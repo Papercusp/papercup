@@ -177,6 +177,7 @@ async function writeToPg(
       summary?: unknown;
       from?: unknown;
       related_msg_id?: unknown;
+      fed_event?: unknown;
     };
     const to = Array.isArray(b.to) ? b.to.filter((x): x is string => typeof x === 'string') : [];
     // P-003: both fans below spend from the author DEVICE's hourly wake budget
@@ -246,6 +247,36 @@ async function writeToPg(
         // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated reply-wake failed for ${row.msg_id} (reply persisted; original sender sees it next turn):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // ── P-009 (cross-machine-coord-parity-and-trust-2026-07-01): federated
+    // EVENT keys. A no-recipient hive-scoped row carrying body.fed_event is an
+    // events:emit { scope:'hive' } — re-fire the key into THIS machine's await
+    // store so a remote peer's events:await wakes (rendezvous beyond
+    // inbox-wake: lock grants, artifact-ready, staging-advanced). Targeted by
+    // construction: emitAwaitedEvent fires only registered watchers (no
+    // watchers = no-op), and the P-003 per-author budget bounds the spend an
+    // admitted peer can trigger. Exactly-once via the same fresh-insert gate.
+    const fe = b.fed_event as { key?: unknown; payload?: unknown; summary?: unknown; source?: unknown } | undefined;
+    if (fe && typeof fe.key === 'string' && fe.key.length > 0) {
+      try {
+        if (tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1)) {
+          const { emitAwaitedEvent } = await import('../../../events/await/engine');
+          await emitAwaitedEvent({
+            key: fe.key,
+            ...(fe.payload !== undefined ? { payload: fe.payload } : {}),
+            ...(typeof fe.summary === 'string' ? { summary: fe.summary } : {}),
+            ...(typeof fe.source === 'string' ? { source: fe.source } : {}),
+            workspaceId: opts.workspaceId,
+          });
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[coord-message] federated event re-fire failed for ${row.msg_id} (row persisted; local watchers miss this firing):`,
           e instanceof Error ? e.message : String(e),
         );
       }

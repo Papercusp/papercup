@@ -17,9 +17,19 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: vi.fn(),
 }));
+// P-009: the federation legs — sendMessage carries the fed-event row; the scope
+// resolver defaults to none (machine-local behavior unchanged).
+vi.mock('../coordination/messages', () => ({
+  sendMessage: vi.fn(async () => ({ msg_id: 'fed-1', to: [], ts: 't' })),
+}));
+vi.mock('../coordination/federation-scope', () => ({
+  resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
+}));
 
 import emit from './emit';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { sendMessage } from '../coordination/messages';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof emit.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -55,5 +65,56 @@ describe('events:emit envelope', () => {
     vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k3', woken: 0, notified: [], msgId: null });
     const out = await call({ event: 'k3' });
     expect(out).toMatchObject({ event: 'k3', woken: 0, notified: 0, msg_id: null });
+  });
+});
+
+
+describe('events:emit scope:\'hive\' (P-009 federated event keys)', () => {
+  const engineResult = { key: 'k1', woken: 1, notified: [], msgId: null };
+
+  it('federates via a NO-RECIPIENT hive-scoped coord row carrying fed_event', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue(engineResult as never);
+    vi.mocked(resolveWorkspaceHiveScope).mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    const out = await call({ event: 'k1', payload: { sha: 'abc' }, scope: 'hive' });
+    expect(out.federated).toBe(true);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const opts = vi.mocked(sendMessage).mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.to).toEqual([]); // zero inbox noise
+    expect(opts.harnessSlug).toBe('my-hive');
+    expect((opts.extra as { fed_event: { key: string; payload: unknown; source: string } }).fed_event).toMatchObject({
+      key: 'k1',
+      payload: { sha: 'abc' },
+      source: 'su-emitter',
+    });
+  });
+
+  it('no shared hive → local emit still succeeds, federated:false + federation_error', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue(engineResult as never);
+    // clearAllMocks resets calls, not implementations — pin 'none' explicitly.
+    vi.mocked(resolveWorkspaceHiveScope).mockResolvedValue({ kind: 'none' } as never);
+    const out = await call({ event: 'k1', scope: 'hive' });
+    expect(out.ok).toBe(true);
+    expect(out.woken).toBe(1); // the LOCAL emit happened regardless
+    expect(out.federated).toBe(false);
+    expect(out.federation_error).toBe('no_hive_scope');
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('without scope, nothing federates and the result shape is unchanged', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue(engineResult as never);
+    vi.mocked(resolveWorkspaceHiveScope).mockResolvedValue({ kind: 'none' } as never);
+    const out = await call({ event: 'k1' });
+    expect(out.federated).toBeUndefined();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('an oversized payload is DROPPED from the federated frame (signal, not blob) but still federates', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue(engineResult as never);
+    vi.mocked(resolveWorkspaceHiveScope).mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
+    const out = await call({ event: 'k1', payload: { blob: 'x'.repeat(10_000) }, scope: 'hive' });
+    expect(out.federated).toBe(true);
+    expect(out.federation_error).toBe('payload_too_large_dropped');
+    const opts = vi.mocked(sendMessage).mock.calls[0][1] as { extra: { fed_event: Record<string, unknown> } };
+    expect(opts.extra.fed_event.payload).toBeUndefined();
   });
 });
