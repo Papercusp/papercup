@@ -1420,6 +1420,75 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
 }
 
 /**
+ * Why did `claimNextWorkItem` return null? (EI-5919.) A bare null CONFLATES two very
+ * different states, and the claim tool historically flattened both into the single message
+ * "no claimable work-item":
+ *   • DRAINED — there is genuinely no unclaimed work in a claimable state (idling is correct).
+ *   • PRESENT-but-UNCLAIMABLE — unclaimed items DO exist, but every one is currently gated
+ *     out of self-select: BLOCKED (a non-terminal blocker), affined to another Swarm,
+ *     high-stakes/redundant (fans out via claim_replica), or a race just took the last ready
+ *     one. The queue is NOT drained — a bee that idles here caps fleet throughput on a full
+ *     backlog (the EI-5803 "fleet saturated with work still queued" signal).
+ *
+ * A self-select being STRICTER than a NAMED `work_items:claim(id)` is BY DESIGN, not a
+ * defect: the named claim deliberately bypasses the status / readiness / placeable-kind
+ * floors (the named-assignment exception), so an item that is directly claimable by id can
+ * be legitimately un-self-selectable. This read-only diagnosis — run ONLY on a claim MISS,
+ * never on the hot path — names WHY the self-select missed so the caller can act instead of
+ * blindly idling.
+ *
+ *   • pendingUnclaimed — the admissible, unclaimed, claimable-status, placeable-kind POOL
+ *     for this harness/workspace, BEFORE the readiness/affinity/redundancy floors. >0 ⇒ work
+ *     exists here; the miss was a gate, not an empty queue. drained === (pendingUnclaimed===0).
+ *   • readyUnclaimed — of that pool, how many pass ALL the floors claim_next enforces (the
+ *     SAME `claimFloorsWhereSql`, incl. readiness). >0 on a miss ⇒ a race / lost lease
+ *     (transient — retry); 0 with pendingUnclaimed>0 ⇒ the rest is genuinely blocked/gated
+ *     (don't idle, but don't hot-retry either).
+ */
+export interface ClaimMissDiagnosis {
+  drained: boolean;
+  pendingUnclaimed: number;
+  readyUnclaimed: number;
+}
+
+export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<ClaimMissDiagnosis> {
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const states = filter.states ?? ['todo'];
+  const useMaintainedReady = await schedulerMaintainedReadyEnabled();
+  // A caller-supplied feature-family kind NARROWING (never a floor) applies to both counts.
+  const kindNarrow = filter.kind ? sql`AND item_kind = ${filter.kind}` : sql``;
+  // POOL: admissible + unclaimed + claimable-status + placeable-kind, WITHOUT the
+  // readiness / affinity / redundancy floors — "is there work here a bee shouldn't idle on".
+  const poolRows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${filter.harness}
+       AND workspace_id = ${ws}
+       AND ${frontierPlacementKindClause(sql, ws)}
+       AND ${autoPickableWhereSql(sql, ws)}
+       AND (taken_by IS NULL OR taken_by = '')
+       AND status = ANY(${states}::text[])
+       ${kindNarrow}`;
+  // READY: passes ALL the floors claim_next enforces (the SAME source of truth — no drift).
+  const readyRows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.harness_features_consolidated
+     WHERE ${claimFloorsWhereSql(sql, {
+       harness: filter.harness,
+       workspaceId: ws,
+       states: filter.states,
+       swarmId: filter.swarmId,
+       excludeRedundant: filter.excludeRedundant,
+       useMaintainedReady,
+     })}
+       ${kindNarrow}`;
+  const pendingUnclaimed = poolRows[0]?.n ?? 0;
+  const readyUnclaimed = readyRows[0]?.n ?? 0;
+  return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed };
+}
+
+/**
  * The ISSUE-family half of self-selection (SCHEDULER_ISSUES_CLAIMABLE, P-007) — atomically
  * claim the oldest UNBLOCKED, unclaimed `open` bug/change/task, mirroring the feature claim's
  * `UPDATE … WHERE pk = (SELECT … FOR UPDATE SKIP LOCKED)` shape but over the `work_items`

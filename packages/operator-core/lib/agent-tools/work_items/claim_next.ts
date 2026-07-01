@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimNextWorkItem, releaseWorkItem } from '../../work-items';
+import { claimNextWorkItem, releaseWorkItem, diagnoseClaimNextMiss } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
@@ -22,11 +22,11 @@ export default defineTool({
   name: 'work_items:claim_next',
   profile: 'engineer',
   description:
-    'Self-select: atomically claim the OLDEST unclaimed work-item in a harness (tuple-space `in` via SKIP LOCKED + work-stealing). Competing agents never double-claim. Returns the claimed item or null.',
+    'Self-select: atomically claim the OLDEST unclaimed work-item in a harness (tuple-space `in` via SKIP LOCKED + work-stealing). Competing agents never double-claim. Returns the claimed item, or on a miss a SELF-DESCRIBING result: `{ ok:false, drained, pendingUnclaimed, readyUnclaimed, error }`. drained:true ⇒ the queue is genuinely empty (idle is correct); drained:false ⇒ unclaimed items EXIST but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-raced) — do NOT idle.',
   guidance: {
     when: 'You are an idle agent picking up work — prefer this self-selection over waiting to be assigned. Returns the oldest claimable feature-family item, now yours.',
-    notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception).',
-    chaining: 'work_items:claim_next → work_items:set_state → work_items:release.',
+    notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).',
+    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained.',
   },
   capability: 'work_items:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: atomic self-select
@@ -88,11 +88,34 @@ export default defineTool({
       return wi;
     };
 
+    /** EI-5919: a bare null CONFLATES "queue drained" with "items exist but none are
+     *  self-selectable now" (blocked / affinity-elsewhere / redundant / just-claimed). A bee
+     *  reading "no claimable work-item" then idles on a FULL-but-blocked backlog (the EI-5803
+     *  "fleet saturated with work still queued" signal). On a miss we run a read-only diagnosis
+     *  and return a SELF-DESCRIBING result so the caller distinguishes drained (idle is correct)
+     *  from pending-but-gated (do NOT idle). Self-select being stricter than a NAMED
+     *  work_items:claim(id) is BY DESIGN — the named claim bypasses the status/readiness floors. */
+    const missResult = async () => {
+      const diag = await diagnoseClaimNextMiss({
+        harness: args.harness,
+        assignee,
+        kind: args.kind,
+        states: args.states,
+        swarmId,
+        excludeRedundant,
+      });
+      const error = diag.drained
+        ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct'
+        : `no claimable work-item RIGHT NOW: ${diag.pendingUnclaimed} unclaimed item(s) exist but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-claimed)${diag.readyUnclaimed > 0 ? ` — ${diag.readyUnclaimed} are ready but a peer likely raced you (retry)` : ''}. The queue is NOT drained — do NOT idle; re-check shortly or unblock the backlog.`;
+      return { ok: false as const, error, drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed };
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
       const wi = await claimOne();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(wi ? { ok: true, workItem: wi } : { ok: false, error: 'no claimable work-item' }) }] };
+      const result = wi ? { ok: true as const, workItem: wi } : await missResult();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     }
 
     // count>1: loop the same atomic claim up to N times, STOPPING at the first miss
@@ -105,6 +128,12 @@ export default defineTool({
       if (!wi) break;
       claimed.push(wi);
     }
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: claimed.length > 0, claimed }) }] };
+    // EI-5919: on an EMPTY sweep, attach the same drained-vs-pending diagnosis so a batch
+    // caller can also distinguish a truly-drained queue from a full-but-gated backlog.
+    if (claimed.length === 0) {
+      const miss = await missResult();
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...miss, claimed }) }] };
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, claimed }) }] };
   },
 });
