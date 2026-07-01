@@ -411,9 +411,17 @@ export interface BuildSuLaunchSpecInput {
   harnessSlug?: string | null;
   /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
   profile?: string;
-  /** su-context-size-variants: 'full' | 'trimmed' — initial-context size. Codex
-   *  hard-trims via the ?tools= allowlist baked here; claude/omp soft-trim at launch. */
+  /** su-context-size-variants: 'full' | 'trimmed' — an EXPLICIT initial-context
+   *  size override. When omitted, the trim is derived from the model tier
+   *  (weak → trimmed, frontier → full); 'trimmed' forces the trim on any tier. */
   contextSize?: 'full' | 'trimmed' | null;
+  /** The model spec the session launches with (e.g. `ollama/ornith-35b:IQ3_M` or
+   *  `anthropic/claude-opus-4-8`). Drives the model-capability tier that gates the
+   *  lite tooling tier — the `?tools=` catalog trim below and, downstream, the
+   *  lite-schema / named-JSON / grammar / examples levers. OMP runs weak AND strong
+   *  models, so the tier comes from THIS, never the client (D-004). Omitted →
+   *  frontier (full catalog): the safe, no-regression default. */
+  model?: string | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
   planTitle?: string | null;
