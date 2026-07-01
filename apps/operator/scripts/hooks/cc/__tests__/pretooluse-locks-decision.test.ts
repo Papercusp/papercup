@@ -202,4 +202,27 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     // …but the guard fired first, so no lock was acquired/cached.
     expect(fs.existsSync(join(cache, 'tu-stray.lock'))).toBe(false);
   });
+
+  it('worktree guard: ALLOWS an edit in a .papercusp/worktrees isolation tree', async () => {
+    // Migration/synthesis roles get their own isolation worktree under
+    // <canonical>/.papercusp/worktrees/<name>. Its parent is NOT the workspace
+    // root (it's deep inside the canonical tree), so it is not a stray sibling —
+    // the guard must let it through. This is the documented exception in
+    // pretooluse-locks-acquire.sh; guarding it would break those roles.
+    const iso = join(repo, '.papercusp', 'worktrees', 'iso-1');
+    fs.mkdirSync(join(iso, 'sub'), { recursive: true });
+    fs.writeFileSync(join(iso, '.git'), 'gitdir: /nonexistent\n');
+    const r = await run({
+      tool_name: 'Edit',
+      tool_input: { file_path: join(iso, 'sub/x.ts') },
+      tool_use_id: 'tu-iso',
+      session_id: 's',
+      cwd: iso,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(''); // allow = no decision
+    // Isolation trees have a non-workspace-root parent, so they're not
+    // coordinated — the guard passes them through without acquiring a lock.
+    expect(fs.existsSync(join(cache, 'tu-iso.lock'))).toBe(false);
+  });
 });

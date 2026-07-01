@@ -81,7 +81,15 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
       delivery_mode text NOT NULL DEFAULT 'full',
       expires_ts    timestamptz,
       created_at    timestamptz NOT NULL DEFAULT now(),
-      cancelled_at  timestamptz
+      cancelled_at  timestamptz,
+      -- Mirror the migration-created constraint (123-coordination-substrate.sql +
+      -- 429-coord-entity-subscriptions-allow-fleet-kind.sql). This bootstrap DDL is
+      -- used by tests + fresh embedded DBs; it MUST carry the SAME target_kind check
+      -- as prod, or a too-strict/missing constraint drifts undetected — exactly the
+      -- gap behind EI-5904, where fleet:delivery ('fleet' kind) passed every test yet
+      -- violated the prod check. Keep this list in sync with the migration.
+      CONSTRAINT coord_entity_subscriptions_kind_check
+        CHECK (target_kind = ANY (ARRAY['topic'::text, 'object'::text, 'fleet'::text]))
     )`;
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS coord_entity_subscriptions_active_uq

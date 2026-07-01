@@ -872,6 +872,22 @@ describe('onToolCall worktree guard (single-tree discipline)', () => {
     });
     expect(r.block).toBeUndefined(); // guard passes → lock granted → {}
   });
+
+  it('allows an edit in a .papercusp/worktrees isolation tree', async () => {
+    // Migration/synthesis isolation worktrees live under
+    // <canonical>/.papercusp/worktrees/<name> — a non-workspace-root parent, so
+    // extractLockTargets never keeps them and the guard never fires. They must
+    // pass (guarding them would break those roles).
+    const iso = join(fx.repo, '.papercusp', 'worktrees', 'iso-1');
+    await fs.mkdir(join(iso, '.git'), { recursive: true });
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'wt-iso',
+      input: { path: join(iso, 'x.ts'), content: 'x' },
+    });
+    expect(r.block).toBeUndefined(); // isolation tree → guard passes → not blocked
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────
