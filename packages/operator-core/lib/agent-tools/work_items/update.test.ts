@@ -63,3 +63,41 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'F-1', error: expect.stringContaining('feature-family') });
   });
 });
+
+// EI-6060: `status`/`state` are lifecycle fields owned by work_items:set_state. Zod's
+// default object() SILENTLY STRIPPED them, so an update({ id, state:'resolved' }) parsed
+// clean, changed nothing, and returned ok:true — a silent no-op read as success. The args
+// schema now REJECTS them with a pointer to set_state. (Tested at the schema layer because
+// the handler is invoked directly in the tests above, bypassing arg parsing.)
+describe('work_items:update args schema — rejects lifecycle-state footguns (EI-6060)', () => {
+  const hasSetStatePointer = (r: ReturnType<typeof tool.args.safeParse>) =>
+    !r.success && r.error.issues.some((i) => /set_state/.test(i.message));
+
+  it('rejects an inline `state` field instead of silently stripping it', () => {
+    const r = tool.args.safeParse({ id: 'EI-1', state: 'resolved' });
+    expect(r.success).toBe(false);
+    expect(hasSetStatePointer(r)).toBe(true);
+  });
+
+  it('rejects an inline `status` field', () => {
+    const r = tool.args.safeParse({ id: 'EI-1', status: 'resolved' });
+    expect(r.success).toBe(false);
+    expect(hasSetStatePointer(r)).toBe(true);
+  });
+
+  it('rejects a `state`/`status` field inside items:[…]', () => {
+    expect(hasSetStatePointer(tool.args.safeParse({ items: [{ id: 'EI-1', state: 'closed' }] }))).toBe(true);
+    expect(hasSetStatePointer(tool.args.safeParse({ items: [{ id: 'EI-2', status: 'open' }] }))).toBe(true);
+  });
+
+  it('still ACCEPTS a valid field-only patch (no false positive)', () => {
+    expect(tool.args.safeParse({ id: 'EI-1', title: 'new', severity: 'major' }).success).toBe(true);
+    expect(tool.args.safeParse({ items: [{ id: 'EI-1', body: 'b', kind: 'change' }] }).success).toBe(true);
+  });
+
+  it('still enforces id-or-items', () => {
+    const r = tool.args.safeParse({ title: 'orphan' });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues.some((i) => /pass \{ id/.test(i.message))).toBe(true);
+  });
+});

@@ -165,11 +165,20 @@ import { getSystemAction, type SystemActionCtx } from '../routines/system-action
 
 // --- helpers over the captured PG writes ------------------------------------------
 
-/** JSONB patches applied to the routine's metadata (recordOutcome + resolver markers). */
-const routinePatches = (): Array<Record<string, unknown>> =>
+/** ALL JSONB patches applied to the routine's metadata, in order (breadcrumb included). */
+const allRoutinePatches = (): Array<Record<string, unknown>> =>
   unsafeCalls
     .filter((c) => c.text.includes('UPDATE harness_shared.routines'))
     .map((c) => JSON.parse(String(c.params[1])) as Record<string, unknown>);
+
+/** WI-1416: the `fire_started_at` breadcrumb patched at the very top of every fire. */
+const fireBreadcrumbs = (): Array<Record<string, unknown>> =>
+  allRoutinePatches().filter((p) => 'fire_started_at' in p);
+
+/** JSONB patches applied to the routine's metadata (recordOutcome + resolver markers) —
+ *  the WI-1416 fire_started_at breadcrumb excluded so outcome assertions stay focused. */
+const routinePatches = (): Array<Record<string, unknown>> =>
+  allRoutinePatches().filter((p) => !('fire_started_at' in p));
 
 /** Escalation upserts (conflict + error kinds), with the parsed body. */
 const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Record<string, unknown> }> =>
