@@ -32,6 +32,11 @@ export default defineTool({
     notWhen: 'You want watchdog/auto-implement health — improvements:watchdog-status. You want the full captured (keyed) backlog triage — improvements:digest. You want one item — work_items:get.',
     chaining:
       'improvements:keyless-digest → for each review item: work_items:claim (take it), work_items:set_state (obsolete), or re-file via improvements:capture with a stable key if it is a recurring signal. improvements:watchdog-status surfaces the same keyless headline split.',
+    seeAlso: [
+      'improvements:digest (the full KEYED backlog triage)',
+      'improvements:watchdog-status (why keyless items escape the lifecycle)',
+      'work_items:set_state (close an obsolete keyless item)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

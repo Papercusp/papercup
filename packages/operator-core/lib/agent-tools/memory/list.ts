@@ -33,6 +33,11 @@ export default defineTool({
       'When the user asks to inspect their memory ("what have you stored about me?") or you need a filter-only query.',
     notWhen:
       'For semantic lookup ("what did I say about X?"), use memory:search instead.',
+    seeAlso: [
+      'memory:search (semantic recall instead of a metadata filter)',
+      'memory:update (amend a memory you found)',
+      'memory:forget (drop one that is wrong)',
+    ],
   },
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made

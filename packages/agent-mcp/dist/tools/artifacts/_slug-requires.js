@@ -9,10 +9,20 @@
  * comes from ctx it must also be SLUG_RE-valid (an arg slug is already
  * zod-validated by each tool's args schema, so the validity spec only needs to
  * cover the ctx path).
+ *
+ * Bulk (the house keyed-array contract,
+ * bulk-endpoint-standardization-2026-06-21): a bulk call carries per-item slugs
+ * on `args.items[]`, so the top-level `args.slug` is absent. The declarative
+ * precondition can't reach into the `items` array, so when `items` is present
+ * BOTH preconditions short-circuit (hold) and per-item slug presence/validity
+ * is re-asserted inside the handler — each bad item becomes an `{ ok:false,
+ * error }` result rather than rejecting the whole batch. The n=1 single path
+ * (`{ slug?, rel_path }`) is gated here exactly as before.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SLUG_RE = void 0;
 exports.slugRequires = slugRequires;
+exports.resolveSlug = resolveSlug;
 /** Mirrors each tool's `args.slug` zod regex — one slug grammar everywhere. */
 exports.SLUG_RE = /^[a-z0-9._-]+$/i;
 /** The two harness-slug preconditions, parameterized by tool name (errors only). */
@@ -21,7 +31,11 @@ function slugRequires(toolName) {
         {
             id: 'harness-slug',
             when: {
-                any: [{ 'args.slug': { truthy: true } }, { 'ctx.harnessSlug': { truthy: true } }],
+                any: [
+                    { 'args.items': { truthy: true } },
+                    { 'args.slug': { truthy: true } },
+                    { 'ctx.harnessSlug': { truthy: true } },
+                ],
             },
             error: `${toolName} — \`slug\` required (no harnessSlug in spawn context)`,
         },
@@ -29,6 +43,7 @@ function slugRequires(toolName) {
             id: 'valid-ctx-slug',
             when: {
                 any: [
+                    { 'args.items': { truthy: true } },
                     { 'args.slug': { truthy: true } },
                     { 'ctx.harnessSlug': { matches: { source: exports.SLUG_RE.source, flags: 'i' } } },
                 ],
@@ -36,4 +51,21 @@ function slugRequires(toolName) {
             error: `${toolName} — invalid harnessSlug in spawn context`,
         },
     ];
+}
+/**
+ * Resolve + validate a per-item (or single-call) slug against the spawn ctx
+ * fallback — the in-handler half of the slug guard for the bulk path. Mirrors
+ * the `slugRequires` preconditions per item: a slug must arrive via the item or
+ * the spawn ctx, and must be SLUG_RE-valid. Returns the resolved slug or an
+ * error string (the per-item op turns the string into `{ ok:false, error }`).
+ */
+function resolveSlug(toolName, itemSlug, ctxHarnessSlug) {
+    const slug = itemSlug ?? ctxHarnessSlug ?? undefined;
+    if (!slug) {
+        return { error: `${toolName} — \`slug\` required (no harnessSlug in spawn context)` };
+    }
+    if (!exports.SLUG_RE.test(slug)) {
+        return { error: `${toolName} — invalid slug ${JSON.stringify(slug)}` };
+    }
+    return { slug };
 }

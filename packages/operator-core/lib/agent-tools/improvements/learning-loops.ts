@@ -34,6 +34,10 @@ export default defineTool({
     notWhen: 'For the watchdog tick health + auto-implement dispatch ledger use improvements:watchdog-status. For the captured backlog use improvements:digest.',
     chaining:
       'improvements:learning_loops → (a dark frontier loop) the per-lane arming runbook; (a should-be-on-but-dark / stale loop) investigate the routine then improvements:capture.',
+    seeAlso: [
+      'improvements:watchdog-status (watchdog tick health + auto-implement dispatch ledger)',
+      'improvements:digest (the captured backlog itself)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

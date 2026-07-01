@@ -30,7 +30,6 @@ import './tools/artifacts/load';
 import './tools/artifacts/save';
 import './tools/artifacts/append';
 import './tools/artifacts/delete';
-import './tools/dev/hello-card';
 import './resources/harness/list';
 import './resources/harness/issues';
 import './resources/goals/list';

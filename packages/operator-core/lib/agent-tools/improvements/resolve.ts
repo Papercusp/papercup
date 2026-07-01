@@ -25,6 +25,11 @@ export default defineTool({
     when: 'You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human.',
     notWhen: 'You only want to comment progress — work_items:comment. You are closing a non-improvement issue — work_items:set_state. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.',
     chaining: 'improvements:digest → (dispatch/claim) → implement + test → improvements:resolve { id, outcome, summary, testsRun }.',
+    seeAlso: [
+      'work_items:comment (a progress note without closing)',
+      'work_items:set_state (close a NON-improvement issue)',
+      'improvements:digest (find the next dispatched item)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

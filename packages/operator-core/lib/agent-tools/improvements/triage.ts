@@ -31,6 +31,11 @@ export default defineTool({
       'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding.",
+    seeAlso: [
+      'improvements:digest (READ the ideas without recording a judgment)',
+      'improvements:capture (FILE a new idea)',
+      'work_items:create (place a triaged idea as tracked work)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

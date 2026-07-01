@@ -26,6 +26,14 @@ exports.default = (0, tooldef_1.defineTool)({
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
+    // Output schema (token-efficient-tool-result-formats P-011) — see audit:list /
+    // messages:inbox: the default `summary` shape is a flat scalar array (CSV-
+    // eligible + advertised `outputSchema`); `detail: 'full'` adds a nested
+    // `details` object per row, which the serializer downgrades to TOON.
+    result: zod_1.z.array(zod_1.z.object({
+        ts: zod_1.z.number(),
+        subject: zod_1.z.string(),
+    })),
     async handler(args, ctx) {
         if (!/^[a-z0-9._-]+$/i.test(args.slug)) {
             return {

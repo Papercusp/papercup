@@ -101,6 +101,11 @@ export default defineTool({
       'Default scope is per-user. Do not pass harness_slug for personal preferences. For IN-FLIGHT / ephemeral state (what you are doing right now), use coord (coord:declare-intent / coord:send) — it is delta-delivered, not a semantic store.',
     chaining:
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
+    seeAlso: [
+      'memory:search (recall / dedup before writing a new fact)',
+      'memory:update (amend an existing memory instead of duplicating)',
+      'coord:declare-intent (in-flight state belongs here, not in a durable memory)',
+    ],
   },
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made

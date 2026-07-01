@@ -6,12 +6,17 @@
  * each spawn's `.mcp.json` (PR 4 of plugin-MCP-host).
  *
  * URL shape:
- *   ?harness=<slug>&workspace=<id>&role=<role>
+ *   ?harness=<slug?>&workspace=<id>&role=<role>
  *   &run=<runId>&spawn=<spawnId>
  *   &feature=<id?>&chunk=<id?>&parent_spawn=<id?>&client=<uiClientId?>
  *
- * Required: harness, workspace, role, run, spawn.
- * Optional: feature, chunk, parent_spawn (set by Phase 9 spawn-of-spawn),
+ * Required: workspace, role, run, spawn.
+ * Optional: harness (a WORKSPACE-LEVEL role session — operator/planner
+ *           launched without a harness, hive-agent-tabs P-003; absent →
+ *           `harnessSlug` is the `'*'` unscoped sentinel, the same value
+ *           the superuser path uses — harness-scoped tools then answer
+ *           `harness_required` until a per-call harness is named),
+ *           feature, chunk, parent_spawn (set by Phase 9 spawn-of-spawn),
  *           client (UI client id; when an agent is invoked from a
  *           browser tab, the tab's client_id is baked here so tools
  *           like `ui:dispatch` can default to it).

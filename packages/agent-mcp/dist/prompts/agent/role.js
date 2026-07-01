@@ -3,7 +3,7 @@
  * `agent:role` — return the canonical role-prompt md for any agent role
  * (architect, orchestrator, scoper, worker, validator, debugger, …).
  *
- * Source of truth: libs/papercusp/packages/harness/prompts/<role>.md.
+ * Source of truth: libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md.
  * Returns the file content as a single system-role message. Used by
  * external clients that want to spin up an LLM session with the same
  * persona Papercusp uses internally.
@@ -12,11 +12,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_path_1 = require("node:path");
 const host_platform_1 = require("@papercusp/host-platform");
 const tooldef_1 = require("@papercusp/tooldef");
+const module_dir_1 = require("../module-dir");
 // No hand-kept role list here. The previous `KNOWN_ROLES` array had drifted
 // from both `AGENT_ROLES` (role-config.ts) and the on-disk prompts — it
 // accepted `tester` (which has no `<role>.md`, so the read below threw) and
 // rejected `plan-gate`/`scanner`/`synthesizer` (which DO have one). The
-// on-disk `libs/papercusp/packages/harness/prompts/<role>.md` set IS the
+// on-disk `libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md` set IS the
 // source of truth for which roles have a persona, so we validate the id is
 // well-formed (anti path-traversal) and let the file read below be the
 // existence check — no second list to drift. (su-prompt-audit-fixes P-017 /
@@ -29,10 +30,18 @@ function findPromptsDir() {
     // "did this readTextFileSync return non-null" is a sufficient existence
     // check for the dir as a whole.
     const platform = (0, host_platform_1.getHostPlatform)();
+    const here = (0, module_dir_1.moduleDir)(import.meta);
     const candidates = [
-        (0, node_path_1.resolve)(import.meta.dirname, '../../../../../libs/papercusp/packages/harness/prompts'),
-        (0, node_path_1.resolve)(import.meta.dirname, '../../../../libs/papercusp/packages/harness/prompts'),
-        (0, node_path_1.resolve)(process.cwd(), 'libs/papercusp/packages/harness/prompts'),
+        ...(here
+            ? [
+                (0, node_path_1.resolve)(here, '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts'),
+                (0, node_path_1.resolve)(here, '../../../../libs/papercusp/packages/harness/blueprints/base/prompts'),
+            ]
+            : []),
+        (0, node_path_1.resolve)(process.cwd(), 'libs/papercusp/packages/harness/blueprints/base/prompts'),
+        // The operator hosts run with cwd apps/operator (systemd units + Tauri
+        // sidecar) — the repo root is two levels up from there.
+        (0, node_path_1.resolve)(process.cwd(), '../../libs/papercusp/packages/harness/blueprints/base/prompts'),
     ];
     for (const dir of candidates) {
         if (platform.fileExistsSync((0, node_path_1.join)(dir, 'architect.md')))
@@ -47,7 +56,7 @@ exports.default = (0, tooldef_1.definePrompt)({
         {
             name: 'role',
             description: 'A Papercusp role id with a prompt at ' +
-                'libs/papercusp/packages/harness/prompts/<role>.md ' +
+                'libs/papercusp/packages/harness/blueprints/base/prompts/<role>.md ' +
                 '(e.g. architect, scoper, worker, reviewer, validator, debugger, orchestrator).',
             required: true,
         },
@@ -59,7 +68,7 @@ exports.default = (0, tooldef_1.definePrompt)({
         }
         const dir = findPromptsDir();
         if (!dir) {
-            throw new Error('Could not locate libs/papercusp/packages/harness/prompts on disk.');
+            throw new Error('Could not locate libs/papercusp/packages/harness/blueprints/base/prompts on disk.');
         }
         const path = (0, node_path_1.join)(dir, `${role}.md`);
         const text = (0, host_platform_1.getHostPlatform)().readTextFileSync(path);

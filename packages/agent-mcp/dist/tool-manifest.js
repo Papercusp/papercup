@@ -3,7 +3,7 @@
  * Pinned tool manifest — freezes the MCP `tools/list` surface so it is
  * byte-stable across reconnects/reloads.
  *
- * WHY: the SDK consuming this server (e.g. via Meridian) inlines the tool
+ * WHY: an SDK consuming this server (e.g. a stateless Anthropic-format client) inlines the tool
  * catalog into the prompt prefix. If the exposed set changes mid-session
  * (a re-fetch after the operator hot-reloads while you're adding tools),
  * the catalog bytes change and the upstream prompt cache busts — re-creating
@@ -31,20 +31,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.reloadToolManifest = reloadToolManifest;
 exports.hasToolManifest = hasToolManifest;
 exports.applyToolManifest = applyToolManifest;
-const node_fs_1 = __importDefault(require("node:fs"));
-const node_os_1 = __importDefault(require("node:os"));
 const node_path_1 = __importDefault(require("node:path"));
+const host_platform_1 = require("@papercusp/host-platform");
 // `undefined` = not yet loaded; `null` = no manifest (expose all).
 let cache;
 function manifestPath() {
     return (process.env.AGENT_MCP_TOOL_MANIFEST ||
-        node_path_1.default.join(node_os_1.default.homedir(), '.papercusp', 'tool-manifest.json'));
+        node_path_1.default.join((0, host_platform_1.getHostPlatform)().homedir(), '.papercusp', 'tool-manifest.json'));
 }
 function load() {
     if (cache !== undefined)
         return cache;
     try {
-        const raw = JSON.parse(node_fs_1.default.readFileSync(manifestPath(), 'utf8'));
+        const text = (0, host_platform_1.getHostPlatform)().readTextFileSync(manifestPath());
+        if (text === null) {
+            cache = null; // missing or unreadable → expose all
+            return cache;
+        }
+        const raw = JSON.parse(text);
         const names = Array.isArray(raw) ? raw : raw?.tools;
         if (!Array.isArray(names) ||
             names.length === 0 ||
@@ -55,7 +59,7 @@ function load() {
         cache = { order: new Map(names.map((n, i) => [n, i])) };
     }
     catch {
-        cache = null; // missing or invalid → expose all
+        cache = null; // unparseable → expose all
     }
     return cache;
 }

@@ -34,6 +34,11 @@ export default defineTool({
     when: 'To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for "why did/didn\'t the watchdog file X?" — and for the auto-implement lane\'s dispatch ledger ("did the dispatch fire / is a worker on it / did it die?").',
     notWhen: 'You want the captured backlog itself — improvements:digest. You want one improvement — work_items:get { id }. You want to file one — improvements:capture.',
     chaining: 'improvements:watchdog-status → work_items:get on a captured/self-escalated/dispatched id → improvements:digest for the full backlog triage.',
+    seeAlso: [
+      'improvements:digest (the captured backlog itself)',
+      'improvements:learning_loops (health of the broader learning machinery)',
+      'improvements:set-watchdog-tunables (retune a noisy/quiet collector)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

@@ -33,6 +33,44 @@ const tooldef_1 = require("@papercusp/tooldef");
 const tool_manifest_1 = require("./tool-manifest");
 const tooldef_2 = require("@papercusp/tooldef");
 const tooldef_3 = require("@papercusp/tooldef");
+/** Walk a dotted path into the raw input to recover the offending value. */
+function valueAtPath(input, segs) {
+    let cur = input;
+    for (const seg of segs) {
+        if (cur == null || typeof cur !== 'object')
+            return undefined;
+        cur = cur[seg];
+    }
+    return cur;
+}
+/**
+ * Render validation issues into one agent-facing `path: message; …` string —
+ * but for a string `too_big` issue, tell the agent HOW FAR over the cap it is and
+ * the exact target length (agent-tooling-token-efficiency-2026-06-25 P-003). Derived
+ * from the issue's `maximum` + the actual input length at that path, e.g.
+ * `goal: too long — 412 chars over the 500-char limit; trim to 500.` so the agent
+ * trims deterministically in ONE retry instead of blind-retrying the same value. A
+ * telemetry audit traced ~1,000+ tool calls/14d failing purely on too-long args.
+ * Generic over any field; non-too_big issues keep their original `path: message`.
+ */
+function formatInvalidArgs(issues, input) {
+    return issues
+        .map((issue) => {
+        const segs = (issue.path ?? []).map((seg) => typeof seg === 'object' && seg !== null ? seg.key : seg);
+        const path = segs.map((s) => String(s)).join('.');
+        if (issue.code === 'too_big' && issue.origin === 'string' && typeof issue.maximum === 'number') {
+            const max = issue.maximum;
+            const actual = valueAtPath(input, segs);
+            const over = typeof actual === 'string' ? actual.length - max : null;
+            const detail = over !== null && over > 0
+                ? `too long — ${over} chars over the ${max}-char limit; trim to ${max}.`
+                : `too long — over the ${max}-char limit; trim to ${max}.`;
+            return path ? `${path}: ${detail}` : detail;
+        }
+        return path ? `${path}: ${issue.message}` : issue.message;
+    })
+        .join('; ');
+}
 /**
  * Run a tool by name with bearer-derived principal. The single entry
  * point used by both the MCP transport handler and in-process callers
@@ -61,7 +99,7 @@ async function dispatch(opts) {
     if (!parsed.ok) {
         return {
             ok: false,
-            error: { code: 'invalid_args', message: (0, tooldef_1.formatIssues)(parsed.issues) },
+            error: { code: 'invalid_args', message: formatInvalidArgs(parsed.issues, opts.args) },
         };
     }
     try {
@@ -299,6 +337,8 @@ async function startServer(opts = {}) {
         // MCP transport, so it defaults to compact; a client can override per call
         // via `_meta.format`. The envelope (nextCursor/degraded) rides in `_meta`.
         const r = result.response;
+        if ('content' in r)
+            return r;
         const meta = req.params._meta;
         const serialized = (0, tooldef_1.serializeToolResponse)(r, (0, tooldef_1.formatOptsFromCtx)({ requestedFormat: meta?.format, requestedStructured: meta?.structured === true, transport: 'mcp' }, (0, tooldef_1.lookupByMcpName)(req.params.name)?.resultEligibility));
         return {

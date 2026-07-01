@@ -35,6 +35,10 @@ export default defineTool({
     when: 'A watchdog collector is too noisy or too quiet on a running fleet (e.g. raise transientMinCount during a flaky-infra window, or lower a min-count to capture more) and you want to retune it live instead of poking the routine payload by hand or editing code.',
     notWhen: 'To turn the watchdog on/off (flip its routine `active` — autoloop/routine control). To READ what it last captured, use improvements:watchdog-status. This tool tunes the payload layer; the maxPerTick env override still wins at tick time.',
     chaining: 'improvements:watchdog-status to see current capture behavior; set with dryRun:true to preview the proposed-vs-current diff before applying.',
+    seeAlso: [
+      'improvements:watchdog-status (read current capture behavior before/after tuning)',
+      'improvements:set-auto-policy (tune the auto-implement lane, not the collector)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -32,6 +32,10 @@ export default defineTool({
       'To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.',
     chaining:
       'memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    seeAlso: [
+      'memory:update (CORRECT the content instead of deleting — preserves history)',
+      'memory:search (find the id to forget)',
+    ],
   },
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made

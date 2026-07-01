@@ -14,8 +14,8 @@ declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<
     kinds: z.ZodOptional<z.ZodArray<z.ZodEnum<{
         messages: "messages";
         projects: "projects";
-        goals: "goals";
         tasks: "tasks";
+        goals: "goals";
         audit: "audit";
     }>>>;
     limit: z.ZodDefault<z.ZodNumber>;

@@ -16,7 +16,8 @@
  * in tool `roles:` allowlists.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BRAIN_PRINCIPAL_ROLE = exports.AGENT_ROLES = void 0;
+exports.BRAIN_PRINCIPAL_ROLE = exports.OPERATOR_CONFIG_WRITE_ROLES = exports.SU_WRITE_ROLES = exports.SU_ROLES = exports.FROZEN_OVERLAY_ROLES = exports.AGENT_ROLES = void 0;
+exports.isOperatorConfigWriteRole = isOperatorConfigWriteRole;
 /**
  * The built-in Papercusp agent roles, as they appear in tool `roles:`
  * allowlists, `rolesQuota` keys, and `byRole` guidance overrides. The set is
@@ -44,6 +45,13 @@ exports.AGENT_ROLES = [
     // ONLY when a bee explicitly spins up a coding harness (kind:'harness'); the bee
     // itself is the generic agent of the kind:'hive' blueprint.
     'bee',
+    // The QUEEN — the hive blueprint's placement-specialist decider
+    // (spine.deciderAlternatives; local-hive-orchestration P-030). The operator role
+    // specialized for placement (D-001): same judgment layer, dial turned toward
+    // fleet:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
+    // blueprint declared the role but the registry never knew it, so a role=queen
+    // launch got an almost-empty role-scoped MCP catalog and could not place work.
+    'queen',
     // The PLANNER (hive-agent-tabs-psu-tui-2026-06-09 P-006): an interactive,
     // RESPONSIVE plan-authoring session launched into the dock as a Planner-kind pane
     // (no auto-injected wakes — the owner drives). It drafts/refines ONE plan via the
@@ -74,6 +82,15 @@ exports.AGENT_ROLES = [
     // redoes the merge fresh on `main`, resolves, commits, leaves the tree clean, and
     // does NOT push (the next git-sync tick pushes). Not feature-scoped.
     'merge-resolver',
+    // git-sync CONTENT-guard repairer (git-sync-content-guard-2026-06-13 D-008 follow-up;
+    // the merge-resolver's content-side twin). Spawned by the `system:git-sync` content
+    // guard (EI-438) when a dirty file fails a content detector and is quarantined out of
+    // the auto-commit — an .mdx that won't MDX-compile, a curly quote used as code. Fixes
+    // ONLY the named files' syntax so they pass the detector, leaves the tree clean, does
+    // NOT push. Registered late (mirrors the merge-resolver/release-fixer launch-fixer
+    // family): the `content-fix` blueprint declared the role, but the registry never knew
+    // it, so it lived as an untyped bare string in tool allowlists.
+    'content-fixer',
     // Release manager (release-gate-ready-branch-2026-06-04 D-011). The judgment
     // half of the deploy chokepoint — Claude Opus 4.8 @ xhigh effort, because the
     // blast radius is the whole running fleet. Spawned by the `system:release-trigger`
@@ -81,6 +98,15 @@ exports.AGENT_ROLES = [
     // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
     // reads health and decides rollback. The script is the hands; this is the brain.
     'release-manager',
+    // green-checkpoint GATE fixer (release-pipeline-resilience-2026-06-09 P-006; the
+    // release-manager's execution-side twin, and the launch-fixer family's third member
+    // alongside merge-resolver/content-fixer). Spawned by the `system:release-trigger` /
+    // green-checkpoint routine when the gate goes RED: reads the checkpoint log, reproduces
+    // the failing test to classify regression-vs-flake, then fixes the code or removes a
+    // proven flake (hermetic / tier-out / accountable quarantine), leaves the tree clean,
+    // does NOT push. Registered late (mirrors merge-resolver): the `release-fix` blueprint
+    // declared the role, but the registry never knew it.
+    'release-fixer',
     // The SENTINEL — the fleet watcher split out of the overloaded "operator"
     // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
     // (steer: schedule + place + prioritize) AND a watcher; they are now separate.
@@ -91,7 +117,154 @@ exports.AGENT_ROLES = [
     // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
     // or the `sentinel` launch blueprint). No execution/mutation capability.
     'sentinel',
+    // The OVERWATCH — the autonomous system-health SUPERVISOR, a sibling to the Queen
+    // (overwatch-role-2026-06-15 C-2 / B-01). Where the Queen SCHEDULES (places work)
+    // and the sentinel WATCHES the fleet, the overwatch runs the short-term
+    // sense→decide→act control loop over the WHOLE running system (the Queen, the bees,
+    // the work-feed, tokens, plans, escalations): it detects drift and makes LIVE
+    // course-corrections by NUDGING the running agents (coord:send) + recording
+    // OBSERVATIONS (improvements:capture lane:observation), never re-placing work itself
+    // (D-001 — the hard Queen-boundary). READ-EVERYTHING + nudge/observe/escalate ONLY:
+    // its write-to-the-world verbs are coord:send / coord:escalate / improvements:capture
+    // / messages:send, and its ROLE_ENVELOPES entry DENIES capability:fs-write +
+    // capability:bash — it nudges, it never edits code. Registered statically + UNGATED
+    // here (the `papercusp-overwatch` flag gates the LOOP/spawn/UI in B-04/B-08/B-10, not
+    // this type-level role id). Canonical persona ships at the coding (hive) blueprint
+    // (blueprints/coding/prompts/overwatch.md, B-05); the fallback prompts/overwatch.md is a
+    // thin STUB so the two cannot drift (D-007 / the EI-611 lesson).
+    'overwatch',
+    // ── Blueprint-shipped specialist roles (blueprint-role-bundling-2026-06-15 Phase 0 /
+    // EI-621). These ship a persona under the harness `prompts/` dir (moving to the owning
+    // blueprint in Phase 2) and are dispatched by their blueprint's spine — but predated this
+    // const, so the registry only "knew" them via the now-retired getKnownRoles filesystem
+    // walk. Listed here so AGENT_ROLES is the COMPLETE built-in role universe and the
+    // filesystem is no longer the registry (D-008). NOT including the program-blueprint-scoped
+    // roles (advocate/voter — resolved only via blueprints/vote) nor the retired org-model
+    // roles (ceo/coordinator); those stay valid as bare `string`s.
+    //
+    // research blueprint — investigation pipeline.
+    'researcher',
+    'research-director',
+    'searcher',
+    'discoverer',
+    'finding-verifier',
+    'findings-synthesizer',
+    'synthesizer',
+    // review blueprint — multi-dimension adversarial review.
+    'review-director',
+    'dimension-reviewer',
+    'verifier',
+    // migration blueprint — codemod pipeline.
+    'migration-director',
+    'migration-verifier',
+    'transformer',
+    // gym / learning-loop blueprints — eval + variant generation.
+    'gym-director',
+    'judge',
+    'task-generator',
+    'variant-runner',
+    'proposer',
+    // scan blueprint — the negative-space/scout scanner (also a blueprint override in scan/).
+    'scanner',
+    // The generic director + committer (single-agent / coding sub-roles).
+    'director',
+    'committer',
+    // Multi-phase coding pipeline (staging/testing/production) roles still DISPATCHED live by
+    // classifyDecision (orchestrator-decide): GENERATE_TESTS→test-writer, NEXT_TESTER→tester,
+    // NEXT_MONITOR→monitor. Their personas currently live ONLY in the phase subdirs
+    // (prompts/{testing,staging,production}/<role>.md); their blueprint-resolvable home is
+    // decided in Phase 2/5 (they must move before the global prompts/ dir is deleted).
+    'tester',
+    'test-writer',
+    'monitor',
 ];
+/**
+ * Roles that exist in AGENT_ROLES but must NEVER be applied as a gym variant
+ * prompt-overlay or throwaway-harness override target. The external `judge` is
+ * FROZEN (gym D-003): the gym overlays + optimizes a harness's PIPELINE roles and
+ * the judge then EVALUATES the resulting variants — overlaying the judge itself
+ * would let a variant rewrite (and so game) its own evaluator.
+ *
+ * This protection used to be IMPLICIT — `judge` was absent from AGENT_ROLES, so the
+ * overlay validators rejected it as an "unknown role". That hole re-opened silently
+ * when blueprint-role-bundling (EI-621 / D-008) made AGENT_ROLES the COMPLETE
+ * built-in role universe (judge is a gym/learning-loop blueprint role). It is now
+ * EXPLICIT and pinned here next to the role declaration so adding a role to
+ * AGENT_ROLES can't re-open it. `satisfies` pins each member to AGENT_ROLES, so
+ * renaming `judge` breaks compilation here instead of silently orphaning the freeze.
+ */
+exports.FROZEN_OVERLAY_ROLES = ['judge'];
+/**
+ * The standard SU-tool `agentRoles:` allowlist — the eight pipeline roles +
+ * the operator chat role. THE single source for this set (audit P-072,
+ * EI-145/EI-66 — it used to exist as ~113 identical inline copies named
+ * SU_ROLES/ALL_ROLES across agent-tools). Variants compose at the use site:
+ * `[...SU_ROLES, 'bee']`, `[...SU_ROLES, 'sentinel']`, etc.
+ *
+ * `satisfies` pins every member to AGENT_ROLES, so renaming a role there
+ * breaks compilation here instead of silently orphaning an allowlist.
+ */
+exports.SU_ROLES = [
+    'scoper',
+    'architect',
+    'worker',
+    'validator',
+    'reviewer',
+    'debugger',
+    'operator',
+    // The queen is the operator specialized (local-hive D-001) — operator-equivalent
+    // grants so her placement loop (events:emit, hive wake declarations) resolves.
+    'queen',
+    'documenter',
+    'curator',
+];
+/**
+ * The write-side subset of SU_ROLES: validator + reviewer are judgment
+ * roles — they read artifacts/state but never author it (the artifacts
+ * tools' allowlist; audit P-072 "shared READ/WRITE role consts").
+ */
+exports.SU_WRITE_ROLES = [
+    'scoper',
+    'architect',
+    'worker',
+    'debugger',
+    'operator',
+    'queen',
+    'documenter',
+    'curator',
+];
+/**
+ * The OPERATOR-CONFIG write-authority roles — the in-handler gate for tools that
+ * MUTATE fleet-wide operator config (the rate-limit knobs, operator preferences,
+ * config overrides, the db-migrate policy, watchdog tunables, scheduled routines).
+ * Those tools advertise the broad `[...SU_ROLES]` INVOKE allowlist (read/list is
+ * open to every pipeline role) but NARROW the mutating op to operator-level
+ * authority — historically a hand-rolled `ctx.role !== 'operator' && ctx.role !==
+ * 'architect'` re-spread across ~6 tools.
+ *
+ * `queen` belongs here: she is the operator SPECIALIZED for placement (local-hive
+ * D-001 — "operator-equivalent grants"). She was silently omitted from those
+ * re-spread literals when added to SU_ROLES, which is exactly EI-2204 — the Queen
+ * could INVOKE `operator:rate_limit_config` but its `set` rejected her role,
+ * blocking the clean path to reset a jammed concurrency ceiling (EI-2186).
+ * Centralizing the set here keeps the operator≡queen equivalence from drifting
+ * back out of sync across those tools (and the `isOperatorConfigWriteRole` guard
+ * fails CI if the literal is re-introduced).
+ */
+exports.OPERATOR_CONFIG_WRITE_ROLES = [
+    'operator',
+    'architect',
+    'queen',
+];
+/**
+ * Does `role` carry operator-config write authority (one of
+ * OPERATOR_CONFIG_WRITE_ROLES)? The single predicate the operator-config-write
+ * tools gate their mutating op on. Plugin-namespaced (`<plugin>:<role>`) and
+ * unknown roles are not operator-equivalent → false (fail-closed).
+ */
+function isOperatorConfigWriteRole(role) {
+    return role != null && exports.OPERATOR_CONFIG_WRITE_ROLES.includes(role);
+}
 /**
  * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
  * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint

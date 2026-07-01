@@ -93,6 +93,11 @@ export default defineTool({
       'To REMOVE a memory entirely, use memory:forget. To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory.',
     chaining:
       'memory:search → memory:update { ids:[…], kind } (bulk metadata hygiene). Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
+    seeAlso: [
+      'memory:search (find the id to amend)',
+      'memory:remember (write a NEW fact instead of amending)',
+      'memory:forget (remove entirely rather than correct)',
+    ],
   },
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made

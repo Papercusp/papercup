@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Get the rendered feature-history block for a feature.
+ * features:history — the rendered feature-history block for one OR many features.
  *
  * Same data path as the prompt-injected version (orchestrator's
  * `feature-history.ts`): notes + debugger findings + recent audit
@@ -9,80 +9,120 @@
  *   - The agent is exploring a non-current feature.
  *
  * Returns the rendered markdown string verbatim. Caller can re-format.
+ *
+ * Bulk by default (the house keyed-array contract,
+ * bulk-endpoint-standardization-2026-06-21): the feature key is the COMPOUND
+ * `(slug, feature_id)`, and the per-section caps ride per item. Pass a single
+ * `{ slug, feature_id, notes_max_chars?, debug_max_chars?, audit_rows? }` for
+ * n=1, or `items:[{ … }]` for many → { ok, results:[{ ok, slug, feature_id,
+ * history? | error }], counts }. Each result self-describes its (slug,
+ * feature_id); a degraded / invalid-slug item fails only itself.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
 const tooldef_1 = require("@papercusp/tooldef");
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
+const _bulk_1 = require("../../_bulk");
 const SLUG_RE = /^[a-z0-9._-]+$/i;
+/** Per-section caps — defaults match the orchestrator's prompt injection. */
+const CapsShape = {
+    notes_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
+    debug_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
+    audit_rows: zod_1.z.number().int().positive().max(100).default(10),
+};
+const HistoryItem = zod_1.z.object({
+    slug: zod_1.z.string().min(1),
+    feature_id: zod_1.z.string().min(1),
+    ...CapsShape,
+});
 exports.default = (0, tooldef_1.defineTool)({
     name: 'features:history',
     profile: 'engineer',
     capability: 'features:read',
+    description: 'Render the history block (notes + debugger findings + recent audit transitions) for one OR many features. Pass a single `{ slug, feature_id, notes_max_chars?, debug_max_chars?, audit_rows? }` or `items:[{ … }]` for several. Returns { ok, results:[{ ok, slug, feature_id, history? | error }], counts } — correlate by (slug, feature_id), not by position; a no-history / invalid-slug item fails only itself.',
     guidance: {
-        when: 'User asks "what changed on feature X?", "who edited the spec?", or you need a timeline of edits.',
+        when: 'User asks "what changed on feature X?", "who edited the spec?", or you need a timeline of edits. Pass every (slug, feature_id) at once via `items`.',
         notWhen: 'For the CURRENT body, use `features:get`. For cross-feature audit, use `audit:list`.',
+        chaining: 'Bulk: single { slug, feature_id, … } | items[] → { ok, results, counts }; correlate by (slug, feature_id) not position; one failure never fails the rest.',
     },
-    args: zod_1.z.object({
-        slug: zod_1.z.string().min(1),
-        feature_id: zod_1.z.string().min(1),
-        /** Per-section character caps. Defaults match the orchestrator's prompt injection. */
-        notes_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
-        debug_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
-        /** Last N audit rows. Default 10. */
-        audit_rows: zod_1.z.number().int().positive().max(100).default(10),
+    args: zod_1.z
+        .object({
+        slug: zod_1.z.string().min(1).optional().describe('a single feature\'s harness slug (n=1 shorthand, paired with feature_id)'),
+        feature_id: zod_1.z.string().min(1).optional().describe('a single feature id (n=1 shorthand, paired with slug)'),
+        ...CapsShape,
+        items: zod_1.z
+            .array(HistoryItem)
+            .min(1)
+            .max(100)
+            .optional()
+            .describe('feature keys + per-item caps (1–100), each { slug, feature_id, notes_max_chars?, debug_max_chars?, audit_rows? }'),
+    })
+        .refine((a) => Boolean(a.items?.length) || (Boolean(a.slug) && Boolean(a.feature_id)), {
+        message: 'pass `{ slug, feature_id }` (one) or `items:[{ slug, feature_id }]` (many)',
     }),
     async handler(args, ctx) {
-        if (!SLUG_RE.test(args.slug)) {
-            return { data: '', degraded: true, degradedReasons: [`invalid slug ${JSON.stringify(args.slug)}`] };
-        }
-        // harness_shared tables have no RLS policies, so we filter
-        // explicitly by workspace_id (sourced from the principal). Other
-        // tools that target per-harness schemas can rely on the tx's
-        // app.workspace_id GUC + RLS.
+        const items = args.items?.length
+            ? args.items
+            : [
+                {
+                    slug: args.slug,
+                    feature_id: args.feature_id,
+                    notes_max_chars: args.notes_max_chars,
+                    debug_max_chars: args.debug_max_chars,
+                    audit_rows: args.audit_rows,
+                },
+            ];
+        // harness_shared tables have no RLS policies, so we filter explicitly by
+        // workspace_id (sourced from the principal). Other tools that target
+        // per-harness schemas can rely on the tx's app.workspace_id GUC + RLS.
         const ws = ctx.principal.workspaceId;
-        const [notesRows, debugRows, auditList] = await Promise.all([
-            ctx.tx `
-        SELECT content
-          FROM harness_shared.harness_feature_notes
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.slug} AND feature_id = ${args.feature_id}
-         LIMIT 1
-      `.catch(() => []),
-            ctx.tx `
-        SELECT content
-          FROM harness_shared.harness_feature_debug_notes
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.slug} AND feature_id = ${args.feature_id}
-         LIMIT 1
-      `.catch(() => []),
-            ctx.tx `
-        SELECT ts, field, old_value, new_value, actor
-          FROM harness_shared.feature_audit_consolidated
-         WHERE workspace_id = ${ws} AND harness_slug = ${args.slug} AND feature_id = ${args.feature_id}
-         ORDER BY ts DESC
-         LIMIT ${args.audit_rows}
-      `.catch(() => []),
-        ]);
-        const sections = [];
-        if (notesRows.length && notesRows[0].content?.trim()) {
-            sections.push('### Notes', truncate(notesRows[0].content, args.notes_max_chars));
-        }
-        if (debugRows.length && debugRows[0].content?.trim()) {
-            sections.push('### Debugger findings', truncate(debugRows[0].content, args.debug_max_chars));
-        }
-        if (auditList.length) {
-            sections.push('### Recent activity');
-            for (const row of auditList) {
-                sections.push(formatAuditRow(row));
+        const env = await (0, _bulk_1.runBulk)(items, async (item) => {
+            const { slug, feature_id, notes_max_chars, debug_max_chars, audit_rows } = item;
+            if (!SLUG_RE.test(slug)) {
+                return { ok: false, slug, feature_id, error: `invalid slug ${JSON.stringify(slug)}` };
             }
-        }
-        if (!sections.length) {
-            return {
-                data: '',
-                degraded: true,
-                degradedReasons: [`no history yet for ${args.feature_id} in ${args.slug}`],
-            };
-        }
-        const rendered = [`## This feature's history (${args.feature_id})`, ...sections].join('\n');
-        return { data: rendered };
+            const [notesRows, debugRows, auditList] = await Promise.all([
+                ctx.tx `
+            SELECT content
+              FROM harness_shared.harness_feature_notes
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}
+             LIMIT 1
+          `.catch(() => []),
+                ctx.tx `
+            SELECT content
+              FROM harness_shared.harness_feature_debug_notes
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}
+             LIMIT 1
+          `.catch(() => []),
+                ctx.tx `
+            SELECT ts, field, old_value, new_value, actor
+              FROM harness_shared.feature_audit_consolidated
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}
+             ORDER BY ts DESC
+             LIMIT ${audit_rows}
+          `.catch(() => []),
+            ]);
+            const sections = [];
+            if (notesRows.length && notesRows[0].content?.trim()) {
+                sections.push('### Notes', truncate(notesRows[0].content, notes_max_chars));
+            }
+            if (debugRows.length && debugRows[0].content?.trim()) {
+                sections.push('### Debugger findings', truncate(debugRows[0].content, debug_max_chars));
+            }
+            if (auditList.length) {
+                sections.push('### Recent activity');
+                for (const row of auditList) {
+                    sections.push(formatAuditRow(row));
+                }
+            }
+            if (!sections.length) {
+                return { ok: false, slug, feature_id, error: `no history yet for ${feature_id} in ${slug}` };
+            }
+            const rendered = [`## This feature's history (${feature_id})`, ...sections].join('\n');
+            return { ok: true, slug, feature_id, history: rendered };
+        }, { keyOf: ({ slug, feature_id }) => ({ slug, feature_id }) });
+        return (0, _bulk_1.bulkContent)(env);
     },
 });
 function truncate(s, maxChars) {

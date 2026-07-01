@@ -22,12 +22,29 @@ export interface ProvisionSystemPrincipalArgs {
 export interface ProvisionResult {
     workspaceId: string;
     name: string;
-    bearer: string;
+    /** The freshly-minted bearer — present ONLY when a bearer was created (initial
+     *  provision) or rotated (`force`). ABSENT on a capabilities-only RECONCILE, which
+     *  leaves the existing bearer untouched (there is no new bearer to return). */
+    bearer?: string;
     /** Display label kept for log/UI surfaces; refers to where the bearer
      *  USED TO be written. The actual source of truth is now PG (token_index). */
     configPath: string;
     rotated: boolean;
+    /** True when an ALREADY-PROVISIONED principal's capabilities were brought up to the
+     *  code-defined set IN PLACE (additive, NO bearer rotation). EI-2048. */
+    reconciled?: boolean;
 }
+/**
+ * The ADDITIVE capability-reconcile decision (EI-2048), pure + exported for tests.
+ * Returns the caps in `code` that `stored` lacks (`missing`) and the union to persist
+ * (`merged`). NEVER removes a stored cap not in `code` — shrinking a principal's caps is
+ * an attended `force` reprovision, not an automatic forceless-deploy side effect. When
+ * `missing` is empty the live row is already current and the caller writes nothing.
+ */
+export declare function reconcileCapabilities(stored: readonly string[], code: readonly string[]): {
+    missing: string[];
+    merged: string[];
+};
 export declare function provisionSystemPrincipal(args: ProvisionSystemPrincipalArgs): Promise<ProvisionResult | null>;
 export interface StartPiSessionArgs {
     workspaceId: string;

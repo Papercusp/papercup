@@ -16,6 +16,7 @@
  * at install time, not silently land at low.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.setCapabilityTierOverride = setCapabilityTierOverride;
 exports.papercuspTierFor = papercuspTierFor;
 const tooldef_1 = require("@papercusp/tooldef");
 /**
@@ -34,6 +35,8 @@ const EXACT = {
     'harness:read': 'low',
     'docs:read': 'low',
     'messages:read': 'low',
+    'activity:read': 'low', // activity:recent — a read; was unlisted → defaulted to 'medium' (mis-tiered as a write), inflating watchdog timeouts (EI-99)
+    'activity:report': 'low', // the activity-bridge sink — cheap fire-and-forget telemetry (one bounded INSERT), not a governed mutation; 'low' (cf. storage:plugin-private) de-noises the decision-ledger + lets the dispatch ok-on-abort read-path absorb load-induced slow completions (EI-111)
     // SU plan-tracking (agent-plan-tracking-2026-05-20.md)
     'plans:read': 'low',
     'plans:write': 'medium',
@@ -44,7 +47,24 @@ const EXACT = {
     'coord:write': 'medium',
     'pending_events:read': 'low',
     'routines:read': 'low',
+    // Named-fleet registry (named-su-agent-fleets-2026-06-29 P-004). Reads are 'low'
+    // (registry list / one fleet's roster); the membership MUTATIONS — create a fleet,
+    // join/leave it, take leadership (the D-002 handoff) — write coord_presence labels +
+    // the agent_fleets leader, so 'medium' (the same tier as coord:write / plans:write).
+    'fleet:list': 'low',
+    'fleet:status': 'low',
+    'fleet:create': 'medium',
+    'fleet:join': 'medium',
+    'fleet:leave': 'medium',
+    'fleet:take-leadership': 'medium',
+    // Rebind a fleet's color scheme — persists agent_fleets.color_scheme + live-recolors
+    // every active session in the fleet (a write on both, so 'medium' like the others).
+    'fleet:recolor': 'medium',
     'storage:plugin-private': 'low',
+    // Storage settings page (storage-settings-page-2026-06-15). Read is a usage
+    // introspection; write is a destructive prune-by-age (+ VACUUM FULL) → high.
+    'storage:read': 'low',
+    'storage:write': 'high',
     'db:plugin-schema': 'low',
     'ui:dashboard-tab': 'low',
     'ui:sidebar-item': 'low',
@@ -67,7 +87,6 @@ const EXACT = {
     // half is governed by the tool's own reason/audit/storm-limit/critical-section
     // guardrails (D-009), NOT by tier gating.
     'turn:interrupt': 'medium',
-    'hindsight:recall': 'medium',
     'search:read': 'medium',
     // High — secrets, outbound network, cross-plugin reads, audit, dispatch wildcards
     'audit:read': 'high',
@@ -76,20 +95,52 @@ const EXACT = {
     'intel:read': 'high',
     'workspaces:read': 'low',
     'harness:dispatch': 'high',
-    'hindsight:retain': 'high',
     // /dev page process kill — Tier 1 sensitive. Requires bearer; agents
     // (URL spawn ctx, no bearer) cannot call. Dashboard hits it via the
     // operator's superuser-token. Defense-in-depth: handler enforces a
     // kind allowlist + writes audit_log on every call.
     'processes:kill': 'high',
+    // Fleet capability surface (agent-capability-confinement-2026-06-13, B-05):
+    // the gated defineTool re-exposure of native capabilities. High for anything
+    // that executes code, mutates the tree, or reaches the network; low for the
+    // read-only file read. The capability-envelope (B-06) keys on these strings.
+    'capability:bash': 'high',
+    // capability:computer (computer-tool-plan) — bee-operated SANDBOX desktop
+    // (screenshot/click/type via xdotool against a leased Xvfb display, never the
+    // host :0). High: it drives a GUI that can run arbitrary apps. Display is
+    // resolved server-side from the lease env; the tool hard-refuses :0.
+    'capability:computer': 'high',
+    // capability:terminal — opens a VISIBLE terminal on the user's HOST desktop
+    // and runs an arbitrary command in it (the visible-terminal sibling of
+    // capability:bash). High: it executes arbitrary code. Unlike capability:bash
+    // it runs in the user's REAL desktop session OUTSIDE the bwrap exec-sandbox
+    // (the visible terminal IS the point) — same tier/role gating, but NOT the
+    // fs/credential/egress containment. A deliberate trade recorded on the plan.
+    'capability:terminal': 'high',
+    'capability:fs-read': 'low',
+    // capability:inspect (EI-524 / P-035) — read-only verification (typecheck/test)
+    // via FIXED commands, no free-form exec. Low: it's the read-only sibling of
+    // capability:bash that the bee envelope opens for verify-before-diagnose.
+    'capability:code-inspect': 'low',
+    'capability:fs-write': 'high',
+    'capability:git': 'high',
+    'capability:net': 'high',
 };
 const PREFIX_HIGH = ['secrets:', 'http:fetch:', 'data:read:'];
 const PREFIX_MEDIUM = ['events:', 'roles:register:'];
+let capabilityTierOverride;
+/** Install (or clear, with `undefined`) the host override resolver. Called once by operator-core at boot. */
+function setCapabilityTierOverride(fn) {
+    capabilityTierOverride = fn;
+}
 /**
  * Papercusp's capability→tier policy. Returns `'medium'` when no deliberate
  * classification is found — see file header.
  */
 function papercuspTierFor(capability) {
+    const override = capabilityTierOverride?.(capability);
+    if (override)
+        return override;
     if (EXACT[capability])
         return EXACT[capability];
     for (const p of PREFIX_HIGH) {

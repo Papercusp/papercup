@@ -1,83 +1,108 @@
 "use strict";
 /**
- * artifacts:append — append to a PG-canonical text artifact.
+ * artifacts:append — append to one OR many PG-canonical text artifacts.
  *
  * Concatenates `suffix` to the existing `content`. If the row doesn't
  * exist yet, creates it with `suffix` as the initial content. Returns
  * the post-append byte length so callers can detect overflow without a
  * follow-up `load`.
+ *
+ * Bulk by default (the house keyed-array contract,
+ * bulk-endpoint-standardization-2026-06-21): the artifact key is the COMPOUND
+ * `(slug, rel_path)` (slug defaults to the spawn ctx's harness), and `suffix`
+ * rides per item. Pass a single `{ slug?, rel_path, suffix }` for n=1, or
+ * `items:[{ slug?, rel_path, suffix }]` for many → { ok, results:[{ ok, slug,
+ * rel_path, appended_bytes, total_bytes, updated_at | error }], counts }. Each
+ * result self-describes its (slug, rel_path); a missing-slug / invalid-slug
+ * item fails only itself.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const db_org_1 = require("@papercusp/db-org");
 const tooldef_1 = require("@papercusp/tooldef");
 const _slug_requires_1 = require("./_slug-requires");
-const WRITE_ROLES = [
-    'scoper',
-    'architect',
-    'worker',
-    'tester',
-    'debugger',
-    'operator',
-    'documenter',
-    'curator',
-];
+const role_config_1 = require("../../role-config");
+// The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
+// barrel (see artifacts/load.ts for why: ESM circular-init + node-moduleResolution).
+const _bulk_1 = require("../../_bulk");
+// NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
+// entry gated nothing (audit P-047).
 function normalizeRelPath(rel) {
     return rel.replace(/^\.papercusp\//, '');
 }
+const AppendItem = zod_1.z.object({
+    slug: zod_1.z.string().min(1).regex(_slug_requires_1.SLUG_RE).optional(),
+    rel_path: zod_1.z.string().min(1),
+    suffix: zod_1.z.string().min(1),
+});
 exports.default = (0, tooldef_1.defineTool)({
     name: 'artifacts:append',
-    description: 'Append to a PG-canonical text artifact (harness_text_artifacts). Creates the row if absent.',
+    description: 'Append to one OR many PG-canonical text artifacts (harness_text_artifacts); creates the row if absent. Pass a single `{ slug?, rel_path, suffix }` or `items:[{ slug?, rel_path, suffix }]` for several. Returns { ok, results:[{ ok, slug, rel_path, appended_bytes, total_bytes, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
     capability: 'artifacts:write',
     guidance: {
-        when: 'Add to an existing artifact without losing prior content — running notes, ongoing log, accumulating findings.',
+        when: 'Add to an existing artifact without losing prior content — running notes, ongoing log, accumulating findings. Append to several at once via `items`.',
         notWhen: 'For replacing the whole file, use `artifacts:save`. For ephemeral within-turn notes, just hold them in your reply.',
+        chaining: 'Bulk: single { slug?, rel_path, suffix } | items[] → { ok, results, counts }; correlate by (slug, rel_path) not position; one failure never fails the rest.',
     },
     requirePrincipal: false,
-    agentRoles: [...WRITE_ROLES],
+    agentRoles: [...role_config_1.SU_WRITE_ROLES],
     rolesQuota: {
         worker: { perChunk: 50 },
         architect: { perRun: 200 },
-        tester: { perRun: 200 },
         scoper: { perRun: 200 },
         operator: { perRun: 500 },
     },
-    args: zod_1.z.object({
+    args: zod_1.z
+        .object({
         slug: zod_1.z.string().min(1).regex(_slug_requires_1.SLUG_RE).optional(),
-        rel_path: zod_1.z.string().min(1),
-        suffix: zod_1.z.string().min(1),
+        rel_path: zod_1.z.string().min(1).optional(),
+        suffix: zod_1.z.string().min(1).optional(),
+        items: zod_1.z.array(AppendItem).min(1).max(100).optional().describe('artifacts to append to (1–100), each { slug?, rel_path, suffix }'),
+    })
+        .refine((a) => Boolean(a.items?.length) || (Boolean(a.rel_path) && Boolean(a.suffix)), {
+        message: 'pass `{ rel_path, suffix }` (one) or `items:[{ rel_path, suffix }]` (many)',
     }),
     // Declarative preconditions (adopt-event-rules-engines requires:-half):
-    // the former in-handler slug guards, lifted — see ./_slug-requires.
+    // the former in-handler slug guards, lifted — see ./_slug-requires. The bulk
+    // (`items`) path re-asserts per-item slug presence/validity in the handler.
     requires: (0, _slug_requires_1.slugRequires)('artifacts:append'),
     async handler(args, ctx) {
-        // Present + SLUG_RE-valid by the preconditions above.
-        const slug = (args.slug ?? ctx.harnessSlug);
-        const key = normalizeRelPath(args.rel_path);
-        const { sql } = (0, db_org_1.getOrgPg)();
+        const items = args.items?.length
+            ? args.items
+            : [{ slug: args.slug, rel_path: args.rel_path, suffix: args.suffix }];
         const now = Date.now();
-        const rows = await sql `
-      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
-      VALUES (${slug}, ${key}, ${args.suffix}, ${now})
-      ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
-        content    = harness_text_artifacts.content || EXCLUDED.content,
-        updated_at = EXCLUDED.updated_at
-      RETURNING content
-    `;
-        const merged = rows[0]?.content ?? args.suffix;
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({
-                        slug,
-                        rel_path: key,
-                        appended_bytes: args.suffix.length,
-                        total_bytes: merged.length,
-                        updated_at: now,
-                    }),
-                },
-            ],
-        };
+        // ctx.tx, NOT getOrgPg() — RLS-scoped write; workspace_id stamps
+        // GUC-first then ctx.workspaceId, and the conflict arm adopts
+        // blank-stamped legacy rows (audit P-012 + EI-280, see save.ts).
+        const wsFallback = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : '';
+        const env = await (0, _bulk_1.runBulk)(items, async (item) => {
+            const r = (0, _slug_requires_1.resolveSlug)('artifacts:append', item.slug, ctx.harnessSlug);
+            const key = normalizeRelPath(item.rel_path);
+            if ('error' in r) {
+                return { ok: false, slug: item.slug ?? null, rel_path: key, error: r.error };
+            }
+            const { slug } = r;
+            const rows = await ctx.tx `
+          INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+          VALUES (${slug}, ${key}, ${item.suffix}, ${now},
+                  COALESCE(NULLIF(current_setting('app.workspace_id', true), ''), ${wsFallback}))
+          ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
+            content      = harness_text_artifacts.content || EXCLUDED.content,
+            updated_at   = EXCLUDED.updated_at,
+            workspace_id = CASE WHEN harness_text_artifacts.workspace_id = ''
+                                THEN EXCLUDED.workspace_id
+                                ELSE harness_text_artifacts.workspace_id END
+          RETURNING content
+        `;
+            const merged = rows[0]?.content ?? item.suffix;
+            return {
+                ok: true,
+                slug,
+                rel_path: key,
+                appended_bytes: item.suffix.length,
+                total_bytes: merged.length,
+                updated_at: now,
+            };
+        }, { keyOf: (item) => ({ slug: item.slug ?? null, rel_path: normalizeRelPath(item.rel_path) }) });
+        return (0, _bulk_1.bulkContent)(env);
     },
 });

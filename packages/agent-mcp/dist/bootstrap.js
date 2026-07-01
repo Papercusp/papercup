@@ -21,8 +21,8 @@ require("./tools/features/list_related");
 require("./tools/features/tag_vocabulary");
 require("./tools/goals/list");
 require("./tools/goals/get");
-// issues:* redefined operator-side (apps/operator/lib/agent-tools/issues/*) —
-// engineer-issues-2026-06-03 D-003. The per-harness stub here was retired.
+// issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-
+// 2026-06-23 P-015 / D-011). The engineer-issues STORE persists; work_items:* dispatches to it.
 require("./tools/messages/inbox");
 require("./tools/messages/outbox");
 require("./tools/audit/list");
@@ -42,9 +42,10 @@ require("./tools/artifacts/delete");
 // instead of HTTP-roundtripping /api/admin/execute-action, which required an
 // operator-side import the package can't make. tasks:update + tasks:close were
 // removed — they referenced a non-existent 'update_feature' op and never worked.
-// mcp-ui fixture (Phase E) — proves the UI tool path; replace with a
-// real use case when one lands. See tools/dev/hello-card.ts.
-require("./tools/dev/hello-card");
+// The dev:hello-card mcp-ui fixture and the dead hindsight:recall tool
+// (deprecated 2026-05-09, degraded-empty ever since, zero callers) were
+// REMOVED from the catalog — audit P-047. Bring a real mcp-ui tool when
+// one lands; the registration shape is one defineTool import here.
 // Resources — read-only browsable URIs (Phase A: agent-mcp resources)
 require("./resources/harness/list");
 require("./resources/harness/issues");

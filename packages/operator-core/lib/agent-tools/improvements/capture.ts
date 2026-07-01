@@ -31,6 +31,11 @@ export default defineTool({
     when: 'You hit a papercusp DX / tooling / code friction worth fixing but out of your current scope. File it here so it lands in the triage backlog instead of being lost. Use kind=bug for something broken, kind=change for a desired improvement, kind=feature for net-new (the last two stay human-gated). Include `paths` (repo-relative files involved) when known — the auto-implement risk gate reads them.',
     notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
     chaining: 'improvements:capture { kind, title, paths? } → (later) improvements:digest triages it → an agent claims + fixes it self/inline, or the auto-implement loop picks up the bugs and improvements:resolve closes them.',
+    seeAlso: [
+      'improvements:digest (triage the backlog this lands in)',
+      'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
+      'plans:new (something needing real design — capture kind=feature linking it)',
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

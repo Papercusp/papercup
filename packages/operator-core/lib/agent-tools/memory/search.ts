@@ -59,6 +59,11 @@ export default defineTool({
       'For lookups by exact metadata (kind), use memory:list — it\'s faster than vector search for filter-only queries.',
     chaining:
       'Pair with memory:update / memory:forget when the user corrects something you recall.',
+    seeAlso: [
+      'memory:remember (write a new durable fact)',
+      'memory:list (filter-only lookup by exact metadata — faster than vector search)',
+      'memory:forget (drop a recalled hit the user contradicted)',
+    ],
   },
   // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
   // `requirePrincipal: true` marker was not a declared input property and made

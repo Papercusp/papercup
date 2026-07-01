@@ -76,6 +76,11 @@ export default defineTool({
     when: 'To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Hive\'s ideas.',
     notWhen: 'You want one improvement in full — work_items:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.',
     chaining: 'improvements:digest → work_items:get / work_items:claim on a queued item → fix it self/inline (or improvements:capture to add more).',
+    seeAlso: [
+      'work_items:claim (take a queued item to fix)',
+      'improvements:watchdog-status (why an item was / was not auto-filed)',
+      'improvements:keyless-digest (the un-managed keyless backlog)',
+    ],
   },
   capability: 'coord:read',
   requirePrincipal: false,

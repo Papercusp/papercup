@@ -14,7 +14,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
 const tooldef_1 = require("@papercusp/tooldef");
-const SLUG_RE = /^[a-z0-9._-]+$/i;
+// No dots: the slug feeds a schema IDENTIFIER below, and a dot would survive
+// into it (postgres-js splits dotted identifiers into qualified parts) —
+// harness slugs are [a-z0-9-] per migration 044's derivation (audit P-029).
+const SLUG_RE = /^[a-z0-9_-]+$/i;
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 exports.default = (0, tooldef_1.defineTool)({
     name: 'messages:inbox',
@@ -31,6 +34,21 @@ exports.default = (0, tooldef_1.defineTool)({
         status: zod_1.z.enum(['pending', 'acknowledged', 'archived', 'all']).default('pending'),
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
+    // Output schema (token-efficient-tool-result-formats P-011) — mirrors
+    // audit:list: the default `summary` shape is a flat array of scalar rows,
+    // which unlocks CSV (the densest format) + the MCP `outputSchema`
+    // advertisement. `detail: 'full'` returns the wider raw rows (incl.
+    // `body`/`parent_message_id`); the serializer's runtime flatness check
+    // downgrades those to TOON gracefully, so declaring the summary shape is
+    // correct + lossless for both modes. `feature` is nullable (harness-level
+    // messages have no feature lane).
+    result: zod_1.z.array(zod_1.z.object({
+        id: zod_1.z.string(),
+        from: zod_1.z.string(),
+        feature: zod_1.z.string().nullable(),
+        kind: zod_1.z.string(),
+        subject: zod_1.z.string(),
+    })),
     async handler(args, ctx) {
         if (!SLUG_RE.test(args.slug)) {
             return {
@@ -41,8 +59,10 @@ exports.default = (0, tooldef_1.defineTool)({
         }
         // Per-harness schemas are `harness_<lower-slug, hyphens→underscores>`
         // (migration 044's `'harness_' || lower(replace(slug,'-','_'))`). Slug
-        // is validated above; identifier embedding via ctx.tx() is safe.
-        const schemaIdent = ctx.tx(`harness_${args.slug.toLowerCase().replace(/-/g, '_')}`);
+        // is validated above; the catch-all replace additionally guarantees the
+        // identifier is a single plain segment (resources/harness/issues.ts
+        // pattern, audit P-029).
+        const schemaIdent = ctx.tx(`harness_${args.slug.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
         const statusFilter = args.status === 'all' ? null : args.status;
         const featureFilter = args.feature_id ?? null;
         let rows = [];

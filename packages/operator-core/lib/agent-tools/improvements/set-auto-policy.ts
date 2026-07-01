@@ -40,6 +40,11 @@ export default defineTool({
     when: 'Graduate the auto-implement lane (widen autoKinds as trust is earned), tune the dispatch rate (maxPerRun/maxAttempts), or ADD a path/keyword to the never-auto protected set — live, no redeploy.',
     notWhen: "To REMOVE a baked protection (impossible by design — D-002 tighten-only). To arm auto-implement itself, flip FLAGS.IMPROVEMENT_AUTO_IMPLEMENT via /admin/features (this only configures the policy). To triage the queue, use improvements:digest.",
     chaining: 'improvements:digest shows the auto/human partition under the current policy; config:list-overrides shows the active override; config:reset-overrides reverts it.',
+    seeAlso: [
+      'improvements:digest (see the auto/human partition under the policy)',
+      'config:list-overrides (the active override this wrote)',
+      'config:reset-overrides (revert the policy override)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

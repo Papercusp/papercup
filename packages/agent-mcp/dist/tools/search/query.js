@@ -13,6 +13,30 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
 const tooldef_1 = require("@papercusp/tooldef");
 const KINDS = ['tasks', 'goals', 'projects', 'audit', 'messages'];
+/**
+ * Run one kind's search: FTS first, ILIKE fallback on failure — and if
+ * the fallback ALSO fails, record `<kind>_unavailable` instead of
+ * erroring the whole search (audit P-048). One kind's outage (dropped
+ * table, bad grant, aborted query) degrades that kind only; every
+ * other kind still answers.
+ */
+async function searchKind(kind, hits, degradedReasons, fts, ilike) {
+    try {
+        hits.push(...(await fts()));
+        return;
+    }
+    catch {
+        // `_search` missing (pre-013) or any FTS failure — try ILIKE.
+    }
+    try {
+        hits.push(...(await ilike()));
+        degradedReasons.push(`${kind}_using_ilike_fallback`);
+    }
+    catch (e) {
+        console.warn(`[search:query] ${kind} unavailable: ${e instanceof Error ? e.message : String(e)}`);
+        degradedReasons.push(`${kind}_unavailable`);
+    }
+}
 exports.default = (0, tooldef_1.defineTool)({
     name: 'search:query',
     capability: 'search:read',
@@ -31,120 +55,136 @@ exports.default = (0, tooldef_1.defineTool)({
         const degradedReasons = [];
         // FTS path: plainto_tsquery is forgiving (accepts user-supplied text).
         // We use ts_rank_cd for ordering. If the `_search` column is missing
-        // (013 not applied), the catch falls back to ILIKE.
+        // (013 not applied), searchKind falls back to ILIKE — and a kind whose
+        // fallback ALSO fails degrades alone (audit P-048).
+        const q = `%${args.query}%`;
         if (wantKind('tasks')) {
-            try {
+            await searchKind('tasks', hits, degradedReasons, async () => {
                 const rows = await ctx.tx `
-          SELECT harness_slug, feature_id, title, summary,
-                 ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.harness_features_consolidated
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows) {
-                    hits.push({
-                        kind: 'tasks',
-                        id: `${r.harness_slug}/${r.feature_id}`,
-                        snippet: r.title || (r.summary ?? '').slice(0, 100),
-                        score: Number(r.rank),
-                    });
-                }
-            }
-            catch {
-                // Fallback: ILIKE
-                const q = `%${args.query}%`;
+            SELECT harness_slug, feature_id, title, summary,
+                   ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.harness_features_consolidated
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({
+                    kind: 'tasks',
+                    id: `${r.harness_slug}/${r.feature_id}`,
+                    snippet: r.title || (r.summary ?? '').slice(0, 100),
+                    score: Number(r.rank),
+                }));
+            }, async () => {
                 const rows = await ctx.tx `
-          SELECT harness_slug, feature_id, title, summary
-            FROM harness_shared.harness_features_consolidated
-           WHERE title ILIKE ${q} OR summary ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows) {
-                    hits.push({
-                        kind: 'tasks',
-                        id: `${r.harness_slug}/${r.feature_id}`,
-                        snippet: r.title || (r.summary ?? '').slice(0, 100),
-                        score: 1,
-                    });
-                }
-                degradedReasons.push('tasks_using_ilike_fallback');
-            }
+            SELECT harness_slug, feature_id, title, summary
+              FROM harness_shared.harness_features_consolidated
+             WHERE title ILIKE ${q} OR summary ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({
+                    kind: 'tasks',
+                    id: `${r.harness_slug}/${r.feature_id}`,
+                    snippet: r.title || (r.summary ?? '').slice(0, 100),
+                    score: 1,
+                }));
+            });
         }
         if (wantKind('goals')) {
-            try {
+            await searchKind('goals', hits, degradedReasons, async () => {
                 const rows = await ctx.tx `
-          SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.goals
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows)
-                    hits.push({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) });
-            }
-            catch {
-                const q = `%${args.query}%`;
+            SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.goals
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) }));
+            }, async () => {
                 const rows = await ctx.tx `
-          SELECT id, title, body FROM harness_shared.goals
-           WHERE title ILIKE ${q} OR body ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows)
-                    hits.push({ kind: 'goals', id: r.id, snippet: r.title, score: 1 });
-                degradedReasons.push('goals_using_ilike_fallback');
-            }
+            SELECT id, title, body FROM harness_shared.goals
+             WHERE title ILIKE ${q} OR body ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: 1 }));
+            });
         }
         if (wantKind('projects')) {
-            try {
+            await searchKind('projects', hits, degradedReasons, async () => {
                 const rows = await ctx.tx `
-          SELECT id, slug, name, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.projects
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows) {
-                    hits.push({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) });
-                }
-            }
-            catch {
-                const q = `%${args.query}%`;
+            SELECT id, slug, name, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.projects
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) }));
+            }, async () => {
                 const rows = await ctx.tx `
-          SELECT id, slug, name FROM harness_shared.projects
-           WHERE name ILIKE ${q} OR slug ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows)
-                    hits.push({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 });
-                degradedReasons.push('projects_using_ilike_fallback');
-            }
+            SELECT id, slug, name FROM harness_shared.projects
+             WHERE name ILIKE ${q} OR slug ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 }));
+            });
         }
         if (wantKind('audit')) {
-            try {
+            await searchKind('audit', hits, degradedReasons, async () => {
                 const rows = await ctx.tx `
-          SELECT id, subject, action,
-                 ts_rank_cd(_search, plainto_tsquery('simple', ${args.query})) AS rank
-            FROM harness_shared.audit_log
-           WHERE _search @@ plainto_tsquery('simple', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows) {
-                    hits.push({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) });
-                }
-            }
-            catch {
-                const q = `%${args.query}%`;
+            SELECT id, subject, action,
+                   ts_rank_cd(_search, plainto_tsquery('simple', ${args.query})) AS rank
+              FROM harness_shared.audit_log
+             WHERE _search @@ plainto_tsquery('simple', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) }));
+            }, async () => {
                 const rows = await ctx.tx `
-          SELECT id, subject, action FROM harness_shared.audit_log
-           WHERE subject ILIKE ${q} OR action ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-                for (const r of rows)
-                    hits.push({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 });
-                degradedReasons.push('audit_using_ilike_fallback');
-            }
+            SELECT id, subject, action FROM harness_shared.audit_log
+             WHERE subject ILIKE ${q} OR action ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 }));
+            });
+        }
+        if (wantKind('messages')) {
+            await searchKind('messages', hits, degradedReasons, async () => {
+                // messages_consolidated has no stored `_search` column (013 covers
+                // the other kinds) — an inline tsvector still ranks correctly and
+                // the corpus is small (hundreds of rows); revisit with a generated
+                // column + GIN if it ever grows hot (EI-282).
+                const rows = await ctx.tx `
+            SELECT harness_slug, id, subject, body,
+                   ts_rank_cd(
+                     to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, '')),
+                     plainto_tsquery('english', ${args.query})
+                   ) AS rank
+              FROM harness_shared.messages_consolidated
+             WHERE to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, ''))
+                   @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({
+                    kind: 'messages',
+                    id: `${r.harness_slug}/${r.id}`,
+                    snippet: r.subject || (r.body ?? '').slice(0, 100),
+                    score: Number(r.rank),
+                }));
+            }, async () => {
+                const rows = await ctx.tx `
+            SELECT harness_slug, id, subject, body
+              FROM harness_shared.messages_consolidated
+             WHERE subject ILIKE ${q} OR body ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+                return rows.map((r) => ({
+                    kind: 'messages',
+                    id: `${r.harness_slug}/${r.id}`,
+                    snippet: r.subject || (r.body ?? '').slice(0, 100),
+                    score: 1,
+                }));
+            });
         }
         // Sort across kinds by score descending so highest-confidence hits land first.
         hits.sort((a, b) => b.score - a.score);

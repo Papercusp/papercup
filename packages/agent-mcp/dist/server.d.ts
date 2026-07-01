@@ -13,7 +13,7 @@
  *     in the same Node process call the same handlers without going
  *     over a wire — same contract, no transport overhead).
  */
-import type { Principal, PromptResult, ResourceContents, ResourceListEntry, ToolDefinition, ToolResponse } from '@papercusp/tooldef';
+import type { Principal, PromptResult, ResourceContents, ResourceListEntry, ToolDefinition, ToolResult, ToolResponse } from '@papercusp/tooldef';
 export interface DispatchOptions {
     toolName: string;
     args: unknown;
@@ -21,7 +21,7 @@ export interface DispatchOptions {
 }
 export interface DispatchResult {
     ok: boolean;
-    response?: ToolResponse;
+    response?: ToolResponse | ToolResult;
     error?: {
         code: string;
         message: string;
