@@ -2798,7 +2798,14 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // live), tools:invoke (also in the spine) calls anything by name, and the compact
       // capability map (MCP initialize instructions) preserves discoverability. ~165k→~10k
       // tokens with the whole catalog still reachable. --context-size=full opts out.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
+      //
+      // discoveryOff is REQUIRED here, not optional (live-verified 2026-07-01 on ornith):
+      // with OMP discovery ON, even the seed's front doors (tools:find / tools:invoke) sit
+      // behind search_tool_bm25 activation — a 0-match query strands the ENTIRE surface
+      // (nothing activated ⇒ nothing callable). A ~20-tool seed needs no discovery gate;
+      // exposing it directly also makes post-list_changed refreshes auto-expose surfaced
+      // tools (sdk activateAll path) instead of gating them behind a second bm25 pass.
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }

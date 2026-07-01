@@ -170,7 +170,13 @@ async function writeToPg(
   //     filtering for free.
   // Best-effort: a wake-fan failure must never fail the projection apply.
   if (origin === 'remote' && applied.length > 0 && applied[0].inserted === true) {
-    const b = row.body as { wake?: unknown; to?: unknown; summary?: unknown; from?: unknown };
+    const b = row.body as {
+      wake?: unknown;
+      to?: unknown;
+      summary?: unknown;
+      from?: unknown;
+      related_msg_id?: unknown;
+    };
     const to = Array.isArray(b.to) ? b.to.filter((x): x is string => typeof x === 'string') : [];
     if (b.wake === true && to.length > 0) {
       try {
@@ -184,6 +190,50 @@ async function writeToPg(
         // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated wake fan failed for ${row.msg_id} (message persisted; recipient sees it next turn):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // ── P-002 (cross-machine-coord-parity-and-trust-2026-07-01): the wake-on-reply
+    // DUAL of the EI-279 fan. The sender-side reply-wake (tools/send.ts) fires on the
+    // REPLIER's instance only — the original sender homed HERE slept through replies
+    // that arrived via federation. When a fresh remote reply (body.related_msg_id)
+    // lands, look the ORIGINAL up locally; if it persisted the wakeOnReply opt-in,
+    // fire the original sender's inbox-wake key. Same gates as EI-279 (remote origin,
+    // fresh insert = once per msg_id); never self-wakes (replier == original sender);
+    // flag-gated to match the send side (COORD_WAKE_ON_REPLY, fail-safe ON). The
+    // lookup uses the projection's OWN sql/workspace binding, not the coord seam —
+    // this instance's coord_event_log is where the federated original landed.
+    if (typeof b.related_msg_id === 'string' && b.related_msg_id.length > 0) {
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        const wakeOnReplyOn = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
+        if (wakeOnReplyOn) {
+          const orig = await sql<{ body: Record<string, unknown> }[]>`
+            SELECT body FROM harness_shared.coord_event_log
+            WHERE workspace_id = ${opts.workspaceId}
+              AND msg_id = ${b.related_msg_id}
+              AND (body->>'notify_kind') IS NULL
+            ORDER BY id
+            LIMIT 1
+          `;
+          const ob = orig[0]?.body as { wakeOnReply?: unknown; from?: unknown } | undefined;
+          const originalFrom = typeof ob?.from === 'string' ? ob.from : null;
+          if (ob?.wakeOnReply === true && originalFrom && originalFrom !== b.from) {
+            const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
+            await wakeRecipients([originalFrom], {
+              ...(typeof b.summary === 'string' ? { summary: b.summary } : {}),
+              ...(typeof b.from === 'string' ? { source: b.from } : {}),
+              workspaceId: opts.workspaceId,
+            });
+          }
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[coord-message] federated reply-wake failed for ${row.msg_id} (reply persisted; original sender sees it next turn):`,
           e instanceof Error ? e.message : String(e),
         );
       }

@@ -35,6 +35,10 @@ vi.mock('../../../agent-tools/coordination/inbox-wake', () => ({
   })),
 }));
 import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
+// P-002 (cross-machine-coord-parity): the projection's reply-wake leg reads the
+// COORD_WAKE_ON_REPLY flag — mock the server read so ON/OFF is deterministic here.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+import { getFlag } from '@papercusp/flags/server';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
