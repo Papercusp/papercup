@@ -3755,9 +3755,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           return { cadenceFloorSec: null, maxBees: null, breakerThreshold: null };
         }
       })();
+      // HOME-hive stamp (2026-07-01): resolve the workspace's HOME queen the SAME way
+      // the loops do (resolveHiveHomeSlug env/ctx chain → operator-home fallback) and
+      // mark its row. The 👑-tab used to GUESS the home as "first project with
+      // harness_kind:'hive'" — in a workspace with test hives that picked e.g.
+      // sb-devboard-hive (paused, woke-never) and the panel showed a dead queen while
+      // the real papercusp queen ran. The UI now prefers this stamp.
+      const homeSlug = await (async () => {
+        try {
+          const [{ resolveHiveHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+            import('../hive/wake'),
+            import('../harness/operator-home-harness'),
+          ]);
+          return resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+        } catch {
+          return null;
+        }
+      })();
       return Promise.all(
         hives.map(async (hv) => ({
           slug: hv.slug,
+          isHome: homeSlug != null && hv.slug === homeSlug,
           ...(await getOwnerSteering(ws, hv.slug).catch(() => DEFAULT_OWNER_STEERING)),
           throttleDefaults,
         })),

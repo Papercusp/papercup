@@ -160,7 +160,19 @@ describe('steerHiveOptions', () => {
 });
 
 describe('resolveHomeHive', () => {
-  it('prefers the first formal hive (harness_kind === "hive")', () => {
+  it('prefers the SERVER-stamped isHome row over any kind:"hive" project (the sb-devboard-hive dead-queen bug, 2026-07-01)', () => {
+    // A workspace with a TEST hive listed first: the old client guess picked it
+    // (paused, woke-never) and the 👑-tab showed a dead queen while the real
+    // home queen ran. The server stamp must win.
+    const projects = [
+      { slug: 'sb-devboard-hive', harness_kind: 'hive' },
+      { slug: 'papercusp', harness_kind: null },
+    ];
+    const rows = [steering({ slug: 'sb-devboard-hive' }), { ...steering({ slug: 'papercusp' }), isHome: true }];
+    expect(resolveHomeHive(projects, rows)).toBe('papercusp');
+  });
+
+  it('prefers the first formal hive (harness_kind === "hive") when no row is stamped', () => {
     const projects = [
       { slug: 'pot-a', harness_kind: null },
       { slug: 'the-hive', harness_kind: 'hive' },

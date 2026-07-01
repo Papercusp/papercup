@@ -63,6 +63,11 @@ import {
 /** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {
   slug: string;
+  /** Server-stamped: this row IS the workspace's HOME queen (the same
+   *  resolveHiveHomeSlug → operator-home chain the loops fire on). The tab
+   *  steers this row; the old client-side "first kind:'hive' project" guess
+   *  picked a test hive (sb-devboard-hive) and showed a dead queen (2026-07-01). */
+  isHome?: boolean;
   directive: string | null;
   eligiblePlans: string[];
   eligibleHives: string[];
@@ -173,10 +178,20 @@ export function steerHiveOptions(projects: LiteProject[]): Array<{ value: string
   return flat;
 }
 
-/** The HOME Queen's hive: the first formal hive (kind:'hive'), else the first
- *  steering row. The tab always steers this one (owner-review round 2). Pure. */
+/** The HOME Queen's hive. Prefer the SERVER-stamped home row (`isHome`, the same
+ *  resolveHiveHomeSlug → operator-home chain the loops fire on) — the old
+ *  client-side guess ("first project with kind:'hive'", else the first steering
+ *  row) picked whichever TEST hive listed first (sb-devboard-hive: paused,
+ *  woke-never) and the 👑-tab showed a dead queen while the real home queen ran
+ *  (2026-07-01). The guess remains only as the fallback for a stale server
+ *  without the stamp. Pure. */
 export function resolveHomeHive(projects: LiteProject[], rows: readonly HiveSteeringRow[]): string {
-  return projects.find((p) => p.harness_kind === 'hive')?.slug || rows[0]?.slug || '';
+  return (
+    rows.find((r) => r.isHome)?.slug ||
+    projects.find((p) => p.harness_kind === 'hive')?.slug ||
+    rows[0]?.slug ||
+    ''
+  );
 }
 
 async function runSetSteering(args: Record<string, unknown>): Promise<void> {
