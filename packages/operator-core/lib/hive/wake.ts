@@ -463,6 +463,14 @@ export async function recordHiveWake(workspaceId?: string): Promise<void> {
  *  env default. The hive is workspace-level but the invoke route is
  *  harness-scoped, so a home slug must be named somewhere. */
 export function resolveHiveHomeSlug(explicit?: string | null, ctxSlug?: string | null): string | null {
-  const slug = explicit?.trim() || ctxSlug?.trim() || process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim() || null;
+  // '*' (wildcard / all-harnesses scope) is NOT a concrete hive home — SKIP it at each level so the chain falls
+  // through to a real slug (env home) or null, instead of firing the hive launch with installSlug '*', which the
+  // invoke route's resolveProject can't find → HTTP 404 "unknown project" (2026-07-01: an operator-scoped
+  // `hive:wake` with no explicit harness inherited ctx.harnessSlug='*' and 404'd instead of resolving/erroring).
+  const concrete = (s?: string | null): string | undefined => {
+    const t = s?.trim();
+    return t && t !== '*' ? t : undefined;
+  };
+  const slug = concrete(explicit) ?? concrete(ctxSlug) ?? concrete(process.env.PAPERCUSP_HIVE_HOME_SLUG) ?? null;
   return slug ? canonicalHarnessSlug(slug) : null;
 }

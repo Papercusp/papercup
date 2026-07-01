@@ -143,6 +143,19 @@ describe('resolveHiveHomeSlug', () => {
     expect(resolveHiveHomeSlug(undefined, undefined)).toBe('papercusp');
     delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
   });
+
+  it('treats a wildcard "*" as NOT a concrete hive home — skips it so the chain falls through (2026-07-01 404 fix)', () => {
+    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    // '*' at any level is skipped — before this fix it fired the launch with installSlug '*' → 404 "unknown project".
+    expect(resolveHiveHomeSlug('*')).toBe(null);
+    expect(resolveHiveHomeSlug(undefined, '*')).toBe(null);
+    expect(resolveHiveHomeSlug('  *  ', undefined)).toBe(null);
+    // An explicit/ctx '*' falls THROUGH to a real slug lower in the chain rather than 404-ing.
+    expect(resolveHiveHomeSlug('*', 'papercusp')).toBe('papercusp');
+    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'papercusp';
+    expect(resolveHiveHomeSlug(undefined, '*')).toBe('papercusp');
+    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+  });
 });
 
 describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {
