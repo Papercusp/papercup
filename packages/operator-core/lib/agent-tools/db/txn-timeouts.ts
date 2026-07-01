@@ -37,6 +37,11 @@ export default defineTool({
     when: 'State-mutating tools are failing with workspace_contended (PG lock_timeout 55P03 / statement_timeout 57014) under same-workspace contention, and you need to widen the window for the incident — raise lockTimeoutMs and/or statementTimeoutMs. get to inspect the effective timeouts + override.',
     notWhen: 'Not for the DEPLOY-migration lock_timeout (db:migrate-policy), nor for the BOOT migration timeout (env/code). This only sizes the per-workspace inWorkspaceTxn lock_timeout/statement_timeout.',
     chaining: 'config:list-overrides shows the active txn-timeouts override; config:reset-overrides reverts it. The kill-switch papercusp-txn-timeouts-config (default ON) forces the baked 5s/5s defaults when OFF.',
+    seeAlso: [
+      'db:migrate-policy (deploy-migration lock_timeout)',
+      'dev:pg_active_queries (queries hitting the timeout)',
+      'config:list-overrides (active txn-timeouts override)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

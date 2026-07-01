@@ -10,6 +10,10 @@ export default defineTool({
   guidance: {
     when: `Exit the current voice channel. Safe no-op when not in one.`,
     notWhen: `Removing a channel from the registry is \`voice:channels {op:'remove'}\` — leaving only ends THIS node's participation.`,
+    seeAlso: [
+      'voice:join (join a channel)',
+      'voice:channels (remove a channel from the registry)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald drives the voice channel.

@@ -21,6 +21,10 @@ export default defineTool({
     when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
     chaining: 'missing non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)).',
+    seeAlso: [
+      'db:migrate (apply a pending migration)',
+      'db:next-migration (scaffold the next migration file)',
+    ],
   },
   capability: 'locks:read',
   requirePrincipal: false,

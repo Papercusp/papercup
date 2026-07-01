@@ -10,6 +10,10 @@ export default defineTool({
   guidance: {
     when: `Read who's in the active voice channel right now (presence is in-band — liveness IS the peer connection).`,
     notWhen: `The durable channel LIST is \`voice:channels {op:'list'}\` — status only covers the channel this node is in.`,
+    seeAlso: [
+      'voice:channels (the durable channel list)',
+      'voice:join (join a channel)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald reads voice status too.

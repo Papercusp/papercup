@@ -17,6 +17,10 @@ export default defineTool({
     when: `Let an agent (e.g. a narrator/host) HEAR what peers said and react on its own terms — {op:'enable'} once, then poll {op:'read', since:<cursor>} for new utterances. Unlike voice:agent {op:'brain'}, this never auto-replies — you decide what to do with the speech.`,
     notWhen: `For the agent to AUTO-converse (peer speech → spoken reply) use \`voice:agent {op:'brain', on:true}\` instead. Buffering needs the ears: {op:'enable'} turns them on; {op:'disable'} stops buffering but leaves the shared ears (toggle those via voice:agent).`,
     chaining: `voice:join → voice:transcript {op:'enable'} → voice:transcript {op:'read'} (note the cursor) → … → voice:transcript {op:'read', since:<cursor>} for only what's new.`,
+    seeAlso: [
+      'voice:agent (auto-converse: peer speech → spoken reply)',
+      'voice:join (join before enabling transcription)',
+    ],
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald reads spoken transcripts.

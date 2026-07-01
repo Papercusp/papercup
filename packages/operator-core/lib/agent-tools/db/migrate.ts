@@ -44,6 +44,11 @@ export default defineTool({
     when: 'Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.',
     notWhen: 'Read-only SQL needs no lock. Never apply migrations casually on a shared box.',
     chaining: 'db:migrate { file } (dry) → review → db:migrate { file, confirm: true }.',
+    seeAlso: [
+      'db:check_drift (verify schema drift first)',
+      'db:next-migration (scaffold a new migration)',
+      'db:migrate-policy (deploy-migration lock policy)',
+    ],
   },
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 60,

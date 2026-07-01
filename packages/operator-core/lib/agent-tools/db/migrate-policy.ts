@@ -22,6 +22,10 @@ export default defineTool({
     when: 'Before a deploy whose migration legitimately needs longer to acquire its lock — raise lockTimeoutMs for that window — or to add a statement_timeout, without editing migrate.ts and redeploying through the path you are tuning.',
     notWhen: 'For the BOOT-time migration lock_timeout (it runs before PG config is readable — stays an env/code default per the plan keep-hardcoded list). To see all live overrides, config:list-overrides.',
     chaining: 'config:list-overrides shows the active override; config:reset-overrides reverts it to the 15000 default.',
+    seeAlso: [
+      'db:migrate (apply migrations)',
+      'config:list-overrides (active migrate-policy override)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

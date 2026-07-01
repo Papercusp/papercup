@@ -88,6 +88,10 @@ export default defineTool({
     when: 'BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.',
     notWhen: 'Applying a migration (that is the boot auto-apply / db:migrate) or checking drift (db:check_drift).',
     chaining: 'db:next-migration { name } → write the returned path → restart the operator (boot auto-applies) or db:migrate.',
+    seeAlso: [
+      'db:migrate (apply the migration you wrote)',
+      'db:check_drift (check drift after applying)',
+    ],
   },
   capability: 'locks:write',
   requirePrincipal: false,

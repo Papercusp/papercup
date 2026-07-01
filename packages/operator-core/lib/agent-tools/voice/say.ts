@@ -22,6 +22,10 @@ export default defineTool({
   guidance: {
     when: `You are the voice-first Sentinel and want the user to HEAR something — call voice:say with the spoken words (short: one or two sentences). The user hears ONLY what you pass here.`,
     notWhen: `Don't speak internal tool steps, long detail, or code aloud. For multi-peer P2P voice use voice:join, not this.`,
+    seeAlso: [
+      'voice:join (multi-peer P2P voice)',
+      'voice:transcript (read what was heard / spoken)',
+    ],
   },
   requirePrincipal: false,
   // The voice-first Sentinel is the primary caller; operator may speak too.
