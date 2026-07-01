@@ -143,6 +143,7 @@ test('renderQueenBrief — owner steering renders an AUTHORITATIVE section BEFOR
         directive: 'Finish the in-flight backlog before anything new.',
         eligiblePlans: ['plan-x', 'plan-y'],
         eligibleHives: [],
+        includeUnplannedWork: true,
         pauseNewWork: false,
         pausedUntil: null,
       },

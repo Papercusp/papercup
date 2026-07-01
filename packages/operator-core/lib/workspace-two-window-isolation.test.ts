@@ -70,9 +70,9 @@ describe('P-060: concurrent per-window isolation (no cross-talk)', () => {
       // guarantees the handlers interleave across the await, which is exactly
       // where a leaky context would surface.
       const d = (N - i) % 11;
-      return app
-        .request(`/probe?d=${d}`, { headers: { 'x-papercusp-workspace': ws } })
-        .then(async (r) => ({ ws, status: r.status, body: (await r.json()) as { before: string; after: string } }));
+      return Promise.resolve(
+        app.request(`/probe?d=${d}`, { headers: { 'x-papercusp-workspace': ws } }),
+      ).then(async (r) => ({ ws, status: r.status, body: (await r.json()) as { before: string; after: string } }));
     });
     const results = await Promise.all(inflight);
 
@@ -88,10 +88,10 @@ describe('P-060: concurrent per-window isolation (no cross-talk)', () => {
   it('a header-less request among them resolves the global, not a neighbor', async () => {
     const app = makeApp();
     const [withHdr, noHdr] = await Promise.all([
-      app
-        .request('/probe?d=8', { headers: { 'x-papercusp-workspace': 'ws-d' } })
-        .then((r) => r.json()),
-      app.request('/probe?d=2').then((r) => r.json()),
+      Promise.resolve(
+        app.request('/probe?d=8', { headers: { 'x-papercusp-workspace': 'ws-d' } }),
+      ).then((r) => r.json()),
+      Promise.resolve(app.request('/probe?d=2')).then((r) => r.json()),
     ]);
     expect(withHdr.after).toBe('ws-d');
     expect(noHdr.after).toBe('ws-a'); // registry.current, never ws-d

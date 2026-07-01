@@ -15,7 +15,7 @@
  * terminal and FALSE-SUCCEED the pipeline with no work done.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 // Mock the DBOS SDK: runStep runs the thunk inline (so loop logic executes and
 // a throwing step propagates); registerWorkflow returns the impl so
@@ -48,6 +48,11 @@ import {
   setPipelineLeaseHeartbeatHook,
   type PipelineInput,
   type PipelineInvokeRunner,
+  type PipelineFinalizer,
+  type PipelineSettledHook,
+  type PipelineDebuggerHook,
+  type PipelineTestDigestHook,
+  type PipelineLeaseHeartbeatHook,
 } from './orchestrator-workflow';
 
 type RunnerCall = {
@@ -63,11 +68,11 @@ let directorOutputs: string[] = [];
 let directorIdx = 0;
 let infiniteDispatch = false;
 
-let finalizer: ReturnType<typeof vi.fn>;
-let settledHook: ReturnType<typeof vi.fn>;
-let debuggerHook: ReturnType<typeof vi.fn>;
-let testDigestHook: ReturnType<typeof vi.fn>;
-let leaseHeartbeatHook: ReturnType<typeof vi.fn>;
+let finalizer: Mock<PipelineFinalizer>;
+let settledHook: Mock<PipelineSettledHook>;
+let debuggerHook: Mock<PipelineDebuggerHook>;
+let testDigestHook: Mock<PipelineTestDigestHook>;
+let leaseHeartbeatHook: Mock<PipelineLeaseHeartbeatHook>;
 
 const ORCH = 'director';
 
@@ -88,26 +93,26 @@ beforeEach(() => {
   };
   setPipelineInvokeRunner(fakeRunner);
 
-  finalizer = vi.fn(async () => {});
+  finalizer = vi.fn<PipelineFinalizer>(async () => {});
   setPipelineFinalizer(finalizer);
 
-  settledHook = vi.fn();
+  settledHook = vi.fn<PipelineSettledHook>();
   setPipelineSettledHook(settledHook);
 
   // Default debugger gate is wired but a no-op (fired:false) so it never
   // pollutes the runner-call sequence; the dedicated test overrides it.
-  debuggerHook = vi.fn(async () => ({ fired: false }));
+  debuggerHook = vi.fn<PipelineDebuggerHook>(async () => ({ fired: false }));
   setPipelineDebuggerHook(debuggerHook);
 
   // Default test-digest hook (P-010) is wired but contributes no extras; the
   // dedicated test overrides it.
-  testDigestHook = vi.fn(async () => ({ extras: [] as string[] }));
+  testDigestHook = vi.fn<PipelineTestDigestHook>(async () => ({ extras: [] as string[] }));
   setPipelineTestDigestHook(testDigestHook);
 
   // Default lease-heartbeat hook (D-007) renews cleanly; it only FIRES when an
   // input carries `claim`, so no-lease tests are unaffected. The dedicated abort
   // test overrides it to report a stolen lease.
-  leaseHeartbeatHook = vi.fn(async () => ({ renewed: true }));
+  leaseHeartbeatHook = vi.fn<PipelineLeaseHeartbeatHook>(async () => ({ renewed: true }));
   setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
 });
 
@@ -241,7 +246,7 @@ describe('featurePipelineWorkflow — bounded + gated', () => {
 
   it('fires the test-digest hook before a validator dispatch and appends its extras (P-010)', async () => {
     directorOutputs = ['NEXT_VALIDATOR F-1', 'DONE'];
-    testDigestHook = vi.fn(async () => ({ extras: ['TEST_DIGEST=.papercusp/test-digest/F-1.md (exit=0; 20 passed)'] }));
+    testDigestHook = vi.fn<PipelineTestDigestHook>(async () => ({ extras: ['TEST_DIGEST=.papercusp/test-digest/F-1.md (exit=0; 20 passed)'] }));
     setPipelineTestDigestHook(testDigestHook);
 
     await featurePipelineWorkflow(input());
@@ -309,7 +314,7 @@ describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort'
     // Renew the first dispatching turn (worker), then report the lease stolen before
     // the second (validator) — the stealer took it while the worker ran.
     let beats = 0;
-    leaseHeartbeatHook = vi.fn(async () =>
+    leaseHeartbeatHook = vi.fn<PipelineLeaseHeartbeatHook>(async () =>
       ++beats === 2 ? { renewed: false, reason: 'held by another owner (swarm-B)' } : { renewed: true },
     );
     setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
@@ -333,7 +338,7 @@ describe('featurePipelineWorkflow — D-007 lease heartbeat + zombie self-abort'
 
   it('aborts before the FIRST side effect when the lease is already gone at turn 0', async () => {
     directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
-    leaseHeartbeatHook = vi.fn(async () => ({ renewed: false, reason: 'claim has lapsed' }));
+    leaseHeartbeatHook = vi.fn<PipelineLeaseHeartbeatHook>(async () => ({ renewed: false, reason: 'claim has lapsed' }));
     setPipelineLeaseHeartbeatHook(leaseHeartbeatHook);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

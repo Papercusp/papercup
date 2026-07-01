@@ -41,13 +41,13 @@ const getFleetSchemeMock = vi.fn(async (_ws: string, slug: string) =>
 );
 vi.mock('../../agent-fleets-store', () => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
-  getFleetScheme: (...args: any[]) => getFleetSchemeMock(...args),
+  getFleetScheme: (ws: string, slug: string) => getFleetSchemeMock(ws, slug),
 }));
 
 // Stub presence-fleet — caller's fleet_slug.
 const fetchPresenceFleetMock = vi.fn(async (_ids: string[]) => new Map<string, { fleetSlug: string | null; fleetRole: string | null }>());
 vi.mock('../coordination/presence-fleet', () => ({
-  fetchPresenceFleet: (...args: any[]) => fetchPresenceFleetMock(...args),
+  fetchPresenceFleet: (ids: string[]) => fetchPresenceFleetMock(ids),
 }));
 
 // Stub identity — stable ownerId.
@@ -149,7 +149,7 @@ describe('capability:terminal scheme resolution', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(3);
     for (const call of spawnMock.mock.calls) {
-      expect(call[0]).toMatchObject({ scheme: expect.objectContaining({ name: 'royal-purple' }) });
+      expect((call as unknown[])[0]).toMatchObject({ scheme: expect.objectContaining({ name: 'royal-purple' }) });
     }
   });
 

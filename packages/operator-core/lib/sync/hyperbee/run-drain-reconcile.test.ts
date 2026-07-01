@@ -8,7 +8,7 @@
  * per-harness watchdog key (the dedup that keeps one improvement per stall).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { runDrainReconcileOnce, type CaptureResult } from './run-drain-reconcile';
+import { runDrainReconcileOnce, type CaptureResult, type RunDrainReconcileDeps } from './run-drain-reconcile';
 import type { SubstrateDrainStat } from './load-drain-stats';
 import type { InProcessSubstrateStatus } from './in-process-status';
 
@@ -42,7 +42,7 @@ describe('runDrainReconcileOnce', () => {
       ['ws::fresh', { undrainedCount: 3, oldestUndrainedAgeMs: 5_000 }],
       // ws::clean intentionally absent → resolver returns zero-drain
     ]);
-    const capture = vi.fn(async () => okCapture());
+    const capture = vi.fn<NonNullable<RunDrainReconcileDeps['capture']>>(async () => okCapture());
 
     const res = await runDrainReconcileOnce({
       loadDrainStats: async () => drainByKey,
