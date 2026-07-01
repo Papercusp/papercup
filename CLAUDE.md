@@ -235,6 +235,24 @@ restart does **NOT** pick up your edits:
 stale, restart the *right* host and re-probe. Detail:
 [repo-conventions § two-port model](/internal/docs/system/repo-conventions).
 
+## Before you design or test — read the docs first
+
+Two `/internal/docs` sections are **required reading before the corresponding
+work**, not optional references. Check them *first*, then act:
+
+- **Before ANY design work** — new or changed UI, an API/schema shape, an
+  architecture, or a new durable surface (component, tool, table, service) —
+  read the **design docs** at [`/internal/docs/design`](/internal/docs/design)
+  and check the `design-phase:*` tools (the DTCG token set + component registry)
+  for what already exists. Don't hand-roll a design without checking the system
+  first.
+- **Before ANY testing work** — writing, adding, or changing tests, or verifying
+  behavior — read the **testing docs** at
+  [`/internal/docs/testing`](/internal/docs/testing) (+
+  [`/internal/docs/testing/agent-e2e`](/internal/docs/testing/agent-e2e) for UI).
+  They say which of the four canonical frameworks to use and how (see also
+  "Where new tests go" below).
+
 ## Read this before changing code — performance anti-patterns
 
 Performance regressions here repeatedly come from the same small set of patterns
