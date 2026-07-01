@@ -11,7 +11,8 @@
  * `resolveHive` (lazy-backfill of a pre-existing hive) call: it mints-or-loads the
  * keypair and get-or-creates the hives row, returning the Hive's public identity.
  */
-import { loadOrGenerateHiveKeypair } from './identity/hive-keypair';
+import { loadOrGenerateHiveKeypair, HIVE_KEYPAIR_SERVICE } from './identity/hive-keypair';
+import { keychainLoad } from './identity/keychain';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
 import { getHiveBySlug, insertHiveIfAbsent, type HiveRecord } from './hive-store';
 
@@ -37,6 +38,24 @@ export async function ensureHiveIdentity(
   homeSlug: string,
   meta?: { title?: string | null; description?: string | null },
 ): Promise<EnsureHiveIdentityResult> {
+  // A slug rename must NOT orphan the hive's key. The hives row's `keychain_id` is
+  // AUTHORITATIVE: if the row already exists and THIS Swarm holds the key stored under
+  // that id, return the row as-is — do NOT recompute the id from the (possibly renamed)
+  // slug via loadOrGenerateHiveKeypair, whose miss-path would MINT a fresh divergent key
+  // under the new slug id. That recompute-and-mint is exactly what orphaned canonical
+  // 76dee8ea (stored under the legacy `papercup-hive` keychain id) and minted the
+  // divergent ef77075a under the new `papercusp` id on the 2026-06-19 rebrand rename —
+  // so the owner then announced the WRONG (empty) hive (the ef77075a divergence,
+  // 2026-07-01). Only owned (non-`remote:`) rows we actually hold short-circuit here;
+  // a fresh hive (no row) or a peer/orphaned key falls through to the mint-or-load path
+  // unchanged.
+  const existing = await getHiveBySlug(workspaceId, homeSlug);
+  if (existing?.keychainId && !existing.keychainId.startsWith('remote:')) {
+    const held = await keychainLoad(existing.keychainId, HIVE_KEYPAIR_SERVICE).catch(
+      () => ({ kind: 'error' as const }),
+    );
+    if (held.kind === 'ok') return { record: existing, created: false };
+  }
   const kp = await loadOrGenerateHiveKeypair(workspaceId, homeSlug);
   return insertHiveIfAbsent({
     workspaceId,
