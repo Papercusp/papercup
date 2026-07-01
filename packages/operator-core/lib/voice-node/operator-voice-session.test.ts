@@ -18,6 +18,8 @@ import {
 } from './el-convai-protocol';
 import {
   OperatorVoiceSession,
+  VOICE_RELAY_ACK,
+  relayFailureLine,
   type ElConnectHandlers,
   type ElSocket,
   type OperatorVoiceSessionDeps,
@@ -47,7 +49,7 @@ interface Harness {
   out: OpVoiceMessage[];
   deps: {
     persistTurn: ReturnType<typeof vi.fn>;
-    askOperator: ReturnType<typeof vi.fn>;
+    relayToBrain: ReturnType<typeof vi.fn>;
     claimLease: ReturnType<typeof vi.fn>;
     releaseLease: ReturnType<typeof vi.fn>;
     resolveConfig: ReturnType<typeof vi.fn>;
@@ -62,7 +64,7 @@ function makeHarness(
   let el: FakeEl | null = null;
 
   const persistTurn = vi.fn(async () => {});
-  const askOperator = vi.fn(async () => '<say>here you go</say>');
+  const relayToBrain = vi.fn(async () => ({ ok: true as const }));
   const claimLease = vi.fn(async () => opts.leaseGranted ?? true);
   const releaseLease = vi.fn(async () => {});
   const resolveConfig = vi.fn(async () =>
@@ -87,7 +89,7 @@ function makeHarness(
       el = sock;
       return sock;
     }),
-    askOperator,
+    relayToBrain,
     loadConversationId: vi.fn(async () => 'op_conv_1'),
     persistTurn,
     parseUtterance: (raw: string) => {
@@ -113,7 +115,7 @@ function makeHarness(
       return el;
     },
     out,
-    deps: { persistTurn, askOperator, claimLease, releaseLease, resolveConfig },
+    deps: { persistTurn, relayToBrain, claimLease, releaseLease, resolveConfig },
     getEl() {
       if (!el) throw new Error('EL socket not connected yet');
       return el;
@@ -243,7 +245,16 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
     expect(pong).toEqual({ type: 'pong', event_id: 99 });
   });
 
-  it('runs the brain on an ask_operator tool call and returns the result to EL', async () => {
+  it('relays a final user transcript to the pane brain (one-brain D-001)', async () => {
+    const h = makeHarness();
+    await startSession(h);
+    h.getEl().push({ type: 'user_transcript', user_transcription_event: { user_transcript: 'how goes it' } });
+    await flush();
+    expect(h.deps.relayToBrain).toHaveBeenCalledWith('how goes it');
+    expect(h.deps.persistTurn).toHaveBeenCalledWith('user', 'how goes it', null);
+  });
+
+  it('acks an ask_operator tool call instantly with the relay ack (D-002)', async () => {
     const h = makeHarness();
     await startSession(h);
     const before = h.getEl().sent.length;
@@ -252,35 +263,43 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
       client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_1', parameters: { question: 'how goes it' } },
     });
     await flush();
-    // brainRole defaults to 'operator' (P-010 voice-role param; backward-compatible).
-    expect(h.deps.askOperator).toHaveBeenCalledWith('how goes it', 'op_conv_1', 'operator');
+    // No transcript preceded, so the tool call is the fallback relay path.
+    expect(h.deps.relayToBrain).toHaveBeenCalledWith('how goes it');
     const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
-    expect(result).toMatchObject({ tool_call_id: 'tc_1', is_error: false, result: '<say>here you go</say>' });
+    expect(result).toMatchObject({ tool_call_id: 'tc_1', is_error: false, result: VOICE_RELAY_ACK });
   });
 
-  it('repoints the brain to sentinel when humanFacingRole=sentinel (P-011)', async () => {
-    const h = makeHarness({ humanFacingRole: 'sentinel' });
+  it('dedupes the tool-call fallback after an identical transcript relay (one write per turn)', async () => {
+    const h = makeHarness();
     await startSession(h);
-    const before = h.getEl().sent.length;
+    h.getEl().push({ type: 'user_transcript', user_transcription_event: { user_transcript: 'status?' } });
+    await flush();
     h.getEl().push({
       type: 'client_tool_call',
       client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_s', parameters: { question: 'status?' } },
     });
     await flush();
-    expect(h.deps.askOperator).toHaveBeenCalledWith('status?', 'op_conv_1', 'sentinel');
-    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
-    expect(result).toMatchObject({ tool_call_id: 'tc_s', is_error: false });
+    expect(h.deps.relayToBrain).toHaveBeenCalledTimes(1);
+    const result = h.getEl().sent.map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({ tool_call_id: 'tc_s', is_error: false, result: VOICE_RELAY_ACK });
   });
 
-  it('keeps the brain on operator when humanFacingRole is unset (default, backward-compatible)', async () => {
+  it('speaks a failure line instead of a false ack when the relay missed', async () => {
     const h = makeHarness();
+    h.deps.relayToBrain.mockResolvedValue({ ok: false, reason: 'no-dock', error: 'no live pui-dock session' });
     await startSession(h);
+    const before = h.getEl().sent.length;
     h.getEl().push({
       type: 'client_tool_call',
-      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_o', parameters: { question: 'status?' } },
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_f', parameters: { question: 'status?' } },
     });
     await flush();
-    expect(h.deps.askOperator).toHaveBeenCalledWith('status?', 'op_conv_1', 'operator');
+    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({
+      tool_call_id: 'tc_f',
+      is_error: false,
+      result: relayFailureLine({ ok: false, reason: 'no-dock', error: 'x' }),
+    });
   });
 
   it('rejects an unknown tool call with an error result', async () => {
@@ -292,7 +311,7 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
       client_tool_call: { tool_name: 'rm_rf', tool_call_id: 'tc_x', parameters: {} },
     });
     await flush();
-    expect(h.deps.askOperator).not.toHaveBeenCalled();
+    expect(h.deps.relayToBrain).not.toHaveBeenCalled();
     const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
     expect(result).toMatchObject({ tool_call_id: 'tc_x', is_error: true });
   });

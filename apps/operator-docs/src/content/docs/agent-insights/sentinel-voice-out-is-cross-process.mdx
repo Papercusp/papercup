@@ -74,12 +74,40 @@ CREATE TABLE IF NOT EXISTS harness_shared.sentinel_says (
 2. **Check the buffer on ALL operator hosts**, not just the webview's. With the old in-memory buffer, `GET /api/operator/sentinel-output` on `:3070`, `:3170`, `:3270` each return their OWN array — a false-negative is easy. With the PG fix, any host returns the same shared rows.
 3. **Confirm the Sentinel's MCP endpoint** in its `.mcp.json` (`~/.papercusp-workspaces/<ws>/.papercusp/.mcp.json`) — the `url` tells you which process `voice:say` runs in (e.g. the `:9071` proxy → `:3070`).
 
+## Full-agent engine mode — server-side pump owns the drain (2026-07-01)
+
+Since **voice-unified-sentinel-pipeline** (P-002, 2026-06-30+), a full-agent
+voice engine (e.g. ElevenLabs Conversational, OpenAI Realtime) can own the voice
+session — it acts as THE BRAIN and the Sentinel TUI becomes a viewport. When
+`fullAgentEngine` is active (not `'off'`) and `micOwnedByFullAgent` is true, the
+**SERVER-side** `sentinel-says` pump takes over: it synths the spoken reply AND
+fan-outs to every attached client (local TTS, P2P voice relays, etc.).
+
+The LOCAL client-side poll in `VoiceAppBridge` (the interval that drains
+`/api/operator/sentinel-output`) MUST NOT compete when a full-agent owns the
+mic:
+
+```ts
+// One-brain voice-OUT: while a full-agent session is live, the SERVER-side
+// sentinel-says pump owns the FIFO — this local-mode poll must not compete.
+if (voiceStateRef.current.micOwnedByFullAgent) return;
+void drainSentinelOutput();
+```
+
+So the buffer is STILL shared PG (the architecture remains), but the CONSUMER
+(local drain vs server-side pump) depends on which engine is driving the session.
+When the full-agent pump is active, it reads and processes all rows; the local
+drain backs off to avoid double-draining or losing utterances.
+
 ## Sibling gotcha — voice-IN is the mirror image
 
 Voice-IN (`POST /api/operator/sentinel-input`) does NOT use this buffer: it
-types the transcript straight into the Sentinel pane's stdin via
-`zellij write-chars --pane-id`, reading the pane id from `~/.papercusp/sentinel-pane`
-(written by the `psu-sentinel` launch wrapper). Its hazards are different — a
-boot-window race after a dock relaunch, and writing into an EXITED pane (where
-the trailing Enter re-runs the command and loses the turn). See
-`sentinel-input.ts` (`SENTINEL_WARMUP_MS`, `isExitedPaneScreen`).
+writes the transcript into the Sentinel pane's stdin via
+`packages/operator-core/lib/sentinel/sentinel-pane-input.ts`, reading the pane
+id from `~/.papercusp/sentinel-pane` (written by the `psu-sentinel` launch
+wrapper). Its hazards are different — a boot-window race after a dock relaunch,
+and writing into an EXITED pane (where the trailing Enter re-runs the command and
+loses the turn). The pane-write mechanics are now SHARED with in-process callers
+(the server-side EL-utterance relay, deep-delegation answer injection) — they
+all converge on the `writeToSentinelPane()` function so they apply the same
+warm-up gate and exited-pane guard.

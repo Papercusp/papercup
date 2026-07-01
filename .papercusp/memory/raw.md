@@ -302,3 +302,4 @@
 [2026-07-01T21:56:00Z] overwatch -: `coord:send` to `@role:queen` with `wake:'optimistic'` can return `ok` with `wake.targets:[]`/`woken:0`; treat that as the role-slot parked delivery path, not a failed nudge.
 [2026-07-01T21:57:03Z] bee F-FIX-043: terminal work-item transitions should clear their live claim fields immediately, or hive placement/accounting reads drift until reaper/watchdog cleanup.
 [2026-07-01T18:32:16-04:00] bee WI-1426: `npm run test:affected` can hit `git diff ... ENOBUFS` in a large dirty tree and silently fall back to the whole monorepo; if verification scope matters, switch to targeted package tests instead of trusting the fallback.
+[2026-07-01T18:41:00Z] doc-steward -: Synced 2 sentinel voice docs to code changes: voice-out now has full-agent engine mode (server-side pump owns drain when active), voice-in route delegated to shared sentinel-pane-input.ts module. Both docs verified and freshness flags cleared.

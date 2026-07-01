@@ -81,7 +81,7 @@ function makeDeps(): OperatorVoiceSessionDeps {
       el.handlers = handlers;
       return { send: (t: string) => el.sent.push(t), close: () => {} };
     },
-    askOperator: async () => 'all systems green',
+    relayToBrain: async () => ({ ok: true as const }),
     loadConversationId: async () => 'conv_1',
     persistTurn: async (role, text) => {
       persisted.push({ role, text });

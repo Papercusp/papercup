@@ -35,7 +35,7 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing. git-sync
  *  runs every 3 min, so on an active box 2h of no new commit is a strong stall signal. Tunable;
@@ -286,6 +286,9 @@ export async function checkGitSyncStall(
             `fires (engine wedge — a lock/restart won't fix it). Claim it: inspect metadata.last_error on ` +
             `the ${row.install_slug} git-sync routine, and rescue-commit the tree if the strand is urgent.`,
           category: 'severe-event',
+          // WI-1444 condition lifecycle: recovery below broadcasts the matching
+          // resolution, so late inbox readers see this alarm annotated resolved.
+          conditionKey: `git-sync-stall:${row.install_slug}`,
         });
         try {
           await sql`
@@ -319,6 +322,13 @@ export async function checkGitSyncStall(
            WHERE harness_slug = ${row.install_slug}
              AND phase = ${WATCHDOG_PHASE}
              AND escalation IS NOT NULL`;
+        // WI-1444: supersede the fleet alarm — coord:inbox annotates every prior
+        // `git-sync-stall:<slug>` broadcast resolved, so a late reader never
+        // investigates a condition that already cleared. Fail-soft by design.
+        await broadcastSevereEventResolved({
+          conditionKey: `git-sync-stall:${row.install_slug}`,
+          summary: `git-sync RECOVERED on ${row.install_slug} — commits are landing again; the earlier stall alarm is stale.`,
+        });
         out.recovered.push(row.install_slug);
       }
     }

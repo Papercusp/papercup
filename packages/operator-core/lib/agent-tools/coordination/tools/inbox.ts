@@ -84,6 +84,40 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
   });
 }
 
+/** WI-1444 severe-event condition lifecycle: annotate every entry whose
+ *  `condition_key` has a STRICTLY-LATER resolution (`resolves_condition` on a
+ *  later envelope — broadcastSevereEventResolved) with `resolved:true` +
+ *  `resolved_at`, so an agent reading a stale stall alarm sees at a glance
+ *  that the condition already cleared instead of burning a turn investigating
+ *  it. Resolutions are scanned over the FULL inbox read (`all`, pre-limit) so
+ *  a windowed view still resolves against everything the reader can see. Pure. */
+export function annotateResolvedConditions<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  all: readonly Record<string, unknown>[],
+): Array<Record<string, unknown>> {
+  // Latest resolution ts per condition key (ISO ts compare lexicographically).
+  const resolvedAt = new Map<string, string>();
+  for (const e of all) {
+    const key = e["resolves_condition"];
+    const ts = e["ts"];
+    if (typeof key === "string" && key && typeof ts === "string") {
+      const prev = resolvedAt.get(key);
+      if (!prev || ts > prev) resolvedAt.set(key, ts);
+    }
+  }
+  if (resolvedAt.size === 0)
+    return entries as unknown as Array<Record<string, unknown>>;
+  return entries.map((e) => {
+    const key = e["condition_key"];
+    const ts = e["ts"];
+    if (typeof key === "string" && typeof ts === "string") {
+      const rts = resolvedAt.get(key);
+      if (rts && rts > ts) return { ...e, resolved: true, resolved_at: rts };
+    }
+    return e;
+  });
+}
+
 export default defineTool({
   name: "coord:inbox",
   description:
@@ -280,10 +314,14 @@ export default defineTool({
         : entries.length > 0
           ? Math.min(600, Math.floor(INBOX_ENTRY_BUDGET / entries.length))
           : 600;
-    const boundEntries = boundInboxEntries(
+    // WI-1444: mark superseded condition alarms (resolved:true) before bounding,
+    // scanning resolutions over the FULL read (`all`) so the annotation sees
+    // resolutions even when the alarm+resolution straddle the `limit` window.
+    const annotatedEntries = annotateResolvedConditions(
       entries as unknown as Array<Record<string, unknown>>,
-      effectiveCap,
+      all as unknown as Array<Record<string, unknown>>,
     );
+    const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap);
 
     return {
       content: [

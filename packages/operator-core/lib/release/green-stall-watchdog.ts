@@ -38,7 +38,7 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -222,6 +222,9 @@ export async function checkGreenStall(
             `manual help if it persists); verdict-staleness ⇒ a failing suite. release:checkpoint-run ` +
             `forces a fresh gate run.`,
           category: 'severe-event',
+          // WI-1444 condition lifecycle: recovery below broadcasts the matching
+          // resolution, so late inbox readers see this alarm annotated resolved.
+          conditionKey: `green-stall:${row.install_slug}`,
         });
         try {
           await sql`
@@ -263,7 +266,17 @@ export async function checkGreenStall(
            WHERE harness_slug = ${row.install_slug}
              AND phase = ${WATCHDOG_PHASE}
              AND escalation IS NOT NULL`;
-        if (cleared.count === 1 || watchdogAlerted) out.recovered.push(row.install_slug);
+        if (cleared.count === 1 || watchdogAlerted) {
+          // WI-1444: supersede the fleet alarm — coord:inbox annotates every prior
+          // `green-stall:<slug>` broadcast resolved, so a late reader never chases
+          // a gate stall that already cleared. Guarded on the same transition edge
+          // as `recovered` so a routinely-healthy pass broadcasts nothing.
+          await broadcastSevereEventResolved({
+            conditionKey: `green-stall:${row.install_slug}`,
+            summary: `green-checkpoint RECOVERED on ${row.install_slug} — the gate is producing verdicts again; the earlier stall alarm is stale.`,
+          });
+          out.recovered.push(row.install_slug);
+        }
       }
     }
     return out;

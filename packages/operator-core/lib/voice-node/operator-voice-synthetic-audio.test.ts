@@ -108,7 +108,7 @@ function makeDeps(): OperatorVoiceSessionDeps {
       el.handlers = handlers;
       return { send: (t: string) => el.sent.push(t), close: () => {} };
     },
-    askOperator: async () => 'ack',
+    relayToBrain: async () => ({ ok: true as const }),
     loadConversationId: async () => 'conv_1',
     persistTurn: async () => {},
     parseUtterance: (raw) => ({ say: raw.replace(/<[^>]+>/g, '').trim() || null, setMode: null }),

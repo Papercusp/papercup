@@ -35,6 +35,15 @@ export interface SevereEventBroadcast {
   body?: string;
   /** Ambient category for coord:inbox filtering (default 'severe-event'). */
   category?: string;
+  /**
+   * Condition-lifecycle key (WI-1444): a stable identifier for the CONDITION this
+   * broadcast reports (e.g. `git-sync-stall:<install_slug>`). When the condition
+   * later clears, the emitter calls broadcastSevereEventResolved with the SAME
+   * key — the coord:inbox read then annotates this alarm `resolved:true`, so an
+   * agent waking hours later never burns a turn investigating a dead condition.
+   * Omit for one-off events with no meaningful recovery.
+   */
+  conditionKey?: string;
 }
 
 /**
@@ -50,11 +59,44 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       summary: ev.summary,
       body: ev.body,
       category: ev.category ?? 'severe-event',
+      ...(ev.conditionKey ? { extra: { condition_key: ev.conditionKey } } : {}),
     });
     return true;
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn(`[severe-event-broadcast] failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+export interface SevereEventResolution {
+  /** The SAME conditionKey the original broadcastSevereEvent carried. */
+  conditionKey: string;
+  /** One-line all-clear (e.g. "git-sync RECOVERED on papercusp — commits landing again."). */
+  summary: string;
+  /** Optional detail (what recovered it / evidence). */
+  body?: string;
+}
+
+/**
+ * Broadcast that a previously-alarmed severe condition has CLEARED (WI-1444). Every prior
+ * broadcast carrying the same `condition_key` is annotated `resolved:true` at coord:inbox
+ * read time, so stale alarms self-supersede instead of sending late readers chasing dead
+ * conditions. Inject-only, same rail as the alarm. Never throws.
+ */
+export async function broadcastSevereEventResolved(res: SevereEventResolution): Promise<boolean> {
+  try {
+    await sendMessage(SEVERE_EVENT_IDENTITY, {
+      to: ['*'],
+      summary: res.summary,
+      body: res.body,
+      category: 'severe-event-resolved',
+      extra: { resolves_condition: res.conditionKey, condition_key: res.conditionKey },
+    });
+    return true;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[severe-event-broadcast] resolve failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }

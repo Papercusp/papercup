@@ -21,13 +21,24 @@ import type { LocalWriteOp } from './boot';
 import {
   startPresenceAnnounceLoop,
   buildPresenceTombstoneOp,
+  buildPresenceAnnounceRow,
   type PresenceAnnounceLoopHandle,
   type PresenceIdentity,
   type PresenceState,
 } from './presence-announce';
 import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
+import type { SharedPresenceRow } from './projections/presence';
+import {
+  registerPresenceGossipTopic,
+  broadcastPresencePut,
+  broadcastPresenceDel,
+  type PresenceGossipWriter,
+} from './presence-gossip-wiring';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 /** The booted-handle surface wire-presence needs — a structural subset of
  *  BootedHarnessHandle, so a test can pass a minimal mock. */
@@ -89,10 +100,48 @@ export async function wirePresenceAnnounceForHarness(
     opts.getState ??
     ((): PresenceState => ({ intent: null, currentView: null, harnessSlug: handle.harnessSlug }));
 
+  // ── P-004 (cross-machine-coord-parity D-002/D-008): presence off the log. ──
+  // READER-FIRST: register this hive topic with the gossip reader UNCONDITIONALLY
+  // (idles at zero cost with no gossip writers) so every updated peer can read
+  // gossip presence before any writer flips. The WRITER cutover is flag-gated
+  // (PRESENCE_GOSSIP, dark until the 2-machine verify): when ON, announce beats
+  // BROADCAST signed frames instead of appending immortal ops to the peer-log.
+  // Flag is read once at wire time (a cutover flag — flip applies on reboot).
+  const topicHex = (handle.swarm as { topicHex?: unknown } | null)?.topicHex;
+  const gossipTopicHex = typeof topicHex === 'string' && topicHex ? topicHex : null;
+  let gossipWriterOn = false;
+  if (gossipTopicHex && hiveSlug) {
+    gossipWriterOn = await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false);
+    let writer: PresenceGossipWriter | undefined;
+    if (gossipWriterOn) {
+      writer = await buildGossipWriter(handle, getState, hiveSlug, opts);
+      if (!writer) gossipWriterOn = false; // gh-unauthed → stay on the log path gate (no-op anyway)
+    }
+    await registerPresenceGossipTopic({
+      topicHex: gossipTopicHex,
+      workspaceId: handle.workspaceId,
+      hiveHomeSlug: hiveSlug,
+      ...(writer ? { writer } : {}),
+    });
+  }
+
   const loop = startPresenceAnnounceLoop({
     resolveIdentity,
     getState,
-    append: (op) => handle.append(op),
+    // Writer cutover: gossip beats when ON (a put op's row broadcasts as a signed
+    // frame; a skipped/failed broadcast is a missed beat the TTL absorbs) — the
+    // log path stays byte-identical when OFF.
+    append:
+      gossipWriterOn && gossipTopicHex
+        ? async (op) => {
+            const row = (op as { value?: SharedPresenceRow }).value;
+            if (op.type === 'put' && row) {
+              await broadcastPresencePut(gossipTopicHex, row);
+              return;
+            }
+            await handle.append(op); // non-put presence ops keep the log path
+          }
+        : (op) => handle.append(op),
     hiveSlug,
     intervalMs,
     now: opts.now,
@@ -109,6 +158,39 @@ export async function wirePresenceAnnounceForHarness(
   });
   handle.registerCloseHook(() => loop.stop());
   return loop;
+}
+
+/** Build the gossip WRITER half for this booted handle (P-004): the device
+ *  signer + this machine's current-row provider (the hello snapshot + each
+ *  broadcast beat). Undefined when gh is unauthenticated — then there is
+ *  nothing to announce on either plane. */
+async function buildGossipWriter(
+  handle: PresenceWireHandle,
+  getState: () => PresenceState,
+  hiveSlug: string,
+  opts: WirePresenceOpts,
+): Promise<PresenceGossipWriter | undefined> {
+  try {
+    const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
+    const now = opts.now ?? Date.now;
+    return {
+      devicePubkey: id.devicePubkeyBase64,
+      sign: (bytes) => signWithDeviceKey(id.keychainId, bytes),
+      getOwnRow: async () =>
+        buildPresenceAnnounceRow(
+          {
+            githubUserId: id.githubUserId,
+            devicePubkey: id.devicePubkeyBase64,
+            machineLabel: machineFingerprint(),
+          },
+          getState(),
+          now(),
+          hiveSlug,
+        ),
+    };
+  } catch {
+    return undefined; // gh unauthed → no writer (no-op on either plane)
+  }
 }
 
 /** The default presence-identity resolver for a booted handle: this machine's
@@ -169,5 +251,24 @@ export async function publishPresenceTombstoneForHarness(
   if (!identity) return false; // gh unauthed → nothing to retract
   const now = (opts.now ?? Date.now)();
   await handle.append(buildPresenceTombstoneOp(identity, now));
+  // P-004: DUAL-publish the tombstone on the gossip plane when the writer flag
+  // is on — a one-shot leave event (not a beat), so dual-write is cheap and
+  // keeps log-readers AND gossip-readers dropping the row promptly during the
+  // cutover window. Best-effort: a miss falls back to the TTL (safe).
+  try {
+    const topicHex = (handle.swarm as { topicHex?: unknown } | null)?.topicHex;
+    if (typeof topicHex === 'string' && topicHex) {
+      const on = await getFlag(FLAGS.PRESENCE_GOSSIP, 'system').catch(() => false);
+      if (on) {
+        await broadcastPresenceDel(topicHex, {
+          github_user_id: identity.githubUserId,
+          machine_label: identity.machineLabel,
+          harness_slug: handle.harnessSlug,
+        });
+      }
+    }
+  } catch {
+    /* best-effort — the log tombstone above already published */
+  }
   return true;
 }

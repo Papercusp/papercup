@@ -535,12 +535,29 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
 export async function surveyHive(
   workspaceId: string,
   hiveHomeSlug: string,
-  opts: { frontierLimit?: number; scopeFilter?: ScopeFilter; deps?: Partial<SurveyDeps> } = {},
+  opts: {
+    frontierLimit?: number;
+    scopeFilter?: ScopeFilter;
+    deps?: Partial<SurveyDeps>;
+    /** Extra harness slugs to UNION into a members-wired survey scope — the
+     *  workspace Queen passes the STARTED-hive set here (owner model 2026-07-01:
+     *  "the Queen works ANY started hive"). Without this, a home hive with
+     *  members wired narrowed the survey to home+members and every OTHER
+     *  started hive's work was invisible to her (the stop-list only SUBTRACTS
+     *  stopped hives; nothing added started ones back). A workspace-wide
+     *  fallback scope (`surveySlugs: []`) already sees everything, so the
+     *  union only applies when membership is wired. */
+    extraSurveySlugs?: string[];
+  } = {},
 ): Promise<HiveSurvey> {
   const deps: SurveyDeps = { ...defaultSurveyDeps(workspaceId), ...opts.deps };
   const now = deps.now();
   const sf = opts.scopeFilter; // scope/pause filter (C-2) — used by both the plan loop + the frontier filter
   const membership = await resolveHiveMembership(workspaceId, hiveHomeSlug, deps.loadRegistry);
+  const surveySlugs =
+    membership.surveySlugs.length > 0 && (opts.extraSurveySlugs?.length ?? 0) > 0
+      ? Array.from(new Set([...membership.surveySlugs, ...opts.extraSurveySlugs!]))
+      : membership.surveySlugs;
 
   // Which harnesses to read plans from: the survey slugs, or hive HOME slugs
   // when membership isn't wired. The frontier fallback is workspace-wide, but
@@ -550,8 +567,8 @@ export async function surveyHive(
   // real kind:'hive' homes (plus this home for legacy registries), while the
   // frontier keeps the workspace-wide blind-spot guard.
   let planSlugs: string[];
-  if (membership.surveySlugs.length > 0) {
-    planSlugs = membership.surveySlugs;
+  if (surveySlugs.length > 0) {
+    planSlugs = surveySlugs;
   } else {
     const reg = await deps.loadRegistry(workspaceId);
     planSlugs = Array.from(new Set([hiveHomeSlug, ...reg.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug)]));
@@ -568,7 +585,7 @@ export async function surveyHive(
         }
       }),
     ),
-    deps.fetchFrontier(membership.surveySlugs, opts.frontierLimit ?? 50),
+    deps.fetchFrontier(surveySlugs, opts.frontierLimit ?? 50),
   ]);
 
   const planCandidates: PlacementCandidate[] = [];
