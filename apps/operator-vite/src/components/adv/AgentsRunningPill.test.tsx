@@ -140,6 +140,23 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
   });
 
+  it('detail preview stays reachable: leaving the scroll list toward the button does NOT dismiss it', () => {
+    H.active = [agent({ ownerId: 'bee1', role: 'bee', runId: 'r1', harnessSlug: 'papercusp' })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-bee1'));
+    expect(screen.getByTestId('agent-detail')).toBeTruthy();
+    // Moving off the row list toward the detail pane must NOT clear the preview
+    // (onMouseLeave is on the whole roster, not the scroll list) — else the
+    // Live-thinking button is unreachable.
+    fireEvent.mouseLeave(screen.getByTestId('agents-roster-scroll'));
+    expect(screen.getByTestId('agent-detail')).toBeTruthy();
+    expect(screen.getByTestId('agent-inspect-btn')).toBeTruthy();
+    // Leaving the ENTIRE roster does clear the hover preview.
+    fireEvent.mouseLeave(screen.getByTestId('agents-roster'));
+    expect(screen.queryByTestId('agent-detail')).toBeNull();
+  });
+
   it('shows a Live-thinking action ONLY for an agent with a resolvable run (guarded — no dead button)', () => {
     H.active = [
       agent({ ownerId: 'bee1', role: 'bee', runId: 'launch-123', harnessSlug: 'papercusp' }),

@@ -131,16 +131,23 @@ export async function writePresence(
 }
 
 /**
- * EXPLICIT named-fleet membership setter (named-su-agent-fleets-2026-06-29 P-004).
+ * EXPLICIT named-fleet membership setter (named-su-agent-fleets-2026-06-29 P-004;
+ * WI-1345 made it append-only).
  *
- * `writePresence`'s fleet fill-if-absent (COALESCE(existing, env)) is populate-once-
- * then-keep — it can NEVER OVERWRITE a label, which is exactly what the fleet REGISTRY
- * tools must do: promote the caller to `leader` on create / take-leadership, demote a
- * prior leader to `member`, set `member` on join, or clear both on leave. They go
- * through this AUTHORITATIVE hard UPDATE instead. Pass (null, null) to clear membership.
- * Keyed on (workspace_id, owner_id) — owner_id is the coord_presence PK, workspace_id is
- * the defensive scope guard. No-op (0 rows) when the owner has no presence row, so a
- * dead prior-leader is silently skipped (D-002 demotion only touches a live row).
+ * `writePresence`'s fleet fill-if-absent is populate-once-then-keep — it can NEVER
+ * OVERWRITE a label, which is exactly what the fleet REGISTRY tools must do: promote the
+ * caller to `leader` on create / take-leadership, demote a prior leader to `member`, set
+ * `member` on join, or clear both on leave. They go through this AUTHORITATIVE path.
+ *
+ * WI-1345: canonical membership is an APPEND-ONLY fact (harness_shared.fleet_membership_events),
+ * so this APPENDS the fact rather than UPDATE-ing coord_presence.fleet_slug directly (a DB
+ * guard now rejects a direct write). The DB projection trigger mirrors the latest fact onto
+ * the live presence row and re-materializes it after the reaper deletes the row on death, so
+ * membership survives death instead of vanishing. Pass (null, null) to record a leave. The
+ * live effect on the presence row is unchanged: the projection is a no-op when the owner has
+ * no presence row (a dead prior-leader's live label is untouched — D-002 — though the durable
+ * fact is still recorded). `sql?` threads a transaction (atomic leadership transfer) or a test
+ * schema.
  */
 export async function setPresenceFleet(
   workspaceId: string,
@@ -149,12 +156,7 @@ export async function setPresenceFleet(
   fleetRole: string | null,
   sql?: Sql,
 ): Promise<void> {
-  const s = sql ?? getOrgPg().sql;
-  await s`
-    UPDATE harness_shared.coord_presence
-       SET fleet_slug = ${fleetSlug}, fleet_role = ${fleetRole}
-     WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
-  `;
+  await appendFleetMembershipEvent({ workspaceId, ownerId, fleetSlug, fleetRole }, sql);
 }
 
 // ── Spawned-bee pending fleet placement (fleet-color-schemes) ────────────────
