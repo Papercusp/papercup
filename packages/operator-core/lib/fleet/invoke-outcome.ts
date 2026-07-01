@@ -31,11 +31,23 @@
  *     (invalid API key / 401). Terminal until account routing/config is fixed.
  *   - 'usage_limit' — the child reached a native account/session quota wall. Terminal
  *     for that account; routing should pick another usable account when available.
+ *   - 'context_overflow' — the agent's PROMPT exceeded the model context window before it
+ *     could produce a turn ("Prompt is too long" / context-length-exceeded). A
+ *     LAUNCH-CONFIG / prompt-size bug (e.g. an unscoped MCP toolset on a small-context
+ *     model — the B1 overwatch death), NOT a 429 / gateway stall / host loss. Terminal
+ *     until the launch tool-scoping or prompt size is fixed; retrying or chasing gateway
+ *     capacity will NOT help. Detected BEFORE the infra_loss fallthrough so it is never
+ *     misattributed to a "gateway stall/429 storm" (B3 / autonomous-loop-hardening F1).
  *   - 'infra_loss' — a genuine launcher-host death / no-turn 0-token wake → terminal.
  *     The conservative default — chosen whenever the capacity-shed signals don't BOTH
  *     hold (never relabel on uncertainty).
  */
-export type SpawnFailureClass = 'infra_loss' | 'capacity_shed' | 'auth_error' | 'usage_limit';
+export type SpawnFailureClass =
+  | 'infra_loss'
+  | 'capacity_shed'
+  | 'auth_error'
+  | 'usage_limit'
+  | 'context_overflow';
 
 export interface InvokeOutcome {
   /** True iff the agent completed at least one turn (or the body is unreadable/
@@ -80,6 +92,27 @@ function classifyDiagnosticFailure(text: string): { failureClass: SpawnFailureCl
   if (!text.trim()) return null;
   const compact = text.replace(/\s+/g, ' ').trim();
   const bounded = compact.slice(-RAW_STDOUT_DETAIL_LIMIT);
+  // context_overflow FINGERPRINT — the prompt exceeded the model context window before a
+  // turn could run ("Prompt is too long" / context-length-exceeded). Checked FIRST so an
+  // unscoped-toolset / oversized-prompt death (B1 overwatch) is never misread as a
+  // gateway stall / 429 storm (B3 / autonomous-loop-hardening F1). This is a LAUNCH-CONFIG
+  // bug: fix the tool-scoping or prompt size — retrying or hunting gateway capacity won't help.
+  if (
+    /prompt is too long/i.test(compact) ||
+    /input (?:length )?is too long/i.test(compact) ||
+    /\bcontext[_ -]?length[_ -]?exceeded\b/i.test(compact) ||
+    /maximum context length/i.test(compact) ||
+    /input length and `?max_tokens`? exceed/i.test(compact) ||
+    /exceeds? the (?:model'?s )?maximum (?:context|(?:number of )?(?:input )?tokens)/i.test(compact) ||
+    /reduce the length of (?:the )?(?:messages|prompt|input)/i.test(compact)
+  ) {
+    return {
+      failureClass: 'context_overflow',
+      detail: ` the agent's prompt EXCEEDED the model context window before it produced a turn (context_overflow — a LAUNCH-CONFIG / prompt-size bug, NOT a 429 / gateway stall / host loss: the spawn loaded too many tokens, e.g. an unscoped MCP toolset on a small-context model. Fix the launch tool-scoping or prompt size; retrying or hunting gateway capacity / a host fault will NOT help): ${JSON.stringify(
+        bounded,
+      )}`,
+    };
+  }
   if (
     /\b(?:invalid[_ -]?api[_ -]?key|incorrect api key|unauthorized|auth(?:entication)? error|401)\b/i.test(compact) ||
     /\bauth error code:\s*invalid_api_key\b/i.test(compact)

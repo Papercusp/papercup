@@ -152,3 +152,84 @@ describe('agentProducedTurn — capacity_shed vs infra_loss classification (P-00
     expect(r.failureClass).toBe('infra_loss');
   });
 });
+
+// B3 / autonomous-loop-hardening F1 — a "Prompt is too long" death (B1: overwatch launched
+// with an unscoped ~550-tool MCP surface on a small-context model) was being misattributed
+// to a "gateway stall / 429 storm" infra_loss, sending debuggers hunting phantom gateway
+// capacity for hours. It is now classified `context_overflow` (a LAUNCH-CONFIG bug),
+// detected BEFORE the capacity_shed/infra_loss fallthrough.
+describe('agentProducedTurn — context_overflow (prompt-too-long) classification (B3/F1)', () => {
+  it('classifies the exact overwatch "Prompt is too long" death as context_overflow, not infra_loss', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail:
+          'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Prompt is too long: 210000 tokens > 200000 maximum"}}',
+      }),
+      'papercusp/overwatch',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('context_overflow');
+    expect(r.detail).toContain('papercusp/overwatch');
+    expect(r.detail).toContain('context_overflow');
+    expect(r.detail).toContain('LAUNCH-CONFIG');
+    // The regression: must NOT read as an infra_loss / gateway-stall phantom host death.
+    expect(r.detail).not.toContain('produced no turn');
+    expect(r.detail).toContain('Prompt is too long');
+  });
+
+  it('classifies an OpenAI-style "maximum context length" death as context_overflow', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail:
+          "This model's maximum context length is 200000 tokens, however you requested 260000 tokens. Please reduce the length of the messages.",
+      }),
+      'papercusp/queen',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('context_overflow');
+  });
+
+  it('context_overflow WINS over capacity_shed — a prompt-too-long tail is not a retryable throttle', () => {
+    // The clean-mid-turn-exit fingerprint holds AND the gateway is throttled, which would
+    // otherwise classify capacity_shed (retryable). But the prompt is too long — retrying
+    // will just fail again — so context_overflow must take precedence.
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail: 'Prompt is too long',
+      }),
+      'papercusp/overwatch',
+      { gatewayThrottled: true },
+    );
+    expect(r.failureClass).toBe('context_overflow');
+  });
+
+  it('leaves a genuine no-turn death (no prompt-length signature) classified infra_loss', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 1,
+        timedOut: false,
+        stderr: '',
+        agentOutput: '',
+        rawStdoutTail: '[2026-07-01T06:39:00.000Z] booting\n[2026-07-01T06:39:03.000Z] tool: coord.orient',
+      }),
+      'papercusp/overwatch',
+    );
+    expect(r.failureClass).toBe('infra_loss');
+  });
+});

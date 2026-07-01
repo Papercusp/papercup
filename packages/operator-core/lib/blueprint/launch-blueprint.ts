@@ -572,10 +572,11 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
             ? false
             : await gatewayWholesaleThrottled().catch(() => false);
           const outcome = agentProducedTurn(responseText, `${installSlug}/${role}`, { gatewayThrottled });
-          errorMessage =
-            outcome.failureClass === 'capacity_shed'
-              ? `capacity_shed:${outcome.detail}`
-              : `infra_loss:${outcome.detail}`;
+          // Prefix with the ACTUAL classified failure (capacity_shed / auth_error /
+          // usage_limit / context_overflow / infra_loss) — never a hardcoded `infra_loss:`
+          // that mislabels an auth / quota / prompt-too-long death as a phantom host loss
+          // (B3 / autonomous-loop-hardening F1). durable-spawn already prefixes this way.
+          errorMessage = `${outcome.failureClass ?? 'infra_loss'}:${outcome.detail}`;
         }
       }
       if (status === 'failed') {
