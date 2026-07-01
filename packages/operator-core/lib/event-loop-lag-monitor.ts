@@ -468,6 +468,16 @@ export async function captureHeapSnapshot(args: {
       } catch {
         /* ignore */
       }
+      // On any failure path the .partial is left behind — destroy the stream and
+      // sweep it so a dead capture can't masquerade as progress (best-effort; a
+      // hard crash mid-capture still leaves the .partial as visible evidence,
+      // which the analyzer + pruner both ignore by extension).
+      try {
+        out.destroy();
+      } catch {
+        /* ignore */
+      }
+      await fs.rm(partial, { force: true }).catch(() => {});
     }
   } catch {
     // No inspector, an attached debugger, OOM during snapshot, or fs error —

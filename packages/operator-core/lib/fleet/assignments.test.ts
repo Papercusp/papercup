@@ -324,3 +324,45 @@ describe('groupByAgent — surfaces stalled like orphaned (P-005)', () => {
     expect(g.doing?.activity).toBe('stalled'); // the head-of-line is NOT progressing
   });
 });
+
+// WI-1408 (fleet-registration-persists): a member launched with `--fleet <slug>`
+// must show up GROUPED under that fleet here — the read side of the fix. The
+// presence row's fleet_slug/fleet_role columns are a projection of the durable
+// membership fact (fleet_membership_events, WI-1345) that bootstrap-su/-role's
+// setPendingFleet + presence.ts's writePresence bridge actually persist (see
+// presence-pending-fleet-persist.test.ts for that write-side wiring). This pins
+// that a `listFleetAssignments` row carrying fleetSlug/fleetRole survives
+// `groupByAgent` into the roster's per-agent fleet label — never silently
+// dropped or left null the way the reported bug produced.
+describe('groupByAgent — named-fleet membership label (WI-1408 / P-005)', () => {
+  it("a --fleet-launched member's presence row groups it under the fleet (non-null fleetSlug/fleetRole)", () => {
+    const groups = groupByAgent([
+      presence({ agentId: 'su-member-1', fleetSlug: 'atlas-fleet', fleetRole: 'member' }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].fleetSlug).toBe('atlas-fleet');
+    expect(groups[0].fleetRole).toBe('member');
+  });
+
+  it('a work-item claim joined to a fleeted holder still surfaces the fleet label via the holder-join fallback', () => {
+    const groups = groupByAgent([
+      workClaim({
+        agentId: 'su-member-2',
+        workItemId: 'WI-9',
+        holderPresent: true,
+        holderAlive: true,
+        fleetSlug: 'atlas-fleet',
+        fleetRole: 'member',
+      }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].fleetSlug).toBe('atlas-fleet');
+    expect(groups[0].fleetRole).toBe('member');
+  });
+
+  it('an agent with no fleet membership groups with a null fleetSlug (unchanged, non-regressive default)', () => {
+    const groups = groupByAgent([presence({ agentId: 'su-unfleeted' })]);
+    expect(groups[0].fleetSlug).toBeNull();
+    expect(groups[0].fleetRole).toBeNull();
+  });
+});
