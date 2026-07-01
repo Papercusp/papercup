@@ -136,6 +136,8 @@ describe('scenario registry', () => {
       'sn-H05-urgent-handoff',
       'sn-H06-respect-no-handoff',
       'sn-H07-multi-item-handoff',
+      'sn-D01-delegate-hard-thinking',
+      'sn-D02-work-not-delegated',
       // sentinel P1 mirrors of operator chat-hygiene contracts (./sentinel/_mirror)
       'sn-S10-ask-choice',
       'sn-S11-voice-card-answer',
