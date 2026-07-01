@@ -32,6 +32,11 @@ export default defineTool({
       'Alias any duplicate output column names (the result is wrapped in a subquery for the row cap, and PG rejects duplicate subquery columns). Pass `maxRows` to widen the cap up to ' +
       String(PG_READ_QUERY_HARD_MAX_ROWS) +
       '; if `truncated` is true, add a tighter WHERE / LIMIT rather than raising the cap blindly.',
+    seeAlso: [
+      'dev:pg_active_queries (live / long-running queries)',
+      'dev:pg_table_sizes (table + index sizes)',
+      'dev:pg_health (connection + pool health)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee', 'queen', 'scoper', 'reviewer', 'validator', 'worker'],

@@ -17,6 +17,11 @@ export default defineTool({
   guidance: {
     when: `Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard.`,
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
+    seeAlso: [
+      'dev:pg_active_queries (currently-running queries)',
+      'dev:pg_table_sizes (storage sizes)',
+      'harness:health (application-level health)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],
