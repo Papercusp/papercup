@@ -614,14 +614,18 @@ const logStream = defineTool({
 });
 
 /**
- * GET /api/adv/session/thinking?sessionId=<id> — a LIVE-FOLLOWED view of an
- * INTERACTIVE (non-bee) Claude session's thinking timeline, for the agents-roster
- * inspector. Unlike a spawned bee (whose harness run-log the /agents/:runId/stream
- * reads), an su/queen/sentinel session keeps its timeline in its transcript jsonl;
- * we resolve that by sessionId (findSessionTranscript), parse the tail with the
- * SAME timeline parser bees use, emit it as one `backfill`, then POLL the file for
- * appended records — emitting each new entry as `event` (the current turn streams
- * in live) plus a `thinking` status ({active}) when the agent starts/stops writing.
+ * GET /api/adv/session/thinking — a LIVE-FOLLOWED view of an INTERACTIVE
+ * (non-bee) session's thinking timeline, for the agents-roster inspector.
+ * Keyed by exactly one of:
+ *   ?sessionId=<uuid>[&owner=<coord-owner>] — a CLAUDE session's transcript jsonl
+ *   ?codexSessionKey=<adv-row-id>           — a CODEX session's rollout jsonl
+ *   ?ompThreadId=<uuid>                     — an OMP session's jsonl
+ * Unlike a spawned bee (whose harness run-log the /agents/:runId/stream reads),
+ * an interactive session keeps its timeline in a per-backend jsonl; we resolve
+ * that file, parse the tail with the backend's timeline parser, emit it as one
+ * `backfill`, then POLL the file for appended records — emitting each new entry
+ * as `event` (the current turn streams in live) plus a `thinking` status
+ * ({active}) when the agent starts/stops writing.
  * It does NOT emit `done` while the session merely goes idle (only if the transcript
  * vanishes); the client closes the stream when the pane closes. A session whose
  * transcript hasn't been WRITTEN yet (a live agent pre-first-turn) gets an empty
@@ -653,13 +657,28 @@ const sessionThinkingStream = defineTool({
     // (1 readdir, plus the global root) instead of sweeping every isolation
     // root. Sanitized; absent ⇒ the full-scan fallback still resolves it.
     const owner = (url.searchParams.get('owner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
+    // Non-claude backends ("every roster agent has a history"): a codex session
+    // streams its rollout jsonl (CODEX_HOME keyed by the adv-session row id),
+    // an omp session its ~/.omp/agent/sessions jsonl (keyed by thread id). Same
+    // tail-backfill + poll-follow machinery — only resolver + parser differ.
+    const codexSessionKey = (url.searchParams.get('codexSessionKey') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+    const ompThreadId = (url.searchParams.get('ompThreadId') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 15_000,
       setup: async (sink) => {
         const { findSessionTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
-        if (!sessionId) { sink.event('backfill', []); sink.done({}); return; }
-        let path = await findSessionTranscript(sessionId, { owner });
+        const { findCodexRolloutPath, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
+        const { createCodexTimelineParser, createOmpTimelineParser } = await import('../../../session-timeline-parsers');
+        const source = codexSessionKey
+          ? { resolve: () => findCodexRolloutPath(codexSessionKey), newParser: createCodexTimelineParser }
+          : ompThreadId
+            ? { resolve: () => findOmpSessionPath(ompThreadId), newParser: createOmpTimelineParser }
+            : sessionId
+              ? { resolve: () => findSessionTranscript(sessionId, { owner }), newParser: createAgentTimelineParser }
+              : null;
+        if (!source) { sink.event('backfill', []); sink.done({}); return; }
+        let path = await source.resolve();
 
         // ── Follow state (shared by the backfill + the live-follow tick) ──
         let pos = 0;
@@ -667,7 +686,7 @@ const sessionThinkingStream = defineTool({
         let lastActive: boolean | null = null;
         let lastAppendMs = Date.now();
         let handle: ManagedHandle | null = null;
-        let followParser = createAgentTimelineParser();
+        let followParser = source.newParser();
         const emitThinking = (active: boolean) => {
           if (active !== lastActive) { lastActive = active; sink.event('thinking', { active }); }
         };
@@ -688,7 +707,7 @@ const sessionThinkingStream = defineTool({
               const firstNl = chunk.indexOf('\n');
               if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
             }
-            const parser = createAgentTimelineParser();
+            const parser = source.newParser();
             const entries: AgentTimelineEntry[] = [];
             for (const rawLine of chunk.split('\n')) {
               const line = rawLine.trim();
@@ -728,15 +747,15 @@ const sessionThinkingStream = defineTool({
         const tick = () => {
           if (sink.closed) { handle?.stop(); return; }
           if (!path) {
-            // Still waiting on the first transcript write. Cheap after the
-            // owner-hinted lookup fix (≤2 readdirs, negative-cached) — no sweep.
+            // Still waiting on the first transcript write. Cheap for every
+            // backend (a handful of readdirs, never a sweep).
             if (resolving) return;
             resolving = true;
-            void findSessionTranscript(sessionId, { owner })
+            void source.resolve()
               .then((p) => {
                 if (sink.closed || path || !p) return;
                 path = p;
-                followParser = createAgentTimelineParser();
+                followParser = source.newParser();
                 emitThinking(backfillFrom(p));
               })
               .finally(() => { resolving = false; });

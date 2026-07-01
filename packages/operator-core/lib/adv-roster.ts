@@ -670,14 +670,22 @@ export async function mergeRosterWithAssignments(
   const active = enrichPidLiveness(entries, os.hostname());
   // "In the middle of thinking" (roster indicator): a session whose transcript was
   // appended within SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved
-  // in PARALLEL (never a serial fs loop, per the perf docs) and best-effort — the
-  // transcript path is cached + owner-fast-pathed, so this is one cheap stat/agent.
-  const { isSessionThinking } = await import('./claude-sessions');
+  // in PARALLEL (never a serial fs loop, per the perf docs) and best-effort — every
+  // backend's transcript path is cached, so this is one cheap stat/agent. Claude
+  // sessions key by sessionId (+owner fast path); codex by the adv row id (its
+  // CODEX_HOME key); omp by thread id.
+  const { isSessionThinking, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
+  const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
   const nowMs = Date.now();
   await Promise.all(
     active.map(async (e) => {
-      if (!e.sessionId) return;
-      e.thinking = await isSessionThinking(e.sessionId, { owner: e.ownerId, nowMs }).catch(() => false);
+      if (e.sessionId) {
+        e.thinking = await isSessionThinking(e.sessionId, { owner: e.ownerId, nowMs }).catch(() => false);
+      } else if (e.agent === 'codex' && e.advSessionId != null) {
+        e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+      } else if (e.ompThreadId) {
+        e.thinking = await isOmpThreadThinking(e.ompThreadId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+      }
     }),
   );
   return {

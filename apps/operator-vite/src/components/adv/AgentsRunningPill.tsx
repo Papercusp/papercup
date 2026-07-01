@@ -42,8 +42,11 @@ export interface RosterAgent {
   runId?: string | null;
   harnessSlug?: string | null;
   /** Native session id — the transcript handle for an INTERACTIVE (non-bee)
-   *  session's thinking (su/queen/sentinel). */
+   *  CLAUDE session's thinking (su/queen/sentinel). */
   sessionId?: string | null;
+  /** The omp thread id — an OMP session's transcript handle
+   *  (~/.omp/agent/sessions jsonl). */
+  ompThreadId?: string | null;
   /** Whether this agent is ACTIVELY thinking right now (transcript appended within
    *  the last few seconds) — drives the roster's pulsing "in the middle of
    *  thinking" indicator. */

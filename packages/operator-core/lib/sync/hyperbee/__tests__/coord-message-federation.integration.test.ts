@@ -40,6 +40,12 @@ import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
 // COORD_WAKE_ON_REPLY flag — mock the server read so ON/OFF is deterministic here.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 import { getFlag } from '@papercusp/flags/server';
+// P-009: the projection's fed-event consumer dynamically imports the await
+// engine — mock it so re-fires are asserted without the real pump.
+vi.mock('../../../events/await/engine', () => ({
+  emitAwaitedEvent: vi.fn(async () => ({ key: '', woken: 0, notified: [], msgId: null })),
+}));
+import { emitAwaitedEvent } from '../../../events/await/engine';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -438,6 +444,84 @@ describe('coord_event_log federation (real PG)', () => {
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
       }
     });
+
+  describe('P-009 — federated event keys (fed_event re-fire)', () => {
+    beforeEach(() => {
+      resetFederatedWakeRate();
+      vi.mocked(emitAwaitedEvent).mockClear();
+    });
+    const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const fedEventRow = (msgId: string, key: string): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, {
+        to: [],
+        summary: `[fed-event] ${key}`,
+        fed_event: { key, payload: { sha: 'abc123' }, source: 'su-A' },
+      }),
+      ts: 1_700_000_000_000,
+    });
+
+    it('a no-recipient fed_event row FEDERATES (capture despite empty to)', async () => {
+      await clearOutbox();
+      await insertRow({
+        msgId: 'fe-cap',
+        body: envelope('fe-cap', { to: [], fed_event: { key: 'k', source: 'su-A' } }),
+      });
+      expect(await outbox()).toHaveLength(1);
+    });
+
+    it('a fresh remote fed_event row re-fires the key locally ONCE; re-applies never re-fire', async () => {
+      const p = proj();
+      await p.writeToPg(fedEventRow('fe-1', 'git:staging-advanced'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(emitAwaitedEvent).toHaveBeenCalledExactlyOnceWith({
+        key: 'git:staging-advanced',
+        payload: { sha: 'abc123' },
+        source: 'su-A',
+        workspaceId: WS,
+      });
+      await p.writeToPg(fedEventRow('fe-1', 'git:staging-advanced'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('local-origin rows never re-fire (the origin machine already emitted locally)', async () => {
+      await proj().writeToPg(fedEventRow('fe-2', 'k2'), { authorPubkey: 'peerPubA', origin: 'local' });
+      expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    });
+
+    it('the P-003 author budget bounds fed-event re-fires too', async () => {
+      process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const p = proj();
+        await p.writeToPg(fedEventRow('fe-3', 'k3'), { authorPubkey: 'flooder-fe', origin: 'remote' });
+        await p.writeToPg(fedEventRow('fe-4', 'k4'), { authorPubkey: 'flooder-fe', origin: 'remote' });
+        expect(emitAwaitedEvent).toHaveBeenCalledTimes(1); // second suppressed
+        // …but the row itself still applied (delivery never dropped).
+        expect(
+          await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='fe-4'`,
+        ).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+        delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+      }
+    });
+  });
+
+  describe('P-002+ — reply/fan interplay continued', () => {
+    beforeEach(() => resetFederatedWakeRate());
+    const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const remoteReplyRowB = (msgId: string, relatedMsgId: string, from = 'su-A'): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, { from, summary: 'the reply', related_msg_id: relatedMsgId }),
+      ts: 1_700_000_000_000,
+    });
+    void remoteReplyRowB;
 
     it('a reply carrying BOTH wake:true and related_msg_id fires both fans independently', async () => {
       await insertRow({
