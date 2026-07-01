@@ -19,6 +19,10 @@ export default defineTool({
   guidance: {
     when: `Update backup configuration. Confirm the change out loud first — affects automated backups going forward.`,
     notWhen: `For one-shot backup creation, use \`backup:snapshot_create\`. settings_set is for the schedule/policy.`,
+    seeAlso: [
+      'backup:settings_get (read the current schedule/policy)',
+      'backup:snapshot_create (a one-shot backup instead of scheduling)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger'],

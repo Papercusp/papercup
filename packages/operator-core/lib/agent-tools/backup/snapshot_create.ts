@@ -26,6 +26,10 @@ export default defineTool({
   guidance: {
     when: `Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.`,
     notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead.`,
+    seeAlso: [
+      'backup:snapshot_list (list existing snapshots)',
+      'backup:settings_set (schedule recurring backups instead of one-shot)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

@@ -11,6 +11,9 @@ export default defineTool({
   guidance: {
     when: `Read backup configuration — schedule, retention, destinations.`,
     notWhen: `For runtime BACKUP state (last run, next run), check the destinations directly.`,
+    seeAlso: [
+      'backup:settings_set (change the schedule/policy)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
