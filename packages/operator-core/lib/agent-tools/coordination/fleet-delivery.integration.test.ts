@@ -102,4 +102,30 @@ describe('fleet delivery override + @fleet: member resolution (real PG)', () => 
     await seedMember('alice', 'payments-squad');
     expect(await hostAudienceResolvers.listFleetMembers('Payments Squad')).toEqual(['alice']);
   });
+
+  // EI-5904 regression: fleet:delivery writes a coord_entity_subscriptions row with
+  // target_kind='fleet' (FLEET_DELIVERY_KIND). The prod table's kind check originally
+  // allowed only 'topic'|'object' (123-coordination-substrate.sql), so every
+  // digest/muted override INSERT threw coord_entity_subscriptions_kind_check — but the
+  // integration/embedded table-creation path (ensureCoordCapabilityTables) carried NO
+  // check at all, so the drift passed every test while breaking prod. Migration 429
+  // added 'fleet' to prod; the bootstrap DDL now mirrors that constraint. These two
+  // cases guard the CLASS: a 'fleet' insert must succeed AND the constraint must exist.
+  describe('coord_entity_subscriptions target_kind constraint (EI-5904)', () => {
+    it("accepts target_kind='fleet' (the fleet:delivery override) without a check violation", async () => {
+      await setFleetDelivery('frank', 'payments', 'muted'); // → INSERT target_kind='fleet'
+      expect((await getFleetDeliveryOverrides('payments')).get('frank')).toBe('muted');
+    });
+
+    it('rejects an unknown target_kind — proves the bootstrap DDL mirrors the prod migration constraint', async () => {
+      // Fails-before/passes-after guard: before the fix the bootstrap table had no
+      // constraint, so this INSERT succeeded and the drift went undetected. It now
+      // fails if the kind check is ever dropped from ensureCoordCapabilityTables.
+      await expect(
+        db.sql`INSERT INTO harness_shared.coord_entity_subscriptions
+                 (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode)
+               VALUES (${WS}, 'zoe', 'bogus-kind', 'x', 'digest')`,
+      ).rejects.toThrow(/coord_entity_subscriptions_kind_check|check constraint/i);
+    });
+  });
 });
