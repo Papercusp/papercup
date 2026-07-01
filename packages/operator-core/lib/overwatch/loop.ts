@@ -75,10 +75,17 @@ const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith(
   : OVERWATCH_WAKE_TARGET_ACTION;
 
 /** Overwatch is a monitor, not a worker lane: a turn that cannot emit its scorecard
- *  within a few minutes must fail closed so the deterministic scorecard backstop can
+ *  in bounded time must fail closed so the deterministic scorecard backstop can
  *  speak. The invoke route's autonomous-loop ceiling is deliberately long for Queen
- *  and bees, but it leaves the monitor silent for far too long under gateway stalls. */
-export const OVERWATCH_INVOKE_TIMEOUT_MS = 180_000;
+ *  and bees, but it leaves the monitor silent for far too long under gateway stalls.
+ *
+ *  8 min, NOT the original 3 (2026-07-01): the loop switched to the codex backend
+ *  (owner-steering modelOverrides.overwatch = gpt-5.4:*), whose spawn+turn takes
+ *  ~5-8 min (observed on the Queen's codex turns) — at 180s EVERY overwatch fire
+ *  died at the timeout with no turn (`timedOut=true, outLen≈750` in autoloop_state)
+ *  and the role NEVER produced a scorecard. 480s still fails closed under the 600s
+ *  wake cadence (no overlapping turns; overwatchMidTurn guards a slow one). */
+export const OVERWATCH_INVOKE_TIMEOUT_MS = 480_000;
 const OVERWATCH_SCORECARD_DEADLINE_GRACE_MS = 15_000;
 
 /** Input to the overwatch launch fire — the resolved role + the computed brief. */

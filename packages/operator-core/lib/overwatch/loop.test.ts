@@ -220,7 +220,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     expect(opts.method).toBe('POST');
     const body = JSON.parse(opts.body);
     expect(body.kickoff).toBe('why-i-woke');
-    expect(body.timeoutMs).toBe(180_000);
+    expect(body.timeoutMs).toBe(OVERWATCH_INVOKE_TIMEOUT_MS);
     expect(body.extra).toEqual(['BLUEPRINT_ID=coding']); // persona resolves at blueprints/coding/prompts/overwatch.md
     expect(body.overwatchBrief).toBe('RENDERED-BRIEF');
   });
@@ -345,7 +345,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
       expect(recordFire).toHaveBeenCalledWith(
         SLUG,
         'overwatch',
-        expect.stringContaining('no complete scorecard within 180000ms launch deadline'),
+        expect.stringContaining(`no complete scorecard within ${OVERWATCH_INVOKE_TIMEOUT_MS}ms launch deadline`),
         'error',
       );
     } finally {

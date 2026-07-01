@@ -25,6 +25,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import { tryConsumeFederatedWake } from '../federated-wake-rate';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -178,7 +179,12 @@ async function writeToPg(
       related_msg_id?: unknown;
     };
     const to = Array.isArray(b.to) ? b.to.filter((x): x is string => typeof x === 'string') : [];
-    if (b.wake === true && to.length > 0) {
+    // P-003: both fans below spend from the author DEVICE's hourly wake budget
+    // (provenance authorPubkey — the verified source-log identity, never the
+    // spoofable body.from). Over budget ⇒ the wake is suppressed but the message
+    // is already applied — delivery is never dropped, only the re-invoke. The
+    // addressee fan costs one token per addressee (each is a billable turn).
+    if (b.wake === true && to.length > 0 && tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length)) {
       try {
         const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
         await wakeRecipients(to, {
@@ -221,7 +227,13 @@ async function writeToPg(
           `;
           const ob = orig[0]?.body as { wakeOnReply?: unknown; from?: unknown } | undefined;
           const originalFrom = typeof ob?.from === 'string' ? ob.from : null;
-          if (ob?.wakeOnReply === true && originalFrom && originalFrom !== b.from) {
+          if (
+            ob?.wakeOnReply === true &&
+            originalFrom &&
+            originalFrom !== b.from &&
+            // P-003: the reply-wake spends one token from the same author budget.
+            tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1)
+          ) {
             const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
             await wakeRecipients([originalFrom], {
               ...(typeof b.summary === 'string' ? { summary: b.summary } : {}),

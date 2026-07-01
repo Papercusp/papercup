@@ -328,4 +328,101 @@ describe('coord_event_log federation (real PG)', () => {
       }
     });
   });
+
+  describe('P-002 — federated wake-on-reply (cross-machine-coord-parity-and-trust-2026-07-01)', () => {
+    const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    // A remote peer's REPLY: no wake intent of its own — only the reply correlation.
+    const remoteReplyRow = (msgId: string, relatedMsgId: string, from = 'su-A'): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, { from, summary: 'the reply', related_msg_id: relatedMsgId }),
+      ts: 1_700_000_000_000,
+    });
+
+    it('a fresh remote reply to a LOCAL opted-in original wakes the original sender ONCE (re-applies never re-wake)', async () => {
+      await insertRow({
+        msgId: 'orig-1',
+        body: envelope('orig-1', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      const p = proj();
+      await p.writeToPg(remoteReplyRow('reply-1', 'orig-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledExactlyOnceWith(['su-LOCAL'], {
+        summary: 'the reply',
+        source: 'su-A',
+        workspaceId: WS,
+      });
+      // at-least-once re-apply → UPDATE path → no re-wake
+      await p.writeToPg(remoteReplyRow('reply-1', 'orig-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it('an original WITHOUT the wakeOnReply opt-in → no reply-wake', async () => {
+      await insertRow({
+        msgId: 'orig-2',
+        body: envelope('orig-2', { from: 'su-LOCAL', to: ['su-A'] }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      await proj().writeToPg(remoteReplyRow('reply-2', 'orig-2'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('COORD_WAKE_ON_REPLY flag OFF → no reply-wake (matches the send-side gate)', async () => {
+      await insertRow({
+        msgId: 'orig-3',
+        body: envelope('orig-3', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      vi.mocked(getFlag).mockResolvedValueOnce(false as never);
+      await proj().writeToPg(remoteReplyRow('reply-3', 'orig-3'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('a reply whose author IS the original sender never self-wakes', async () => {
+      await insertRow({
+        msgId: 'orig-4',
+        body: envelope('orig-4', { from: 'su-A', to: ['su-LOCAL'], wakeOnReply: true }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      await proj().writeToPg(remoteReplyRow('reply-4', 'orig-4', 'su-A'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('a reply to an UNKNOWN original is a quiet no-op — the reply row still persists', async () => {
+      vi.mocked(wakeRecipients).mockClear();
+      await proj().writeToPg(remoteReplyRow('reply-5', 'no-such-original'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+      expect(
+        await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='reply-5'`,
+      ).toHaveLength(1);
+    });
+
+    it('a reply carrying BOTH wake:true and related_msg_id fires both fans independently', async () => {
+      await insertRow({
+        msgId: 'orig-6',
+        body: envelope('orig-6', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      const both: CoordMessageRow = {
+        harness_slug: HARNESS,
+        msg_id: 'reply-6',
+        surface: 'messages',
+        writer_key: 'peer-A',
+        body: envelope('reply-6', {
+          from: 'su-A',
+          to: ['su-B'],
+          wake: true,
+          summary: 'urgent reply',
+          related_msg_id: 'orig-6',
+        }),
+        ts: 1_700_000_000_000,
+      };
+      await proj().writeToPg(both, { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(wakeRecipients).mock.calls[0][0]).toEqual(['su-B']); // EI-279 addressee fan
+      expect(vi.mocked(wakeRecipients).mock.calls[1][0]).toEqual(['su-LOCAL']); // P-002 reply-wake
+    });
+  });
 });

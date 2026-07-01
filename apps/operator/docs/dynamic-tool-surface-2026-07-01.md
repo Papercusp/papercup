@@ -113,6 +113,25 @@ dissolves.
   browses to know WHAT exists to search for — discoverability at ~1% of the ~165k full
   descriptions. Harmless for `full`/eager sessions (seed-agnostic wording).
 
+- **D12 — Trimmed OMP runs discovery OFF (live-verified necessity, 2026-07-01).** With OMP
+  tool-discovery ON, even the seed's front doors (`tools:find`/`tools:invoke`) sit behind
+  `search_tool_bm25` activation — a 0-match query strands the ENTIRE surface (verified on
+  ornith: bm25("schedule inventory") → 0 matches → nothing callable → the session dead-ends
+  improvising via bash/eval). A ~20-tool seed needs no discovery gate; `discoveryOff:true` +
+  `toolsAllowlist` exposes the spine directly AND lets the post-`list_changed` refresh
+  auto-expose surfaced tools instead of gating them behind a second bm25 pass
+  (`psu-launcher.mjs` trimmed branch). Client verification matrix (real headless sessions
+  against :3170, trimmed 20-tool seed, off-seed target `schedule:inventory`):
+  **Sonnet PASS** — `tools:find` → `activated:true` → direct off-seed call, real data;
+  **Codex PASS** — `tools:invoke` fallback, real data (headless codex NEEDS the harness's
+  standard `-s danger-full-access --dangerously-bypass-approvals-and-sandbox`, else every MCP
+  call auto-denies as "user cancelled"); **OMP/ornith** — with discovery ON it failed as
+  above; this decision is the fix. Server side exonerated by replay: `tools/list` grows
+  20→25 under the same client key, and OMP's log confirms `notifications/tools/list_changed`
+  is received on the POST response stream even with `disableSse`. Guidance hardened
+  alongside: `tools:find`'s `howToCall`/`chaining` + the capability map now say "if a found
+  tool errors not-found, run it via `tools:invoke` — never guess name variants".
+
 ## 4. Phases / work items
 
 **Phase 0 — server-side mutable surface state**
