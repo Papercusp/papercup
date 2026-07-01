@@ -18,6 +18,10 @@ export default defineTool({
     when: 'User asks "what projects do I have?" or you need a project id before calling `projects:get`. Workspace-level project enumeration.',
     notWhen: 'For HARNESSES (work running inside a project), use `harness:list`. Projects ⊇ harnesses; the slug overlap is intentional but the surfaces are different.',
     chaining: 'Pair with `projects:get` for detail, or `projects:spec_revisions` for the spec history.',
+    seeAlso: [
+      'projects:get (full record for one project)',
+      'harness:list (harnesses running inside projects)',
+    ],
   },
   description: 'List projects relevant to a harness (filtered to those with at least one feature in the given slug). Includes feature counts.',
   capability: 'projects:read',

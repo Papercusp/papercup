@@ -18,6 +18,10 @@ export default defineTool({
     when: 'User asks "how has the spec changed?", "when did we update X?", or you need a list of spec revision ids before reading one.',
     notWhen: 'For ONE revision\'s body, use `projects:spec_revision`. For the current spec, use `projects:get`.',
     chaining: 'Pair with `projects:spec_revision` to read a specific revision.',
+    seeAlso: [
+      'projects:spec_revision (read ONE revision body)',
+      'projects:get (the current spec)',
+    ],
   },
   description: 'List spec-revision summaries for a project (newest-first; full spec body lives on projects:spec_revision).',
   capability: 'projects:read',

@@ -17,6 +17,11 @@ export default defineTool({
     when: 'User names a specific project and wants its full record (spec, status, metadata).',
     notWhen: 'For SPEC revisions / history, use `projects:spec_revisions`. For the runtime harness state, use `harness:get`.',
     chaining: 'Follow `projects:list` for the slug.',
+    seeAlso: [
+      'projects:list (find the slug)',
+      'projects:spec_revisions (spec change history)',
+      'harness:get (the runtime harness state)',
+    ],
   },
   description: 'Fetch a single project detail (spec, feature counts, last spec revision summary). Returns null when not found.',
   capability: 'projects:read',

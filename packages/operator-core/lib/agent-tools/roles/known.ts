@@ -16,6 +16,10 @@ export default defineTool({
   guidance: {
     when: 'Static enum of role names the runtime supports — use to validate a role string before passing it elsewhere.',
     notWhen: 'For the workspace\'s ACTUAL roles (may be a subset), use `roles:list`. known is the universe; list is what\'s configured.',
+    seeAlso: [
+      'roles:list (the workspace\'s actual configured roles)',
+      'roles:get (one role\'s definition)',
+    ],
   },
   description: 'Static well-known role-id allowlist (kernel set; plugin-registered roles extend this).',
   capability: 'roles:read',

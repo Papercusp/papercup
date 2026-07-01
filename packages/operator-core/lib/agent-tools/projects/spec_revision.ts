@@ -16,6 +16,10 @@ export default defineTool({
     when: 'User names a specific revision id and wants its full body — what the spec looked like at that point.',
     notWhen: 'For the CURRENT spec, use `projects:get`. For the list of revisions, use `projects:spec_revisions`.',
     chaining: 'Follow `projects:spec_revisions` for the id.',
+    seeAlso: [
+      'projects:spec_revisions (the list of revision ids)',
+      'projects:get (the current spec)',
+    ],
   },
   description: 'Fetch one project spec-revision in full (includes the spec body). Returns null when not found.',
   capability: 'projects:read',

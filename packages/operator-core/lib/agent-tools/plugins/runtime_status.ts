@@ -17,6 +17,11 @@ export default defineTool({
   guidance: {
     when: 'You need to know which plugins are loaded + healthy in the current operator process (per-harness or workspace-level).',
     notWhen: 'For the plugin CATALOG (everything installable), use the marketplace endpoints. plugins:runtime_status is the runtime view.',
+    seeAlso: [
+      'plugins:invoke_action (invoke an action a plugin exposes)',
+      'plugins:tui_panes (the plugin\'s TUI pane contributions)',
+      'plugins:fire_event (replay a hook event)',
+    ],
   },
   description: 'Read the plugin host runtime status (loaded plugins, registered actions, mounted api routes).',
   capability: 'plugins:read',

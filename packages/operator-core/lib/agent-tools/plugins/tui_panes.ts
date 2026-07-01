@@ -88,6 +88,9 @@ export default defineTool({
   guidance: {
     when: "The pui (or an agent) needs the TUI panes (type:'tui-pane' UI contributions) a harness's enabled plugins offer, to open one in a terminal pane.",
     notWhen: 'For desktop UI surfaces (react/iframe) or the full plugin runtime status, use plugins:runtime_status.',
+    seeAlso: [
+      'plugins:runtime_status (full plugin runtime status + desktop UI surfaces)',
+    ],
   },
   description:
     'List the capability-gated tui-pane UI contributions for a harness (pluginName, slug, label, command, cwd). The pui opens these in a zellij pane.',

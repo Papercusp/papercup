@@ -43,6 +43,10 @@ export default defineTool({
       'Opening/merging a PR — that is the fork-PR hook / prs review route. Removing a hive membership — hive tooling. Deleting a repo you actively contribute to — this never collects a fork with an open PR.',
     chaining:
       'platform:fork_gc (dry-run report) → review wouldCollect → platform:fork_gc { confirm:true } to delete the abandoned forks.',
+    seeAlso: [
+      'platform:contribute (the fork→PR path that leaves forks)',
+      'platform:dogfood_verify (confirm a PR merged before GC)',
+    ],
   },
   capability: 'harness:write',
   crossWorkspace: true,
