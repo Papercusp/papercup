@@ -543,4 +543,61 @@ const logStream = defineTool({
   },
 });
 
-export default [agentRunStream, slugStream, logStream];
+/**
+ * GET /api/adv/session/thinking?sessionId=<id> — a snapshot of an INTERACTIVE
+ * (non-bee) Claude session's thinking timeline, for the agents-roster inspector.
+ * Unlike a spawned bee (whose harness run-log the /agents/:runId/stream reads), an
+ * su/queen/sentinel session keeps its timeline in its transcript jsonl; we resolve
+ * that by sessionId (findSessionTranscript), parse the tail with the SAME timeline
+ * parser bees use, and emit it as one `backfill` then `done` — a snapshot (no live
+ * follow yet). Empty backfill when the session id is unknown/unreadable.
+ */
+const sessionThinkingStream = defineTool({
+  method: 'GET',
+  path: '/adv/session/thinking',
+  auth: 'public',
+  sampleRate: 0,
+  async handler(req) {
+    const url = new URL(req.url);
+    const sessionId = (url.searchParams.get('sessionId') ?? '').replace(/[^A-Za-z0-9_.-]/g, '');
+    return sseResponse({
+      signal: req.signal,
+      heartbeatMs: 15_000,
+      setup: async (sink) => {
+        const parser = createAgentTimelineParser();
+        const entries: AgentTimelineEntry[] = [];
+        try {
+          const { findSessionTranscript } = await import('../../../claude-sessions');
+          const path = sessionId ? await findSessionTranscript(sessionId) : null;
+          if (path) {
+            const stat = statSync(path);
+            // Tail the last 1 MiB so a long session doesn't blow the response.
+            const tailBytes = 1024 * 1024;
+            const start = Math.max(0, stat.size - tailBytes);
+            const len = stat.size - start;
+            const buf = Buffer.alloc(len);
+            const fd = openSync(path, 'r');
+            try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+            let chunk = buf.toString('utf8');
+            if (start > 0) {
+              const firstNl = chunk.indexOf('\n');
+              if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+            }
+            for (const rawLine of chunk.split('\n')) {
+              const line = rawLine.trim();
+              if (!line) continue;
+              for (const e of parser.parseLine(line)) entries.push(e);
+            }
+            entries.push(...parser.flush());
+          }
+        } catch { /* unreadable / not found → empty backfill */ }
+        const capped = entries.length > 200 ? entries.slice(-200) : entries;
+        sink.event('backfill', capped);
+        sink.event('done', {});
+        sink.close();
+      },
+    });
+  },
+});
+
+export default [agentRunStream, slugStream, logStream, sessionThinkingStream];

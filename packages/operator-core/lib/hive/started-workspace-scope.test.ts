@@ -60,6 +60,9 @@ vi.mock('../workspace-brain-scope', async (importActual) => {
 import {
   getHiveStarted,
   setHiveStarted,
+  getHivePlacementStarted,
+  setHivePlacementStarted,
+  anyHivePlacementStarted,
   listStartedHives,
   listStartedWorkspaceLoops,
 } from './started';
