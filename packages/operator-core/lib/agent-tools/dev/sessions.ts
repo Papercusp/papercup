@@ -18,6 +18,11 @@ export default defineTool({
   guidance: {
     when: `List recent /dev panel sessions — used by the dev UI to populate session pickers.`,
     notWhen: `For application AGENT chat sessions, use \`agent_chats:list\`. dev:sessions is the panel's own concept.`,
+    seeAlso: [
+      'dev:session_detail (drill into one session)',
+      'dev:processes (OS-level spawn processes)',
+      'agent_chats:list (application chat sessions)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

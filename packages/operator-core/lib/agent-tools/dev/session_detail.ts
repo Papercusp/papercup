@@ -18,6 +18,10 @@ export default defineTool({
   guidance: {
     when: `Read full detail of one /dev session — request history, env, traces.`,
     notWhen: `For the SESSION LIST, use \`dev:sessions\` first.`,
+    seeAlso: [
+      'dev:sessions (the session list)',
+      'dev:resolve_owner (map an owner id to its session)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

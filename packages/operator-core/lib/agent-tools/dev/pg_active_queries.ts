@@ -17,6 +17,10 @@ export default defineTool({
   guidance: {
     when: `Diagnostic: list currently-running PG queries (pg_stat_activity). Use when investigating slow / hung queries.`,
     notWhen: `For routine diagnostics, the /dev/pg panel is enough. Use this tool when scripting an investigation.`,
+    seeAlso: [
+      'dev:pg_health (connection / pool health)',
+      'dev:pg_query (run a read-only diagnostic query)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],

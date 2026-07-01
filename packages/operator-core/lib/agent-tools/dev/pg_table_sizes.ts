@@ -15,6 +15,10 @@ export default defineTool({
   guidance: {
     when: `Diagnostic: per-table sizes + row counts. Use when investigating storage growth.`,
     notWhen: `For application data analysis, query the relevant tools directly. pg_table_sizes is an ops view.`,
+    seeAlso: [
+      'dev:pg_query (query the tables directly)',
+      'dev:pg_health (connection health)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'bee'],
