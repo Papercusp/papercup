@@ -78,6 +78,8 @@ import { verifyAccessToken } from '../../../power-user-token';
 import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
+  getSessionSurface,
+  activateSessionTools,
 } from './tool-allowlist';
 import {
   validIdempotencyKey,
@@ -790,7 +792,30 @@ async function buildMcpToolContext(
       ...(msg ? { message: msg } : {}),
     });
   };
+  // activateTools — expand THIS session's live tool surface at runtime
+  // (dynamic-tool-surface-2026-07-01). Grows the session's mutable allowlist
+  // (keyed by the su session identity uiClientId, seeded from the connect-time
+  // ?tools=) and, if something new was added, fires the standard
+  // notifications/tools/list_changed so a listChanged-capable client (omp,
+  // codex) re-fetches tools/list and can call the surfaced tools. Gated only on
+  // sendNotification (session-level, NOT progressToken like emit/progress).
+  // No-op for un-seeded (full-catalog / Claude) sessions: activateSessionTools
+  // returns false when no surface entry exists, so no notification is sent.
+  const activateTools: UnifiedToolContext['activateTools'] = (toolNames) => {
+    const added = activateSessionTools(spawn.uiClientId, toolNames);
+    if (added && sendNotification) {
+      sendNotification({
+        method: 'notifications/tools/list_changed',
+        params: {},
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[mcp-tool] sendNotification(tools/list_changed) failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    return added;
+  };
   return {
+    activateTools,
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
     projectDir: paths.projectDir,
@@ -852,7 +877,15 @@ async function buildMcpToolContext(
  * of a unit-testable contract.
  */
 export const MCP_SERVER_CAPABILITIES = {
-  tools: {},
+  // listChanged: true — this server GROWS a session's advertised tool set at
+  // runtime (dynamic-tool-surface-2026-07-01). A seeded session (small ?tools=
+  // core) expands on intent via ctx.activateTools (tools:find), and the
+  // transport fires notifications/tools/list_changed so the client re-fetches
+  // tools/list and can call the surfaced tools. Clients that honor the
+  // notification (omp, codex) get "small seed + full reachability on demand";
+  // clients that ignore it are unaffected. Claude is never sent the
+  // notification (it launches un-seeded → no surface → no fire).
+  tools: { listChanged: true },
   resources: {},
   prompts: {},
   experimental: {
@@ -986,7 +1019,15 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
   const result = applyToolManifest(listMcpProjections(role, profile), { bypass });
-  const allow = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
+  // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
+  // seeded session's surface GROWS at runtime via ctx.activateTools (tools:find)
+  // + notifications/tools/list_changed. getSessionSurface returns that live set
+  // (created on this first tools/list, re-fetched-and-grown on later ones), or
+  // the raw seed when there's no stable session key, or null (full catalog) when
+  // there's no seed at all. Keyed by the su session identity (uiClientId).
+  const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
+  const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
+  const allow = getSessionSurface(sessionKey, seed);
   return {
     kind: spawnRes.kind,
     spawnRes,

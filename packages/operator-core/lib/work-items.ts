@@ -1511,9 +1511,18 @@ async function claimNextIssueWorkItem(
   // getIssue() re-read below agree on the same partition (they'd diverge when ISSUES_PER_WORKSPACE
   // is OFF: issues live in 'default' while the feature scope is the active workspace).
   const issueWs = issuesScopeWorkspace();
-  // Issue-family rows carry harness_slug = '' (operator scope) or 'harness:<slug>' → <slug>;
-  // the feature `harness` filter ('papercup'…) is the issue scope here too. Claimable issue
-  // status = 'open'; terminal (resolved|closed) excluded by status, blocked ones by readiness.
+  // Issue-family rows carry harness_slug = 'harness:<slug>' → <slug> (harness-scoped) or
+  // 'operator:<workspace_id>' (operator scope, migration 382 — the harness_slug='' sentinel
+  // it replaced is gone in current data). EI-5919 / WI-1406: this query used to match ONLY
+  // `wi.harness_slug = filter.harness`, so it could see harness-scoped issues but NOT
+  // operator-scope ones — which is ~90% of the open bug/change/task backlog (2326/2596 rows
+  // for papercusp-workspace, verified 2026-07-01). Every harness-scoped claim_next call was
+  // structurally blind to that backlog: "40+ ready unclaimed todos exist" yet claim_next
+  // reported no claimable work-item. Also accept the operator-scope encoding for the SAME
+  // resolved issue workspace, so operator-wide issues become self-pickable by any harness.
+  const operatorScopeSlug = `operator:${issueWs}`;
+  // Claimable issue status = 'open'; terminal (resolved|closed) excluded by status, blocked
+  // ones by readiness (below).
   const states = ISSUE_FAMILY_CLAIMABLE_STATES;
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
@@ -1523,7 +1532,7 @@ async function claimNextIssueWorkItem(
          FROM harness_shared.work_items wi
         WHERE wi.item_kind IN ('bug', 'change', 'task')
           AND wi.workspace_id = ${issueWs}
-          AND wi.harness_slug = ${filter.harness}
+          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR wi.taken_by = '')
           AND wi.status = ANY(${[...states]}::text[])
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.

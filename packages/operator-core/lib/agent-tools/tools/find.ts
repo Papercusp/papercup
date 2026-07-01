@@ -156,10 +156,12 @@ if (!process.env.VITEST) {
 export default defineTool({
   name: 'tools:find',
   description:
-    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ' +
-    'Returns the best-matching tool names with descriptions. Use when you need a capability ' +
-    'that is not in your core toolset — e.g. tools:find("feature flag") or tools:find("spawn a worker"). ' +
-    'In omp, a returned tool is hidden behind discovery: load it with search_tool_bm25("<exact name>") before calling.',
+    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic) AND ' +
+    'activate the matches for your session so you can call them. Returns the best-matching tool ' +
+    'names with descriptions. Use when you need a capability that is not in your core toolset — ' +
+    'e.g. tools:find("feature flag") or tools:find("spawn a worker"). On a seeded (small-surface) ' +
+    'session the matched tools are added to your live tool list on the fly, so after this call you ' +
+    'can call the one you want directly.',
   guidance: {
     when:
       'You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO ' +
@@ -168,7 +170,8 @@ export default defineTool({
       'When the tool is already in your core set or you know its exact name — just call it (in omp, search_tool_bm25("<name>") then call). ' +
       'For a full permission-annotated dump use agent_tools:list.',
     chaining:
-      'tools:find("<intent>") → take the top tool name → (omp) search_tool_bm25("<name>") to load it → call it.',
+      'tools:find("<intent>") activates the matches for your session → call the top tool directly. ' +
+      '(In omp, if it still reports the tool as unknown, search_tool_bm25("<name>") once to load it.)',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -183,7 +186,7 @@ export default defineTool({
     /** Max results (default 8). */
     limit: z.number().int().positive().max(25).optional(),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const { corpus, embedText } = buildCorpus();
     const embedder = await getEmbedder();
     // Self-heal: rebuild if boot warm didn't run or the catalog drifted. Non-
@@ -195,6 +198,20 @@ export default defineTool({
       embedder,
       embeddings: embIndex,
     });
+
+    // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
+    // tools for THIS session so a seeded (small-surface) client can call them.
+    // On a listChanged-capable transport this also fires tools/list_changed so
+    // the client re-fetches tools/list and the surfaced tools become callable.
+    // No-op (returns false) on a full-catalog / un-seeded session — nothing to
+    // expand — and on transports without a mutable surface. NEVER let a surface
+    // failure break discovery: the hits are still returned.
+    let activated = false;
+    try {
+      activated = ctx.activateTools?.(hits.map((h) => h.tool)) ?? false;
+    } catch {
+      /* activation is best-effort; discovery still succeeds */
+    }
 
     // Honest mode marker (never silently pretend semantic ran):
     //   on          — index ready, the semantic leg contributed;
@@ -210,14 +227,19 @@ export default defineTool({
             query: args.query,
             count: hits.length,
             semantic,
+            // true ⇒ the matches were added to your live tool surface this call
+            // (a seeded session); call the one you want directly next.
+            activated,
             hits: hits.map((h) => ({
               tool: h.tool,
               description: h.description,
               argSchema: h.argSchema,
               via: h.via,
             })),
-            howToCall:
-              'In omp: search_tool_bm25("<tool name>") to load it, then call it. Claude/Codex: call it directly.',
+            howToCall: activated
+              ? 'The matched tools are now active for your session — call the one you want directly. ' +
+                '(In omp, if it still reports the tool as unknown, run search_tool_bm25("<name>") once to load it.)'
+              : 'Call the tool directly (Claude/Codex). In omp: search_tool_bm25("<tool name>") to load it, then call it.',
           }),
         },
       ],
