@@ -41,7 +41,10 @@ describe('joinCanonicalPapercuspHive', () => {
     resolveGithub: okId,
     ensureWired: async () => ({
       joinInviteTopic: async () => undefined,
-      confirmInviteAnnounce: async () => ({ found: true, hive: { hiveId: 'papercusp', memberLinks: ['link1'] } }),
+      confirmInviteAnnounce: async () => ({
+        found: true,
+        hive: { hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link1'] },
+      }),
     }),
     joinHive: async () => ({ ok: true, hiveSlug: 'papercusp' }),
     setHomeWorkspace: () => {},
