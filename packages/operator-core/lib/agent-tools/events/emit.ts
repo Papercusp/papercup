@@ -15,6 +15,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { sendMessage } from '../coordination/messages';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
@@ -43,6 +45,12 @@ export default defineTool({
       .max(50)
       .optional()
       .describe("Additional NOTIFY audience: ownerIds, @plan:/@topic:/@object:/@file: selectors, '*' or 'human'. Wake-awaiters are excluded (their wake already carries it)."),
+    scope: z
+      .enum(['hive', 'local'])
+      .optional()
+      .describe(
+        "P-009 (cross-machine-coord-parity): 'hive' ALSO federates this event to every machine of the workspace's shared Hive — each peer re-fires the key into ITS local await store, so a REMOTE machine's events:await on the same key wakes (rendezvous beyond inbox-wake: lock grants, artifact-ready, staging-advanced). Requires a resolvable hive scope (the result reports federated: plus federation_error: when none). Omit/'local' = today's machine-local emit.",
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -54,6 +62,62 @@ export default defineTool({
       source: identity.ownerId,
       workspaceId: identity.workspaceId ?? undefined,
     });
+    // ── P-009 (cross-machine-coord-parity-and-trust-2026-07-01): federate the
+    // event. The fed-event rides a NO-RECIPIENT hive-scoped coord row (persists
+    // + federates via the mig-150 gate; empty `to` = zero inbox noise, audience
+    // D-004). Each peer's coord-message projection re-fires the key into its
+    // local await store — only registered watchers wake (no thunder-herd), and
+    // the per-author wake budget applies on the receiving side. Best-effort:
+    // the LOCAL emit above already happened; a federation miss is reported,
+    // never thrown.
+    let federated: boolean | undefined;
+    let federationError: string | undefined;
+    if (args.scope === 'hive') {
+      federated = false;
+      try {
+        const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+        const ctxHarness =
+          typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
+            ? ctxHarnessRaw
+            : undefined;
+        let scopeSlug = ctxHarness;
+        if (!scopeSlug && identity.workspaceId && identity.workspaceId !== '*') {
+          const resolved = await resolveWorkspaceHiveScope(identity.workspaceId);
+          if (resolved.kind === 'one') scopeSlug = resolved.homeSlug;
+          else federationError = resolved.kind === 'many' ? 'ambiguous_hive_scope' : 'no_hive_scope';
+        } else if (!scopeSlug) {
+          federationError = 'no_hive_scope';
+        }
+        if (scopeSlug) {
+          // Bound the federated payload — a fed event is a signal, not a blob.
+          let payload = args.payload;
+          try {
+            if (payload !== undefined && JSON.stringify(payload).length > 8_192) {
+              payload = undefined;
+              federationError = 'payload_too_large_dropped';
+            }
+          } catch {
+            payload = undefined;
+          }
+          await sendMessage(identity, {
+            to: [],
+            summary: `[fed-event] ${args.event}`,
+            harnessSlug: scopeSlug,
+            extra: {
+              fed_event: {
+                key: args.event,
+                ...(payload !== undefined ? { payload } : {}),
+                ...(args.summary ? { summary: clampText(args.summary, LIMITS.ANNOTATION) } : {}),
+                source: identity.ownerId,
+              },
+            },
+          });
+          federated = true;
+        }
+      } catch (e) {
+        federationError = e instanceof Error ? e.message : String(e);
+      }
+    }
     return {
       content: [
         {
@@ -64,6 +128,8 @@ export default defineTool({
             woken: result.woken,
             notified: result.notified.length,
             msg_id: result.msgId,
+            ...(federated !== undefined ? { federated } : {}),
+            ...(federationError ? { federation_error: federationError } : {}),
           }),
         },
       ],
