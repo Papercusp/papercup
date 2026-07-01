@@ -13,8 +13,6 @@ import {
   writeDeepgramKey,
   readPicovoiceKey,
   writePicovoiceKey,
-  readGoogleKey,
-  writeGoogleKey,
   maskKey,
 } from '../../../voice-credentials';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -25,14 +23,12 @@ async function snapshot() {
   const c = await readCartesiaKey();
   const d = await readDeepgramKey();
   const p = await readPicovoiceKey();
-  const g = await readGoogleKey();
   return {
     elevenlabs: { apiKey: maskKey(e), configured: !!e },
     openai:     { apiKey: maskKey(o), configured: !!o },
     cartesia:   { apiKey: maskKey(c), configured: !!c },
     deepgram:   { apiKey: maskKey(d), configured: !!d },
     picovoice:  { apiKey: maskKey(p), configured: !!p },
-    google:     { apiKey: maskKey(g), configured: !!g },
   };
 }
 
@@ -50,7 +46,7 @@ const put = defineTool({
   path: '/agent-mcp/operator-credentials',
   auth: 'loopback',
   async handler(req) {
-    let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown; googleApiKey?: unknown } = {};
+    let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -72,7 +68,6 @@ const put = defineTool({
       ['cartesiaApiKey',   writeCartesiaKey],
       ['deepgramApiKey',   writeDeepgramKey],
       ['picovoiceApiKey',  writePicovoiceKey],
-      ['googleApiKey',     writeGoogleKey],
     ] as const) {
       const err = await setKey(field, writer);
       if (err) return err;

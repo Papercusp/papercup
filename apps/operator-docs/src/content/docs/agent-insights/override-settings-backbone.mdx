@@ -2,6 +2,7 @@
 title: The unified override-settings backbone (scope → persistence → resolution → contract)
 description: "Every runtime override in Papercusp now conforms to one of two contracts — backend mechanisms self-register as a config-override CONCERN (config:list-overrides / config:reset-overrides are the canonical audit + revoke-all surface), and frontend override UIs unify on <OverridableSetting>. This maps each setting family to its scope (global/workspace/hive/user/session/device), persistence, resolution order, and which contract it conforms to. New override surfaces MUST use both."
 discovered: 2026-06-21
+updated: 2026-07-01
 tags: [overrides, config-overrides, settings, scope, resolution-order, registerOverrideConcern, OverridableSetting, sentinel-herald]
 status: active
 documents:
@@ -74,6 +75,12 @@ Resolution order reads **left → right; the LAST present layer wins.**
 | capability-envelope | per-role envelope overrides (DARK) | workspace | `operator_capability_envelopes` | code envelope → row (flag-gated) | `capability-envelope-overrides` ✅ (pre-existing) |
 | release-checkpoint | green-checkpoint thresholds | workspace | `operator_release_checkpoint_config` | DEFAULT → row | `release-checkpoint-config` ✅ (pre-existing) |
 | gym-gates | per-harness gym promotion gates | workspace/hive | (gym-gates store) | DEFAULT → row | `gym-gates` ✅ (pre-existing) |
+| scout-workspace-budget | Scout workspace spend-ceiling override | workspace | `operator_scout_budget` | PG override → env `PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD` → `DEFAULT_SCOUT_WORKSPACE_CEILING_USD` | `scout-workspace-budget` ✅ |
+| tool-quota-overrides | per-(tool,role) quota overrides | workspace | `operator_quota_overrides` | baked `rolesQuota[role]` → PG override (D-010 sync cache) | `tool-quota-overrides` ✅ |
+| telemetry-buffer-config | dispatch telemetry-buffer sizing (maxPending/debounceMs/maxBatch) | workspace | `operator_telemetry_buffer_config` | baked `TELEMETRY_BUFFER_DEFAULTS` → PG override (kill-switch `papercusp-telemetry-buffer-config`, default ON) | `telemetry-buffer-config` ✅ |
+| txn-timeouts-config | per-workspace txn `lock_timeout`/`statement_timeout` | workspace | `operator_txn_timeouts_config` | baked 5s/5s (`TXN_TIMEOUTS_DEFAULTS`) → PG override (kill-switch `papercusp-txn-timeouts-config`, default ON) | `txn-timeouts-config` ✅ |
+| capability-tier-overrides | per-capability tier reclassification | workspace | `operator_capability_tiers` | baked EXACT table → PG override, **DARK** (`papercusp-auth-config-overrides`) | `capability-tier-overrides` ✅ |
+| auth-config-overrides | §G auth/sandbox dials (full-access bypass roles, scoped-SU safe-tools, sandbox mask/egress) | workspace | `operator_auth_config` | baked literals → PG override, **DARK** (`papercusp-auth-config-overrides`); tighten/replace-only, never widens | `auth-config-overrides` ✅ |
 | flags | runtime flag overrides | workspace | `operator_flag_overrides` | code flag defaults → row | (flag-bus; not yet a concern) |
 | learning-packs | installed pack enable/config | workspace/hive | learning-pack store | pack default → install row | (not yet a concern) |
 

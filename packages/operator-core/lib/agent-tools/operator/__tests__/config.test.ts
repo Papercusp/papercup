@@ -217,7 +217,6 @@ describe('operator:credentials_status', () => {
       readCartesiaKey: vi.fn(async () => null),
       readDeepgramKey: vi.fn(async () => null),
       readPicovoiceKey: vi.fn(async () => null),
-      readGoogleKey: vi.fn(async () => null),
     }));
     const { default: tool } = await import('../credentials_status');
     const result = await tool.handler({}, MAKE_CTX());
@@ -236,7 +235,6 @@ describe('operator:credentials_status', () => {
       readCartesiaKey: vi.fn(async () => null),
       readDeepgramKey: vi.fn(async () => null),
       readPicovoiceKey: vi.fn(async () => null),
-      readGoogleKey: vi.fn(async () => null),
     }));
     const { default: tool } = await import('../credentials_status');
     const result = await tool.handler({}, MAKE_CTX());

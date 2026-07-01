@@ -16,7 +16,6 @@ import {
   readCartesiaKey,
   readDeepgramKey,
   readElevenLabsKey,
-  readGoogleKey,
   readOpenAiKey,
   readPicovoiceKey,
 } from '../../voice-credentials';
@@ -38,13 +37,12 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
-    const [el, openai, cartesia, deepgram, picovoice, google] = await Promise.all([
+    const [el, openai, cartesia, deepgram, picovoice] = await Promise.all([
       readElevenLabsKey(),
       readOpenAiKey(),
       readCartesiaKey(),
       readDeepgramKey(),
       readPicovoiceKey(),
-      readGoogleKey(),
     ]);
     return {
       content: [{
@@ -55,7 +53,6 @@ export default defineTool({
           cartesia: { set: !!cartesia, masked: maskKey(cartesia) },
           deepgram: { set: !!deepgram, masked: maskKey(deepgram) },
           picovoice: { set: !!picovoice, masked: maskKey(picovoice) },
-          google: { set: !!google, masked: maskKey(google) },
         }),
       }],
     };

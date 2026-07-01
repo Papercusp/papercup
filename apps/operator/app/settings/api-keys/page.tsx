@@ -27,7 +27,6 @@ interface VoiceCredsSnapshot {
   cartesia: VoiceCredsState;
   deepgram: VoiceCredsState;
   picovoice: VoiceCredsState;
-  google: VoiceCredsState;
 }
 
 // Core keys (Anthropic LLM, OpenAI, GitHub) — leave-alone-on-empty semantics.
@@ -241,15 +240,6 @@ export default function ApiKeysPage() {
             placeholder="pv_..."
             helpUrl="https://console.picovoice.ai/"
             note="Wake-word (Porcupine) + noise suppression (Koala). Free tier covers personal use."
-            onChange={(snap) => setVoiceCreds(snap)}
-          />
-          <VoiceKeyRow
-            label="Google AI"
-            field="googleApiKey"
-            state={voiceCreds.google}
-            placeholder="AIza..."
-            helpUrl="https://aistudio.google.com/app/apikey"
-            note="Google Gemini Live full-agent mode. Free tier available via AI Studio."
             onChange={(snap) => setVoiceCreds(snap)}
           />
           </div>
