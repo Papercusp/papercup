@@ -21,6 +21,10 @@ import {
   MCP_SERVER_CAPABILITIES,
   type BuiltSpawnContext,
 } from '../routes/transport/_mcp-handler';
+import {
+  getSessionSurface,
+  __resetSessionSurfaces,
+} from '../routes/transport/tool-allowlist';
 
 const fakeSpawn: BuiltSpawnContext = {
   workspaceId: 'default',
@@ -33,6 +37,9 @@ const fakeSpawn: BuiltSpawnContext = {
   parentSpawnId: null,
   uiClientId: null,
 };
+
+/** A spawn with a stable session identity — required for activateTools. */
+const seededSpawn: BuiltSpawnContext = { ...fakeSpawn, uiClientId: 'sess-A' };
 
 function recordingSendNotification() {
   const sent: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -115,12 +122,66 @@ describe('MCP emit → notifications', () => {
 
   it('MCP_SERVER_CAPABILITIES declares the Papercusp typed-events extension (P4.8)', () => {
     expect(MCP_SERVER_CAPABILITIES).toMatchObject({
-      tools: {},
+      tools: { listChanged: true },
       resources: {},
       prompts: {},
       experimental: {
         'papercusp/typedEvents': { version: '1' },
       },
+    });
+  });
+
+  it('declares tools.listChanged (dynamic-tool-surface P-002) — required for OMP/Codex re-fetch', () => {
+    // OMP checks `capabilities.tools?.listChanged === true` before it will act
+    // on a tools/list_changed notification. If this regresses to `{}` the
+    // dynamic-expansion round-trip silently breaks (the client never re-fetches).
+    expect(MCP_SERVER_CAPABILITIES.tools.listChanged).toBe(true);
+  });
+
+  describe('ctx.activateTools → notifications/tools/list_changed (dynamic-tool-surface P-003)', () => {
+    it('fires list_changed exactly once when a SEEDED session grows', async () => {
+      __resetSessionSurfaces();
+      // Seed the session as tools/list would on first contact.
+      getSessionSurface('sess-A', new Set(['coord:orient']));
+      const { sent, sendNotification } = recordingSendNotification();
+      const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
+      const grew = ctx.activateTools!(['flags:set', 'harness:status']);
+      await new Promise((r) => setImmediate(r));
+      expect(grew).toBe(true);
+      expect(sent).toEqual([{ method: 'notifications/tools/list_changed', params: {} }]);
+      // The grown set is now visible to a re-fetch.
+      expect(getSessionSurface('sess-A', new Set(['coord:orient']))).toEqual(
+        new Set(['coord:orient', 'flags:set', 'harness:status']),
+      );
+    });
+
+    it('does NOT fire when activation adds nothing new (no re-fetch spam)', async () => {
+      __resetSessionSurfaces();
+      getSessionSurface('sess-A', new Set(['coord:orient', 'flags:set']));
+      const { sent, sendNotification } = recordingSendNotification();
+      const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
+      const grew = ctx.activateTools!(['flags:set']); // already present
+      await new Promise((r) => setImmediate(r));
+      expect(grew).toBe(false);
+      expect(sent).toHaveLength(0);
+    });
+
+    it('is a no-op for an UN-SEEDED (full-catalog / Claude) session — never fires', async () => {
+      __resetSessionSurfaces();
+      // No getSessionSurface() seeding → no surface entry for this session.
+      const { sent, sendNotification } = recordingSendNotification();
+      const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, sendNotification);
+      const grew = ctx.activateTools!(['flags:set']);
+      await new Promise((r) => setImmediate(r));
+      expect(grew).toBe(false);
+      expect(sent).toHaveLength(0);
+    });
+
+    it('never throws when sendNotification is undefined', async () => {
+      __resetSessionSurfaces();
+      getSessionSurface('sess-A', new Set(['coord:orient']));
+      const ctx = await __buildMcpToolContext_forTests(seededSpawn, undefined, undefined);
+      expect(() => ctx.activateTools!(['flags:set'])).not.toThrow();
     });
   });
 

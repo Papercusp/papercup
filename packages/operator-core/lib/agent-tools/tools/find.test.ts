@@ -127,6 +127,31 @@ describe('handler — graceful degrade + result shape', () => {
   });
 });
 
+describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
+  it('activates the matched tools for the session + reports activated:true', async () => {
+    const activated: string[][] = [];
+    const ctx = { activateTools: (names: readonly string[]) => { activated.push([...names]); return true; } };
+    const res = await (toolFind as unknown as ToolDef).handler({ query: 'find tools by intent' }, ctx);
+    const out = JSON.parse(res.content[0].text) as {
+      activated: boolean; hits: Array<{ tool: string }>; howToCall: string;
+    };
+    // activateTools was called exactly once, with EVERY hit's tool name.
+    expect(activated).toHaveLength(1);
+    expect(activated[0]).toEqual(out.hits.map((h) => h.tool));
+    expect(out.activated).toBe(true);
+    // The guidance flips to "call directly" once activated.
+    expect(out.howToCall).toContain('call the one you want directly');
+  });
+
+  it('never breaks discovery when activation throws — hits still returned', async () => {
+    const ctx = { activateTools: () => { throw new Error('surface exploded'); } };
+    const res = await (toolFind as unknown as ToolDef).handler({ query: 'feature flag' }, ctx);
+    const out = JSON.parse(res.content[0].text) as { activated: boolean; count: number };
+    expect(out.activated).toBe(false); // swallowed
+    expect(out.count).toBeGreaterThan(0); // discovery unaffected
+  });
+});
+
 describe('warmToolFindIndex (boot warm)', () => {
   it('resolves without throwing when no embedder is configured (no-op warm)', async () => {
     await expect(warmToolFindIndex()).resolves.toBeUndefined();

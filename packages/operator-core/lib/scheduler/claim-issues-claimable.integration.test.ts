@@ -95,6 +95,20 @@ async function seedIssue(
       ${WS}, ${opts.createdTs ?? 0}, 0)`;
 }
 
+/** An OPERATOR-scope issue-family row (harness_slug = 'operator:<workspace>', migration 382 —
+ *  not owned by any harness) — must still be self-pickable by a harness-scoped caller
+ *  (EI-5919 / WI-1406: this encoding used to be invisible to claimNextIssueWorkItem, which
+ *  matched only `harness_slug = filter.harness`). */
+async function seedOperatorIssue(
+  id: string,
+  opts: { createdTs?: number; state?: string; kind?: string } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts)
+    VALUES (${`operator:${WS}`}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+}
+
 /** A blocks edge with arbitrary blocked/blocker refs (issue refs are BARE ids). */
 async function blockEdge(blockedRef: string, blockerRef: string, blockedKind = 'issue', blockerKind = 'feature') {
   await db.sql`
@@ -173,6 +187,11 @@ describe('SCHEDULER_ISSUES_CLAIMABLE — flag ON: issues self-pickable, readines
     await seedIssue('EI-done', { state: 'resolved', createdTs: 100 });
     await seedIssue('EI-closed', { state: 'closed', createdTs: 110 });
     expect(await claimOne('w-on-4')).toBeNull();
+  });
+
+  it('claims an OPERATOR-scope issue (harness_slug=operator:<ws>) via a harness-scoped caller (EI-5919/WI-1406)', async () => {
+    await seedOperatorIssue('EI-op-1', { state: 'open', createdTs: 100 });
+    expect(await claimOne('w-on-op')).toBe('EI-op-1');
   });
 
   it('prefers a claimable FEATURE first; only falls through to an issue when no feature is claimable', async () => {

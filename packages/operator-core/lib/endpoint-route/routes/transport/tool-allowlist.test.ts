@@ -8,10 +8,13 @@
  * filter can't silently shrink a non-operator surface.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
+  getSessionSurface,
+  activateSessionTools,
+  __resetSessionSurfaces,
 } from './tool-allowlist';
 
 // A stand-in for the agent-mcp `tools/list` projections: the real
@@ -78,5 +81,94 @@ describe('filterListingsByAllowlist', () => {
     const frozen = Object.freeze([...SURFACE]);
     expect(() => filterListingsByAllowlist(frozen, parseToolsAllowlist('harness:list'))).not.toThrow();
     expect(() => filterListingsByAllowlist(frozen, null)).not.toThrow();
+  });
+});
+
+/**
+ * The mutable per-session surface (dynamic-tool-surface-2026-07-01): the SEED
+ * (`?tools=`) is a floor, not a cap — a seeded session grows on demand via
+ * activateSessionTools, and getSessionSurface returns the live grown set on
+ * every re-fetch. The load-bearing properties pinned here:
+ *   1. no seed ⇒ null (full catalog, no surface tracked — the Claude path);
+ *   2. a seeded session's growth is visible to a later tools/list;
+ *   3. sessions are isolated (A's growth never leaks into B);
+ *   4. activation only grows an already-seeded session and reports whether it
+ *      added anything new (so the caller fires list_changed only when needed).
+ */
+describe('getSessionSurface / activateSessionTools (per-session mutable surface)', () => {
+  beforeEach(() => __resetSessionSurfaces());
+
+  it('returns null when there is no seed (full catalog — nothing tracked)', () => {
+    expect(getSessionSurface('sess-A', null)).toBeNull();
+    // …and with no seed, activation can never grow it.
+    expect(activateSessionTools('sess-A', ['flags:set'])).toBe(false);
+  });
+
+  it('returns the raw seed (static) when there is no stable session key', () => {
+    const seed = new Set(['coord:orient']);
+    expect(getSessionSurface(null, seed)).toBe(seed);
+    expect(getSessionSurface(undefined, seed)).toBe(seed);
+  });
+
+  it('seeds on first access and returns the SAME live set on re-access', () => {
+    const first = getSessionSurface('sess-A', new Set(['coord:orient', 'tools:find']));
+    expect(first).toEqual(new Set(['coord:orient', 'tools:find']));
+    const second = getSessionSurface('sess-A', new Set(['coord:orient', 'tools:find']));
+    expect(second).toBe(first); // same live Set instance, not a fresh copy
+  });
+
+  it('grows a seeded session and the growth is visible to a later tools/list', () => {
+    const seed = new Set(['coord:orient']);
+    getSessionSurface('sess-A', seed); // first tools/list seeds it
+    const grew = activateSessionTools('sess-A', ['flags:set', 'harness:status']);
+    expect(grew).toBe(true);
+    // A re-fetch (with the same seed) sees seed ∪ activated.
+    expect(getSessionSurface('sess-A', seed)).toEqual(
+      new Set(['coord:orient', 'flags:set', 'harness:status']),
+    );
+  });
+
+  it('reports false when activation adds nothing new (idempotent — no list_changed)', () => {
+    getSessionSurface('sess-A', new Set(['coord:orient']));
+    expect(activateSessionTools('sess-A', ['flags:set'])).toBe(true);
+    expect(activateSessionTools('sess-A', ['flags:set'])).toBe(false); // already present
+    expect(activateSessionTools('sess-A', [])).toBe(false); // nothing to add
+  });
+
+  it('only grows an ALREADY-SEEDED session (un-seeded ⇒ no-op)', () => {
+    // No getSessionSurface() call for sess-Z → no entry → activation no-ops.
+    expect(activateSessionTools('sess-Z', ['flags:set'])).toBe(false);
+    // And a later seed does NOT retroactively include the dropped activation.
+    expect(getSessionSurface('sess-Z', new Set(['coord:orient']))).toEqual(new Set(['coord:orient']));
+  });
+
+  it('isolates sessions — one session\'s growth never leaks into another', () => {
+    const seed = new Set(['coord:orient']);
+    getSessionSurface('sess-A', seed);
+    getSessionSurface('sess-B', seed);
+    activateSessionTools('sess-A', ['flags:set']);
+    expect(getSessionSurface('sess-A', seed)).toEqual(new Set(['coord:orient', 'flags:set']));
+    expect(getSessionSurface('sess-B', seed)).toEqual(new Set(['coord:orient'])); // untouched
+  });
+
+  it('re-seeds defensively — the seed is an invariant floor across re-fetches', () => {
+    getSessionSurface('sess-A', new Set(['coord:orient']));
+    activateSessionTools('sess-A', ['flags:set']);
+    // A later tools/list arrives with a BROADER seed (e.g. a config change):
+    // the floor widens, growth is preserved.
+    expect(getSessionSurface('sess-A', new Set(['coord:orient', 'plans:get']))).toEqual(
+      new Set(['coord:orient', 'plans:get', 'flags:set']),
+    );
+  });
+
+  it('evicts entries idle past the TTL (lazy sweep on access)', () => {
+    const seed = new Set(['coord:orient']);
+    const t0 = 1_000_000;
+    getSessionSurface('sess-old', seed, t0);
+    activateSessionTools('sess-old', ['flags:set'], t0);
+    // A fresh access 7h later triggers the sweep; the idle entry is gone, so a
+    // re-seed starts clean (activation floor only, no stale growth).
+    const t1 = t0 + 7 * 60 * 60 * 1000;
+    expect(getSessionSurface('sess-old', seed, t1)).toEqual(new Set(['coord:orient']));
   });
 });
