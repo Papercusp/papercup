@@ -109,15 +109,27 @@ export interface HiveDemand {
 /** Cheap deterministic demand counts (D-003): queued feature-family work +
  *  started plans. Escalations are not re-checked here — they wake the Queen at
  *  raise time via the P-002 event subscription; the watchdog needs only the
- *  STANDING demand a forgotten wake would strand. */
+ *  STANDING demand a forgotten wake would strand.
+ *
+ *  STOPPED hives' backlog is NOT demand (owner model 2026-07-01: the start/stop
+ *  popup is the Queen's scope control): waking her for work the survey's
+ *  stop-list then withholds is pure wake-noise. A stop-list, not an allow-list —
+ *  standalone/unhived work still counts. Fail-open (a split read error ⇒
+ *  workspace-wide counts, today's behavior). */
 export async function hiveDemandCheck(workspaceId: string): Promise<HiveDemand> {
   const { sql } = getOrgPg();
+  const stopped = await import('./queen-brief-launch')
+    .then(({ computeHivePlacementSplit }) => computeHivePlacementSplit(workspaceId))
+    .then((s) => s.stopped)
+    .catch(() => [] as string[]);
   const rows = await sql<Array<{ todo_items: number; started_plans: number }>>`
     SELECT
       (SELECT count(*) FROM harness_shared.harness_features_consolidated
-        WHERE workspace_id = ${workspaceId} AND status = 'todo')::int AS todo_items,
+        WHERE workspace_id = ${workspaceId} AND status = 'todo'
+        ${stopped.length > 0 ? sql`AND harness_slug != ALL(${stopped})` : sql``})::int AS todo_items,
       (SELECT count(*) FROM harness_shared.harness_plans
-        WHERE workspace_id = ${workspaceId} AND op_status = 'started')::int AS started_plans
+        WHERE workspace_id = ${workspaceId} AND op_status = 'started'
+        ${stopped.length > 0 ? sql`AND harness_slug != ALL(${stopped})` : sql``})::int AS started_plans
   `;
   const todoItems = Number(rows[0]?.todo_items ?? 0);
   const startedPlans = Number(rows[0]?.started_plans ?? 0);

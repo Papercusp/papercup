@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { clearStaleReaperLastError, REAPER_LAST_ERROR_SOURCE } from './dbos-executor-reaper';
+import { collectRoutineFailureSignals } from '../harness/improvements/watchdog';
 
 let org: OrgTestDb;
 let sql: Sql;

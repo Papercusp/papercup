@@ -47,6 +47,7 @@ vi.mock('../_shared', () => ({
     content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
     isError,
   }),
+  recolorCallerTerminal: async () => {},
   resolveFleetCaller: () => ({
     identity: { ownerId: 'owner-1' },
     ownerId: 'owner-1',

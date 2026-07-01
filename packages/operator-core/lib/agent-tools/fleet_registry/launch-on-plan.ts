@@ -38,7 +38,7 @@ import {
 } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
-import { fleetRoleFor, json, resolveFleetCaller } from './_shared';
+import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import type { ColorScheme } from '../../console-color-schemes';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
@@ -250,6 +250,12 @@ export default defineTool({
       leaderRole = fleetRoleFor(record.leaderOwnerId, ownerId);
       await heartbeatPresence(identity);
       await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+      // Recolor the caller's live window to the fleet's bound scheme — every other
+      // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
+      // does this; a leader whose window keeps its old color while the members open
+      // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
+      // non-psu-hosted callers, never throws.
+      await recolorCallerTerminal(ownerId, record);
     } catch (e: any) {
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }

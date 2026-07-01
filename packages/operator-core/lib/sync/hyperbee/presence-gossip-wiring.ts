@@ -39,6 +39,7 @@ import {
   type PresenceDelKey,
 } from './presence-gossip';
 import { getSharedSwarm } from './swarm';
+import { applySessionPresenceSet } from './session-presence-store';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../../hive-membership-store';
 
 /** Membership-set cache TTL — a beat must not hit PG per frame. */
@@ -117,18 +118,39 @@ async function ensureState(): Promise<WiringState> {
         const admitted = await admittedDeviceSet(binding);
         return admitted.has(devicePubkey);
       },
-      applyPut: async (row, frameTs) => {
+      applyPut: async (row, frameTs, topicHex) => {
+        const binding = bindings.get(topicHex);
+        if (!binding) return; // unregistered topic → nothing to apply under
         const proj = buildPresenceProjection({
-          workspaceId: rowWorkspace(bindings, row) ?? row.harness_slug /* unreachable fallback */,
+          workspaceId: binding.workspaceId,
           harnessSlug: row.harness_slug,
         });
         await proj.writeToPg(row, { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs });
       },
-      applyDel: async (del, frameTs) => {
-        const ws = delWorkspace(bindings, del);
-        if (!ws) return;
-        const proj = buildPresenceProjection({ workspaceId: ws, harnessSlug: del.harness_slug });
+      applyDel: async (del, frameTs, topicHex) => {
+        const binding = bindings.get(topicHex);
+        if (!binding) return;
+        const proj = buildPresenceProjection({
+          workspaceId: binding.workspaceId,
+          harnessSlug: del.harness_slug,
+        });
         await proj.deleteFromPg(`${del.github_user_id}/${del.machine_label}`, frameTs);
+      },
+      applySessions: async (input, frameTs, topicHex) => {
+        const binding = bindings.get(topicHex);
+        if (!binding) return;
+        await applySessionPresenceSet({
+          workspaceId: binding.workspaceId,
+          devicePubkey: input.devicePubkey,
+          githubUserId: input.githubUserId,
+          machineLabel: input.machineLabel,
+          // Pin the stored hive scope to the RECEIVER's registered binding —
+          // never the sender-declared hive_slug (an admitted member could
+          // otherwise plant rows under a foreign hive scope).
+          hiveSlug: binding.hiveHomeSlug,
+          sessions: input.sessions,
+          frameTs,
+        });
       },
       getHelloFrames: async (topicHex) => {
         const binding = bindings.get(topicHex);
@@ -149,27 +171,6 @@ async function ensureState(): Promise<WiringState> {
     return state;
   })();
   return creating;
-}
-
-/** The workspace a put row applies under: its hive binding's workspace (any
- *  registered binding for a topic carrying this row's hive). Rows apply under
- *  the LOCAL projection workspace, exactly like the log path. */
-function rowWorkspace(bindings: Map<string, TopicBinding>, row: SharedPresenceRow): string | null {
-  for (const b of bindings.values()) {
-    if (b.hiveHomeSlug === (row.hive_slug ?? row.harness_slug)) return b.workspaceId;
-  }
-  // Single-workspace pragmatics: any binding's workspace (presence is
-  // hive-scoped; a frame only arrives on a registered topic's channel).
-  const first = bindings.values().next().value as TopicBinding | undefined;
-  return first?.workspaceId ?? null;
-}
-
-function delWorkspace(bindings: Map<string, TopicBinding>, del: PresenceDelKey): string | null {
-  for (const b of bindings.values()) {
-    if (b.hiveHomeSlug === del.harness_slug) return b.workspaceId;
-  }
-  const first = bindings.values().next().value as TopicBinding | undefined;
-  return first?.workspaceId ?? null;
 }
 
 /**

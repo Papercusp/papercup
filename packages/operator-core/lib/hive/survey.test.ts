@@ -214,6 +214,45 @@ describe('surveyHive (P-012 regression)', () => {
     expect(survey.scope).toBe('workspace');
   });
 
+  it('extraSurveySlugs UNIONs started hives into a members-wired scope (owner model 2026-07-01: the Queen works ANY started hive)', async () => {
+    // The home hive HAS members wired — before this, the survey narrowed to
+    // home+members and every OTHER started hive's work was invisible to her.
+    const calls: { planSlugs: string[]; frontierScope: readonly string[] } = { planSlugs: [], frontierScope: [] };
+    const survey = await surveyHive('default', 'papercup-hive', {
+      extraSurveySlugs: ['other-started-hive', 'papercup'], // 'papercup' dedupes with the member
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup', hive_slug: 'papercup-hive' }, { slug: 'papercup-hive' }] }),
+        listPlanRows: async (slug) => {
+          calls.planSlugs.push(slug);
+          return [];
+        },
+        fetchFrontier: async (surveySlugs) => {
+          calls.frontierScope = surveySlugs;
+          return [frontierRow({ feature_id: 'WI-OTHER', harness_slug: 'other-started-hive' })];
+        },
+      }),
+    });
+    expect(calls.frontierScope).toEqual(['papercup-hive', 'papercup', 'other-started-hive']); // union, deduped
+    expect(calls.planSlugs).toContain('other-started-hive'); // plans read from the started hive too
+    expect(survey.frontier.map((c) => c.id)).toContain('WI-OTHER');
+  });
+
+  it('extraSurveySlugs is a NO-OP on a workspace-wide scope (already covers every started hive)', async () => {
+    let frontierScope: readonly string[] | null = null;
+    await surveyHive('default', 'papercup-hive', {
+      extraSurveySlugs: ['x-hive'],
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup-hive', harness_kind: 'hive' }] }),
+        listPlanRows: async () => [],
+        fetchFrontier: async (surveySlugs) => {
+          frontierScope = surveySlugs;
+          return [];
+        },
+      }),
+    });
+    expect(frontierScope).toEqual([]); // stays workspace-wide — the union never NARROWS
+  });
+
   it('ranks both views through the one ranker (urgent member plan leads its view)', async () => {
     const survey = await surveyHive('default', 'papercup-hive', {
       deps: depsFor({

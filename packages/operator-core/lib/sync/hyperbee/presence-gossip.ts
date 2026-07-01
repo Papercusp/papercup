@@ -62,9 +62,28 @@ export interface PresenceDelKey {
   harness_slug: string;
 }
 
+/** One live session on the announcing device (P-005 session-grain presence —
+ *  the row the unified roster surfaces as a first-class remote agent). */
+export interface SessionPresenceEntry {
+  /** The session's REAL ownerId (su-<uuid> / s-<ts>-<hash> / queen id). */
+  owner_id: string;
+  /** 'su' | 'bee' | 'queen' | … — the sender's advisory classification. */
+  kind: string;
+  intent: string | null;
+  plan_slug: string | null;
+  /** The session's harness scope (within-hive demux, D-006). */
+  harness_slug: string;
+  /** The session's own liveness beat (epoch ms, sender-declared). */
+  last_active_ms: number;
+}
+
+/** Defensive bound on one device's announced session set (10 agents/machine is
+ *  the design point; 128 absorbs bursts without letting a peer flood rows). */
+export const MAX_SESSIONS_PER_FRAME = 128;
+
 export interface PresenceFrameBody {
   v: number;
-  kind: 'put' | 'del';
+  kind: 'put' | 'del' | 'sessions';
   /** The signing device (raw-32 Ed25519, base64) — must equal row.device_pubkey
    *  on a put (a device may only announce ITSELF; enforced in verify). */
   device_pubkey: string;
@@ -74,6 +93,13 @@ export interface PresenceFrameBody {
   row?: SharedPresenceRow;
   /** del: the tombstone key. */
   del?: PresenceDelKey;
+  /** sessions (P-005): this device's FULL current session set — the receiver
+   *  replaces the device's previous set (full-set semantics, self-healing).
+   *  Frame-level identity legs give each entry its device/user/machine/hive. */
+  sessions?: SessionPresenceEntry[];
+  github_user_id?: number;
+  machine_label?: string;
+  hive_slug?: string | null;
 }
 
 export interface SignedPresenceFrame extends PresenceFrameBody {
@@ -113,6 +139,19 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
       harness_slug: body.del.harness_slug,
     };
   }
+  if (body.sessions) {
+    ordered.github_user_id = body.github_user_id;
+    ordered.machine_label = body.machine_label;
+    ordered.hive_slug = body.hive_slug ?? null;
+    ordered.sessions = body.sessions.map((s) => ({
+      owner_id: s.owner_id,
+      kind: s.kind,
+      intent: s.intent,
+      plan_slug: s.plan_slug,
+      harness_slug: s.harness_slug,
+      last_active_ms: s.last_active_ms,
+    }));
+  }
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
@@ -129,6 +168,33 @@ export async function buildPresencePutFrame(
     device_pubkey: row.device_pubkey,
     ts: nowMs,
     row,
+  };
+  const sig = await sign(presenceFrameSigningBytes(body));
+  return { ...body, sig: sig.toString('base64') };
+}
+
+/** Build a signed SESSIONS frame — this device's full current session set
+ *  (P-005). Receivers replace the device's previous set (full-set semantics). */
+export async function buildSessionsFrame(
+  identity: {
+    devicePubkey: string;
+    githubUserId: number;
+    machineLabel: string;
+    hiveSlug: string | null;
+  },
+  sessions: SessionPresenceEntry[],
+  nowMs: number,
+  sign: (bytes: Buffer) => Promise<Buffer>,
+): Promise<SignedPresenceFrame> {
+  const body: PresenceFrameBody = {
+    v: PRESENCE_FRAME_VERSION,
+    kind: 'sessions',
+    device_pubkey: identity.devicePubkey,
+    ts: nowMs,
+    github_user_id: identity.githubUserId,
+    machine_label: identity.machineLabel,
+    hive_slug: identity.hiveSlug,
+    sessions: sessions.slice(0, MAX_SESSIONS_PER_FRAME),
   };
   const sig = await sign(presenceFrameSigningBytes(body));
   return { ...body, sig: sig.toString('base64') };
@@ -166,11 +232,31 @@ export function verifyPresenceFrame(
   try {
     if (!frame || typeof frame !== 'object') return false;
     if (frame.v !== PRESENCE_FRAME_VERSION) return false;
-    if (frame.kind !== 'put' && frame.kind !== 'del') return false;
+    if (frame.kind !== 'put' && frame.kind !== 'del' && frame.kind !== 'sessions') return false;
     if (typeof frame.device_pubkey !== 'string' || typeof frame.sig !== 'string') return false;
     if (typeof frame.ts !== 'number' || !Number.isFinite(frame.ts)) return false;
 
-    if (frame.kind === 'put') {
+    if (frame.kind === 'sessions') {
+      // P-005: frame-level identity legs + a bounded, well-shaped session set.
+      if (
+        typeof frame.github_user_id !== 'number' ||
+        typeof frame.machine_label !== 'string' ||
+        frame.machine_label.length === 0 ||
+        !Array.isArray(frame.sessions) ||
+        frame.sessions.length > MAX_SESSIONS_PER_FRAME
+      ) {
+        return false;
+      }
+      for (const s of frame.sessions) {
+        if (!s || typeof s !== 'object') return false;
+        if (typeof s.owner_id !== 'string' || s.owner_id.length === 0) return false;
+        if (typeof s.kind !== 'string') return false;
+        if (s.intent !== null && typeof s.intent !== 'string') return false;
+        if (s.plan_slug !== null && typeof s.plan_slug !== 'string') return false;
+        if (typeof s.harness_slug !== 'string' || s.harness_slug.length === 0) return false;
+        if (typeof s.last_active_ms !== 'number' || !Number.isFinite(s.last_active_ms)) return false;
+      }
+    } else if (frame.kind === 'put') {
       const r = frame.row;
       if (!r || typeof r !== 'object') return false;
       if (
@@ -223,10 +309,25 @@ export interface CreatePresenceGossipOpts {
    *  union) keyed by the topic's registered hive; false/throw ⇒ frame dropped. */
   isMemberDevice: (devicePubkey: string, topicHex: string) => boolean | Promise<boolean>;
   /** Apply an admitted put (bind to the shared_presence projection's writeToPg —
-   *  same LWW/ts guards as the log path). */
-  applyPut: (row: SharedPresenceRow, frameTs: number) => void | Promise<unknown>;
+   *  same LWW/ts guards as the log path). `topicHex` = the carrying topic (the
+   *  receiver's workspace/hive binding key). */
+  applyPut: (row: SharedPresenceRow, frameTs: number, topicHex: string) => void | Promise<unknown>;
   /** Apply an admitted del (bind to the projection's deleteFromPg). */
-  applyDel: (del: PresenceDelKey, frameTs: number) => void | Promise<unknown>;
+  applyDel: (del: PresenceDelKey, frameTs: number, topicHex: string) => void | Promise<unknown>;
+  /** Apply an admitted SESSIONS set (P-005): replace the device's whole
+   *  session-presence set (bind to the shared_session_presence writer).
+   *  Optional so put/del-only deployments (and older tests) stay valid. */
+  applySessions?: (
+    input: {
+      devicePubkey: string;
+      githubUserId: number;
+      machineLabel: string;
+      hiveSlug: string | null;
+      sessions: SessionPresenceEntry[];
+    },
+    frameTs: number,
+    topicHex: string,
+  ) => void | Promise<unknown>;
   /** Our current presence frame(s) for the late-joiner HELLO — re-signed at call
    *  time so the freshness window holds. Empty when gh-unauthed / nothing to say. */
   getHelloFrames: (topicHex: string) => SignedPresenceFrame[] | Promise<SignedPresenceFrame[]>;
@@ -258,7 +359,7 @@ export async function handleInboundPresenceFrame(
   topicHex: string,
   opts: Pick<
     CreatePresenceGossipOpts,
-    'isMemberDevice' | 'applyPut' | 'applyDel' | 'frameWindowMs' | 'now'
+    'isMemberDevice' | 'applyPut' | 'applyDel' | 'applySessions' | 'frameWindowMs' | 'now'
   >,
 ): Promise<PresenceFrameDisposition> {
   try {
@@ -275,9 +376,23 @@ export async function handleInboundPresenceFrame(
     ).catch(() => false);
     if (!admitted) return 'not-member';
     if (frame.kind === 'put' && frame.row) {
-      await Promise.resolve(opts.applyPut(frame.row, frame.ts));
+      await Promise.resolve(opts.applyPut(frame.row, frame.ts, topicHex));
     } else if (frame.kind === 'del' && frame.del) {
-      await Promise.resolve(opts.applyDel(frame.del, frame.ts));
+      await Promise.resolve(opts.applyDel(frame.del, frame.ts, topicHex));
+    } else if (frame.kind === 'sessions' && frame.sessions && opts.applySessions) {
+      await Promise.resolve(
+        opts.applySessions(
+          {
+            devicePubkey: frame.device_pubkey,
+            githubUserId: frame.github_user_id!,
+            machineLabel: frame.machine_label!,
+            hiveSlug: frame.hive_slug ?? null,
+            sessions: frame.sessions,
+          },
+          frame.ts,
+          topicHex,
+        ),
+      );
     }
     return 'applied';
   } catch {

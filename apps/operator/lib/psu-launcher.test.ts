@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1790,8 +1790,14 @@ describe('assertFleetJoined (WI-1408 fleet-join-startup-assertion)', () => {
   // Killing the member then is wrong (the 2026-07-01 10-member wipeout) — the
   // hard-fail is reserved for a server that SPEAKS the field and says null.
   it('fleet requested but the response predates the fleetSlug field entirely ⇒ warns, does not throw', () => {
-    expect(() => assertFleetJoined('shared-hive-testing', {})).not.toThrow();
-    expect(() => assertFleetJoined('shared-hive-testing', { status: 'ok', fleetNotice: 'joined fleet shared-hive-testing as member.' })).not.toThrow();
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => assertFleetJoined('shared-hive-testing', {})).not.toThrow();
+      expect(() => assertFleetJoined('shared-hive-testing', { status: 'ok', fleetNotice: 'joined fleet shared-hive-testing as member.' })).not.toThrow();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('predates the fleetSlug field'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

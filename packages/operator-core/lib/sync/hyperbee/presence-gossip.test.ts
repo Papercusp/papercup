@@ -17,10 +17,13 @@ import type { SharedPresenceRow } from './projections/presence';
 import {
   buildPresencePutFrame,
   buildPresenceDelFrame,
+  buildSessionsFrame,
   verifyPresenceFrame,
   handleInboundPresenceFrame,
   PRESENCE_FRAME_VERSION,
+  MAX_SESSIONS_PER_FRAME,
   type SignedPresenceFrame,
+  type SessionPresenceEntry,
 } from './presence-gossip';
 
 const T0 = 1_700_000_000_000;
@@ -139,7 +142,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const frame = await buildPresencePutFrame(row, T0, dev.sign);
     const deps = pipelineDeps();
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
-    expect(deps.applyPut).toHaveBeenCalledExactlyOnceWith(row, T0);
+    expect(deps.applyPut).toHaveBeenCalledExactlyOnceWith(row, T0, 't0');
     expect(deps.applyDel).not.toHaveBeenCalled();
   });
 
@@ -149,7 +152,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const frame = await buildPresenceDelFrame(dev.pubB64, del, T0, dev.sign);
     const deps = pipelineDeps();
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
-    expect(deps.applyDel).toHaveBeenCalledExactlyOnceWith(del, T0);
+    expect(deps.applyDel).toHaveBeenCalledExactlyOnceWith(del, T0, 't0');
   });
 
   it('a bad frame is dropped BEFORE the membership gate (no member lookup for garbage)', async () => {
@@ -196,5 +199,104 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
       }),
     });
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('apply-failed');
+  });
+});
+
+describe('sessions frames (P-005 session-grain presence)', () => {
+  const ident = (dev: { pubB64: string }) => ({
+    devicePubkey: dev.pubB64,
+    githubUserId: 42,
+    machineLabel: 'laptop',
+    hiveSlug: 'hive-home',
+  });
+  const entry = (ownerId: string, over?: Partial<SessionPresenceEntry>): SessionPresenceEntry => ({
+    owner_id: ownerId,
+    kind: 'su',
+    intent: 'working',
+    plan_slug: null,
+    harness_slug: 'hive-home',
+    last_active_ms: T0,
+    ...over,
+  });
+
+  it('a signed sessions frame round-trips verify', async () => {
+    const dev = makeDevice();
+    const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa'), entry('s-123', { kind: 'bee' })], T0, dev.sign);
+    expect(verifyPresenceFrame(frame, { nowMs: T0 })).toBe(true);
+  });
+
+  it('an EMPTY session set round-trips (the "all my agents ended" frame)', async () => {
+    const dev = makeDevice();
+    const frame = await buildSessionsFrame(ident(dev), [], T0, dev.sign);
+    expect(verifyPresenceFrame(frame, { nowMs: T0 })).toBe(true);
+  });
+
+  it('tampering with an entry after signing fails verify', async () => {
+    const dev = makeDevice();
+    const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa')], T0, dev.sign);
+    const tampered = {
+      ...frame,
+      sessions: [{ ...frame.sessions![0], intent: 'exfiltrate' }],
+    } as SignedPresenceFrame;
+    expect(verifyPresenceFrame(tampered, { nowMs: T0 })).toBe(false);
+  });
+
+  it('an over-bound session set is rejected (defensive flood cap)', async () => {
+    const dev = makeDevice();
+    const good = await buildSessionsFrame(ident(dev), [entry('su-aaa')], T0, dev.sign);
+    const flood = {
+      ...good,
+      sessions: Array.from({ length: MAX_SESSIONS_PER_FRAME + 1 }, (_, i) => entry(`su-${i}`)),
+    } as SignedPresenceFrame;
+    expect(verifyPresenceFrame(flood, { nowMs: T0 })).toBe(false);
+  });
+
+  it('missing identity legs / malformed entries never verify', async () => {
+    const dev = makeDevice();
+    const good = await buildSessionsFrame(ident(dev), [entry('su-aaa')], T0, dev.sign);
+    expect(verifyPresenceFrame({ ...good, machine_label: undefined } as never, { nowMs: T0 })).toBe(false);
+    expect(verifyPresenceFrame({ ...good, github_user_id: 'x' } as never, { nowMs: T0 })).toBe(false);
+    expect(
+      verifyPresenceFrame({ ...good, sessions: [{ owner_id: '' }] } as never, { nowMs: T0 }),
+    ).toBe(false);
+  });
+
+  it('the pipeline dispatches an admitted sessions frame to applySessions with the topic', async () => {
+    const dev = makeDevice();
+    const sessions = [entry('su-aaa'), entry('s-bee-1', { kind: 'bee', plan_slug: 'p1' })];
+    const frame = await buildSessionsFrame(ident(dev), sessions, T0, dev.sign);
+    const applySessions = vi.fn(async () => {});
+    const deps = {
+      isMemberDevice: vi.fn(async () => true),
+      applyPut: vi.fn(async () => {}),
+      applyDel: vi.fn(async () => {}),
+      applySessions,
+      now: () => T0,
+    };
+    expect(await handleInboundPresenceFrame(frame, 'topic-a', deps)).toBe('applied');
+    expect(applySessions).toHaveBeenCalledExactlyOnceWith(
+      {
+        devicePubkey: dev.pubB64,
+        githubUserId: 42,
+        machineLabel: 'laptop',
+        hiveSlug: 'hive-home',
+        sessions,
+      },
+      T0,
+      'topic-a',
+    );
+    expect(deps.applyPut).not.toHaveBeenCalled();
+  });
+
+  it('a sessions frame with NO applySessions binding is a quiet no-op (still applied)', async () => {
+    const dev = makeDevice();
+    const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa')], T0, dev.sign);
+    const deps = {
+      isMemberDevice: vi.fn(async () => true),
+      applyPut: vi.fn(async () => {}),
+      applyDel: vi.fn(async () => {}),
+      now: () => T0,
+    };
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
   });
 });
