@@ -169,8 +169,15 @@ export interface SaveRegistryOptions {
   allowEmpty?: boolean;
 }
 
-export async function loadHarnessRegistry(workspaceId?: string): Promise<HarnessRegistry> {
-  const raw = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
+export async function loadHarnessRegistry(
+  workspaceId?: string,
+  // WI-1378: { fresh:true } bypasses the operator-state read cache so a
+  // correctness-critical caller (the joiner hive-home resolve on the sidecar-process
+  // rekey) sees a just-committed cross-process registry write. Default (cached) is
+  // the hot path — do not pass fresh there.
+  opts?: { fresh?: boolean },
+): Promise<HarnessRegistry> {
+  const raw = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId, opts);
   return {
     projects: raw?.projects ?? [],
     ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),

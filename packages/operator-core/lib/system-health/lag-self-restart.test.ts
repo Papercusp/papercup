@@ -24,6 +24,12 @@ describe('startLagSelfRestart', () => {
   });
 
   it('is an inert no-op when not armed (default OFF)', () => {
+    // Hermeticity: the bg-host / green-checkpoint runner can have
+    // PAPERCUSP_LAG_SELF_RESTART=1 set live (armed as a stall mitigation).
+    // vi.unstubAllEnvs() only clears vi.stubEnv() stubs, NOT the ambient process
+    // env — so force the flag OFF here to test the true default-OFF behavior
+    // regardless of the runner's environment (otherwise this red-pins the gate).
+    vi.stubEnv('PAPERCUSP_LAG_SELF_RESTART', '');
     const exit = vi.fn();
     const h = startLagSelfRestart({ intervalMs: 1000, sustainChecks: 2, minUptimeMs: 0, pressure: () => 'critical', exit, now: () => 1_000_000, bootAt: 0, log: vi.fn() });
     vi.advanceTimersByTime(10_000);
