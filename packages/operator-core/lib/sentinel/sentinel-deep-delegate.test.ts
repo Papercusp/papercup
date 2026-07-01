@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeepBrief,
   DEEP_MAX_CONCURRENT,
+  DEEP_TIMEOUT_MS,
   delegateDeep,
   type DeepDelegateDeps,
 } from './sentinel-deep-delegate';
@@ -18,7 +19,7 @@ function makeDeps(over: Partial<DeepDelegateDeps> = {}): {
   };
 } {
   const countOpenDelegations = vi.fn(async () => 0);
-  const createWorkItem = vi.fn(async () => ({ id: 'WI-301' }));
+  const createWorkItem = vi.fn(async () => ({ id: 'WI-301', harness: 'papercup' }));
   const spawn = vi.fn(async () => ({ ok: true, spawnId: 's-deep' }));
   const log = vi.fn();
   const deps: DeepDelegateDeps = {
@@ -56,14 +57,17 @@ describe('delegateDeep', () => {
     expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true });
     expect(spies.createWorkItem).toHaveBeenCalledTimes(1);
     expect(spies.createWorkItem.mock.calls[0][0]).toMatchObject({
+      assignee: expect.stringMatching(/^s-\d+-[0-9a-f]{8}$/),
       title: 'Deep dive: Which migration path is safer?',
       harness: 'papercup',
       workspaceId: WS,
     });
     expect(spies.spawn).toHaveBeenCalledTimes(1);
     expect(spies.spawn.mock.calls[0][0]).toMatchObject({
+      spawnId: spies.createWorkItem.mock.calls[0][0].assignee,
       workItemId: 'WI-301',
       harness: 'papercup',
+      timeoutMs: DEEP_TIMEOUT_MS,
     });
     expect(spies.spawn.mock.calls[0][0].brief).toContain("work_items:complete { id: 'WI-301'");
   });
@@ -102,6 +106,22 @@ describe('delegateDeep', () => {
     expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: null, spawned: false });
     expect(spies.createWorkItem).toHaveBeenCalledTimes(1);
     expect(spies.log).toHaveBeenCalledWith(expect.stringContaining('deep-delegate spawn failed for WI-301'));
+  });
+
+  it('fails when the durable work item could not be created', async () => {
+    const { deps, spies } = makeDeps({
+      createWorkItem: vi.fn(async () => null),
+    });
+    const out = await delegateDeep(
+      {
+        question: 'Compare the tradeoffs.',
+        workspaceId: WS,
+      },
+      deps,
+    );
+
+    expect(out).toEqual({ ok: false, error: 'work_item create failed' });
+    expect(spies.spawn).not.toHaveBeenCalled();
   });
 
   it('rejects an empty question', async () => {

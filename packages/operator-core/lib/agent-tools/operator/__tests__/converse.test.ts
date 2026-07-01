@@ -77,9 +77,23 @@ vi.mock('../../../fleet/operator-spawn', () => ({
     error: null,
   })),
 }));
+vi.mock('../../../operator-sentinel-handoff', () => ({
+  dispatchSentinelHandoff: vi.fn(async () => ({ status: 'filed', workItemId: 'WI-101', tier: 'low', nudged: true })),
+}));
+vi.mock('../../../operator-sentinel-handoff-deps', () => ({
+  defaultSentinelHandoffDeps: vi.fn(() => ({})),
+}));
+vi.mock('../../../sentinel/sentinel-deep-delegate', () => ({
+  delegateDeep: vi.fn(async () => ({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true })),
+}));
+vi.mock('../../../sentinel/sentinel-deep-delegate-deps', () => ({
+  defaultDeepDelegateDeps: vi.fn(() => ({})),
+}));
 
 import { runAgentChat } from '../../../agent-chat-stream';
 import { spawnAgentInHarness } from '../../../fleet/operator-spawn';
+import { dispatchSentinelHandoff } from '../../../operator-sentinel-handoff';
+import { delegateDeep } from '../../../sentinel/sentinel-deep-delegate';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
 import tool from '../converse';
@@ -312,6 +326,41 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     });
     // The retired plugin route must NOT be fetched anymore.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('role=sentinel dispatches <handoff_to_queen> and <delegate_deep> but never spawn', async () => {
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    const { readSystemPrincipal } = await import('../../../system-principal');
+    vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield {
+        type: 'delta',
+        text:
+          '<say>On it.</say>' +
+          '<handoff_to_queen summary="ship the export flow" harness="papercup">' +
+          '<delegate_deep summary="compare the migration strategies" brief="Need the safer recommendation." harness="papercup">' +
+          '<spawn role="worker" harness="demo" feature="F-1">',
+      };
+    });
+
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'sentinel', sessionUser: null },
+      { ...makeCtx(), role: 'sentinel' },
+    );
+
+    expect(dispatchSentinelHandoff).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchSentinelHandoff).mock.calls[0][0]).toMatchObject({
+      summary: 'ship the export flow',
+      harness: 'papercup',
+    });
+    expect(delegateDeep).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(delegateDeep).mock.calls[0][0]).toMatchObject({
+      question: 'compare the migration strategies',
+      brief: 'Need the safer recommendation.',
+      harness: 'papercup',
+      workspaceId: 'ws-real',
+    });
+    expect(spawnAgentInHarness).not.toHaveBeenCalled();
   });
 });
 

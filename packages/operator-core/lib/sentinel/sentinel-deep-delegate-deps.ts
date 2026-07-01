@@ -7,20 +7,17 @@
  *
  * Each dep maps onto an EXISTING substrate primitive — reuse, don't rebuild:
  *   - countOpenDelegations → one SQL count over engineer_issues keyed on the
- *                            payload.deep_delegation stamp (the durable marker).
- *   - createWorkItem       → work-items.createWorkItem (kind=`task`, issue-family
- *                            ON PURPOSE: a feature-family item would enter the
- *                            Queen's placement frontier and double-execute
- *                            alongside our direct spawn). Tagged
- *                            `deep-delegation` (the landing gate) + stamped
- *                            payload.deep_delegation.
+ *                            feature-family row stamp (the durable marker).
+ *   - createWorkItem       → work-items.createWorkItem (kind=`research-task`),
+ *                            tagged `deep-delegation` (the landing gate) +
+ *                            stamped payload.deep_delegation, landing ALREADY
+ *                            claimed by the pre-minted spawn id.
  *   - spawn                → fleet/operator-spawn.spawnAgentInHarness with a
- *                            pre-minted spawn id + work-items.claimWorkItem (the
- *                            same reserve-claim-launch order fleet:spawn uses),
- *                            role `bee` (the generic brief-driven worker) at the
- *                            `deep` tier.
+ *                            pre-minted spawn id, role `bee` (the generic
+ *                            brief-driven worker) at the `deep` tier; if launch
+ *                            is refused before the nursery takes ownership, the
+ *                            reserved claim is released back to the pool.
  */
-import { randomUUID } from 'node:crypto';
 import type { DeepDelegateDeps } from './sentinel-deep-delegate';
 import { DEEP_DELEGATION_LABEL } from './sentinel-deep-delegate';
 
@@ -39,9 +36,10 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
         const { sql } = getOrgPg();
         const rows = await sql<{ n: number }[]>`
           SELECT count(*)::int AS n
-            FROM harness_shared.engineer_issues
+            FROM harness_shared.harness_features_consolidated
            WHERE workspace_id = ${workspaceId}
-             AND state = 'open'
+             AND item_kind = 'research-task'
+             AND status <> ALL(ARRAY['passed', 'deprecated']::text[])
              AND payload->>'deep_delegation' = 'true'
         `;
         return rows[0]?.n ?? 0;
@@ -54,48 +52,52 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
     async createWorkItem(input) {
       try {
         const { createWorkItem } = await import('../work-items');
+        const harness = input.harness ?? defaultSpawnHarness();
+        if (!harness) {
+          console.warn('[deep-delegate] no harness resolved for research-task create');
+          return null;
+        }
         const wi = await createWorkItem({
-          kind: 'task',
+          kind: 'research-task',
           title: input.title,
           summary: input.summary,
-          harness: input.harness ?? undefined,
+          harness,
           workspaceId: input.workspaceId,
           topics: [DEEP_DELEGATION_LABEL],
           createdBy: 'sentinel-deep',
           payload: { deep_delegation: true },
+          assignee: input.assignee,
         });
-        return { id: wi.id };
+        return { id: wi.id, harness };
       } catch (err) {
         console.warn('[deep-delegate] work_item create failed:', (err as Error).message);
         return null;
       }
     },
 
-    async spawn({ workItemId, harness, brief }) {
+    async spawn({ spawnId, workItemId, harness, brief, timeoutMs }) {
       try {
-        const [{ spawnAgentInHarness }, { claimWorkItem }, { activeWorkspaceId }] =
+        const [{ spawnAgentInHarness }, { activeWorkspaceId }, { releaseWorkItem }] =
           await Promise.all([
             import('../fleet/operator-spawn'),
-            import('../work-items'),
             import('../workspace-registry'),
+            import('../work-items'),
           ]);
-        const spawnHarness = harness ?? defaultSpawnHarness();
-        // Reserve → claim → launch, the same order fleet:spawn uses, so the item
-        // never looks unowned between the create and the boot.
-        const spawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
-        const claim = await claimWorkItem(workItemId, spawnId, {
-          harness: spawnHarness ?? undefined,
-        });
-        if (!claim) return { ok: false, error: `could not claim ${workItemId} for the spawn` };
         const out = await spawnAgentInHarness({
           workspaceId: activeWorkspaceId(),
-          harness: spawnHarness,
+          harness,
           role: 'bee',
           spawnId,
           brief,
           tier: 'deep',
+          timeoutMs,
+          featureId: workItemId,
+          itemId: workItemId,
         });
-        if (!out.ok) return { ok: false, spawnId: out.spawnId ?? spawnId, error: out.error ?? 'spawn failed' };
+        if (!out.ok) {
+          await releaseWorkItem(workItemId, { harness }).catch(() => {});
+          return { ok: false, spawnId: out.spawnId ?? spawnId, error: out.error ?? 'spawn failed' };
+        }
         return { ok: true, spawnId: out.spawnId ?? spawnId };
       } catch (err) {
         return { ok: false, error: (err as Error)?.message ?? String(err) };
