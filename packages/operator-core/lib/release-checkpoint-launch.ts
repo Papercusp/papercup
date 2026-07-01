@@ -53,9 +53,20 @@ export interface LaunchCheckpointResult {
  *  release-deploy-launch.ts's buildSystemdRunArgv (PATH passthrough so the unit doesn't depend
  *  on the systemd-manager env; PAPERCUSP_INTEGRATION_ROOT explicit like the deploy). Exported
  *  for unit-testing the command construction. */
-export function buildCheckpointSystemdArgv(root: string, logPath: string, pathEnv: string): string[] {
+export function buildCheckpointSystemdArgv(
+  root: string,
+  logPath: string,
+  pathEnv: string,
+  partialGreenGate = false,
+): string[] {
+  // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
+  // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
+  // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
+  // ran whole-batch. Forward the flag into the inner command when the launcher itself has it set, so
+  // release:checkpoint-run behaves the same as the scheduled gate.
+  const gateEnv = partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : '';
   const inner =
-    `PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
+    `${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
     `apps/operator/lib/release/green-checkpoint.ts > ${logPath} 2>&1`;
   return [
     '--user',
@@ -85,7 +96,12 @@ export interface LaunchCheckpointOpts {
 export function launchDetachedCheckpoint(opts: LaunchCheckpointOpts = {}, spawnFn: SpawnLike = spawn): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const logPath = `/tmp/${CHECKPOINT_UNIT}.log`;
-  const argv = buildCheckpointSystemdArgv(root, logPath, process.env.PATH ?? '');
+  const argv = buildCheckpointSystemdArgv(
+    root,
+    logPath,
+    process.env.PATH ?? '',
+    process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
+  );
 
   return new Promise<LaunchCheckpointResult>((resolve) => {
     const base: LaunchCheckpointResult = { launched: false, unit: CHECKPOINT_UNIT, argv, logPath };

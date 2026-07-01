@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,6 +108,58 @@ describe('runGitSync (real git, no submodule)', () => {
     const bodies = git(originDir, 'log', '--format=%B', 'main');
     expect(bodies).toContain('Co-Authored-By: Bee Seven <bee-7@agents.papercusp>');
     // both files landed; the tree is clean.
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('STRANDING GUARD (WI-1316 / 8186adfb5): a FAILED attributed commit (index.lock race) must NOT skip the catch-all — the remainder still commits', async () => {
+    // mine.txt is attributed to bee-7 (peeled into its OWN commit first); other.txt is
+    // unattributed (the catch-all remainder). We force the ONE attributed commit to fail
+    // like the index.lock race that bit 2026-06-30. PRE-fix, syncOneRepo `return`-ed on
+    // res.error and BOTH files stranded (mine.txt staged-uncommitted, other.txt untracked)
+    // → an unbuildable tree ("Cannot find module"). POST-fix it logs + falls through to the
+    // catch-all `git add -A`, so nothing strands. This is the deterministic guard WI-1316 asks
+    // for: inject a runGit that fails the attributed commit but runs everything else for real.
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → bee-7
+    writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
+
+    // A real-git runner (non-throwing: returns {code} instead of throwing on non-zero).
+    const realGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+    // Fail ONLY the first attributed commit — the one carrying a `Papercusp-Agent:` trailer
+    // (the catch-all auto-commit never does, so it runs for real). Do NOT execute it, exactly
+    // like an index.lock race that never wrote the commit.
+    let attributedCommitFailed = false;
+    const runGit: RunGit = async (args, cwd) => {
+      const isAttributedCommit = args[0] === 'commit' && args.some((a) => a.startsWith('Papercusp-Agent:'));
+      if (isAttributedCommit && !attributedCommitFailed) {
+        attributedCommitFailed = true;
+        return { code: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." };
+      }
+      return realGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      loadRoster: async () => [{ agent: 'bee-7', agentLabel: 'Bee Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+      runGit,
+    });
+
+    // The injected failure MUST have fired — else the test proves nothing.
+    expect(attributedCommitFailed).toBe(true);
+    // The catch-all recovered: the tree synced + pushed DESPITE the attributed-commit error.
+    expect(out.status).toBe('synced');
+    // BOTH files reached origin — the remainder did NOT strand (the core regression).
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('mine.txt');
+    expect(originFiles).toContain('other.txt');
+    // The attributed subject never landed (that commit failed); only the catch-all auto-commit did.
+    const subjects = originLog();
+    expect(subjects).not.toMatch(/wire the parser/);
+    expect(subjects).toMatch(/auto-commit test/);
+    // working tree clean after the catch-all swept the failed group's files + the remainder.
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 

@@ -26,6 +26,18 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
     expect(inner).toContain('> /tmp/cp.log 2>&1');
   });
+
+  it('does NOT forward the partial-green-gate flag by default (whole-batch, back-compat)', () => {
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin').at(-1)!;
+    expect(inner).not.toContain('PAPERCUSP_PARTIAL_GREEN_GATE');
+  });
+
+  it('forwards PAPERCUSP_PARTIAL_GREEN_GATE when armed — a manual checkpoint then uses the same longest-green-prefix FF as the periodic gate', () => {
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin', true).at(-1)!;
+    expect(inner).toContain("PAPERCUSP_PARTIAL_GREEN_GATE='1'");
+    expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
+    expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
+  });
 });
 
 /** A fake ChildProcess whose close/error we drive. */

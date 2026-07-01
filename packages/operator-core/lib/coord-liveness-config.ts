@@ -33,6 +33,11 @@ export interface CoordLivenessConfig {
   assignmentReclaimGraceMs?: number;
   /** Override the idle-session reaper grace (default IDLE_SESSION_GRACE_MS = STALE_MS = 10m). */
   sessionReaperGraceMs?: number;
+  /** Override the coord_presence retention-reaper TTL (presence-coord-unification-2026-07-01
+   *  P-004, WI-1347) — how long a NOT-wakeable ("ended") coord_presence row survives past its
+   *  last heartbeat before the scheduled reaper deletes it. A wakeable ("parked") row is never
+   *  reaped regardless of this TTL. Default PRESENCE_REAPER_TTL_MS = 4h. */
+  presenceReaperTtlMs?: number;
 }
 
 /** The consumers' baked defaults — for the diff/display + the tools' "default" reporting only.
@@ -44,6 +49,7 @@ export const COORD_LIVENESS_DEFAULTS = {
   reclaimRequeueCap: 3,
   assignmentReclaimGraceMs: 60 * 60 * 1000,
   sessionReaperGraceMs: STALE_MS,
+  presenceReaperTtlMs: 4 * 60 * 60 * 1000,
 } as const;
 
 export async function readCoordLivenessConfig(): Promise<CoordLivenessConfig> {

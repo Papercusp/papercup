@@ -1179,6 +1179,19 @@ export const FLAGS = {
   // runs detection-only (toast + log, no kills). The kill-switch if the reaper ever
   // mis-targets a process.
   TEST_WEBVIEW_REAPER: "papercusp-test-webview-reaper",
+  // presence-coord-unification-2026-07-01 P-004 (WI-1347): the coord_presence RETENTION
+  // reaper — a scheduled DBOS workflow that evicts `harness_shared.coord_presence` rows
+  // that are (a) NOT wakeable (deriveSessionState's `ended` — no live standing wake await,
+  // the same predicate coord:presence/fleet:status already use to distinguish `ended` from
+  // `parked`) AND (b) past the TTL since their last heartbeat. A `parked` row (stale
+  // heartbeat but still wakeable) is NEVER reaped regardless of age — only a genuinely
+  // dead, unwakeable row is. Long-term history survives the delete via the append-only
+  // fleet_membership_events ledger (WI-1345/migration 430) + adv_sessions — this flag only
+  // gates the coord_presence ROW eviction. DEFAULT ON (alpha flags-default-on: finished,
+  // tested, additive retention hygiene — no user-facing behavior change, only fewer
+  // long-dead rows in the live roster). OFF ⇒ the reaper tick no-ops (today's behavior:
+  // rows accumulate until the opportunistic 24h sweepStalePresence catches them).
+  COORD_PRESENCE_REAPER: "papercusp-coord-presence-reaper",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
