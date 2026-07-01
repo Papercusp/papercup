@@ -600,13 +600,22 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const mcpUrl = new URL(`${resolveAgentMcpBaseUrl(input.operatorBaseUrl)}/api/mcp`);
   mcpUrl.searchParams.set('superuser', '1');
   mcpUrl.searchParams.set('workspace', input.workspaceId);
-  // su-context-size-variants — Codex has NO native tool discovery (it loads the whole
-  // tools/list up-front), so a 'trimmed' codex session is hard-trimmed SERVER-SIDE:
-  // advertise only the core spine via the ?tools= allowlist (filterListingsByAllowlist
-  // in the MCP handler). claude/omp soft-trim natively, so this is gated to codex;
-  // 'full'/omitted leaves the whole superuser catalog advertised. URLSearchParams
-  // encodes the colon/comma tool names; parseToolsAllowlist decodes them server-side.
-  if (input.agent === 'codex' && input.contextSize === 'trimmed') {
+  // su-context-size-variants + weak-model-tool-tier — advertise only the CORE SPINE
+  // (the ?tools= allowlist → filterListingsByAllowlist in the MCP handler) when a
+  // client that CANNOT self-trim runs a session that should be trimmed. Two axes:
+  //   • WHO can't self-trim: codex + omp load the whole tools/list up-front (omp's
+  //     `discoveryMode` is a proven no-op — it ships all ~606 tools). claude self-
+  //     trims via native ToolSearch, so it is NEVER hard-trimmed here (that's its job).
+  //   • WHEN to trim: the model TIER (weak-model-tool-tier D-001) — a weak/local model
+  //     can't parse the full catalog — OR an explicit `contextSize:'trimmed'` override
+  //     on any tier. A frontier model with no override → full catalog (byte-identical
+  //     to before this change: zero regression for Claude/Opus/GPT sessions).
+  // The tier comes from the MODEL, never the client: OMP runs weak AND strong models
+  // (D-004), so `agent==='omp'` alone must not decide. URLSearchParams encodes the
+  // colon/comma tool names; parseToolsAllowlist decodes them server-side.
+  const clientSelfTrims = input.agent === 'claude';
+  const wantsTrim = input.contextSize === 'trimmed' || modelCapabilityTier(input.model) === 'weak';
+  if (wantsTrim && !clientSelfTrims) {
     mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   }
   const mcpUrlStr = mcpUrl.toString();
