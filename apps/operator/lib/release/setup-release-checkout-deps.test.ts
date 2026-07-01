@@ -415,3 +415,96 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     expect((r.stdout ?? '') + (r.stderr ?? '')).not.toMatch(/WARN|ERROR|rebuild/i);
   });
 });
+
+/**
+ * Symlink-safe root resolution (EI-5307) — the node_modules copy enumeration must
+ * survive a SYMLINKED INTEGRATION_ROOT.
+ *
+ * papercupai-workspace/papercup is a symlink -> papercusp (since 2026-06-25), and
+ * deploy-cli passed that symlink as `--integration`. Step 3's copy loop enumerates
+ * package-local node_modules with `find "$INTEGRATION_ROOT" -name node_modules -type d
+ * -prune`, and `find` (default -P) does NOT descend a symlinked START path — so the
+ * loop enumerated ZERO dirs and copied NOTHING while still logging "node_modules sync
+ * complete". The release tree's node_modules stayed stale until the EI-2118
+ * workspace-resolution gate aborted every deploy ("@papercusp/scheduled-registry
+ * unresolved"), leaving live :3070 ~166 commits behind.
+ *
+ * The fix realpath-normalizes INTEGRATION_ROOT/RELEASE_ROOT right after arg-parse so
+ * find/cp operate on the real tree regardless of how the caller named the root. The
+ * existing deps tests only sed-extract need_node_modules/sync_one_node_modules — none
+ * exercised root resolution, so this class could silently return. These lock it by
+ * sourcing the SHIPPED normalization block (never a copy) and running the exact copy-loop
+ * enumeration: the bug is real (symlink → nothing) and the fix cures it (symlink →
+ * every dir, dereferenced to the real tree).
+ */
+describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules enumeration (EI-5307)', () => {
+  // The exact enumeration step 3's copy loop runs.
+  const FIND_ENUM = 'find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print';
+
+  let work: string;
+  let realTree: string;
+  let linkToTree: string;
+
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), 'symlink-root-'));
+    realTree = join(work, 'real');
+    // A real integration tree: root node_modules + a package-local node_modules (both
+    // must be enumerated), plus a .git so it reads as the integration repo.
+    mkdirSync(join(realTree, 'node_modules/@papercusp'), { recursive: true });
+    mkdirSync(join(realTree, 'packages/scheduled-registry/node_modules'), { recursive: true });
+    mkdirSync(join(realTree, '.git'), { recursive: true });
+    // The symlink deploy-cli passed as --integration (papercup -> papercusp).
+    linkToTree = join(work, 'papercup-link');
+    symlinkSync(realTree, linkToTree);
+  });
+
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  /**
+   * Run the copy-loop enumeration for INTEGRATION_ROOT=`root`. When `normalize` is set,
+   * first source the SHIPPED realpath-normalization block out of the live script (so we
+   * exercise the deployed fix, never a copy). Returns the enumerated node_modules dirs.
+   */
+  function enumerate(root: string, normalize: boolean): string[] {
+    const lines = ['set -uo pipefail', `INTEGRATION_ROOT=${JSON.stringify(root)}`];
+    if (normalize) {
+      lines.push(
+        'RELEASE_ROOT="$INTEGRATION_ROOT"', // the shipped block normalizes both; unused here
+        `source <(sed -n '/^# Symlink-safe roots/,/^RELEASE_ROOT="\\$(realpath -m/p' "$SETUP_SCRIPT")`,
+      );
+    }
+    lines.push(FIND_ENUM);
+    const r = spawnSync('bash', ['-c', lines.join('\n')], {
+      env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH },
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) throw new Error(`enumeration failed (${r.status}): ${r.stderr || r.stdout}`);
+    return (r.stdout ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+  }
+
+  it('the bug: find over a SYMLINKED root enumerates ZERO node_modules (silent no-op)', () => {
+    // Passing the symlink verbatim (no normalization) — `find -P` won't descend it.
+    expect(enumerate(linkToTree, /* normalize */ false)).toEqual([]);
+  });
+
+  it('a REAL root enumerates every package-local node_modules (sanity: the tree has them)', () => {
+    const dirs = enumerate(realTree, /* normalize */ false);
+    expect(dirs.length).toBe(2);
+    expect(dirs.every((d) => d.endsWith('/node_modules'))).toBe(true);
+  });
+
+  it('the fix: the shipped realpath normalization makes a SYMLINKED root enumerate them all', () => {
+    const dirs = enumerate(linkToTree, /* normalize */ true);
+    const realBase = realpathSync(realTree); // canonical (tmpdir itself may be symlinked)
+    // Same set as the real tree — the copy loop now sees the node_modules dirs.
+    expect(dirs.length).toBe(2);
+    // …dereferenced under the REAL tree, never left on the symlink path.
+    expect(dirs.every((d) => d.startsWith(realBase))).toBe(true);
+    expect(dirs.some((d) => d.startsWith(linkToTree))).toBe(false);
+  });
+});

@@ -25,7 +25,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -67,6 +67,19 @@ describe('groupByFleet (pure)', () => {
     ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].agents.map((a) => a.ownerId)).toEqual(['a', 'b']);
+  });
+});
+
+describe('displayName / shortOwner (pure — the name fix)', () => {
+  it('shortOwner shortens a long owner id, keeping the prefix', () => {
+    expect(shortOwner('su-5577c5df-e2a2-49d2-85a7')).toMatch(/^su-5577/);
+    expect(shortOwner('short-id')).toBe('short-id'); // already short → unchanged
+  });
+  it('displayName prefers the human label, never the agent type', () => {
+    // A real label wins (even though agent='claude' would be the type).
+    expect(displayName({ label: 'su · su-5577c', ownerId: 'su-5577c5df-e2a2' })).toBe('su · su-5577c');
+    // No label → a short owner id, NOT the raw long id and NOT "claude".
+    expect(displayName({ label: '', ownerId: 'su-5577c5df-e2a2-49d2' })).toMatch(/^su-5577/);
   });
 });
 
