@@ -602,20 +602,26 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   mcpUrl.searchParams.set('workspace', input.workspaceId);
   // su-context-size-variants + weak-model-tool-tier — advertise only the CORE SPINE
   // (the ?tools= allowlist → filterListingsByAllowlist in the MCP handler) when a
-  // client that CANNOT self-trim runs a session that should be trimmed. Two axes:
-  //   • WHO can't self-trim: codex + omp load the whole tools/list up-front (omp's
-  //     `discoveryMode` is a proven no-op — it ships all ~606 tools). claude self-
-  //     trims via native ToolSearch, so it is NEVER hard-trimmed here (that's its job).
-  //   • WHEN to trim: the model TIER (weak-model-tool-tier D-001) — a weak/local model
-  //     can't parse the full catalog — OR an explicit `contextSize:'trimmed'` override
-  //     on any tier. A frontier model with no override → full catalog (byte-identical
-  //     to before this change: zero regression for Claude/Opus/GPT sessions).
-  // The tier comes from the MODEL, never the client: OMP runs weak AND strong models
-  // (D-004), so `agent==='omp'` alone must not decide. URLSearchParams encodes the
+  // session should be trimmed. This is the ONLY reliable trim lever for EVERY client,
+  // claude included:
+  //   • claude does NOT usefully self-trim. Native ToolSearch defers tool SCHEMAS but
+  //     leaves all ~581 tool NAMES + DESCRIPTIONS inline (~165k tokens, MEASURED via
+  //     tools/list). That alone nearly fills a 200k-window model (sonnet) on boot, so
+  //     an unscoped `trimmed` claude died with "Prompt is too long" — trimmed was a
+  //     no-op for it. (It only ever "worked" on 1M-window opus, where 165k is fine.)
+  //   • codex + omp load the whole tools/list up-front (omp's `discoveryMode` is a
+  //     proven no-op — it ships all tools), so they always needed the hard-trim.
+  // A trimmed client is NOT crippled: the CORE SPINE includes `tools:find`, the
+  // intent-search front door to the full catalog — claude/codex call a discovered
+  // tool DIRECTLY (the ?tools= allowlist is a LISTING hint, it does NOT gate
+  // tools/call). WHEN to trim: an explicit `contextSize:'trimmed'` override on any
+  // tier, OR a weak model TIER (weak-model-tool-tier D-001) that can't parse the full
+  // catalog. A frontier model with no override → full catalog (zero regression for
+  // Claude/Opus/GPT sessions that don't opt in). The tier comes from the MODEL, never
+  // the client (D-004: OMP runs weak AND strong models). URLSearchParams encodes the
   // colon/comma tool names; parseToolsAllowlist decodes them server-side.
-  const clientSelfTrims = input.agent === 'claude';
   const wantsTrim = input.contextSize === 'trimmed' || modelCapabilityTier(input.model) === 'weak';
-  if (wantsTrim && !clientSelfTrims) {
+  if (wantsTrim) {
     mcpUrl.searchParams.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   }
   const mcpUrlStr = mcpUrl.toString();

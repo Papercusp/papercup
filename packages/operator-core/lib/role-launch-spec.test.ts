@@ -336,13 +336,15 @@ describe('buildLaunchSpec — kind dispatch', () => {
   });
 });
 
-// su-context-size-variants + weak-model-tool-tier: codex + omp load the whole
-// tools/list up-front (omp's native `discoveryMode` is a proven no-op), so they are
-// hard-trimmed SERVER-SIDE — the core-spine `?tools=` allowlist is baked into the
-// superuser MCP URL — when the session SHOULD be trimmed. "Should be trimmed" = a
-// WEAK model tier (weak-model-tool-tier D-001) OR an explicit contextSize:'trimmed'.
-// claude self-trims via native ToolSearch, so it is NEVER hard-trimmed here. The tier
-// comes from the MODEL, not the client (D-004: OMP runs weak AND strong models).
+// su-context-size-variants + weak-model-tool-tier: EVERY client is hard-trimmed
+// SERVER-SIDE — the core-spine `?tools=` allowlist is baked into the superuser MCP
+// URL — when the session SHOULD be trimmed. "Should be trimmed" = a WEAK model tier
+// (weak-model-tool-tier D-001) OR an explicit contextSize:'trimmed'. claude is now
+// INCLUDED (the fix): its native ToolSearch defers only tool SCHEMAS and leaves all
+// ~581 tool names+descriptions (~165k, measured) inline, so an unscoped trimmed claude
+// was a no-op that died "Prompt is too long" on a 200k-window model (sonnet); it only
+// ever fit on 1M-window opus. The tier comes from the MODEL, not the client (D-004:
+// OMP runs weak AND strong models).
 describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever', () => {
   async function suMcpUrl(
     agent: 'claude' | 'omp' | 'codex',
@@ -402,8 +404,18 @@ describe('buildSuLaunchSpec — model-tier / contextSize ?tools= allowlist lever
     ).toBe(true);
   });
 
-  it('claude is NEVER hard-trimmed here — it self-trims via ToolSearch (weak model OR explicit trimmed)', async () => {
-    expect((await suMcpUrl('claude', { model: WEAK })).searchParams.has('tools')).toBe(false);
-    expect((await suMcpUrl('claude', { contextSize: 'trimmed' })).searchParams.has('tools')).toBe(false);
+  it('claude + trimmed ⇒ tools= present and EQUALS CORE_MCP_TOOL_NAMES (THE FIX — ToolSearch defers only schemas, not the ~165k of names+descriptions)', async () => {
+    const u = await suMcpUrl('claude', { contextSize: 'trimmed' });
+    expect(u.searchParams.get('tools')).toBe(CORE_MCP_TOOL_NAMES.join(','));
+    expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES]);
+  });
+
+  it('claude + WEAK model ⇒ tools= present (the tier gates the trim for every client)', async () => {
+    expect((await suMcpUrl('claude', { model: WEAK })).searchParams.has('tools')).toBe(true);
+  });
+
+  it('claude + FRONTIER model, no override ⇒ NO tools= param (full catalog — zero regression for opus/frontier sessions that do not opt in)', async () => {
+    expect((await suMcpUrl('claude', { model: FRONTIER })).searchParams.has('tools')).toBe(false);
+    expect((await suMcpUrl('claude')).searchParams.has('tools')).toBe(false);
   });
 });
