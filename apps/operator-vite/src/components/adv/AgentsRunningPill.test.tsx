@@ -19,7 +19,9 @@ vi.mock('@/app/coord/presence-ui', () => ({
   LivenessDot: ({ liveness }: { liveness: string }) => <span data-testid={`dot-${liveness}`} />,
 }));
 vi.mock('@/app/harness/AgentInspectorModal', () => ({
-  default: ({ runId }: { runId: string }) => <div data-testid="inspector-modal" data-run={runId} />,
+  default: ({ runId, streamUrl }: { runId: string; streamUrl?: string }) => (
+    <div data-testid="inspector-modal" data-run={runId} data-url={streamUrl} />
+  ),
 }));
 
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
@@ -28,7 +30,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -158,6 +160,17 @@ describe('<AgentsRunningPill>', () => {
     fireEvent.mouseEnter(screen.getByTestId('agent-row-bee1'));
     fireEvent.click(screen.getByTestId('agent-inspect-btn'));
     expect(screen.getByTestId('inspector-modal').getAttribute('data-run')).toBe('launch-xyz');
+  });
+
+  it('an INTERACTIVE session (sessionId, no run) also gets thinking → the transcript stream', () => {
+    H.active = [agent({ ownerId: 'q1', role: 'queen', sessionId: 'sess-abc', runId: null, harnessSlug: null })];
+    nuqs.open = true;
+    render(<Pill />);
+    // Row click opens the inspector pointed at the session-transcript endpoint.
+    fireEvent.click(screen.getByTestId('agent-row-q1'));
+    const modal = screen.getByTestId('inspector-modal');
+    expect(modal.getAttribute('data-run')).toBe('sess-abc');
+    expect(modal.getAttribute('data-url')).toContain('/api/adv/session/thinking?sessionId=sess-abc');
   });
 
   it('clicking the ROW opens thinking for an agent with a run; pins for one without', () => {
