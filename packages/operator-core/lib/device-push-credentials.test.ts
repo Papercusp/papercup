@@ -34,7 +34,7 @@ const SA_JSON = JSON.stringify({
 });
 
 // Mutable fs behaviour shared into the hoisted node:fs mock.
-const h = vi.hoisted(() => ({
+const h = vi.hoisted((): { exists: (p: string) => boolean; read: (p: string) => string } => ({
   exists: (_p: string) => true,
   read: (_p: string) => '',
 }));

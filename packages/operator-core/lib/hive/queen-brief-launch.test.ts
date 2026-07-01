@@ -1,5 +1,6 @@
 import { test, beforeEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
+import type { DrainSlotInput } from '../agent-tools/coordination/slot-parked-store';
 
 // Mock the PG-backed deps; renderQueenBrief + floorFromSurvey stay REAL (the
 // renderer is unit-tested in queen-brief.test.ts). Arrow-deref so the hoisted
@@ -243,11 +244,11 @@ test('computeQueenWakeBrief — drains stable @role:queen parked nudges into the
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out);
   assert.match(out!, /Queen placement drift: re-open stranded item/);
-  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.slot?.kind, 'role');
-  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.slot?.ref, 'queen');
-  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.harnessSlug, 'papercup');
-  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.toOwner, 's-queen-1');
-  assert.equal(drainSlotMessages.mock.calls[0]?.[1]?.workspaceId, 'ws-1');
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.slot?.kind, 'role');
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.slot?.ref, 'queen');
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.harnessSlug, 'papercup');
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.toOwner, 's-queen-1');
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.workspaceId, 'ws-1');
 });
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {
