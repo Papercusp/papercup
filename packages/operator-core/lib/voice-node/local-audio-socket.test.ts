@@ -50,6 +50,11 @@ vi.mock('./manager', () => ({
 
 import { gcDeadVoiceSockets, startLocalVoiceSocket, stopLocalVoiceSocket } from './local-audio-socket';
 
+// Hermetic IPC root: without this, startLocalVoiceSocket reaps the REAL
+// ~/.papercusp/sockets (an orphaned socket on the host → a GC console.error →
+// vitest-fail-on-console reds the gate) and overwrites the live voice-ipc.json.
+process.env.PAPERCUSP_VOICE_IPC_DIR = mkdtempSync(join(tmpdir(), 'voice-ipc-test-'));
+
 const CTRL = 0x01;
 const MIC = 0x02;
 const MIX = 0x03;

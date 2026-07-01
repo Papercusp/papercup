@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -2848,7 +2848,20 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   });
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Symlink-robust CLI-entry check (WI-1443): node realpaths the entry module's
+// import.meta.url while argv[1] keeps the invoked path — through a symlinked
+// checkout (papercup -> papercusp, as the on-PATH shim does) the naive === is
+// false and main() silently never runs.
+const isMain = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   main().catch((e) => {
     // @inquirer throws ExitPromptError on Ctrl+C — treat as a clean cancel.

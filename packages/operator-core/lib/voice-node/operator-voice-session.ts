@@ -4,8 +4,7 @@
  * universal-voice-interface-2026-06-05, P-002/P-003/P-004/P-006/P-007).
  *
  * The host (this module, running in the operator sidecar) owns the single EL
- * WebSocket: it mints the signed URL, connects, runs the `ask_operator` brain
- * loop once, decodes the response, and:
+ * WebSocket: it mints the signed URL, connects, and:
  *   • FAN-OUT (P-003): broadcasts input transcript + response audio/transcript/
  *     tags + session state to ALL attached clients over the voice-node bus.
  *   • CONTROL (P-004): any client may mute/PTT/start/stop/set-mode/force-host;
@@ -14,8 +13,15 @@
  *     renders response audio AND captures the mic; others are receive+display
  *     clients. The connection itself is the liveness signal; if the player
  *     drops, the host re-elects another attached client so the session survives.
+ *   • ONE-BRAIN RELAY (voice-unified-sentinel-pipeline-2026-07-01, D-001/D-002):
+ *     the EL agent is a voice FRONT-END, not a brain. Every final user
+ *     transcript is relayed to the Sentinel pane (the one brain of record) via
+ *     the injected `relayToBrain` port; the EL `ask_operator` tool call returns
+ *     only an instant ACK for EL to speak. The pane's answer arrives later
+ *     through the sentinel-says pump (voice:say → synth → this same bus), so
+ *     voice and typed text share one pipeline and one conversation state.
  *
- * Pure orchestration over injected ports (EL socket, brain, persistence, lease,
+ * Pure orchestration over injected ports (EL socket, relay, persistence, lease,
  * broadcast) so it unit-tests without a live EL endpoint or audio hardware.
  */
 import {
@@ -62,14 +68,23 @@ export interface ElConnectHandlers {
   onError(err: unknown): void;
 }
 
+/** Outcome of relaying one utterance to the Sentinel pane (the one brain). */
+export type BrainRelayResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-dock' | 'pane-exited' | 'write-failed'; error: string };
+
 /** Everything the host needs from the outside world — real in prod, faked in tests. */
 export interface OperatorVoiceSessionDeps {
   /** Resolve EL config (prefs/agentId/key → signed URL + overrides). */
   resolveConfig(): Promise<{ ok: true; config: ElSessionConfig } | { ok: false; error: string }>;
   /** Open the EL WebSocket and wire inbound text/close/error. */
   connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSocket>;
-  /** Run the operator brain once for a spoken turn; returns the text EL speaks. */
-  askOperator(question: string, opConversationId: string | null, role?: string): Promise<string>;
+  /**
+   * Hand one final user utterance to the Sentinel pane — the ONE brain (D-001).
+   * The pane's answer comes back asynchronously via the sentinel-says pump; the
+   * host never waits on it.
+   */
+  relayToBrain(text: string): Promise<BrainRelayResult>;
   /** The shared operator conversation id (D-005) — voice turns persist into it. */
   loadConversationId(): Promise<string | null>;
   /** Persist one turn into the shared thread (host is the SOLE writer → once). */
@@ -84,6 +99,29 @@ export interface OperatorVoiceSessionDeps {
 }
 
 const DEFAULT_MODE = 'always-on';
+
+/**
+ * The instant acknowledgment EL speaks while the pane thinks (D-002). The real
+ * answer arrives later through the sentinel-says pump in the same Herald voice.
+ */
+export const VOICE_RELAY_ACK = "On it — I'll come back to you in a moment.";
+
+/** Spoken failure lines per relay-failure class — the user must HEAR a miss. */
+export function relayFailureLine(result: Extract<BrainRelayResult, { ok: false }>): string {
+  switch (result.reason) {
+    case 'no-dock':
+      return "I can't reach the Sentinel right now — the agent dock isn't running.";
+    case 'pane-exited':
+      return 'The Sentinel is restarting — give it a moment and ask again.';
+    default:
+      return "I couldn't hand that to the Sentinel — check the agent dock.";
+  }
+}
+
+/** How long the ack path waits for an in-flight relay before acking optimistically.
+ *  The relay's warm-up gate can hold a write for up to ~8s after a dock relaunch;
+ *  EL expects a tool result promptly, so we cap the wait and trust the write. */
+const RELAY_ACK_WAIT_MS = 2_500;
 
 interface AttachedClient {
   clientId: string;
@@ -108,6 +146,11 @@ export class OperatorVoiceSession {
   private socket: ElSocket | null = null;
   private starting = false;
   private readonly clients = new Map<string, AttachedClient>();
+  // One-brain relay bookkeeping (D-001): the last utterance handed to the pane
+  // (dedupes a tool-call fallback re-relay of the same turn) and its in-flight
+  // promise (the ack path peeks at it to speak a failure instead of a false ack).
+  private lastRelayedText: string | null = null;
+  private lastRelay: Promise<BrainRelayResult> | null = null;
 
   constructor(private readonly deps: OperatorVoiceSessionDeps) {}
 
@@ -338,6 +381,11 @@ export class OperatorVoiceSession {
         if (!t) return;
         this.deps.broadcast(encodeInputTranscript({ text: t, final: true }));
         void this.deps.persistTurn('user', t, this.elConversationId);
+        // ONE-BRAIN RELAY (D-001): hand the utterance to the Sentinel pane
+        // deterministically, in OUR code — never dependent on whether the EL
+        // agent's LLM decides to call its tool. Fire-and-forget; the ack path
+        // (ask_operator) peeks at the promise to voice a failure.
+        this.relay(t);
         this.setStatus('listening');
         return;
       }
@@ -365,6 +413,27 @@ export class OperatorVoiceSession {
     }
   }
 
+  /** Relay one utterance to the pane, deduping an identical re-relay of the same turn. */
+  private relay(text: string): Promise<BrainRelayResult> {
+    if (this.lastRelayedText === text && this.lastRelay) return this.lastRelay;
+    this.lastRelayedText = text;
+    const p = this.deps
+      .relayToBrain(text)
+      .catch((err): BrainRelayResult => ({ ok: false, reason: 'write-failed', error: (err as Error)?.message ?? String(err) }));
+    this.lastRelay = p;
+    void p.then((r) => {
+      if (!r.ok) this.deps.log?.(`brain relay failed (${r.reason}): ${r.error}`);
+    });
+    return p;
+  }
+
+  /**
+   * EL client-tool calls. `ask_operator` no longer runs a brain (D-001): the
+   * pane is the brain and the transcript relay already delivered the utterance.
+   * The tool result is only what EL should SPEAK NOW — the instant ack (D-002),
+   * or a spoken failure when the relay is known to have missed. The pane's real
+   * answer arrives later via the sentinel-says pump on this same bus.
+   */
   private async onToolCall(
     toolName: string,
     toolCallId: string,
@@ -376,15 +445,23 @@ export class OperatorVoiceSession {
       );
       return;
     }
+    // Fallback relay: if EL called the tool without a preceding user_transcript
+    // (or with a different question), make sure the pane still gets the turn.
+    // relay() dedupes the common path where the transcript already went out.
     const question = String(parameters.question ?? parameters.message ?? parameters.text ?? '').trim();
-    try {
-      const reply = await this.deps.askOperator(question, this.opConversationId, this.brainRole);
-      this.socket?.send(elClientToolResultMessage(toolCallId, reply, false));
-    } catch (err) {
-      this.socket?.send(
-        elClientToolResultMessage(toolCallId, (err as Error)?.message ?? String(err), true),
-      );
+    const inFlight = question ? this.relay(question) : this.lastRelay;
+
+    let result: BrainRelayResult | null = null;
+    if (inFlight) {
+      // The relay's warm-up gate can hold a write for seconds; don't make EL
+      // wait it out — ack optimistically past the cap and trust the write.
+      result = await Promise.race([
+        inFlight,
+        new Promise<null>((r) => setTimeout(() => r(null), RELAY_ACK_WAIT_MS)),
+      ]);
     }
+    const speak = result && !result.ok ? relayFailureLine(result) : VOICE_RELAY_ACK;
+    this.socket?.send(elClientToolResultMessage(toolCallId, speak, false));
   }
 
   // ── state broadcast ──────────────────────────────────────────────────────

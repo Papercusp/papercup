@@ -38,7 +38,7 @@
  * seed, so a derived set could never detect its own regression).
  */
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -150,7 +150,19 @@ function main() {
 }
 
 // Run the scan only when invoked as a CLI — importing the module (for the unit
-// test) must NOT exec git / exit the process.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// test) must NOT exec git / exit the process. Symlink-robust (WI-1443): node
+// realpaths import.meta.url while argv[1] keeps the invoked path, so also
+// compare realpaths.
+const isMain = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   main();
 }

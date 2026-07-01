@@ -1,0 +1,259 @@
+/**
+ * presence-gossip-wiring — bind presence-gossip to the live system
+ * (cross-machine-coord-parity-and-trust-2026-07-01 P-004, D-008).
+ *
+ * ONE gossip instance per process (the chassis rule: Hyperswarm dedupes
+ * connections per peer, so per-topic instances are wrong — see topic-gossip.ts).
+ * Per shared hive, boot registers its federation TOPIC here with the bindings
+ * the inbound pipeline needs:
+ *
+ *   - isMemberDevice(topicHex) — attested device pubkeys of the topic's hive
+ *     (`hive_members` union) MINUS the revoked union (loadRevokedHivePubkeys
+ *     semantics), TTL-cached ~30s (a presence beat must not hit PG per frame).
+ *     FAIL-CLOSED: an unregistered topic or a membership-read error drops the
+ *     frame (the pipeline treats a gate error as not-member).
+ *   - applyPut/applyDel — the shared_presence projection's writeToPg /
+ *     deleteFromPg for the frame row's OWN harness slug (same LWW/fed_ts guards
+ *     as the log path: one writer shape, two transports). fed_ts = frame.ts.
+ *   - hello — the late-joiner snapshot: each registered topic's provider
+ *     re-signs this machine's CURRENT presence at pair time (so the freshness
+ *     window holds), replacing the log-replay catch-up.
+ *
+ * READER-FIRST CUTOVER (the PRESENCE_GOSSIP flag's safety argument): this
+ * reader wiring is UNCONDITIONAL — with no gossip writers it idles at zero
+ * cost — while the WRITER (wire-presence.ts announce loop → broadcast) is
+ * flag-gated. Every peer therefore carries the reader as soon as it updates,
+ * and the owner flips writers only after that.
+ *
+ * Best-effort everywhere: wiring/broadcast failures degrade to today's
+ * behavior (log-path presence when the flag is off; a missed beat when on).
+ */
+
+import type { SharedPresenceRow } from './projections/presence';
+import { buildPresenceProjection } from './projections/presence';
+import {
+  createPresenceGossip,
+  buildPresencePutFrame,
+  buildPresenceDelFrame,
+  type PresenceGossipHandle,
+  type PresenceDelKey,
+} from './presence-gossip';
+import { getSharedSwarm } from './swarm';
+import { listHiveMembers, loadRevokedHivePubkeys } from '../../hive-membership-store';
+
+/** Membership-set cache TTL — a beat must not hit PG per frame. */
+const MEMBER_CACHE_TTL_MS = Number(process.env.PAPERCUSP_PRESENCE_MEMBER_CACHE_MS) || 30_000;
+
+/** The writer half a caller registers when the PRESENCE_GOSSIP flag is on:
+ *  this machine's current row + its device signer (the caller owns the
+ *  identity — wire-presence resolves it off the booted handle's own log). */
+export interface PresenceGossipWriter {
+  getOwnRow: () => Promise<SharedPresenceRow | null>;
+  /** Sign frame bytes with THIS device's key. */
+  sign: (bytes: Buffer) => Promise<Buffer>;
+  /** This device's raw-32 base64 pubkey (frame identity for del frames). */
+  devicePubkey: string;
+}
+
+interface TopicBinding {
+  workspaceId: string;
+  /** The hive HOME slug whose hive_members gate this topic. */
+  hiveHomeSlug: string;
+  /** Writer half (flag-gated by the caller; null = reader-only registration). */
+  writer: PresenceGossipWriter | null;
+  /** Cached admitted-device set. */
+  members?: { at: number; admitted: Set<string> };
+}
+
+interface WiringState {
+  gossip: PresenceGossipHandle;
+  bindings: Map<string, TopicBinding>; // topicHex → binding
+}
+
+let state: WiringState | null = null;
+let creating: Promise<WiringState> | null = null;
+
+/** Injectable seams (tests swap PG/identity reads without a swarm). */
+export interface PresenceGossipWiringDeps {
+  listHiveMembers: typeof listHiveMembers;
+  loadRevokedHivePubkeys: typeof loadRevokedHivePubkeys;
+}
+let deps: PresenceGossipWiringDeps = { listHiveMembers, loadRevokedHivePubkeys };
+
+async function admittedDeviceSet(binding: TopicBinding): Promise<Set<string>> {
+  const now = Date.now();
+  if (binding.members && now - binding.members.at < MEMBER_CACHE_TTL_MS) {
+    return binding.members.admitted;
+  }
+  const [members, revoked] = await Promise.all([
+    deps.listHiveMembers(binding.workspaceId, binding.hiveHomeSlug),
+    deps.loadRevokedHivePubkeys(binding.workspaceId, binding.hiveHomeSlug),
+  ]);
+  const revokedSet = new Set(revoked);
+  const admitted = new Set<string>();
+  for (const m of members) {
+    for (const a of m.deviceAttestations ?? []) {
+      if (a?.device_pubkey && !revokedSet.has(a.device_pubkey)) admitted.add(a.device_pubkey);
+    }
+  }
+  binding.members = { at: now, admitted };
+  return admitted;
+}
+
+async function ensureState(): Promise<WiringState> {
+  if (state) return state;
+  if (creating) return creating;
+  creating = (async () => {
+    const swarm = await getSharedSwarm();
+    const bindings = new Map<string, TopicBinding>();
+    const gossip = createPresenceGossip({
+      swarm,
+      // Riding already-joined substrate topics: the substrate's own discovery
+      // drives connections; no extra DHT refresh loop from this instance.
+      refreshMs: 0,
+      isMemberDevice: async (devicePubkey, topicHex) => {
+        const binding = bindings.get(topicHex);
+        if (!binding) return false; // unregistered topic → fail closed
+        const admitted = await admittedDeviceSet(binding);
+        return admitted.has(devicePubkey);
+      },
+      applyPut: async (row, frameTs) => {
+        const proj = buildPresenceProjection({
+          workspaceId: rowWorkspace(bindings, row) ?? row.harness_slug /* unreachable fallback */,
+          harnessSlug: row.harness_slug,
+        });
+        await proj.writeToPg(row, { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs });
+      },
+      applyDel: async (del, frameTs) => {
+        const ws = delWorkspace(bindings, del);
+        if (!ws) return;
+        const proj = buildPresenceProjection({ workspaceId: ws, harnessSlug: del.harness_slug });
+        await proj.deleteFromPg(`${del.github_user_id}/${del.machine_label}`, frameTs);
+      },
+      getHelloFrames: async (topicHex) => {
+        const binding = bindings.get(topicHex);
+        const writer = binding?.writer;
+        if (!writer) return [];
+        try {
+          const row = await writer.getOwnRow();
+          if (!row) return [];
+          // Re-sign at pair time so the freshness window holds.
+          return [await buildPresencePutFrame(row, Date.now(), writer.sign)];
+        } catch {
+          return [];
+        }
+      },
+    });
+    state = { gossip, bindings };
+    creating = null;
+    return state;
+  })();
+  return creating;
+}
+
+/** The workspace a put row applies under: its hive binding's workspace (any
+ *  registered binding for a topic carrying this row's hive). Rows apply under
+ *  the LOCAL projection workspace, exactly like the log path. */
+function rowWorkspace(bindings: Map<string, TopicBinding>, row: SharedPresenceRow): string | null {
+  for (const b of bindings.values()) {
+    if (b.hiveHomeSlug === (row.hive_slug ?? row.harness_slug)) return b.workspaceId;
+  }
+  // Single-workspace pragmatics: any binding's workspace (presence is
+  // hive-scoped; a frame only arrives on a registered topic's channel).
+  const first = bindings.values().next().value as TopicBinding | undefined;
+  return first?.workspaceId ?? null;
+}
+
+function delWorkspace(bindings: Map<string, TopicBinding>, del: PresenceDelKey): string | null {
+  for (const b of bindings.values()) {
+    if (b.hiveHomeSlug === del.harness_slug) return b.workspaceId;
+  }
+  const first = bindings.values().next().value as TopicBinding | undefined;
+  return first?.workspaceId ?? null;
+}
+
+/**
+ * Register a shared hive's federation topic with the presence-gossip READER
+ * (unconditional at boot — reader-first cutover) and join its gossip channel.
+ * Idempotent per topic; a later call can attach/replace the writer half.
+ * Best-effort: returns false on any failure (boot never blocks on presence).
+ */
+export async function registerPresenceGossipTopic(input: {
+  topicHex: string;
+  workspaceId: string;
+  hiveHomeSlug: string;
+  /** Writer half — flag-gated by the caller; omit for reader-only. */
+  writer?: PresenceGossipWriter;
+}): Promise<boolean> {
+  try {
+    const s = await ensureState();
+    const existing = s.bindings.get(input.topicHex);
+    if (existing) {
+      if (input.writer) existing.writer = input.writer;
+      return true;
+    }
+    s.bindings.set(input.topicHex, {
+      workspaceId: input.workspaceId,
+      hiveHomeSlug: input.hiveHomeSlug,
+      writer: input.writer ?? null,
+    });
+    s.gossip.joinTopic(Buffer.from(input.topicHex, 'hex'));
+    return true;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[presence-gossip] topic registration failed for ${input.topicHex.slice(0, 12)}… (presence stays log-path):`,
+      e instanceof Error ? e.message : String(e),
+    );
+    return false;
+  }
+}
+
+/**
+ * Broadcast THIS machine's presence row as a signed gossip frame (the writer
+ * path — callers gate on FLAGS.PRESENCE_GOSSIP; the topic's registered writer
+ * signs). Returns false when the gossip/writer is unavailable (caller treats
+ * it as a skipped beat — the TTL absorbs it).
+ */
+export async function broadcastPresencePut(topicHex: string, row: SharedPresenceRow): Promise<boolean> {
+  try {
+    const s = await ensureState();
+    const writer = s.bindings.get(topicHex)?.writer;
+    if (!writer) return false;
+    const frame = await buildPresencePutFrame(row, Date.now(), writer.sign);
+    s.gossip.broadcast(topicHex, frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Broadcast this machine's presence LEAVE tombstone (hive:leave semantics —
+ *  peers drop the row at once; the TTL is the backstop). */
+export async function broadcastPresenceDel(
+  topicHex: string,
+  del: PresenceDelKey,
+): Promise<boolean> {
+  try {
+    const s = await ensureState();
+    const writer = s.bindings.get(topicHex)?.writer;
+    if (!writer) return false;
+    const frame = await buildPresenceDelFrame(writer.devicePubkey, del, Date.now(), writer.sign);
+    s.gossip.broadcast(topicHex, frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Test seams. */
+export function __setPresenceGossipWiringDeps(d: Partial<PresenceGossipWiringDeps>): void {
+  deps = { ...deps, ...d };
+}
+export async function __resetPresenceGossipWiring(): Promise<void> {
+  const s = state;
+  state = null;
+  creating = null;
+  deps = { listHiveMembers, loadRevokedHivePubkeys };
+  if (s) await s.gossip.close().catch(() => {});
+}

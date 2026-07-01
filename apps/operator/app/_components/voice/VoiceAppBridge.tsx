@@ -269,6 +269,11 @@ export function VoiceAppBridge(): null {
     let stopped = false;
     const id = setInterval(() => {
       if (stopped || voiceStateRef.current.mode === 'off') return;
+      // One-brain voice-OUT (voice-unified-sentinel-pipeline P-002): while a
+      // full-agent session is live, the SERVER-side sentinel-says pump owns the
+      // FIFO (synth + bus fan-out to every attached client) — this local-mode
+      // poll must not compete for the drain.
+      if (voiceStateRef.current.micOwnedByFullAgent) return;
       void (async () => {
         const says = await drainSentinelOutput();
         if (says.length === 0) return;

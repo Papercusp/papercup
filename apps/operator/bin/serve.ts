@@ -38,7 +38,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
@@ -561,9 +561,19 @@ async function main(): Promise<void> {
 }
 
 // Only auto-run when executed directly (so tests / other modules can import
-// the helpers without booting a server).
-const invokedDirectly =
-  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// the helpers without booting a server). Symlink-robust (WI-1443): node
+// realpaths import.meta.url while argv[1] keeps the invoked path (papercup ->
+// papercusp), so also compare the realpath'd form.
+const invokedDirectly = ((): boolean => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
 if (invokedDirectly) {
   main().catch((e) => {
     console.error('[serve] fatal:', e);

@@ -12,8 +12,9 @@ import { startLocalVoiceSocket, broadcastOpVoice, setOperatorVoiceSession } from
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { OperatorVoiceSession } from './operator-voice-session';
 import { createOperatorVoiceSessionDeps } from './operator-voice-session-deps';
+import { startSentinelSaysPump } from './sentinel-says-pump';
 import { runSentinelProactiveSweep, type SentinelSweepDeps } from '../sentinel/sentinel-proactive-sweep';
-import { buildSentinelSweepDeps } from '../sentinel/sentinel-proactive-sweep-deps';
+import { buildSentinelSweepDeps, speakIntoSession } from '../sentinel/sentinel-proactive-sweep-deps';
 
 /** Re-claim the elected player's lease well under its 12s TTL. */
 const LEASE_HEARTBEAT_MS = 5_000;
@@ -31,6 +32,7 @@ let started = false;
 let session: OperatorVoiceSession | null = null;
 let heartbeat: ManagedHandle | null = null;
 let sentinelSweep: ManagedHandle | null = null;
+let saysPump: ManagedHandle | null = null;
 // The sweep dep set is built lazily once (the heavy legs are lazy-imported inside
 // it), reusing the host's broadcastOpVoice sink so a proactive utterance fans to
 // every attached client exactly like the EL audio path does.
@@ -58,6 +60,26 @@ export function startOperatorVoiceHost(): void {
   // unchanged. The sweep only ever acts when the flag is ON *and* this host owns
   // the elected voice lease (single-owner) *and* the persona is sentinel *and* no
   // DND/pause/over-budget — see sentinel-proactive-sweep.ts for the full gate set.
+  // Voice-OUT for the one-brain pipeline (voice-unified-sentinel-pipeline
+  // P-002): while a session is live, drain the pane's voice:say lines and speak
+  // them into the bus. When no session is live the pump no-ops and the webview's
+  // local-mode drain keeps the FIFO (the sessionLive gate = single consumer).
+  saysPump = startSentinelSaysPump({
+    sessionLive: () => session?.sweepState().sessionLive ?? false,
+    drain: async () => {
+      const { drainSentinelSays } = await import('../sentinel-output-buffer');
+      return drainSentinelSays();
+    },
+    speak: (text) => speakIntoSession(text, broadcastOpVoice),
+    broadcast: broadcastOpVoice,
+    persist: async (text) => {
+      const { getOrCreateActiveConversation, appendTurn } = await import('../operator-conversations');
+      const conv = await getOrCreateActiveConversation();
+      await appendTurn({ conversationId: conv.id, role: 'assistant', text, source: 'voice_tts', elConvId: null });
+    },
+    log: (msg) => console.log(`[voice-host] ${msg}`),
+  });
+
   sweepDeps = buildSentinelSweepDeps(broadcastOpVoice);
   sentinelSweep = managedSetInterval('operator-voice-sentinel-sweep', sentinelSweepTickMs(), () => {
     if (sweepInFlight || !session || !sweepDeps) return;
@@ -83,6 +105,10 @@ export async function stopOperatorVoiceHost(): Promise<void> {
   if (sentinelSweep) {
     sentinelSweep.stop();
     sentinelSweep = null;
+  }
+  if (saysPump) {
+    saysPump.stop();
+    saysPump = null;
   }
   sweepDeps = null;
   sweepInFlight = false;

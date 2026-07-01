@@ -27,7 +27,8 @@
  * already neutralised by the bundle banner's dummy `module`; this is the
  * symmetric fix for the ESM `import.meta.url` idiom.
  */
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Injected by esbuild (`--define`) only in the desktop-sidecar bundle. Absent
 // (a genuine `undefined` global) under tsx/dev/test — read it via `typeof` so
@@ -46,5 +47,19 @@ export function isCliEntry(importMetaUrl: string): boolean {
   if (typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__) {
     return false;
   }
-  return !!process.argv[1] && importMetaUrl === pathToFileURL(process.argv[1]).href;
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (importMetaUrl === pathToFileURL(argv1).href) return true;
+  // Symlink robustness (WI-1443): node realpaths the entry module's
+  // import.meta.url by default while argv[1] preserves the path it was invoked
+  // through — so through a symlinked checkout (papercup -> papercusp) the naive
+  // comparison above is false and the CLI silently never runs (exit 0, no
+  // output). Compare the realpath'd forms too; under --preserve-symlinks the
+  // URL side may ALSO be un-realpath'd, so normalize both sides.
+  try {
+    if (importMetaUrl === pathToFileURL(realpathSync(argv1)).href) return true;
+    return realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(argv1);
+  } catch {
+    return false; // non-file URL / vanished path — not a direct CLI invocation
+  }
 }

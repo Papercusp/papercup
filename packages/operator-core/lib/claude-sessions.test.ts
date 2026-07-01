@@ -3,7 +3,7 @@
  * temp fixture dir (every fs fn takes `root`, so no real $HOME dependency).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,7 @@ import {
   claudeProjectsRoots,
   findSessionTranscript,
   isSessionThinking,
+  __resetClaudeSessionCaches,
 } from './claude-sessions';
 
 describe('pure helpers', () => {
@@ -161,6 +162,36 @@ describe('isolation-dir scanning (EI-5790)', () => {
       // roots:[] proves the resolution came from the owner fast path, not a sweep.
       expect(await findSessionTranscript(sid, { owner, isolationBase: isoBase, roots: [] })).toBe(target);
     } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('an owner-hinted MISS scans only the owner root + the global root — never the all-owners sweep (storm guard)', async () => {
+    // The owner hint is authoritative for isolation roots (launch keys
+    // CLAUDE_CONFIG_DIR and coord_owner_id from the same sid). A hinted miss —
+    // typically a live session pre-first-turn — must NOT trigger the 13k-dir
+    // every-owner sweep: fired per roster push per agent, that sweep pegged the
+    // desktop operator's CPU and wedged the thinking pane on "connecting…".
+    const base = await fs.mkdtemp(join(tmpdir(), 'find-sess-nosweep-'));
+    const isoBase = join(base, 'session-claude');
+    const sid = `nosweep-${Math.random().toString(36).slice(2, 10)}`;
+    // ANOTHER owner's root holds a transcript with the same session id — the
+    // authoritative-hint contract says a hinted lookup must not reach it.
+    const otherProj = join(isoBase, 'su-other-owner', 'projects', '-home-x-proj');
+    await fs.mkdir(otherProj, { recursive: true });
+    await fs.writeFile(join(otherProj, `${sid}.jsonl`), '{}\n');
+    await fs.mkdir(join(isoBase, 'su-hinted', 'projects'), { recursive: true });
+    const readdirSpy = vi.spyOn(fs, 'readdir');
+    try {
+      __resetClaudeSessionCaches();
+      expect(await findSessionTranscript(sid, { owner: 'su-hinted', isolationBase: isoBase })).toBeNull();
+      const scanned = readdirSpy.mock.calls.map((c) => String(c[0]));
+      expect(scanned.some((p) => p.includes('su-other-owner'))).toBe(false);
+      // Exactly the hinted owner root + the global ~/.claude/projects root.
+      expect(scanned.length).toBeLessThanOrEqual(2);
+    } finally {
+      readdirSpy.mockRestore();
+      __resetClaudeSessionCaches();
       await fs.rm(base, { recursive: true, force: true });
     }
   });

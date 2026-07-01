@@ -26,7 +26,7 @@
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -499,7 +499,20 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Symlink-robust CLI-entry check (WI-1443): node realpaths the entry module's
+// import.meta.url while argv[1] keeps the invoked path, so through a symlinked
+// checkout (papercup -> papercusp, as the on-PATH `ptool` shim does) the naive
+// === is false and main() silently never runs (exit 0, zero output).
+const isMain = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   main().catch((e) => {
     // @inquirer throws ExitPromptError on Ctrl+C — treat as a clean cancel.

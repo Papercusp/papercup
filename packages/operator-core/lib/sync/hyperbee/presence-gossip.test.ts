@@ -123,7 +123,7 @@ describe('presence frame sign/verify', () => {
 });
 
 describe('handleInboundPresenceFrame — the gating pipeline', () => {
-  function pipelineDeps(over?: Partial<Parameters<typeof handleInboundPresenceFrame>[1]>) {
+  function pipelineDeps(over?: Partial<Parameters<typeof handleInboundPresenceFrame>[2]>) {
     return {
       isMemberDevice: vi.fn(async () => true),
       applyPut: vi.fn(async () => {}),
@@ -138,7 +138,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const row = makeRow(dev.pubB64);
     const frame = await buildPresencePutFrame(row, T0, dev.sign);
     const deps = pipelineDeps();
-    expect(await handleInboundPresenceFrame(frame, deps)).toBe('applied');
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
     expect(deps.applyPut).toHaveBeenCalledExactlyOnceWith(row, T0);
     expect(deps.applyDel).not.toHaveBeenCalled();
   });
@@ -148,7 +148,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const del = { github_user_id: 42, machine_label: 'laptop', harness_slug: 'hive-home' };
     const frame = await buildPresenceDelFrame(dev.pubB64, del, T0, dev.sign);
     const deps = pipelineDeps();
-    expect(await handleInboundPresenceFrame(frame, deps)).toBe('applied');
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
     expect(deps.applyDel).toHaveBeenCalledExactlyOnceWith(del, T0);
   });
 
@@ -159,6 +159,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     expect(
       await handleInboundPresenceFrame(
         { ...frame, row: { ...frame.row!, intent: 'tampered' } } as SignedPresenceFrame,
+        't0',
         deps,
       ),
     ).toBe('bad-frame');
@@ -170,7 +171,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const dev = makeDevice();
     const frame = await buildPresencePutFrame(makeRow(dev.pubB64), T0, dev.sign);
     const deps = pipelineDeps({ isMemberDevice: vi.fn(async () => false) });
-    expect(await handleInboundPresenceFrame(frame, deps)).toBe('not-member');
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('not-member');
     expect(deps.applyPut).not.toHaveBeenCalled();
   });
 
@@ -182,7 +183,7 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
         throw new Error('membership store down');
       }),
     });
-    expect(await handleInboundPresenceFrame(frame, deps)).toBe('not-member');
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('not-member');
     expect(deps.applyPut).not.toHaveBeenCalled();
   });
 
@@ -194,6 +195,6 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
         throw new Error('pg down');
       }),
     });
-    expect(await handleInboundPresenceFrame(frame, deps)).toBe('apply-failed');
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('apply-failed');
   });
 });

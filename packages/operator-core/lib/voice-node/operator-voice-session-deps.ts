@@ -1,68 +1,60 @@
 /**
  * Production dependencies for the OperatorVoiceSession host
- * (universal-voice-interface-2026-06-05, P-002). Thin glue that binds the host's
- * injected ports to the real operator infrastructure:
+ * (universal-voice-interface-2026-06-05, P-002; one-brain rewiring:
+ * voice-unified-sentinel-pipeline-2026-07-01, D-001/D-002). Thin glue that binds
+ * the host's injected ports to the real operator infrastructure:
  *
- *   resolveConfig   → voice prefs + EL key + mintSignedUrlFromEL (the same logic
- *                     the pui's /operator-elevenlabs-ws-init route runs)
+ *   resolveConfig   → voice prefs + EL key + mintSignedUrlFromEL, plus the
+ *                     RELAY persona override (the EL agent is a voice front-end,
+ *                     never a brain)
  *   connect         → an outbound `ws` WebSocket to EL's signed URL
- *   askOperator     → operator:converse IN-PROCESS via dispatchProjectedToolStream
- *                     (the verified server-side brain path device/operator-converse uses)
+ *   relayToBrain    → writeToSentinelPane (the ONE Sentinel pipeline — the same
+ *                     mechanics typed text takes via POST /operator/sentinel-input)
  *   loadConversationId / persistTurn → the shared operator_conversations thread (D-005)
  *   parseUtterance  → parseOperatorTurn (the <say>/<set_mode> tag protocol)
  *   claim/releaseLease → the cross-surface voice-lease, re-meaned to elect the
  *                        single host+player (D-003)
  *
+ * The retired path: `askOperator` used to run `${role}:converse` in-process — a
+ * SECOND brain that answered voice while typed text went to the pane (the
+ * modality split-brain). D-001 removed it; the pane is the one brain of record.
+ *
  * The host itself is pure and unit-tested with fakes; this module is the I/O
  * boundary, so it stays declarative and is exercised by the live e2e (P-011).
  */
 import { WebSocket } from 'ws';
-import { dispatchProjectedToolStream, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import '../agent-tools/index'; // register operator:converse (+ the rest) so lookupByMcpName resolves
 import { loadVoicePrefs } from '../voice-prefs';
 import { readElevenLabsKey } from '../voice-credentials';
 import { mintSignedUrlFromEL } from '../endpoint-route/routes/agent-mcp/operator-elevenlabs-ws-init';
 import { claimVoiceLease, releaseVoiceLease } from '../voice-lease';
 import { activeWorkspaceId } from '../workspace-registry';
-import {
-  getOrCreateActiveConversation,
-  appendTurn,
-  listTurnsRecent,
-  type TurnRole,
-} from '../operator-conversations';
+import { getOrCreateActiveConversation, appendTurn, type TurnRole } from '../operator-conversations';
 import { parseOperatorTurn } from '../operator-converse-tags';
-import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket } from './operator-voice-session';
-
-/** How many recent turns of the shared thread to feed the brain as context. */
-const HISTORY_CONTEXT_TURNS = 24;
-
-interface BrainMessage {
-  role: TurnRole;
-  content: string;
-}
+import { writeToSentinelPane } from '../sentinel/sentinel-pane-input';
+import type {
+  OperatorVoiceSessionDeps,
+  ElConnectHandlers,
+  ElSocket,
+  BrainRelayResult,
+} from './operator-voice-session';
 
 /**
- * Build the brain's message context from the shared thread's recent turns plus
- * the current spoken `question`. The host persists the user turn from the EL
- * `user_transcript` event BEFORE the agent calls `ask_operator`, so the question
- * is usually already the tail — append it only when it isn't, to avoid a
- * duplicate user line (mirrors the pui's ask_operator tail-dedup). Pure +
- * unit-tested.
+ * The relay persona pushed as a conversation_config_override so the EL agent
+ * behaves as a FRONT-END regardless of its dashboard prompt (D-001/D-002): it
+ * must never answer from its own knowledge — the Sentinel pane is the brain,
+ * and its answer arrives as injected audio on this same session.
+ *
+ * NOTE: the EL agent's dashboard security settings must allow prompt overrides
+ * for this to bite; when the platform rejects the override the session still
+ * runs with the dashboard persona, so keep that persona relay-shaped too
+ * (verified live in P-012/P-013).
  */
-export function buildBrainMessages(recentTurns: Array<{ role: string; text: string }>, question: string): BrainMessage[] {
-  const messages: BrainMessage[] = [];
-  for (const t of recentTurns) {
-    if ((t.role === 'user' || t.role === 'assistant') && t.text.trim().length > 0) {
-      messages.push({ role: t.role as TurnRole, content: t.text });
-    }
-  }
-  const q = question.trim();
-  const tail = messages[messages.length - 1];
-  if (q && (!tail || tail.role !== 'user' || tail.content.trim() !== q)) {
-    messages.push({ role: 'user', content: q });
-  }
-  return messages;
-}
+export const EL_RELAY_PERSONA = [
+  'You are the Herald — the voice front-end for the Papercusp Sentinel. You are NOT the brain.',
+  'For EVERY user message: call the ask_operator tool with the message, then speak the tool result VERBATIM and nothing else.',
+  'Never answer questions yourself. Never invent status. The Sentinel’s full answer is delivered separately on this session — do not wait for it or mention the mechanics.',
+  'Keep any speech under 20 words. No preamble, no filler.',
+].join(' ');
 
 async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConfig']> {
   try {
@@ -79,10 +71,14 @@ async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConf
     if ('error' in result) return { ok: false, error: `${result.error}: ${result.detail}` };
 
     const agentLanguage = prefs.agentLanguage?.trim() ?? '';
-    const overrides = agentLanguage ? { agent: { language: agentLanguage } } : null;
-    // Persona repoint: the EL agent / signed-URL is
-    // UNCHANGED — only the brain behind `ask_operator` switches. Default
-    // 'operator' leaves the live path byte-for-byte unchanged.
+    // The relay persona override makes the front-end contract code-owned instead
+    // of dashboard-owned (D-001). Language rides along when configured.
+    const overrides = {
+      agent: {
+        prompt: { prompt: EL_RELAY_PERSONA },
+        ...(agentLanguage ? { language: agentLanguage } : {}),
+      },
+    };
     const humanFacingRole = prefs.humanFacingRole === 'sentinel' ? 'sentinel' : 'operator';
     return {
       ok: true,
@@ -133,58 +129,11 @@ function connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSock
   });
 }
 
-async function askOperator(
-  question: string,
-  opConversationId: string | null,
-  role: string = 'operator',
-): Promise<string> {
-  // role selects the human-facing persona/brain: 'operator' (default, backward-compatible)
-  // or 'sentinel'. The `${role}:converse` tool alias loads the matching persona.
-  const tool = lookupByMcpName(`${role}:converse`);
-  if (!tool) throw new Error(`${role}:converse tool not registered`);
-
-  const conversationId = opConversationId ?? (await getOrCreateActiveConversation()).id;
-  const recent = await listTurnsRecent({ conversationId, limit: HISTORY_CONTEXT_TURNS });
-  const messages = buildBrainMessages(recent.turns, question);
-
-  const ctxBase: UnifiedToolContext = {
-    log: (msg) => console.log(`[voice-host][brain] ${msg}`),
-    signal: AbortSignal.timeout(120_000),
-    progress: () => {},
-    emit: () => {},
-    workspaceId: activeWorkspaceId(),
-    role: role as UnifiedToolContext['role'],
-    runId: globalThis.crypto.randomUUID(),
-    spawnId: globalThis.crypto.randomUUID(),
-    transport: 'in_process',
-    uiClientId: null,
-  };
-
-  let assembled = '';
-  for await (const ev of dispatchProjectedToolStream(
-    tool,
-    `${role}:converse`,
-    { messages, trigger: 'user_message', modality: 'voice', conversationId, role },
-    ctxBase,
-    {},
-  )) {
-    if (ev.kind === 'done') {
-      try {
-        const t = (ev.result.content[0] as { text?: string })?.text ?? '{}';
-        assembled = (JSON.parse(t) as { assembled?: string }).assembled ?? '';
-      } catch {
-        /* leave assembled empty → fallback below */
-      }
-    } else if (ev.kind === 'error') {
-      throw ev.error;
-    }
-  }
-
-  // EL speaks what we return, so hand back the clean <say> body (the agent's
-  // own `agent_response` event then carries it for persistence + display).
-  const parsed = parseOperatorTurn(assembled);
-  const say = (parsed.say ?? assembled).trim();
-  return say || 'I had trouble just then — say that again?';
+/** Hand a spoken utterance to the Sentinel pane — the ONE brain (D-001). */
+async function relayToBrain(text: string): Promise<BrainRelayResult> {
+  const res = await writeToSentinelPane(text);
+  if (res.ok) return { ok: true };
+  return { ok: false, reason: res.reason, error: res.error };
 }
 
 async function loadConversationId(): Promise<string | null> {
@@ -195,7 +144,7 @@ async function loadConversationId(): Promise<string | null> {
   }
 }
 
-async function persistTurn(role: 'user' | 'assistant', text: string, elConvId: string | null): Promise<void> {
+async function persistTurn(role: TurnRole & ('user' | 'assistant'), text: string, elConvId: string | null): Promise<void> {
   try {
     const conv = await getOrCreateActiveConversation();
     await appendTurn({
@@ -232,7 +181,7 @@ export function createOperatorVoiceSessionDeps(broadcast: (frame: Uint8Array) =>
   return {
     resolveConfig,
     connect,
-    askOperator,
+    relayToBrain,
     loadConversationId,
     persistTurn,
     parseUtterance,

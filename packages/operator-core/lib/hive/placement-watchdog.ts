@@ -433,6 +433,55 @@ export interface StalePlacementEscalationObs {
 export function evaluateStalePlacementEscalation(obs: StalePlacementEscalationObs): StaleEscalationDecision {
   if (!obs.hasEscalation) return 'keep';
   if (obs.placementStatus !== 'cursed' && obs.placementStatus !== 'stranded') return 'keep';
+  // The terminal/gone verdict is the same for every open status — reuse the general
+  // decider so the escalation GC and the completion GC can never diverge (EI-6109).
+  return evaluateTerminalPlacementReconcile({
+    placementStatus: obs.placementStatus,
+    unitExists: obs.unitExists,
+    unitTerminal: obs.unitTerminal,
+  });
+}
+
+// ── EI-6109 pure decider: completion-reconcile GC over ALL open placements ─────
+
+/** The non-terminal (OPEN) placement statuses the completion GC reconciles. A
+ *  placement in one of these is still tracked as in-flight; once its subject unit
+ *  reaches terminal / is retired, the durable row must converge to completed /
+ *  abandoned so hive:status, summarizeOpenPlacements, and loadCursedWorkItemIds
+ *  stop counting a lane whose work has actually finished. */
+export const OPEN_PLACEMENT_STATES = new Set(['working', 'recovering', 'cursed', 'stranded']);
+
+export interface TerminalPlacementObs {
+  /** The placement's current status — only OPEN statuses are reconcile candidates. */
+  placementStatus: string;
+  /** The subject work-item row still exists. */
+  unitExists: boolean;
+  /** The subject work-item reached a terminal state. */
+  unitTerminal: boolean;
+}
+
+/**
+ * EI-6109 — the completion-reconcile decider, generalizing the EI-1524 escalation GC
+ * beyond `cursed`/`stranded`-with-escalation. A placement in ANY open status
+ * (working / recovering / cursed / stranded) whose subject unit has reached terminal —
+ * or been retired — must converge to completed / abandoned. This is the closing edge
+ * the per-candidate sweep and the escalation-only GC together left uncovered:
+ *   • a `working`/`recovering` row is never revisited once its serving bee dies /
+ *     ages out of the candidate set (nothing re-anchors it), and
+ *   • an infra-attributed `cursed`/`stranded` row carries NO escalation_msg_id, so the
+ *     escalation-only GC (which required escalation_msg_id IS NOT NULL) skipped it.
+ * Both left the durable hive_placements accounting DRIFTING after the work completed
+ * or the bee died — hive:status reporting cursed/working lanes long since done.
+ *
+ *   OPEN + unit GONE      → resolve-abandoned
+ *   OPEN + unit TERMINAL  → resolve-completed
+ *   otherwise (still open, or not an open status) → keep
+ * Only ever fires for a terminal/gone unit, so it NEVER robs a genuinely in-flight
+ * lane (a non-terminal unit is always kept for the candidate sweep). Pure; exported
+ * for the decider unit tests.
+ */
+export function evaluateTerminalPlacementReconcile(obs: TerminalPlacementObs): StaleEscalationDecision {
+  if (!OPEN_PLACEMENT_STATES.has(obs.placementStatus)) return 'keep';
   if (!obs.unitExists) return 'resolve-abandoned';
   if (obs.unitTerminal) return 'resolve-completed';
   return 'keep';
@@ -951,10 +1000,11 @@ export async function reconcileOneHive(
   // 3. P-022 — stranded-work resolution: stuck blockers gating downstream work.
   out.push(...(await reconcileStrandedWork(sql, workspaceId, installSlug, queenOwner, placeById, now)));
 
-  // 4. EI-1524/1518 — backstop escalation GC: close cursed/stranded advisories
-  //    whose subject item went terminal/gone with no live bee re-anchoring it
-  //    (the candidate sweep above never revisits those, so they would leak).
-  out.push(...(await reconcileStalePlacementEscalations(sql, workspaceId, installSlug, now)));
+  // 4. EI-6109/1524/1518 — completion-reconcile GC: converge EVERY open placement
+  //    (working/recovering/cursed/stranded) whose subject item went terminal/gone with
+  //    no live bee re-anchoring it (the candidate sweep above never revisits those, so
+  //    the durable accounting would drift), resolving any advisory it still carries.
+  out.push(...(await reconcileTerminalPlacements(sql, workspaceId, installSlug, now)));
   return out;
 }
 
@@ -1092,49 +1142,57 @@ async function suppressCursedEscalation(escalationMsgId: string, unitId: string)
 }
 
 /**
- * EI-1524 / EI-1518 — the backstop escalation GC sweep. The per-candidate
- * suppression only fires while a live bee anchors the item; a cursed/stranded
- * item that later reaches terminal (or is retired) with NO live holder falls out
- * of the candidate set and keeps its advisory escalation OPEN forever — the root
- * of the ~13k stale-escalation residue. This sweep runs every tick over the
- * hive's `cursed`/`stranded` placements that still carry an escalation, and for
- * any whose subject work-item is now terminal (→ completed) or gone (→ abandoned),
- * resolves the escalation and flips the placement out of the open set. Bounded:
- * only escalation-carrying cursed/stranded rows are read (few — the breaker only
- * trips on genuinely stuck items), and a still-open item is left untouched.
- * Fail-soft; one row's failure never aborts the sweep.
+ * EI-6109 / EI-1524 / EI-1518 — the completion-reconcile GC sweep. The per-candidate
+ * sweep only settles a placement to completed/abandoned while a live bee anchors or
+ * holds the unit (it is a candidate THIS tick). A placement whose subject unit reaches
+ * terminal — or is retired — AFTER its serving bee has died / aged out of the candidate
+ * set is therefore never revisited, and keeps its OPEN status forever:
+ *   • a `working`/`recovering` row has no live holder to re-anchor it, and
+ *   • an infra-attributed `cursed`/`stranded` row carries NO escalation_msg_id, so the
+ *     ORIGINAL escalation-only GC (which required escalation_msg_id IS NOT NULL) skipped
+ *     it as well.
+ * The result is the placement-accounting DRIFT (EI-6109): hive_placements reports
+ * cursed/working lanes whose work-items have long since completed, and
+ * loadCursedWorkItemIds (raw status='cursed') holds their ids out of the frontier.
+ *
+ * This sweep closes the class: every tick, over ALL of the hive's OPEN placements
+ * (working / recovering / cursed / stranded), any whose subject work-item is now
+ * terminal (→ completed) or gone (→ abandoned) is converged to a terminal placement
+ * status. A row that still carries an advisory escalation (a genuine cursed/stranded
+ * curse) also has that escalation resolved — subsuming the EI-1524 behavior. Bounded
+ * (the open set is small — the frontier plus a handful of stuck rows) and fail-soft;
+ * one row's failure never aborts the sweep, and a non-terminal unit is always left for
+ * the candidate sweep (never robbed).
  */
-async function reconcileStalePlacementEscalations(
+async function reconcileTerminalPlacements(
   sql: Sql,
   workspaceId: string,
   installSlug: string,
   now: number,
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
-  const staleRows = await sql<
+  const openRows = await sql<
     { work_item_id: string; status: string; escalation_msg_id: string | null; harness_slug: string | null; fail_count: number }[]
   >`
     SELECT work_item_id, status, escalation_msg_id, harness_slug, fail_count
       FROM harness_shared.hive_placements
      WHERE workspace_id = ${workspaceId}
        AND install_slug = ${installSlug}
-       AND status IN ('cursed', 'stranded')
-       AND escalation_msg_id IS NOT NULL`;
-  if (staleRows.length === 0) return out;
+       AND status IN ('working', 'recovering', 'cursed', 'stranded')`;
+  if (openRows.length === 0) return out;
 
   // Current unit status for each, keyed by feature_id within the workspace (the
   // same key the candidate sweep uses — see the unitById map above).
-  const ids = [...new Set(staleRows.map((r) => r.work_item_id))];
+  const ids = [...new Set(openRows.map((r) => r.work_item_id))];
   const unitRows = await sql<{ feature_id: string; status: string }[]>`
     SELECT feature_id, status
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${ids})`;
   const unitStatusById = new Map<string, string>(unitRows.map((u) => [u.feature_id, u.status]));
 
-  for (const r of staleRows) {
+  for (const r of openRows) {
     const unitStatus = unitStatusById.get(r.work_item_id);
-    const decision = evaluateStalePlacementEscalation({
-      hasEscalation: Boolean(r.escalation_msg_id),
+    const decision = evaluateTerminalPlacementReconcile({
       placementStatus: r.status,
       unitExists: unitStatus != null,
       unitTerminal: isUnitTerminal(unitStatus),
@@ -1142,16 +1200,21 @@ async function reconcileStalePlacementEscalations(
     if (decision === 'keep') continue;
 
     const terminal = decision === 'resolve-completed';
-    await resolvePlacementEscalation(
-      r.escalation_msg_id!,
-      r.work_item_id,
-      terminal
-        ? `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} reached terminal state (${unitStatus}); the ${r.status} advisory is no longer relevant`
-        : `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} no longer exists; the ${r.status} advisory is no longer relevant`,
-    );
-    // Flip the placement out of the open (cursed/stranded) set so hive:status +
-    // summarizeOpenPlacements stop counting it. queen/bee fields are preserved
-    // (COALESCE keeps the existing values on null).
+    // Resolve any open advisory the row still carries (cursed/stranded curses do; a
+    // working/recovering row, and an infra-attributed curse, carry none — those simply
+    // skip the resolve and converge the status).
+    if (r.escalation_msg_id) {
+      await resolvePlacementEscalation(
+        r.escalation_msg_id,
+        r.work_item_id,
+        terminal
+          ? `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} reached terminal state (${unitStatus}); the ${r.status} advisory is no longer relevant`
+          : `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} no longer exists; the ${r.status} advisory is no longer relevant`,
+      );
+    }
+    // Converge the placement out of the OPEN set so hive:status +
+    // summarizeOpenPlacements + loadCursedWorkItemIds stop counting a lane whose work
+    // has finished. queen/bee fields are preserved (COALESCE keeps existing on null).
     await upsertPlacement(sql, {
       workspaceId,
       installSlug,
@@ -1170,7 +1233,7 @@ async function reconcileStalePlacementEscalations(
       installSlug,
       workItemId: r.work_item_id,
       decision: terminal ? 'completed' : 'abandon',
-      detail: `gc: stale ${r.status} escalation auto-resolved (unit ${terminal ? unitStatus : 'gone'})`,
+      detail: `gc: stale ${r.status} placement reconciled (unit ${terminal ? unitStatus : 'gone'})`,
     });
   }
   return out;

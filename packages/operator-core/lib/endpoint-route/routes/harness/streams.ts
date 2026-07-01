@@ -623,8 +623,11 @@ const logStream = defineTool({
  * appended records — emitting each new entry as `event` (the current turn streams
  * in live) plus a `thinking` status ({active}) when the agent starts/stops writing.
  * It does NOT emit `done` while the session merely goes idle (only if the transcript
- * vanishes); the client closes the stream when the pane closes. Empty backfill +
- * `done` when the session id is unknown/unreadable.
+ * vanishes); the client closes the stream when the pane closes. A session whose
+ * transcript hasn't been WRITTEN yet (a live agent pre-first-turn) gets an empty
+ * backfill and the stream KEEPS polling until the file appears — `done` there
+ * would misread a live agent as "run ended". Empty backfill + `done` only when
+ * no sessionId was supplied.
  *
  * SECURITY (auth: 'loopback'): an interactive session's transcript carries the
  * FULL agent reasoning + tool inputs/results (which can hold file contents +
@@ -647,64 +650,98 @@ const sessionThinkingStream = defineTool({
     const sessionId = (url.searchParams.get('sessionId') ?? '').replace(/[^A-Za-z0-9_.-]/g, '');
     // The agent's coord owner id — the per-session isolation dir key. Lets
     // findSessionTranscript jump straight to `session-claude/<owner>/projects`
-    // (1 readdir) instead of sweeping every isolation root (~3s). Sanitized;
-    // absent/wrong ⇒ the full-scan fallback still resolves it.
+    // (1 readdir, plus the global root) instead of sweeping every isolation
+    // root. Sanitized; absent ⇒ the full-scan fallback still resolves it.
     const owner = (url.searchParams.get('owner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 15_000,
       setup: async (sink) => {
         const { findSessionTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
-        const path = sessionId ? await findSessionTranscript(sessionId, { owner }) : null;
-        if (!path) { sink.event('backfill', []); sink.done({}); return; }
+        if (!sessionId) { sink.event('backfill', []); sink.done({}); return; }
+        let path = await findSessionTranscript(sessionId, { owner });
 
-        // ── 1) Backfill: the last 1 MiB tail as a snapshot ──
+        // ── Follow state (shared by the backfill + the live-follow tick) ──
         let pos = 0;
-        let initialActive = false;
-        try {
-          const stat = statSync(path);
-          const tailBytes = 1024 * 1024;
-          const start = Math.max(0, stat.size - tailBytes);
-          const len = stat.size - start;
-          const buf = Buffer.alloc(len);
-          const fd = openSync(path, 'r');
-          try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
-          let chunk = buf.toString('utf8');
-          if (start > 0) {
-            const firstNl = chunk.indexOf('\n');
-            if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+        let lineBuf = '';
+        let lastActive: boolean | null = null;
+        let lastAppendMs = Date.now();
+        let handle: ManagedHandle | null = null;
+        let followParser = createAgentTimelineParser();
+        const emitThinking = (active: boolean) => {
+          if (active !== lastActive) { lastActive = active; sink.event('thinking', { active }); }
+        };
+
+        // ── 1) Backfill: the last 1 MiB tail as a snapshot. Returns whether the
+        //       transcript was appended recently (the initial thinking state). ──
+        const backfillFrom = (p: string): boolean => {
+          try {
+            const stat = statSync(p);
+            const tailBytes = 1024 * 1024;
+            const start = Math.max(0, stat.size - tailBytes);
+            const len = stat.size - start;
+            const buf = Buffer.alloc(len);
+            const fd = openSync(p, 'r');
+            try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+            let chunk = buf.toString('utf8');
+            if (start > 0) {
+              const firstNl = chunk.indexOf('\n');
+              if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+            }
+            const parser = createAgentTimelineParser();
+            const entries: AgentTimelineEntry[] = [];
+            for (const rawLine of chunk.split('\n')) {
+              const line = rawLine.trim();
+              if (!line) continue;
+              for (const e of parser.parseLine(line)) entries.push(e);
+            }
+            entries.push(...parser.flush());
+            const capped = (entries.length > 200 ? entries.slice(-200) : entries).map(capEntryText);
+            sink.event('backfill', capped);
+            pos = stat.size;
+            return Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
+          } catch {
+            sink.event('backfill', []);
+            return false;
           }
-          const parser = createAgentTimelineParser();
-          const entries: AgentTimelineEntry[] = [];
-          for (const rawLine of chunk.split('\n')) {
-            const line = rawLine.trim();
-            if (!line) continue;
-            for (const e of parser.parseLine(line)) entries.push(e);
-          }
-          entries.push(...parser.flush());
-          const capped = (entries.length > 200 ? entries.slice(-200) : entries).map(capEntryText);
-          sink.event('backfill', capped);
-          pos = stat.size;
-          initialActive = Date.now() - stat.mtimeMs < SESSION_THINKING_ACTIVE_MS;
-        } catch { sink.event('backfill', []); }
+        };
+
+        if (path) {
+          emitThinking(backfillFrom(path));
+        } else {
+          // No transcript file YET — for a LIVE session that hasn't taken its
+          // first turn this is "waiting", NOT "run ended": send the empty
+          // backfill (the pane shows its waiting/stalled state, no eternal
+          // "connecting…") and keep the stream open — the tick below re-resolves
+          // until the file appears, then backfills + follows it. `done` here
+          // (the old behavior) misread every just-launched queen as ended.
+          sink.event('backfill', []);
+          emitThinking(false);
+        }
 
         // ── 2) Live-follow the CURRENT turn: poll for appended records, emit each
         //       as `event`, and a `thinking` status when the agent starts/stops
         //       writing. Unlike a bee run this never emits `done` on its own — an
         //       interactive session's transcript just goes quiet when idle; the
         //       client closes the stream when the pane closes (onClose → stop). ──
-        let lineBuf = '';
-        let lastActive: boolean | null = null;
-        let lastAppendMs = Date.now();
-        let handle: ManagedHandle | null = null;
-        const followParser = createAgentTimelineParser();
-        const emitThinking = (active: boolean) => {
-          if (active !== lastActive) { lastActive = active; sink.event('thinking', { active }); }
-        };
-        emitThinking(initialActive);
-
+        let resolving = false;
         const tick = () => {
           if (sink.closed) { handle?.stop(); return; }
+          if (!path) {
+            // Still waiting on the first transcript write. Cheap after the
+            // owner-hinted lookup fix (≤2 readdirs, negative-cached) — no sweep.
+            if (resolving) return;
+            resolving = true;
+            void findSessionTranscript(sessionId, { owner })
+              .then((p) => {
+                if (sink.closed || path || !p) return;
+                path = p;
+                followParser = createAgentTimelineParser();
+                emitThinking(backfillFrom(p));
+              })
+              .finally(() => { resolving = false; });
+            return;
+          }
           let stat;
           try { stat = statSync(path); } catch { sink.done({}); handle?.stop(); return; }
           if (stat.size > pos) {

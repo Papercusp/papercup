@@ -380,7 +380,7 @@ export function startLocalVoiceSocket(): VoiceSocketInfo {
     onVoiceStatusChanged((status) => broadcastCtrl({ ev: 'status', status })),
   );
 
-  const discoveryPath = join(homedir(), '.papercusp', 'voice-ipc.json');
+  const discoveryPath = join(voiceIpcRoot(), 'voice-ipc.json');
   writeFileSync(
     discoveryPath,
     JSON.stringify({ socketPath, sampleRate: VOICE_SAMPLE_RATE, frameSamples: VOICE_FRAME_SAMPLES }, null, 2),

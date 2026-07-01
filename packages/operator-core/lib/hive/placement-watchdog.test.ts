@@ -9,6 +9,7 @@ import {
   deriveBeeLiveness,
   evaluatePlacement,
   evaluateStalePlacementEscalation,
+  evaluateTerminalPlacementReconcile,
   buildOpenPlacementSummary,
   isReaperReclaim,
   isUnitTerminal,
@@ -674,6 +675,54 @@ describe('evaluateStalePlacementEscalation — EI-1524/1518 backstop escalation 
           unitExists: true,
           unitTerminal: true,
         }),
+      ).toBe('keep');
+    }
+  });
+});
+
+describe('evaluateTerminalPlacementReconcile — EI-6109 completion-reconcile GC (all open statuses)', () => {
+  it('completes ANY open placement whose unit reached terminal — incl. working/recovering', () => {
+    for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
+      expect(
+        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true }),
+      ).toBe('resolve-completed');
+    }
+  });
+
+  it('completes a working placement whose unit is terminal — the exact drift bug (before the fix it stayed working)', () => {
+    expect(
+      evaluateTerminalPlacementReconcile({ placementStatus: 'working', unitExists: true, unitTerminal: true }),
+    ).toBe('resolve-completed');
+  });
+
+  it('completes an infra-attributed cursed placement (no escalation needed) whose unit is terminal', () => {
+    // The escalation-only GC required escalation_msg_id IS NOT NULL, so an infra curse
+    // (fail_count=0, escalation=null) drifted; the completion decider ignores escalation.
+    expect(
+      evaluateTerminalPlacementReconcile({ placementStatus: 'cursed', unitExists: true, unitTerminal: true }),
+    ).toBe('resolve-completed');
+  });
+
+  it('abandons any open placement whose unit no longer exists', () => {
+    for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
+      expect(
+        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: false, unitTerminal: false }),
+      ).toBe('resolve-abandoned');
+    }
+  });
+
+  it('KEEPS an open placement whose unit is still non-terminal (never robs an in-flight lane)', () => {
+    for (const placementStatus of ['working', 'recovering', 'cursed', 'stranded']) {
+      expect(
+        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: false }),
+      ).toBe('keep');
+    }
+  });
+
+  it('KEEPS an already-terminal placement status (completed/abandoned) — not an open row', () => {
+    for (const placementStatus of ['completed', 'abandoned']) {
+      expect(
+        evaluateTerminalPlacementReconcile({ placementStatus, unitExists: true, unitTerminal: true }),
       ).toBe('keep');
     }
   });

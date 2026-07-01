@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isCliEntry } from './cli-entry';
@@ -16,6 +17,39 @@ describe('isCliEntry', () => {
   it('returns false for any other module URL', () => {
     expect(isCliEntry('file:///some/other/module.ts')).toBe(false);
     expect(isCliEntry(pathToFileURL(process.argv[1]).href + '.not')).toBe(false);
+  });
+
+  // WI-1443 regression: node realpaths the entry module's import.meta.url while
+  // argv[1] preserves the invoked path — through a symlinked checkout
+  // (papercup -> papercusp) the two differ and the naive === made every shim
+  // CLI (ptool/psu) a silent no-op. isCliEntry must match through the symlink.
+  describe('symlinked invocation path (WI-1443)', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cli-entry-symlink-'));
+    const realDir = join(tmp, 'real');
+    const linkDir = join(tmp, 'link');
+    afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+    it('matches when argv[1] reaches the entry through a directory symlink', () => {
+      // real/entry.mjs + link -> real; simulate `node link/entry.mjs` where node
+      // set import.meta.url from the REALPATH (its default behavior).
+      const entryReal = join(realDir, 'entry.mjs');
+      mkdirSync(realDir, { recursive: true });
+      writeFileSync(entryReal, '// symlink test entry\n');
+      symlinkSync(realDir, linkDir, 'dir');
+      const entryViaLink = join(linkDir, 'entry.mjs');
+
+      const savedArgv1 = process.argv[1];
+      try {
+        process.argv[1] = entryViaLink; // invoked through the symlink
+        const importMetaUrl = pathToFileURL(realpathSync(entryViaLink)).href; // node realpaths the entry
+        expect(importMetaUrl).not.toBe(pathToFileURL(entryViaLink).href); // precondition: the naive === is false
+        expect(isCliEntry(importMetaUrl)).toBe(true);
+        // and a genuinely different module still does not match
+        expect(isCliEntry(pathToFileURL(join(realDir, 'other.mjs')).href)).toBe(false);
+      } finally {
+        process.argv[1] = savedArgv1;
+      }
+    });
   });
 });
 

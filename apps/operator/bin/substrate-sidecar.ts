@@ -21,11 +21,21 @@
  *   PAPERCUSP_SUBSTRATE_IPC_SOCKET — absolute Unix socket path (resolveSubstrateSocketPath()).
  */
 
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 
 // Auto-run only when invoked directly (dev: tsx apps/operator/bin/substrate-sidecar.ts).
 // The packaged path calls runSubstrateSidecarServer() from serve.ts instead.
-const invokedDirectly =
-  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Symlink-robust (WI-1443): also compare argv[1]'s realpath (papercup -> papercusp).
+const invokedDirectly = ((): boolean => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
 if (invokedDirectly) runSubstrateSidecarServer();
