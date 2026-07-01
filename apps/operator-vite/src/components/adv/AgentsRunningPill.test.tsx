@@ -7,7 +7,7 @@
  * <Popover> needs a TooltipProvider ancestor (same as HivesRunningPill.test).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 
 const H = vi.hoisted(() => ({
@@ -104,5 +104,21 @@ describe('<AgentsRunningPill>', () => {
     // Rows for the running agents.
     expect(screen.getByTestId('agent-row-b1')).toBeTruthy();
     expect(screen.getByTestId('agent-row-q1')).toBeTruthy();
+  });
+
+  it('hovering an agent row previews its plan/work-item in the detail strip', () => {
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-b1'));
+    const detail = screen.getByTestId('agent-detail');
+    expect(detail.textContent).toContain('gizmo');
+    expect(detail.textContent).toContain('F-1'); // its work item
+  });
+
+  it('clicking an agent row pins it', () => {
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-row-q1'));
+    expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
   });
 });

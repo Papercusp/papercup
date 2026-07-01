@@ -19,7 +19,7 @@
 
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listRecordedLiveSessions } from '../../adv-sessions';
-import { listPresence, sweepStalePresence, sweepEndedPresence, PRESENCE_ENDED_REAP_MS } from './presence';
+import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
@@ -201,11 +201,8 @@ export async function assemblePresenceSnapshot(
   const localAllIds = all.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
-  // On-desktop (live OS window) + PTY-panel viewer owners were already gathered up
-  // front (so the reaper above could spare them); reuse them here for the row
-  // enrichment rather than re-reading.
-  const onDesktopOwners = onDesktopSet;
-  const viewerAttachedOwners = viewerSet;
+  let onDesktopOwners = new Set<string>();
+  let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
   // (it does NOT ride the base PresenceRecord like hive_slug). Fetched for the WHOLE
   // local roster (active + stale) so a parked fleet member still shows its fleet.
@@ -220,6 +217,22 @@ export async function assemblePresenceSnapshot(
     fetchWakeability(localAllIds)
       .then((m) => {
         wakeability = m;
+      })
+      .catch(() => {}),
+    // On-desktop (live OS window) owners — best-effort, box-local (empty on a
+    // headless box). Independent of the other joins so a wmctrl hiccup never
+    // affects wakeability/tier-1, and vice-versa.
+    gatherOnDesktopSessions()
+      .then((s) => {
+        onDesktopOwners = s.owners;
+      })
+      .catch(() => {}),
+    // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
+    // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
+    // the other joins.
+    gatherViewerAttachedOwners()
+      .then((s) => {
+        viewerAttachedOwners = s;
       })
       .catch(() => {}),
     // Named-fleet membership (P-005) — best-effort + independent of the other joins.

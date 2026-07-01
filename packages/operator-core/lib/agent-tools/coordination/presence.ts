@@ -22,19 +22,9 @@ import {
 } from '@papercusp/coordination/presence';
 import { deriveAgentRole, deriveFleetMembership, type AgentIdentity } from './identity';
 import { writeSessionBrief } from '../../session-brief';
-import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
-
-/** Short TTL for the genuinely-ENDED presence row reaper (`sweepEndedPresence`).
- *  A row is only ever a reap candidate here once it is BOTH stale-beyond-this AND
- *  not-wakeable (= `ended`, never a live/parked dispatch target), so this can be
- *  aggressive without ever evicting a resumable session. 1h leaves a comfortable
- *  margin over the 10-min stale window + heartbeat lag. Contrast `PRESENCE_GC_MS`
- *  (24h) — the blunt heartbeat-only backstop that still catches a stuck row whose
- *  await never got cancelled. */
-export const PRESENCE_ENDED_REAP_MS = 60 * 60 * 1000;
 
 const store = new PgPresenceStore({
   getSql: () => getOrgPg().sql,
@@ -223,50 +213,4 @@ export async function getPresence(ownerId: string): Promise<PresenceRecord | nul
  *  long-ended rows. Returns rows removed. */
 export async function sweepStalePresence(maxAgeMs: number): Promise<number> {
   return store.sweepStale(maxAgeMs);
-}
-
-/**
- * Reap genuinely-ENDED presence rows on a SHORT TTL — the dead-row-retention fix.
- *
- * A row qualifies only when it is BOTH (a) stale beyond `ttlMs` (heartbeat lapsed)
- * AND (b) NOT wakeable — no live `coord:inbox-wake:<owner>` standing await — which
- * is exactly `deriveSessionState`'s `ended` verdict (a dead/zombie row that needs a
- * relaunch, never a wake). A PARKED session (stale heartbeat but a LIVE await — a
- * resumable dispatch target) keeps its await and so is NEVER touched here; the
- * blunt 24h `sweepStalePresence` remains the backstop for a stuck row whose await
- * outlived it. `protectedOwners` (on-desktop / viewer-attached — the reaper's
- * hard-exempt cohort) are spared unconditionally.
- *
- * Optional `workspaceId` / `hiveSlug` scope the sweep to the read that triggered it
- * (a hive read reaps only that hive's dead rows), so a scoped read never evicts an
- * unrelated scope's rows. Best-effort; returns rows removed. Server-only.
- */
-export async function sweepEndedPresence(opts: {
-  ttlMs: number;
-  protectedOwners?: ReadonlySet<string>;
-  workspaceId?: string | null;
-  hiveSlug?: string | null;
-}): Promise<number> {
-  const { sql } = getOrgPg();
-  const secs = Math.max(1, Math.floor(opts.ttlMs / 1000));
-  const protectedIds = [...(opts.protectedOwners ?? [])];
-  const ws = opts.workspaceId ?? null;
-  const hive = opts.hiveSlug ?? null;
-  const rows = await sql<{ owner_id: string }[]>`
-    DELETE FROM harness_shared.coord_presence cp
-     WHERE cp.heartbeat_at < now() - make_interval(secs => ${secs})
-       AND ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
-       AND ${hive == null ? sql`TRUE` : sql`cp.hive_slug = ${hive}`}
-       AND cp.owner_id <> ALL(${protectedIds}::text[])
-       AND NOT EXISTS (
-             SELECT 1
-               FROM harness_shared.event_awaits ea
-              WHERE ea.subscriber_id = cp.owner_id
-                AND ea.event_key = ${COORD_INBOX_WAKE_PREFIX} || ea.subscriber_id
-                AND ea.fired_at IS NULL AND ea.cancelled_at IS NULL
-                AND (ea.expires_ts IS NULL OR ea.expires_ts > now())
-           )
-    RETURNING cp.owner_id
-  `;
-  return rows.length;
 }
