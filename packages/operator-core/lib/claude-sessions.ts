@@ -58,6 +58,41 @@ export async function claudeProjectsRoots(
 }
 
 /**
+ * Resolve the transcript jsonl for a Claude session by its id — the
+ * `<session-id>.jsonl` handle, searched across every projects root (global +
+ * per-session isolation). Returns the first match's absolute path, or null.
+ * A targeted stat-only walk (readdir the project dirs, stat the one target file),
+ * so it stays cheap even with thousands of transcripts. Powers the agents-roster
+ * live-thinking view for INTERACTIVE (non-bee) sessions, which — unlike a
+ * spawned bee's harness run-log — keep their timeline in this transcript.
+ */
+export async function findSessionTranscript(
+  sessionId: string,
+  roots?: string[],
+): Promise<string | null> {
+  if (!/^[A-Za-z0-9_.-]{6,}$/.test(sessionId)) return null;
+  const file = `${sessionId}.jsonl`;
+  for (const root of roots ?? (await claudeProjectsRoots())) {
+    let projectDirs: string[];
+    try {
+      projectDirs = await fs.readdir(root);
+    } catch {
+      continue; // root unreadable
+    }
+    for (const projDir of projectDirs) {
+      const p = join(root, projDir, file);
+      try {
+        await fs.access(p);
+        return p;
+      } catch {
+        /* not in this project dir */
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Decode a Claude project dir name to a cwd hint. Claude encodes the cwd by
  * replacing '/' with '-', which is NOT invertible when a real path segment
  * contains a dash — so this is a FALLBACK hint only; prefer the `cwd` read from a
