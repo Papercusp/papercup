@@ -31,6 +31,11 @@ export default defineTool({
     when: 'You reviewed report(s) (hive:moderation_queue) and want to mark them resolved. Clearing a queue? Pass them all via `items:[{ reportId, status }]`.',
     notWhen: 'You want to actually hide content (hive:takedown) or ban a member (hive:ban_member) — do that first, then resolve.',
     chaining: 'hive:moderation_queue → (hive:takedown / hive:ban_member) → hive:moderation_resolve. Bulk: correlate by reportId, not position; one failure never fails the rest.',
+    seeAlso: [
+      'hive:moderation_queue (the reports to resolve)',
+      'hive:takedown (hide the content before resolving)',
+      'hive:ban_member (ban the member before resolving)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

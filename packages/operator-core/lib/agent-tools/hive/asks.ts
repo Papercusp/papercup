@@ -27,6 +27,10 @@ export default defineTool({
       'Inbound admission policy (hive:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).',
     chaining:
       'hive:ask / hive:request_work create rows here; hive:asks { hive, state: "answered" } reviews the replies.',
+    seeAlso: [
+      'hive:ask (post a new cross-Hive question)',
+      'hive:request_work (the other row-creator — request work from a peer)',
+    ],
   },
   capability: 'work_items:read',
   requirePrincipal: false,

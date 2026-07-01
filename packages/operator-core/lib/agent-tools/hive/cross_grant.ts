@@ -35,6 +35,11 @@ export default defineTool({
       'Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.',
     chaining:
       'discovery:hives (peer pubkey) → hive:cross_grant {action:"grant", direction, peerHivePubkey, kinds}; "out" before hive:ask / hive:request_work.',
+    seeAlso: [
+      'discovery:hives (find the peer Hive pubkey to grant to)',
+      'hive:ask (use an "out" grant to ask a peer)',
+      'hive:request_work (use an "out" grant to request work)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,

@@ -34,6 +34,11 @@ export default defineTool({
       'To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.',
     chaining:
       'hive:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → hive:start to resume.',
+    seeAlso: [
+      'hive:start (resume autonomous operation)',
+      'coord:wake-queue (review staged wakes while paused)',
+      'hive:dissolve (tear down permanently instead of pausing)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

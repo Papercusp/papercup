@@ -26,6 +26,10 @@ export default defineTool({
     notWhen:
       'For the trust roster (already-admitted members) use hive:get / harness:membership. Setting the membership MODE is hive policy (the policy authoring surface), not this.',
     chaining: 'hive:membership_pending (review) → hive:membership_decide (approve/deny each).',
+    seeAlso: [
+      'hive:membership_decide (approve/deny each pending join)',
+      'hive:add-member (add a member directly without a pending request)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

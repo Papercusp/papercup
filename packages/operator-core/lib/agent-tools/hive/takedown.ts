@@ -27,6 +27,11 @@ export default defineTool({
     when: 'A member reported content (hive:moderation_queue) that you (the owner) want hidden on every honest peer.',
     notWhen: 'Banning the AUTHOR for repeat abuse — that is hive:ban_member (revoke + re-key teeth). Takedown hides content; ban removes a member.',
     chaining: 'hive:moderation_queue → hive:takedown (hide) → hive:moderation_resolve (mark actioned).',
+    seeAlso: [
+      'hive:moderation_queue (the report that triggered the takedown)',
+      'hive:moderation_resolve (mark actioned after hiding)',
+      'hive:ban_member (ban the author too)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

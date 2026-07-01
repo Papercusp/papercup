@@ -35,6 +35,10 @@ export default defineTool({
     notWhen:
       'Tearing down a LOCAL hive you OWN (stop its Queen, cancel its bees) — hive:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
     chaining: 'hive:list / hive:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind.',
+    seeAlso: [
+      'hive:list (find the joined hive slug first)',
+      'hive:add-member (the inverse — add a member to a hive)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

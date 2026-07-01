@@ -54,6 +54,11 @@ export default defineTool({
     notWhen:
       'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — hive:declare-wake { mode:none }. From a bee — not allowed.',
     chaining: 'hive:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm.',
+    seeAlso: [
+      'hive:pause (freeze instead of permanently tearing down)',
+      'hive:get (inspect the hive before dissolving)',
+      'deploy:teardown_hive (run first if the hive is deployed to a Swarm)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

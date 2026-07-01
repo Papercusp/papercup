@@ -24,6 +24,10 @@ export default defineTool({
   guidance: {
     when: 'Checking what the Queen is currently steered toward — before changing it, or to confirm a hive:set-steering write landed.',
     notWhen: 'Changing steering — hive:set-steering. Reading the whole hive status — hive:status.',
+    seeAlso: [
+      'hive:set-steering (change the steering directive)',
+      'hive:status (the whole hive status, not just steering)',
+    ],
   },
   capability: 'harness:read',
   requirePrincipal: false,

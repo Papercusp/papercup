@@ -30,6 +30,11 @@ export default defineTool({
     when: 'A member is a confirmed repeat abuser (see hive:moderation_queue) and you (the owner) want them removed AND unable to re-join.',
     notWhen: 'Hiding one piece of content — that is hive:takedown. Revoking your OWN device — substrate:revoke_self_device.',
     chaining: 'hive:moderation_queue → hive:ban_member → hive:moderation_resolve (mark actioned). The read cut-off completes when the C-001 re-key op-path lands.',
+    seeAlso: [
+      'hive:moderation_queue (the reports that justify a ban)',
+      'hive:moderation_resolve (mark the report actioned after banning)',
+      'hive:add-member (re-admit a member later)',
+    ],
   },
   capability: 'intel:write',
   requirePrincipal: false,

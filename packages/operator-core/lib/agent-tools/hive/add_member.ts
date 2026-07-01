@@ -42,6 +42,11 @@ export default defineTool({
       'Adding a person/device to a Hive (that is admission, a separate concern). Removing a member (re-point via the registry / hive:leave for a joined remote hive). Nesting a Hive home as a member (rejected — Hives compose as peers).',
     chaining:
       'hive:list / hive:get to find the Hive home + the member slug → hive:add-member → hive:start (or hive:wake) so the Queen surveys the now-scoped frontier → hive:survey to confirm members[] is non-empty + scope is hive-local.',
+    seeAlso: [
+      'hive:ban_member (remove a member)',
+      'hive:membership_pending (approve a self-requested join instead of adding directly)',
+      'hive:survey (confirm the scoped frontier after adding)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -39,6 +39,10 @@ export default defineTool({
     notWhen:
       'Banning an already-admitted member for abuse — use hive:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is hive policy.',
     chaining: 'hive:membership_pending (review the queue) → hive:membership_decide (per joiner, or all at once via items[]). Bulk: correlate by githubUserId, not position; one failure never fails the rest.',
+    seeAlso: [
+      'hive:membership_pending (review the queue first)',
+      'hive:ban_member (remove an already-admitted member)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -22,6 +22,11 @@ export default defineTool({
     when: 'You (the owner) want to review reports members filed via hive:report.',
     notWhen: 'Filing a report (that is hive:report, member-side).',
     chaining: 'hive:moderation_queue → hive:takedown / hive:ban_member / hive:moderation_resolve.',
+    seeAlso: [
+      'hive:takedown (hide reported content)',
+      'hive:ban_member (ban the reported member)',
+      'hive:moderation_resolve (mark a report actioned)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

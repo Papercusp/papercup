@@ -34,6 +34,10 @@ export default defineTool({
       'Freezing the WHOLE hive (all autonomous wakes) — hive:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE bee — fleet:drain / fleet:cancel.',
     chaining:
       'hive:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Queen wakes + honours it next placement. hive:set-steering { pauseNewWork:true } → she drives existing work to terminal then idles. hive:get-steering reads the current state; clear:true resets.',
+    seeAlso: [
+      'hive:get-steering (read the current steering before changing it)',
+      'hive:pause (freeze the whole hive instead of steering the Queen)',
+    ],
   },
   capability: 'harness:write',
   requirePrincipal: false,

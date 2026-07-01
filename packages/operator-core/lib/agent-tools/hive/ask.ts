@@ -32,6 +32,11 @@ export default defineTool({
       'Handing the peer WORK to do (use hive:request_work). Within-Hive questions (coord:ask / conversations). Granting a peer to send asks INTO this Hive (that is the inbound hive:cross_grant).',
     chaining:
       'discovery:hives (find the peer Hive pubkey) → hive:ask { hive, peerHivePubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with hive:asks.',
+    seeAlso: [
+      'hive:asks (review outstanding asks + their replies)',
+      'discovery:hives (find the peer Hive to ask)',
+      'hive:request_work (ask a peer to DO work, not answer a question)',
+    ],
   },
   capability: 'work_items:write',
   requirePrincipal: false,
