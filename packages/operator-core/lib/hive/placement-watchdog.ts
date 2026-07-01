@@ -44,6 +44,7 @@ import { placementOverride } from '../hive-control-policy';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 import { listStartedHives } from './started';
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
@@ -1298,17 +1299,56 @@ export async function summarizeOpenPlacements(
   const empty: OpenPlacementSummary = { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] };
   try {
     const { sql } = getOrgPg();
+    const graceSec = Math.max(1, Math.round(STALE_CLAIM_GRACE_MS / 1000));
     const countRows = await sql<OpenPlacementCountRow[]>`
+      WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+      live_open AS (
+        SELECT p.status
+          FROM harness_shared.hive_placements p
+          LEFT JOIN harness_shared.harness_features_consolidated f
+            ON f.workspace_id = p.workspace_id
+           AND f.feature_id = p.work_item_id
+         WHERE p.workspace_id = ${workspaceId}
+           AND p.install_slug = ${installSlug}
+           AND p.status IN ('recovering', 'cursed', 'stranded', 'working')
+           AND f.feature_id IS NOT NULL
+           AND f.status <> ALL(${Array.from(TERMINAL_UNIT_STATES)}::text[])
+           AND (
+             p.status <> 'working'
+             OR (
+               f.taken_by IS NOT NULL
+               AND f.taken_by <> ''
+               AND EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+             )
+           )
+      )
       SELECT status, count(*)::int AS count
-        FROM harness_shared.hive_placements
-       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
-         AND status IN ('recovering', 'cursed', 'stranded', 'working')
+        FROM live_open
        GROUP BY status`;
     const rows = await sql<OpenPlacementItemRow[]>`
+      WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+      live_open AS (
+        SELECT p.work_item_id, p.status, p.fail_count, p.harness_slug, p.updated_at
+          FROM harness_shared.hive_placements p
+          LEFT JOIN harness_shared.harness_features_consolidated f
+            ON f.workspace_id = p.workspace_id
+           AND f.feature_id = p.work_item_id
+         WHERE p.workspace_id = ${workspaceId}
+           AND p.install_slug = ${installSlug}
+           AND p.status IN ('recovering', 'cursed', 'stranded', 'working')
+           AND f.feature_id IS NOT NULL
+           AND f.status <> ALL(${Array.from(TERMINAL_UNIT_STATES)}::text[])
+           AND (
+             p.status <> 'working'
+             OR (
+               f.taken_by IS NOT NULL
+               AND f.taken_by <> ''
+               AND EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+             )
+           )
+      )
       SELECT work_item_id, status, fail_count, harness_slug
-        FROM harness_shared.hive_placements
-       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
-         AND status IN ('recovering', 'cursed', 'stranded', 'working')
+        FROM live_open
        ORDER BY (status = 'cursed') DESC, (status = 'stranded') DESC, (status = 'recovering') DESC, updated_at DESC
        LIMIT ${limit}`;
     return buildOpenPlacementSummary(countRows, rows);

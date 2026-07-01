@@ -143,6 +143,50 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(createdAtChecks).toBeGreaterThanOrEqual(4);
   });
 
+  it("WI-1416: the fast-orphan path is ENQUEUED-only — a PENDING fire with no queue row is EXECUTING, not orphaned (queue rows vanish at dequeue)", async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    await reapDeadExecutorWorkflows(sql);
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    // Both the requeue CASE and the WHERE restrict the no-queue-row heuristic to
+    // ENQUEUED rows — the state that IS anomalous under the corrected semantics.
+    // (Verified live 2026-07-01: DBOS deletes the queue row at DEQUEUE, so every
+    // healthy executing PENDING fire has no queue row; the old unrestricted 90s fast
+    // path reaped every fire whose first step outlived 90s — the WI-1415 loop.)
+    const enqueuedGuards = staleSelect.text.match(/status = 'ENQUEUED'/g) ?? [];
+    expect(enqueuedGuards.length).toBe(2);
+    // …and each guard rides its OWN longer orphan window, not the 90s scheduler one.
+    const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
+    const now = Math.max(...numericValues);
+    const distinctWindows = new Set(numericValues.map((v) => now - v));
+    expect(distinctWindows.has(10 * 60 * 1000)).toBe(true); // default orphan window (env-tunable)
+  });
+
+  it('WI-1416: a reaped git-sync fire INCREMENTS reaped_count on the routine metadata (consecutive-reap signal)', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) {
+        return [{ workflow_uuid: 'sched-.routineFire-gitsync', requeue_routine_id: 'rt_gitsync' }];
+      }
+      if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
+      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
+      if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
+      throw new Error(`unexpected query: ${text}`);
+    });
+
+    const res = await reapDeadExecutorWorkflows(sql, 300_000, 90_000, 300_000);
+
+    expect(res.requeuedRoutineIds).toEqual(['rt_gitsync']);
+    const requeueUpdate = calls.find((c) => c.text.includes('UPDATE harness_shared.routines'))!;
+    expect(requeueUpdate.text).toContain("'reaped_count'");
+    expect(requeueUpdate.text).toContain("COALESCE((metadata->>'reaped_count')::int, 0) + 1");
+  });
+
   it('deduplicates requeued routines from multiple no-output routineFire rows', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
@@ -206,7 +250,7 @@ describe('reapDeadExecutorWorkflows', () => {
 });
 
 describe('clearStaleReaperLastError', () => {
-  it('strips the three reaper marker keys with a SOURCE-SCOPED UPDATE (EI-5938)', async () => {
+  it('strips the reaper marker keys (incl. reaped_count) with a SOURCE-SCOPED UPDATE (EI-5938)', async () => {
     const { sql, calls } = fakeSql(() => ({ count: 1 }));
 
     await clearStaleReaperLastError(sql, 'rt-loop-883');
@@ -218,6 +262,8 @@ describe('clearStaleReaperLastError', () => {
     expect(upd.text).toContain("- 'last_error'");
     expect(upd.text).toContain("- 'last_error_at'");
     expect(upd.text).toContain("- 'last_error_source'");
+    // WI-1416: a completed dispatch also disproves the consecutive-reap counter.
+    expect(upd.text).toContain("- 'reaped_count'");
     // SAFETY: the clear is scoped to the reaper source ONLY — a `runner`-sourced action
     // error and git-sync's own no-source error must be left intact, so a genuine wedge
     // still surfaces. The routine id + the source value are the only bound params.

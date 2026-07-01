@@ -84,6 +84,39 @@ describe('evaluateGitSyncStall', () => {
     expect(evaluateGitSyncStall(s, NOW, { fireStaleMs: 10 * M }).fireStale).toBe(true);
   });
 
+  it('WI-1416 persistent reap: >=3 consecutive executor-reaper cancels ⇒ stalled (the synthetic reap-loop alarm)', () => {
+    // Synthetic persistent-reap: fires keep starting (lastFired fresh, so NOT fire-stale;
+    // last_error null — the reaper marker can flip null between reaps) but the reaper has
+    // cancelled 3 consecutive fires. reaped_count is the durable signal that survives the
+    // noisy last_error, so the watchdog must alarm on it alone.
+    const v = evaluateGitSyncStall({ ...base, reapedCount: 3 }, NOW);
+    expect(v.stalled).toBe(true);
+    expect(v.persistentReap).toBe(true);
+    expect(v.commitStale).toBe(false);
+    expect(v.errorStall).toBe(false);
+    expect(v.reason).toMatch(/reaper has cancelled 3 consecutive/i);
+  });
+
+  it('WI-1416 persistent reap: below the threshold (or absent) ⇒ not stalled; threshold overridable', () => {
+    expect(evaluateGitSyncStall({ ...base, reapedCount: 2 }, NOW).persistentReap).toBe(false);
+    expect(evaluateGitSyncStall(base, NOW).persistentReap).toBe(false); // reapedCount absent → 0
+    expect(evaluateGitSyncStall({ ...base, reapedCount: 2 }, NOW, { persistentReapMin: 2 }).persistentReap).toBe(true);
+  });
+
+  it('WI-1416 persistent reap: a completed fire resets the counter (recordOutcome writes 0) ⇒ recovery clears the verdict', () => {
+    const v = evaluateGitSyncStall({ ...base, reapedCount: 0 }, NOW);
+    expect(v.persistentReap).toBe(false);
+    expect(v.stalled).toBe(false);
+  });
+
+  it('WI-1416: the escalation body carries the persistentReap flag', () => {
+    const v = evaluateGitSyncStall({ ...base, reapedCount: 4 }, NOW);
+    const body = JSON.parse(
+      gitSyncStallEscalationBody({ installSlug: 'papercusp', verdict: v, lastFiredMs: base.lastFiredMs, headUnchangedMs: null, lastStatus: 'nothing', nowMs: NOW }),
+    );
+    expect(body.persistentReap).toBe(true);
+  });
+
   it('escalation body captures the commit-stall + is valid JSON', () => {
     const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 6 * H }, NOW);
     const body = JSON.parse(

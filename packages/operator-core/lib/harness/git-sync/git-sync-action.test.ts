@@ -161,7 +161,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
 import { isResolverInFlight, acquireWithContentionRetry } from './git-sync-action';
-import { getSystemAction, type SystemActionCtx } from '../routines/system-actions';
+import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../routines/system-actions';
 
 // --- helpers over the captured PG writes ------------------------------------------
 
@@ -276,6 +276,35 @@ describe('registry population', () => {
   it('side-effect import registers the git-sync system action', () => {
     expect(action).toBeTypeOf('function');
   });
+
+  it('WI-1416: git-sync registers with ownSteps so the engine runs it at the WORKFLOW layer (sub-steps checkpoint)', () => {
+    expect(getSystemActionEntry('git-sync')).toMatchObject({ ownSteps: true });
+  });
+});
+
+describe('WI-1416 durable-fire breadcrumbs', () => {
+  it('stamps fire_started_at as the FIRST metadata write of every fire (before locks/gate)', async () => {
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+
+    await action(ctx);
+
+    const first = allRoutinePatches()[0];
+    expect(first).toEqual({ fire_started_at: expect.any(Number) });
+  });
+
+  it('stamps the breadcrumb even on an ineligible (skipped) tick — a gate-stalled fire is still visible', async () => {
+    registryProjects = []; // no registry entry → no_path skip
+    await action(ctx);
+    expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
+  });
+
+  it('a COMPLETED tick resets reaped_count to 0 (recordOutcome) — the reaper counter reads as CONSECUTIVE reaps', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
+  });
 });
 
 describe('P-009/P-006 lock discipline (per-slug resources)', () => {
@@ -290,10 +319,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     await action(ctx);
 
     expect(acquiredResources()).toEqual(['git-sync:papercup', 'git-sync', 'libs-papercusp-submodule']);
-    // the routine did NOTHING this tick: no sync, no PG writes, no pipeline event
+    // the routine did NOTHING this tick: no sync, no outcome writes, no pipeline event
+    // (the only PG write is the WI-1416 fire_started_at breadcrumb, stamped before locks)
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
-    expect(unsafeCalls).toEqual([]);
+    expect(routinePatches()).toEqual([]);
+    expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
     expect(captureHeadShaMock).not.toHaveBeenCalled();
     // …but the partially-acquired locks were released (reverse order)
     expect(releasedResources()).toEqual(['git-sync', 'git-sync:papercup']);
@@ -367,7 +398,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
-    expect(unsafeCalls).toEqual([]);
+    expect(routinePatches()).toEqual([]); // only the WI-1416 breadcrumb is written
     // the deliberate, human-registered surface: warned about, not auto-registered
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));
@@ -445,9 +476,10 @@ describe('clean sync outcome', () => {
 
     await action(ctx);
 
-    // trigger config defaults flow into the pipeline
+    // trigger config defaults flow into the pipeline (+ WI-1416: the checkpoint seam)
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
       config: expect.objectContaining({ push: true, pushSubmodules: true }),
+      step: expect.any(Function),
     });
 
     // { last_synced_at, last_status, head_sha } + the EI-18 counters on the metadata
@@ -521,6 +553,7 @@ describe('clean sync outcome', () => {
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
       config: { push: false, pushSubmodules: false, branch: 'staging', remote: 'upstream', maxBlobBytes: 1024 },
+      step: expect.any(Function),
     });
   });
 });

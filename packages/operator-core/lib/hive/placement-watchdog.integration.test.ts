@@ -32,7 +32,7 @@ vi.mock('../agent-tools/coordination/escalations', async (orig) => ({
   resolveEscalation: mocks.resolveEscalation,
 }));
 
-import { reconcileOneHive, type PlacementConfig } from './placement-watchdog';
+import { reconcileOneHive, summarizeOpenPlacements, type PlacementConfig } from './placement-watchdog';
 
 const WS = 'default'; // coord_links default workspace == the org workspace here
 const HIVE = 'papercup';
@@ -170,6 +170,36 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
 
     expect((await readPlacement('F-130'))?.status).toBe('completed');
+  });
+
+  it('F-FIX-043: summarizeOpenPlacements does not count a stale working row once the unit is terminal', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-SUMMARY-DONE', ${HIVE}, ${QUEEN},
+              'bee-1', 'working', 0, now(), now(), now())`;
+    await seedUnit({ id: 'F-SUMMARY-DONE', status: 'passed', takenBy: 'bee-1' });
+
+    const summary = await summarizeOpenPlacements(WS, HIVE);
+
+    expect(summary.workingTracked).toBe(0);
+    expect(summary.items).toEqual([]);
+  });
+
+  it('F-FIX-043: summarizeOpenPlacements does not count a stale working row after dead-holder cleanup clears the claim', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-SUMMARY-CLEARED', ${HIVE}, ${QUEEN},
+              'bee-dead', 'working', 0, now(), now(), now())`;
+    await seedUnit({ id: 'F-SUMMARY-CLEARED', status: 'todo', takenBy: null });
+
+    const summary = await summarizeOpenPlacements(WS, HIVE);
+
+    expect(summary.workingTracked).toBe(0);
+    expect(summary.items).toEqual([]);
   });
 
   it('P-021: a unit at the breaker threshold → cursed + an owner escalation, no further wake', async () => {
