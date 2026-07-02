@@ -1,6 +1,6 @@
 ---
 title: Voice modality
-description: How tools declare which surface they make sense from, and how the EL Conv AI voice integration interacts with the framework.
+description: How tools declare text vs voice relevance, and how the current hosted-voice session maps those prompt-level tool surfaces onto the operator/Sentinel voice stack.
 sidebar:
   order: 5
 plans:
@@ -11,14 +11,22 @@ plans:
   - sentinel-herald-2026-06-21
 documents:
   - libs/generic/tooldef/src/tool-projection.ts
-  - packages/operator-core/lib/voice-engines/elevenlabs-conv.ts
+  - packages/operator-core/lib/voice-node/operator-voice-session.ts
+  - packages/operator-core/lib/voice-node/operator-voice-session-deps.ts
   - packages/operator-core/lib/operator-converse-tags.ts
   - packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-converse.ts
 ---
 
 # Voice modality
 
-Tools can declare a `modality` field stating which surfaces they're meaningful from — `'text'` (chat sidebar, harness chat panel), `'voice'` (the ElevenLabs Conv AI integration), or both. The framework's prompt-assembly layer filters tools out of catalogs they don't belong in.
+Tools can declare a `modality` field stating which surfaces they're meaningful
+from — `'text'`, `'voice'`, or both. This is **prompt-assembly metadata**: it
+decides what a voice-facing brain sees in its tool catalog, not which transport
+is currently carrying the audio.
+
+Today the main voice transport is the hosted operator voice session
+(`OperatorVoiceSession`), but the same modality rules also apply to text chat,
+mobile voice routes, and any other caller that renders a voice catalog.
 
 ## Default behaviour
 
@@ -71,35 +79,37 @@ The framework's modality concept is **prompt-assembly metadata only**. The frame
 
 The "narration" model from the original Phase 4 plan was a poor fit for the EL Conv AI integration. See the spike memo (in-repo plan `voice-modality-spike-2026-05-13`, at `apps/operator/docs/plans/voice-modality-spike-2026-05-13.md`) for the analysis — it isn't published as a standalone docs page.
 
-## How the EL Conv AI integration actually works
+## How the current hosted voice path actually works
 
-The browser opens a WebRTC session to EL's hosted Conv AI agent (Claude Haiku via BYO-LLM). When the agent decides to "ask the operator," the EL SDK invokes our `ask_operator` clientTool handler in the browser:
+The live hosted voice path is not "the provider brain talks directly to the
+user." It is:
 
-```ts
-// packages/operator-core/lib/voice-engines/elevenlabs-conv.ts
-tools.ask_operator = async (params) => askOperatorViaSse(params);
-```
+1. a hosted voice provider session
+2. the provider calls our tool for each user turn
+3. the operator host relays the final transcript into the Sentinel or operator
+   brain
+4. the answer comes back through the shared voice pipeline
 
-`askOperatorViaSse`:
+In the current one-brain architecture, the provider-facing session is owned by
+`packages/operator-core/lib/voice-node/operator-voice-session.ts`, and its
+production wiring comes from `operator-voice-session-deps.ts`.
 
-1. POSTs `/api/agent-mcp/operator-converse` with the conversation history + the new user turn.
-2. Drains the SSE stream into an `assembled` string.
-3. Extracts the `<say>...</say>` body from the assembled text.
-4. Returns that string to EL.
-5. EL speaks the string via TTS.
+The provider is therefore a **voice front-end**, not the cognition source. The
+tool result is a short acknowledgment; the real answer arrives later through the
+same voice session via `voice:say` and the sentinel-says pump.
 
-The contract with EL is **one string in, one string out** per turn. EL is not subscribing to a typed-event channel — it reads the clientTool function's return value.
+The earlier browser-only `askOperatorViaSse` story is historical context, not
+the full current architecture.
 
 ### Which persona brain answers — the Sentinel-as-Herald repoint
 
 The `operator-converse` route (`endpoint-route/routes/agent-mcp/operator-converse.ts`)
 doesn't always dispatch to `operator:converse`. It resolves a `role` (default
 `'operator'`) and looks up `${role}:converse`, falling back to `operator:converse` if
-that name isn't registered. `role` comes from an explicit `body.role` on the request
-when the caller sets one; otherwise it falls back to the `humanFacingRole` voice pref
-(`'operator'` | `'sentinel'`, default `'operator'`) so the voice path stays consistent
-with the text/mobile paths. `askOperatorViaSse` itself doesn't set `body.role`, so a
-voice session picks up whichever persona `humanFacingRole` currently names.
+that name isn't registered. `role` comes from an explicit `body.role` when set;
+otherwise it falls back to the `humanFacingRole` voice pref (`'operator'` |
+`'sentinel'`, default `'operator'`) so voice, text, and mobile all converge on
+the same human-facing persona choice.
 
 When `role === 'sentinel'`, the turn is answered by the always-on Sentinel persona
 instead of the legacy operator persona — same tag contract (`<say>`, `<set_mode>`,
@@ -107,11 +117,16 @@ instead of the legacy operator persona — same tag contract (`<say>`, `<set_mod
 See [the Sentinel](/internal/docs/agent-insights/sentinel) for the full architecture
 (how it's enabled, its read-context sources, and the handoff-to-Queen flow).
 
-### Shell mode is the default — EL is just transport
+### Hosted voice is transport — the brain is still ours
 
-By default the integration runs in **shell mode**: EL's hosted agent is a pure voice transport, *not* the brain. Its dashboard prompt is `operator.shell.md` (pushed by `el-agent-sync.mjs`), which instructs EL to call `ask_operator` on **every** user turn and speak the returned text verbatim. The actual operator reply — persona, turn-taking, and tag protocol — is generated by the **local omp + Claude stack**, not by EL's own LLM. In shell mode the persona/converse prompts are deliberately *not* injected into the EL session (they live in the local brain instead).
+The hosted session is deliberately relay-shaped. Its prompt override tells it to
+call the tool on every user turn and never answer from its own knowledge. That
+keeps the cognition in the local operator/Sentinel stack and avoids a voice-only
+split brain.
 
-Shell mode is on unless explicitly disabled: `shellMode` defaults to `true` and only flips off when `localStorage.harnessElShellMode === '0'` (see `elevenlabs-conv.ts`). Set that flag to run EL with its own LLM in the loop instead of as a transport shell.
+The exact transport may change over time, but the modality contract stays the
+same: **voice-surfaced tools are chosen by prompt assembly, then invoked inside
+our own role/policy system.**
 
 ## The `<say>` tag protocol
 
@@ -128,7 +143,13 @@ The operator brain (running our prompt) wraps voice-mode replies in `<say>...</s
 | `<handoff_to_queen summary="…" harness="…" feature="…" tier="…" urgent="…">` | The **Sentinel's** file-and-nudge placement seam — never spawns, files a `work_item` and nudges the Queen. **Sentinel role only.** | Server (`parseOperatorTurn` → `operator-sentinel-handoff.ts`); never returned to EL. See [the Sentinel](/internal/docs/agent-insights/sentinel). |
 | `<delegate_deep summary="…" brief="…" harness="…">` | The **Sentinel's** hard-thinking delegation seam — offloads sustained analysis to the deep-analysis lane. **Sentinel role only.** | Server (`parseOperatorTurn` → `sentinel-deep-delegate.ts`); never returned to EL. |
 
-The shared parser (`parseOperatorTurn` in `operator-converse-tags.ts`) runs on both the server and the client, but they consume different slots, and which server-side tags are honored depends on the turn's `role`. `operator:converse` reads `parsed.say` / `parsed.report` (for persistence) and, for an **operator** turn, dispatches `parsed.spawns`; for a **sentinel** turn it instead dispatches `parsed.handoffs` and `parsed.deepDelegations` and ignores `parsed.spawns` — the two control-tag sets can't cross. Neither role reads `parsed.setMode` or `parsed.sleep` server-side. The mode flip and the sleep timer are therefore **client-only side-effects**: they fire in `OperatorConversationProvider`, never on the server.
+The shared parser (`parseOperatorTurn` in `operator-converse-tags.ts`) runs on
+both the server and the client, but they consume different slots, and which
+server-side tags are honored depends on the turn's `role`. `operator:converse`
+reads `parsed.say` / `parsed.report` and, for an **operator** turn, dispatches
+`parsed.spawns`; for a **sentinel** turn it instead dispatches
+`parsed.handoffs` and `parsed.deepDelegations` and ignores `parsed.spawns`.
+Those control-tag sets cannot cross.
 
 ### `<say>` body clamping
 
@@ -172,5 +193,5 @@ Gating (audit5+): the `operator-converse` SSE only forwards `state-snapshot` eve
 
 - [Transports](./transports.mdx) — how typed events project across HTTP / MCP / IPC
 - Spike memo `voice-modality-spike-2026-05-13` (`apps/operator/docs/plans/voice-modality-spike-2026-05-13.md`) — why the original "ctx.narrate" design didn't fit; not a published docs page
-- `packages/operator-core/lib/voice-engines/elevenlabs-conv.ts` — the integration source
+- `packages/operator-core/lib/voice-node/operator-voice-session.ts` — the hosted voice-session source
 - `packages/operator-core/lib/operator-converse-tags.ts` — the tag parser

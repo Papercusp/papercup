@@ -33,28 +33,87 @@ export const AGENTS = ['claude', 'omp', 'codex'];
 export const NO_PLAN = '<no-plan>';
 
 /**
+ * Is the resilient MCP proxy (mcp-host-availability-resilience-2026-06-22 P-005,
+ * systemd user unit `papercup-mcp-proxy`, default :9071 → :3070) alive on this
+ * box? STRICT two-factor probe so a stale role MCP host squatting the port can
+ * never false-positive (role hosts have historically used e.g. :9071):
+ *   (a) the systemd unit is `active` (the unit is the sole legitimate port owner
+ *       per the P-006 cutover), AND
+ *   (b) an HTTP GET /api/health THROUGH the proxy returns 200 (proxy is
+ *       listening AND the chain to the operator works end-to-end).
+ * Sync (resolveOperatorUrl runs at module top level); each check is loopback +
+ * bounded, so the added launch latency is ~10–50ms. Exported for tests.
+ */
+export function defaultMcpProxyProbe(port) {
+  try {
+    const unit = spawnSync('systemctl', ['--user', 'is-active', 'papercup-mcp-proxy'], {
+      encoding: 'utf8',
+      timeout: 2_000,
+    });
+    if ((unit.stdout ?? '').trim() !== 'active') return false;
+    const health = spawnSync(
+      'curl',
+      ['-s', '-o', '/dev/null', '-m', '2', '-w', '%{http_code}', `http://127.0.0.1:${port}/api/health`],
+      { encoding: 'utf8', timeout: 4_000 },
+    );
+    return (health.stdout ?? '').trim() === '200';
+  } catch {
+    return false; // no systemctl / no curl / any error ⇒ treat as no proxy (safe fallback)
+  }
+}
+
+/**
  * Resolve the operator's base URL. Precedence:
- *   1. PAPERCUSP_OPERATOR_URL env — explicit override (highest).
+ *   1. PAPERCUSP_OPERATOR_URL env — explicit override (highest). If it targets
+ *      the fixed :3070 while the resilient proxy is active, a loud warning is
+ *      emitted (WI-1457: proxy active-but-unrouted) — the override still wins.
  *   2. ~/.papercusp/operator.json `httpUrl` (or `port`) — the DESKTOP operator's
  *      ACTUAL address. A shipped Tauri desktop app runs its operator on a
  *      dynamically-assigned localhost port (rewritten on every boot), NOT a
  *      fixed :3070, and records it here. Without this, psu in a desktop install
  *      always reaches for a dead :3070 and fails with "operator unreachable".
- *   3. http://localhost:3070 — the dev-box default (a fixed-port operator under
- *      systemd). The desktop never has operator.json missing, and the dev box
- *      never WRITES operator.json in steady state, so each environment lands on
- *      the right branch with no cross-contamination.
- * Exported for tests. Pure aside from the two file reads + env.
+ *   3. The RESILIENT MCP PROXY (`http://127.0.0.1:9071`, WI-1457 hardening) —
+ *      when its systemd unit is active AND it health-checks end-to-end. This is
+ *      the dev-box steady state: sessions ride the always-up proxy so a :3070
+ *      deploy restart is invisible (retry-on-refused, never double-applies a
+ *      write). Opt out with PAPERCUSP_MCP_PROXY=0; port override via
+ *      PAPERCUSP_MCP_PROXY_PORT. The proxy is a generic passthrough, so the
+ *      whole operator HTTP surface (not just /api/mcp) works through it.
+ *   4. http://localhost:3070 — the dev-box direct default (no proxy installed).
+ * The desktop never has operator.json missing, and the dev box never WRITES
+ * operator.json in steady state, so each environment lands on the right branch
+ * with no cross-contamination. Exported for tests; `probe`/`warn` injectable.
  */
-export function resolveOperatorUrl({ env = process.env, home = homedir() } = {}) {
-  if (env.PAPERCUSP_OPERATOR_URL) return env.PAPERCUSP_OPERATOR_URL;
+export function resolveOperatorUrl({
+  env = process.env,
+  home = homedir(),
+  probe = defaultMcpProxyProbe,
+  warn = (m) => console.warn(m),
+} = {}) {
+  const proxyOptedOut = env.PAPERCUSP_MCP_PROXY === '0';
+  const proxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
+  if (env.PAPERCUSP_OPERATOR_URL) {
+    // WI-1457: an explicit :3070 pin while the proxy is alive is exactly the
+    // active-but-unrouted regression — honor the override, but say so loudly.
+    if (!proxyOptedOut && /:3070\b/.test(env.PAPERCUSP_OPERATOR_URL) && probe(proxyPort)) {
+      warn(
+        `psu: PAPERCUSP_OPERATOR_URL pins ${env.PAPERCUSP_OPERATOR_URL} but the resilient MCP proxy is ACTIVE on :${proxyPort} — ` +
+          `this session bypasses deploy-restart resilience (WI-1457). Unset the override (or point it at :${proxyPort}) to ride the proxy.`,
+      );
+    }
+    return env.PAPERCUSP_OPERATOR_URL;
+  }
   try {
     const d = JSON.parse(readFileSync(join(home, '.papercusp', 'operator.json'), 'utf8'));
     if (d && typeof d.httpUrl === 'string' && d.httpUrl) return d.httpUrl;
     if (d && d.port) return `http://127.0.0.1:${d.port}`;
   } catch {
-    /* no/!readable operator.json (the dev box) → dev-port fallback below */
+    /* no/!readable operator.json (the dev box) → proxy / dev-port fallback below */
   }
+  // WI-1457 hardening: prefer the always-up resilient proxy over direct :3070
+  // whenever it is verifiably alive, so re-minted configs / fresh launches can
+  // never silently regress the P-006 cutover again.
+  if (!proxyOptedOut && probe(proxyPort)) return `http://127.0.0.1:${proxyPort}`;
   return 'http://localhost:3070';
 }
 
