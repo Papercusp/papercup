@@ -73,6 +73,15 @@ export async function parkSlotMessage(
 export interface DrainSlotInput {
   slot: SlotSelector;
   harnessSlug?: string | null;
+  /**
+   * Drain the slot across EVERY harness_slug in the workspace (ignore the
+   * harnessSlug key entirely). The workspace-Queen drain (WI-682) needs this:
+   * there is ONE Queen per workspace covering all started hives, but senders
+   * park `@role:queen` rows under whatever harness context they had — including
+   * NULL — so a slug-keyed drain strands every row parked under a different
+   * (or absent) slug. Slug-scoped slots (per-hive roles) leave this unset.
+   */
+  anyHarnessSlug?: boolean;
   /** The spawnee ownerId the parked messages are being delivered to. */
   toOwner: string;
   /** epoch ms "now" — also the expiry cutoff. */
@@ -98,7 +107,7 @@ export async function drainSlotMessages(
      WHERE workspace_id = ${ws}
        AND slot_kind = ${input.slot.kind}
        AND slot_ref = ${input.slot.ref}
-       AND harness_slug IS NOT DISTINCT FROM ${input.harnessSlug ?? null}
+       AND ${input.anyHarnessSlug ? sql`TRUE` : sql`harness_slug IS NOT DISTINCT FROM ${input.harnessSlug ?? null}`}
        AND delivered_ts IS NULL
        AND dropped_ts IS NULL
        AND (ttl_ms IS NULL OR created_ts + ttl_ms > ${input.nowMs})

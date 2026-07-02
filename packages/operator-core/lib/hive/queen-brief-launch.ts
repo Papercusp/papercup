@@ -119,9 +119,13 @@ async function gatherInbox(workspaceId: string, installSlug: string, limit = 10)
     const queenOwner = await resolveQueenOwner(sql, workspaceId, installSlug);
     if (!queenOwner) return [];
     const inboxRows = await runWithWorkspace(workspaceId, () => readInbox(queenOwner, {})).catch(() => [] as CoordEnvelope[]);
+    // anyHarnessSlug (WI-682): there is ONE workspace Queen covering all started
+    // hives, but senders park `@role:queen` rows under whatever harness context
+    // they had — often NULL (a coord:send with no harness scope). A slug-keyed
+    // drain stranded those rows forever (18 undelivered nudges, 06-25→07-02).
     const slotRows = await drainSlotMessages(sql, {
       slot: { kind: 'role', ref: 'queen' },
-      harnessSlug: installSlug,
+      anyHarnessSlug: true,
       toOwner: queenOwner,
       nowMs: Date.now(),
       workspaceId,

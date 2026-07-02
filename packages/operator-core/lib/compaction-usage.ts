@@ -144,28 +144,19 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
  * marker) for a session owner — the window signal `defaultCompactionLimitForSpec`
  * keys on (context-trimming-tiers P-002/P-006).
  *
- * Source 1: the per-owner session config dir's `settings.json` `model` field
- * (~/.papercusp/session-claude/<owner>/settings.json) — covers interactive AND
- * spawned psu Claude sessions, and tracks a mid-session `/model` switch (Claude
- * persists it there). Source 2: a `--model` in the recorded launch argv
- * (adv_sessions). null when neither resolves — callers treat null as the
- * conservative 200k window (a low limit on a big window is deliberate leanness;
- * the reverse is fatal).
+ * Source 1: a `--model` in the recorded launch argv (adv_sessions) — the only
+ * PER-SESSION truth. Source 2 (fallback when no `--model` was recorded): the
+ * session config dir's `settings.json` `model` field. Order matters: that
+ * `settings.json` is a SYMLINK back to the shared `~/.claude/settings.json`
+ * (interactive-claude-config mirror), so it reports the BOX-DEFAULT model —
+ * checking it first handed every `psu --model=sonnet` fleet member the
+ * opus[1m] 500k limit on a 200k window, a guaranteed context death
+ * (context-trimming-tiers P-031 gap 1, 2026-07-02). argv-first fails safe:
+ * a conservative spec on a big window is deliberate leanness; a big spec on a
+ * 200k window is fatal. null when neither resolves — callers treat null as the
+ * conservative 200k window.
  */
 export async function resolveModelSpecForOwner(ownerId: string): Promise<string | null> {
-  // Guard the path join: owner ids are our own (su-/s-/pus- UUIDs), but never
-  // let a hostile id escape the session-claude root.
-  if (ownerId && !ownerId.includes('/') && !ownerId.includes('..')) {
-    try {
-      const { papercuspSessionClaudeBase } = await import('./claude-sessions');
-      const path = await import('node:path');
-      const p = path.join(papercuspSessionClaudeBase(), ownerId, 'settings.json');
-      const j = JSON.parse(fs.readFileSync(p, 'utf8')) as { model?: unknown };
-      if (typeof j.model === 'string' && j.model.trim()) return j.model.trim();
-    } catch {
-      /* fall through to argv */
-    }
-  }
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const rows = await getOrgPg().sql<{ launch_argv: unknown }[]>`
@@ -180,14 +171,31 @@ export async function resolveModelSpecForOwner(ownerId: string): Promise<string 
       for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (typeof a !== 'string') continue;
-        if (a.startsWith('--model=')) return a.slice('--model='.length).trim() || null;
+        if (a.startsWith('--model=')) {
+          const v = a.slice('--model='.length).trim();
+          if (v) return v;
+        }
         if (a === '--model' && typeof argv[i + 1] === 'string') {
-          return (argv[i + 1] as string).trim() || null;
+          const v = (argv[i + 1] as string).trim();
+          if (v) return v;
         }
       }
     }
   } catch {
-    /* best-effort */
+    /* best-effort — fall through to settings.json */
+  }
+  // Guard the path join: owner ids are our own (su-/s-/pus- UUIDs), but never
+  // let a hostile id escape the session-claude root.
+  if (ownerId && !ownerId.includes('/') && !ownerId.includes('..')) {
+    try {
+      const { papercuspSessionClaudeBase } = await import('./claude-sessions');
+      const path = await import('node:path');
+      const p = path.join(papercuspSessionClaudeBase(), ownerId, 'settings.json');
+      const j = JSON.parse(fs.readFileSync(p, 'utf8')) as { model?: unknown };
+      if (typeof j.model === 'string' && j.model.trim()) return j.model.trim();
+    } catch {
+      /* unresolvable */
+    }
   }
   return null;
 }
