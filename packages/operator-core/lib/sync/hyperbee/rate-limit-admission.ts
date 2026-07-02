@@ -64,6 +64,9 @@ export const CONTENT_TABLE_TAGS: ReadonlySet<string> = new Set([
   'features-by-id',
   'plans-by-slug',
   'plan-parts',
+  // F1-1/F1-6 (federated-scout-gym): shareable standing facts are agent-authored
+  // CONTENT — a fact-flood is exactly the rowsPerHour spam vector the caps target.
+  'agent-facts-by-key',
 ]);
 
 /**

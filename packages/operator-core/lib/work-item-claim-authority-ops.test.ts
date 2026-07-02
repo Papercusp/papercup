@@ -20,11 +20,12 @@ function fakeClaim(over: Partial<WorkItemClaim> = {}): WorkItemClaim {
 }
 
 function makeFake(): { coord: WorkItemClaimCoordinator; calls: Record<string, unknown[]> } {
-  const calls: Record<string, unknown[]> = { acquire: [], heartbeat: [], release: [] };
+  const calls: Record<string, unknown[]> = { acquire: [], heartbeat: [], release: [], releaseForItem: [] };
   const coord: WorkItemClaimCoordinator = {
     acquire: vi.fn(async (opts): Promise<AcquireResult> => { calls.acquire.push(opts); return { ok: true, claim: fakeClaim() }; }),
     heartbeat: vi.fn(async (p): Promise<HeartbeatResult> => { calls.heartbeat.push(p); return { renewed: true, held: true, expiresTs: '2026-06-08T12:30:00.000Z' }; }),
     release: vi.fn(async (p): Promise<boolean> => { calls.release.push(p); return true; }),
+    releaseForItem: vi.fn(async (p): Promise<boolean> => { calls.releaseForItem.push(p); return true; }),
   };
   return { coord, calls };
 }
@@ -33,10 +34,15 @@ describe('registerWorkItemClaimAuthorityOps', () => {
   beforeEach(() => __resetAuthorityOpsForTests());
   afterEach(() => __resetAuthorityOpsForTests());
 
-  it('registers the three work-item claim op kinds', () => {
+  it('registers the four work-item claim op kinds', () => {
     registerWorkItemClaimAuthorityOps(makeFake().coord);
     expect(registeredAuthorityOpKinds()).toEqual(
-      [WORK_ITEM_CLAIM_OP_KINDS.acquire, WORK_ITEM_CLAIM_OP_KINDS.heartbeat, WORK_ITEM_CLAIM_OP_KINDS.release].sort(),
+      [
+        WORK_ITEM_CLAIM_OP_KINDS.acquire,
+        WORK_ITEM_CLAIM_OP_KINDS.heartbeat,
+        WORK_ITEM_CLAIM_OP_KINDS.release,
+        WORK_ITEM_CLAIM_OP_KINDS.releaseForItem,
+      ].sort(),
     );
   });
 
@@ -44,7 +50,7 @@ describe('registerWorkItemClaimAuthorityOps', () => {
     const { coord } = makeFake();
     registerWorkItemClaimAuthorityOps(coord);
     expect(() => registerWorkItemClaimAuthorityOps(coord)).not.toThrow();
-    expect(registeredAuthorityOpKinds()).toHaveLength(3);
+    expect(registeredAuthorityOpKinds()).toHaveLength(4);
   });
 
   it('routes a valid acquire envelope to the coordinator + returns its result', async () => {
@@ -85,6 +91,29 @@ describe('registerWorkItemClaimAuthorityOps', () => {
     const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: 'work-item.claim.bogus', payload: {} });
     expect(res.ok).toBe(false);
     expect(res.error).toBe('unknown_kind');
+  });
+
+  it('EI-6832: routes a valid release-for-item envelope to the coordinator (no claimId required)', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord);
+    const payload = { workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', owner: 'su-a' };
+    const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.releaseForItem, payload });
+    expect(res.ok).toBe(true);
+    expect(res.result).toBe(true);
+    expect(calls.releaseForItem).toHaveLength(1);
+    expect(calls.releaseForItem[0]).toMatchObject({ workItemId: 'F-001', owner: 'su-a' });
+  });
+
+  it('EI-6832: release-for-item rejects an invalid payload (missing owner)', async () => {
+    registerWorkItemClaimAuthorityOps(makeFake().coord);
+    const res = await handleAuthorityRpc({
+      harnessSlug: 'hive-a',
+      kind: WORK_ITEM_CLAIM_OP_KINDS.releaseForItem,
+      payload: { workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001' },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('handler_error');
+    expect(res.message).toMatch(/invalid payload/);
   });
 });
 
@@ -131,6 +160,18 @@ describe('caller-standing gate (EI-284)', () => {
     });
     expect(res.result).toBe(true);
     expect(calls.release).toHaveLength(1);
+  });
+
+  it('EI-6832: release-for-item is also NOT gated — mirrors release', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, { isCallerRevoked: async () => true });
+    const res = await handleAuthorityRpc({
+      harnessSlug: 'hive-a',
+      kind: WORK_ITEM_CLAIM_OP_KINDS.releaseForItem,
+      payload,
+    });
+    expect(res.result).toBe(true);
+    expect(calls.releaseForItem).toHaveLength(1);
   });
 
   it('a payload WITHOUT a holderPubkey skips the check (no identity to judge — fail-open)', async () => {

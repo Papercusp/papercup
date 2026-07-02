@@ -26,11 +26,14 @@
  * capability:terminal desktop-spawn path). Desktop-spawn is Linux+macOS only; on
  * Windows (operator in WSL) spawnConsole returns 501 with an actionable error.
  */
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { papercuspPathForWorkspace } from '../../papercusp-root';
 import {
   createFleetIfAbsent,
   fleetSlugFromName,
@@ -120,6 +123,73 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
   for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
   return parts.join(' ');
+}
+
+/**
+ * The universal MEMBER OPERATING BASELINE rules, composed onto EVERY member's
+ * launch context ahead of any per-fleet brief. Encodes the drain-discipline
+ * lessons learned watching real fleets run: check-already-fixed before building,
+ * flag to the leader (not just the broadcast stream), don't re-claim a
+ * ping-ponging item, and always ship completion evidence. Single source so the
+ * member's full text and the leader's echo (headlines) can never drift.
+ */
+export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }> = [
+  {
+    head: 'Already-fixed check FIRST',
+    body: 'Before you build anything, spend ~2 min confirming the fix has not already shipped — read the code/tests, check `git log` and sibling work-items. Re-implementing what a peer already fixed is the single biggest waste of fleet time. If it is already done, close it as already-fixed WITH the evidence you checked (files/tests) — do not rebuild it.',
+  },
+  {
+    head: 'Flag to your LEADER, not just the broadcast stream',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send / coord:escalate) so it lands in their inbox — a `*` broadcast is easy to miss.',
+  },
+  {
+    head: 'Do not re-claim a ping-ponging item',
+    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of `claim_next` and you loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+  },
+  {
+    head: 'Completion evidence is mandatory',
+    body: 'Every terminal transition carries a completion_ref stating (a) files / root-cause, (b) the exact test or verification you ran AND its result, (c) any tests you added. Auditors mark you CLEAN on stated evidence — thin evidence on solid work still gets dinged.',
+  },
+  {
+    head: '"Not available" means DEFERRED, not missing',
+    body: 'An InputValidationError / "not available" on a tool means load it (ToolSearch / tools:find) and continue — never stop or report a tool as unavailable.',
+  },
+  {
+    head: 'Edit only the staging tree; git-sync owns commit + push',
+    body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around the lock.',
+  },
+];
+
+/** Render the full member-facing baseline markdown (the numbered rules with a
+ *  short header). Pure + exported for tests. */
+export function renderMemberBaseline(opts: { fleetSlug: string; plan: string; count: number }): string {
+  const { fleetSlug, plan, count } = opts;
+  const rules = MEMBER_BASELINE_RULES.map((r, i) => `${i + 1}. **${r.head}.** ${r.body}`).join('\n');
+  return [
+    '# Fleet member — operating baseline',
+    '',
+    `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
+    '',
+    'Your loop, until nothing is claimable: **claim** the highest-priority unclaimed non-terminal item (`work_items:claim_next`) → **read** it fully (`work_items:get`) → **classify + act** (real fix / already-fixed-close / genuinely-blocked) → drive it to a **terminal** state with evidence → repeat.',
+    '',
+    '## Non-negotiables',
+    rules,
+  ].join('\n');
+}
+
+/** Compose a member's launch context = the universal baseline + (optionally) the
+ *  leader's per-fleet brief BELOW it (the brief wins on fleet-specifics). Pure +
+ *  exported for tests. */
+export function composeMemberLaunchContext(opts: {
+  fleetSlug: string;
+  plan: string;
+  count: number;
+  customBriefText?: string | null;
+}): string {
+  const baseline = renderMemberBaseline(opts);
+  const brief = opts.customBriefText?.trim();
+  if (!brief) return `${baseline}\n`;
+  return `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`;
 }
 
 function err(text: string) {
@@ -272,6 +342,39 @@ export default defineTool({
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
 
+    // Compose every member's launch context = the universal MEMBER OPERATING
+    // BASELINE + (optionally) the leader's per-fleet brief below it. Written to the
+    // workspace's launch-context dir (NON-repo — never the staging tree, which
+    // git-sync would try to commit) and passed to psu as each member's appended
+    // system prompt. Resilient: any read/write failure falls back to the raw
+    // launchContext so a launch never dies on a context-compose hiccup.
+    let effectiveLaunchContext = args.launchContext?.trim() || undefined;
+    let memberLaunchContextPath: string | null = null;
+    let baselineApplied = false;
+    let briefReadError: string | null = null;
+    try {
+      let customBriefText: string | null = null;
+      if (effectiveLaunchContext) {
+        try {
+          customBriefText = readFileSync(effectiveLaunchContext, 'utf8');
+        } catch (e: any) {
+          briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
+        }
+      }
+      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText });
+      const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
+      mkdirSync(ctxDir, { recursive: true });
+      const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context.md`);
+      writeFileSync(ctxPath, composed, 'utf8');
+      effectiveLaunchContext = ctxPath;
+      memberLaunchContextPath = ctxPath;
+      baselineApplied = true;
+    } catch {
+      // Compose/write failed — fall back to the raw launchContext (or none). The
+      // launch still proceeds; the baseline just isn't prepended this time.
+      baselineApplied = false;
+    }
+
     // Base envelope (cwd/env) once — skip the superuser .mcp.json (each member's psu
     // bootstraps its own MCP), exactly like capability:terminal.
     let base;
@@ -304,7 +407,7 @@ export default defineTool({
       role: args.role?.trim() || undefined,
       model: args.model?.trim() || undefined,
       feature: args.feature?.trim() || undefined,
-      launchContext: args.launchContext?.trim() || undefined,
+      launchContext: effectiveLaunchContext,
       profile: args.profile?.trim() || undefined,
       contextSize: args.contextSize,
       brain: args.brain || undefined,
@@ -369,6 +472,16 @@ export default defineTool({
       lines.push(
         '  5. Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Queen issues graceful-drain cues, loop:end and report the outcome to the owner. Do not spin empty wakes.',
       );
+      if (baselineApplied) {
+        lines.push(
+          'Your members were launched with this MEMBER OPERATING BASELINE (already told to them — do NOT re-issue or contradict it; your custom brief, if any, is layered BELOW it and wins on fleet-specifics):',
+        );
+        for (let i = 0; i < MEMBER_BASELINE_RULES.length; i++) {
+          lines.push(`  ${i + 1}. ${MEMBER_BASELINE_RULES[i].head}`);
+        }
+        if (memberLaunchContextPath) lines.push(`  (full composed member context: ${memberLaunchContextPath})`);
+      }
+      if (briefReadError) lines.push(briefReadError);
     }
 
     return json(
@@ -382,6 +495,10 @@ export default defineTool({
         account: args.account?.trim() || null,
         requested: count,
         sizingAdvisory,
+        memberBaselineApplied: baselineApplied,
+        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
+        memberLaunchContextPath,
+        briefReadError,
         opened,
         failed,
         message: lines.join('\n'),

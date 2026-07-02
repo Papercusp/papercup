@@ -23,6 +23,12 @@ vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-1',
 }));
 
+// Keep the handler's launch-context compose-write out of the real ~/.papercusp
+// during tests — point the workspace home at a throwaway tmp dir.
+vi.mock('../../../papercusp-root', () => ({
+  papercuspPathForWorkspace: () => '/tmp/fleet-launch-ctx-test',
+}));
+
 vi.mock('../../../agent-fleets-store', () => ({
   createFleetIfAbsent: vi.fn(async () => ({
     record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
@@ -59,7 +65,12 @@ vi.mock('../../../inference-gateway/observability', () => ({
   fetchGatewayHeadroom: (...args: unknown[]) => fetchGatewayHeadroomMock(...args),
 }));
 
-import tool, { memberLaunchCommand } from '../launch-on-plan';
+import tool, {
+  memberLaunchCommand,
+  composeMemberLaunchContext,
+  renderMemberBaseline,
+  MEMBER_BASELINE_RULES,
+} from '../launch-on-plan';
 
 describe('memberLaunchCommand', () => {
   beforeEach(() => {
@@ -206,5 +217,79 @@ describe('memberLaunchCommand', () => {
     expect(notWarnedPayload.ok).toBe(true);
     expect(notWarnedPayload.sizingAdvisory).toBeNull();
     expect(notWarnedPayload.message).not.toMatch(/Sizing advisory:/);
+  });
+});
+
+describe('composeMemberLaunchContext / renderMemberBaseline', () => {
+  it('renders the universal baseline with every rule headline + the fleet/plan context', () => {
+    const md = renderMemberBaseline({ fleetSlug: 'ops', plan: 'my-plan', count: 4 });
+    expect(md).toContain('one of 4 parallel worker agents in fleet `ops`');
+    expect(md).toContain('working plan `my-plan`');
+    for (const r of MEMBER_BASELINE_RULES) expect(md).toContain(r.head);
+    // the load-bearing rules the whole feature exists for
+    expect(md).toContain('Already-fixed check FIRST');
+    expect(md).toContain('Flag to your LEADER');
+    expect(md).toContain('Do not re-claim a ping-ponging item');
+  });
+
+  it('singularizes the worker count for a 1-member fleet', () => {
+    const md = renderMemberBaseline({ fleetSlug: 'f', plan: 'p', count: 1 });
+    expect(md).toContain('one of 1 parallel worker agent in fleet');
+    expect(md).not.toContain('worker agents');
+  });
+
+  it('returns the baseline alone when no custom brief is given', () => {
+    const md = composeMemberLaunchContext({ fleetSlug: 'f', plan: 'p', count: 2 });
+    expect(md).toContain('# Fleet member — operating baseline');
+    expect(md).not.toContain('Fleet-specific brief');
+  });
+
+  it('layers the leader brief BELOW the baseline (brief wins on specifics)', () => {
+    const md = composeMemberLaunchContext({
+      fleetSlug: 'f',
+      plan: 'p',
+      count: 2,
+      customBriefText: 'CUSTOM DRAIN RULES for this fleet',
+    });
+    const baselineIdx = md.indexOf('# Fleet member — operating baseline');
+    const sepIdx = md.indexOf('Fleet-specific brief');
+    const briefIdx = md.indexOf('CUSTOM DRAIN RULES for this fleet');
+    expect(baselineIdx).toBeGreaterThanOrEqual(0);
+    expect(sepIdx).toBeGreaterThan(baselineIdx); // the brief section comes after the baseline
+    expect(briefIdx).toBeGreaterThan(sepIdx);
+  });
+
+  it('ignores an empty / whitespace custom brief (baseline only)', () => {
+    const md = composeMemberLaunchContext({ fleetSlug: 'f', plan: 'p', count: 1, customBriefText: '   \n' });
+    expect(md).not.toContain('Fleet-specific brief');
+  });
+});
+
+describe('fleet:launch-on-plan handler — member baseline wiring', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('composes the member baseline and threads its path into every member command', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    // The leader always learns, structurally, what members were told.
+    expect(payload.memberBaselineHeadlines).toHaveLength(MEMBER_BASELINE_RULES.length);
+    expect(payload.memberBaselineHeadlines).toContain('Already-fixed check FIRST');
+    expect(typeof payload.memberBaselineApplied).toBe('boolean');
+    // On a writable tmp the compose lands and its path threads into psu's --launch-context.
+    if (payload.memberBaselineApplied) {
+      expect(payload.memberLaunchContextPath).toContain('fleet-alpha-fleet-launch-context.md');
+      const firstGreeting = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
+      expect(firstGreeting).toContain('--launch-context=');
+      expect(firstGreeting).toContain('fleet-alpha-fleet-launch-context.md');
+    }
   });
 });

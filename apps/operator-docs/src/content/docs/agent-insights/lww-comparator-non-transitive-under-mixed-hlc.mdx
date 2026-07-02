@@ -181,3 +181,7 @@ re-introduces the same amplifier one absurd stamp can poison the whole hive with
   WI-1672 amplifier family, landed as defense-in-depth after the node-id fix.
 - Adjacent: D-001 `fed_hlc` ordering (`lww-hlc-fedts-divergence.test.ts`), mig-314,
   mig-458 (`fed_order_key()`), `hlc-stamp.ts`, `@papercusp/locks-core/hlc.ts`.
+- Adjacent but DISTINCT (not an ordering bug — do not expect node ids to fix it):
+  WI-1684, local-del resurrection under skipOwnOps (no tombstone) — see
+  `agent-insights/federation-public-release-known-limitations` §4a; pinned by the
+  WI-1684 teeth test in `convergence-fuzz.test.ts`.

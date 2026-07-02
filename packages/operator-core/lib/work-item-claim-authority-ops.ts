@@ -24,6 +24,7 @@ import {
   acquireClaimLocal,
   heartbeatClaimLocal,
   releaseClaimLocal,
+  releaseClaimForItemLocal,
   refusedAcquire,
   WORK_ITEM_CLAIM_OP_KINDS,
   type AcquireOpts,
@@ -31,6 +32,7 @@ import {
   type HeartbeatClaimParams,
   type HeartbeatResult,
   type ReleaseClaimParams,
+  type ReleaseClaimForItemParams,
 } from './work-item-claims';
 import { loadRevokedPubkeys } from './sync/hyperbee/load-revoked-pubkeys';
 
@@ -42,6 +44,7 @@ export interface WorkItemClaimCoordinator {
   acquire(opts: AcquireOpts): Promise<AcquireResult>;
   heartbeat(p: HeartbeatClaimParams): Promise<HeartbeatResult>;
   release(p: ReleaseClaimParams): Promise<boolean>;
+  releaseForItem(p: ReleaseClaimForItemParams): Promise<boolean>;
 }
 
 /** The production coordinator: the un-routed claim-store SQL legs. */
@@ -49,6 +52,7 @@ export const DEFAULT_WORK_ITEM_CLAIM_COORDINATOR: WorkItemClaimCoordinator = {
   acquire: acquireClaimLocal,
   heartbeat: heartbeatClaimLocal,
   release: releaseClaimLocal,
+  releaseForItem: releaseClaimForItemLocal,
 };
 
 function asAcquireOpts(payload: unknown): AcquireOpts {
@@ -93,6 +97,20 @@ function asReleaseParams(payload: unknown): ReleaseClaimParams {
     throw new Error('work-item.claim.release: invalid payload (workspaceId, harnessSlug, workItemId, claimId, owner required)');
   }
   return p as ReleaseClaimParams;
+}
+
+function asReleaseForItemParams(payload: unknown): ReleaseClaimForItemParams {
+  const p = payload as Partial<ReleaseClaimForItemParams>;
+  if (
+    !p ||
+    typeof p.workspaceId !== 'string' ||
+    typeof p.harnessSlug !== 'string' ||
+    typeof p.workItemId !== 'string' ||
+    typeof p.owner !== 'string'
+  ) {
+    throw new Error('work-item.claim.release-for-item: invalid payload (workspaceId, harnessSlug, workItemId, owner required)');
+  }
+  return p as ReleaseClaimForItemParams;
 }
 
 /**
@@ -189,5 +207,11 @@ export function registerWorkItemClaimAuthorityOps(
   });
   registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.release, async (payload) =>
     coordinator.release(asReleaseParams(payload)),
+  );
+  // EI-6832: same "release is deliberately NOT gated" posture as the claimId-checked
+  // release above — a stale lease being cleared as its item returns to the pool is
+  // exactly what the hive wants, never something a revoked holder should be blocked from.
+  registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.releaseForItem, async (payload) =>
+    coordinator.releaseForItem(asReleaseForItemParams(payload)),
   );
 }

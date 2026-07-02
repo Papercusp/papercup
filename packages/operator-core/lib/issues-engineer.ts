@@ -442,10 +442,29 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
 }
 
 export async function getIssue(id: string): Promise<EngineerIssue | null> {
+  return getIssueInWorkspace(issuesScopeWorkspace(), id);
+}
+
+/**
+ * Read one issue-family row scoped to an EXPLICIT workspace, bypassing the
+ * `issuesScopeWorkspace()` re-derivation.
+ *
+ * EI-6480: the issue-claim path (`claimNextIssueWorkItem`) claims a row via an atomic
+ * UPDATE that fixes the workspace to `issueWs = issuesScopeWorkspace()` captured ONCE,
+ * then re-reads the claimed row to build its `WorkItem`. If that re-read calls the bare
+ * `getIssue()` it re-derives `issuesScopeWorkspace()` a SECOND time — and that value can
+ * drift between the two calls (the ISSUES_PER_WORKSPACE flag cache self-heals on a TTL,
+ * so a mid-call refresh can flip `default` ⇄ the active workspace). A drift makes the
+ * re-read miss the just-claimed row → `getIssue` returns null → the claim path returned
+ * null while the row stayed `taken_by`-set: a LEAKED claim reported to the caller as a
+ * spurious "ready but a peer raced you (retry)" miss. Re-reading in the SAME captured
+ * workspace the row was claimed in removes that drift entirely.
+ */
+export async function getIssueInWorkspace(workspaceId: string, id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}`;
+     WHERE workspace_id = ${workspaceId} AND issue_id = ${id}`;
   return rows[0] ? toIssue(rows[0]) : null;
 }
 

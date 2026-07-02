@@ -86,6 +86,7 @@ export const WORK_ITEM_CLAIM_OP_KINDS = {
   acquire: 'work-item.claim.acquire',
   heartbeat: 'work-item.claim.heartbeat',
   release: 'work-item.claim.release',
+  releaseForItem: 'work-item.claim.release-for-item',
 } as const;
 
 /** The authority scope key for an op: the Hive home if present, else the harness slug. */
@@ -274,6 +275,60 @@ export async function releaseClaimLocal(p: ReleaseClaimParams): Promise<boolean>
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        AND work_item_id = ${workItemId}
        AND claim_id = ${claimId}::uuid AND owner = ${owner}
+    RETURNING work_item_id
+  `;
+  return rows.length > 0;
+}
+
+/** Serialisable release-for-item params — the payload an authority RPC carries. */
+export interface ReleaseClaimForItemParams {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  hiveSlug?: string | null;
+  /** The item's CURRENT holder (its `taken_by`/assignee) at release time — NOT
+   *  necessarily the exact claimId, since the base work-item release path (voluntary
+   *  `work_items:release`, EI-6832) doesn't track the lease's claimId at all. Owner-
+   *  scoped (not unconditional) so this can never delete a DIFFERENT claimant's lease
+   *  in the rare race where someone else re-claimed the item a moment earlier. */
+  owner: string;
+}
+
+/**
+ * EI-6832: release the LEASE for a work item that is returning to the unclaimed pool
+ * via `work_items:release` (voluntary release / reap), NOT via the lease's own
+ * claimId-checked `releaseClaim`. Without this, `acquireClaimLocal`/`heartbeatClaimLocal`
+ * never touch `work_item_claims` on a base-table release — the item's `taken_by` clears
+ * (so it re-enters the visible unclaimed pool) but its PRIOR owner's lease row stays LIVE
+ * for up to its TTL (default 30m, max 2h). Any OTHER agent that then self-selects the
+ * item via `work_items:claim_next` succeeds at the local `taken_by` UPDATE, then loses the
+ * `leaseClaimedWorkItem` arbitration to that stale lease (`acquireClaimLocal`'s
+ * `ON CONFLICT ... WHERE expired OR owner = EXCLUDED.owner` — neither holds for a
+ * different, not-yet-expired owner) and gets bounced back to the pool — reporting a claim
+ * MISS even though `readyUnclaimed > 0`. Confirmed LIVE 2026-07-02 (WI-652: `taken_by`
+ * NULL / `status` open, yet a lease for a prior, unrelated owner not expiring for ~14
+ * more minutes) — this is a genuine, reproducing instance of the class of symptom
+ * EI-6832 reported ("claim_next misses despite readyUnclaimed>0"), not merely a race.
+ * Routed through the per-Hive claim authority like every other claim mutation (D-002);
+ * owner-scoped (not unconditional) so a genuine race where someone ELSE re-claimed the
+ * item a moment earlier is never clobbered. Best-effort: callers (work-items.ts
+ * `releaseWorkItem`) never let a failure here block the underlying release.
+ */
+export async function releaseClaimForItem(opts: ReleaseClaimForItemParams): Promise<boolean> {
+  return getWorkItemClaimAuthority().route(scopeOf(opts), {
+    local: () => releaseClaimForItemLocal(opts),
+    remote: { kind: WORK_ITEM_CLAIM_OP_KINDS.releaseForItem, payload: opts, decode: (raw) => raw as boolean },
+  });
+}
+
+/** The LOCAL (un-routed) release-for-item — raw SQL against THIS peer's PG. See {@link releaseClaimForItem}. */
+export async function releaseClaimForItemLocal(p: ReleaseClaimForItemParams): Promise<boolean> {
+  const { workspaceId, harnessSlug, workItemId, owner } = p;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ work_item_id: string }[]>`
+    DELETE FROM harness_shared.work_item_claims
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       AND work_item_id = ${workItemId} AND owner = ${owner}
     RETURNING work_item_id
   `;
   return rows.length > 0;

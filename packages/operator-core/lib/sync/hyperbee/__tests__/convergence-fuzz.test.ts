@@ -164,7 +164,7 @@ describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnO
   });
 });
 
-describe('WI-1674 — local-del resurrection under skipOwnOps (no tombstone): a SEPARATE open gap', () => {
+describe('WI-1684 — local-del resurrection under skipOwnOps (no tombstone): a SEPARATE open gap', () => {
   // Found while fixing WI-1672: an author DELETES a row locally (trigger path —
   // row gone, NO tombstone) and its own del is skipOwnOps-excluded from its own
   // fold. A CONCURRENT foreign put with a LOWER hlc then wins the author's fold
@@ -174,7 +174,7 @@ describe('WI-1674 — local-del resurrection under skipOwnOps (no tombstone): a 
   // stays deleted: split-brain on row PRESENCE. Node ids (migration 459) cannot
   // fix this — it is a missing-tombstone gap, not an ordering tie.
   // CHARACTERISATION/TEETH: pins that the gap exists TODAY. Flip to a
-  // convergence assertion when WI-1674 lands a fix (tombstones, or folding own
+  // convergence assertion when WI-1684 lands a fix (tombstones, or folding own
   // ops into the winners map).
   it('TEETH: dels + production topology diverge on row presence even WITH node ids', async () => {
     let diverged = 0;

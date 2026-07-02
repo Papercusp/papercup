@@ -669,6 +669,16 @@ export const FLAGS = {
   // `hiveGit.mode` setting is flipped to 'bridged' (the owner-set per-hive activation);
   // this flag is the fleet-wide kill-switch, not the activation surface.
   GITHUB_BRIDGE: "papercusp-github-bridge",
+  // p2p-work-distribution-2026-07-02 P-002/P-005: the P2P work-sharing surface —
+  // the /settings/p2p page (host opt-in, peers capability matrix, GLOBAL
+  // kill-switch) + the foreign-work admission contract Phase-1 consumers read.
+  // Default ON (derived FLAG_DEFAULTS), the GITHUB_BRIDGE pattern: this flag is
+  // the FLEET-WIDE kill-switch, not the activation surface — activation is the
+  // real surface (explicit grants P-001 + host opt-in, zero/empty by default per
+  // M11), so inertness is structural and no dark-allowlist entry is needed.
+  // P-005 layers the rollout TIERS on top (tier 1 same-owner / tier 2 delegate-
+  // capped / tier 3 operator grants).
+  P2P: "papercusp-p2p",
   // git-sync-dx-hardening-2026-06-17 P-004: DERIVED commit attribution — when ON, git-sync
   // groups dirty files by the agent who declared them (coord:declare-intent / lock holder)
   // and makes per-agent commits with the intent message + a Co-Authored-By trailer (catch-all

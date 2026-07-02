@@ -26,7 +26,7 @@ import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
 import { hiveHomeSlugForHarness } from './hive-federation';
-import { acquireClaim } from './work-item-claims';
+import { acquireClaim, releaseClaimForItem } from './work-item-claims';
 import { getBootedHarness } from './sync/hyperbee/boot-all';
 import { resolveMyPubkey } from './orchestrator/distributed-claim';
 
@@ -83,6 +83,37 @@ export async function leaseClaimedWorkItem(opts: {
     intent: 'work-stealing claim (claim_next)',
   });
   return res.ok;
+}
+
+/**
+ * EI-6832: best-effort lease cleanup for a work item RETURNING to the unclaimed pool via
+ * `work_items:release` (voluntary release, not `leaseClaimedWorkItem`'s own claimId-checked
+ * release). See {@link releaseClaimForItem}'s doc comment for the full mechanism this
+ * closes (a stale, not-yet-expired lease silently poisoning the item for every OTHER
+ * claimant until its TTL lapses — up to 30m/2h — even though the item is visibly
+ * unclaimed). A no-op when the lease flag is off (nothing to clean up) or `owner` is
+ * empty (nothing was ever leased under that identity). NEVER throws — callers must not
+ * let this cleanup's failure block the actual release; a leftover stale lease degrades
+ * to "this one item is temporarily un-self-selectable", never a correctness break.
+ */
+export async function releaseWorkItemLease(opts: { harness: string; workItemId: string; owner: string | null | undefined }): Promise<void> {
+  if (!claimLeaseOn || !opts.owner) return;
+  try {
+    const workspaceId = activeWorkspaceId();
+    // Same hiveSlug resolution as leaseClaimedWorkItem (above), so a release routes to
+    // the SAME authority scope the original acquire did — on a single box this is a
+    // no-op (authority = self either way); cross-Swarm it matters.
+    let hiveSlug: string | null = null;
+    try {
+      hiveSlug = await hiveHomeSlugForHarness(workspaceId, opts.harness);
+    } catch {
+      hiveSlug = null;
+    }
+    await releaseClaimForItem({ workspaceId, harnessSlug: opts.harness, workItemId: opts.workItemId, hiveSlug, owner: opts.owner });
+  } catch {
+    // best-effort — a stale lease that outlives its TTL is a temporary DX papercut,
+    // never worth risking the caller's actual release for.
+  }
 }
 
 /**

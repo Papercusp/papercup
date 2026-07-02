@@ -56,7 +56,7 @@ federation is done.
 | True 3-machine multi-member fanout, **live** | ⛔ **Not coverable** under the current 2-server quota | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts |
 | NAT / firewall / cross-region diversity | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat** | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner's owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox) |
 | Long-running node stability (bg-host listener/handle leak) | 🔴 **Open — re-observed live** | WI-1089's fix did not hold: ~30GB RSS at ~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes |
-| LWW convergence under clock skew | 🔴 **Known S0** (one of its two sources now FIXED) | HLC-fold vs fed_ts-guard divergence (Brief D finding) remains open. The **second** divergence source — the capture-boundary two-clock bug (row `fed_ts` stamped `clock_timestamp()` by the mig-314 trigger, outbox wire ts stamped `now()` by the capture triggers, so author ≠ every receiver forever) — is **FIXED by mig 446** in BOTH capture functions (`capture_substrate_outbox` + `capture_work_items_outbox`), regression-tested (`capture-outbox-wire-ts.integration.test.ts` 3/3) and live-verified (concurrent_lww PASS, m1783013203) |
+| LWW convergence under clock skew | ✅ **All four known ordering sources FIXED (2026-07-02)** — one residual PRESENCE gap open (WI-1684) | (1) capture-boundary two-clock bug → **mig 446**; (2) HLC-fold vs fed_ts-guard order split → **mig 458** (`fed_order_key` across all 20 mutable projection writers, EI-1698); (3) exact `(ms,count)` fed_hlc TIES swap winners under counter-lockstep (WI-1672) → **mig 459** node-id total order (3-segment HLC) + locks-core `hlc.ts`; (4) one absurd-future stamp pins every recv-ratcheted clock forever (the WI-1672 amplifier) → **mig 460** + `HlcClock.maxDriftMs` ε recv clamp (600s = 2× the D-007 announce window). Evidence: production-topology convergence-fuzz sweep (TEETH + 120-seed FIXED, monotone AND skew) + forced-tie two-device PG integration test. **Still open: WI-1684** — local-del resurrection under skipOwnOps (missing tombstone; row PRESENCE split-brain; see § 4a) |
 | Revocation **read** cut-off | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)** | Post-ban owner content never reached the banned member over real VMs (~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329 |
 
 ---
@@ -225,24 +225,63 @@ still pending (Brief 3)** — today only the in-process
 tests cover the K-cut. This is a conscious product decision, not a silent hole.
 ([substrate-revocation-model](/internal/docs/agent-insights/substrate-revocation-model).)
 
-### 4. LWW convergence can diverge under clock skew (S0)
-Federated LWW can silently diverge: the merge winners-fold orders by **HLC**
-while every mutable projection's PG guard orders by **fed_ts** (wall clock). A
-single forward clock excursion anywhere can raise the global HLC floor and
-decouple the two orderings, so two honest peers materialize different rows for
-the same key. A complete fix is one ordering key of record end-to-end (carry the
-HLC column to the PG guard) — cross-cutting, needs a migration. ([hlc-merge-vs-fed-ts-guard-divergence](/internal/docs/agent-insights/hlc-merge-vs-fed-ts-guard-divergence).)
+### 4. LWW convergence under clock skew — the four ordering sources are FIXED (2026-07-02); one presence gap remains (§ 4a)
+The S0 class ("two honest peers silently materialize different rows for the same
+key") had **four** distinct sources, all now fixed:
 
-**Fixed sub-case (2026-07-02, mig 446):** even with perfectly-synced clocks,
-`fed_ts` itself diverged permanently between the author and every receiver,
-because two clock reads in the *same transaction* stamped the same op — the
-mig-314 BEFORE trigger stamps the row's `fed_ts` with `clock_timestamp()`
-while the AFTER capture triggers stamped the outbox wire `ts` with `now()`
-(txn start). Mig 446 threads the ROW's `fed_ts` as the put-op wire ts in
-**both** capture functions (`capture_substrate_outbox` AND
-`capture_work_items_outbox` — the features/issues family rides the latter; a
-fix that patches only the generic one misses it). Live-verified:
-concurrent_lww PASS, run m1783013203.
+1. **Capture-boundary two-clock bug (mig 446):** two clock reads in the *same
+   transaction* stamped the same op — the mig-314 BEFORE trigger stamps the
+   row's `fed_ts` with `clock_timestamp()` while the AFTER capture triggers
+   stamped the outbox wire `ts` with `now()` (txn start), so author ≠ every
+   receiver forever. Mig 446 threads the ROW's `fed_ts` as the put-op wire ts in
+   **both** capture functions. Live-verified (concurrent_lww PASS, m1783013203).
+2. **HLC-fold vs fed_ts-guard order split (mig 458, EI-1698):** the merge
+   winners-fold ordered by HLC while the PG guards ordered by wall-clock
+   `fed_ts` (and later, non-transitively, by a mixed rule). Mig 458 introduces
+   `harness_shared.fed_order_key(hlc, ts)` — an immutable SQL mirror of
+   `lwwPick`'s derivation — and applies it to all 40 guard clauses (put+delete)
+   across the 20 mutable projection writers: one ordering key of record
+   end-to-end. ([hlc-merge-vs-fed-ts-guard-divergence](/internal/docs/agent-insights/hlc-merge-vs-fed-ts-guard-divergence).)
+3. **Exact fed_hlc ties swap winners (WI-1672, mig 459):** after any
+   recv-ratchet episode, peers advance clocks by counter only in near-lockstep
+   and routinely mint IDENTICAL `(ms, count)` stamps; every tie-accepting `>=`
+   guard then accepts the incoming op on BOTH peers and two honest peers stably
+   SWAP winners (observed live on the wi1544 3-frame rig). Fixed by a node-id
+   total order: 3-segment HLC `<15-digit ms>:<5-digit count>:<16-hex node>`
+   (locks-core `hlc.ts` + mig 459's `hlc_clock.node_id` / 3-segment
+   `hlc_now()`/`hlc_recv()`); a genuine full tie can now only be the same stamp
+   replayed, where tie-accept is correct (idempotent). Legacy 2-segment stamps
+   lose ties deterministically on every peer.
+4. **The recv-ratchet amplifier (mig 460):** `hlc_recv`/`HlcClock.recv` blindly
+   adopted any remote `ms`, so ONE absurd-future stamp pinned the clock — and,
+   re-propagated, the whole hive — years ahead, permanently (self-demonstrated
+   live on the dev DB during WI-1672 verification). Both now refuse to ratchet
+   past `now + 600s` (2× the D-007 announce-admission window, so every
+   legitimately-admitted peer still ratchets); the op's DATA still applies,
+   only the clock advance is skipped.
+
+Evidence for 3+4: the convergence-fuzz rig now models the REAL production
+topology (`localAuthorApply` = skipOwnOps + the unguarded trigger write path;
+`lockstep` = the ratcheted counter-lockstep) — node-LESS stamps split-brain
+across a 120-seed sweep (teeth), node-carrying stamps converge on all 120
+seeds, monotone AND skew; plus the forced-tie two-device swarm + migrated-PG
+integration test (`federation-concurrent-writes-sidecar.repro.integration.test.ts`).
+
+### 4a. Local-del resurrection under skipOwnOps — row-PRESENCE split-brain (WI-1684, OPEN)
+Found by the production-topology fuzz rig while verifying the WI-1672 fix, and
+**not** fixed by node ids: an author DELETES a row locally (trigger path — row
+gone, **no tombstone**) and its own del is skipOwnOps-excluded from its own
+fold; a CONCURRENT foreign put with a LOWER fed_hlc then wins the author's fold
+among foreign ops alone and hits the projection's no-row insert path, which has
+nothing to arbitrate against → the row is RESURRECTED on the author peer only,
+while every other peer folds del + put together and keeps it deleted. Classic
+LWW-set missing-tombstone gap, specific to the local-write path bypassing the
+merge's winners map. Needs genuinely concurrent cross-peer writes straddling a
+delete, so lower frequency than WI-1672 — but silent, permanent divergence when
+it hits. Pinned by a characterisation/teeth test in `convergence-fuzz.test.ts`;
+candidate fixes on WI-1684 (fed_hlc-stamped tombstones in the projections, or
+folding own ops into the winners map for ORDERING while still skipping their
+APPLY). Fix or explicitly accept before public release.
 
 ### 5. NAT / firewall / geo assumptions — LIVE-PROVEN with one caveat (Brief 8, 2026-07-02)
 Brief 8 lifted this from the easy topology: 2 Hetzner frames **cross-region**

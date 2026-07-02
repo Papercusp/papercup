@@ -242,6 +242,15 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // CDC capture (mig 463); projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts),
   // which RECEIVER-ENFORCES author-attestation == grantor before applying (M6/L9).
   'p2p_peer_grants',
+  // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts federate
+  // as hive state (mig 461 capture triggers, shareable=true rows only — D-006 privacy;
+  // apply side partitions by receiver-stamped source_hive, H6). Keyed (workspace_id,
+  // scope, scope_ref, key, source_hive) → workspace-owned + peer-log. Projection
+  // 'agent-facts-by-key' (projections/agent-facts.ts). [Registry entry added by Lane A
+  // su-71623 to green the capture-coverage guard: the CDC capture (mig 461) + mapper
+  // landed without this classification, which red-pinned checkSubstrateCaptureCoverage
+  // for every table — flagged to the F1-1 owner su-29e3d.]
+  'agent_facts',
 ];
 
 /**

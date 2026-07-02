@@ -55,6 +55,7 @@ import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -1867,6 +1868,11 @@ export async function observeWorkItem(id: string, opts: { harness?: string } = {
 export async function releaseWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
+  // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
+  // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL (fire-and-forget,
+  // never blocks the release itself; see releaseWorkItemLease's doc comment).
+  if (wi.harness) void releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id);
     return updated ? issueToWorkItem(updated) : null;

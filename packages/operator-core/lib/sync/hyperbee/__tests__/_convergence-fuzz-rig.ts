@@ -74,7 +74,7 @@ export interface FuzzOptions {
   dupProb?: number;
   /** Probability a generated op is a `del` (default 0.12). Pass 0 to generate a
    *  put-only universe — used by tests that pin put-vs-put ORDERING and must not
-   *  trip the orthogonal local-del/no-tombstone resurrection gap (WI-1674). */
+   *  trip the orthogonal local-del/no-tombstone resurrection gap (WI-1684). */
   delProb?: number;
   /** Materialised-store guard ordering: 'fed_ts' (today / bug) | 'lww' (the fix). */
   guardOrder?: GuardOrder;
