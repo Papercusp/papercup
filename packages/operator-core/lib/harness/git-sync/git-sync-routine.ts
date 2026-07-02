@@ -16,6 +16,7 @@ import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { computeNextFireAt } from '../routines/cron';
 import { decideGitSyncPush, type PushDecision, type PushDecisionInput } from './decide-git-sync-push';
+import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
 import {
   gitSyncEligibility,
   gitSyncCronForKey,
@@ -157,6 +158,9 @@ export interface SeedGitSyncRoutineDeps {
   fetchPushPermission?: (owner: string, repo: string) => Promise<boolean | null>;
   /** B-02's push decider (default decideGitSyncPush — pure). */
   decidePush?: (i: PushDecisionInput) => PushDecision;
+  /** github-bridge P-003: per-hive mode resolver (default getHiveGitMode — reads
+   *  the federated hive_settings; junk/absent/error all read as 'legacy'). */
+  resolveHiveGitMode?: (workspaceId: string, hiveHomeSlug: string) => Promise<HiveGitMode>;
   getRoutine?: typeof getGitSyncRoutine;
   upsert?: typeof upsertGitSyncRoutine;
 }
@@ -245,10 +249,21 @@ export async function seedGitSyncRoutineForMember(
         !joinerSide && hasUpstreamRemote && isUntouchedCoordslessCreatorSeed(existing, opts.installSlug);
       if (!upgrading) return { seeded: false, reason: 'routine_exists' };
     }
-    // Probe only when the answer can matter: rules 1+2 of the decider win
-    // outright for fetch-less repos and joiner clones.
+    // github-bridge P-003 (S-5): resolve the hive's git mode — 'bridged'/'p2p-only'
+    // force commit-only via the decider. Hive membership comes from `hive_slug`
+    // (member checkouts) or the entry's own slug on a self_repo hive home (the
+    // Option-B merged shape); a non-hive member is 'legacy' without a lookup.
+    const hiveHomeSlug = opts.entry.hive_slug ?? (opts.entry.self_repo ? opts.entry.slug : undefined);
+    let hiveGitMode: HiveGitMode = 'legacy';
+    if (hiveHomeSlug) {
+      const resolveMode = deps.resolveHiveGitMode ?? getHiveGitMode;
+      hiveGitMode = await resolveMode(opts.workspaceId, hiveHomeSlug);
+    }
+
+    // Probe only when the answer can matter: rules 1-3 of the decider win
+    // outright for fetch-less repos, bridged/p2p-only hives, and joiner clones.
     let permissionsPush: boolean | null = null;
-    if (hasUpstreamRemote && !joinerSide) {
+    if (hasUpstreamRemote && !joinerSide && hiveGitMode === 'legacy') {
       const parsed = parseGithubUrl(opts.entry.github_remote!);
       if (parsed) {
         const probe = deps.fetchPushPermission ?? fetchRepoPushPermission;
@@ -256,7 +271,7 @@ export async function seedGitSyncRoutineForMember(
       }
     }
     const decide = deps.decidePush ?? decideGitSyncPush;
-    const decision = decide({ joinerSide, hasUpstreamRemote, permissionsPush });
+    const decision = decide({ joinerSide, hasUpstreamRemote, permissionsPush, hiveGitMode });
 
     const cron = gitSyncCronForKey(opts.cronKey ?? opts.installSlug);
     const active = joinerSide ? GIT_SYNC_SEED_ACTIVE_JOINER : GIT_SYNC_SEED_ACTIVE_CREATOR;

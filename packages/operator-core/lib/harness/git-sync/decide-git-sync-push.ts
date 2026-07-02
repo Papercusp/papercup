@@ -25,14 +25,21 @@
  *
  * Rules, in precedence order:
  *   1. no upstream remote        → push: false  (P-011 — fetch-less repo)
- *   2. joiner-side clone         → push: false  (read-only; fork-PR is the
+ *   2. hive mode bridged/p2p-only → push: false (github-bridge-hive-egress
+ *      P-003 / S-5: on a BRIDGED hive the bridge writer — the integrator
+ *      lease holder — is the SOLE origin pusher, so member git-sync must be
+ *      commit-only or it double-pushes/races the canonical refs; on a
+ *      P2P-ONLY hive nobody pushes GitHub at all. `legacy`/absent leaves
+ *      rules 1+3..6 byte-for-byte unchanged.)
+ *   3. joiner-side clone         → push: false  (read-only; fork-PR is the
  *      contribution path — hive-from-github-url-2026-06-11 P-013)
- *   3. permissions.push === false → push: false (GitHub says no)
- *   4. permissions.push === true  → push: true  (GitHub says yes)
- *   5. unknown (null/undefined)   → push: true  (best-effort optimism — a
+ *   4. permissions.push === false → push: false (GitHub says no)
+ *   5. permissions.push === true  → push: true  (GitHub says yes)
+ *   6. unknown (null/undefined)   → push: true  (best-effort optimism — a
  *      wrong guess surfaces via the existing `git-sync-error` escalation,
  *      D-002 of the plan)
  */
+import type { HiveGitMode } from './hive-git-mode';
 
 export interface PushDecisionInput {
   /** True for a joiner-side member clone (read-only by design). */
@@ -41,6 +48,13 @@ export interface PushDecisionInput {
   hasUpstreamRemote: boolean;
   /** GitHub `permissions.push` from the probe; null/undefined = unknown. */
   permissionsPush?: boolean | null;
+  /**
+   * The member's hive git mode (github-bridge-hive-egress P-003; resolved via
+   * `getHiveGitMode` from the federated hive_settings). `bridged`/`p2p-only`
+   * force commit-only; `legacy`/null/undefined (incl. every non-hive member)
+   * preserves the pre-bridge decision table exactly.
+   */
+  hiveGitMode?: HiveGitMode | null;
 }
 
 export interface PushDecision {
@@ -61,6 +75,22 @@ export function decideGitSyncPush(i: PushDecisionInput): PushDecision {
       reason:
         'no_upstream_remote — local-only repo with no origin; with push on, the failed fetch ' +
         'would error-escalate every tick (run-git-sync syncOneRepo); with push off, commit-only sync is quiet',
+    };
+  }
+  if (i.hiveGitMode === 'bridged') {
+    return {
+      push: false,
+      reason:
+        'bridged_hive — the GitHub bridge egresses canonical refs (github-bridge-hive-egress S-1/S-5); ' +
+        'member git-sync is commit-only so the bridge writer stays the sole origin pusher',
+    };
+  }
+  if (i.hiveGitMode === 'p2p-only') {
+    return {
+      push: false,
+      reason:
+        'p2p_only_hive — code syncs on the hive P2P plane (lib/sync/hive-git); ' +
+        'no GitHub remote is pushed by member git-sync',
     };
   }
   if (i.joinerSide === true) {

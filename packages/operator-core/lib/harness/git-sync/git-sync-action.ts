@@ -38,6 +38,7 @@ import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
+import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
@@ -712,17 +713,17 @@ async function recordOutcome(
  * and run time can never disagree on the vocabulary. Best-effort: an unreadable
  * registry FAILS OPEN (the pipeline's own path resolution will surface the error).
  */
-async function gitSyncRuntimeGate(slug: string): Promise<GitSyncEligibility> {
+async function gitSyncRuntimeGate(slug: string): Promise<{ gate: GitSyncEligibility; entry?: ProjectEntry }> {
   let entry: ProjectEntry | undefined;
   try {
     entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
   } catch (e) {
     console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
-    return { eligible: true };
+    return { gate: { eligible: true } };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
-  if (!entry) return { eligible: false, reason: 'no_path' };
-  return gitSyncEligibility(entry);
+  if (!entry) return { gate: { eligible: false, reason: 'no_path' } };
+  return { gate: gitSyncEligibility(entry), entry };
 }
 
 /** P-004/P-006: build the live attribution roster (active agents + their declared files) from
@@ -943,21 +944,42 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // makes a persistent reap-loop a durable, queryable signal for the
   // git-sync-stall-watchdog. P-008 runtime gate: ineligible rows no-op (logged +
   // recorded), never escalate.
-  const gate = await runCheckpointedStep('git-sync:eligibility', async (): Promise<GitSyncEligibility> => {
-    await patchRoutineMetadata(slug, { fire_started_at: Date.now() });
-    const g = await gitSyncRuntimeGate(slug);
-    if (!g.eligible) {
-      await patchRoutineMetadata(slug, {
-        last_status: 'skipped',
-        last_skip_reason: g.reason,
-        last_skipped_at: Date.now(),
-      });
-    }
-    return g;
-  });
+  const gate = await runCheckpointedStep(
+    'git-sync:eligibility',
+    async (): Promise<GitSyncEligibility & { hiveGitMode?: HiveGitMode }> => {
+      await patchRoutineMetadata(slug, { fire_started_at: Date.now() });
+      const { gate: g, entry } = await gitSyncRuntimeGate(slug);
+      if (!g.eligible) {
+        await patchRoutineMetadata(slug, {
+          last_status: 'skipped',
+          last_skip_reason: g.reason,
+          last_skipped_at: Date.now(),
+        });
+        return g;
+      }
+      // github-bridge P-003 (S-5, run-time half): re-consult the hive's git mode
+      // EVERY tick — a hive flipped legacy→bridged must stop origin-pushing without
+      // a routine re-seed (the seeded trigger_config.push predates the flip). Only
+      // resolved for hive members (hive_slug) / self_repo hive homes; getHiveGitMode
+      // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
+      const hiveHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
+      if (hiveHomeSlug && workspaceId) {
+        const mode = await getHiveGitMode(workspaceId, hiveHomeSlug);
+        if (mode !== 'legacy') return { ...g, hiveGitMode: mode };
+      }
+      return g;
+    },
+  );
   if (!gate.eligible) {
     console.log(`[git-sync] ${slug}: ineligible (${gate.reason}) — skipping this tick`);
     return;
+  }
+  // github-bridge P-003: on a bridged/p2p-only hive, member git-sync is COMMIT-ONLY —
+  // the bridge writer (integrator lease holder) is the sole origin pusher (S-1). Local
+  // commit+fetch+merge still runs (work must keep flowing into the tree/P2P plane).
+  if (cfg.push && gate.hiveGitMode) {
+    console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
+    cfg.push = false;
   }
 
   // P-006: per-slug resource first (auto-registered), then the routine's extras

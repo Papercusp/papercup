@@ -152,8 +152,20 @@ async function isAncestor(repoPath: string, ancestor: string, descendant: string
   return r.code === 0;
 }
 
-/** Changed (non-binary, size-capped) files between base..target as
- *  { path, content } for the secrets scan. base=null → the full target tree. */
+/**
+ * Every blob INTRODUCED by the pushed range (base..target; base=null → all of
+ * target's history) as { path, content } for the secrets scan.
+ *
+ * Why per-commit and not endpoint-diff: a push publishes HISTORY — a secret
+ * committed then deleted inside the range rides out in the pack even though an
+ * endpoint diff never shows it. So we walk `rev-list base..target` and collect
+ * each commit's introduced blobs (diff-tree vs its parents), deduped by blob
+ * sha. Blobs already reachable from `base` are excluded by rev-list itself.
+ *
+ * Bounds: unique blobs beyond `maxFiles` → overflow (the caller fails CLOSED);
+ * blobs over MAX_SCAN_BLOB_BYTES or containing NUL (binary) are skipped and
+ * counted, not scanned.
+ */
 async function collectScanFiles(
   repoPath: string,
   base: string | null,
@@ -161,38 +173,45 @@ async function collectScanFiles(
   maxFiles: number,
   runGit: RunGit,
 ): Promise<{ files: { path: string; content: string }[]; overflow: boolean; skippedLarge: number } | { error: string }> {
-  // numstat marks binary files as "-\t-\t<path>" — skip those outright.
-  const listArgs = base
-    ? ['diff', '--numstat', `${base}..${target}`]
-    : ['diff-tree', '--numstat', '-r', '--root', target];
-  const r = await runGit(listArgs, repoPath);
-  if (r.code !== 0) return { error: r.stderr.trim() || `diff --numstat exited ${r.code}` };
-  const paths: string[] = [];
+  const range = base ? [`${base}..${target}`] : [target];
+  const revs = await runGit(['rev-list', ...range], repoPath);
+  if (revs.code !== 0) return { error: revs.stderr.trim() || `rev-list exited ${revs.code}` };
+  const commits = revs.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  // blob sha → a path it appears at (for the finding report).
+  const blobs = new Map<string, string>();
   let overflow = false;
-  for (const line of r.stdout.split('\n')) {
-    const t = line.trim();
-    if (!t) continue;
-    const m = t.match(/^(\S+)\t(\S+)\t(.+)$/);
-    if (!m) continue;
-    if (m[1] === '-' || m[2] === '-') continue; // binary
-    if (paths.length >= maxFiles) {
-      overflow = true;
-      break;
+  outer: for (const c of commits) {
+    // -m: diff merges against EACH parent (a merge can introduce blobs too);
+    // --root: a parentless commit diffs against the empty tree.
+    const raw = await runGit(['diff-tree', '-r', '-m', '--root', '--no-commit-id', c], repoPath);
+    if (raw.code !== 0) return { error: raw.stderr.trim() || `diff-tree ${c} exited ${raw.code}` };
+    for (const line of raw.stdout.split('\n')) {
+      const m = line.match(/^:\d+ \d+ [0-9a-f]+ ([0-9a-f]+) ([A-Z])\d*\t(.+?)(?:\t.*)?$/);
+      if (!m) continue;
+      const [, dstSha, status, path] = m;
+      if (status === 'D' || /^0+$/.test(dstSha)) continue; // deletion — no new blob
+      if (blobs.has(dstSha)) continue;
+      if (blobs.size >= maxFiles) {
+        overflow = true;
+        break outer;
+      }
+      blobs.set(dstSha, path);
     }
-    paths.push(m[3]);
   }
+
   let skippedLarge = 0;
   const files: { path: string; content: string }[] = [];
-  for (const path of paths) {
-    // Deleted-in-target paths have no blob at target; cat-file fails → skip.
-    const size = await runGit(['cat-file', '-s', `${target}:${path}`], repoPath);
-    if (size.code !== 0) continue;
+  for (const [sha, path] of blobs) {
+    const size = await runGit(['cat-file', '-s', sha], repoPath);
+    if (size.code !== 0) continue; // a submodule gitlink / non-blob entry
     if (Number(size.stdout.trim()) > MAX_SCAN_BLOB_BYTES) {
       skippedLarge += 1;
       continue;
     }
-    const show = await runGit(['show', `${target}:${path}`], repoPath);
+    const show = await runGit(['cat-file', '-p', sha], repoPath);
     if (show.code !== 0) continue;
+    if (show.stdout.includes('\0')) continue; // binary — no line-oriented secrets
     files.push({ path, content: show.stdout });
   }
   return { files, overflow, skippedLarge };

@@ -59,6 +59,10 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // P-004 D-008): every hive peer must carry the gossip READER before a writer
   // flips, so it ships dark until the 2-machine verify.
   'papercusp-presence-gossip',
+  // 2026-07-02 — queen warm-session cutover (queen-memory-hybrid-2026-07-02 L2):
+  // queen session model changes from cold-spawn-per-wake to warm-resume-with-
+  // rebirth; owner flips after an attended A/B verify against the cold baseline.
+  'papercusp-queen-warm-session',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
