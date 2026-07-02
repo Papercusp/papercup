@@ -1821,7 +1821,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           headers: { 'content-type': 'application/json' },
           body: bodyBuf,
           signal: AbortSignal.timeout(deps.localBackendTimeoutMs ?? DEFAULT_LOCAL_BACKEND_TIMEOUT_MS),
-        });
+        } as RequestInit);
         settled = true;
         pool.recordEnd(backend.id);
         pool.recordOutcome(backend.id, upstream.ok || (upstream.status >= 400 && upstream.status < 500));

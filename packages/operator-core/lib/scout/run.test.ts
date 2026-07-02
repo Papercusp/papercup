@@ -10,14 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const sched = vi.hoisted(() => ({
   DEFAULT_SCOUT_CYCLE_TIMEOUT_MS: 20 * 60_000,
   runScoutTick: vi.fn(),
-  buildScoutTickDeps: vi.fn(() => ({})),
+  buildScoutTickDeps: vi.fn((..._args: unknown[]) => ({})),
 }));
 vi.mock('./scheduler', () => sched);
 
 import { runScoutCycleTick, parseScoutCycleConfig, productionDepsBuilder, type ScoutCycleDeps } from './run';
 
 const baseInput = { workspaceId: 'ws', installSlug: 'h', payloadTemplate: null };
-const runCycle = vi.fn();
+const runCycle = vi.fn((..._args: unknown[]) => undefined);
 const recordTick = vi.fn();
 const buildDeps = vi.fn(() => ({ recordTick })); // fake tick deps — the mocked runScoutTick ignores them
 

@@ -7,14 +7,13 @@
  * the Queen idle before P-003. This module is the PURE detection core (a filter over
  * per-plan counts); it has NO I/O, so it is fully unit-testable.
  *
- * Wiring (DEFERRED to attended — see the plan D-004/P-009 note): a watchdog
- * collector in `defaultPapercuspCollectors` (watchdog.ts) that, ONLY when the
- * `papercusp-plan-workitem-promotion` flag is ON (early-return [] when OFF so it is
- * inert while promotion is dark), queries started+eligible plans with their
- * open-item + work-item counts and feeds them here. Registering it also requires
- * adding `'zero-promotion'` to the WatchdogSource union. Kept out of the live
- * watchdog until the flag is activated, so it can't fire on every started plan
- * while promotion is intentionally dark.
+ * Wiring (LIVE — WI-707): registered as the `papercusp-zero-promotion` collector in
+ * `defaultPapercuspCollectors` (watchdog.ts), with `'zero-promotion'` in the
+ * WatchdogSource union. `collectZeroPromotionSignals` below still self-gates on the
+ * `papercusp-plan-workitem-promotion` flag (early-return [] when OFF) so it stays
+ * inert if promotion is ever turned back dark — but the flag is NOT in DARK_FLAGS
+ * (libs/flags/src/types.ts), so per the flag-default-inversion (P-011) it defaults
+ * ON: promotion, this detector, and its watchdog signal are all live in production.
  */
 
 /** Per-plan counts the detector reasons over (one row per started+eligible plan). */
