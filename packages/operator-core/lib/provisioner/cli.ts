@@ -27,21 +27,37 @@
  *                                                                        # with plain dry-run only, since
  *                                                                        # the resolved binPath would just
  *                                                                        # be discarded).
+ *   npx tsx packages/operator-core/lib/provisioner/cli.ts --provision-vllm-image
+ *                                                                        # pull the pinned vLLM container
+ *                                                                        # IMAGE first (vllm-container.ts's
+ *                                                                        # `pullVllmImage`, D-009 #3/P-013):
+ *                                                                        # a cache hit is fast, a fresh pull
+ *                                                                        # is a real multi-GB network fetch
+ *                                                                        # — opt-in, mirrors --provision-
+ *                                                                        # binary. Only meaningful when the
+ *                                                                        # recommended combo is a vllm entry
+ *                                                                        # AND a working Docker/Podman
+ *                                                                        # runtime was detected — otherwise
+ *                                                                        # a no-op (nothing to pull yet:
+ *                                                                        # no vLLM catalog entry exists
+ *                                                                        # until P-008 lands one).
  *   npx tsx packages/operator-core/lib/provisioner/cli.ts --json        # machine-readable output
  *
  * Exit code: 0 on a successful detect/plan (and, with --install, a successful apply); 1 if the
- * plan is blocked (no combo fits / weights missing / binary provisioning failed) or --install's
- * apply fails.
+ * plan is blocked (no combo fits / weights or image missing / binary or image provisioning
+ * failed) or --install's apply fails.
  */
 import { planProvision, applyProvision } from './provision';
 import { detectHardware } from './hardware-detect';
 import { resolveLlamaBinary, computeCapToArch } from './llama-binary';
+import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from './vllm-container';
 
 interface CliArgs {
   install: boolean;
   start: boolean;
   json: boolean;
   provisionBinary: boolean;
+  provisionVllmImage: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -50,6 +66,7 @@ function parseArgs(argv: string[]): CliArgs {
     start: argv.includes('--start'),
     json: argv.includes('--json'),
     provisionBinary: argv.includes('--provision-binary'),
+    provisionVllmImage: argv.includes('--provision-vllm-image'),
   };
 }
 
@@ -72,6 +89,19 @@ async function main(): Promise<void> {
       return;
     }
     binPath = result.binPath;
+  }
+
+  if (args.provisionVllmImage) {
+    const runtimeInfo = await detectContainerRuntime();
+    const result = await pullVllmImage(VLLM_PINNED_IMAGE, { runtimeInfo });
+    if (!args.json) {
+      console.log(result.ok ? `vLLM image: ${result.image} (${result.alreadyPresent ? 'cached' : 'pulled'}, ${result.runtime})` : `vLLM image provisioning BLOCKED: ${result.blocked}`);
+    }
+    if (!result.ok) {
+      if (args.json) console.log(JSON.stringify({ vllmImageResult: result }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
   }
 
   const plan = await planProvision({ binPath });

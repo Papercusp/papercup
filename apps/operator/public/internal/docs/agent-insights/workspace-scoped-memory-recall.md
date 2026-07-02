@@ -41,15 +41,17 @@ when it explicitly carries a *different* `workspace_id` AND is not owner-tier:
 So flipping it never silently guts recall: only *new* cross-workspace `project` memories are
 scoped out; harness/hive pools are untouched.
 
-## The flag is a dark CUTOVER — verify before flipping
+## The flag: graduated — defaults ON since the 2026-06-25 owner-attended flip
 
-`FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL` (`papercusp-memory-workspace-scoped-recall`) defaults
-**OFF** and is registered `DARK_FLAG_CASE='cutover'`: a reversible kill-switch flipped after an
-**attended live recall-hit-rate verify** (the filter is complete + unit-tested, but recall is
-emergent — confirm hit-rate isn't degraded before defaulting ON). OFF = byte-identical to
-today, so it ships safely without breaking the legacy memory tests. To verify: sample real
-recall queries with the flag ON vs OFF and confirm only cross-workspace `project` hits drop
-(owner-tier + same-ws + legacy-NULL all still surface).
+`FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL` (`papercusp-memory-workspace-scoped-recall`) shipped as a
+reversible **cutover** kill-switch, flipped after an **attended live recall-hit-rate verify** —
+the owner watched the live A/B (the filter was already complete + unit-tested; recall is
+emergent, so hit-rate was the thing to confirm, not a pre-gate). The flip landed 2026-06-25 and
+the flag graduated OUT of `DARK_FLAGS` (`libs/flags/src/types.ts`) — it now **defaults ON**
+(`FLAG_DEFAULTS['papercusp-memory-workspace-scoped-recall'] === true`). OFF remains available as
+the reversible kill-switch if hit-rate ever regresses: sample real recall queries with the flag
+ON vs OFF and confirm only cross-workspace `project` hits drop (owner-tier + same-ws +
+legacy-NULL all still surface).
 
 ## Related: the wider `workspace_id DEFAULT 'default'` substrate is NOT this
 

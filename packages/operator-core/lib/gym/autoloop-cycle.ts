@@ -279,11 +279,37 @@ export async function runOneAutoloopCycle(
     log('operator ready (DBOS launched)');
 
     // 4. LLM calls — imported lazily so fake mode never loads the llm-client graph.
+    // GYM-1 layer-4 hardening (2026-07-02): a single transient network blip
+    // ("TypeError: fetch failed" — undici, no HTTP status) killed a whole
+    // provisioned cycle 16s in (14:42:49, same window as other outbound flakiness
+    // on this box). A provisioned cycle is EXPENSIVE (container + operator boot
+    // ~2.5min) — retry the bare-network failure class (never HTTP-status errors:
+    // the gateway already owns those semantics) 2× with short backoff.
+    const withNetRetry = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
+      async (...a: A): Promise<R> => {
+        let lastErr: unknown;
+        for (let attempt = 0; attempt <= 2; attempt++) {
+          try {
+            return await fn(...a);
+          } catch (e) {
+            lastErr = e;
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg)) throw e;
+            log(`llm call transient network failure (attempt ${attempt + 1}/3): ${msg.slice(0, 120)}`);
+            await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
+          }
+        }
+        throw lastErr;
+      };
     const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
-    const judge: JudgeLlmCall = FAKE ? fakeJudge : (opts) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' });
+    const judge: JudgeLlmCall = FAKE
+      ? fakeJudge
+      : withNetRetry((opts: Parameters<JudgeLlmCall>[0]) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' }));
     const proposer: GymLlmCall = FAKE
       ? fakeProposer
-      : ((opts) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' }) as unknown as GymLlmCall);
+      : (withNetRetry((opts: Parameters<GymLlmCall>[0]) =>
+          rawGymLlm!.llmCall({ ...(opts as object), priority: 'gym' } as never),
+        ) as unknown as GymLlmCall);
 
     // 5. Ports + loop deps.
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');

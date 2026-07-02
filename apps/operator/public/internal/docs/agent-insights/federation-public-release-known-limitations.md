@@ -26,17 +26,17 @@ federation is done.
 
 ## Status snapshot
 
-| Capability                                                                                          | Status                                                          | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Base federation (content/features + per-part plans + coord **data**), A→B **and** B→A               | ✅ **Proven LIVE — no-restart blocker RESOLVED**                 | run33/34/35 + Briefs 4/3/7 (2026-07-01/02). The no-restart roster-empty class (blocker #9 / WI-1378) is fixed by THREE stacked fixes: the fresh home-resolve (3030bfd13), the directory self-echo guard (WI-1422), and the **deterministic join-time owner-device binding** (verified coords extracted from the member links + stamped on the registry view — no directory-timing dependence; Brief 7's baseline federated FIRST-poll). Fresh-join first-poll latency can still occur; the adaptive re-fold restart in the rig scenarios covers it. |
-| `forceReFold` A→B owner-admit race fix                                                              | ✅ In + adversarially reviewed **SAFE-TO-SHIP**                  | `boot.ts`; repro test `owner-roster-rebind-race.repro`; review record memory `4d1db206`                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Extended matrix: revocation/K-cut, multi-member, reconnect, restart, concurrent/LWW, security-drops | ✅ **Live-proven per-scenario** (multi-member per D-006)         | In-process 28-test matrix green AND live: restart (Brief 5), concurrent/LWW (Brief 6), reconnect/catch-up (Brief 4), revocation/K-cut (Brief 3), coord boundary (Brief 7). Multi-member 3+: in-process + 2-node live per owner decision D-006. One-command live runner: `bin/deb-hetzner-matrix.sh` (8 scenarios registered)                                                                                                                                                                                                                        |
-| Coordination **control plane** cross-machine (wake / push / presence)                               | ✅ **Boundary LIVE-PROVEN (Brief 7 matrix, 2026-07-02)**         | Harness-scoped coord messages + escalations FEDERATE; raw presence/watermarks/await-subscriptions stay LOCAL by design (cross-machine visibility rides `shared_presence`). Genuine gap: the handoffs surface doesn't federate — WI-1510                                                                                                                                                                                                                                                                                                             |
-| True 3-machine multi-member fanout, **live**                                                        | ⛔ **Not coverable** under the current 2-server quota            | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| NAT / firewall / cross-region diversity                                                             | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat** | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner's owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox)                                                                                                                                               |
-| Long-running node stability (bg-host listener/handle leak)                                          | 🔴 **Open — re-observed live**                                  | WI-1089's fix did not hold: \~30GB RSS at \~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes                                                                                                                                                                                                                                                 |
-| LWW convergence under clock skew                                                                    | 🔴 **Known S0**                                                 | HLC-fold vs fed\_ts-guard divergence (Brief D finding)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Revocation **read** cut-off                                                                         | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)**                         | Post-ban owner content never reached the banned member over real VMs (\~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329                                                                                                                                                                                                                                                                                                                                                            |
+| Capability                                                                                          | Status                                                          | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base federation (content/features + per-part plans + coord **data**), A→B **and** B→A               | ✅ **Proven LIVE — no-restart blocker RESOLVED**                 | run33/34/35 + Briefs 4/3/7 (2026-07-01/02). The no-restart roster-empty class (blocker #9 / WI-1378) is fixed by THREE stacked fixes: the fresh home-resolve (3030bfd13), the directory self-echo guard (WI-1422), and the **deterministic join-time owner-device binding** (verified coords extracted from the member links + stamped on the registry view — no directory-timing dependence; Brief 7's baseline federated FIRST-poll). Fresh-join first-poll latency can still occur; the adaptive re-fold restart in the rig scenarios covers it.                                                                         |
+| `forceReFold` A→B owner-admit race fix                                                              | ✅ In + adversarially reviewed **SAFE-TO-SHIP**                  | `boot.ts`; repro test `owner-roster-rebind-race.repro`; review record memory `4d1db206`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Extended matrix: revocation/K-cut, multi-member, reconnect, restart, concurrent/LWW, security-drops | ✅ **Live-proven per-scenario** (multi-member per D-006)         | In-process 28-test matrix green AND live: restart (Brief 5), concurrent/LWW (Brief 6), reconnect/catch-up (Brief 4), revocation/K-cut (Brief 3), coord boundary (Brief 7). Multi-member 3+: in-process + 2-node live per owner decision D-006. One-command live runner: `bin/deb-hetzner-matrix.sh` — **8/8 green 2026-07-02, run m1783013203** (2-node containerized rig: separate frames + PGs + substrate processes over a dedicated DHT bootstrap; Hetzner creates are owner-walled since 2026-07-02, so this rerun is container-grade, not VM-grade — the earlier per-brief Hetzner runs remain the VM-grade proof)    |
+| Coordination **control plane** cross-machine (wake / push / presence)                               | ✅ **Boundary LIVE-PROVEN (Brief 7 matrix, 2026-07-02)**         | Harness-scoped coord messages + escalations FEDERATE; raw presence/watermarks/await-subscriptions stay LOCAL by design (cross-machine visibility rides `shared_presence`). The "handoffs don't federate" gap (WI-1510) is **CLOSED — by design, not a wire bug**: handoffs DO federate but the receiver-side P-013 comms-tier gate quarantines any handoff whose author is below `steer` (`coord_quarantine`, reason `handoff-below-steer`; no owner special-case — steer is a local per-user grant that never federates). Live-proven both legs 2026-07-02 (m1783013203): ungranted → quarantined; steer-granted → applies |
+| True 3-machine multi-member fanout, **live**                                                        | ⛔ **Not coverable** under the current 2-server quota            | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| NAT / firewall / cross-region diversity                                                             | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat** | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner's owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox)                                                                                                                                                                                                                       |
+| Long-running node stability (bg-host listener/handle leak)                                          | 🔴 **Open — re-observed live**                                  | WI-1089's fix did not hold: \~30GB RSS at \~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes                                                                                                                                                                                                                                                                                                                         |
+| LWW convergence under clock skew                                                                    | 🔴 **Known S0** (one of its two sources now FIXED)              | HLC-fold vs fed\_ts-guard divergence (Brief D finding) remains open. The **second** divergence source — the capture-boundary two-clock bug (row `fed_ts` stamped `clock_timestamp()` by the mig-314 trigger, outbox wire ts stamped `now()` by the capture triggers, so author ≠ every receiver forever) — is **FIXED by mig 446** in BOTH capture functions (`capture_substrate_outbox` + `capture_work_items_outbox`), regression-tested (`capture-outbox-wire-ts.integration.test.ts` 3/3) and live-verified (concurrent\_lww PASS, m1783013203)                                                                         |
+| Revocation **read** cut-off                                                                         | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)**                         | Post-ban owner content never reached the banned member over real VMs (\~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ***
 
@@ -154,6 +154,22 @@ per author device (P-003); presence still rides the log until the
 2-machine proof is still owed (the in-process suites are green — in-process ≠
 live, this page's own rule).
 
+**Handoffs are trust-gated, not broken (WI-1510 disposition, 2026-07-02).** The
+handoffs surface federates on the wire like messages/escalations, but the
+receiver-side P-013 comms-tier gate
+(`sync/hyperbee/projections/coord-message.ts` + `comms-tier-gate.ts`) requires
+the *author* to resolve to tier `steer` — via a **local** `comms_trust_list`
+grant or the owner-signed hive-policy default — before a remote handoff
+applies; below that it lands in `harness_shared.coord_quarantine`
+(reason `handoff-below-steer`): visible and grantable, never silently applied
+or dropped. There is deliberately **no owner special-case** (steer grants are
+per-user, per-machine, and never federate). Messages/escalations need only the
+`message` fallback tier, which is why they pass ungranted. Both legs
+live-proven in the matrix (`deb-hetzner-coord-controlplane.sh`: ungranted →
+QUARANTINE, steer-granted → FEDERATED). Tier lookups are TTL-cached \~30s
+(`PAPERCUSP_COMMS_TIER_CACHE_MS`) — a fresh grant takes up to that long to
+take effect.
+
 ### 2. Multi-device, same identity
 
 Federation identity is **per-device keypair**, not per-GitHub-account. The
@@ -199,6 +215,17 @@ single forward clock excursion anywhere can raise the global HLC floor and
 decouple the two orderings, so two honest peers materialize different rows for
 the same key. A complete fix is one ordering key of record end-to-end (carry the
 HLC column to the PG guard) — cross-cutting, needs a migration. ([hlc-merge-vs-fed-ts-guard-divergence](/internal/docs/agent-insights/hlc-merge-vs-fed-ts-guard-divergence).)
+
+**Fixed sub-case (2026-07-02, mig 446):** even with perfectly-synced clocks,
+`fed_ts` itself diverged permanently between the author and every receiver,
+because two clock reads in the *same transaction* stamped the same op — the
+mig-314 BEFORE trigger stamps the row's `fed_ts` with `clock_timestamp()`
+while the AFTER capture triggers stamped the outbox wire `ts` with `now()`
+(txn start). Mig 446 threads the ROW's `fed_ts` as the put-op wire ts in
+**both** capture functions (`capture_substrate_outbox` AND
+`capture_work_items_outbox` — the features/issues family rides the latter; a
+fix that patches only the generic one misses it). Live-verified:
+concurrent\_lww PASS, run m1783013203.
 
 ### 5. NAT / firewall / geo assumptions — LIVE-PROVEN with one caveat (Brief 8, 2026-07-02)
 
@@ -247,7 +274,7 @@ True 3-machine member↔member fanout (owner + 2 members, Brief 2) is therefore
 matrix. Document multi-member fanout as **gated on a >2-server quota**, not as
 live-proven.
 
-### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (suspected live blocker, under confirmation)
+### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (RESOLVED — both mechanisms fixed + live-verified 2026-07-02)
 
 A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, real
 DHT) surfaced **owner(a)→joiner(b) content federation FAILING** in the plain
@@ -281,11 +308,21 @@ calls `joinerHiveHomeSlug(ws, slug, { fresh: true })`, threaded through
 cache on this one rare resolve path (hot-path callers keep the cache, so the
 seqscan perf win is preserved). A fresh PG read is guaranteed to see the
 committed write (join-hive awaits the `mutateRegistry` commit before the rekey
-RPC). **Still pending before the min bar is truly green:** (a) an in-process
-regression test (WI-1383, su-c25e5 — seed a stale cache + out-of-band registry
-write → assert the fresh resolve sees it), and (b) a LIVE owner→joiner
-no-restart re-verify (e7698, Brief 6). Until (b) passes live, the base-row
-"proven live" stays caveated.
+RPC). **Second mechanism (WI-1544, the race bifurcation):** when the deterministic
+join-time binding resolved BEFORE the owner's announce, the joiner's hive-home
+projection conclusively rejected the owner core on the slug filter
+(origin=member-slug), membership chicken-and-egged, and A→B blacked out
+*permanently* (the rekey rescue was structurally unreachable — no binding
+transition). Fixed in `boot.ts`: `inJoinBootstrapWindow()` reclassifies a
+join-window `binding_invalid` as retryable/buffered instead of
+conclusive-reject, and the `scope_unresolved` buffer holds out-of-scope
+slug-filter frames while the hive-home projection slug is unresolved
+(WI-1544, resolved 2026-07-02; 41 dedicated tests in `boot.test.ts` +
+`announce-channel-multihive.test.ts`).
+
+**Live verification:** matrix run m1783013203 (2026-07-02) federated A→B on the
+FIRST poll across all 8 scenarios — no restart, no adaptive re-fold rescue
+needed. This limitation is closed.
 
 ***
 
@@ -307,8 +344,15 @@ no-restart re-verify (e7698, Brief 6). Until (b) passes live, the base-row
 Brief **8** (NAT/geo), Brief **9** (scale + `forceReFold` cost), Brief **10**
 (bg-host leak fix + guard).
 
-**For repeatability:** Brief **13** (one-command live-matrix runner over the
-2-server cap) and Brief **12** (this doc).
+**For repeatability:** Brief **13** — ✅ **DONE (2026-07-02, su-f5d28)**: the
+one-command runner `bin/deb-hetzner-matrix.sh` executes all 8 registered
+scenarios end-to-end (publish → join → per-scenario → K-cut) and went
+**8/8 green** on run m1783013203, after fixing the two failures the first full
+run surfaced (concurrent\_lww → mig 446; coord\_controlplane → stale pre-P-013
+expectation, scenario rewritten to assert the trust boundary). Note the rerun
+executed on the 2-node **containerized** rig (Hetzner creates owner-walled,
+below) — container-grade, with the per-brief Hetzner runs as the VM-grade
+proof. Brief **12** (this doc).
 
 > **Honest read of the minimum bar:** with the 2-server cap permanent, the
 > Brief-2 "multi-member fanout proven LIVE" gate cannot be met as originally
@@ -329,12 +373,15 @@ Brief **8** (NAT/geo), Brief **9** (scale + `forceReFold` cost), Brief **10**
 (310→244 errors, all type-only test-typing fixes, ratcheted, `npm run lint:tsc`
 exits 0). CI is no longer red on this.
 
-> **⚠ Current release-critical blocker (as of this update):** the **no-restart
-> owner→joiner roster gap (blocker #9 above)** gates the remaining live min-bar
-> briefs (2, 3, 6, 7) — running them before the fix lands just reproduces the
-> empty-roster failure. Fix owned by su-2c799 under **WI-1378**; e7698 is
-> live-confirming. The min bar cannot go green until WI-1378 lands + a live
-> owner→joiner run passes in the pure no-restart path.
+> **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is
+> RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve;
+> WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went
+> green first-poll with no restart (m1783013203). **One standing owner-wall:**
+> the Hetzner account has rejected ALL billable creates with
+> `403 forbidden "permission denied"` since 2026-07-02 (reads + free writes
+> work; token-a/token-b are dead 401s) — an account-level billing/verification
+> lock only the owner can clear in console.hetzner.cloud. Until then, matrix
+> reruns are container-grade (2-node docker rig), not VM-grade.
 
 ***
 

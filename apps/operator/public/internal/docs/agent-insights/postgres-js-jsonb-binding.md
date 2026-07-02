@@ -78,13 +78,28 @@ operator's DB), not the testcontainer. Assert only client-agnostic things
 `${...}::jsonb` in production code under `packages/operator-core/lib`,
 `packages/coordination/src`, and `libs/papercusp/libs/db/src` (38 files) was
 converted to the universal **`${...}::text::jsonb`** form, and an ESLint rule
-**`papercusp/no-bare-jsonb-cast`** (`tools/eslint-rules/`, wired in
-`eslint.config.mjs`, RuleTester-tested) now flags + autofixes a bare
+**`papercusp/no-bare-jsonb-cast`** (`tools/eslint-rules/`, wired `error` in
+`eslint.config.mjs` for `packages/operator-core/lib`, `packages/coordination/src`,
+and `libs/papercusp/libs/db/src`, RuleTester-tested) flags + autofixes a bare
 `${x}::jsonb` → `${x}::text::jsonb` (it skips the `sql.json()`/`pgJson()` helper
 forms + `::jsonb[]`). The federation round-trip test stays green because
 `::text::jsonb` stores a real object under both clients, so the per-client
 sections below are now historical context — **new code should use
-`::text::jsonb`** and the lint rule enforces it.
+`::text::jsonb`**.
+
+The 38-file sweep was a point-in-time cleanup, not a standing guarantee: running
+`npx eslint packages/operator-core/lib` today reports **50+ live
+`no-bare-jsonb-cast` violations** re-introduced since the sweep (e.g.
+`lib/system-health/perf-regression-rig.ts`, `lib/work-item-redundancy.ts`,
+`lib/role-capability-grants.ts`, `lib/agent-tools/routines/set.ts`,
+`lib/owner-preference/interactions.ts`, `lib/pr-host/pr-review-report-store.ts`,
+`lib/harness/improvements/watchdog-tunables.ts`,
+`lib/harness/git-sync/pipeline-events.ts`, `lib/iq-battery/corpus.ts`,
+`lib/replay/store.ts`) — so whatever lint gate is supposed to catch this is
+evidently linting changed files only, not the whole tree, on at least some
+merge paths. Tracked as **EI-6682**. Don't trust "the lint rule enforces it" as
+proof a given file is fixed — grep it (below) or run eslint on that file
+directly.
 
 **Fixed 2026-06-03 (superseded by the sweep above)** — every getOrgPg-client
 jsonb write bound via `${JSON.stringify(x)}::jsonb`:
@@ -108,7 +123,10 @@ Fixed earlier in P-070: `packages/operator-core/lib/harness/usage-events.ts`.
   *fresh* `postgres()` pool (`db()` = `postgres(getHarnessAdminUrl(), {prepare:false})`),
   NOT getOrgPg. On that client `sql.json()` is CORRECT and `${JSON.stringify}::jsonb`
   double-encodes — the inverse of the getOrgPg rule. Leave their `sql.json()` as-is.
-* `packages/operator-core/lib/operator-rate-limit.ts` already binds correctly with
-  `${JSON.stringify}::jsonb` (live-verified `jsonb_typeof=object`, with accumulated
-  rate-limit state). A 2026-06-03 report that flagged it as a double-encode bug was a
-  false positive from testing against the testcontainer client (which behaves oppositely).
+* `packages/operator-core/lib/operator-rate-limit.ts` binds jsonb (live-verified
+  `jsonb_typeof=object`, with accumulated rate-limit state) and — as of the
+  2026-06-04 sweep — via the universal `${JSON.stringify}::text::jsonb` form like
+  everything else, not the older bare `::jsonb` this note originally described. A
+  2026-06-03 report that flagged the (then bare-cast) form as a double-encode bug
+  was a false positive from testing against the testcontainer client (which
+  behaves oppositely from getOrgPg).
