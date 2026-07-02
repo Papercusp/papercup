@@ -164,6 +164,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-006: structured rubric measurements ride the same flatten so the ideators
     // leap from them. `?? []` keeps a 4-lane (pre-rubric) digest byte-identical.
     ['rubric-rating', digest.rubricRatings ?? []],
+    // L1c (queen-memory-hybrid): standing facts ride the flatten too — the
+    // fleet's deterministic conclusions as ideation substrate.
+    ['standing-fact', digest.standingFacts ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -192,6 +195,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Capability gap';
     case 'rubric-rating':
       return 'Rubric rating';
+    case 'standing-fact':
+      return 'Standing fact (deterministic conclusion — ground truth unless retracted)';
   }
 }
 

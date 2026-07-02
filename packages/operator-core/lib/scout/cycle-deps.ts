@@ -186,6 +186,26 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     ...(opts.onPhase ? { onPhase: opts.onPhase } : {}),
     readCorpus: async () => {
       const digest = await synthesizeStateOfHive(readers, opts.digestOptions);
+      // L1c (queen-memory-hybrid): fold live standing facts (harness + workspace
+      // scopes) into the digest as a pattern lane so ideation is grounded in the
+      // fleet's deterministic conclusions. Fail-soft — a facts outage never
+      // disturbs the digest or the cycle.
+      try {
+        const { foldFacts } = await import('../agent-facts/store');
+        const facts = await foldFacts(
+          [{ scope: 'workspace' }, { scope: 'harness', scopeRef: opts.harnessSlug }],
+          {},
+        );
+        if (facts.length > 0) {
+          digest.standingFacts = facts.map((f) => ({
+            summary: f.body,
+            ref: `fact:${f.scope}${f.scopeRef ? `:${f.scopeRef}` : ''}:${f.key}`,
+            ...(f.sourceRef ? { detail: `src ${f.sourceRef}` } : {}),
+          }));
+        }
+      } catch {
+        /* best-effort */
+      }
       // Scout `rubric` rail (plan-templates-and-rubric-v2 P-009, SCOUT_RUBRIC_RAIL,
       // default OFF): on a detected RUBRIC GAP (digest.rubricGaps, P-008) AUTHOR a
       // `template: rubric` DRAFT plan → the existing queen↔scout loop ratifies it into

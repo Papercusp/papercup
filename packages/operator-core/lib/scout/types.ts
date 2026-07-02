@@ -60,7 +60,10 @@ export type MetaPatternCategory =
   | 'time-token-sink'
   | 'chronic-deferral'
   | 'capability-gap'
-  | 'rubric-rating';
+  | 'rubric-rating'
+  // queen-memory-hybrid-2026-07-02 L1c: standing facts (agent_facts ledger) ride
+  // the digest so ideation is grounded in the fleet's DETERMINISTIC conclusions.
+  | 'standing-fact';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -109,6 +112,11 @@ export interface CorpusDigest {
    * standing; its `ref` (`rubric:<id>#<criterion>@<hive>`) is the drill-back.
    */
   rubricRatings?: MetaPattern[];
+  /** STANDING FACTS (queen-memory-hybrid L1c) — live agent_facts (harness +
+   *  workspace scopes) projected as patterns (`ref` = `fact:<scope>:<key>`) so
+   *  the ideators leap from the fleet's deterministic conclusions too. OPTIONAL
+   *  so pre-facts digests and fixtures stay valid. */
+  standingFacts?: MetaPattern[];
   /** Optional one-line "state of the Hive" headline. */
   headline?: string;
   /** ISO timestamp the digest was synthesized. */

@@ -336,9 +336,12 @@ describe('resolveTierSpec compactionLimit', () => {
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
+    // Ordered weakest → strongest (the order IS the floor ranking): the haiku
+    // tier must come FIRST or bee's haiku floor ([1m]-insensitive family
+    // match) clamps a weaker-ranked pick up past it.
     const tiers = [
-      { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
       { name: 'vast', spec: 'haiku[1m]' },
+      { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
       { name: 'wide', spec: 'opus[1m]:high' },
     ];
     const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
