@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
+import { FEATURE_NON_REQUEUE_STATES } from '../work-item-dispatch-states';
 
 /** A query handle — a pooled client or an open transaction. */
 type Db = Sql | TransactionSql;
@@ -238,6 +239,105 @@ export interface ReclaimResult {
    *  being flipped to `failed`. Empty for the periodic sweep (it already handles
    *  same-host liveness via the `alive` bucket, just without a boot-id rewrite). */
   reattached?: string[];
+  /** Durable claims freed alongside the reclaim (dead-holder release — see
+   *  releaseClaimsOfDeadSpawns). */
+  claimsReleased?: DeadSpawnClaimsReleased;
+}
+
+export interface DeadSpawnClaimsReleased {
+  features: number;
+  issues: number;
+  planClaims: number;
+}
+
+/**
+ * Free the durable claims a set of DEAD spawn ids still hold. Reclaiming a
+ * nursery row to 'failed' frees the concurrency ceiling but NOT the work-item
+ * grip: `taken_by` (features), `assignee` (engineer_issues) and
+ * `plan_item_claims.owner` all still name the dead spawn, so every
+ * re-placement's compare-and-claim rejects ("could not be claimed for the new
+ * bee") until a slower lane ages the claim off — the Queen saw hours of
+ * fleet_assignments calling the holder dead while the claim stayed held
+ * (2026-07-02, WI-1508 thread). A spawned agent's owner id IS its spawn id
+ * (`s-…`), so the release keys directly on the reclaimed ids. Feature items are
+ * re-queued to 'todo' (unless in a non-requeue state) so dispatch sees them
+ * again — mirroring operator-spawn's releaseSpawnWorkItemClaim.
+ */
+export async function releaseClaimsOfDeadSpawns(sql: Db, spawnIds: string[]): Promise<DeadSpawnClaimsReleased> {
+  if (spawnIds.length === 0) return { features: 0, issues: 0, planClaims: 0 };
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  const features = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
+           status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
+           updated_ts = ${Date.now()}
+     WHERE taken_by = ANY(${spawnIds}::text[])
+    RETURNING feature_id`;
+  const issues = await sql<{ issue_id: string }[]>`
+    UPDATE harness_shared.engineer_issues
+       SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
+     WHERE assignee = ANY(${spawnIds}::text[])
+    RETURNING issue_id`;
+  const planClaims = await sql<{ item_id: string }[]>`
+    DELETE FROM harness_shared.plan_item_claims
+     WHERE owner = ANY(${spawnIds}::text[])
+    RETURNING item_id`;
+  const released = { features: features.length, issues: issues.length, planClaims: planClaims.length };
+  if (released.features || released.issues || released.planClaims) {
+    console.log(
+      `[spawn-reclaim] released dead-holder claims: ${released.features} feature(s) [${features.map((f) => f.feature_id).join(', ')}], ${released.issues} issue(s), ${released.planClaims} plan claim(s)`,
+    );
+  }
+  return released;
+}
+
+/**
+ * Backstop for the HISTORIC class: claims whose `s-…` holder's nursery row is
+ * already terminal (settled by an earlier sweep that predates the dead-holder
+ * release above) — or absent entirely AND the claim is old (the absent-row guard
+ * keeps a just-reserved claim in fleet:spawn's claim-then-insert window safe).
+ * Runs every periodic sweep; each matched claim is a re-placement the Queen was
+ * being refused.
+ */
+export async function sweepStaleSpawnClaims(sql: Db): Promise<DeadSpawnClaimsReleased> {
+  const nonRequeue = [...FEATURE_NON_REQUEUE_STATES];
+  const features = await sql<{ feature_id: string; taken_by: string }[]>`
+    UPDATE harness_shared.harness_features_consolidated f
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
+           status = CASE WHEN f.status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE f.status END,
+           updated_ts = ${Date.now()}
+     WHERE f.taken_by LIKE 's-%'
+       AND (
+         EXISTS (SELECT 1 FROM harness_shared.spawned_agents a
+                  WHERE a.spawn_id = f.taken_by AND a.status NOT IN ('running', 'restarting'))
+         OR (NOT EXISTS (SELECT 1 FROM harness_shared.spawned_agents a WHERE a.spawn_id = f.taken_by)
+             AND f.taken_at < now() - interval '1 hour')
+       )
+    RETURNING f.feature_id, f.taken_by`;
+  const issues = await sql<{ issue_id: string }[]>`
+    UPDATE harness_shared.engineer_issues i
+       SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
+     WHERE i.assignee LIKE 's-%'
+       AND (
+         EXISTS (SELECT 1 FROM harness_shared.spawned_agents a
+                  WHERE a.spawn_id = i.assignee AND a.status NOT IN ('running', 'restarting'))
+         OR (NOT EXISTS (SELECT 1 FROM harness_shared.spawned_agents a WHERE a.spawn_id = i.assignee)
+             AND i.assigned_at < now() - interval '1 hour')
+       )
+    RETURNING i.issue_id`;
+  const planClaims = await sql<{ item_id: string }[]>`
+    DELETE FROM harness_shared.plan_item_claims c
+     WHERE c.owner LIKE 's-%'
+       AND EXISTS (SELECT 1 FROM harness_shared.spawned_agents a
+                    WHERE a.spawn_id = c.owner AND a.status NOT IN ('running', 'restarting'))
+    RETURNING c.item_id`;
+  const released = { features: features.length, issues: issues.length, planClaims: planClaims.length };
+  if (released.features || released.issues || released.planClaims) {
+    console.log(
+      `[spawn-reclaim] stale-claim backstop freed: ${released.features} feature(s) [${features.map((f) => `${f.feature_id}←${f.taken_by}`).join(', ')}], ${released.issues} issue(s), ${released.planClaims} plan claim(s)`,
+    );
+  }
+  return released;
 }
 
 /**
@@ -429,6 +529,12 @@ export async function reclaimOrphanedSpawns(
        AND spawn_id = ANY(${reclaimable}::text[])
     RETURNING spawn_id, workspace_id`;
 
+  // Dead-holder release (2026-07-02): free the work-item claims the reclaimed
+  // spawns still hold — WITH the reclaim, not hours later via a slower lane —
+  // plus the backstop for claims settled terminal by pre-fix sweeps.
+  const claimsReleased = await releaseClaimsOfDeadSpawns(sql, rows.map((r) => r.spawn_id));
+  const backstop = await sweepStaleSpawnClaims(sql);
+
   // EI-108: Wake parents of reclaimed spawns (best-effort, concurrent, no await)
   for (const row of rows) {
     void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
@@ -440,6 +546,11 @@ export async function reclaimOrphanedSpawns(
     reclaimed: rows.length,
     spawnIds: rows.map((r) => r.spawn_id),
     workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    claimsReleased: {
+      features: claimsReleased.features + backstop.features,
+      issues: claimsReleased.issues + backstop.issues,
+      planClaims: claimsReleased.planClaims + backstop.planClaims,
+    },
   };
 }
 
@@ -771,6 +882,13 @@ export async function reconcileSpawnAdmissionOnBoot(
         ON f.feature_id = r.work_item_id
        AND f.workspace_id = r.workspace_id
        AND f.harness_slug = r.harness_slug`;
+
+  // Dead-holder release (2026-07-02) — MUST run BEFORE the relaunch loop: a
+  // re-launched bee re-claims its work-item under a NEW spawn id, and the dead
+  // predecessor's still-held `taken_by` would reject that compare-and-claim
+  // ("could not be claimed for the new bee"), turning every boot relaunch into
+  // a refusal.
+  await releaseClaimsOfDeadSpawns(sql, rows.map((r) => r.spawn_id));
 
   // Re-launch the survivors whose durable work-item is still non-terminal (EI-85),
   // BEFORE waking parents — a successful re-launch means the child did not really
