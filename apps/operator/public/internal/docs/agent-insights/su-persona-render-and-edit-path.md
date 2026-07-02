@@ -1,7 +1,7 @@
 # Where the su persona lives and how it reaches a live session
 URL: /internal/docs/agent-insights/su-persona-render-and-edit-path
 
-A su agent's system prompt is layered and projected, not one file. The DOMAIN-NEUTRAL base is libs/papercusp/.../base/prompts/su.md (a git submodule); per-client + code-generated sections splice in at `<!-- PAPERCUSP-SU:* -->` markers (AUTO mode is renderAutoModePolicy(), not a file); the per-hive override is a DB row appended last. renderSuPlaybook() assembles the prompt fresh per launch behind the SU_BLUEPRINT_PERSONA flag, so a base edit is live for NEW sessions immediately — but the .materialized/coding/su.md copies lag and are not on the live path.
+A su agent's system prompt is layered and projected, not one file. The DOMAIN-NEUTRAL base is libs/papercusp/.../base/prompts/su.md (a git submodule); per-client + code-generated sections splice in at `<!-- PAPERCUSP-SU:* -->` markers (AUTO mode is renderModesPolicy(), not a file); the per-hive override is a DB row appended last. renderSuPlaybook() assembles the prompt fresh per launch behind the SU_BLUEPRINT_PERSONA flag, so a base edit is live for NEW sessions immediately — but the .materialized/coding/su.md copies lag and are not on the live path.
 
 ## What
 
@@ -20,7 +20,7 @@ looks like it worked and changes nothing live.
 | 4 | **Per-hive instance override**  | DB `harness_shared.hive_settings`, key `promptOverride.su`, appended LAST (`hive-settings-store.ts` → `getHiveInstancePromptOverride` / `setHiveInstancePromptOverride`) | a single hive's domain specifics                                                     |
 
 The marker-spliced code sections are **not in any `.md`** — e.g. `## AUTO mode` is produced
-by `renderAutoModePolicy()` (`auto-mode-policy.ts`) and spliced at `<!-- PAPERCUSP-SU:AUTO-MODE -->`
+by `renderModesPolicy()` (`operating-modes-policy.ts`) and spliced at `<!-- PAPERCUSP-SU:AUTO-MODE -->`
 (su.md \~L122). Marker constants live in `desktop-install/splice-tooling-overlay.ts`.
 
 ## The render path
@@ -38,7 +38,7 @@ written to `~/.papercusp/launch-context/session-*.md`.
 * **A new persona section that must render *before* AUTO mode** → author it in `su.md`
   **before** the `<!-- PAPERCUSP-SU:AUTO-MODE -->` marker. Everything before the marker renders
   before `## AUTO mode`; everything after renders after it.
-* **AUTO-mode wording** → `auto-mode-policy.ts` (code, not a file).
+* **AUTO-mode wording** → `operating-modes-policy.ts` (code, not a file).
 * **The orient / mem0 bootstrap instructions** (the MCP `instructions` block) →
   `packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`.
 

@@ -5,11 +5,14 @@ How the in-webview EnvSwitcherBar works on every platform — the GET /api/deskt
 
 ## What this is
 
-On the dev box, the env switcher is a **Linux-only native GTK bar** (`dev_wrapper.rs`) that
-navigates the webview between four operator stacks on fixed local ports — `prod :3070`
-(green/release tree), `staging :3170` (staging tree), `dev :3270` (working tree), and
-`local :3055` (Vite HMR). `EnvSwitcherBar` is its **data-driven, cross-platform twin**: a
-slim fixed top bar that ships in public builds and works on macOS/Windows/Linux.
+The env switcher started as a **Linux-only native GTK bar** (`dev_wrapper.rs`, now retired —
+superseded 2026-06-30 by `env_switch.rs`) that navigated the webview between four operator
+stacks on fixed local ports — `prod :3070` (green/release tree), `staging :3170` (staging
+tree), `dev :3270` (working tree), and `local :3055` (Vite HMR). `EnvSwitcherBar` is now the
+**single, cross-platform, in-webview** bar (data-driven, ships in public builds, works on
+macOS/Windows/Linux); `env_switch.rs` is its Rust-side plumbing (the authoritative `list_envs`
+probe, `/api` retargeting, persisted-target restore, and the native menu/shortcut backstop) —
+not a second visible bar.
 
 It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx`, but **self-hides
 unless ≥2 ENV operators are reachable** — so a plain single-operator install shows nothing

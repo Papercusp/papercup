@@ -39,7 +39,7 @@ override to the delta**:
 
 1. **Put the generic/cross-cutting content in the generated base**, authored once. The clean
    mechanism is a render function + a splice marker (mirrors `renderWireSchemasSection` /
-   `renderCoordLegend`): e.g. `renderAutoModePolicy()` in `auto-mode-policy.ts`, spliced at
+   `renderCoordLegend`): e.g. `renderModesPolicy()` in `operating-modes-policy.ts`, spliced at
    `AUTO_MODE_MARKER` by `renderSuPlaybook` / `writeSplicedPlaybook`. Add the marker to the bases that
    should carry it (`blueprints/base/prompts/su.md`, `papercusp-su-engineer.tools.md`,
    `papercusp-su-power.tools.md`). An absent marker is a clean no-op (a base may opt out).

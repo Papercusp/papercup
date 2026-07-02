@@ -101,7 +101,7 @@ Promise.all(['/api/flags/bootstrap','/api/desktop/dev-operators','/api/operator/
 A 200 on `flags/bootstrap` but 404 on the `desktop/*` + `operator/whoami` endpoints means
 `/api` is reaching a backend that simply doesn't serve those routes — a **routing** issue.
 The robust fix is to make the bar source its env list from the desktop/Tauri side (which
-authoritatively owns the env set in `dev_wrapper.rs`), not a routed HTTP fetch, so the
+authoritatively owns the env set in `env_switch.rs`), not a routed HTTP fetch, so the
 escape-hatch bar can never vanish exactly when routing is misconfigured.
 
 ## The work-items "parent shows child" bug (the actual fix this session)

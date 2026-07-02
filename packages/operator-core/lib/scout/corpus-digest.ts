@@ -186,13 +186,15 @@ export interface StateOfHiveReaders {
 // ---------------------------------------------------------------------------
 
 /** The corpus-digest categories (mirrors scout/types.ts MetaPatternCategory):
- *  the four friction lanes + `rubric-rating` (structured measurements, P-006). */
+ *  the four friction lanes + `rubric-rating` (structured measurements, P-006)
+ *  + `standing-fact` (agent_facts fold, queen-memory-hybrid L1c). */
 const META_PATTERN_CATEGORIES = [
   'recurring-friction',
   'time-token-sink',
   'chronic-deferral',
   'capability-gap',
   'rubric-rating',
+  'standing-fact',
 ] as const;
 
 /**
