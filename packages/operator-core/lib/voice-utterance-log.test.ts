@@ -7,7 +7,7 @@
  * without a real Postgres.
  *
  * The INSERT's VALUES(...) order (see voice-utterance-log.ts) is:
- *   workspace, source, mode, length_chars, name_used, had_backstory, modifications
+ *   workspace_id, source, mode, length_chars, name_used, had_backstory, modifications
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

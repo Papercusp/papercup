@@ -18,6 +18,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
+import { fetchEndedOwnerIds } from '../agent-tools/coordination/presence-wakeability';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */
 const GLOBAL_WORKSPACE = '*';
@@ -106,6 +107,43 @@ export function deriveActivity(
   return 'reserved';
 }
 
+/**
+ * Reconcile the view's HEARTBEAT-derived liveness with the AUTHORITATIVE session
+ * state (EI-6374). The `fleet_assignment` view derives `holder_alive`/`orphaned`
+ * from `coord_presence.heartbeat_at` freshness ALONE, so a bee that has ENDED —
+ * process exited, coord inbox-wake await cancelled — keeps reading `alive` /
+ * `progressing` for up to PRESENCE_STALE_MS (the heartbeat lags the exit). That
+ * false coverage is exactly what let a dead bee look "covered" while
+ * `coord:send {wake:'required'}` reported it `ended` and not wakeable — blocking
+ * correct replacement. Given the authoritative ended-owner set (from
+ * {@link fetchEndedOwnerIds} — NOT inbox-wakeable AND no live recorded session),
+ * drop the warm-heartbeat liveness on every one of that owner's rows and mark its
+ * LIVE claim legs orphaned, so {@link deriveActivity} resolves them to `dead`
+ * (reclaimable) — agreeing with `coord:presence`'s `ended` sessionState and the
+ * wake path.
+ *
+ * PURE (rows + set in → rows out) so it unit-tests without PG. A no-op when the
+ * ended set is empty. Only DOWNGRADES a currently-alive holder (`holderAlive`
+ * true) — it never revives a dead/stalled row and never touches a holder outside
+ * the ended set.
+ */
+export function downgradeEndedHolders(
+  rows: FleetAssignmentRow[],
+  endedOwnerIds: ReadonlySet<string>,
+): FleetAssignmentRow[] {
+  if (endedOwnerIds.size === 0) return rows;
+  return rows.map((r) => {
+    if (!r.agentId || !r.holderAlive || !endedOwnerIds.has(r.agentId)) return r;
+    const isClaim = r.source !== 'presence';
+    return {
+      ...r,
+      holderAlive: false,
+      // A live claim held by a confirmed-dead session is abandoned → orphaned.
+      orphaned: isClaim && r.claimActive !== false ? true : r.orphaned,
+    };
+  });
+}
+
 export interface ListFleetAssignmentsOpts {
   /** Scope to a workspace (+ the '*' global rows). null/undefined = all. */
   workspaceId?: string | null;
@@ -150,7 +188,7 @@ export async function listFleetAssignments(
       AND ${activeOnly ? sql`(claim_active IS DISTINCT FROM false)` : sql`TRUE`}
     ORDER BY source, holder_heartbeat_at DESC NULLS LAST
   `;
-  return rows.map(
+  const mapped = rows.map(
     (r): FleetAssignmentRow => ({
       source: r.source as FleetAssignmentSource,
       workspaceId: r.workspace_id as string,
@@ -184,6 +222,19 @@ export async function listFleetAssignments(
       fleetRole: (r.fleet_role as string | null) ?? null,
     }),
   );
+
+  // EI-6374: the view's holder_alive/orphaned come from heartbeat freshness ALONE,
+  // so a just-ENDED bee (warm heartbeat, but process exited / not wakeable) still
+  // reads `alive` — falsely "covered", blocking replacement. Reconcile against the
+  // authoritative session state (the SAME signal coord:presence + the wake path
+  // use) so an ended holder resolves to `dead`. Only owners the view currently
+  // believes alive are checked; best-effort → no change on any query error.
+  const aliveOwners = [
+    ...new Set(mapped.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string)),
+  ];
+  if (aliveOwners.length === 0) return mapped;
+  const ended = await fetchEndedOwnerIds(aliveOwners);
+  return downgradeEndedHolders(mapped, ended);
 }
 
 // ───────────────────────── pure projections (no PG) ─────────────────────────

@@ -639,6 +639,39 @@ export async function listRecordedLiveSessions(
 }
 
 /**
+ * Batch membership test: which of `coordOwnerIds` have a LIVE recorded session
+ * (adv_sessions `ended_at IS NULL`) — the authoritative "is this owner's process
+ * still running" signal, keyed by owner. Complements {@link listRecordedLiveSessions}
+ * (which returns the FULL live set for roster synthesis); this is the bounded set
+ * a liveness reader wants to GUARD against calling a launching / not-yet-wakeable
+ * session dead (EI-6374). Same recency bound so an unreaped zombie ages out.
+ * Best-effort → empty set on any DB error (the caller degrades to heartbeat-only
+ * liveness and never over-reports death).
+ */
+export async function liveRecordedOwnerIds(
+  coordOwnerIds: string[],
+  opts: { maxAgeMs?: number } = {},
+): Promise<Set<string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id))];
+  if (ids.length === 0) return new Set();
+  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? RECORDED_LIVE_MAX_AGE_MS) / 1000));
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ coord_owner_id: string }[]>`
+      SELECT DISTINCT coord_owner_id
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NULL
+         AND coord_owner_id = ANY(${ids}::text[])
+         AND started_at > now() - make_interval(secs => ${maxAgeSec})
+    `;
+    return new Set(rows.map((r) => r.coord_owner_id));
+  } catch (e) {
+    console.warn('[adv-sessions] liveRecordedOwnerIds failed:', (e as Error).message);
+    return new Set();
+  }
+}
+
+/**
  * The most recent adv_sessions row for ONE coord owner — the await-event
  * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await
  * stamps this row's {id, agent, session_id, omp_thread_id, cwd, pid} onto the

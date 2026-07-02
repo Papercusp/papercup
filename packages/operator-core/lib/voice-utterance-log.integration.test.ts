@@ -33,7 +33,7 @@ const DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.voice_utterances (
     id            BIGSERIAL PRIMARY KEY,
     ts            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    workspace     TEXT,
+    workspace_id  TEXT,
     source        TEXT NOT NULL,
     mode          TEXT,
     length_chars  INT,
@@ -84,7 +84,7 @@ describe('logVoiceUtterance — real PG insert', () => {
     expect(res).toEqual({ ok: true });
     const r = await rows();
     expect(r).toHaveLength(1);
-    expect(r[0].workspace).toBe('ws-test');
+    expect(r[0].workspace_id).toBe('ws-test');
     expect(r[0].source).toBe('elevenlabs-conv');
     expect(r[0].mode).toBe('assertive');
     expect(r[0].length_chars).toBe(42);

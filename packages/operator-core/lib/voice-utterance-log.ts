@@ -36,7 +36,7 @@ export async function logVoiceUtterance(input: VoiceUtteranceLogInput): Promise<
     await withWorkspace(workspace, async (tx) => {
       await tx`
         INSERT INTO harness_shared.voice_utterances (
-          workspace, source, mode, length_chars, name_used, had_backstory, modifications
+          workspace_id, source, mode, length_chars, name_used, had_backstory, modifications
         ) VALUES (
           ${workspace},
           ${source},

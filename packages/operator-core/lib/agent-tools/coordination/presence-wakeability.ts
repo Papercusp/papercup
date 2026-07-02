@@ -38,6 +38,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { PRESENCE_STALE_MS } from './presence';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
+import { liveRecordedOwnerIds } from '../../adv-sessions';
 
 /**
  * Coordinator-facing session state.
@@ -136,4 +137,58 @@ export async function fetchWakeability(
     out.set(id, { wakeable: wakeSet.has(id), liveTurn });
   }
   return out;
+}
+
+/** A `fed:…` owner id is FEDERATED — it never matches the local wakeability /
+ *  session-log tables, so its liveness is UNKNOWN here, not ended. */
+export const FEDERATED_OWNER_PREFIX = 'fed:';
+
+/**
+ * PURE: given each owner's wakeability + whether it has a live recorded session,
+ * return the owners that are AUTHORITATIVELY ENDED (dead, need a relaunch). This
+ * is the {@link deriveSessionState} `ended` verdict distilled for a batch
+ * liveness reader: an owner is ended iff it is NOT inbox-wakeable AND has NO live
+ * recorded session (a launching / not-yet-registered session is `recorded`-live,
+ * NOT dead). Federated owners are excluded upstream. Injected inputs so it
+ * unit-tests without PG.
+ */
+export function selectEndedOwnerIds(
+  ownerIds: readonly string[],
+  wake: ReadonlyMap<string, WakeabilitySignals>,
+  recordedLive: ReadonlySet<string>,
+): Set<string> {
+  const ended = new Set<string>();
+  for (const id of ownerIds) {
+    const wakeable = wake.get(id)?.wakeable ?? false;
+    if (!wakeable && !recordedLive.has(id)) ended.add(id);
+  }
+  return ended;
+}
+
+/**
+ * IO seam: batch-classify which of `ownerIds` are AUTHORITATIVELY ENDED — dead,
+ * needing a relaunch — using the SAME two signals `coord:presence` derives its
+ * `ended` sessionState from (EI-6374, the fleet-coverage liveness-drift): an
+ * owner is `ended` iff it is NOT inbox-wakeable AND has NO live recorded session
+ * (`adv_sessions.ended_at IS NULL`). The recorded-session guard is what keeps a
+ * launching / not-yet-coord-registered (`recorded`-live) bee from being mistaken
+ * for dead. Federated (`fed:…`) owners are dropped (unknown, not ended).
+ *
+ * Best-effort: on any query error it returns an EMPTY set — no owner is
+ * downgraded — so the caller degrades to heartbeat-only liveness and never
+ * over-reports death.
+ */
+export async function fetchEndedOwnerIds(ownerIds: string[]): Promise<Set<string>> {
+  const local = [...new Set(ownerIds.filter((id) => !!id && !id.startsWith(FEDERATED_OWNER_PREFIX)))];
+  if (local.length === 0) return new Set();
+  try {
+    const [wake, recordedLive] = await Promise.all([
+      fetchWakeability(local),
+      liveRecordedOwnerIds(local),
+    ]);
+    return selectEndedOwnerIds(local, wake, recordedLive);
+  } catch (e) {
+    console.warn('[presence-wakeability] fetchEndedOwnerIds failed:', (e as Error)?.message ?? e);
+    return new Set();
+  }
 }

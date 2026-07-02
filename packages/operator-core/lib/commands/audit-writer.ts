@@ -46,7 +46,7 @@ export async function writeAuditRows(
           await tx`
             INSERT INTO harness_shared.agent_actions (
               ts, agent, command_id, args, status, error_code, duration_ms,
-              workspace, session_id, request_id
+              workspace_id, session_id, request_id
             ) VALUES (
               now(),
               ${a.agent},
@@ -66,7 +66,7 @@ export async function writeAuditRows(
         for (const q of queries) {
           await tx`
             INSERT INTO harness_shared.agent_queries (
-              ts, agent, query_id, args_compact, workspace, request_id
+              ts, agent, query_id, args_compact, workspace_id, request_id
             ) VALUES (
               now(),
               ${q.agent},

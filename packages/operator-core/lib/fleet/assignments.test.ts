@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveActivity,
+  downgradeEndedHolders,
   groupByAgent,
   orphanedClaims,
   reclaimableClaims,

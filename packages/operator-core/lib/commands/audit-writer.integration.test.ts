@@ -42,7 +42,7 @@ describe('agent audit-log writer (real PG)', () => {
   it('is a no-op when both lists are empty (no rows, no throw)', async () => {
     h.ws = 'ws-audit-empty';
     await expect(writeAuditRows([], [])).resolves.toBeUndefined();
-    const a = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.agent_actions WHERE workspace = 'ws-audit-empty'`;
+    const a = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.agent_actions WHERE workspace_id = 'ws-audit-empty'`;
     expect((a[0] as { n: number }).n).toBe(0);
   });
 
@@ -67,7 +67,7 @@ describe('agent audit-log writer (real PG)', () => {
       Array<{ command_id: string; args: Record<string, unknown>; status: string; duration_ms: number; session_id: string; request_id: string }>
     >`
       SELECT command_id, args, status, duration_ms, session_id, request_id
-        FROM harness_shared.agent_actions WHERE workspace = 'ws-audit-action'`;
+        FROM harness_shared.agent_actions WHERE workspace_id = 'ws-audit-action'`;
     expect(rows).toHaveLength(1);
     expect(rows[0].command_id).toBe('plans:get');
     expect(rows[0].args).toEqual({ slug: 'demo', limit: 5 }); // real jsonb, not a string scalar
@@ -94,7 +94,7 @@ describe('agent audit-log writer (real PG)', () => {
       [],
     );
     const rows = await db.adminSql<Array<{ status: string; error_code: string | null; session_id: string | null }>>`
-      SELECT status, error_code, session_id FROM harness_shared.agent_actions WHERE workspace = 'ws-audit-err'`;
+      SELECT status, error_code, session_id FROM harness_shared.agent_actions WHERE workspace_id = 'ws-audit-err'`;
     expect(rows[0].status).toBe('err');
     expect(rows[0].error_code).toBe('E_BOOM');
     expect(rows[0].session_id).toBeNull();
@@ -111,7 +111,7 @@ describe('agent audit-log writer (real PG)', () => {
     );
     const rows = await db.adminSql<Array<{ query_id: string; args_compact: Record<string, unknown> | null }>>`
       SELECT query_id, args_compact FROM harness_shared.agent_queries
-       WHERE workspace = 'ws-audit-query' ORDER BY query_id`;
+       WHERE workspace_id = 'ws-audit-query' ORDER BY query_id`;
     expect(rows).toHaveLength(2);
     const byId = Object.fromEntries(rows.map((r) => [r.query_id, r.args_compact]));
     expect(byId['features:list']).toEqual({ tag: 'x' });
@@ -132,7 +132,7 @@ describe('agent audit-log writer (real PG)', () => {
       })),
       [],
     );
-    const rows = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.agent_actions WHERE workspace = 'ws-audit-batch'`;
+    const rows = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.agent_actions WHERE workspace_id = 'ws-audit-batch'`;
     expect((rows[0] as { n: number }).n).toBe(3);
   });
 });
