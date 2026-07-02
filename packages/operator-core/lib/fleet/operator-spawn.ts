@@ -749,6 +749,7 @@ export async function spawnAgentInHarness(
   let spawnModelSpec: string | null = (input.modelSpec ?? '').trim() || null;
   let spawnModelTier: string | null = null;
   let spawnModelBackend: string | null = null;
+  let spawnCompactionLimit: number | null = null;
   if (!spawnModelSpec && input.tier && input.tier.trim()) {
     const [{ resolveTierSpec }, { tiers, tierCeilings }] = await Promise.all([
       import('./model-tiers'),
@@ -759,6 +760,7 @@ export async function spawnAgentInHarness(
     spawnModelSpec = resolved.spec;
     spawnModelTier = resolved.tier;
     spawnModelBackend = resolved.backend ?? null;
+    spawnCompactionLimit = resolved.compactionLimit;
     if (resolved.note) console.log(`[operator-spawn] ${resolved.note}`);
 
     // Fleet opus-budget pacing (B-GW-4 — inference-gateway-robustness-audit-2026-06-20 gateway P2):
@@ -784,6 +786,7 @@ export async function spawnAgentInHarness(
             spawnModelSpec = dg.spec;
             spawnModelTier = dg.tier;
             spawnModelBackend = dg.backend ?? null;
+            spawnCompactionLimit = dg.compactionLimit ?? spawnCompactionLimit;
           }
         } else if (budget.pace) {
           console.log(`[operator-spawn] opus-budget: ${role} (${criticality}) keeps opus but is paced — ${budget.reason}`);
@@ -1208,6 +1211,17 @@ export async function spawnAgentInHarness(
   // default and pins the child's AGENT_BACKEND to match.
   if (spawnModelBackend) {
     extraEnv.PAPERCUSP_SPAWN_BACKEND = spawnModelBackend;
+  }
+  // context-trimming-tiers P-006: the resolved tier's soft compaction limit
+  // (explicit per-tier value, else the spec's model-derived default) rides the
+  // spawn env; an explicit modelSpec (no tier) derives its spec's default. The
+  // compliance watchdog backstops sessions this env never reaches with the
+  // model-derived default.
+  {
+    const { defaultCompactionLimitForSpec } = await import('../agent-config-constants');
+    const spawnLimit =
+      spawnCompactionLimit ?? (spawnModelSpec ? defaultCompactionLimitForSpec(spawnModelSpec) : null);
+    if (spawnLimit != null) extraEnv.PAPERCUSP_SPAWN_COMPACTION_LIMIT = String(spawnLimit);
   }
 
   // P-012/P-005: route spawned agents through the backend-aware gateway/account helper.

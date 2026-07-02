@@ -20,7 +20,7 @@
  * an error — only an unknown tier name rejects, since that's a bad input the
  * caller should fix, not a judgment to silently reinterpret.
  */
-import { DEFAULT_MODEL_TIERS, type ModelTier } from '../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 
 export interface TierResolution {
@@ -35,6 +35,12 @@ export interface TierResolution {
       inherit the host's agent command. Comes from the RESOLVED tier — a
       clamp adopts the clamped-to tier's backend along with its spec. */
   backend?: string;
+  /** The resolved tier's effective soft compaction limit (tokens) — the tier's
+      explicit value, else the resolved spec's model-derived default
+      (context-trimming-tiers D-001/D-002). Threaded to the spawn as
+      PAPERCUSP_SPAWN_COMPACTION_LIMIT; the compliance watchdog seeds the
+      model-derived default for sessions that never receive it. */
+  compactionLimit: number;
   /** Set when the pick was clamped, with the bound that did it. */
   clamped?: 'floor' | 'ceiling';
   /** Human-readable note on why the clamp happened (for the spawn log/row). */
@@ -134,6 +140,7 @@ export function resolveTierSpec(opts: {
     tier: tiers[idx].name,
     requestedTier: requested,
     ...(tiers[idx].backend ? { backend: tiers[idx].backend } : {}),
+    compactionLimit: tiers[idx].compactionLimit ?? defaultCompactionLimitForSpec(tiers[idx].spec),
     ...(clamped ? { clamped, note } : {}),
   };
 }
@@ -157,6 +164,9 @@ export interface OpusDowngrade {
   tier: string | null;
   /** The resolved tier's backend, set only when the downgrade adopted one. */
   backend?: string;
+  /** The downgraded-to tier's effective soft compaction limit, set only on a real
+      downgrade (the spec — and so the window — changed; context-trimming-tiers). */
+  compactionLimit?: number;
   /** The original opus spec, set only when an actual downgrade happened (for the log / nursery row). */
   from?: string;
 }
@@ -189,7 +199,14 @@ export function downgradeOpusTierForBudget(opts: {
   // The floor-clamp may have pulled the target back UP to opus (the role's OWN floor is opus) → no
   // real downgrade; keep the opus spec (the floor invariant, for free).
   if (specModelClass(r.spec) === 'opus') return unchanged;
-  return { downgraded: true, spec: r.spec, tier: r.tier, backend: r.backend, from: opts.currentSpec };
+  return {
+    downgraded: true,
+    spec: r.spec,
+    tier: r.tier,
+    backend: r.backend,
+    compactionLimit: r.compactionLimit,
+    from: opts.currentSpec,
+  };
 }
 
 /**

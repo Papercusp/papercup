@@ -1671,6 +1671,63 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     expect(out[0].body).toContain('config: 4');
   });
 
+  // EI-6018: a fleet infra-reclaim (boot reconcile EI-2186 / orphan sweep EI-85 / wedge reaper
+  // WI-233) settles a `running` row `failed` to FREE the concurrency ceiling — expected
+  // housekeeping, NOT a spawn failure. All such messages are `reclaimed`-prefixed and must
+  // classify as 'reclaimed', not 'other'.
+  it('classifies fleet infra-reclaim rows as reclaimed, not a failure (EI-6018)', () => {
+    expect(classifySpawnError(
+      'reclaimed at operator boot: launched by a prior incarnation on host-A ' +
+      '(host/process restarted before its admission-release ran) — stale spawn-ceiling debit ' +
+      'freed by the boot reconcile (EI-2186)',
+    )).toBe('reclaimed');
+    expect(classifySpawnError(
+      'reclaimed: launched by a prior operator incarnation (boot-id mismatch on host-A) — ' +
+      'host restarted, concurrency ceiling freed by the reclaim sweep (EI-2186)',
+    )).toBe('reclaimed');
+    expect(classifySpawnError(
+      'reclaimed: child process (pid 4242) confirmed dead on host-A — concurrency ceiling freed ' +
+      'by the P-011 reclaim sweep (EI-85)',
+    )).toBe('reclaimed');
+    expect(classifySpawnError(
+      "reclaimed: spawn heartbeat stale > 300s (launching operator host presumed dead) — " +
+      'concurrency ceiling freed by the P-011 reclaim sweep',
+    )).toBe('reclaimed');
+  });
+
+  it('EXCLUDES fleet infra-reclaim rows from the failed-spawn signal (EI-6018)', () => {
+    const reclaim = (i: number) => ({
+      error_message:
+        'reclaimed at operator boot: launched by a prior incarnation on host-A ' +
+        `(host/process restarted before its admission-release ran) — freed by the boot reconcile (EI-2186) slot ${i}`,
+      started_at: '2026-07-01T10:00:00.000Z',
+    });
+    // 15 boot-reclaim rows (the EI-6018 "other" phantom) + 4 timeouts + 4 network:
+    // only the 8 genuine failures should count, and the reclaim rows must not be the dominant class.
+    const rows = [
+      ...Array.from({ length: 15 }, (_, i) => reclaim(i)),
+      ...Array.from({ length: 4 }, () => ({ error_message: 'spawn timed out after 280s', started_at: '2026-07-01T09:00:00.000Z' })),
+      ...Array.from({ length: 4 }, () => ({ error_message: 'connect ECONNREFUSED 127.0.0.1:3070', started_at: '2026-07-01T08:00:00.000Z' })),
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    // Dominant of the GENUINE failures is timeout (4), not the reclaim housekeeping (15).
+    expect(out[0].key).toBe('failed-spawns:timeout');
+    expect(out[0].body).not.toContain('reclaimed');
+    // Count reflects only the 8 real failures, not the 23 total rows.
+    expect(out[0].body).toContain('8 agent spawn(s) failed');
+    expect(out[0].body).toContain('timeout: 4');
+    expect(out[0].body).toContain('network: 4');
+  });
+
+  it('reclaim-only rows never fire (all reclaimed housekeeping, no genuine failures) (EI-6018)', () => {
+    const rows = Array.from({ length: 30 }, () => ({
+      error_message: 'reclaimed at operator boot: freed by the boot reconcile (EI-2186)',
+      started_at: '2026-07-01T10:00:00.000Z',
+    }));
+    expect(failedSpawnSignalsFromRows(rows, { minCount: 5 })).toEqual([]);
+  });
+
   it('ceiling-only rejections never fire (all backpressure, below the genuine-failure threshold)', () => {
     const rows = Array.from({ length: 30 }, () => ({
       error_message: 'spawn rejected: 3 bee spawns already running (fleet ceiling 3 — owner maxBees).',

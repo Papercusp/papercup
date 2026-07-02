@@ -1161,9 +1161,18 @@ export async function collectStuckPlanSignals(sql: Sql, workspaceId: string, sta
  * resolved timeout-storm item would mask a new auth breakage. Keying the signal
  * by DOMINANT class gives one capture per diagnosable problem.
  */
-export type SpawnErrorClass = 'backpressure' | 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
+export type SpawnErrorClass = 'backpressure' | 'reclaimed' | 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
 export function classifySpawnError(message: string | null | undefined): SpawnErrorClass {
   const m = message ?? '';
+  // Fleet infra-reclaim (EI-6018): a `running` row settled `failed` by the spawn-reclaim floor —
+  // the boot reconcile ('reclaimed at operator boot: …', EI-2186), the orphan sweep
+  // ('reclaimed: … heartbeat stale / child process confirmed dead / prior operator incarnation',
+  // EI-85), or the wedge reaper ('reclaimed: …', WI-233). All are EXPECTED housekeeping that FREES
+  // the concurrency ceiling after a host/process restart or a hung child — NOT a spawn failure the
+  // loop can fix. They are all `reclaimed`-prefixed by construction. Checked FIRST (alongside
+  // backpressure) so the message never falls through to 'other' — the 15/29 "other" rows that
+  // re-filed this non-actionable bug every cadence (mirrors the EI-5485 backpressure exclusion).
+  if (/^\s*reclaimed[\s:]/i.test(m)) return 'reclaimed';
   // Admission-ceiling rejection (D-004 backpressure): `spawn rejected: N … already running
   // (fleet ceiling … — owner maxBees/maxSimultaneousAgents) … events:await spawn-slot:freed …`.
   // Recorded as a `failed` row for queue+await durability, but it is EXPECTED, working-as-designed
@@ -1193,12 +1202,18 @@ export function failedSpawnSignalsFromRows(
 ): WatchdogSignal[] {
   const windowHours = opts.windowHours ?? 6;
   const minCount = opts.minCount ?? 5;
-  // Drop admission-ceiling backpressure rows: a ceiling rejection is recorded as a `failed`
-  // nursery row for D-004 queue+await durability, but it is EXPECTED behavior (the caller awaits
-  // spawn-slot:freed and retries), not a failure the loop can fix. Counting it inflated the signal
-  // and re-filed a non-actionable improvement every cadence (EI-5485: 57/69 "other" were ceiling
-  // rejections), masking genuine failure causes.
-  const failures = rows.filter((r) => classifySpawnError(r.error_message) !== 'backpressure');
+  // Drop EXPECTED, non-actionable rows so they never inflate the signal or mask a genuine cause:
+  //  • backpressure — an admission-ceiling rejection recorded as a `failed` row for D-004
+  //    queue+await durability; the caller awaits spawn-slot:freed and retries (EI-5485: 57/69
+  //    "other" were ceiling rejections).
+  //  • reclaimed — a fleet infra-reclaim (boot reconcile / orphan sweep / wedge reaper) that FREES
+  //    the ceiling after a host restart or hung child; expected housekeeping, not a spawn failure
+  //    the loop can fix (EI-6018: 15/29 "other" were `reclaimed`-prefixed boot-reconcile rows,
+  //    re-filing this non-actionable bug every cadence).
+  const failures = rows.filter((r) => {
+    const cls = classifySpawnError(r.error_message);
+    return cls !== 'backpressure' && cls !== 'reclaimed';
+  });
   if (failures.length < minCount) return [];
   const byClass = new Map<SpawnErrorClass, { n: number; sample: string | null }>();
   let latestAt: string | undefined;
