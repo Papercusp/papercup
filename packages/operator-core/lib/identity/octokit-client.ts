@@ -114,6 +114,11 @@ export function createOctokit(opts: CreateOctokitOpts = {}): Octokit {
   // cache-fallback paths only fire on a rejection — never on a stalled await.
   const oc = new Octokit({
     request: { fetch: makeTimeoutFetch(resolveGithubTimeoutMs(opts.timeoutMs), opts.fetch) },
+    // QUIET logger: octokit's request-log plugin console.error()s every failed request — redundant
+    // (every caller classifies/logs its own failures) and it fails ANY vitest under fail-on-console
+    // the moment GitHub is unreachable (gate-red 2026-07-01: hive/_create + identity tests died on a
+    // transient network outage purely from this noise). Errors still propagate to the caller.
+    log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
   });
 
   oc.hook.before('request', async (options) => {

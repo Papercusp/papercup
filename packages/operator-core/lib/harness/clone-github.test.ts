@@ -270,7 +270,10 @@ describe('cloneGithubRepo — local bare-repo integration', () => {
     );
     expect(isCloneError(r)).toBe(true);
     if (isCloneError(r)) {
-      expect(['auth_required', 'not_found', 'unknown']).toContain(r.code);
+      // network_timeout is the CORRECT classification when the box is offline/DNS-dark — this test
+      // asserts classification-happens, not connectivity (gate-red 2026-07-01: a transient GitHub
+      // outage mid-checkpoint failed this as 'expected …to include network_timeout').
+      expect(['auth_required', 'not_found', 'unknown', 'network_timeout']).toContain(r.code);
     }
   }, 40_000);
 
