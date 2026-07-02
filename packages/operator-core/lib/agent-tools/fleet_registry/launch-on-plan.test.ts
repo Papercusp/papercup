@@ -59,9 +59,9 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
     expect(cmd).toContain('--fleet=atlas-fleet');
   });
 
-  it('noSubagents (owner request 2026-07-01): omitted by default, --no-subagents when requested', () => {
-    expect(memberLaunchCommand(base)).not.toContain('--no-subagents');
-    expect(memberLaunchCommand({ ...base, noSubagents: true }).split(' ')).toContain('--no-subagents');
-    expect(memberLaunchCommand({ ...base, noSubagents: false })).not.toContain('--no-subagents');
+  it('allowSubagents (owner mandate 2026-07-02): omitted by default (deny), --allow-subagents when opted in', () => {
+    expect(memberLaunchCommand(base)).not.toContain('--allow-subagents');
+    expect(memberLaunchCommand({ ...base, allowSubagents: true }).split(' ')).toContain('--allow-subagents');
+    expect(memberLaunchCommand({ ...base, allowSubagents: false })).not.toContain('--allow-subagents');
   });
 });

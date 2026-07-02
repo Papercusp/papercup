@@ -414,15 +414,16 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
-      // no-subagent-fanout (owner request 2026-07-01): default OFF — the human su
-      // session keeps its subagent tool unless --no-subagents opts out.
-      noSubagents: false,
+      // subagent-launch governance (owner mandate 2026-07-02): tri-state, default
+      // null (unset) — the picker prompts (falling back to DENY); a flag preselects.
+      allowSubagents: null,
     });
   });
 
-  it('parses --no-subagents (owner request 2026-07-01); defaults false', () => {
-    expect(parseArgs([]).noSubagents).toBe(false);
-    expect(parseArgs(['--no-subagents']).noSubagents).toBe(true);
+  it('parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)', () => {
+    expect(parseArgs([]).allowSubagents).toBeNull();
+    expect(parseArgs(['--allow-subagents']).allowSubagents).toBe(true);
+    expect(parseArgs(['--no-subagents']).allowSubagents).toBe(false);
   });
 
   it('parses retired --brain as a tombstoned flag, not a backend-specific capability', () => {
@@ -467,7 +468,7 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
-      noSubagents: false,
+      allowSubagents: null,
     });
   });
 
@@ -1045,9 +1046,10 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(NO_SUBAGENTS_DENY_FLAG).toContain('Agent');
   });
 
-  it('role sessions ALWAYS deny subagent fanout — unconditional, no opt-out (bees/fleet posture)', () => {
+  it('role sessions DENY subagent fanout by DEFAULT; allowSubagents:true opts in (owner mandate 2026-07-02)', () => {
     expect(roleLaunchArgs('claude', files).args).toContain(NO_SUBAGENTS_DENY_FLAG);
     expect(roleLaunchArgs('claude', { ...files, replaceClaudeBase: true }).args).toContain(NO_SUBAGENTS_DENY_FLAG);
+    expect(roleLaunchArgs('claude', { ...files, allowSubagents: true }).args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
   it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
@@ -1139,6 +1141,8 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--dangerously-skip-permissions',
       '--append-system-prompt-file', '/lc/session-9.md',
       '--permission-mode', 'bypassPermissions',
+      // Subagent deny is DEFAULT-ON as of the 2026-07-02 owner mandate.
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
     // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
@@ -1146,19 +1150,22 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     expect(args).not.toContain('--strict-mcp-config');
   });
 
-  it('claude su: the HUMAN session keeps native schedulers — NO lockout flag (native-scheduler-lockout D-003)', () => {
+  it('claude su: the HUMAN session keeps native SCHEDULERS — NO scheduler-lockout flag (native-scheduler-lockout D-003)', () => {
     const { args } = suLaunchArgs('claude', files);
-    expect(args.some((a) => a.startsWith('--disallowedTools'))).toBe(false);
+    // D-003 for SCHEDULERS still holds — assert the scheduler-deny specifically, NOT
+    // the mere presence of a --disallowedTools token: the subagent deny is now
+    // default-ON (owner mandate 2026-07-02) and adds its own --disallowedTools.
+    expect(args).not.toContain(NATIVE_SCHEDULER_DENY_FLAG);
   });
 
-  it('claude su: keeps the subagent tool by DEFAULT — no --no-subagents deny unless opted in (D-003 posture)', () => {
+  it('claude su: DENIES the subagent tool by DEFAULT (owner mandate 2026-07-02 — inverted the D-003 carve-out)', () => {
     const { args } = suLaunchArgs('claude', files);
-    expect(args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
-  });
-
-  it('claude su: noSubagents:true opts the human session OUT of the subagent tool (owner request 2026-07-01)', () => {
-    const { args } = suLaunchArgs('claude', { ...files, noSubagents: true });
     expect(args).toContain(NO_SUBAGENTS_DENY_FLAG);
+  });
+
+  it('claude su: allowSubagents:true opts the human session back IN to the subagent tool (owner mandate 2026-07-02)', () => {
+    const { args } = suLaunchArgs('claude', { ...files, allowSubagents: true });
+    expect(args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
   it('omp: yolo + playbook prompt + coordination extension (-e, P-021)', () => {
@@ -1192,6 +1199,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--append-system-prompt-file', '/lc/s.md',
       '--session-id', 'uuid-9',
       '--permission-mode', 'bypassPermissions',
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
 
@@ -1224,6 +1232,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--system-prompt-file', '/lc/session-9.md',
       '--exclude-dynamic-system-prompt-sections',
       '--permission-mode', 'bypassPermissions',
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(args).not.toContain('--append-system-prompt-file');
   });
@@ -1253,6 +1262,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
       '--exclude-dynamic-system-prompt-sections',
       '--session-id', 'uuid-9',
       '--permission-mode', 'bypassPermissions',
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
 });
@@ -1958,11 +1968,11 @@ describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
     const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
     expect(argv).toContain(`--fleet=${storeFleetSlugFromName('My New Fleet')}`);
   });
-  it('captures --no-subagents (owner request 2026-07-01); omitted when not requested', () => {
-    const withFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--no-subagents']);
-    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withFlag)).toContain('--no-subagents');
+  it('captures --allow-subagents (owner mandate 2026-07-02); omitted when not opted in (deny is the default)', () => {
+    const withFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--allow-subagents']);
+    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withFlag)).toContain('--allow-subagents');
     const withoutFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
-    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withoutFlag)).not.toContain('--no-subagents');
+    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withoutFlag)).not.toContain('--allow-subagents');
   });
 });
 

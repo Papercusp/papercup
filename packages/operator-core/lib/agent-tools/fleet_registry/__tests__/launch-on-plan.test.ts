@@ -109,14 +109,14 @@ describe('memberLaunchCommand', () => {
     expect(cmd).toContain('--add-dir=/b');
   });
 
-  it('emits --no-subagents as a bare flag when requested (owner request 2026-07-01); omitted by default', () => {
+  it('emits --allow-subagents as a bare flag when opted in (owner mandate 2026-07-02); omitted by default (deny)', () => {
     const cmd = memberLaunchCommand({
-      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', noSubagents: true,
+      fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', allowSubagents: true,
     });
-    expect(cmd).toContain(' --no-subagents');
+    expect(cmd).toContain(' --allow-subagents');
     expect(
       memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' }),
-    ).not.toContain('--no-subagents');
+    ).not.toContain('--allow-subagents');
   });
 
   it('threads --context-size=<variant> (full|trimmed) for every backend', () => {
