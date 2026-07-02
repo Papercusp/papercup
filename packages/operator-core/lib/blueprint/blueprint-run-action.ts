@@ -149,6 +149,23 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   // harness_shared.autoloop_state, so consecutive_errors feeds the fire gate —
   // a repeatedly-failing decider backs off instead of re-firing at full cadence.
   void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {});
+  // queen-memory-hybrid L2 (QUEEN_WARM_SESSION, default OFF): try delivering a
+  // queen wake WARM (wake-executor resume of her tracked session) before the
+  // cold /invoke spawn. Fail-soft + flag-gated inside the attempt; delivered ⇒
+  // skip the spawn (the resumed session IS this wake); not ⇒ today's path,
+  // byte-identical. Mode+reason stamped for the A/B.
+  void (async () => {
+    const { queenWarmWakeAttempt } = await import('../hive/queen-warm-session');
+    const attempt = await queenWarmWakeAttempt({ installSlug, workspaceId, role, ...(kickoff ? { kickoff } : {}) });
+    if (attempt.decision) {
+      void recordFire(installSlug, role, `wake-mode: ${attempt.decision.mode} — ${attempt.decision.reason}`, attempt.delivered ? 'ok' : 'attempt').catch(() => {});
+    }
+    if (attempt.delivered) return; // warm-delivered — no cold spawn
+    void coldFire();
+  })().catch(() => void coldFire());
+  return;
+
+  function coldFire(): void {
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -177,6 +194,7 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
       },
     )
     .catch(() => {});
+  } // end coldFire (queen-memory-hybrid L2 warm-branch wrapper)
 };
 
 /** Lazily-loaded built-in `coding-factory` blueprint — the fallback when a harness has no blueprint

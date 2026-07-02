@@ -46,6 +46,7 @@ import {
   type UsageRollupForContributor,
   emptyRollup,
 } from './contributor-usage-event-types';
+import { resolveWorkspaceForHarness } from './workspace-for-harness';
 
 // ── ULID event-id generator ────────────────────────────────────────────────
 // 26 Crockford base32 chars (no I/L/O/U): 10 chars of 48-bit ms timestamp
@@ -88,12 +89,31 @@ export interface EmitDeps {
   /** Override the generated event_id (e.g. to re-emit the same logical event
    *  idempotently — the PK ON CONFLICT makes the re-emit a no-op). */
   eventId?: string;
+  /** Skip the harness_slug → workspace_id resolve (e.g. caller already knows it). */
+  workspaceId?: string;
+  /** Injectable seam for tests — overrides resolveWorkspaceForHarness. */
+  resolveWorkspace?: typeof resolveWorkspaceForHarness;
 }
 
 /**
  * Append one activity event to the ledger. Idempotent on `(harness_slug,
  * event_id)`: re-emitting the same `eventId` is a no-op (P-070d). Returns the
  * `event_id` so the caller can re-emit idempotently on retry.
+ *
+ * WI-1572: the table's `workspace_id` column is filled by a BEFORE-INSERT
+ * trigger (`fill_workspace_id_from_projects`, migration 301) ONLY when this
+ * INSERT leaves it null/empty — but that SQL-level trigger consults ONLY
+ * `harness_shared.projects` (a sparse, non-authoritative projection; see
+ * `lookupProjectWorkspaceIds`'s doc comment), with NO fallback to the
+ * authoritative `harness_shared.harness_registry`. A harness registered only
+ * in the registry (papercusp itself is exactly this case — no `projects` row,
+ * but a real registry entry under workspace 'papercusp-workspace') silently
+ * falls to 'default' and its usage-event outbox rows never match the real
+ * workspace drain → permanently stranded (144+ rows observed, growing).
+ * Fix: resolve the SAME way every other per-harness surface does —
+ * `resolveWorkspaceForHarness` (projects, THEN the authoritative registry,
+ * THROW if truly unregistered) — and set it explicitly on the INSERT so the
+ * incomplete SQL trigger never gets a say.
  */
 export async function emitUsageEvent(
   input: EmitUsageEventInput,
@@ -102,15 +122,17 @@ export async function emitUsageEvent(
   const nowMs = deps.nowMs ?? Date.now();
   const event_id = deps.eventId ?? makeUsageEventId(nowMs);
   const sql = deps.sql ?? getOrgPg().sql;
+  const resolve = deps.resolveWorkspace ?? resolveWorkspaceForHarness;
+  const workspace_id = deps.workspaceId ?? (await resolve(input.harness_slug));
   await sql`
     INSERT INTO harness_shared.contributor_usage_events
-      (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version)
+      (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version, workspace_id)
     VALUES
       (${input.harness_slug}, ${event_id}, ${input.github_user_id}, ${input.device_pubkey},
        ${input.kind}, ${input.ref_id ?? null},
        ${input.payload == null ? null : JSON.stringify(input.payload)}::text::jsonb,
        to_timestamp(${nowMs} / 1000.0),
-       ${USAGE_EVENT_SCHEMA_VERSION})
+       ${USAGE_EVENT_SCHEMA_VERSION}, ${workspace_id})
     ON CONFLICT (harness_slug, event_id) DO NOTHING
   `;
   return { event_id };

@@ -47,6 +47,77 @@ export interface QueenWakeDecision {
  * (error streak / unhealthy scorecard) — a struggling warm session must never
  * be resumed into, that is how drift compounds.
  */
+/**
+ * The IMPURE warm-wake attempt the blueprint-run fire chokepoint calls BEFORE
+ * its cold /invoke spawn. Returns true when the wake was delivered WARM (the
+ * caller must then SKIP the cold spawn); false = fall through to the cold spawn
+ * (today's exact behavior). FAIL-SOFT by contract: any error → false.
+ *
+ * v1 scoping: queen role only; "same boot" proxied by session started AFTER
+ * this process booted (adv_sessions carries no boot id — the reclaim sweep
+ * kills cross-boot sessions anyway, EI-2186). Anomaly input = the queen's
+ * autoloop consecutive_errors. Delivery rides wakeRecipients → the
+ * wake-executor liveness ladder (inject if live, `claude --resume` if exited —
+ * EI-908: the executor is the liveness authority, never the caller).
+ */
+export async function queenWarmWakeAttempt(args: {
+  installSlug: string;
+  workspaceId: string;
+  role: string;
+  kickoff?: string;
+}): Promise<{ delivered: boolean; decision?: QueenWakeDecision }> {
+  try {
+    if (args.role !== 'queen' && args.role !== 'brain') return { delivered: false };
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    if (!(await getFlag(FLAGS.QUEEN_WARM_SESSION, 'system'))) return { delivered: false };
+
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{ coord_owner_id: string | null; started_at: string }>
+    >`
+      SELECT coord_owner_id, started_at::text
+        FROM harness_shared.adv_sessions
+       WHERE role = ${args.role} AND coord_owner_id IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT 1`;
+    const row = rows[0];
+    const processBootMs = Date.now() - process.uptime() * 1000;
+    const errRows = await sql<Array<{ consecutive_errors: number }>>`
+      SELECT consecutive_errors FROM harness_shared.autoloop_state
+       WHERE harness_slug = ${args.installSlug} AND role = ${args.role} LIMIT 1`;
+    const decision = decideQueenWakeMode({
+      sessionBootId: row ? 'this-boot-proxy' : null,
+      currentBootId: 'this-boot-proxy',
+      sessionStartedMs: row ? Date.parse(row.started_at) : null,
+      nowMs: Date.now(),
+      consecutiveErrors: errRows[0]?.consecutive_errors ?? 0,
+    });
+    // Boot proxy: a session started BEFORE this process booted is cross-boot → rebirth.
+    const crossBoot = row && Date.parse(row.started_at) < processBootMs;
+    if (decision.mode !== 'warm' || crossBoot || !row?.coord_owner_id) {
+      return { delivered: false, decision: crossBoot ? { mode: 'rebirth', reason: 'session predates this process boot' } : decision };
+    }
+    const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+    const res = await wakeRecipients([row.coord_owner_id], {
+      summary:
+        `Queen wake (WARM resume — queen-memory-hybrid L2). ${args.kickoff ?? 'Survey the fleet and act.'} ` +
+        'Your brief mechanisms (standing facts / carry-journal / background recall) still apply; ' +
+        'durable state remains the source of truth.',
+      payload: { kind: 'queen-warm-wake', installSlug: args.installSlug },
+      source: 'queen-warm-session',
+      workspaceId: args.workspaceId,
+    });
+    const woken = (res as { woken?: number } | undefined)?.woken ?? 0;
+    // A wake that reached NO live/resumable session must fall through to the cold
+    // spawn — never strand the queen on an undelivered warm wake.
+    return woken > 0 ? { delivered: true, decision } : { delivered: false, decision: { mode: 'cold', reason: 'warm wake undeliverable (woken=0)' } };
+  } catch {
+    return { delivered: false };
+  }
+}
+
 export function decideQueenWakeMode(inputs: QueenRebirthInputs): QueenWakeDecision {
   if (!inputs.sessionBootId || inputs.sessionStartedMs == null) {
     return { mode: 'cold', reason: 'no resumable session recorded' };
