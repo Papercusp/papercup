@@ -409,7 +409,14 @@ const invoke = defineTool({
     if (hiveSpawnId) {
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
       if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
-      if (!nativeSessionId && advSessionRowId != null) env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
+      // Codex ALWAYS gets the durable-CODEX_HOME key (resume-by-row-id), even now
+      // that it ALSO carries a native session id — the id is the transcript/roster
+      // key (hive-tabs mirror), NOT a resume handle; the durable home remains the
+      // resume mechanism. Pre-2026-07-01 this was `!nativeSessionId && …`, which
+      // the codex transcript fix would have silently broken.
+      if (routeBackend === 'codex' && advSessionRowId != null) {
+        env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
+      }
     }
     // queen-brief-cache-assembly B-03 (P-006): the Queen's precomputed wake brief
     // (ranked survey floor + carry-note), assembled by fireLaunchBlueprint when it

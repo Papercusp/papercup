@@ -32,19 +32,30 @@ const mig = (f: string) =>
   readFileSync(resolve(SQL_DIR, f), 'utf8')
     .split('\n')
     .filter((l) => !/^\s*\\/.test(l))
+    // strip standalone BEGIN;/COMMIT; — sql.unsafe on a pooled conn rejects them.
+    .filter((l) => !/^\s*(begin|commit);\s*$/i.test(l))
     .join('\n');
 
 let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('beespecs');
   h.sql = db.sql;
-  await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
-  await db.sql.unsafe(mig('389-bee-claim-spec-id-only.sql')); // id-pin tripwire column
-  // Minimal harness_features_consolidated (just the columns listRunningClaims reads) — self-contained.
+  // Minimal consolidated tables FIRST — mig 102 attaches its capture triggers to
+  // them (and ALTERs harness_issues_consolidated), so they must pre-exist.
   await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
     harness_slug text NOT NULL, feature_id text NOT NULL, item_kind text NOT NULL DEFAULT 'feature',
     status text NOT NULL DEFAULT 'todo', taken_by text, taken_at timestamptz,
-    last_progress_at timestamptz, workspace_id text NOT NULL DEFAULT 'default')`);
+    last_progress_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
+    PRIMARY KEY (harness_slug, feature_id))`);
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.harness_issues_consolidated (
+    harness_slug text NOT NULL, issue_id text NOT NULL, workspace_id text NOT NULL DEFAULT 'default',
+    PRIMARY KEY (harness_slug, issue_id))`);
+  // P-016 (cross-machine-coord-parity): substrate_outbox + capture fn (mig 102),
+  // the spec table (372/389), then its federation columns + capture triggers (438).
+  await db.sql.unsafe(mig('archive/102-substrate-outbox.sql'));
+  await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
+  await db.sql.unsafe(mig('389-bee-claim-spec-id-only.sql')); // id-pin tripwire column
+  await db.sql.unsafe(mig('438-bee-claim-specs-federation.sql'));
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();
@@ -92,4 +103,30 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
   it('returns an empty map for no bees', async () => {
     expect(await getClaimSpecHeadsForBees([], undefined, db.sql)).toEqual(new Map());
   });
+  it('P-016: a hive-scoped spec ENQUEUES a federation outbox row; operator-scope stays LOCAL', async () => {
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    // operator-scope (hiveSlug null) — no capture (the mig-438 WHEN gate).
+    await setClaimSpec({ beeId: 'su-bee-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen' }, db.sql);
+    expect(
+      await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-local'`,
+    ).toHaveLength(0);
+    // hive-scoped — one put outbox row keyed by bee_id, tagged with the hive home slug.
+    await setClaimSpec(
+      { beeId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'my-hive' },
+      db.sql,
+    );
+    const rows = await db.sql<{ op: string; key: string; harness_slug: string }[]>`
+      SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-fed'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ op: 'put', key: 'su-bee-fed', harness_slug: 'my-hive' });
+    // a re-steer (revision bump) of the hive-scoped spec captures again (UPDATE gate).
+    await setClaimSpec(
+      { beeId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'my-hive' },
+      db.sql,
+    );
+    expect(
+      (await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-fed'`).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
 });
