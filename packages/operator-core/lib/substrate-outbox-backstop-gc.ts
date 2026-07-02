@@ -103,9 +103,11 @@ export interface BackstopGcOptions {
    * all). Keying the exemption on the EXACT (workspace_id, harness_slug) pair means
    * a mis-routed/retired-slug row (e.g. a pre-rename 'papercup' capture) still falls
    * OUTSIDE the exemption — the currently-started hive lives under the NEW slug, not
-   * the orphaned one — so M1's original catch is preserved. Defaults to a real
-   * `listStartedHives()` read; pass `[]` to disable the exemption (old behavior,
-   * e.g. a test asserting the pre-WI-1634 semantics).
+   * the orphaned one — so M1's original catch is preserved. Defaults to `[]` (no
+   * exemption — today's behavior, and test-safe: this function must stay a pure
+   * function of its OWN injected `sql`, never a second untracked connection) — the
+   * production scheduler (dbos/periodic-workflows.ts) passes the real
+   * `listStartedHives()` read explicitly.
    */
   startedHives?: ReadonlyArray<{ workspaceId: string; installSlug: string }>;
 }
@@ -120,7 +122,7 @@ export async function runSubstrateOutboxBackstopGc(
   const now = opts.now ?? Date.now();
   const sql = opts.sql ?? getOrgPg().sql;
   const c = backstopGcCutoffs(now);
-  const started = opts.startedHives ?? (await listStartedHives());
+  const started = opts.startedHives ?? [];
   const startedWs = started.map((h) => h.workspaceId);
   const startedSlugs = started.map((h) => h.installSlug);
   const rows = await sql<Array<{ n: number }>>`

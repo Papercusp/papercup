@@ -227,7 +227,11 @@ DBOS.registerScheduled(operatorTurnsGcWorkflow, { name: 'operatorTurnsGc', cront
 async function outboxBackstopGcTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('substrate-outbox-backstop-gc')) return;
-    await runSubstrateOutboxBackstopGc();
+    // WI-1634 (WI-900 M3 residual): exempt currently-started hives' undrained rows
+    // from the 48h orphan reap — a started hive's drain may be legitimately halted
+    // on a recoverable cause (e.g. an epoch key not yet local), not truly orphaned.
+    const { listStartedHives } = await import('../hive/started');
+    await runSubstrateOutboxBackstopGc({ startedHives: await listStartedHives() });
   }, { name: 'substrate-outbox-backstop-gc' });
 }
 const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {

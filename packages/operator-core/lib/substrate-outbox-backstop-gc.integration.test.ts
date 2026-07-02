@@ -114,6 +114,68 @@ describe('substrate-outbox backstop GC', () => {
     expect(await keysRemaining(sql)).toEqual(['fresh-drained', 'fresh-undrained']);
   });
 
+  it('WI-1634: a currently-started hive is EXEMPT from the 48h orphan reap (recoverable halt, not orphaned)', async () => {
+    await seed(sql, {
+      key: 'started-halted',
+      ts: NOW - ORPHAN_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      workspace_id: 'ws-a',
+      harness_slug: 'hive-a',
+    });
+    // A genuinely orphaned (not-started) row at the SAME age is still reaped.
+    await seed(sql, {
+      key: 'orphan-not-started',
+      ts: NOW - ORPHAN_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      workspace_id: 'ws-b',
+      harness_slug: 'hive-b',
+    });
+
+    const { deleted } = await runSubstrateOutboxBackstopGc({
+      now: NOW,
+      sql,
+      startedHives: [{ workspaceId: 'ws-a', installSlug: 'hive-a' }],
+    });
+
+    expect(deleted).toBe(1);
+    expect(await keysRemaining(sql)).toEqual(['started-halted']);
+  });
+
+  it('WI-1634: the exemption is keyed on the EXACT (workspace, slug) pair — a mis-routed/retired slug under a DIFFERENT started hive is still reaped (M1 preserved)', async () => {
+    // The started hive lives under the NEW slug 'papercusp'...
+    await seed(sql, {
+      key: 'orphan-retired-slug',
+      ts: NOW - ORPHAN_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      workspace_id: 'ws-c',
+      harness_slug: 'papercup', // ...but this row is captured under the OLD retired slug.
+    });
+
+    const { deleted } = await runSubstrateOutboxBackstopGc({
+      now: NOW,
+      sql,
+      startedHives: [{ workspaceId: 'ws-c', installSlug: 'papercusp' }],
+    });
+
+    expect(deleted).toBe(1);
+    expect(await keysRemaining(sql)).toEqual([]);
+  });
+
+  it('WI-1634: no startedHives supplied ⇒ old behavior unchanged (nothing exempt)', async () => {
+    await seed(sql, {
+      key: 'orphan-default-opts',
+      ts: NOW - ORPHAN_UNDRAINED_RETENTION_MS - 1000,
+      drained_at: null,
+      workspace_id: 'ws-d',
+      harness_slug: 'hive-d',
+    });
+
+    const { deleted } = await runSubstrateOutboxBackstopGc({ now: NOW, sql }); // no startedHives
+
+    expect(deleted).toBe(1);
+    expect(await keysRemaining(sql)).toEqual([]);
+  });
+
   it('reaps undrained one-shot ephemeral test-hive rows on the short TTL, sparing recent + non-ephemeral', async () => {
     // A contract-test-* one-shot hive's undrained row past the 2h ephemeral TTL → reaped...
     await seed(sql, {
