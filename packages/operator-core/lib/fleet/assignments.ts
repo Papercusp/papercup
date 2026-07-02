@@ -18,7 +18,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
-import { fetchEndedOwnerIds } from '../agent-tools/coordination/presence-wakeability';
+import { endedRecordedOwnerIds } from '../adv-sessions';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */
 const GLOBAL_WORKSPACE = '*';
@@ -116,7 +116,7 @@ export function deriveActivity(
  * false coverage is exactly what let a dead bee look "covered" while
  * `coord:send {wake:'required'}` reported it `ended` and not wakeable — blocking
  * correct replacement. Given the authoritative ended-owner set (from
- * {@link fetchEndedOwnerIds} — NOT inbox-wakeable AND no live recorded session),
+ * {@link endedRecordedOwnerIds} — the holder's recorded session has ended),
  * drop the warm-heartbeat liveness on every one of that owner's rows and mark its
  * LIVE claim legs orphaned, so {@link deriveActivity} resolves them to `dead`
  * (reclaimable) — agreeing with `coord:presence`'s `ended` sessionState and the
@@ -224,16 +224,17 @@ export async function listFleetAssignments(
   );
 
   // EI-6374: the view's holder_alive/orphaned come from heartbeat freshness ALONE,
-  // so a just-ENDED bee (warm heartbeat, but process exited / not wakeable) still
-  // reads `alive` — falsely "covered", blocking replacement. Reconcile against the
-  // authoritative session state (the SAME signal coord:presence + the wake path
-  // use) so an ended holder resolves to `dead`. Only owners the view currently
-  // believes alive are checked; best-effort → no change on any query error.
+  // so a just-ENDED bee (warm heartbeat, but the process has exited) still reads
+  // `alive` — falsely "covered", blocking replacement. Reconcile against POSITIVE
+  // death evidence — the holder's own recorded session has ended (adv_sessions
+  // .ended_at set), the SAME teardown that cancels the wake await — so an ended
+  // holder resolves to `dead`. Only owners the view currently believes alive are
+  // checked; best-effort → no change on any query error.
   const aliveOwners = [
     ...new Set(mapped.filter((r) => r.holderAlive && r.agentId).map((r) => r.agentId as string)),
   ];
   if (aliveOwners.length === 0) return mapped;
-  const ended = await fetchEndedOwnerIds(aliveOwners);
+  const ended = await endedRecordedOwnerIds(aliveOwners);
   return downgradeEndedHolders(mapped, ended);
 }
 

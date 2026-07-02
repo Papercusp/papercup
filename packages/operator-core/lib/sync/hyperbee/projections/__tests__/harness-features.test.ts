@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildHarnessFeaturesProjection,
   _testing,
@@ -111,5 +111,21 @@ describe('harness_features projection', () => {
     const p = buildHarnessFeaturesProjection({ workspaceId: 'w1', harnessSlug: 'sheets' });
     expect(p.decodeValue(feature())).toEqual(feature());
     expect(p.decodeValue({})).toBeNull();
+  });
+
+  it('WI-1612: writeToPg ALWAYS binds workspace_id explicitly on the INSERT — never left NULL for the incomplete fill_ws_features_trg fallback', async () => {
+    const sql = Object.assign(vi.fn(async (..._a: unknown[]) => [] as unknown[]), {
+      json: vi.fn((x: unknown) => ({ __json: x })),
+    });
+    const p = buildHarnessFeaturesProjection({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'sheets', // own-slug op — member-content guard short-circuits to 'apply'
+      sql: sql as never,
+    });
+    await p.writeToPg(feature(), { origin: 'local' });
+    expect(sql).toHaveBeenCalledTimes(1);
+    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    // workspace_id is the FIRST bound column in the INSERT (see writeToPg).
+    expect(values[0]).toBe('papercusp-workspace');
   });
 });

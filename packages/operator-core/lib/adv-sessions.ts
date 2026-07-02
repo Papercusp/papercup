@@ -639,34 +639,37 @@ export async function listRecordedLiveSessions(
 }
 
 /**
- * Batch membership test: which of `coordOwnerIds` have a LIVE recorded session
- * (adv_sessions `ended_at IS NULL`) — the authoritative "is this owner's process
- * still running" signal, keyed by owner. Complements {@link listRecordedLiveSessions}
- * (which returns the FULL live set for roster synthesis); this is the bounded set
- * a liveness reader wants to GUARD against calling a launching / not-yet-wakeable
- * session dead (EI-6374). Same recency bound so an unreaped zombie ages out.
- * Best-effort → empty set on any DB error (the caller degrades to heartbeat-only
- * liveness and never over-reports death).
+ * Batch: which of `coordOwnerIds` have a RECORDED session whose MOST-RECENT row
+ * has ENDED (`adv_sessions.ended_at IS NOT NULL`) — POSITIVE evidence the owner's
+ * process has exited, keyed by owner (EI-6374, the fleet-coverage liveness-drift).
+ *
+ * This is the authoritative "is it actually still running" signal a coverage
+ * reader needs to override a still-WARM `coord_presence` heartbeat: session end
+ * sets `ended_at` in the SAME teardown that cancels the inbox-wake await (harness
+ * spawn + su/console launch paths), so a bee reported `ended` by the wake path
+ * lands here too. Positive-evidence by design — an owner with NO recorded session
+ * (a test-synthetic presence row, a legacy agent) is NEVER flagged, and a
+ * launching / live / RESUMED session (reactivateAdvSession clears `ended_at`) has
+ * a LIVE most-recent row → excluded. `DISTINCT ON (coord_owner_id)` most-recent
+ * row per owner (a resume reuses the SID, so the latest row wins). Federated
+ * (`fed:…`) owners never have a local record → dropped up front. Best-effort →
+ * empty set on any DB error (no owner is downgraded; the reader degrades to
+ * heartbeat-only liveness and never over-reports death).
  */
-export async function liveRecordedOwnerIds(
-  coordOwnerIds: string[],
-  opts: { maxAgeMs?: number } = {},
-): Promise<Set<string>> {
-  const ids = [...new Set(coordOwnerIds.filter((id) => !!id))];
+export async function endedRecordedOwnerIds(coordOwnerIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
   if (ids.length === 0) return new Set();
-  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? RECORDED_LIVE_MAX_AGE_MS) / 1000));
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ coord_owner_id: string }[]>`
-      SELECT DISTINCT coord_owner_id
+    const rows = await sql<{ coord_owner_id: string; ended_at: string | Date | null }[]>`
+      SELECT DISTINCT ON (coord_owner_id) coord_owner_id, ended_at
         FROM harness_shared.adv_sessions
-       WHERE ended_at IS NULL
-         AND coord_owner_id = ANY(${ids}::text[])
-         AND started_at > now() - make_interval(secs => ${maxAgeSec})
+       WHERE coord_owner_id = ANY(${ids}::text[])
+       ORDER BY coord_owner_id, started_at DESC
     `;
-    return new Set(rows.map((r) => r.coord_owner_id));
+    return new Set(rows.filter((r) => r.ended_at != null).map((r) => r.coord_owner_id));
   } catch (e) {
-    console.warn('[adv-sessions] liveRecordedOwnerIds failed:', (e as Error).message);
+    console.warn('[adv-sessions] endedRecordedOwnerIds failed:', (e as Error).message);
     return new Set();
   }
 }

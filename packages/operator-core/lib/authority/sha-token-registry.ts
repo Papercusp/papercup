@@ -51,6 +51,25 @@ interface PathTokenState {
 /** Bound on tracked (domain, path) entries — LRU-evicted beyond this (WI-1548). */
 const MAX_ENTRIES = 8192;
 
+/**
+ * A git commit sha: hex-only, 40 (SHA-1) or 64 (SHA-256) chars. Mirrors the
+ * `locks:release` MCP tool's `published_sha` zod validation
+ * (agent-tools/locks/release.ts) — but that regex guards only ONE entry
+ * point. `noteShaTokenRelease` is also reached from the cross-machine
+ * authority RPC surface (file-lock-authority-ops.ts `lock.release`, driven by
+ * a REMOTE peer's payload over PeerRpcTransport → POST /api/authority/rpc),
+ * which did NOT re-validate — so a peer (or a future third caller) could
+ * stamp arbitrary text as `requiredSha` on the NEXT grant, later fed
+ * unsanitized into `git merge-base --is-ancestor <requiredSha> …` in
+ * classifyRequiredSha (sync/hive-git/handoff-token.ts). `spawn` (no shell) rules
+ * out shell injection, but a value that happens to start with `-` could still
+ * be parsed as a git OPTION rather than a positional sha (argument injection)
+ * — WI-1551. Validating here, at the single choke point both callers
+ * converge on, closes the gap regardless of which entry point a value arrives
+ * through.
+ */
+const SHA_RE = /^[0-9a-f]{40,64}$/;
+
 const state = new Map<string, PathTokenState>();
 
 /** `\0` can appear in neither a repo realpath nor a lock path. */
