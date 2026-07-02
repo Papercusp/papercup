@@ -79,7 +79,17 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const audience = args.audience ?? 'user';
-    const activityLimit = args.activity_limit ?? DEFAULT_ACTIVITY_LIMIT;
+    // Session-tier DEFAULT for the activity window (context-trimming-tiers
+    // P-022). This tool keeps its hand-rolled JSON ToolResult — the statusline
+    // + objective-title cc hooks and the OMP coord-hook MCP-call it and
+    // `JSON.parse` the text (the coord:inbox hazard), and those pollers carry
+    // no ctx_tier → full default → byte-identical. Only a trimmed/standard LLM
+    // session gets the smaller window; an explicit activity_limit always wins.
+    const sessionTier = (ctx as { contextTier?: 'trimmed' | 'standard' | 'full' })
+      .contextTier;
+    const tierActivityDefault =
+      sessionTier === 'trimmed' ? 6 : sessionTier === 'standard' ? 8 : DEFAULT_ACTIVITY_LIMIT;
+    const activityLimit = args.activity_limit ?? tierActivityDefault;
     const { sql } = getOrgPg();
 
     const [wakeDefault, stagedByOwner, beeRows, activity] = await Promise.all([
@@ -184,6 +194,12 @@ export default defineTool({
             activity,
             tips,
             self: { objective: selfObjective, loop: selfLoop },
+            // Loud tier marker (D-004): a non-full session sees the smaller
+            // activity window is tier-derived (widen via activity_limit /
+            // payloadTier:"full").
+            ...(sessionTier && sessionTier !== 'full'
+              ? { payload_tier: sessionTier }
+              : {}),
           }),
         },
       ],

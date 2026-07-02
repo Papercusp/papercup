@@ -76,3 +76,37 @@ WHERE invoked_at > now() - interval '2 hours' GROUP BY 1 ORDER BY 1 DESC;
 If `reads ≫ writes` and the per-hour read count is flat around the clock, the bottleneck is poll
 cadence (lever 2), not payload (handled by lever 1). Tracked as **EI-2661** (egress) / **WI-545**
 (move the UI poll onto an SSE/sync delta or `not_modified`).
+
+## Re-verified 2026-07-02 — diagnosis still holds; two new code additions don't change it
+
+Re-ran this doc's own SQL against current `tool_invocations`: still **~570K `plans:list` /
+~568K `plans:attention` HTTP calls / 3d** (`transport='mcp'` still \<100 for both), still a
+**~500:1 read:write ratio** (21,731 reads vs. 44 matched writes over a 2h sample), still flat
+around the clock. Lever 2 (poll cadence) is **not yet addressed** — the numbers are essentially
+unchanged from this doc's original 2026-06-23 measurement.
+
+Two things changed in the anchored code since then, neither of which moves the byte/count
+conclusions above (both land on the negligible **agent/MCP** path, not the dominant UI path):
+
+- `plans:list` gained server-side `compact` / `order` / `limit` / `createdSince` / `updatedSince`
+  args (Build P-005, 2026-06-21) — lets an agent fetch a cheap, filtered directory scan instead of
+  every plan. The UI's `plans.list` sync resource does not pass these, so the ~340GB UI figure is
+  unaffected; this is a lever for the \<100-calls/3d agent slice only.
+- `plans:attention` gained per-tier payload shaping (`attention-shape.ts`,
+  context-trimming-tiers-2026-07-01 P-021) — trims a trimmed/standard MCP-tier caller to group
+  summaries + top-N items instead of the full ~1.09MB average payload. The HTTP/sync path (what
+  the UI reads, `ctx_tier`-less) still gets the full untrimmed shape, so again this targets the
+  agent path this doc already found "buys ~nothing" on the dominant traffic.
+- `plans:attention`'s ~10 sources also now run concurrently (`Promise.all`, infra-perf-robustness-
+  audit-2026-06-18 P-005) instead of sequentially — a latency fix (p50 ~2s → lower), not a call-
+  count or byte-volume change; each poll is still one full aggregation.
+
+`HarnessSyncProvider.tsx`'s SSE transport already runs an invalidation-driven refresh with a
+180s drift-repair backstop (`DEFAULT_SSE_DRIFT_REPAIR_MS`, replacing what was a shared 5s
+`pollIntervalMs`) — but that landed 2026-06-10, *before* this doc's original 2026-06-23
+measurement, and the re-measurement above shows the same ~4/sec, flat-around-the-clock shape
+regardless. So the still-live traffic is not explained by "SSE hasn't gotten the long-drift-repair
+fix yet" — something else (many concurrent open sessions each on their own drift-repair tick,
+frequent SSE→POLLING fallback, or another caller entirely) is generating it. That's a genuine open
+question this doc can't resolve from a snapshot query; re-run the SQL above with a `spawn_id` /
+`role` breakdown to attribute it before assuming "it's the desktop UI" without checking.
