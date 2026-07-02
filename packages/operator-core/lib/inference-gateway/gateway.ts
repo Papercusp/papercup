@@ -411,6 +411,23 @@ export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
 export const OWNER_HEADER = 'x-papercusp-owner';
 const ANTHROPIC_VERSION = '2023-06-01';
 
+/** The request's effective priority label: the explicit `x-papercusp-priority` header when present,
+ *  otherwise INFERRED from the `x-papercusp-owner` id prefix (`su-…` → `su`, `s-…` → `bee`). Guards the
+ *  tier-5 starvation trap (2026-07-01): the interactive PSU pin path spawned sessions with an owner header
+ *  but NO priority header, so every pinned session fell to the `default` band (tier 5, cap 1) and the
+ *  whole fleet's first turns serialized one-at-a-time. An owner-bearing session is by construction a
+ *  coordinated fleet role, never anonymous batch — so infer its band instead of crawling. Requests with
+ *  NEITHER header keep the default band. */
+export function effectivePriorityLabel(headers: Record<string, unknown>): string | undefined {
+  const explicit = (headers[PRIORITY_HEADER] as string | undefined)?.trim().toLowerCase();
+  if (explicit) return explicit;
+  const owner = (headers[OWNER_HEADER] as string | undefined)?.trim().toLowerCase();
+  if (!owner) return undefined;
+  if (owner.startsWith('su-')) return 'su';
+  if (owner.startsWith('s-')) return 'bee';
+  return undefined;
+}
+
 /** WI-1073: the fleet-canonical SONNET api id the gateway substitutes for a walled OPUS request as a
  *  last resort. `claude-sonnet-4-6` is the sonnet id used fleet-wide (omp-integration, gym, pr-host,
  *  scout, replay), so it is a known-valid dated id the gateway can forward verbatim (a bare alias like
@@ -2051,7 +2068,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // park-retry loop and finally shed. 0 = OFF (the slot-hold deadline above is the only bound, as before).
       // P-003 (safe variant): scale the budget by the request's TIER so a high-priority caller out-waits a batch
       // one for the recovered account (the priority-throttle-park OUTCOME, no governor wait-queue). Identity off.
-      const priLabel = (req.headers[PRIORITY_HEADER] as string | undefined)?.trim().toLowerCase();
+      const priLabel = effectivePriorityLabel(req.headers);
       const reqTier = tierMap ? tierOf(priLabel ?? undefined, tierMap) : undefined;
       let effAbsorbMs = requestAbsorbMs > 0 ? Math.round(requestAbsorbMs * absorbTierFactor(reqTier)) : 0;
       // INTERACTIVE FAIL-FAST: a human-facing caller (interactive/operator) sheds fast instead of being held
@@ -3336,7 +3353,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    const priLabel = (req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined;
+    const priLabel = effectivePriorityLabel(req.headers);
     const pri = priorityFromLabel(priLabel);
     // Tier the request from its `x-papercusp-priority` role (only when the tier layer is on — `tierMap`
     // present). Passed to queue.run as `opts.tier`; it is IGNORED by the queue when the tier layer is off,

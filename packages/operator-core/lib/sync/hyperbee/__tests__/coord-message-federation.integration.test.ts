@@ -133,6 +133,8 @@ describe('coord_event_log federation (real PG)', () => {
     // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
     await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+    // P-013: the quarantine table (mig 436 verbatim).
+    await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '436-coord-quarantine.sql'), 'utf8')));
   }, 60_000);
 
   afterAll(async () => {
@@ -615,6 +617,111 @@ describe('coord_event_log federation (real PG)', () => {
         warnSpy.mockRestore();
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
       }
+    });
+  });
+
+  describe('P-013/P-014 — comms-tier enforcement (hive-bound projections only)', () => {
+    beforeEach(() => {
+      resetFederatedWakeRate();
+      vi.mocked(wakeRecipients).mockClear();
+      vi.mocked(emitAwaitedEvent).mockClear();
+      vi.mocked(sendMessage).mockClear();
+    });
+    const tierProj = (tier: 'observe' | 'message' | 'wake' | 'steer') =>
+      buildCoordMessageProjection({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        sql: db.sql,
+        hiveHomeSlug: HARNESS, // hive-bound ⇒ enforcement active
+        resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
+      });
+    const wakeRow = (msgId: string, extra: Record<string, unknown> = {}): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, { wake: true, summary: 'hi', to: ['su-B'], ...extra }),
+      ts: 1_700_000_000_000,
+    });
+    async function applied(msgId: string): Promise<boolean> {
+      const r = await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id=${msgId}`;
+      return r.length > 0;
+    }
+    async function quarantined(msgId: string) {
+      const r = await db.sql<{ reason: string; author_github_user_id: string | number | null }[]>`
+        SELECT reason, author_github_user_id FROM harness_shared.coord_quarantine WHERE workspace_id=${WS} AND msg_id=${msgId}`;
+      return r[0] ?? null;
+    }
+
+    it("below 'message' (observe): the row NEVER applies — QUARANTINED with the verified author", async () => {
+      await tierProj('observe').writeToPg(wakeRow('q-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(await applied('q-1')).toBe(false);
+      const q = await quarantined('q-1');
+      expect(q?.reason).toBe('below-message-tier');
+      expect(Number(q?.author_github_user_id)).toBe(4242);
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it("at 'message': the row APPLIES but no fan, no reply-wake, no fed-event re-fire (attention, not spend)", async () => {
+      // seed an opted-in original so the reply-wake WOULD fire if allowed
+      await insertRow({ msgId: 'q-orig', body: envelope('q-orig', { from: 'su-LOCAL', to: ['su-A'], wakeOnReply: true }) });
+      const p = tierProj('message');
+      await p.writeToPg(
+        wakeRow('q-2', { related_msg_id: 'q-orig', fed_event: { key: 'k-q2', source: 'su-A' } }),
+        { authorPubkey: 'peerPubA', origin: 'remote' },
+      );
+      expect(await applied('q-2')).toBe(true);
+      expect(await quarantined('q-2')).toBeNull();
+      expect(wakeRecipients).not.toHaveBeenCalled();
+      expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    });
+
+    it("at 'wake': the fan fires as usual", async () => {
+      await tierProj('wake').writeToPg(wakeRow('q-3'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(await applied('q-3')).toBe(true);
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it("a HANDOFF below 'steer' is quarantined even from a wake-tier author", async () => {
+      const handoff: CoordMessageRow = {
+        ...wakeRow('q-4'),
+        surface: 'handoffs',
+        body: envelope('q-4', { kind: 'handoff', to: ['su-B'] }),
+      };
+      await tierProj('wake').writeToPg(handoff, { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(await applied('q-4')).toBe(false);
+      expect((await quarantined('q-4'))?.reason).toBe('handoff-below-steer');
+    });
+
+    it('P-014: a quarantined receipt-requesting message acks delivered:false + quarantined:true', async () => {
+      await tierProj('observe').writeToPg(
+        wakeRow('q-5', { receipt: true }),
+        { authorPubkey: 'peerPubA', origin: 'remote' },
+      );
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const opts2 = vi.mocked(sendMessage).mock.calls[0][1] as {
+        extra?: { fed_event?: { key: string; payload: Record<string, unknown> } };
+      };
+      expect(opts2.extra?.fed_event?.key).toBe('coord:receipt:q-5');
+      expect(opts2.extra?.fed_event?.payload).toMatchObject({
+        delivered: false,
+        quarantined: true,
+        reason: 'below-message-tier',
+      });
+    });
+
+    it("'steer' passthrough + NON-hive-bound projections stay byte-identical (no gate)", async () => {
+      await tierProj('steer').writeToPg(wakeRow('q-6'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(await applied('q-6')).toBe(true);
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+      // non-hive-bound (no hiveHomeSlug): even an 'observe' resolver is never consulted
+      const resolver = vi.fn(async () => ({ tier: 'observe' as const, githubUserId: 1 }));
+      const plain = buildCoordMessageProjection({
+        workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, resolveCommsTier: resolver,
+      });
+      await plain.writeToPg(wakeRow('q-7'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(await applied('q-7')).toBe(true);
+      expect(resolver).not.toHaveBeenCalled();
     });
   });
 

@@ -221,6 +221,11 @@ export async function resolveAccountPin(
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
       return fail('the inference gateway is off (INFERENCE_GATEWAY)');
     }
+    // Priority label for the admission tier (gateway-priority-tiers): a PSU session is role `su` (tier 2).
+    // Without this, pinned/auto psu sessions fell to the default band — tier 5, cap 1 — and their first
+    // turns serialized behind each other (the 2026-07-01 "15-minute first turn" starvation). Gated on the
+    // same flag as the bee spawn path so flag-OFF emits no new header.
+    const priority = (await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system')) ? 'su' : undefined;
     // AUTO: route through the gateway with NO account pin — it selects an available account + fails over.
     if (wantAuto) {
       const expected = accountProviderForInteractiveBackend(agent);
@@ -229,7 +234,7 @@ export async function resolveAccountPin(
         const { gatewaySpawnEnv } = await import('../../../inference-gateway/spawn-env');
         // ownerId → x-papercusp-owner (attribution + stall-wake); NO accountId → gateway active()/drain + failover.
         return {
-          env: { ...gatewaySpawnEnv(true, { ownerId }) },
+          env: { ...gatewaySpawnEnv(true, { ownerId, priority }) },
           notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
           accountId: null,
           provider: expected,
@@ -259,7 +264,7 @@ export async function resolveAccountPin(
       return {
         // Pass ownerId so the session ALSO sends x-papercusp-owner (not just the account pin) — this lets the
         // gateway attribute the session's routed account (GET /admin/route → the statusline ⇢ <account> chip).
-        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId, hardPin }), PAPERCUSP_ACCOUNT_ID: id },
+        env: { ...gatewaySpawnEnv(true, { accountId: id, ownerId, priority, hardPin }), PAPERCUSP_ACCOUNT_ID: id },
         notice: `pinned to account ${id} (routed through the inference gateway${hardPin ? ', HARD pin — no failover' : ''}).`,
         accountId: id,
         provider,

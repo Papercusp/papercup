@@ -28,7 +28,7 @@ import type { PendingMembershipContent } from '../pending-membership-content';
 import { tryConsumeFederatedWake } from '../federated-wake-rate';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { quarantineCoordMessage } from '../coord-quarantine-store';
-import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../trust/comms-trust';
+import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
