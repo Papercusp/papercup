@@ -56,6 +56,7 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || true
 run() {
   python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$CACHE_DIR" "$WORKSPACE_ROOT" "$FLAG_KEY" "$AGENT" <<'PYEOF'
 import json, os, sys, time, urllib.request, urllib.parse
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, sid, cache_dir, workspace_root, flag_key, agent = sys.argv[1:9]
 HTTP_TIMEOUT = 3

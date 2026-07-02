@@ -56,6 +56,9 @@ export interface AssertFactInput {
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;
+  /** F0-2 (federated-scout-gym): OPT-IN federation egress — only shareable
+   *  facts ever leave the hive. Default false (privacy default, D-001/D-005). */
+  shareable?: boolean;
 }
 
 /** Validate scope/ref pairing per D-001. Returns an error string or null. */
@@ -91,16 +94,17 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const ttl = input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_DEFAULT_TTL_SEC;
   const rows = await sql<AgentFactRow[]>`
     INSERT INTO harness_shared.agent_facts
-      (workspace_id, scope, scope_ref, key, body, source_ref, created_by, expires_at)
+      (workspace_id, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable)
     VALUES
       (${ws}, ${input.scope}, ${ref}, ${key}, ${body}, ${input.sourceRef ?? null}, ${input.createdBy},
-       now() + make_interval(secs => ${ttl}))
+       now() + make_interval(secs => ${ttl}), ${input.shareable === true})
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key)
     DO UPDATE SET body = EXCLUDED.body,
                   source_ref = EXCLUDED.source_ref,
                   updated_at = now(),
                   expires_at = EXCLUDED.expires_at,
-                  retracted_at = NULL
+                  retracted_at = NULL,
+                  shareable = EXCLUDED.shareable
     RETURNING scope, scope_ref, key, body, source_ref, created_by,
               updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this (scope, ref).
@@ -193,6 +197,14 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
         OR retracted_at < now() - interval '30 days'
     RETURNING key`;
   return rows.length;
+}
+
+/** F0-2 (federated-scout-gym): the ELITE eligibility rule — sender-side gate on
+ *  what may federate. Outcome-verified or strongly-graded only; everything else
+ *  is spam-by-design on an open network (D-005 H3: receiver-side signed-outcome
+ *  verification + reputation weighting still apply on top of this). */
+export function federatableElite(e: { outcome?: string | null; grade?: number | null }): boolean {
+  return e.outcome === 'won' || (e.grade ?? 0) >= 4;
 }
 
 /** Render facts as the compact fold block briefs embed. Deterministic layout:
