@@ -34,7 +34,10 @@
 
 import type { Duplex } from 'node:stream';
 import { type TransportResult, fetchOverDuplex } from './fetch-transport';
-import { type RunGit, defaultRunGit, listNamespaces } from './storage';
+import { type RunGit, defaultRunGit, deviceNamespaceKey, listNamespaces } from './storage';
+
+/** update-ref's "the ref must NOT exist" old-value (create-only CAS). */
+const ZERO_SHA = '0'.repeat(40);
 
 /** The private landing area for the bootstrap fetch — never read by anything
  *  else, always safe to clobber/delete. */

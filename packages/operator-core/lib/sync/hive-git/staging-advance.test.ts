@@ -121,4 +121,77 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       reason: 'malformed',
     });
   });
+
+  describe('WI-1560 — maxGrantedEpoch caps insider watermark poisoning', () => {
+    it('REGRESSION: an ADMITTED member claiming a max epoch is rejected ungranted-epoch', async () => {
+      const authority = keypair();
+      const insider = keypair();
+      const members = [authority.pubkeyBase64, insider.pubkeyBase64];
+      const prior = { epoch: 2, seq: 5 };
+
+      // The insider self-signs an absurd epoch over the current sha. Without
+      // the cap this was ACCEPTED (member set passes, sig is self-consistent,
+      // (1e9, 0) > (2, 5)) — poisoning the watermark unrecoverably.
+      const poison = await advance(insider, 1_000_000_000, 0);
+      expect(acceptStagingAdvance(poison, prior, { allowedDevices: members })).toEqual({ ok: true }); // the documented hole
+      expect(
+        acceptStagingAdvance(poison, prior, { allowedDevices: members, maxGrantedEpoch: 2 }),
+      ).toEqual({ ok: false, reason: 'ungranted-epoch' });
+
+      // Legitimate advances at/below the granted epoch still pass.
+      expect(
+        acceptStagingAdvance(await advance(authority, 2, 6), prior, {
+          allowedDevices: members,
+          maxGrantedEpoch: 2,
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    it('an epoch BUMP passes only once the receiver has raised the grant (handoff adopted)', async () => {
+      const authority = keypair();
+      const prior = { epoch: 2, seq: 5 };
+      const bumped = await advance(authority, 3, 0);
+      // Before the receiver verifies the G-0 handoff, epoch 3 is ungranted…
+      expect(
+        acceptStagingAdvance(bumped, prior, { allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 2 }),
+      ).toEqual({ ok: false, reason: 'ungranted-epoch' });
+      // …after adopting the token (nextEpoch = 3) it is granted and accepted.
+      expect(
+        acceptStagingAdvance(bumped, prior, { allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 3 }),
+      ).toEqual({ ok: true });
+    });
+
+    it('within-epoch seq poisoning stays RECOVERABLE: the next granted epoch beats any seq', async () => {
+      const authority = keypair();
+      const insider = keypair();
+      const members = [authority.pubkeyBase64, insider.pubkeyBase64];
+
+      // The worst an insider can do under the cap: burn the seq space of the
+      // CURRENT epoch.
+      const seqPoison = await advance(insider, 2, 1_000_000_000);
+      expect(
+        acceptStagingAdvance(seqPoison, { epoch: 2, seq: 5 }, { allowedDevices: members, maxGrantedEpoch: 2 }),
+      ).toEqual({ ok: true });
+
+      // The real authority recovers at the NEXT epoch grant: (3, 0) > (2, 1e9).
+      const recovered = await advance(authority, 3, 0);
+      expect(
+        acceptStagingAdvance(recovered, { epoch: 2, seq: 1_000_000_000 }, {
+          allowedDevices: members,
+          maxGrantedEpoch: 3,
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    it('expectedDevice mode composes with the cap (rejects even the pinned authority past the grant)', async () => {
+      const authority = keypair();
+      const over = await advance(authority, 9, 0);
+      expect(
+        acceptStagingAdvance(over, null, { expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 8 }),
+      ).toEqual({ ok: false, reason: 'ungranted-epoch' });
+      expect(
+        acceptStagingAdvance(over, null, { expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 9 }),
+      ).toEqual({ ok: true });
+    });
+  });
 });

@@ -167,7 +167,14 @@ export type StagingAdvanceAcceptance =
   | { ok: true }
   | {
       ok: false;
-      reason: 'malformed' | 'wrong-device' | 'bad-signature' | 'stale-epoch-seq' | 'non-fast-forward' | 'unknown-sha';
+      reason:
+        | 'malformed'
+        | 'wrong-device'
+        | 'bad-signature'
+        | 'ungranted-epoch'
+        | 'stale-epoch-seq'
+        | 'non-fast-forward'
+        | 'unknown-sha';
     };
 
 export interface AcceptStagingAdvanceOpts {
@@ -180,6 +187,25 @@ export interface AcceptStagingAdvanceOpts {
    * gate the device itself.
    */
   allowedDevices?: readonly string[];
+  /**
+   * INSIDER-POISONING guard (WI-1560): the highest epoch the receiver believes
+   * has been LEGITIMATELY GRANTED — i.e. the last verified G-0 handoff token's
+   * `nextEpoch` (handoff-token.ts `adoptHandoffToken`), or the lock-authority
+   * lease epoch. An advance claiming `epoch > maxGrantedEpoch` is rejected
+   * `ungranted-epoch` even when its device passes the gate.
+   *
+   * WHY: with `allowedDevices` (a member SET, not one pinned authority), any
+   * ADMITTED member could self-sign `epoch: 1e9` over the current sha — the
+   * fence would accept it, poison the persisted watermark, and every future
+   * legitimate advance would be rejected `stale-epoch-seq`, UNRECOVERABLY
+   * (no grantable epoch exceeds 1e9 in practice). With the cap, an insider can
+   * at worst poison the SEQ space WITHIN the current epoch — which the real
+   * authority recovers from at the next epoch grant, since (epoch+1, 0) beats
+   * (epoch, anySeq) in the lexicographic order. Receivers using
+   * `allowedDevices` SHOULD set this; with `expectedDevice` (one pinned
+   * authority) it is optional — only that authority can sign at all.
+   */
+  maxGrantedEpoch?: number;
 }
 
 /**
@@ -203,6 +229,9 @@ export function acceptStagingAdvance(
     return { ok: false, reason: 'wrong-device' };
   }
   if (!verifyStagingAdvance(incoming)) return { ok: false, reason: 'bad-signature' };
+  if (opts.maxGrantedEpoch !== undefined && incoming.epoch > opts.maxGrantedEpoch) {
+    return { ok: false, reason: 'ungranted-epoch' };
+  }
   if (prior !== null && compareEpochSeq(incoming, prior) <= 0) {
     return { ok: false, reason: 'stale-epoch-seq' };
   }
