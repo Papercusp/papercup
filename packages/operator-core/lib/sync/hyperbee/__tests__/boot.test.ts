@@ -26,7 +26,7 @@ import { openOwnLog, type RemoteLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
-import { listBootHistory } from '../boot-history';
+import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import type { AdmittedLog } from '../read-merge';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
@@ -91,6 +91,16 @@ afterEach(async () => {
     try { await cleanups.pop()!(); } catch {}
   }
   _resetCacheForTests();
+  // WI-183 flaky-test fix: boot-history is a module-level append-only buffer
+  // (cap 200, no per-test scoping beyond the workspaceId/harnessSlug filter
+  // callers apply on read) — every other piece of cross-test module state in
+  // this file gets an explicit reset above, but boot-history did not, so any
+  // event recorded during a test (including from a prior FAILED/aborted run
+  // sharing this worker process, e.g. under `vitest --retry` or watch-mode
+  // re-execution) could persist into a later test's `listBootHistory()` read.
+  // Resetting it here closes that isolation gap for every describe block in
+  // this file, not just the WI-183 one that surfaced it.
+  _resetBootHistoryForTests();
 });
 
 describe('bootHarnessSubstrate — validation', () => {
