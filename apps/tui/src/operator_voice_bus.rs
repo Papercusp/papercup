@@ -61,26 +61,25 @@ pub fn control_start() -> Vec<u8> {
 
 // The remaining control builders are the complete bus control surface (P-004:
 // any attached client may mute/PTT/set-mode/stop, or force-host to take over
-// playout). They're exercised by the codec tests; wiring them to pui
-// keybindings is a thin follow-on in the voice UI (voice_ui.rs), so they're
-// allow(dead_code) until that lands rather than dropped from the mirror.
+// playout). mute/ptt/set-mode/force-host are wired to pui keybindings via
+// `voice_convai::ConvAiHandle::control` (M / v-hold / A / H while the shared
+// session is live). `control_stop` alone stays unwired: the pui detaches by
+// closing its socket (handleClientGone re-elects or tears down) rather than
+// stopping the SHARED session for every surface — it's kept (allow(dead_code))
+// so the codec mirror + tests stay byte-complete against the TS side.
 #[allow(dead_code)]
 pub fn control_stop() -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "stop" }))
 }
-#[allow(dead_code)]
 pub fn control_force_host() -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "force-host" }))
 }
-#[allow(dead_code)]
 pub fn control_mute(muted: bool) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "mute", "muted": muted }))
 }
-#[allow(dead_code)]
 pub fn control_ptt(down: bool) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "ptt", "down": down }))
 }
-#[allow(dead_code)]
 pub fn control_set_mode(mode: &str) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "set-mode", "mode": mode }))
 }

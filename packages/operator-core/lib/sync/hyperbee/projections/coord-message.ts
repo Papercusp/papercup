@@ -27,7 +27,8 @@ import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { tryConsumeFederatedWake } from '../federated-wake-rate';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
-import { quarantineCoordMessage } from '../coord-quarantine-store';
+import { quarantineCoordMessage, type QuarantineReason } from '../coord-quarantine-store';
+import { tryConsumeMemberMessageRate } from '../member-rate-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
@@ -88,6 +89,9 @@ export interface CoordMessageProjectionOpts {
   resolveCommsTier?: (
     devicePubkey: string | null,
   ) => Promise<{ tier: CommsTier; githubUserId: number | null }>;
+  /** P-015 test seam: spend one message-op from the member's policy-rate
+   *  budget. Default binds member-rate-gate (hive_policy.rate). */
+  consumeMessageRate?: (devicePubkey: string | null) => Promise<boolean>;
 }
 
 function composeKey(row: CoordMessageRow): string {
@@ -133,11 +137,31 @@ async function writeToPg(
     } catch {
       authorTier = FALLBACK_COMMS_TIER;
     }
-    const quarantineReason = !commsTierAtLeast(authorTier, 'message')
-      ? ('below-message-tier' as const)
+    let quarantineReason: QuarantineReason | null = !commsTierAtLeast(authorTier, 'message')
+      ? 'below-message-tier'
       : row.surface === 'handoffs' && !commsTierAtLeast(authorTier, 'steer')
-        ? ('handoff-below-steer' as const)
+        ? 'handoff-below-steer'
         : null;
+    // P-015: the owner-signed policy.rate caps — the ATTENTION surface only
+    // (coord messages); over-rate quarantines (never a silent drop). Checked
+    // after the tier gate so a below-tier author doesn't also spend rate.
+    if (quarantineReason === null) {
+      try {
+        const consumeRate =
+          opts.consumeMessageRate ??
+          (async (device: string | null) =>
+            device
+              ? tryConsumeMemberMessageRate({
+                  workspaceId: opts.workspaceId,
+                  hiveHomeSlug: opts.hiveHomeSlug!,
+                  devicePubkey: device,
+                })
+              : true);
+        if (!(await consumeRate(sourceLogDevice))) quarantineReason = 'rate-exceeded';
+      } catch {
+        /* fail-open: rate is throttling, not the allow-list */
+      }
+    }
     if (quarantineReason) {
       try {
         await quarantineCoordMessage(

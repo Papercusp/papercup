@@ -15,7 +15,7 @@ import type postgres from 'postgres';
 export const DEFAULT_QUARANTINE_PER_AUTHOR_CAP =
   Number(process.env.PAPERCUSP_COORD_QUARANTINE_PER_AUTHOR_CAP) || 200;
 
-export type QuarantineReason = 'below-message-tier' | 'handoff-below-steer';
+export type QuarantineReason = 'below-message-tier' | 'handoff-below-steer' | 'rate-exceeded';
 
 export interface QuarantineCoordMessageInput {
   workspaceId: string;
