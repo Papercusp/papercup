@@ -141,3 +141,33 @@ describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', ()
     expect(parseTierCeilings(null, tiers)).toEqual({});
   });
 });
+
+// ── context-trimming-tiers-2026-07-01: per-tier compaction limits ────────────
+
+describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () => {
+  it('keeps a valid limit; drops the FIELD (not the row) for a non-number', () => {
+    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 120_000 }])).toEqual([
+      { name: 'std', spec: 'sonnet', compactionLimit: 120_000 },
+    ]);
+    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 'lots' }])).toEqual([
+      { name: 'std', spec: 'sonnet' },
+    ]);
+    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: NaN }])).toEqual([
+      { name: 'std', spec: 'sonnet' },
+    ]);
+  });
+
+  it('clamps to the spec-derived ceiling: 200k window caps at 158k, [1m] at 825k', () => {
+    // (window − 10k margin) ÷ 1.2 — the 20% overshoot allowance (D-001).
+    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 900_000 }])).toEqual([
+      { name: 'std', spec: 'sonnet', compactionLimit: 158_000 },
+    ]);
+    expect(parseTiers([{ name: 'deep', spec: 'opus[1m]:high', compactionLimit: 900_000 }])).toEqual([
+      { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 825_000 },
+    ]);
+    // floor clamp
+    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 5 }])).toEqual([
+      { name: 'std', spec: 'sonnet', compactionLimit: 20_000 },
+    ]);
+  });
+});
