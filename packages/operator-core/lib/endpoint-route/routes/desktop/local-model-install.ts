@@ -4,7 +4,7 @@
  * (same core as the CLI and the `provisioner:install` agent-tool): writes the backend's systemd
  * unit and registers it in the gateway's durable local-backend pool.
  *
- * Body: `{ start?: boolean, provisionBinary?: boolean }`.
+ * Body: `{ start?: boolean, provisionBinary?: boolean, pullVllmImage?: boolean }`.
  *  - `start` DEFAULTS TO FALSE — config-write + gateway-registration only, no process started,
  *    no GPU touched. `start:true` also enables+starts the systemd unit and health-checks it,
  *    which DOES load the model onto the GPU; the StepLocalModel UI gates that behind an
@@ -21,11 +21,18 @@
  *    wait (no client-side timeout on this same-machine fetch). On a resolve failure, the route
  *    returns `{ ok:false, error }` WITHOUT falling back to a bare-PATH assumption — a caller
  *    that explicitly asked for binary provisioning gets an honest failure, not a silent skip.
+ *  - `pullVllmImage` DEFAULTS TO FALSE (mirrors the CLI's opt-in `--provision-vllm-image` flag,
+ *    WI-1618/D-009 #3). When true, pulls the pinned vLLM container image (vllm-container.ts's
+ *    `pullVllmImage`) BEFORE planning if it isn't already cached locally — a real multi-GB
+ *    network fetch on a cache miss, same slow-request contract as `provisionBinary`. Only
+ *    meaningful when a working Docker/Podman runtime is present and the recommended combo is a
+ *    `vllm` entry; on a resolve failure the route returns `{ ok:false, error }` the same way.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { planProvision, applyProvision } from '../../../provisioner/provision';
 import { detectHardware } from '../../../provisioner/hardware-detect';
 import { resolveLlamaBinary, computeCapToArch } from '../../../provisioner/llama-binary';
+import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from '../../../provisioner/vllm-container';
 
 export default defineTool({
   method: 'POST',
@@ -34,12 +41,14 @@ export default defineTool({
   async handler(req: Request) {
     let start = false;
     let provisionBinary = false;
+    let provisionVllmImage = false;
     try {
-      const body = (await req.json().catch(() => ({}))) as { start?: unknown; provisionBinary?: unknown };
+      const body = (await req.json().catch(() => ({}))) as { start?: unknown; provisionBinary?: unknown; pullVllmImage?: unknown };
       start = body?.start === true;
       provisionBinary = body?.provisionBinary === true;
+      provisionVllmImage = body?.pullVllmImage === true;
     } catch {
-      // no/invalid body — default to start:false / provisionBinary:false (the safe path)
+      // no/invalid body — default to start:false / provisionBinary:false / pullVllmImage:false (the safe path)
     }
     try {
       let binPath: string | undefined;
@@ -53,6 +62,13 @@ export default defineTool({
           return Response.json({ ok: false, error: `binary provisioning failed: ${binaryResult.blocked}` }, { status: 500 });
         }
         binPath = binaryResult.binPath;
+      }
+      if (provisionVllmImage) {
+        const runtimeInfo = await detectContainerRuntime();
+        const imageResult = await pullVllmImage(VLLM_PINNED_IMAGE, { runtimeInfo });
+        if (!imageResult.ok) {
+          return Response.json({ ok: false, error: `vLLM image provisioning failed: ${imageResult.blocked}` }, { status: 500 });
+        }
       }
       const plan = await planProvision({ binPath });
       const result = await applyProvision(plan, { start });

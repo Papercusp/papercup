@@ -30,6 +30,14 @@ vi.mock('../../../provisioner/llama-binary', () => ({
   computeCapToArch: (cc: string) => cc.replace(/\./g, ''),
 }));
 
+const detectContainerRuntimeMock = vi.fn();
+const pullVllmImageMock = vi.fn();
+vi.mock('../../../provisioner/vllm-container', () => ({
+  detectContainerRuntime: (...args: unknown[]) => detectContainerRuntimeMock(...args),
+  pullVllmImage: (...args: unknown[]) => pullVllmImageMock(...args),
+  VLLM_PINNED_IMAGE: 'vllm/vllm-openai:v0.24.0',
+}));
+
 import route from './local-model-install';
 
 beforeEach(() => {
@@ -37,6 +45,8 @@ beforeEach(() => {
   applyProvisionMock.mockClear();
   detectHardwareMock.mockClear();
   resolveLlamaBinaryMock.mockClear();
+  detectContainerRuntimeMock.mockClear();
+  pullVllmImageMock.mockClear();
 });
 
 function jsonReq(body: unknown) {
@@ -155,6 +165,50 @@ describe('POST /desktop/local-model-install', () => {
       await route.handler(jsonReq({ provisionBinary: 1 }), {} as never);
       expect(resolveLlamaBinaryMock).not.toHaveBeenCalled();
       expect(planProvisionMock).toHaveBeenCalledWith({ binPath: undefined });
+    });
+  });
+
+  describe('pullVllmImage (WI-1618 opt-in vLLM container image provisioning)', () => {
+    it('defaults pullVllmImage to false — never probes/pulls when omitted', async () => {
+      planProvisionMock.mockResolvedValue({ blocked: null });
+      applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
+      await route.handler(jsonReq({}), {} as never);
+      expect(detectContainerRuntimeMock).not.toHaveBeenCalled();
+      expect(pullVllmImageMock).not.toHaveBeenCalled();
+    });
+
+    it('probes the runtime and pulls the pinned image before planning when pullVllmImage:true', async () => {
+      const runtimeInfo = { runtime: 'docker' as const, version: '27.0.0', notes: [] };
+      detectContainerRuntimeMock.mockResolvedValue(runtimeInfo);
+      pullVllmImageMock.mockResolvedValue({ ok: true, runtime: 'docker', image: 'vllm/vllm-openai:v0.24.0', alreadyPresent: false });
+      planProvisionMock.mockResolvedValue({ blocked: null });
+      applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
+
+      const res = await route.handler(jsonReq({ pullVllmImage: true }), {} as never);
+
+      expect(detectContainerRuntimeMock).toHaveBeenCalled();
+      expect(pullVllmImageMock).toHaveBeenCalledWith('vllm/vllm-openai:v0.24.0', { runtimeInfo });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true });
+    });
+
+    it('returns {ok:false, error} with 500 (never falling back to plan) when the image pull is blocked', async () => {
+      detectContainerRuntimeMock.mockResolvedValue({ runtime: null, notes: ['docker not usable'] });
+      pullVllmImageMock.mockResolvedValue({ ok: false, blocked: 'no working container runtime (docker/podman) found' });
+
+      const res = await route.handler(jsonReq({ pullVllmImage: true }), {} as never);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ ok: false, error: 'vLLM image provisioning failed: no working container runtime (docker/podman) found' });
+      expect(planProvisionMock).not.toHaveBeenCalled();
+      expect(applyProvisionMock).not.toHaveBeenCalled();
+    });
+
+    it('treats a truthy-but-not-boolean-true pullVllmImage as false (no coercion)', async () => {
+      planProvisionMock.mockResolvedValue({ blocked: null });
+      applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
+      await route.handler(jsonReq({ pullVllmImage: 1 }), {} as never);
+      expect(pullVllmImageMock).not.toHaveBeenCalled();
     });
   });
 });

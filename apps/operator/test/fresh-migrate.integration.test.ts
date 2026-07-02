@@ -149,11 +149,34 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
   });
 
   it('re-applying 000-baseline.sql RAW is a clean no-op (statement-level idempotency)', async () => {
+    // Asserted on a baseline-ONLY database, not the head DB: migration 374 turned
+    // work_items/harness_features_consolidated/engineer_issues into views at head,
+    // so table-DDL statements in the baseline (ALTER TABLE, triggers, RLS) now fail
+    // there on relation-type mismatch no matter how well guarded. The contract this
+    // gate protects — every baseline statement is guarded (IF NOT EXISTS /
+    // OR REPLACE / DO-block) — is a property of the baseline itself.
     const { readFileSync } = await import('node:fs');
     const baseline = readFileSync(resolve(SQL_DIR, '000-baseline.sql'), 'utf8');
-    // Throws if any statement isn't guarded (IF NOT EXISTS / OR REPLACE / DO-block).
-    await expect(sql.unsafe(baseline)).resolves.toBeDefined();
-  });
+    const bName = `fmb_${randomBytes(5).toString('hex')}`;
+    const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+    try {
+      await admin.unsafe(`CREATE DATABASE "${bName}"`);
+      const u = new URL(adminUri);
+      u.pathname = `/${bName}`;
+      const bSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+      try {
+        await bSql.unsafe(BOOT_PREREQS_DDL);
+        await bSql.unsafe(baseline);
+        // Throws if any statement isn't guarded.
+        await expect(bSql.unsafe(baseline)).resolves.toBeDefined();
+      } finally {
+        await bSql.end({ timeout: 5 });
+      }
+    } finally {
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${bName}" WITH (FORCE)`).catch(() => {});
+      await admin.end({ timeout: 5 });
+    }
+  }, 120_000);
 });
 
 describe('migration runner — filename-keyed tracker safety', () => {

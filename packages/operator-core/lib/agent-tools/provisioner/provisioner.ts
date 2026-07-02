@@ -17,6 +17,7 @@ import { detectHardware } from '../../provisioner/hardware-detect';
 import { recommendCombo } from '../../provisioner/recommend';
 import { planProvision, applyProvision } from '../../provisioner/provision';
 import { resolveLlamaBinary, computeCapToArch } from '../../provisioner/llama-binary';
+import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from '../../provisioner/vllm-container';
 
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
 const fail = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...p }) }] });
@@ -98,11 +99,11 @@ export const provisionerPlanInstallTool = defineTool({
 export const provisionerInstallTool = defineTool({
   name: 'provisioner:install',
   description:
-    "Plan + apply the provisioner flow: writes the recommended backend's systemd user-unit and registers it in the gateway's durable local-backend pool (gateway:local_backend_register's same registry). By DEFAULT this does NOT start the backend or touch the GPU — pass `start:true` to also `systemctl --user enable --now` it and health-check it, which DOES load the model onto the GPU. Pass `provisionBinary:true` (WI-1617/D-009 #2) to first resolve a real `llama-server` binary — a cache hit is fast, but a first-time GitHub-release download or from-source CUDA build genuinely takes real minutes and network/CPU — instead of assuming `llama-server` is already on PATH; on a resolution failure the whole call fails rather than silently falling back to PATH. Returns {ok, plan, result:{wroteUnit,registered,started}}. If `plan.blocked` is non-null (no combo fits / weights not downloaded) the apply is refused and `result.error` explains why.",
+    "Plan + apply the provisioner flow: write the recommended backend's systemd user-unit + register it in the gateway's local-backend pool (gateway:local_backend_register's registry). Default: does NOT start the backend or touch the GPU — pass `start:true` to `systemctl --user enable --now` it + health-check (loads the model onto the GPU). Pass `provisionBinary:true` (WI-1617) to first resolve a real `llama-server` binary (cache hit is fast; a first build/download takes real minutes) instead of assuming PATH has one — a resolution failure fails the call rather than silently falling back. Pass `pullVllmImage:true` (WI-1618/D-009 #3) to first pull the pinned vLLM container image (cache hit is fast; a first pull is a real multi-GB network fetch) — only meaningful when the recommended combo is a `vllm` entry with a working Docker/Podman runtime; a resolution failure fails the call the same way binary provisioning does. Returns {ok, plan, result:{wroteUnit,registered,started}}. `plan.blocked` non-null (no combo fits / weights or image missing) refuses the apply with `result.error`.",
   guidance: {
     when: 'Actually provisioning a local inference backend after reviewing provisioner:plan_install\'s output.',
-    notWhen: 'A GPU-resident process may already be running (another backend load, a live smoke test) — check coord:presence / coord:ask before passing start:true. Config-write + registry-registration alone (start omitted/false) is always safe. Also not when you only want to know WHAT would be resolved without committing minutes to a real download/build — inspect llama-binary.ts\'s pure `assetNameRules`/`pickPrebuiltAsset` directly for that.',
-    chaining: 'provisioner:plan_install (review) → provisioner:install (start:false by default; add provisionBinary:true on the first run for a given box) → once verified idle, provisioner:install again with start:true, or start the unit manually.',
+    notWhen: 'A GPU-resident process may already be running — check coord:presence / coord:ask before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To see WHAT would resolve without committing minutes to a real download/build, inspect llama-binary.ts\'s pure `assetNameRules`/`pickPrebuiltAsset` directly.',
+    chaining: 'provisioner:plan_install (review) → provisioner:install (start:false default; add provisionBinary:true or pullVllmImage:true on a box\'s first run, matching the recommended backend) → once verified idle, provisioner:install again with start:true, or start the unit manually.',
     seeAlso: ['provisioner:plan_install', 'gateway:local_backend_list', 'gateway:local_backend_register'],
   },
   capability: 'harness:write',
@@ -121,8 +122,14 @@ export const provisionerInstallTool = defineTool({
       .describe(
         'Resolve (download a matching GitHub-release prebuilt, or build from source) a real llama-server binary before planning, instead of assuming one is already on PATH. Default false. A from-source build can take real minutes.',
       ),
+    pullVllmImage: z
+      .boolean()
+      .optional()
+      .describe(
+        'Pull the pinned vLLM container image (docker/podman) before planning, instead of assuming it is already cached locally. Default false. A first pull is a real multi-GB network fetch. Only meaningful when a working container runtime is present and the recommended combo is a vllm entry.',
+      ),
   }),
-  async handler({ start, provisionBinary }) {
+  async handler({ start, provisionBinary, pullVllmImage: doPullVllmImage }) {
     try {
       let binPath: string | undefined;
       if (provisionBinary) {
@@ -135,6 +142,13 @@ export const provisionerInstallTool = defineTool({
           return fail({ error: `provisioner:install failed: binary provisioning failed: ${binaryResult.blocked}` });
         }
         binPath = binaryResult.binPath;
+      }
+      if (doPullVllmImage) {
+        const runtimeInfo = await detectContainerRuntime();
+        const imageResult = await pullVllmImage(VLLM_PINNED_IMAGE, { runtimeInfo });
+        if (!imageResult.ok) {
+          return fail({ error: `provisioner:install failed: vLLM image provisioning failed: ${imageResult.blocked}` });
+        }
       }
       const plan = await planProvision({ binPath });
       const result = await applyProvision(plan, { start: start ?? false });
