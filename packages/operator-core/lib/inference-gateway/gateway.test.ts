@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, effectivePriorityLabel, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
@@ -2731,4 +2731,25 @@ test('[codex-cli] no bearer pool + no CLI accounts → the 503 is unchanged (pre
   assert.equal(res.status, 503);
   const body = (await res.json()) as { error: { message: string } };
   assert.match(body.error.message, /no Codex account pool configured/);
+});
+
+/* ── effectivePriorityLabel: owner-prefix tier inference (2026-07-01 tier-5 starvation guard) ── */
+
+test('effectivePriorityLabel prefers the explicit priority header', () => {
+  assert.equal(
+    effectivePriorityLabel({ 'x-papercusp-priority': ' Queen ', 'x-papercusp-owner': 'su-abc' }),
+    'queen',
+  );
+});
+
+test('effectivePriorityLabel infers su/bee from the owner id prefix when priority is absent', () => {
+  assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 'su-42371aaa-bbb' }), 'su');
+  assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 's-1782946527495-3e5fd845' }), 'bee');
+});
+
+test('effectivePriorityLabel leaves unknown owners and headerless requests in the default band', () => {
+  assert.equal(effectivePriorityLabel({ 'x-papercusp-owner': 'queen-like-unknown' }), undefined);
+  assert.equal(effectivePriorityLabel({}), undefined);
+  // An empty/whitespace priority header must not mask owner inference.
+  assert.equal(effectivePriorityLabel({ 'x-papercusp-priority': '  ', 'x-papercusp-owner': 'su-x' }), 'su');
 });

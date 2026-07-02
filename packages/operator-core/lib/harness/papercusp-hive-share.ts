@@ -203,6 +203,11 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
         // set so flipping modes later doesn't lose it; it is inert under 'open'/'approval'.
         allowlist: Array.from(new Set([state.githubLogin, ...teamAllowlist])),
         ...(contentWriteAuthority === 'author-scoped' ? { contentWriteAuthority } : {}),
+        // P-013 (cross-machine-coord-parity-and-trust-2026-07-01): the per-owner
+        // dogfood hive is the SAME human's devices — full comms parity by default
+        // (steer). Without this, the conservative fallback ('message') would
+        // suppress cross-machine wakes between the owner's own machines.
+        comms: { defaultTier: 'steer' },
       },
     });
   } catch {
