@@ -72,6 +72,33 @@ pause lifts. A yielded response carries `x-papercusp-pin-yielded:
   account cap — pinning N sessions to one account can genuinely exhaust its 5h
   window; no gateway fix routes around that. Spread the cohort instead.
 
+## The egress kill-switch — and the two look-alike transport failures
+
+`gateway:egress_mode { proxy:'off' }` (or `curl :8788/admin/egress-mode?proxy=off`)
+drops ALL datacenter-proxy egress and routes every account through the box's own
+IP, live. The boot default is the `PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS`
+service env (drop-in `egress-proxy.conf`), so a durable flip needs BOTH. Flipped
+off 2026-07-01 (Rayobyte squids at 11–66% transport-fail). Two traps learned
+the hard way:
+
+- **The default-parameter leak.** `dispatcherFor(account, eg = account.egress)` —
+  passing an explicit `undefined` entry re-triggers the default, so proxy-only
+  accounts kept dialing their squids in "off" mode. The kill-switch is now
+  guarded INSIDE `dispatcherFor` (the chokepoint); never re-implement it at a
+  call site.
+- **"fetch failed" on DIRECT egress is usually DNS, not Anthropic.** Clustered
+  same-second failures across DIFFERENT accounts = the box's shared resolution
+  path, not any account/proxy. Fingerprint: `systemd-resolved` logging "Using
+  degraded feature set UDP/TCP for DNS server `<router>`". The router resolver
+  degrading caused box-wide ENOTFOUND bursts (green-checkpoint GitHub failures,
+  interactive-session API errors). `FallbackDNS=1.1.1.1 9.9.9.9 8.8.8.8` is set
+  in `/etc/systemd/resolved.conf.d/papercusp-fallback-dns.conf`.
+- **Box-ip-only concentrates ALL egress on one IP** — expect the Cloudflare
+  per-IP bare-burst rate to rise (watch `upstream429` + the
+  `[bare-burst-origin …]` journal suffix). If it climbs, selectively re-enable
+  the healthy squids (`proxy:'on'` — per-IP cooldowns route around the bad
+  ones) rather than living with the per-IP squeeze.
+
 ## Related hardening (same plan)
 
 Idle egress routes are health-probed proactively (45 s cadence) and circuit-

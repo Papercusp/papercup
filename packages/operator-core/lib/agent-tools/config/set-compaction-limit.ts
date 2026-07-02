@@ -47,7 +47,15 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    await setCompactionLimit(identity.ownerId, args.limit);
+    // Clamp to the caller's model-derived ceiling (context-trimming-tiers D-001):
+    // `limit × 1.2 ≤ window − margin`, i.e. limit ≤ defaultCompactionLimitForSpec(spec).
+    // The spec resolves best-effort (session settings.json → launch argv); an
+    // unresolvable spec clamps against the conservative 200k window — a LOW cap
+    // on a big-window session is safe leanness, the reverse is a hard death.
+    const spec = await resolveModelSpecForOwner(identity.ownerId).catch(() => null);
+    const cap = defaultCompactionLimitForSpec(spec);
+    const applied = clampCompactionLimit(args.limit, spec);
+    await setCompactionLimit(identity.ownerId, applied);
     const presence = await getPresence(identity.ownerId);
     const persisted = presence?.compactionLimit ?? null;
     // { data } shape (tool-data-shape ratchet P-003): the framework owns wire encoding.
@@ -56,6 +64,14 @@ export default defineTool({
         ok: persisted != null,
         ownerId: identity.ownerId,
         compactionLimit: persisted,
+        ...(applied !== args.limit
+          ? {
+              clamped: true,
+              requested: args.limit,
+              cap,
+              note: `requested limit clamped to the model-derived ceiling (window${spec ? ` for ${spec}` : ' 200k — model spec unresolvable'} minus margin, ÷1.2 overshoot allowance)`,
+            }
+          : {}),
         ...(persisted == null ? { note: 'no live presence row for this session — limit not persisted' } : {}),
       },
     };

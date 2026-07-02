@@ -75,3 +75,56 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   const ref = await resolveSessionRef(ownerId);
   return ref ? estimateContextTokens(ref, ownerId) : null;
 }
+
+/**
+ * Best-effort MODEL SPEC (`<id>[:effort]`, possibly carrying the `[1m]` window
+ * marker) for a session owner — the window signal `defaultCompactionLimitForSpec`
+ * keys on (context-trimming-tiers P-002/P-006).
+ *
+ * Source 1: the per-owner session config dir's `settings.json` `model` field
+ * (~/.papercusp/session-claude/<owner>/settings.json) — covers interactive AND
+ * spawned psu Claude sessions, and tracks a mid-session `/model` switch (Claude
+ * persists it there). Source 2: a `--model` in the recorded launch argv
+ * (adv_sessions). null when neither resolves — callers treat null as the
+ * conservative 200k window (a low limit on a big window is deliberate leanness;
+ * the reverse is fatal).
+ */
+export async function resolveModelSpecForOwner(ownerId: string): Promise<string | null> {
+  // Guard the path join: owner ids are our own (su-/s-/pus- UUIDs), but never
+  // let a hostile id escape the session-claude root.
+  if (ownerId && !ownerId.includes('/') && !ownerId.includes('..')) {
+    try {
+      const { papercuspSessionClaudeBase } = await import('./claude-sessions');
+      const path = await import('node:path');
+      const p = path.join(papercuspSessionClaudeBase(), ownerId, 'settings.json');
+      const j = JSON.parse(fs.readFileSync(p, 'utf8')) as { model?: unknown };
+      if (typeof j.model === 'string' && j.model.trim()) return j.model.trim();
+    } catch {
+      /* fall through to argv */
+    }
+  }
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const rows = await getOrgPg().sql<{ launch_argv: unknown }[]>`
+      SELECT launch_argv
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId} AND launch_argv IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const argv = rows[0]?.launch_argv;
+    if (Array.isArray(argv)) {
+      for (let i = 0; i < argv.length; i++) {
+        const a = argv[i];
+        if (typeof a !== 'string') continue;
+        if (a.startsWith('--model=')) return a.slice('--model='.length).trim() || null;
+        if (a === '--model' && typeof argv[i + 1] === 'string') {
+          return (argv[i + 1] as string).trim() || null;
+        }
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  return null;
+}

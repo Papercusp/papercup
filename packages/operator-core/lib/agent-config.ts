@@ -29,6 +29,7 @@ import {
   AGENT_BACKENDS,
   SURFACE_KEYS,
   isValidModelSpec,
+  clampCompactionLimit,
   type AgentBackend,
   type ModelTier,
   type SurfaceKey,
@@ -127,11 +128,12 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   };
 }
 
-/** Validate the stored tier menu: an array of { name, spec, backend? } with a
-    non-empty lowercase-unique name, a syntactically valid model spec, and an
-    optional known backend. Invalid entries are dropped (absence →
-    DEFAULT_MODEL_TIERS at resolution time); an invalid backend value drops to
-    inherit rather than killing the row. */
+/** Validate the stored tier menu: an array of { name, spec, backend?,
+    compactionLimit? } with a non-empty lowercase-unique name, a syntactically
+    valid model spec, an optional known backend, and an optional per-tier soft
+    compaction limit (clamped to the spec's model-derived ceiling). Invalid
+    entries are dropped (absence → DEFAULT_MODEL_TIERS at resolution time); an
+    invalid backend/limit value drops to inherit rather than killing the row. */
 export function parseTiers(raw: unknown): ModelTier[] {
   if (!Array.isArray(raw)) return [];
   const out: ModelTier[] = [];
@@ -146,6 +148,15 @@ export function parseTiers(raw: unknown): ModelTier[] {
     const key = name.toLowerCase();
     if (!name || !spec || seen.has(key) || !isValidModelSpec(spec)) continue;
     seen.add(key);
+    // Optional per-tier soft compaction limit (context-trimming-tiers D-002):
+    // a non-number drops the FIELD (→ model-derived default at resolution),
+    // never the row; a number is clamped so `limit × 1.2 ≤ window − margin`
+    // (D-001 — the ceiling IS the model-derived default).
+    const rawLimit = (entry as ModelTier).compactionLimit;
+    const compactionLimit =
+      typeof rawLimit === 'number' && Number.isFinite(rawLimit)
+        ? clampCompactionLimit(rawLimit, spec)
+        : undefined;
     out.push({
       name,
       spec,
@@ -153,6 +164,7 @@ export function parseTiers(raw: unknown): ModelTier[] {
       // The queen-facing one-liner; capped so a pasted essay can't bloat
       // every queen launch prompt.
       ...(when ? { when: when.slice(0, 300) } : {}),
+      ...(compactionLimit !== undefined ? { compactionLimit } : {}),
     });
   }
   return out;
