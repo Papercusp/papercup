@@ -31,9 +31,10 @@ const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
 vi.mock('nuqs', () => ({
   useQueryState: () => [nuqs.open, nuqs.set],
   parseAsBoolean: { withDefault: () => ({}) },
+  parseAsString: {},
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -315,5 +316,37 @@ describe('isLiveByActivity (pure — WI-1488: live = turn in last 10m OR loop ar
 
   it('NOT live for an unparseable lastActiveAt', () => {
     expect(isLiveByActivity(mk({ lastActiveAt: 'not-a-date' }), NOW)).toBe(false);
+  });
+});
+
+describe('machine grouping (shared-hive per-machine tabs)', () => {
+  const a = (o: Partial<RosterAgent>): RosterAgent =>
+    ({ ownerId: 'x', label: 'x', agent: null, role: null, intent: '', feature: null, currentPlanSlug: null, liveness: 'live', heartbeatAt: '', ...o }) as RosterAgent;
+
+  it('distinctMachineCount counts local + each remote machine', () => {
+    expect(distinctMachineCount([
+      a({ isLocal: true, machineLabel: 'boxA' }),
+      a({ isLocal: true, machineLabel: 'boxA' }),
+      a({ isLocal: false, machineLabel: 'boxB' }),
+      a({ isLocal: false, machineLabel: 'boxC' }),
+    ])).toBe(3);
+  });
+
+  it('machineKey buckets unlabeled local vs remote rows', () => {
+    expect(machineKey(a({ isLocal: true }))).toBe('__local__');
+    expect(machineKey(a({ isLocal: false }))).toBe('__remote__');
+    expect(machineKey(a({ machineLabel: 'boxB', isLocal: false }))).toBe('boxB');
+  });
+
+  it('machineTabs puts Local first, then remotes alphabetical, with counts', () => {
+    const tabs = machineTabs([
+      a({ isLocal: false, machineLabel: 'zeta' }),
+      a({ isLocal: true, machineLabel: 'boxA' }),
+      a({ isLocal: false, machineLabel: 'alpha' }),
+      a({ isLocal: false, machineLabel: 'alpha' }),
+    ]);
+    expect(tabs.map((t) => t.label)).toEqual(['Local', 'alpha', 'zeta']);
+    expect(tabs[0].isLocal).toBe(true);
+    expect(tabs.find((t) => t.label === 'alpha')?.count).toBe(2);
   });
 });

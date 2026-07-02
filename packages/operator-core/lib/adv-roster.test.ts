@@ -581,4 +581,18 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
     const [e] = mergeRosterEntries([presence()], new Map(), NOW);
     expect(e.loopArmed).toBe(false);
   });
+
+  it('tags local rows isLocal:true and federated rows with their machineLabel', () => {
+    const fedRow = {
+      ...presence({ ownerId: 'remote1' }),
+      federated: true,
+      machineLabel: 'box-B',
+      host: 'box-B',
+    } as unknown as PresenceRecord;
+    const [local, remote] = mergeRosterEntries([presence({ ownerId: 'local1' }), fedRow], new Map(), NOW);
+    expect(local.isLocal).toBe(true);
+    expect(local.machineLabel).toBeNull(); // stamped later in mergeRosterWithAssignments
+    expect(remote.isLocal).toBe(false);
+    expect(remote.machineLabel).toBe('box-B');
+  });
 });
