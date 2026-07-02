@@ -1668,26 +1668,32 @@ export function assertLaunchPersona(promptFile) {
 }
 
 /**
- * opus + fable default to the FULL 1M window (owner directive 2026-07-02): inject
- * the `[1m]` marker into their model spec so EVERY downstream `[1m]` consumer —
- * the preflight window guard, the context-size/tier derivation, and the `--model`
- * passthrough that makes Claude Code / the gateway enable the 1M-context beta —
- * treats them as 1M. Idempotent; a no-op for a spec already carrying `[1m]` or
- * that isn't opus/fable. `[1m]` is inserted before a recognized `:effort` suffix,
- * else appended. Papercusp then caps their compaction at 500k
+ * opus + fable + sonnet-5 default to the FULL 1M window (owner directive
+ * 2026-07-02): inject the `[1m]` marker into their model spec so EVERY
+ * downstream `[1m]` consumer — the preflight window guard, the
+ * context-size/tier derivation, and the `--model` passthrough that makes
+ * Claude Code / the gateway enable the 1M-context window — treats them as 1M.
+ * Idempotent; a no-op for a spec already carrying `[1m]` or outside the
+ * default-1M families. `[1m]` is inserted before a recognized `:effort`
+ * suffix, else appended. Papercusp then caps their compaction at 500k
  * (agent-config-constants defaultCompactionLimitForSpec) to bound token spend.
- * sonnet-5 is ALSO a default-1M family (P-031 correction 2026-07-02: Anthropic
- * ships sonnet-5 with the 1M window as its DEFAULT — no beta/marker needed) but
- * deliberately gets NO `[1m]` injection here: the marker exists to flip the 1M
- * beta on for families whose default is 200k, which sonnet-5's isn't.
- * The bare `sonnet` alias (whole spec) also counts: CC resolves it to the
- * latest sonnet = sonnet-5 (live-verified 2026-07-02). Kept in lockstep with
- * agent-config-constants `isDefault1mModelSpec` via DEFAULT_1M_FAMILY_RE.
+ * sonnet-5 REQUIRES the marker too — REVERSAL of the earlier P-031 note
+ * (2026-07-02), live-verified via `/context` the same day: bare `--model
+ * sonnet` runs a 200k AUTO-COMPACT window in CC 2.1.198 ("76k/200k ·
+ * Auto-compact window: 200k tokens" — auto-fires ~167k, which killed a whole
+ * wave of sonnet fleet members at preTokens 167-170k on 2026-07-02), while
+ * `--model 'sonnet[1m]'` runs "76k/967k · Auto-compact window: 967k tokens".
+ * The CC binary's 967k default for sonnet-5 sits behind a staged-rollout gate
+ * (statsig `tengu_amber_moleskin`, OFF here), so despite sonnet-5 being
+ * natively 1M-capable the `[1m]` marker is the only reliable way to get the
+ * big window. The bare `sonnet` alias (whole spec) also counts: CC resolves it
+ * to the latest sonnet = sonnet-5 (live-verified 2026-07-02). Kept in lockstep
+ * with agent-config-constants `isDefault1mModelSpec` via DEFAULT_1M_FAMILY_RE.
  */
 export const DEFAULT_1M_FAMILY_RE = /fable|opus|sonnet-?5|^sonnet(\[1m\])?(:[a-z0-9]+)?$/i;
 
 export function normalizeModelSpec(spec) {
-  if (!spec || /\[1m\]/i.test(spec) || !/fable|opus/i.test(spec)) return spec;
+  if (!spec || /\[1m\]/i.test(spec) || !DEFAULT_1M_FAMILY_RE.test(spec)) return spec;
   const c = spec.lastIndexOf(':');
   const suffix = c > 0 ? spec.slice(c + 1) : '';
   if (c > 0 && /^(low|medium|high|xhigh|max)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;

@@ -117,7 +117,9 @@ describe('handler — graceful degrade + result shape', () => {
       expect(h).toHaveProperty('argSchema'); // null or a string, never missing
       expect(h.via).toBe('lexical');
     }
-    expect(out.howToCall).toContain('search_tool_bm25');
+    // howToCall must always name the never-fails dispatch path (tools:invoke) —
+    // the exact copy varies by activation state; the invariant is the pointer.
+    expect(out.howToCall).toContain('tools:invoke');
   });
 
   it('returns the real tool arg-schema with a hit (schemas are returnable)', async () => {

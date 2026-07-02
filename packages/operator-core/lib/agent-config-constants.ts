@@ -120,37 +120,45 @@ export function isValidModelSpec(spec: string): boolean {
 
 /** 1M-window models — a spec carrying the `[1m]` marker. */
 export const MODEL_WINDOW_1M = 1_000_000;
-/** The conservative default window: models outside the default-1M families
-    (`isDefault1mModelSpec`) and without the `[1m]` marker — haiku, sonnet ≤4.x,
-    unknown/null specs — run 200k. */
+/** The conservative default window: any spec WITHOUT the `[1m]` marker —
+    haiku, sonnet ≤4.x, unknown/null specs, AND un-normalized default-1M-family
+    specs (a bare `sonnet`/`opus` launch really does run a 200k auto-compact
+    window in CC — see `isDefault1mModelSpec`). */
 export const MODEL_WINDOW_DEFAULT = 200_000;
 
 /**
  * Hard context window for a CC-hosted model spec. The `[1m]` marker on the
- * spec is the practical window signal — Claude Code enables the 1M-context
- * beta only for `[1m]` specs — so: `[1m]` → 1M; anything else (including an
- * unknown/null spec) → the conservative 200k. Fail-safe direction matters: a
- * low limit on a 1M session is just deliberate leanness (agent-managed-
- * compaction D-006); a high limit on a 200k session is a hard death. OMP/local
- * models resolve via their own registry (follow-up, context-trimming D-003).
+ * spec IS the window signal — live-verified via `/context` on CC 2.1.198
+ * (2026-07-02): bare `sonnet` reports "Auto-compact window: 200k tokens" and
+ * auto-compacts ~167k (killed a wave of sonnet fleet members at preTokens
+ * 167-170k), while `sonnet[1m]` reports "Auto-compact window: 967k tokens".
+ * So: `[1m]` → 1M; anything else (including an unknown/null spec and a bare
+ * default-1M-family name that skipped launch normalization) → the conservative
+ * 200k. Fail-safe direction matters: a low limit on a 1M session is just
+ * deliberate leanness (agent-managed-compaction D-006); a high limit on a 200k
+ * session means papercusp never preempts and CC auto-compacts MID-TASK — the
+ * exact 2026-07-02 failure. OMP/local models resolve via their own registry
+ * (follow-up, context-trimming D-003).
  */
 export function modelWindowForSpec(spec?: string | null): number {
   if (spec == null) return MODEL_WINDOW_DEFAULT;
-  return spec.includes('[1m]') || isDefault1mModelSpec(spec) ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+  return spec.includes('[1m]') ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
 }
 
 /**
- * Model families papercusp defaults to the FULL 1M window: `opus` and `fable`
- * (owner directive 2026-07-02), plus `sonnet-5` (P-031 correction 2026-07-02:
- * Sonnet 5's 1M window is the DEFAULT — Anthropic ships no 200k variant, and
- * CC 2.1.198's own model table gives `claude-sonnet-5` a 967k default window,
- * no `[1m]` suffix or beta needed; the old 200k assumption was Sonnet-4.x-era
- * and mis-derived a 158k soft limit for sonnet-5 fleet members). Sonnet ≤4.x
- * (`claude-sonnet-4-6` etc.) stays 200k-default — the regex deliberately does
- * not match `sonnet-4-5`. opus/fable launch specs are ALSO normalized to carry
- * `[1m]` (psu-launcher `normalizeModelSpec`); this helper is the
- * compaction-math twin, so a session that skipped normalization still gets the
- * 1M window here (never a 200k hard death).
+ * Model FAMILIES papercusp launches at the FULL 1M window: `opus`, `fable`
+ * (owner directive 2026-07-02), and `sonnet-5` (incl. the bare `sonnet` alias,
+ * which CC resolves to the latest sonnet = sonnet-5). This is the FAMILY
+ * predicate the launch normalizer keys on — psu-launcher `normalizeModelSpec`
+ * injects `[1m]` into these specs at launch — NOT a claim that a bare spec
+ * already runs 1M. REVERSAL of the P-031 note (2026-07-02, live-verified via
+ * `/context` the same day): a bare `sonnet` session runs a 200k AUTO-COMPACT
+ * window in CC 2.1.198; the 967k default in CC's model table sits behind a
+ * staged-rollout gate (statsig `tengu_amber_moleskin`, OFF here), so only the
+ * `[1m]` marker reliably buys the big window. Window/limit math must therefore
+ * key on the marker (`modelWindowForSpec`), never on this family predicate.
+ * Sonnet ≤4.x (`claude-sonnet-4-6` etc.) stays outside the family — the regex
+ * deliberately does not match `sonnet-4-5`.
  */
 export function isDefault1mModelSpec(spec?: string | null): boolean {
   if (spec == null) return false;
@@ -175,10 +183,10 @@ export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
- * Preemptive compaction cap for the default-1M families (opus + fable + sonnet-5):
- * they run on the full 1M window but papercusp compacts them at 500k to bound
- * token spend (owner directive 2026-07-02) — 500k is ample for a leanly-scoped
- * task, and its ×1.2 overshoot (600k) stays well under the 1M − margin ceiling.
+ * Preemptive compaction cap for `[1m]`-window sessions: they run on the full
+ * 1M window but papercusp compacts them at 500k to bound token spend (owner
+ * directive 2026-07-02) — 500k is ample for a leanly-scoped task, and its ×1.2
+ * overshoot (600k) stays well under the 1M − margin ceiling.
  */
 export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
 
@@ -186,12 +194,16 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
- * 200k window → 158,000; 1M → 825,000. EXCEPTION: the default-1M families
- * (opus/fable/sonnet-5 — `isDefault1mModelSpec`) are capped at 500,000 (owner
- * directive 2026-07-02) so they compact preemptively despite the 1M window.
+ * 200k window → 158,000. EXCEPTION: a `[1m]`-carrying spec is capped at
+ * 500,000 (owner directive 2026-07-02) so it compacts preemptively despite the
+ * 1M window. Keyed on the `[1m]` MARKER, not the family name: a bare `sonnet`
+ * / `opus` launch that skipped normalization really runs a 200k auto-compact
+ * window in CC (live-verified 2026-07-02), so its soft limit must be 158k —
+ * below CC's own ~167k auto trigger — or papercusp never compacts cleanly and
+ * CC compacts mid-task instead.
  */
 export function defaultCompactionLimitForSpec(spec?: string | null): number {
-  if (isDefault1mModelSpec(spec)) return COMPACTION_LIMIT_DEFAULT_1M_CAP;
+  if (spec?.includes('[1m]')) return COMPACTION_LIMIT_DEFAULT_1M_CAP;
   const window = modelWindowForSpec(spec);
   const raw = (window - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
   return Math.floor(raw / 1000) * 1000;
