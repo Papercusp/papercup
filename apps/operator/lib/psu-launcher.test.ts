@@ -1609,30 +1609,106 @@ describe('operator endpoint resolution (desktop vs dev box)', () => {
     writeFileSync(join(home, '.papercusp', 'operator.json'), JSON.stringify(obj));
 
   describe('resolveOperatorUrl', () => {
-    it('falls back to the dev-box :3070 when no operator.json (the dev box)', () => {
-      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://localhost:3070');
+    const noProxy = () => false;
+
+    it('falls back to the dev-box :3070 when no operator.json and no proxy (the dev box)', () => {
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://localhost:3070');
     });
 
     it('reads the desktop operator httpUrl from operator.json (the shipping bug fix)', () => {
       writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689', port: '24689', token: 'abc' });
-      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://127.0.0.1:24689');
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://127.0.0.1:24689');
     });
 
     it('synthesizes a URL from port when httpUrl is absent', () => {
       writeOperatorJson({ port: '31337', token: 'abc' });
-      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://127.0.0.1:31337');
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://127.0.0.1:31337');
     });
 
     it('PAPERCUSP_OPERATOR_URL env overrides operator.json (explicit wins)', () => {
       writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
       expect(
-        resolveOperatorUrl({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home }),
+        resolveOperatorUrl({ env: { PAPERCUSP_OPERATOR_URL: 'http://override:9999' }, home, probe: noProxy }),
       ).toBe('http://override:9999');
     });
 
     it('falls back to :3070 on a malformed operator.json', () => {
       writeFileSync(join(home, '.papercusp', 'operator.json'), '{ not json');
-      expect(resolveOperatorUrl({ env: {}, home })).toBe('http://localhost:3070');
+      expect(resolveOperatorUrl({ env: {}, home, probe: noProxy })).toBe('http://localhost:3070');
+    });
+
+    // ── WI-1457: the resilient MCP proxy preference (re-cutover hardening) ──
+
+    it('prefers the ACTIVE resilient proxy over direct :3070 on the dev box', () => {
+      const probed: number[] = [];
+      const url = resolveOperatorUrl({
+        env: {},
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return true;
+        },
+      });
+      expect(url).toBe('http://127.0.0.1:9071');
+      expect(probed).toEqual([9071]);
+    });
+
+    it('PAPERCUSP_MCP_PROXY=0 opts out without even probing', () => {
+      let probes = 0;
+      const url = resolveOperatorUrl({
+        env: { PAPERCUSP_MCP_PROXY: '0' },
+        home,
+        probe: () => {
+          probes++;
+          return true;
+        },
+      });
+      expect(url).toBe('http://localhost:3070');
+      expect(probes).toBe(0);
+    });
+
+    it('honors PAPERCUSP_MCP_PROXY_PORT for both the probe and the url', () => {
+      const probed: number[] = [];
+      const url = resolveOperatorUrl({
+        env: { PAPERCUSP_MCP_PROXY_PORT: '9171' },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return true;
+        },
+      });
+      expect(url).toBe('http://127.0.0.1:9171');
+      expect(probed).toEqual([9171]);
+    });
+
+    it('operator.json (the desktop) still wins over an active proxy', () => {
+      writeOperatorJson({ httpUrl: 'http://127.0.0.1:24689' });
+      expect(resolveOperatorUrl({ env: {}, home, probe: () => true })).toBe('http://127.0.0.1:24689');
+    });
+
+    it('warns (active-but-unrouted) when an explicit :3070 pin bypasses a live proxy — override still wins', () => {
+      const warnings: string[] = [];
+      const url = resolveOperatorUrl({
+        env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070' },
+        home,
+        probe: () => true,
+        warn: (m: string) => warnings.push(m),
+      });
+      expect(url).toBe('http://localhost:3070'); // explicit override is honored
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/WI-1457/);
+      expect(warnings[0]).toMatch(/:9071/);
+    });
+
+    it('does NOT warn on a :3070 pin when the proxy is down (nothing to route through)', () => {
+      const warnings: string[] = [];
+      resolveOperatorUrl({
+        env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070' },
+        home,
+        probe: noProxy,
+        warn: (m: string) => warnings.push(m),
+      });
+      expect(warnings).toHaveLength(0);
     });
   });
 

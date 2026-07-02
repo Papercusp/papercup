@@ -485,6 +485,8 @@ import './inbox/triage';
 // Lifecycle auto-emission target (coord-lifecycle-automation-2026-06-04)
 import './coordination/tools/emit';
 import './coordination/tools/inbox';
+// Live open/resolved severe-condition state (WI-1444 lifecycle reader, EI-6138)
+import './coordination/tools/conditions';
 import './coordination/tools/ack';
 import './coordination/tools/thread';
 // L3 escalations + handoffs (Phase C)

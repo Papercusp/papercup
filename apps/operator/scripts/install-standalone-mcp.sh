@@ -44,7 +44,22 @@ set -euo pipefail
 # papercup→papercusp compat link), argv[1] != import.meta.url and the launcher's
 # `isMain` guard fails → psu/ptool exit 0 doing nothing. Canonicalize here.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+# WI-1457 hardening (mcp-host-availability-resilience P-005/P-006): when the
+# resilient MCP proxy is verifiably alive (systemd unit active AND /api/health
+# 200 THROUGH it), mint configs against the proxy — a :3070 deploy restart is
+# then invisible to sessions (retry-on-refused; never double-applies a write).
+# An explicit PAPERCUSP_OPERATOR_URL still wins; PAPERCUSP_MCP_PROXY=0 opts out.
+# This is precisely the re-mint path that silently REGRESSED the P-006 cutover
+# (configs re-baked to direct :3070 while the proxy sat active-but-unrouted).
+MCP_PROXY_PORT="${PAPERCUSP_MCP_PROXY_PORT:-9071}"
+if [ -z "${PAPERCUSP_OPERATOR_URL:-}" ] && [ "${PAPERCUSP_MCP_PROXY:-1}" != "0" ] \
+  && systemctl --user is-active --quiet papercup-mcp-proxy 2>/dev/null \
+  && [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:${MCP_PROXY_PORT}/api/health" 2>/dev/null)" = "200" ]; then
+  OPERATOR_URL="http://127.0.0.1:${MCP_PROXY_PORT}"
+  echo "→ Resilient MCP proxy ACTIVE on :${MCP_PROXY_PORT} — minting configs against the proxy (WI-1457)"
+else
+  OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+fi
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 
 # Parse --profile=engineer|power (default: engineer).
@@ -645,9 +660,14 @@ cfg.setdefault('mcpServers', {})
 # the install-time profile. NOTE: this ${...} form is written only here
 # (Claude); OMP/Codex don't do url env-interpolation.
 profile_default = 'power' if profile == 'power' else ''
+# WI-1457: the BASE is env-interpolated too — `${PAPERCUSP_OPERATOR_URL:-<mint-time
+# base>}` — matching desktop-install/claude-integration.ts. psu exports the live,
+# proxy-preferring PAPERCUSP_OPERATOR_URL per launch (resolveOperatorUrl), so a
+# re-mint of this file can never again pin sessions to a stale literal base; the
+# mint-time default (proxy when active, else :3070) only serves bare `claude`.
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
-    'url': (operator_url + '/api/mcp?superuser=1'
+    'url': ('${PAPERCUSP_OPERATOR_URL:-' + operator_url + '}' + '/api/mcp?superuser=1'
             + '&client=${PAPERCUSP_SID:-' + agent_id + '}'
             + '&workspace=${PAPERCUSP_WORKSPACE:-}'
             + '&profile=${PAPERCUSP_PROFILE:-' + profile_default + '}'),
