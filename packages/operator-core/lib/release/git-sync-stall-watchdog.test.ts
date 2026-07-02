@@ -129,3 +129,29 @@ describe('evaluateGitSyncStall', () => {
     expect(String(body.detail)).toMatch(/deploy ships only committed HEAD|strand/i);
   });
 });
+
+describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
+  it("lastStatus 'nothing' (clean tree) never head-stalls — idle hives stop crying wolf", () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 60_000, headUnchangedMs: 48 * 3_600_000, lastError: null, lastStatus: 'nothing', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+  });
+
+  it("a 'synced'-status hive with a frozen HEAD still stalls (real commit failures alarm)", () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 60_000, headUnchangedMs: 48 * 3_600_000, lastError: null, lastStatus: 'synced', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(true);
+  });
+
+  it('fire-stale and error stalls are status-independent (a dead engine reports nothing)', () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 48 * 3_600_000, headUnchangedMs: 0, lastError: null, lastStatus: 'nothing', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(true);
+  });
+});
