@@ -49,6 +49,31 @@ Guarded = the re-run takes **zero** table locks; the fresh-migrate path
 statements normally. See `208-scout-ticks-and-lens-weights.sql` for the worked
 fix, and mirror it instead of the older bare-DDL pattern in `202-*.sql`.
 
+:::note\[Update: a second call site exists now, with different failure semantics — the guard rule still covers both]
+`migration-runner.js`'s `applyPendingMigrations` takes a `continueOnError` flag, and there are now
+**two** distinct call sites that set it differently:
+
+* **`apps/operator/lib/release/migrate.ts`** (`applyStagedMigrations`) — the DEPLOY path this
+  incident is about. `continueOnError: false` (the default): a lock-timeout or any other failure
+  THROWS, aborting the deploy and rolling back, exactly as described above. `lock_timeout` is
+  configurable via `readMigratePolicy()` (`db:migrate-policy`), 15000ms by default;
+  `application_name: 'papercusp-deploy-migrate'`.
+* **`packages/operator-core/lib/db-boot-migrate.ts`** (`applyPendingMigrationsAtBoot`) — a NEWER,
+  separate path that runs at native-box **boot** time (not deploy time — see
+  handoff-coordination-dx-followups-2026-06-04 §A1). It sets `continueOnError: true`: a failing
+  migration is logged and left **unrecorded** in `schema_migrations` (so it's retried on the next
+  boot) instead of throwing, and a coord message (`category: 'service-health'`) is broadcast so the
+  failure isn't silent. It has its own `lock_timeout: 15_000` and
+  `application_name: 'papercusp-boot-migrate'`.
+
+These are complementary, not redundant: the deploy path stays fail-loud on purpose (a bad migration
+should never ship), while the boot path is deliberately soft-fail (a single boot-time hiccup
+shouldn't crash-loop the box; it just retries next boot). **The guard-your-DDL rule above still
+applies unconditionally to both** — `continueOnError: true` changes what happens to the *runner's
+bookkeeping* after a lock-timeout, it does not make the lock-timeout itself any less likely or
+less disruptive to concurrent readers of the table while it's pending.
+:::
+
 ## How to recognize it
 
 * `/tmp/papercup-auto-deploy.log` shows `migrate: apply <NNN>-…` then

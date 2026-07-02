@@ -54,3 +54,23 @@ you trust "the agent does X by calling Y":
 The fix here: a real `work_items:checkpoint` tool (`setWorkItemCheckpoint`,
 COORD\_ROLES incl. bee) + `bee.md` corrected to point at it and the real
 `### Carry-note (your last checkpoint)` location.
+
+## Still live (2026-07-02)
+
+Re-verified against current code — the write→store→read→inject loop is still
+fully wired, no drift reintroduced:
+
+* `work_items:checkpoint` (`agent-tools/work_items/checkpoint.ts`) went **bulk
+  by default** (bulk-endpoint-standardization-2026-06-21): `{ id, checkpoint? }`
+  for one, or `items:[{ id, checkpoint?, harness? }]` for many — same
+  `setWorkItemCheckpoint` call underneath, same semantics.
+* `setWorkItemCheckpoint` (`work-item-checkpoint.ts`) picked up a second duty
+  (autonomous-loop-prod-audit-2026-07-02 P-008): a non-clear write now also bumps
+  the work-item's `last_progress_at`, so a checkpointing bee reads as
+  `progressing` rather than `stalled` and doesn't get its claim reaped mid-task —
+  best-effort, never fails the checkpoint write itself.
+* The re-inject heading is unchanged: `spawn-hydration.ts` still emits
+  `### Carry-note (your last checkpoint)` inside the `## Handoff` block, and
+  `bee.base.md` (the live Hive bee persona, extended per-domain by
+  `blueprints/{coding,work}/prompts/bee.md`) still names the real tool + the
+  real heading — the persona-drift this insight is about has not recurred.

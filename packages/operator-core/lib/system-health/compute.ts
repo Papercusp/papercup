@@ -49,6 +49,8 @@ import type {
   SuFleetHealth,
   OverwatchPanelHealth,
   ScoutHealth,
+  ToolEfficiencyHealth,
+  ToolEfficiencyRating,
 } from './types';
 import { PANEL_LABELS } from './types';
 import { isOperationalEscalation } from '../attention/adapters';
@@ -1020,6 +1022,68 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
   });
 }
 
+/**
+ * PURE: fold the 3 tool-efficiency leg ratings into one panel status. `crit` if
+ * ANY leg is 'broken' (a real regression), `warn` if any is 'degraded', `unknown`
+ * only when EVERY leg is 'unknown' (all windows too small to grade), else `ok`.
+ * Exported + unit-tested directly (mirrors scoutHealthVerdict / overwatchStatus).
+ */
+export function toolEfficiencyStatus(ratings: readonly ToolEfficiencyRating['rating'][]): PanelStatus {
+  if (ratings.some((r) => r === 'broken')) return 'crit';
+  if (ratings.some((r) => r === 'degraded')) return 'warn';
+  if (ratings.every((r) => r === 'unknown')) return 'unknown';
+  return 'ok';
+}
+
+async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEfficiencyHealth>> {
+  return panelSafe<ToolEfficiencyHealth>('toolEfficiency', async () => {
+    // WI-839: the 3 measuring-code-run-adoption.mdx metrics, each already a pure +
+    // unit-tested read/grade module — this collector only runs them + folds the result.
+    // Dynamic imports (mirrors collectScout/collectOverwatch) keep this niche panel's
+    // dependencies out of compute.ts's module-load path.
+    const [{ readCodeRunAdoption, rollupAdoption, gradeToolUtilization }, { readLimitFailureRate, gradeLimitFailureRate }, { readOrientDedupRate, gradeOrientDedupRate }] =
+      await Promise.all([import('../code-run-adoption'), import('../limit-failure-rate'), import('../orient-dedup-rate')]);
+    const { sql } = getOrgPg();
+    const runQuery = async <T = unknown>(query: string, params: unknown[]): Promise<T[]> =>
+      (await sql.unsafe(query, params as never)) as unknown as T[];
+
+    const [adoptionSummaries, limitRollup, orientRollup] = await Promise.all([
+      readCodeRunAdoption(runQuery, { sinceDays: 7 }),
+      readLimitFailureRate(runQuery, { sinceDays: 14 }),
+      readOrientDedupRate(runQuery, { sinceHours: 24 }),
+    ]);
+    const adoptionRollup = rollupAdoption(adoptionSummaries);
+    const adoptionGrade = gradeToolUtilization(adoptionRollup);
+    const limitGrade = gradeLimitFailureRate(limitRollup);
+    const orientGrade = gradeOrientDedupRate(orientRollup);
+    const adoptionRatePct = adoptionRollup.adoptionRate !== null ? Math.round(adoptionRollup.adoptionRate * 100) : null;
+
+    const data: ToolEfficiencyHealth = {
+      limitFailure: { rating: limitGrade.rating, evidence: limitGrade.evidence, totalErrs: limitRollup.totalErrs },
+      codeRunAdoption: { rating: adoptionGrade.rating, evidence: adoptionGrade.evidence, adoptionRatePct },
+      orientDedup: { rating: orientGrade.rating, evidence: orientGrade.evidence, pctRedundant: orientRollup.pctRedundant },
+    };
+    const status = toolEfficiencyStatus([limitGrade.rating, adoptionGrade.rating, orientGrade.rating]);
+    const summary =
+      `limit-failures ${limitGrade.rating} (${limitRollup.totalErrs}/14d) · ` +
+      `code:run adoption ${adoptionGrade.rating}${adoptionRatePct !== null ? ` (${adoptionRatePct}%)` : ''} · ` +
+      `orient-dedup ${orientGrade.rating}${orientRollup.pctRedundant !== null ? ` (${orientRollup.pctRedundant}%)` : ''}`;
+    const toneOf = (r: ToolEfficiencyRating['rating']): PanelStatus | undefined =>
+      r === 'broken' ? 'crit' : r === 'degraded' ? 'warn' : undefined;
+    return {
+      status,
+      summary,
+      data,
+      link: { label: 'Learning', href: '/adv?tab=learning' },
+      metrics: [
+        m('limit-failures 14d', limitRollup.totalErrs, toneOf(limitGrade.rating)),
+        m('code:run adoption', adoptionRatePct !== null ? `${adoptionRatePct}%` : 'n/a', toneOf(adoptionGrade.rating)),
+        m('orient-dedup', orientRollup.pctRedundant !== null ? `${orientRollup.pctRedundant}%` : 'n/a', toneOf(orientGrade.rating)),
+      ],
+    };
+  });
+}
+
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
   return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
     const { ws, now, hiveSlug } = ctx;
@@ -1188,17 +1252,19 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
+    toolEfficiency,
   ] = await Promise.all([
     collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
     collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
     collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
     collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
-    collectScout(ctx),
+    collectScout(ctx), collectToolEfficiency(ctx),
   ]);
 
   const panels: SystemHealthPanels = {
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
+    toolEfficiency,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
   // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT

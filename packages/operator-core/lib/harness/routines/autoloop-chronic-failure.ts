@@ -33,7 +33,7 @@
  * must never SUPPRESS a genuine chronic-failure alert).
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { recentWatchdogFires, recordFire } from '../../hive/watchdog';
+import { recentWatchdogFires, claimWatchdogFire } from '../../hive/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Breach threshold (env-overridable; <=0 disables the sweep). */
@@ -105,14 +105,24 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
     for (const b of breaches) {
       try {
         const source = 'autoloop-chronic' as const;
-        const alreadyFired =
-          (await recentWatchdogFires(workspaceId, `${b.harness_slug}::${b.role}`, 24, source)) > 0;
+        const installSlug = `${b.harness_slug}::${b.role}`;
+        const alreadyFired = (await recentWatchdogFires(workspaceId, installSlug, 24, source)) > 0;
         if (alreadyFired) {
           results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'debounced', reason: 'escalated within 24h' });
           continue;
         }
-        const { captureImprovement } = await import('../improvements/capture-core');
         const reason = `${b.role}@${b.harness_slug}: ${b.consecutive_errors} consecutive errors — last_status: ${(b.last_status ?? '').slice(0, 200)}`;
+        // EI-6777: the `alreadyFired` read above is a cheap, racy pre-check —
+        // multiple concurrent sweep ticks/processes can all observe "not fired
+        // yet" before any of them records a fire. Atomically re-check + claim
+        // the debounce slot right before the one-time escalation side effect
+        // so only one racer ever proceeds to captureImprovement below.
+        const claimedFire = await claimWatchdogFire({ workspaceId, installSlug, source, windowHours: 24, reason, wakeAt: null });
+        if (!claimedFire) {
+          results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'debounced', reason: 'escalated within 24h (raced)' });
+          continue;
+        }
+        const { captureImprovement } = await import('../improvements/capture-core');
         await captureImprovement({
           title: `CHRONIC autoloop failure: ${b.role}@${b.harness_slug} red ${b.consecutive_errors} consecutive fires`,
           kind: 'bug',
@@ -125,7 +135,8 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
           scope: `harness:${b.harness_slug}`,
           foundDuring: 'autoloop-chronic-failure sweep (routines tick)',
         });
-        await recordFire({ workspaceId, installSlug: `${b.harness_slug}::${b.role}`, source, reason, wakeAt: null });
+        // claimWatchdogFire already recorded the fire atomically above —
+        // no separate recordFire call here (that was the race this closes).
         results.push({ harnessSlug: b.harness_slug, role: b.role, outcome: 'escalated', reason });
       } catch (e) {
         results.push({

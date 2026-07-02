@@ -30,7 +30,9 @@ Reuse the **renderer**, keep the **lifecycle** separate:
   2. client `askUserLocal` registry → `LocalCardHost`,
   3. the **durable inbox** → `app/admin/plans/attention-card.ts`.
 
-The inbox emitter is two pure functions:
+The inbox emitter is now **three** pure(ish) functions in `attention-card.ts`
+(it started as two — `attentionItemToCardSpec` / `resolveAttentionAction` — and
+grew `answerAttentionItem` once Answer became a real InputCard submit path):
 
 * `attentionItemToCardSpec(item)` maps an `AttentionItem` → `AskChoiceArgs`.
   `item.actions[]` is the single source of truth (so the adapter in
@@ -38,8 +40,19 @@ The inbox emitter is two pure functions:
   set — see the gotcha).
 * `resolveAttentionAction(item, optionId)` dispatches a **terminal** pick to the
   item's existing backend helper (`resolveEscalation` / `ackCoordMessage` /
-  `setItemStatus`) via the `/api/admin/coord/:verb` proxy — no new route, because
-  `defineTool` already projects the coord tools onto HTTP.
+  `setItemStatus`, and — as the B-14/P-100 folded channels landed — also
+  `dismissImprovement` / `decideStandingApproval` / `triageAttentionItem`) via
+  whichever existing proxy that helper already used (`/api/admin/coord/:verb`,
+  `/api/admin/coordination/:group/:verb`, `/api/admin/inbox/triage`,
+  `/api/agent-mcp/operator-standing-approvals`) — no new route *class*, because
+  `defineTool` already projects each coord/harness tool onto HTTP. See
+  [folding-a-channel-into-the-queue](/agent-insights/folding-a-channel-into-the-queue)
+  for how those folded kinds pick what to surface in the first place.
+* `answerAttentionItem(item, answerText)` is the Answer InputCard's free-text
+  submit: for a `plan-item` it records a plan decision, marks the item done,
+  and resumes the loop; for a `conversation` (D-027 follow-on (1)) it resolves
+  the open question with the text as the accepted answer — no loop resume,
+  since a `coord:ask` conversation isn't a plan-blocking decision.
 
 ## Terminal vs navigate — the option convention
 
@@ -62,10 +75,14 @@ The inbox emitter is two pure functions:
   adapter doesn't emit. Add the action to `AttentionActionId` *and*
   `planItemToAttention`, and mirror the union in the client wire type
   (`plans-api.ts`).
-* **Preserve `resumeLoop`.** Plan-item Resolve/Answer POST
-  `/api/harness/:slug/launch?phase=staging` to resume the orchestrator; **Drop
-  deliberately does not**. Centralizing the dispatch must keep that distinction
-  (parity-test it).
+* **Preserve `resumeLoop`.** Plan-item Resolve/Answer fire `hive:wake` (via
+  `/api/agent-mcp/run-tool`, floor-debounced) to nudge the Queen now instead of
+  waiting for her next armed wake; **Drop deliberately does not** call it. This
+  replaced the legacy `POST /api/harness/:slug/launch?phase=staging` run-loop
+  kick after the bash orchestrator binary was archived (2026-06-06) — the
+  *distinction* (Resolve/Answer wake, Drop doesn't) is the invariant to
+  preserve; the transport underneath it has already changed once and may
+  again. Centralizing the dispatch must keep that distinction (parity-test it).
 * **No "Skip" on durable cards.** `AskChoiceCard` shows a Skip (`decline`) by
   default; `decline` is undefined for a durable record. Render inbox cards with
   `allowDecline={false}`.

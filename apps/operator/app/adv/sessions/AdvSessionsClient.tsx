@@ -5,6 +5,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { parseAsArrayOf, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
@@ -533,6 +534,31 @@ export default function AdvSessionsClient() {
     if (!row.pid && !row.windowId) {
       toast.error('No pid or window id recorded for this session — cannot focus.');
       return;
+    }
+    // Windows desktop (windows-desktop-feature-parity D-002): the operator runs
+    // inside the WSL2 distro (Session 0) and CANNOT focus a Session-1 desktop
+    // window. The renderer runs IN the Tauri shell (Session 1), so it invokes
+    // the native Rust `focus_window_by_title` command directly. On Windows
+    // `row.windowId` IS the exact window title (console-record stores
+    // `Papercup — <sessionId>` as the windowId). The command returns false on a
+    // non-Windows operator, so a Linux desktop falls through to the wmctrl POST
+    // below. This is a click → user-initiated (feedback_e2e_no_focus_steal).
+    if (
+      row.windowId &&
+      typeof window !== 'undefined' &&
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    ) {
+      try {
+        const focused = await invoke<boolean>('focus_window_by_title', { title: row.windowId });
+        if (focused) {
+          toast.success('Window focused.', { duration: 2000 });
+          return;
+        }
+        // false → not a Windows desktop (or no title match) → fall through to
+        // the operator-side (wmctrl) focus path.
+      } catch {
+        // command absent (older shell) / invoke unavailable → server path.
+      }
     }
     try {
       const r = await fetch('/api/adv/sessions/focus', {

@@ -3,6 +3,35 @@ URL: /internal/docs/agent-insights/pgbouncer-breaks-getorgpg-env-routed-integrat
 
 On a server-class host (the dev box), pgbouncerEnabled() is default-on, so getOrgPg reroutes to :6432 and ignores a testcontainer DSN — failing any integration test that env-routes getOrgPg at a throwaway DB. Fix - set PAPERCUSP_PGBOUNCER=0.
 
+## Update 2026-07-02 (WI-1666) — the durable class-level fix landed for the PAPERCUSP\_PG\_PORT case
+
+The SAME `pgbouncerEnabled()` default-on-server bug also broke **every isolated
+embedded-PG smoke-test/witness/rig process** (`two-instance-*-smoke.sh`,
+`deb-hetzner-*.sh`) on this box: a "fresh, isolated" instance would boot its own
+empty embedded PG on an explicit `PAPERCUSP_PG_PORT`, but `getOrgPg()` silently
+rerouted through the box's shared PgBouncer (`:6432` → the REAL native
+`postgresql@18-main` on `:5432`) — so the witness read *another process's*
+pre-existing rows instead of its own empty DB. Confirmed live: the witness's own
+embedded PG had 0 matching rows; the box's native PG had the exact "existing" rows
+the bug reported. This is very likely the reason a chunk of the federation/live-rig
+backlog reports "cannot continue without a created hive" on this box.
+
+**Fixed** (not just worked around) by implementing the "durable / class-level fix"
+option below: `pgbouncerEnabled()` now returns `false` whenever `PAPERCUSP_PG_PORT`
+is explicitly set (after the `PAPERCUSP_PGBOUNCER=1/0` explicit overrides, which
+still win) — the real dev/staging operators on this box never set that var (they
+attach via `DATABASE_URL`/discovery), while every isolated smoke/rig script always
+does, making it a safe, exclusive signal. See `connection.ts`'s `pgbouncerEnabled()`
+comment + `connection-helpers.test.ts`'s WI-1666 cases.
+
+This does **NOT** fully close the ORIGINAL symptom below (a test that env-routes
+`getOrgPg` at a testcontainer via `HARNESS_ADMIN_DATABASE_URL` without also setting
+its own `PAPERCUSP_PG_PORT`) — that per-test `PAPERCUSP_PGBOUNCER=0` workaround is
+still needed for testcontainer-backed integration tests that don't set
+`PAPERCUSP_PG_PORT`. A future pass could additionally derive the signal from an
+explicitly-set `HARNESS_ADMIN_DATABASE_URL`/`HARNESS_DATABASE_URL` pointing at a
+non-default port, closing that remaining gap too.
+
 ## Symptom
 
 An integration test that env-routes the process-global `getOrgPg()` at a fresh

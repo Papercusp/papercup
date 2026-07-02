@@ -37,9 +37,10 @@ export interface HealthLink {
   href: string;
 }
 
-/** The 15 panels, in render order. `overwatch` (#15) is the autonomous
+/** The 17 panels, in render order. `overwatch` (#15) is the autonomous
  *  supervisor's own loop health (overwatch-role-2026-06-15 #15, the
- *  who-watches-the-watcher card). */
+ *  who-watches-the-watcher card). `toolEfficiency` (#17, WI-839) folds the 3
+ *  measuring-code-run-adoption.mdx tool-usage metrics into one recurring card. */
 export type PanelKey =
   | 'queen'
   | 'bees'
@@ -56,7 +57,8 @@ export type PanelKey =
   | 'infra'
   | 'suFleet'
   | 'overwatch'
-  | 'scout';
+  | 'scout'
+  | 'toolEfficiency';
 
 /** Canonical render order for the tab's status-card grid. */
 export const PANEL_ORDER: readonly PanelKey[] = [
@@ -76,6 +78,7 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'suFleet',
   'overwatch',
   'scout',
+  'toolEfficiency',
 ] as const;
 
 export const PANEL_LABELS: Record<PanelKey, string> = {
@@ -95,6 +98,7 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   suFleet: 'SU fleet',
   overwatch: 'Overwatch',
   scout: 'Scout / ideation',
+  toolEfficiency: 'Tool efficiency',
 };
 
 /**
@@ -443,6 +447,32 @@ export interface ScoutHealth {
   transportDeath: boolean;
 }
 
+/** A rating shared by the three tool-efficiency metrics (mirrors each metric
+ *  module's own Grade shape — limit-failure-rate.ts / orient-dedup-rate.ts /
+ *  code-run-adoption.ts). */
+export interface ToolEfficiencyRating {
+  rating: 'healthy' | 'degraded' | 'broken' | 'unknown';
+  evidence: string;
+}
+
+/**
+ * Tool efficiency (panel #17, WI-839) — the 3 canonical
+ * measuring-code-run-adoption.mdx SQL metrics folded into one recurring card,
+ * so a regression (a tight new validation cap, the code:run nudge losing
+ * effect, agents re-calling what coord:orient already returned) surfaces
+ * without a manual audit. Each leg is read + graded by its own already
+ * pure+unit-tested module (limit-failure-rate.ts / code-run-adoption.ts /
+ * orient-dedup-rate.ts); this panel only folds their outputs.
+ */
+export interface ToolEfficiencyHealth {
+  /** Metric #1 — too-long-string tool-arg validation failures, last 14d. */
+  limitFailure: ToolEfficiencyRating & { totalErrs: number };
+  /** Metric #2 — code:run/recipes:run adoption among batchable-opportunity spawns, last 7d. */
+  codeRunAdoption: ToolEfficiencyRating & { adoptionRatePct: number | null };
+  /** Metric #3 — of coord:orient spawns, % that also re-called a subsumed tool, last 24h. */
+  orientDedup: ToolEfficiencyRating & { pctRedundant: number | null };
+}
+
 /**
  * Who-watches-the-watcher (overwatch-role C-1 / D-004). `overwatchAlive` is null
  * until the overwatch role lands (overwatch-role-2026-06-15). The Health tab
@@ -471,6 +501,7 @@ export interface SystemHealthPanels {
   suFleet: HealthPanel<SuFleetHealth>;
   overwatch: HealthPanel<OverwatchPanelHealth>;
   scout: HealthPanel<ScoutHealth>;
+  toolEfficiency: HealthPanel<ToolEfficiencyHealth>;
 }
 
 /**
