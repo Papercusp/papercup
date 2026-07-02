@@ -16,7 +16,7 @@ vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'm
 vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 vi.mock('../inbox-wake', () => ({
-  wakeRecipients: vi.fn(async () => ({ targets: [], woken: 0, staged: 0 })),
+  wakeRecipients: vi.fn(async () => ({ targets: [], woken: 0, staged: 0, stagedTargets: [] })),
   reportIdleRecipients: vi.fn(async () => ({ idle: [] })),
 }));
 vi.mock('../recipient-resolve', () => ({
@@ -123,7 +123,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it("wake:'required' miss on a DEAD recipient → recipient_dead + truthful black-hole note (WI-574)", async () => {
-    wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['dead-bee'] } as never);
     const b = await body({ to: ['dead-bee'], summary: 'pick this up', wake: 'required' });
     expect(b.results[0].wake).toMatchObject({ recipient_absent: true, recipient_dead: ['dead-bee'] });
@@ -131,7 +131,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it("wake:'required' miss on a PAUSED-but-alive recipient → recipient_absent, NO recipient_dead (WI-574)", async () => {
-    wakeM.mockResolvedValueOnce({ targets: ['paused-bee'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['paused-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: [] } as never);
     const b = await body({ to: ['paused-bee'], summary: 'hi', wake: 'required' });
     expect(b.results[0].wake.recipient_absent).toBe(true);
@@ -143,7 +143,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     // The incident: an optimistic transfer to a now-dead agent woke nobody and was read
     // as "fine, the backstop will get it" — when there was no backstop. Now: no declared
     // backstop ⇒ the miss is as loud as a required miss.
-    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['ghost-bee'] } as never);
     const b = await body({ to: ['ghost-bee'], summary: 'deploy this', wake: 'optimistic' });
     expect(b.results[0].wake).toMatchObject({
@@ -156,7 +156,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it("FF#1: wake:'optimistic' miss WITH a declared backstop → soft note naming it, NO recipient_absent", async () => {
-    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     const b = await body({
       to: ['ghost-bee'],
       summary: 'survey will re-place',
@@ -169,7 +169,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it('FF#3: a miss forces the missed addressee\'s FRESH sessionState into the result', async () => {
-    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['ghost-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     livenessM.mockResolvedValueOnce([
       { ownerId: 'ghost-bee', sessionState: 'ended', wakeable: false },
     ] as never);
@@ -180,7 +180,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
   });
 
   it("wake:'optimistic' that WOKE someone (woken:1) carries no miss note", async () => {
-    wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'optimistic' });
     expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 1 });
     expect(b.results[0].wake.note).toBeUndefined();
@@ -215,7 +215,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('a reply to an opted-in directed message fires an optimistic wake to the ORIGINAL sender', async () => {
     getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
-    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
@@ -323,7 +323,7 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
 describe('coord:send delivery receipts (P-008)', () => {
   it('a FEDERATED directed required-wake send persists receipt:true and returns receiptEvent', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['su-r'], summary: 'do it now', wake: 'required' });
     const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
     expect(opts.extra?.receipt).toBe(true);
@@ -332,7 +332,7 @@ describe('coord:send delivery receipts (P-008)', () => {
 
   it('no receipt on: local-only send, broadcast, or inject-only', async () => {
     // local-only (no hive scope): required wake but federated:false
-    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 1, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-r'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     let b = await body({ to: ['su-r'], summary: 'x', wake: 'required' });
     expect((sendM.mock.calls[0][1] as { extra?: Record<string, unknown> }).extra?.receipt).toBeUndefined();
     expect(b.results[0].receiptEvent).toBeUndefined();
@@ -351,7 +351,7 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a required-wake miss on a REMOTE-homed recipient reports recipient_remote (not dead) with the federation note', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never); // no local watcher — but it is REMOTE
     const b = await body({ to: ['su-remote-1'], summary: 'cross-machine ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote).toEqual(['su-remote-1']);
@@ -363,7 +363,7 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a remote-homed recipient on a NON-federated send gets the loud scope hint (it will never arrive)', async () => {
     // no shared hive → the send stays local, but the recipient is remote-only
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now()]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].federated).toBe(false);
@@ -373,7 +373,7 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   it('a STALE remote beat is reported as probably-gone (P-010) — treat like dead unless the receipt arrives', async () => {
     fedScopeM.mockResolvedValue({ kind: 'one', homeSlug: 'my-hive' } as never);
     remoteMapM.mockResolvedValue(new Map([['su-remote-1', Date.now() - 30 * 60 * 1000]]) as never);
-    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0 } as never);
+    wakeM.mockResolvedValueOnce({ targets: ['su-remote-1'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['su-remote-1'] } as never);
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote_stale).toEqual(['su-remote-1']);
