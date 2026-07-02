@@ -36,6 +36,15 @@ export interface HivePolicyModeration {
   takedownList?: string[];
 }
 
+export interface HivePolicyComms {
+  /** Default comms-trust tier for members (P-012). */
+  defaultTier?: 'observe' | 'message' | 'wake' | 'steer';
+  /** Forward-compat: future comms knobs are preserved + signed. */
+  [k: string]: unknown;
+}
+
+/**
+
 /**
  * The typed view of a Hive policy document. This is a forward-compatible OPEN record:
  * the named fields are the EN-1..EN-4 surface, and `[k: string]: unknown` preserves
@@ -51,6 +60,13 @@ export interface HivePolicy {
    *  owner (its first writer) or a privileged identity may mutate it. Absent ⇒ resolved by
    *  resolveContentWriteMode (an `open` hive defaults to 'author-scoped'). */
   contentWriteAuthority?: 'member' | 'author-scoped';
+  /** P-012 (cross-machine-coord-parity-and-trust-2026-07-01, D-004) — the
+   *  owner-signed COMMS defaults for members. `defaultTier` is the tier a
+   *  member's verified GitHub user gets toward every OTHER member absent that
+   *  member's local override (comms-trust.ts effectiveCommsTier: local
+   *  override → THIS default → conservative fallback). Lattice:
+   *  observe < message < wake < steer. Open record for future comms knobs. */
+  comms?: HivePolicyComms;
   /** EN-4 P-CONTRIB — fork→PR contribution rules. Opaque at EN-1. */
   contrib?: Record<string, unknown>;
   /** EN-4 P-CONTENT — payload/content rules. Opaque at EN-1. */
@@ -160,6 +176,21 @@ export function coerceHivePolicyInput(
   }
   if (p.allowlist !== undefined && !isStringArray(p.allowlist)) {
     return { ok: false, error: 'policy.allowlist must be a string[]' };
+  }
+  if (p.comms !== undefined) {
+    if (!p.comms || typeof p.comms !== 'object' || Array.isArray(p.comms)) {
+      return { ok: false, error: 'policy.comms must be an object' };
+    }
+    const c = p.comms as Record<string, unknown>;
+    if (
+      c.defaultTier !== undefined &&
+      c.defaultTier !== 'observe' &&
+      c.defaultTier !== 'message' &&
+      c.defaultTier !== 'wake' &&
+      c.defaultTier !== 'steer'
+    ) {
+      return { ok: false, error: "policy.comms.defaultTier must be 'observe' | 'message' | 'wake' | 'steer'" };
+    }
   }
   if (p.moderation !== undefined) {
     if (!p.moderation || typeof p.moderation !== 'object' || Array.isArray(p.moderation)) {

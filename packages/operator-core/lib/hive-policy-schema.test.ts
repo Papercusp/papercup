@@ -128,3 +128,30 @@ describe('parseHivePolicyJson', () => {
     expect(parseHivePolicyJson('')).toEqual({});
   });
 });
+
+describe('policy.comms (P-012 — cross-machine-coord-parity-and-trust-2026-07-01)', () => {
+  it('accepts a valid comms.defaultTier and preserves unknown comms subkeys (signed round-trip)', () => {
+    const res = coerceHivePolicyInput({ comms: { defaultTier: 'wake', futureKnob: 42 } });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.policy.comms).toEqual({ defaultTier: 'wake', futureKnob: 42 });
+      // canonicalization covers the whole object — comms is signed like everything else
+      const canon = canonicalizeHivePolicy(res.policy);
+      expect(canon).toContain('"defaultTier":"wake"');
+      expect(canon).toContain('"futureKnob":42');
+    }
+  });
+
+  it('accepts every lattice tier and an empty comms object', () => {
+    for (const tier of ['observe', 'message', 'wake', 'steer']) {
+      expect(coerceHivePolicyInput({ comms: { defaultTier: tier } }).ok).toBe(true);
+    }
+    expect(coerceHivePolicyInput({ comms: {} }).ok).toBe(true);
+  });
+
+  it('rejects a garbage defaultTier and a non-object comms', () => {
+    expect(coerceHivePolicyInput({ comms: { defaultTier: 'root' } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ comms: 'wake' }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ comms: ['wake'] }).ok).toBe(false);
+  });
+});
