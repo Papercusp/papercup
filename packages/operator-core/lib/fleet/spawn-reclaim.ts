@@ -231,6 +231,13 @@ export interface ReclaimResult {
    *  AND re-launched because its durable work-item is still non-terminal — i.e.
    *  the work survived the host restart. Empty for the periodic sweep. */
   relaunched?: string[];
+  /** Boot reconcile only (WI-1499): spawnIds that were NOT reclaimed because
+   *  their child process is confirmed still alive on this host (a scope-isolated
+   *  agent turn that survived the host/process restart) — RE-ATTACHED to this
+   *  fresh incarnation (launcher_boot_id bumped + heartbeat refreshed) instead of
+   *  being flipped to `failed`. Empty for the periodic sweep (it already handles
+   *  same-host liveness via the `alive` bucket, just without a boot-id rewrite). */
+  reattached?: string[];
 }
 
 /**
@@ -599,14 +606,34 @@ export async function reclaimWedgedSpawns(
  *
  * THE RECONCILE. A fresh operator process has launched NOTHING yet, so any
  * `running` row attributed to THIS host that does not carry THIS process's boot id
- * is owned by a dead prior incarnation — reclaim it, regardless of heartbeat
- * freshness (that is the crucial difference from the periodic sweep: it does NOT
- * gate on staleness, so it clears rows the false-alive bug kept fresh). The
- * boot-id discriminator is immune to pid reuse. Rows predating the boot-id column
- * (`launcher_boot_id IS NULL`) fall back to the stale-heartbeat rule so a
- * mid-insert current-process row (not yet pid/boot-id-stamped) is never reclaimed
- * out from under itself. Different-host rows are left alone (a federated peer's
- * live operator owns them).
+ * was launched by a PRIOR incarnation — but "prior incarnation" no longer implies
+ * "provably dead" (WI-1499). Since bg-host-agent-spawn-scope-isolation-2026-07-02,
+ * a `spawn`-kind row (an actual OS child, launched into its own systemd user SCOPE
+ * — see `orchestrator-runner.ts`'s `runChild`) can OUTLIVE the operator process
+ * that launched it: a host/process restart no longer touches its cgroup. So the
+ * reconcile now liveness-checks each same-host candidate's recorded pid
+ * (`isSpawnProcessAlive`, same primitive the periodic sweep uses) before acting:
+ *   • ALIVE (`spawn` kind only — see below) → RE-ATTACH: bump `launcher_boot_id`
+ *     to this fresh incarnation's id + refresh `heartbeat_at`, and leave the row
+ *     `running` untouched. The agent turn keeps executing; no reclaim row, no
+ *     relaunch, no lost/duplicated work (WI-1499's acceptance criterion).
+ *   • DEAD (or unverifiable) → reclaim to `failed`, exactly as before.
+ * `launch`-kind rows (in-process loopback launches — a Queen wake, an overwatch
+ * loop) are ALWAYS reclaimed here regardless of what their recorded pid's /proc
+ * slot currently holds: unlike a `spawn`-kind OS child, a `launch` row's "process"
+ * IS the firing operator process itself, and a fresh boot is BY DEFINITION a NEW
+ * process — the prior one is gone. Treating a `launch` row's pid as possibly-alive
+ * at boot would be a straight PID-reuse hazard (a rebooted-feeling but
+ * still-running box can reassign that exact pid to an unrelated process within
+ * seconds), which is exactly the false-alive bug EI-2186 introduced the boot
+ * reconcile to fix in the first place — so the liveness check is deliberately
+ * scoped to `spawn` kind only.
+ *
+ * Rows predating the boot-id column (`launcher_boot_id IS NULL`) fall back to the
+ * stale-heartbeat rule to select as CANDIDATES (so a mid-insert current-process
+ * row, not yet pid/boot-id-stamped, is never touched) — but still go through the
+ * SAME alive/dead liveness split before being reclaimed or re-attached.
+ * Different-host rows are left alone (a federated peer's live operator owns them).
  *
  * Call ONCE at host bootstrap, before arming the spawn paths. Idempotent + safe to
  * re-run. The caller announces `spawn-slot:freed:<ws>` per freed workspace so any
@@ -616,31 +643,89 @@ export async function reclaimWedgedSpawns(
  * frees the ceiling debit but LOSES the work: a queen mid-orchestration and every
  * bee it placed vanish on a host restart, doing zero work until the next routine
  * cadence re-fires the queen. So when a re-launcher is supplied (and the relaunch
- * is enabled), the reconcile re-launches each reclaimed spawn whose durable
- * work-item is still NON-TERMINAL (`shouldRelaunchReclaimedSpawn`), instead of
- * just killing it — the dead row is still settled `failed` (with a
+ * is enabled), the reconcile re-launches each reclaimed (i.e. confirmed-DEAD) spawn
+ * whose durable work-item is still NON-TERMINAL (`shouldRelaunchReclaimedSpawn`),
+ * instead of just killing it — the dead row is still settled `failed` (with a
  * "superseded by boot relaunch" reason so the ceiling debit is freed and the
  * diagnosis is accurate), and a fresh `running` row owned by THIS process takes
  * its place. A spawn whose work-item is already terminal/gone (or a non-queen/bee
- * role) keeps the plain reclaim-to-`failed` floor.
+ * role) keeps the plain reclaim-to-`failed` floor. A RE-ATTACHED (alive) spawn is
+ * never a relaunch candidate — it never died.
  *
  * @param opts.relaunch INJECTED re-fire seam (host-bootstrap); omitted ⇒ the legacy
  *        reclaim-only behaviour (also the flag-OFF path).
+ * @param opts.isAlive INJECTED liveness check (default `isSpawnProcessAlive`) —
+ *        overridable for tests, mirrors `reclaimOrphanedSpawns`'s seam.
  */
 export async function reconcileSpawnAdmissionOnBoot(
   sql: Db,
-  opts: { staleMs?: number; relaunch?: RelaunchSpawnFn } = {},
+  opts: { staleMs?: number; relaunch?: RelaunchSpawnFn; isAlive?: (pid: number, kind?: 'spawn' | 'launch') => boolean } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
   const me = hostname();
+  const isAlive = opts.isAlive ?? isSpawnProcessAlive;
 
-  // Settle every prior-incarnation row to `failed` (freeing the ceiling debit) and
-  // RETURN its durable identity + its work-item's current status, so we can decide
-  // per row whether to re-launch. The work-item id is `item_id` (the canonical
-  // work-item link) falling back to the legacy `feature_id`; its status is resolved
-  // from harness_features_consolidated keyed on (work-item id, workspace, harness)
-  // — a LEFT JOIN so a spawn with no work-item (or a deleted one) returns NULL and
-  // is reclaimed, never re-launched.
+  // First gather every same-host candidate from a prior incarnation (boot-id
+  // mismatch, or no boot id + stale heartbeat) WITHOUT touching them yet — we
+  // need each row's pid + run_id to classify alive-vs-dead before deciding
+  // reclaim vs re-attach.
+  const candidates = await sql<
+    {
+      spawn_id: string;
+      pid: number | null;
+      run_id: string | null;
+    }[]
+  >`
+    SELECT a.spawn_id, a.pid, a.run_id
+      FROM harness_shared.spawned_agents AS a
+     WHERE a.status IN ('running', 'restarting')
+       AND a.launcher_host = ${me}
+       AND (
+             (a.launcher_boot_id IS NOT NULL AND a.launcher_boot_id <> ${LAUNCHER_BOOT_ID})
+          OR (a.launcher_boot_id IS NULL AND a.heartbeat_at < now() - ${staleSec}::int * interval '1 second')
+         )`;
+
+  // Classify: a `spawn`-kind row (invoke-once bee/queen child) whose recorded pid
+  // is confirmed alive survived the restart (scope-isolated, WI-1499) → re-attach.
+  // A `launch`-kind row is ALWAYS reclaimed at boot (its firing process is THIS
+  // process's dead predecessor by construction — see the doc comment above).
+  const aliveIds: string[] = [];
+  const deadIds: string[] = [];
+  for (const c of candidates) {
+    const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
+    if (kind === 'spawn' && c.pid != null && isAlive(c.pid, kind)) {
+      aliveIds.push(c.spawn_id);
+    } else {
+      deadIds.push(c.spawn_id);
+    }
+  }
+
+  // Re-attach the survivors to this fresh incarnation: same row, same status,
+  // just handed off — future sweeps (periodic + the next boot) now see it as
+  // owned by THIS process. No reclaim row, no relaunch, no lost work.
+  const reattached: string[] = [];
+  if (aliveIds.length > 0) {
+    const reattachedRows = await sql<{ spawn_id: string }[]>`
+      UPDATE harness_shared.spawned_agents AS a
+         SET launcher_boot_id = ${LAUNCHER_BOOT_ID},
+             heartbeat_at = now()
+       WHERE a.status IN ('running', 'restarting')
+         AND a.spawn_id = ANY(${aliveIds}::text[])
+      RETURNING a.spawn_id`;
+    reattached.push(...reattachedRows.map((r) => r.spawn_id));
+  }
+
+  if (deadIds.length === 0) {
+    return { reclaimed: 0, spawnIds: [], workspaces: [], relaunched: [], reattached };
+  }
+
+  // Settle every confirmed-dead prior-incarnation row to `failed` (freeing the
+  // ceiling debit) and RETURN its durable identity + its work-item's current
+  // status, so we can decide per row whether to re-launch. The work-item id is
+  // `item_id` (the canonical work-item link) falling back to the legacy
+  // `feature_id`; its status is resolved from harness_features_consolidated keyed
+  // on (work-item id, workspace, harness) — a LEFT JOIN so a spawn with no
+  // work-item (or a deleted one) returns NULL and is reclaimed, never re-launched.
   const rows = await sql<
     {
       spawn_id: string;
@@ -666,15 +751,12 @@ export async function reconcileSpawnAdmissionOnBoot(
                a.error_message,
                'reclaimed at operator boot: launched by a prior incarnation on '
                  || COALESCE(a.launcher_host, '?')
-                 || ' (host/process restarted before its admission-release ran) — '
-                 || 'stale spawn-ceiling debit freed by the boot reconcile (EI-2186)'
+                 || ' (host/process restarted before its admission-release ran, and its child'
+                 || ' process is confirmed dead) — stale spawn-ceiling debit freed by the boot'
+                 || ' reconcile (EI-2186 / WI-1499)'
              )
        WHERE a.status IN ('running', 'restarting')
-         AND a.launcher_host = ${me}
-         AND (
-               (a.launcher_boot_id IS NOT NULL AND a.launcher_boot_id <> ${LAUNCHER_BOOT_ID})
-            OR (a.launcher_boot_id IS NULL AND a.heartbeat_at < now() - ${staleSec}::int * interval '1 second')
-         )
+         AND a.spawn_id = ANY(${deadIds}::text[])
       RETURNING a.spawn_id, a.workspace_id, a.harness_slug, a.child_role,
                 a.parent_spawn_id, a.parent_role,
                 COALESCE(a.item_id, a.feature_id) AS work_item_id,
@@ -747,5 +829,6 @@ export async function reconcileSpawnAdmissionOnBoot(
     spawnIds: rows.map((r) => r.spawn_id),
     workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
     relaunched,
+    reattached,
   };
 }

@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingPopover';
@@ -398,18 +399,22 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
       {showTabs && (
         <div className="pc-agents-roster__tabs" role="tablist" data-testid="agents-machine-tabs">
           {tabs.map((t) => (
-            <button
+            <Tooltip
               key={t.key}
-              type="button"
-              role="tab"
-              aria-selected={t.key === activeTabKey}
-              className={`pc-agents-roster__tab${t.key === activeTabKey ? ' is-active' : ''}`}
-              data-testid={`agents-machine-tab-${t.key}`}
-              title={t.isLocal ? 'Agents on this machine' : `Agents on ${t.label}`}
-              onClick={() => void setMachineTab(t.key === tabs[0].key ? null : t.key)}
+              label={t.isLocal ? 'Agents on this machine' : `Agents on ${t.label}`}
+              side="bottom"
             >
-              {t.label} <span className="pc-agents-roster__tab-count">{t.count}</span>
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={t.key === activeTabKey}
+                className={`pc-agents-roster__tab${t.key === activeTabKey ? ' is-active' : ''}`}
+                data-testid={`agents-machine-tab-${t.key}`}
+                onClick={() => void setMachineTab(t.key === tabs[0].key ? null : t.key)}
+              >
+                {t.label} <span className="pc-agents-roster__tab-count">{t.count}</span>
+              </button>
+            </Tooltip>
           ))}
         </div>
       )}

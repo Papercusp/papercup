@@ -86,6 +86,7 @@ import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 import { initRateLimitConfig } from '../rate-limit-config';
 import { recordUsageHeaders } from '../agent-usage-telemetry';
+import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
 
 // Audit P-015 (EI-172): read these env knobs LAZILY, per spawn — as module-init
 // consts they froze at first import, so setting/changing the env after host boot
@@ -446,7 +447,41 @@ function reconcileClientFromPostgres(pg: AdminPgClient): ReconcileDbClient {
  *  to flush + exit cleanly before we hard-kill. */
 const KILL_GRACE_MS = 2_000;
 
-/** The raw subprocess spawn + timeout-kill + stdout/stderr capture (never rejects). */
+/** Per-agent-turn memory cap (GiB) for the isolated spawn scope (systemd-run --user
+ *  --scope). Sized generously above a single CLI turn's real working set — the point
+ *  isn't to squeeze the turn but to keep a runaway/leaking agent's OOM inside ITS OWN
+ *  cgroup, away from the launching host's cage (WI-1499: bg-host-agent-spawn-scope-
+ *  isolation-2026-07-02). Override: PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G. */
+function agentSpawnScopeMemoryMaxG(): number {
+  const raw = Number(process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G);
+  return Number.isFinite(raw) && raw > 0 ? raw : 6;
+}
+
+/** Isolation kill-switch (peer of release-actions.ts's PAPERCUSP_CHECKPOINT_SCOPE):
+ *  PAPERCUSP_AGENT_SPAWN_SCOPE=0 forces the pre-hardening same-cgroup spawn (ops
+ *  escape hatch). Linux-only — systemd-run has no analog elsewhere, and every
+ *  deployment target for this operator is Linux hosts (dev box + prod). */
+function agentSpawnScopeEnabled(): boolean {
+  return process.platform === 'linux' && process.env.PAPERCUSP_AGENT_SPAWN_SCOPE !== '0';
+}
+
+/** The raw subprocess spawn + timeout-kill + stdout/stderr capture (never rejects).
+ *
+ * WI-1499: every bee/queen turn is spawned inside its own transient systemd user
+ * SCOPE (own cgroup, per-agent MemoryMax) — see `buildIsolatedScopeArgv`. Before this,
+ * every agent child ran inside papercup-bg-host.service's OWN cgroup, so a bg-host
+ * restart or OOM (systemd's default KillMode=control-group) killed every in-flight
+ * bee/queen turn along with it, reclaiming them at the next boot reconcile even
+ * though nothing about THEIR work actually failed. Scope-isolating them means a
+ * bg-host restart no longer touches their cgroup, so they simply keep running —
+ * `reconcileSpawnAdmissionOnBoot` (spawn-reclaim.ts) re-attaches to them instead of
+ * reclaiming. `--scope` (not `--unit`, mirroring release-actions.ts's precedent):
+ * the payload stays OUR CHILD — piped stdio, full env inheritance, and the existing
+ * pgid tree-kill below still covers it (systemd-run remains the process-group
+ * leader; the payload inherits its pgid). On a SCOPE LAUNCH failure (no user bus,
+ * no systemd-run binary, …) this retries DIRECT once, exactly like
+ * release-actions.ts's runScript, so a box without a reachable user bus degrades to
+ * the pre-hardening behavior instead of failing every agent turn outright. */
 function runChild(
   command: string,
   args: string[],
@@ -457,6 +492,7 @@ function runChild(
   timeoutMs?: number,
   onChildPid?: (pid: number) => void,
   onOutputActivity?: () => void,
+  useScope: boolean = agentSpawnScopeEnabled(),
 ): Promise<SpawnInvokeOnceResult> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.
@@ -465,17 +501,26 @@ function runChild(
       return;
     }
     let timedOut = false;
+    const launchedAt = Date.now();
+    const [spawnCommand, ...spawnArgs] = useScope
+      ? buildIsolatedScopeArgv([command, ...args], agentSpawnScopeMemoryMaxG())
+      : [command, ...args];
     // `detached: true` puts the child in its OWN process group so we can reap the
     // WHOLE tree on abort/timeout, not just the immediate child. In dev the spawn is
     // `node <tsx-cli> invoke-once.ts`, and the tsx CLI forks a worker (invoke-once,
     // which spawns the agent) — a single-PID kill hits only the wrapper and orphans
     // the agent (EI-40). Group-kill (`process.kill(-pid)`) takes out wrapper +
-    // invoke-once + agent together. The new group is the child's alone, so it can
-    // never signal the operator host (a different group).
-    const child = spawn(command, args, { cwd: projectDir, env, detached: true });
+    // invoke-once + agent together (and, under the scope wrapper, systemd-run +
+    // that same tree — it inherits the group's pgid). The new group is the child's
+    // alone, so it can never signal the operator host (a different group).
+    const child = spawn(spawnCommand, spawnArgs, { cwd: projectDir, env, detached: true });
     // EI-85: surface the child OS pid so the caller can record it on the nursery
     // row — the reclaim sweep liveness-checks /proc/<pid> rather than blindly
-    // reclaiming a stale-heartbeat row whose child is actually still alive.
+    // reclaiming a stale-heartbeat row whose child is actually still alive. Under
+    // the scope wrapper this is systemd-run's own pid (the group leader), which is
+    // exactly the pid the pgid tree-kill needs and whose /proc/<pid>/cmdline still
+    // carries the wrapped invoke-once argv (isSpawnProcessAlive's 'invoke-once'
+    // substring check keeps working unmodified).
     if (child.pid != null) {
       try { onChildPid?.(child.pid); } catch { /* recording is best-effort */ }
     }
@@ -483,6 +528,7 @@ function runChild(
     let stderr = '';
     let killGrace: ReturnType<typeof setTimeout> | null = null;
     let aborted = false;
+    let settled = false;
     // Kill the child's whole process group; fall back to a single-PID kill if the
     // group send fails (e.g. the child already exited / no group).
     const killTree = (sigName: NodeJS.Signals) => {
@@ -512,8 +558,26 @@ function runChild(
     const reportActivity = () => { try { onOutputActivity?.(); } catch { /* best-effort */ } };
     child.stdout?.on('data', (d) => { reportActivity(); stdout += String(d); });
     child.stderr?.on('data', (d) => { reportActivity(); stderr += String(d); });
+    // Scope-launch failure (fast systemd-run exit with a launch-shaped stderr, before
+    // any real agent turn could plausibly have run) → retry DIRECT once, exactly like
+    // release-actions.ts's runScript, so a box without a reachable user bus degrades
+    // to the pre-hardening same-cgroup spawn instead of failing the agent turn.
+    const isScopeLaunchFailure = (code: number | null): boolean =>
+      useScope &&
+      !aborted &&
+      !timedOut &&
+      code !== 0 &&
+      Date.now() - launchedAt < 5_000 &&
+      SCOPE_LAUNCH_FAILURE_RE.test(stderr);
     child.on('close', (code) => {
       cleanup();
+      if (settled) return;
+      if (isScopeLaunchFailure(code)) {
+        settled = true;
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
+        return;
+      }
+      settled = true;
       // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the
       // signal — normalize to a non-zero "aborted" outcome so callers don't read a
       // cancelled run as a clean success.
@@ -548,6 +612,13 @@ function runChild(
     });
     child.on('error', (err) => {
       cleanup();
+      if (settled) return;
+      if (useScope && !aborted) {
+        settled = true;
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
+        return;
+      }
+      settled = true;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
       resolve({ output: '', exitCode: 1, stderr: msg, rawStdoutTail: rawStdoutTail(stdout) });
