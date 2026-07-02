@@ -203,6 +203,16 @@ jobs:
       - name: Lint MDX compiles
         run: npm run lint:mdx
 
+      # Insight-doc citation guard (WI-1576): an agent-insights doc's `documents:`
+      # frontmatter citation that no longer resolves on disk (the cited file was
+      # renamed/moved/deleted and the doc never updated) silently points an agent
+      # at a file that doesn't exist. GATING — checks every tracked .mdx/.md under
+      # apps/operator-docs/src/content/docs/agent-insights/ against the same parse
+      # the harness-docs anchor/drift system uses (subject-ref.ts), so this lint
+      # and that system can never disagree on what a doc cites.
+      - name: Lint agent-insights doc citations resolve on disk
+        run: npm run lint:insight-citations
+
       # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
       # pre-existing baseline of type errors. This gates NEW errors above the
       # baseline while allowing legacy errors. Baseline is stored in

@@ -7,6 +7,7 @@
  */
 export { blankFrontmatter, findMdxCompileError, type MdxCompileError } from './mdx';
 export { findCodePositionCurlyQuotes, curlyLabel, CURLY, type CurlyQuoteHit } from './smart-quotes';
+export { findStaleInsightCitations, formatStaleCitations, type StaleCitation } from './insight-citations';
 export {
   type ContentDetector,
   mdxDetector,

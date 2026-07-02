@@ -14,37 +14,15 @@ import { repoHeadSha, runGit } from './git-runner';
 import { resolveHarnessDocPaths } from './harness-repo';
 import { readDocBody } from './doc-fs';
 import { makeFeatureCommitLookup } from './feature-commits';
-import { parseDocumentsField, resolveAllAnchorPaths, type SubjectRef } from './subject-ref';
+import { parseDocumentsField, resolveAllAnchorPaths, frontmatterDocuments, type SubjectRef } from './subject-ref';
 import { upsertDocRecord, getDocRecord, verifyDoc, type HarnessDocRecord } from './doc-record';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
-/** Extract the raw `documents:` value from a markdown body's YAML frontmatter. */
-export function frontmatterDocuments(body: string): unknown {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
-  if (!m) return undefined;
-  const fm = m[1];
-  // documents: a single scalar, an inline [a, b], or a block list of "- item".
-  const line = /^documents:[ \t]*(.*)$/m.exec(fm);
-  if (!line) return undefined;
-  const rhs = line[1].trim();
-  if (rhs && rhs !== '|' && rhs !== '>') {
-    if (rhs.startsWith('[')) {
-      // inline flow array
-      const inner = rhs.replace(/^\[|\]$/g, '');
-      return inner.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-    }
-    return rhs.replace(/^['"]|['"]$/g, '');
-  }
-  // block list: collect following "  - foo" lines.
-  const after = fm.slice((line.index ?? 0) + line[0].length);
-  const items: string[] = [];
-  for (const l of after.split('\n')) {
-    const li = /^\s*-\s+(.*)$/.exec(l);
-    if (li) items.push(li[1].trim().replace(/^['"]|['"]$/g, ''));
-    else if (l.trim() && !/^\s/.test(l)) break; // next top-level key ends the list
-  }
-  return items.length ? items : undefined;
-}
+// Re-exported for existing callers (agent-tools/docs/author, migrate-fs-docs, tests) —
+// the implementation now lives in subject-ref.ts (WI-1576), the dependency-light pure
+// module, so a caller that only needs frontmatter parsing doesn't drag in this file's
+// PG-backed anchoring machinery.
+export { frontmatterDocuments };
 
 /**
  * Infer subject refs from the repo paths a doc body references — best-effort: any
