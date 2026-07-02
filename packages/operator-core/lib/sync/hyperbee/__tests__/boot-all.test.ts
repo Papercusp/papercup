@@ -212,6 +212,65 @@ describe('boot-all — substrate orchestrator', () => {
     expect(peak).toBeGreaterThan(1); // ...but it IS concurrent, not serialized
   });
 
+  it('WI-790 (verifies WI-779): cap=4 keeps 12 substrates under the boot timeout against a shared resource that degrades past a concurrency threshold — the fed-rig failure mode reproduced + the default cap evaluated', async () => {
+    // Model of the live fed-rig incident (WI-779): the shared boot resource
+    // (hyperswarm/DHT join) tolerates a small number of concurrent joins fast, but
+    // past a threshold every IN-FLIGHT boot degrades past the per-harness timeout —
+    // observed live: 2 concurrent -> booted in 5.5s; 11 concurrent -> ALL timed out
+    // (>30s). Modeled here as a hard threshold (SAFE_PEAK) rather than a
+    // continuously-scaling latency, so the assertion isn't sensitive to real-timer
+    // jitter near a boundary: at or under the threshold every boot is fast; once a
+    // batch's peak concurrency exceeds it, every boot in that batch is slow enough to
+    // miss perHarnessTimeoutMs — the same all-or-nothing shape actually witnessed.
+    const TIMEOUT_MS = 200;
+    const FAST_MS = 20; // well under TIMEOUT_MS
+    const SLOW_MS = 2_000; // well over TIMEOUT_MS -> that boot times out
+    const SAFE_PEAK = 4; // the DEFAULT bootConcurrency (WI-779)
+    const N = 12;
+
+    async function runWithConcurrency(bootConcurrency: number) {
+      let active = 0;
+      let peak = 0;
+      const slugs = Array.from({ length: N }, (_, i) => `fed-h${i}`);
+      return bootAllHarnessesForActiveWorkspace({
+        workspaceIds: ['ws-fed'],
+        discoverHarnessSlugs: async () => slugs,
+        bootConcurrency,
+        perHarnessTimeoutMs: TIMEOUT_MS,
+        skipSendSideWiring: true,
+        resolveSwarmBinding: async () => null,
+        bootHarness: async ({ workspaceId, harnessSlug }) => {
+          active++;
+          peak = Math.max(peak, active);
+          // Once ANY boot has pushed the batch's peak concurrency past the safe
+          // threshold, the shared resource is saturated for every boot still
+          // in flight — not just the newest one (matches "11 concurrent -> all
+          // timeout", not "only the 11th times out").
+          const latency = peak > SAFE_PEAK ? SLOW_MS : FAST_MS;
+          await new Promise((r) => setTimeout(r, latency));
+          active--;
+          return fakeHandle(workspaceId, harnessSlug);
+        },
+      });
+    }
+
+    // Default cap (4): peak concurrency never exceeds SAFE_PEAK -> every boot stays
+    // fast. This is the WI-779 acceptance bar restated at N=12: booted === attempted.
+    const capped = await runWithConcurrency(SAFE_PEAK);
+    expect(capped.attempted).toBe(N);
+    expect(capped.booted).toBe(N);
+    expect(capped.failed).toBe(0);
+
+    // Unbounded (12, one worker per harness): peak concurrency hits 12 immediately,
+    // saturating the shared resource -> every in-flight boot misses the timeout ->
+    // reproduces the live incident (11 concurrent -> all timeout). Confirms cap=4
+    // sits with real margin below the observed failure threshold (>2, <=11), not
+    // just barely under it.
+    const uncapped = await runWithConcurrency(N);
+    expect(uncapped.failed).toBeGreaterThan(0);
+    expect(uncapped.booted).toBeLessThan(N);
+  }, 10_000);
+
   it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
     const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
