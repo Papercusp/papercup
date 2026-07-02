@@ -53,7 +53,12 @@ describe('emitUsageEvent', () => {
         ref_id: 'F-1',
         payload: { title: 'Do it' },
       },
-      { sql: sql as never, nowMs: 1_700_000_000_000, eventId: 'EVT00000000000000000000000' },
+      {
+        sql: sql as never,
+        nowMs: 1_700_000_000_000,
+        eventId: 'EVT00000000000000000000000',
+        workspaceId: 'papercusp-workspace',
+      },
     );
     expect(res.event_id).toBe('EVT00000000000000000000000');
     const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
@@ -69,12 +74,13 @@ describe('emitUsageEvent', () => {
     expect(sql.json).not.toHaveBeenCalled();
     expect(values[7]).toBe(1_700_000_000_000); // ts ms (inside to_timestamp)
     expect(values[8]).toBe(1); // schema_version
+    expect(values[9]).toBe('papercusp-workspace'); // workspace_id (WI-1572)
   });
 
   it('null-defaults ref_id + payload (no sql.json for a null payload)', async () => {
     await emitUsageEvent(
       { harness_slug: 'h', github_user_id: 1, device_pubkey: 'd', kind: 'agent_run_completed' },
-      { sql: sql as never, eventId: 'E' },
+      { sql: sql as never, eventId: 'E', workspaceId: 'ws-h' },
     );
     const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
     expect(values[5]).toBeNull(); // ref_id
@@ -85,9 +91,31 @@ describe('emitUsageEvent', () => {
   it('generates a valid ULID when no eventId is provided', async () => {
     const res = await emitUsageEvent(
       { harness_slug: 'h', github_user_id: 1, device_pubkey: 'd', kind: 'plan_authored' },
-      { sql: sql as never, nowMs: 1_700_000_000_000 },
+      { sql: sql as never, nowMs: 1_700_000_000_000, workspaceId: 'ws-h' },
     );
     expect(isUsageEventId(res.event_id)).toBe(true);
+  });
+
+  it('WI-1572: resolves workspace_id via resolveWorkspaceForHarness when not explicitly passed — NEVER leaves it to the incomplete SQL-trigger-only fallback', async () => {
+    const resolveWorkspace = vi.fn(async (slug: string | undefined) => `resolved-for-${slug}`);
+    await emitUsageEvent(
+      { harness_slug: 'papercusp', github_user_id: 1, device_pubkey: 'd', kind: 'plan_authored' },
+      { sql: sql as never, eventId: 'E2', resolveWorkspace: resolveWorkspace as never },
+    );
+    expect(resolveWorkspace).toHaveBeenCalledWith('papercusp');
+    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    expect(values[9]).toBe('resolved-for-papercusp'); // workspace_id set explicitly on the INSERT
+  });
+
+  it('WI-1572: an explicit workspaceId short-circuits the resolver entirely', async () => {
+    const resolveWorkspace = vi.fn(async () => 'should-not-be-called');
+    await emitUsageEvent(
+      { harness_slug: 'papercusp', github_user_id: 1, device_pubkey: 'd', kind: 'plan_authored' },
+      { sql: sql as never, eventId: 'E3', workspaceId: 'explicit-ws', resolveWorkspace: resolveWorkspace as never },
+    );
+    expect(resolveWorkspace).not.toHaveBeenCalled();
+    const values = (sql.mock.calls[0] as unknown as unknown[]).slice(1);
+    expect(values[9]).toBe('explicit-ws');
   });
 });
 

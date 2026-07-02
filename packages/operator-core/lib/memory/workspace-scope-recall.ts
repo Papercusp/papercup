@@ -10,11 +10,13 @@
  * personal pool) follow the owner everywhere. Rides migration 398's generated `workspace_id`
  * column, surfaced into the recalled entry's `metadata.workspace_id`.
  *
- * Gated by FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL (dark cutover — the flip is the attended
- * live recall-hit-rate verify, NOT a finished feature parked behind a flag). The filter is
- * CONSERVATIVE / NULL-safe by design: it drops a hit ONLY when it explicitly carries a
- * DIFFERENT workspace AND is not owner-tier — legacy rows with no workspace_id (the bulk,
- * pre-stamping) are always kept, so flipping the flag never silently guts recall.
+ * Gated by FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL. Owner-attended flip landed 2026-06-25 — the
+ * live recall-hit-rate A/B was the watch, not a pre-gate — and the flag graduated OUT of
+ * DARK_FLAGS (`libs/flags/src/types.ts`), so it now defaults ON (`FLAG_DEFAULTS[...] === true`).
+ * The filter is CONSERVATIVE / NULL-safe by design: it drops a hit ONLY when it explicitly
+ * carries a DIFFERENT workspace AND is not owner-tier — legacy rows with no workspace_id (the
+ * bulk, pre-stamping) are always kept, so the flag was never able to silently gut recall. OFF
+ * remains available as a reversible kill-switch if hit-rate ever regresses.
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -24,9 +26,9 @@ import { systemDistinctId } from '../flag-distinct-id';
  *  workspaces. `project` is the workspace-scoped kind. */
 const OWNER_TIER_KINDS: ReadonlySet<string> = new Set(['user', 'feedback', 'reference']);
 
-/** Is workspace-scoped memory recall ON? (FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL; dark
- *  cutover, default OFF). Fail-closed (false) on a flag-read error, like the sibling
- *  isWorkspaceCoordinationOn — OFF = today's behavior. */
+/** Is workspace-scoped memory recall ON? (FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL; graduated,
+ *  default ON since the 2026-06-25 owner-attended flip). Fail-closed (false) on a flag-read
+ *  error, like the sibling isWorkspaceCoordinationOn — a read failure never widens recall. */
 export async function isMemoryWorkspaceScopedRecallOn(): Promise<boolean> {
   try {
     return await getFlag(FLAGS.MEMORY_WORKSPACE_SCOPED_RECALL, systemDistinctId());
