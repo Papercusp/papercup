@@ -603,7 +603,7 @@ export default function AgentSettingsPage() {
                   style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
                   placeholder={String(defaultCompactionLimitForSpec(row.spec.trim() || null))}
                   aria-label={`Tier ${i + 1} soft compaction limit (tokens)`}
-                  value={row.compactionLimit}
+                  value={row.compactionLimit ?? ''}
                   onCommit={(compactionLimit) => {
                     setTiersCustomized(true);
                     setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, compactionLimit } : r)));

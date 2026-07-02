@@ -33,9 +33,10 @@ export interface TierRow {
   backend: '' | AgentBackend;
   /** When the queen should pick this tier — injected into her launch prompt. */
   when: string;
-  /** Soft compaction limit (tokens) as edited text; '' = model-derived default
-      (context-trimming-tiers D-002). */
-  compactionLimit: string;
+  /** Soft compaction limit (tokens) as edited text; ''/absent = model-derived
+      default (context-trimming-tiers D-002). Optional so pre-existing row
+      literals stay valid; tierToRow always populates it. */
+  compactionLimit?: string;
 }
 
 export const tierToRow = (t: ModelTier): TierRow => ({

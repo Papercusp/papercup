@@ -745,6 +745,36 @@ describe('coord_event_log federation (real PG)', () => {
       });
     });
 
+    it('M5b: a below-tier author FLOODING receipt-requesting messages emits at most the per-author budget of receipts (rest suppressed) — every message still quarantined', async () => {
+      // Pre-M5b every quarantined receipt-requesting row emitted a federated
+      // receipt with NO cap, so an admitted-but-untrusted (or over-rate) member
+      // could make us author one receipt row per flooded message. M5b spends from
+      // the same per-author federated-wake budget: over budget ⇒ receipt suppressed
+      // (the quarantine record itself is unaffected — delivery honesty preserved).
+      process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '2';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const p = tierProj('observe'); // below message-tier ⇒ every row quarantines
+        for (const id of ['f-1', 'f-2', 'f-3', 'f-4']) {
+          await p.writeToPg(wakeRow(id, { receipt: true }), { authorPubkey: 'receipt-flooder', origin: 'remote' });
+        }
+        // budget = 2 ⇒ only the first two receipt emits survive; the rest suppressed.
+        expect(sendMessage).toHaveBeenCalledTimes(2);
+        // …but ALL FOUR were still quarantined — the cap drops only the courtesy
+        // receipt, never the quarantine record (never applied to the inbox either).
+        for (const id of ['f-1', 'f-2', 'f-3', 'f-4']) {
+          expect(await applied(id)).toBe(false);
+          expect((await quarantined(id))?.reason).toBe('below-message-tier');
+        }
+        // a DIFFERENT author device is unaffected by the flooder's exhausted budget.
+        await p.writeToPg(wakeRow('f-5', { receipt: true }), { authorPubkey: 'honest', origin: 'remote' });
+        expect(sendMessage).toHaveBeenCalledTimes(3);
+      } finally {
+        warnSpy.mockRestore();
+        delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+      }
+    });
+
     it("'steer' passthrough + NON-hive-bound projections stay byte-identical (no gate)", async () => {
       await tierProj('steer').writeToPg(wakeRow('q-6'), { authorPubkey: 'peerPubA', origin: 'remote' });
       expect(await applied('q-6')).toBe(true);

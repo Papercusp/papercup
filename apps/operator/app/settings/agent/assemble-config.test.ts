@@ -18,6 +18,7 @@ import {
   tierToRow,
   type AssembleInput,
   type LastValidSections,
+  type SurfaceChoice,
 } from './assemble-config';
 
 const emptySurfaceBackends = Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as AssembleInput['surfaceBackends'];
