@@ -340,6 +340,7 @@ import './autonomy/graduation_status';
 import './trust/list';
 import './trust/add';
 import './trust/remove';
+import './trust/comms';
 
 import './saved_prompts/list';
 
