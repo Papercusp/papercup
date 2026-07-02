@@ -394,6 +394,14 @@ export interface BootHarnessOpts {
    */
   ownerDeviceForTopicOverride?: (topicHex: string) => Promise<string | null>;
   /**
+   * Test seam (WI-1544 root cause #3) — replace `openRemoteLog` inside the
+   * merge-gated admission drain so a unit test can make the open THROW (the
+   * one-shot silent-loss class: a drain failure used to lose the announce
+   * frame forever — no re-buffer, no re-announce). Production leaves this
+   * undefined and uses the real `openRemoteLog`.
+   */
+  openRemoteLogOverride?: (store: Corestore, logKeyHex: string) => Promise<RemoteLog>;
+  /**
    * Slow re-verify interval (ms). At this cadence, every admitted peer's
    * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
    * drops the peer from the admitted set (but does NOT add it to the published
@@ -1335,7 +1343,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           attestationGistId: frame.attestation_gist_id,
         });
         if (!admitted.has(frame.log_core_key)) {
-          const remote = await openRemoteLog(store, frame.log_core_key);
+          const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(
+            store,
+            frame.log_core_key,
+          );
           admitted.set(frame.log_core_key, remote);
           recordBootEvent(
             opts.workspaceId,

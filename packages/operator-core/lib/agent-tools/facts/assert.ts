@@ -1,0 +1,55 @@
+/**
+ * facts:assert — upsert a standing fact: a deterministic, scoped, TTL'd
+ * CONCLUSION that will be folded VERBATIM into every relevant future brief /
+ * dossier / orient until it expires or is retracted
+ * (queen-memory-hybrid-2026-07-02 L1b; D-001: harness/work_item scopes optional).
+ *
+ * THE LINE vs the other memory surfaces (put facts HERE, not there):
+ *   facts  = deterministic delivery of a scoped conclusion ("WI-1439 is
+ *            owner-residue — exclude from frontier").
+ *   mem0   = fuzzy semantic background (may or may not surface).
+ *   coord  = ephemeral status. checkpoint = task progress. insights doc =
+ *            long-form how-it-works.
+ */
+import { z } from 'zod';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { assertFact, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+
+export default defineTool({
+  name: 'facts:assert',
+  capability: 'coord:write',
+  description:
+    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
+  guidance: {
+    when:
+      'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
+    notWhen:
+      'Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — 500-char cap, per-scope cap 50, TTL mandatory.',
+    chaining:
+      'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
+    seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
+  },
+  agentRoles: [...AGENT_ROLES],
+  modality: ['text'],
+  args: z.object({
+    scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
+    scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
+    key: z.string().min(1).max(120).describe('Stable slug — upsert + retract target (e.g. "wi-1439-owner-residue").'),
+    body: z.string().min(1).max(FACT_BODY_MAX_CHARS).describe(`The conclusion, ≤${FACT_BODY_MAX_CHARS} chars — folded verbatim.`),
+    sourceRef: z.string().max(200).optional().describe('Anchor that proved it (WI-/EI- id, plan slug) so readers can verify.'),
+    ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
+  }),
+  async handler(args, ctx) {
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    const fact = await assertFact({
+      scope: args.scope,
+      scopeRef: args.scopeRef ?? null,
+      key: args.key,
+      body: args.body,
+      sourceRef: args.sourceRef ?? null,
+      ttlSec: args.ttlSec,
+      createdBy: resolveAgentIdentity(ctx).ownerId,
+    });
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact }) }] };
+  },
+});

@@ -196,6 +196,11 @@ import './search/semantic';
 import './memory/remember';
 import './memory/search';
 import './memory/list';
+// queen-memory-hybrid-2026-07-02 L1b — the generalized standing-facts ledger
+// (deterministic scoped conclusions folded verbatim into briefs/dossiers/orients)
+import './facts/assert';
+import './facts/retract';
+import './facts/list';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './learning_packs/list';

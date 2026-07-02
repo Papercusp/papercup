@@ -161,6 +161,42 @@ function defaultPidAlive(pid: number): boolean {
  *  HEALTHY in-progress run's lock mid-suite. */
 export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
 
+/** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
+ *  (green-checkpoint.ts) itself, independent of the supervising parent
+ *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
+ *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=55m + escalates to SIGKILL 15s later).
+ *
+ *  That parent-side kill relies on the PARENT (the bg-host / routines-tick node
+ *  process) staying alive long enough for its in-memory `setTimeout` to fire.
+ *  This process is spawned `detached: true` (its own process-group leader) —
+ *  detached is exactly what lets it SURVIVE the parent's death/restart, which
+ *  means a parent restart mid-suite (routine bg-host crash/deploy/manual
+ *  restart) silently drops the ONLY thing that was going to kill a hung run:
+ *  the child (this process + any vitest/tsx workers it spawned, which inherit
+ *  ITS pgid since they're plain non-detached `runCmd` spawns) is orphaned,
+ *  keeps holding the run-lock, and — if genuinely deadlocked (e.g. wedged in
+ *  ep_poll awaiting a vitest child that never returns, 0 CPU) — never releases
+ *  it or exits. The run-lock's own stale-reclaim (CHECKPOINT_LOCK_STALE_MS,
+ *  time-based) lets a LATER attempt proceed, but does nothing to the orphan
+ *  itself — it lingers, leaking RSS/FDs/docker containers, and each repeat
+ *  orphan compounds the resource pressure on this memory-constrained box. This
+ *  froze `main` ~97h on 2026-06-30 even with the reaper's 60m no-output window
+ *  in place (that window only cancels the DBOS-level bookkeeping row — it has
+ *  no reach into an already-orphaned OS process tree).
+ *
+ *  Fix: THIS process arms its own watchdog on startup. If it fires, the parent
+ *  is presumed dead (a live parent's SIGTERM+SIGKILL would have landed well
+ *  before this — see the margin below), so this process releases its own lock
+ *  and SIGKILLs its OWN process group (`-process.pid`, covering itself + every
+ *  runCmd-spawned vitest/tsx worker in one shot) — no orphan can outlive it.
+ *
+ *  INVARIANT: strictly greater than the parent's full kill window (55m SIGTERM
+ *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
+ *  this watchdog is a pure backstop, never a competing timeout. Also strictly
+ *  less than CHECKPOINT_LOCK_STALE_MS (65m) so THIS run terminates itself
+ *  (and frees its lock) before a peer attempt would need to force-reclaim it. */
+export const SELF_WATCHDOG_MS = 58 * 60_000;
+
 /** PER-ROOT run-lock dir (2026-07-02): the bare `.green-checkpoint-run.lock` made every
  *  lineage sharing the DEFAULT ~/.papercusp/checkpoint-logs serialize on ONE lock — the stale
  *  papercup-root lineage's back-to-back ~40-min suites held it across EVERY papercusp hourly
