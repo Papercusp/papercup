@@ -67,6 +67,28 @@ async function blockByFeature(blockedId: string, blockerId: string) {
     VALUES (${WS}, 'feature', ${`${H}#${blockedId}`}, 'feature', ${`${H}#${blockerId}`}, 'blocks')`;
 }
 
+/** An issue-family (bug/change/task) row in the work_items BASE — the issue tier of the
+ *  claim ladder (EI-6062). */
+async function seedIssue(
+  id: string,
+  opts: { status?: string; takenBy?: string | null; createdTs?: number } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+    VALUES (${H}, ${id}, 'bug', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
+       ${opts.createdTs ?? 0}, 0)`;
+}
+
+/** An issue→feature blocks edge: the issue's blocked_ref is its BARE id (issues:link
+ *  convention), the blocker is a harness-qualified feature ref. */
+async function blockIssueByFeature(issueId: string, blockerId: string) {
+  await db.sql`
+    INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+    VALUES (${WS}, 'bug', ${issueId}, 'feature', ${`${H}#${blockerId}`}, 'blocks')`;
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('claim-next-miss-diagnosis');
   h.sql = db.sql;
@@ -147,5 +169,59 @@ describe('claim_next miss diagnosis — drained vs present-but-unclaimable (EI-5
     // claim_next now serves the newly-ready item.
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'w1' });
     expect(got?.id).toBe('F-blocked');
+  });
+});
+
+/**
+ * EI-6062 — `diagnoseClaimNextMiss` undercounted the ISSUE-family backlog: it only read
+ * the FEATURE pool. The `pendingUnclaimed` half was later patched to fold in the issue POOL,
+ * but `readyUnclaimed` STILL read only the feature-family floor (harness_features_consolidated),
+ * so an issue-only backlog that was READY (unblocked) reported readyUnclaimed:0 while
+ * pendingUnclaimed>0 — the "genuinely blocked/gated, don't hot-retry" verdict — even though
+ * claim_next's issue tier would have served it (a lost-lease/race that SHOULD retry). Both
+ * halves must now count the issue family, mirroring claimNextIssueWorkItem's floors.
+ */
+describe('claim_next miss diagnosis — issue-family backlog (EI-6062)', () => {
+  const enableIssues = () =>
+    setFlagOverridesForTest({
+      [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+      [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
+    });
+
+  it('ISSUE-ONLY READY backlog is counted in BOTH pendingUnclaimed AND readyUnclaimed — not just the feature pool', async () => {
+    enableIssues();
+    // No features at all — an unclaimed, unblocked `open` bug is the whole backlog.
+    await seedIssue('EI-ready', { status: 'open', createdTs: 100 });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
+    // The regression: before the fix readyUnclaimed read only the feature pool ⇒ 0 here,
+    // misreporting a claimable issue as "genuinely blocked/gated". It must be 1.
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+  });
+
+  it('ISSUE-ONLY BLOCKED backlog: pending counts it, ready does NOT until the blocker goes terminal', async () => {
+    enableIssues();
+    await seedFeature('F-blocker', { status: 'wip', createdTs: 100 });
+    await seedIssue('EI-blocked', { status: 'open', createdTs: 200 });
+    await blockIssueByFeature('EI-blocked', 'F-blocker');
+
+    // Present in the pool, but the non-terminal feature blocker keeps it out of the ready set.
+    let diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 0 });
+
+    // Flip the blocker terminal ⇒ the issue's readiness is satisfied and it joins readyUnclaimed.
+    await db.sql`UPDATE harness_shared.work_items SET status = 'passed' WHERE feature_id = 'F-blocker'`;
+    diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
+    expect(diag).toEqual({ drained: false, pendingUnclaimed: 1, readyUnclaimed: 1 });
+  });
+
+  it('gate OFF ⇒ issue backlog is invisible to the diagnosis (byte-identical feature-only behavior)', async () => {
+    // Explicitly pin SCHEDULER_ISSUES_CLAIMABLE off (it defaults ON) so the issue tier is inert.
+    setFlagOverridesForTest({
+      [FLAGS.SCHEDULER_MAINTAINED_READY]: false,
+      [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false,
+    });
+    await seedIssue('EI-ready', { status: 'open', createdTs: 100 });
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'w1' });
+    expect(diag).toEqual({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
   });
 });

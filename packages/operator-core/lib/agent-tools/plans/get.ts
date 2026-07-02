@@ -32,6 +32,7 @@ import { overlayIssueBlocksForPlan } from "../../issue-blocks-merge";
 import { boundRowField } from "../_bound-output";
 import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { shapePlansGet } from "./get-shape";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -197,6 +198,15 @@ export default defineTool({
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
     schemaVersion: "plans-get-v1",
     maxDeltaAge: 5 * 60_000,
+  },
+  // context-trimming-tiers P-012: trimmed/standard sessions get a projected
+  // envelope (prose/items/decisions capped with loud pointers — see get-shape.ts).
+  // The cache stores the UNSHAPED result (shaping runs post-handler in defineTool
+  // dispatch), so one cached read serves every tier; the UI (HTTP transport, no
+  // ctx_tier) always reads full.
+  shape: {
+    standard: (data) => shapePlansGet(data, "standard"),
+    trimmed: (data) => shapePlansGet(data, "trimmed"),
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };

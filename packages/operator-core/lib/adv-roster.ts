@@ -89,9 +89,17 @@ export interface RosterEntry {
   pid: number | null;
   startedAt: string;
   heartbeatAt: string;
+  /** Genuine-activity timestamp (coord_presence.last_active_at, mig 277) — bumped
+   *  ONLY by real tool dispatch, NOT the 60s keepalive. The "since last turn" clock
+   *  and the basis for activity-liveness. null when the row predates its first activity. */
+  lastActiveAt: string | null;
   liveness: Liveness;
   /** The coord-store's own stale flag (heartbeat older than PRESENCE_STALE_MS). */
   stale: boolean;
+  /** Whether an engine LOOP is armed for this agent (an active harness_shared.routines
+   *  loop row targeting this ownerId). A loop-armed agent counts as "live" (it keeps
+   *  working on a cadence) even when its presence has gone idle between wakes. */
+  loopArmed: boolean;
   workspaceId: string;
   userId: string | null;
   revoked: boolean;
@@ -336,6 +344,7 @@ export function mergeRosterEntries(
   nurseryByOwner: Map<string, NurseryLiveness> = new Map(),
   fleetByOwner: Map<string, { fleetSlug: string | null; fleetColor: string | null }> = new Map(),
   runInfoByOwner: Map<string, { runId: string; harness: string }> = new Map(),
+  loopArmedOwners: Set<string> = new Set(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -388,8 +397,10 @@ export function mergeRosterEntries(
       pid: p.pid,
       startedAt: p.startedAt,
       heartbeatAt: p.heartbeatAt,
+      lastActiveAt: p.lastActiveAt ?? null,
       liveness,
       stale: p.stale,
+      loopArmed: loopArmedOwners.has(p.ownerId),
       workspaceId: p.workspaceId,
       userId: p.userId,
       revoked: p.revoked,
@@ -461,8 +472,10 @@ export function pendingLaunchesToRosterEntries(
       pid: null,
       startedAt: r.startedAt,
       heartbeatAt: r.startedAt,
+      lastActiveAt: null,
       liveness: 'pending' as Liveness,
       stale: false,
+      loopArmed: false,
       workspaceId: r.workspaceId,
       userId: null,
       revoked: false,
@@ -618,6 +631,31 @@ async function spawnedAgentRunInfoByOwner(): Promise<Map<string, { runId: string
 }
 
 /**
+ * Owner ids that currently have an ARMED engine loop — an active
+ * harness_shared.routines loop row (reschedule_interval_sec IS NOT NULL) pinned to
+ * that owner (target_owner_id). A loop-armed agent counts as "live" in the roster
+ * (it keeps working on a cadence) even when its presence has gone idle between
+ * wakes. Best-effort: empty set on any read error.
+ */
+export async function activeLoopOwners(): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT DISTINCT target_owner_id
+        FROM harness_shared.routines
+       WHERE reschedule_interval_sec IS NOT NULL
+         AND target_owner_id IS NOT NULL
+         AND active = true
+    `) as unknown as Array<{ target_owner_id: string | null }>;
+    for (const r of rows) if (r.target_owner_id) out.add(r.target_owner_id);
+  } catch {
+    /* best-effort — no loop-armed annotation if this read fails */
+  }
+  return out;
+}
+
+/**
  * The live roster for a workspace (or all workspaces when workspaceId is
  * null/omitted): coord_presence primary + adv_sessions enrichment + per-agent
  * claims from the canonical fleet_assignment view, liveness derived from the
@@ -638,6 +676,7 @@ export async function mergeRosterWithAssignments(
     defaultWakeMode,
     pendingWakesByOwner,
     runInfoByOwner,
+    loopArmedOwners,
   ] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
@@ -647,6 +686,7 @@ export async function mergeRosterWithAssignments(
     getDefaultWakeMode().catch(() => 'auto' as WakeMode),
     countAllPendingWakes().catch(() => new Map<string, number>()),
     spawnedAgentRunInfoByOwner(),
+    activeLoopOwners().catch(() => new Set<string>()),
   ]);
   // EI-348: nursery liveness join — sequential (not in the Promise.all) only
   // because it needs the hostname; one indexed query, still cheap.
@@ -666,6 +706,7 @@ export async function mergeRosterWithAssignments(
     nurseryByOwner,
     fleetInfoByOwner,
     runInfoByOwner,
+    loopArmedOwners,
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // "In the middle of thinking" (roster indicator): a session whose transcript was

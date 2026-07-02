@@ -79,6 +79,73 @@ export function boundSummaries<T extends { summary?: string | null }>(
   );
 }
 
+/**
+ * Payload-tier shapers (context-trimming-tiers-2026-07-01 P-012). A trimmed/
+ * standard session projects each row to its placement-relevant core — the
+ * summary excerpt, timestamps, and the fat `payload` subtree are the measured
+ * token sinks (~1 token/char over a UUID-dense backlog in the 2026-07-01 fleet
+ * incident). Rows keep a UNIFORM key set per tier (null over absent) so TOON's
+ * tabular form still applies; `payload.plan_item` is flattened to a short
+ * `plan_ref` string ("slug#P-NNN"). No silent caps (D-004): a sliced list
+ * appends a visible `(truncated)` notice row carrying the fetch-pointer.
+ */
+const LIST_TIER_CAPS = {
+  trimmed: { rows: 40, title: 90, summary: 0 },
+  standard: { rows: 120, title: 160, summary: 140 },
+} as const;
+
+export function shapeWorkItemsList(
+  data: unknown,
+  tier: keyof typeof LIST_TIER_CAPS,
+): unknown {
+  if (!Array.isArray(data)) return data;
+  const c = LIST_TIER_CAPS[tier];
+  const clip = (s: unknown, n: number): string | null =>
+    typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
+  const project = (row: unknown): unknown => {
+    if (!row || typeof row !== "object") return row;
+    const r = row as Record<string, unknown>;
+    const planItem = (
+      r.payload as
+        | { plan_item?: { plan_slug?: unknown; item_id?: unknown } | null }
+        | null
+        | undefined
+    )?.plan_item;
+    const planRef =
+      planItem && typeof planItem === "object"
+        ? `${String(planItem.plan_slug ?? "?")}#${String(planItem.item_id ?? "?")}`
+        : null;
+    return {
+      id: r.id ?? null,
+      kind: r.kind ?? null,
+      harness: r.harness ?? null,
+      title: clip(r.title, c.title),
+      ...(c.summary > 0 ? { summary: clip(r.summary, c.summary) } : {}),
+      state: r.state ?? null,
+      assignee: r.assignee ?? null,
+      severity: r.severity ?? null,
+      priority: r.priority ?? null,
+      plan_ref: planRef,
+    };
+  };
+  const rows = data.slice(0, c.rows).map(project);
+  if (data.length > c.rows) {
+    rows.push({
+      id: "(truncated)",
+      kind: "notice",
+      harness: null,
+      title: `showing ${c.rows} of ${data.length} — narrow with state/kind/limit, work_items:get {id} for detail, or payloadTier:"full"`,
+      ...(c.summary > 0 ? { summary: null } : {}),
+      state: null,
+      assignee: null,
+      severity: null,
+      priority: null,
+      plan_ref: null,
+    });
+  }
+  return rows;
+}
+
 export default defineTool({
   name: "work_items:list",
   profile: "engineer",
@@ -143,6 +210,13 @@ export default defineTool({
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
     schemaVersion: "work-items-list-v1",
     maxDeltaAge: 5 * 60_000,
+  },
+  // context-trimming-tiers P-012: trimmed/standard sessions get projected rows
+  // (see shapeWorkItemsList). The cache stores the UNSHAPED rows (shaping runs
+  // post-handler in defineTool dispatch), so one cached read serves every tier.
+  shape: {
+    standard: (data) => shapeWorkItemsList(data, "standard"),
+    trimmed: (data) => shapeWorkItemsList(data, "trimmed"),
   },
   async handler(args, ctx) {
     // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-

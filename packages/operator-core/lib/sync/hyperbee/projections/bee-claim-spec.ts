@@ -17,6 +17,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { resolveAuthorCommsTier } from '../comms-tier-gate';
+import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 
 /** Wire-shape of a federated bee_claim_specs row. Defensive on every field. */
 export interface BeeClaimSpecRow {
@@ -44,6 +46,19 @@ export interface BeeClaimSpecProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** M6 (audit D-013): the hive-home slug when this projection is HIVE-BOUND —
+   *  a cross-machine claim-spec apply is comms-tier-gated only when set (mirrors
+   *  coord-message / the WI-259 member-content guard). */
+  hiveHomeSlug?: string;
+  /** M6 test seam: resolve an op's VERIFIED source-log device pubkey from the
+   *  provenance authorPubkey (sourceLogKeyHex). Prod wires resolveAuthorDevice. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** M6 test seam: resolve the author DEVICE's effective comms tier. Default binds
+   *  comms-tier-gate (hive_members attestations → comms-trust). Only consulted for
+   *  a hive-bound projection on a remote op. */
+  resolveCommsTier?: (
+    devicePubkey: string | null,
+  ) => Promise<{ tier: CommsTier; githubUserId: number | null }>;
 }
 
 function composeKey(row: BeeClaimSpecRow): string {
@@ -60,6 +75,46 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
+
+  // M6 (audit D-013): a federated claim spec is a STEER-class action — it
+  // redirects a bee's work selection (get_next reads it). bee_claim_specs federate
+  // under the hive-HOME slug, so decideMemberContentOp's own-slug fast path would
+  // trivially admit ANY federated spec; the real authorization is the COMMS TIER of
+  // the VERIFIED author device. When the projection is HIVE-BOUND and the op is
+  // REMOTE, resolve that tier and REQUIRE 'steer': an admitted-but-below-steer
+  // member — or a demoted / removed one (the tier is re-resolved at APPLY, not a
+  // stale admission flag) — cannot redirect another member's bee. A tier-resolve
+  // error falls to FALLBACK_COMMS_TIER ('message' < 'steer') ⇒ NOT applied
+  // (fail-CLOSED — correct for a high-privilege action). Local/own writes (the
+  // queen on this machine) and non-hive topologies stay full-passthrough.
+  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+    const sourceLogDevice = provenance.authorPubkey
+      ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
+      : null;
+    const resolveTier =
+      opts.resolveCommsTier ??
+      (async (device: string | null) =>
+        device
+          ? resolveAuthorCommsTier({
+              workspaceId: opts.workspaceId,
+              hiveHomeSlug: opts.hiveHomeSlug!,
+              devicePubkey: device,
+            })
+          : { tier: FALLBACK_COMMS_TIER, githubUserId: null });
+    let authorTier: CommsTier = FALLBACK_COMMS_TIER;
+    try {
+      authorTier = (await resolveTier(sourceLogDevice)).tier;
+    } catch {
+      authorTier = FALLBACK_COMMS_TIER;
+    }
+    if (!commsTierAtLeast(authorTier, 'steer')) {
+      // Below steer — this author's spec does NOT apply. Best-effort drop (no
+      // quarantine rail for specs): the authoring queen re-emits on its next
+      // version bump, and a bee with no applied spec falls back to DEFAULT_CLAIM_SPEC.
+      return;
+    }
+  }
+
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';

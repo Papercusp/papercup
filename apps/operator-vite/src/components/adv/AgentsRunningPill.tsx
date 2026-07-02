@@ -33,6 +33,12 @@ export interface RosterAgent {
   currentPlanSlug: string | null;
   liveness: 'live' | 'idle' | 'stale' | string;
   heartbeatAt: string;
+  /** Genuine-activity timestamp (last real turn/tool dispatch, coord_presence.last_active_at)
+   *  — the "since last turn" clock and the basis for activity-liveness. NOT the keepalive
+   *  heartbeat. null on older/pending rows. */
+  lastActiveAt?: string | null;
+  /** Whether an engine loop is armed for this agent (keeps working on a cadence). */
+  loopArmed?: boolean;
   fleetSlug?: string | null;
   fleetColor?: string | null;
   agentPaneKind?: string | null;
@@ -123,6 +129,30 @@ export function fmtCompactAge(iso: string | null | undefined, nowMs: number): st
   return `${Math.floor(h / 24)}d`;
 }
 
+/** The window that counts as "live" in this dropdown: took a turn within the last
+ *  10 minutes. */
+export const LIVE_TURN_MS = 600_000;
+
+/**
+ * Whether an agent is "live" for this dropdown, per the owner's definition: it took
+ * a turn within the last 10 minutes (lastActiveAt — GENUINE activity, not the 60s
+ * keepalive heartbeat), OR an engine loop is armed (it will keep working on a
+ * cadence). This is deliberately NOT the heartbeat-based `liveness` (which is
+ * keepalive-polluted and effectively means "process alive"). Pure — exported for
+ * tests.
+ */
+export function isLiveByActivity(
+  a: Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'>,
+  nowMs: number,
+): boolean {
+  if (a.loopArmed) return true;
+  const iso = a.lastActiveAt ?? null;
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  return nowMs - t < LIVE_TURN_MS;
+}
+
 /** advRoster.list returns a single-element array wrapping the roster object. */
 interface RosterResponse {
   active: RosterAgent[];
@@ -207,8 +237,10 @@ export default function AgentsRunningPill() {
     return () => clearInterval(id);
   }, [open]);
   const active = (data?.[0]?.active ?? []) as RosterAgent[];
-  // "Running" = present + not stale (a stale row is a presumed-ended session).
-  const running = active.filter((a) => a.liveness !== 'stale');
+  // Shown = present (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps
+  // working on a cadence even while parked between wakes, so it belongs here even if
+  // its presence heartbeat has gone stale.
+  const running = active.filter((a) => a.liveness !== 'stale' || a.loopArmed);
   if (running.length === 0) return null;
 
   const groups = groupByFleet(running);
@@ -334,11 +366,24 @@ export function AgentsRoster({ groups, total, nowMs }: { groups: FleetGroup[]; t
                   {a.thinking ? (
                     <ThinkingDot size={7} title={`${displayName(a)} — thinking`} />
                   ) : (
-                    <LivenessDot liveness={a.liveness as 'live' | 'idle' | 'stale'} size={7} title={a.liveness} />
+                    <LivenessDot
+                      liveness={isLiveByActivity(a, nowMs) ? 'live' : 'idle'}
+                      size={7}
+                      title={
+                        isLiveByActivity(a, nowMs)
+                          ? a.loopArmed
+                            ? 'live — loop armed'
+                            : 'live — took a turn in the last 10m'
+                          : 'idle — no turn in the last 10m'
+                      }
+                    />
                   )}
-                  {fmtCompactAge(a.heartbeatAt, nowMs) ? (
-                    <span className="pc-agents-roster__age" title={`last active ${fmtCompactAge(a.heartbeatAt, nowMs)} ago`}>
-                      {fmtCompactAge(a.heartbeatAt, nowMs)}
+                  {fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs) ? (
+                    <span
+                      className="pc-agents-roster__age"
+                      title={`last turn ${fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs)} ago`}
+                    >
+                      {fmtCompactAge(a.lastActiveAt ?? a.heartbeatAt, nowMs)}
                     </span>
                   ) : null}
                 </span>
@@ -362,6 +407,7 @@ export function AgentsRoster({ groups, total, nowMs }: { groups: FleetGroup[]; t
           agent={active.agent}
           color={active.color}
           pinned={active.agent.ownerId === pinned}
+          nowMs={nowMs}
           onInspect={setInspecting}
         />
       ) : null}
@@ -391,11 +437,13 @@ function AgentDetailStrip({
   agent,
   color,
   pinned,
+  nowMs,
   onInspect,
 }: {
   agent: RosterAgent;
   color: string | null;
   pinned: boolean;
+  nowMs: number;
   onInspect: (a: RosterAgent) => void;
 }) {
   return (
@@ -403,7 +451,7 @@ function AgentDetailStrip({
       <div className="pc-agents-roster__detail-head" style={color ? { color } : undefined}>
         {agentGlyph(agent)} <strong>{displayName(agent)}</strong>
         {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
-        <span className="pc-agents-roster__detail-live"> · {agent.liveness}</span>
+        <span className="pc-agents-roster__detail-live"> · {isLiveByActivity(agent, nowMs) ? (agent.loopArmed ? 'live (loop armed)' : 'live') : 'idle'}</span>
         {agent.thinking ? (
           <span className="pc-agents-roster__detail-thinking" style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#6aa84f' }}>
             <ThinkingDot size={6} /> thinking
