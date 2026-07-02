@@ -49,6 +49,7 @@ const h = vi.hoisted(() => {
     state,
     spawn,
     writeFile: vi.fn(async () => {}),
+    cp: vi.fn(async () => {}),
     mkdir: vi.fn(async () => {}),
     chmod: vi.fn(async () => {}),
     rm: vi.fn(async () => {}),
@@ -73,7 +74,7 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@lydell/node-pty', () => ({ spawn: h.spawn }));
-vi.mock('node:fs/promises', () => ({ readFile: h.readFile, writeFile: h.writeFile, mkdir: h.mkdir, chmod: h.chmod, rm: h.rm }));
+vi.mock('node:fs/promises', () => ({ readFile: h.readFile, writeFile: h.writeFile, cp: h.cp, mkdir: h.mkdir, chmod: h.chmod, rm: h.rm }));
 vi.mock('../papercusp-root', () => ({ papercuspPath: (...p: string[]) => '/tmp/test/' + p.join('/') }));
 vi.mock('./account-pool', () => ({
   registerAccount: h.registerAccount,
@@ -145,22 +146,23 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(JSON.stringify(r)).not.toContain('sk-ant-oat01-TESTtoken');
   });
 
-  it('completeCliLink refuses to register Codex ChatGPT auth.json as a gateway bearer', async () => {
+  it('completeCliLink persists a Codex CLI home and registers it as codex-cli:<home>', async () => {
     h.state.mode = 'codex';
     const s = await startCliLink({ accountId: 'codex-acme', label: 'Codex Acme', provider: 'codex' });
     expect(s.ok).toBe(true);
     if (!s.ok) return;
     const r = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.error).toMatch(/ChatGPT auth\.json/);
-    expect(r.error).toMatch(/OpenAI API bearer/);
-    expect(h.writeFile).not.toHaveBeenCalledWith(
-      '/tmp/test/deploy-credentials/codex-acme.codex-auth.json',
-      expect.any(String),
-      expect.anything(),
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test/deploy-credentials/codex-acme.codex-cli/auth.json',
+      expect.stringContaining('codex-access-token'),
+      expect.objectContaining({ mode: 0o600 }),
     );
-    expect(h.registerAccount).not.toHaveBeenCalled();
+    const regInput = h.registerAccount.mock.calls[0]?.[1] as { id: string; credentialRef: string; provider: string };
+    expect(regInput.id).toBe('codex-acme');
+    expect(regInput.provider).toBe('codex');
+    expect(regInput.credentialRef).toBe('codex-cli:/tmp/test/deploy-credentials/codex-acme.codex-cli');
     expect(JSON.stringify(r)).not.toContain('codex-access-token');
   });
 

@@ -253,6 +253,42 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       expect(() => JSON.parse(body)).not.toThrow();
     }
   });
+
+  it('a saturated window also dumps a heap-sampling profile below the RSS snapshot threshold', async () => {
+    const dir = tmp('sampling-on-saturation');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 60,
+      warnP95Ms: 20,
+      profileOnSaturation: true,
+      profileDir: dir,
+      profileTriggerP95Ms: 20,
+      profileDurationMs: 120,
+      minProfileGapMs: 0,
+      heapSamplingOnHighRss: true,
+      heapSnapshotOnHighRss: false,
+      heapSnapshotDir: dir,
+      minHeapSamplingDumpGapMs: 0,
+      log,
+    });
+    for (let i = 0; i < 4; i++) {
+      blockFor(40);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 500));
+    let heapProfiles: string[] = [];
+    try {
+      heapProfiles = (await fs.readdir(dir)).filter((f) => f.endsWith('.heapprofile'));
+    } catch {
+      /* no inspector available => graceful no-op */
+    }
+    if (heapProfiles.length > 0) {
+      const body = await fs.readFile(path.join(dir, heapProfiles[0]), 'utf8');
+      const parsed = JSON.parse(body) as { head?: unknown };
+      expect(parsed.head).toBeTruthy();
+      expect(log.mock.calls.some(([line]) => String(line).includes('top live allocation sites'))).toBe(true);
+    }
+  });
 });
 
 describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-06-30)', () => {

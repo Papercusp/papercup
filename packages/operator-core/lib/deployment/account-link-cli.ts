@@ -23,7 +23,7 @@
  * idle reaper + a TTL kill any link the owner abandons.
  */
 import { spawn, type IPty } from '@lydell/node-pty';
-import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
+import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
@@ -232,7 +232,7 @@ async function completeCodexCliLink(
   linkId: string,
   l: PendingCliLink,
   _input: CompleteCliLinkInput,
-  _deps: CompleteCliLinkDeps,
+  deps: CompleteCliLinkDeps,
 ): Promise<CompleteCliLinkResult> {
   const sourceAuthPath = `${l.configDir}/auth.json`;
   let raw: string;
@@ -241,13 +241,41 @@ async function completeCodexCliLink(
   } catch {
     return { ok: false, error: 'Codex login is not complete yet — enter the device code in the browser, then complete the link' };
   }
+  const durableHome = papercuspPath('deploy-credentials', `${l.accountId}.codex-cli`);
+  const durableAuthPath = `${durableHome}/auth.json`;
+  try {
+    await rm(durableHome, { recursive: true, force: true });
+    await mkdir(durableHome, { recursive: true });
+    await writeFile(durableAuthPath, raw, { mode: 0o600 });
+    await chmod(durableAuthPath, 0o600);
+    // Preserve any provider-managed side files the CLI created alongside auth.json.
+    await cp(l.configDir, durableHome, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+      filter: (src) => src !== sourceAuthPath,
+    }).catch(() => {});
+    await updateAccountPool((p) =>
+      registerAccount(
+        p,
+        {
+          id: l.accountId,
+          provider: 'codex',
+          credentialRef: `codex-cli:${durableHome}`,
+          label: l.label,
+        },
+        Date.now(),
+      ),
+    );
+  } catch (e) {
+    return { ok: false, error: `failed to persist the Codex CLI credential: ${(e as Error).message}` };
+  }
   cleanup(linkId);
-  void raw; // The file proves login completed, but ChatGPT auth is not a gateway bearer.
+  deps.notify?.();
+  const account = (await accountStatus()).find((a) => a.id === l.accountId) ?? null;
   return {
-    ok: false,
-    error:
-      'Codex device login creates a ChatGPT auth.json, which cannot be used by the OpenAI-compatible inference gateway. ' +
-      "Register a real OpenAI API bearer instead: accounts:register { provider:'codex', credentialRef:'env:OPENAI_API_KEY' } or token:<path>.",
+    ok: true,
+    account,
   };
 }
 

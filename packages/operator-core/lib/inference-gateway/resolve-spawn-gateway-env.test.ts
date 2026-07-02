@@ -84,15 +84,15 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.supportsBearer).toHaveBeenCalledWith('token:/codex');
   });
 
-  test('Codex backend + ChatGPT-auth-only account → no gateway pin; native Codex auth handles it', async () => {
+  test('Codex backend + codex-cli:<home> account → emits the account pin for gateway CLI routing', async () => {
     h.getFlag.mockResolvedValue(true);
     h.selectSpawnAccount.mockResolvedValue('codex-main');
-    h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'file:/codex-auth.json' }] });
+    h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'codex-cli:/codex-home' }] });
     h.supportsBearer.mockResolvedValue(false);
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'codex' });
 
-    expect(env).toEqual({});
-    expect(h.supportsBearer).toHaveBeenCalledWith('file:/codex-auth.json');
+    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(h.supportsBearer).not.toHaveBeenCalled();
   });
 
   test('OMP backend → emits the per-session models.yml (gateway provider + pin headers) + selector, NOT the claude ANTHROPIC_BASE_URL env (P-006/D-008)', async () => {
