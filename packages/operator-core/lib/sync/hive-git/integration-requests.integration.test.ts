@@ -219,6 +219,53 @@ describe('hive_integration_requests (G-5c P-035 — queue, don’t integrate)', 
     expect(await listIntegrationRequests({ workspaceId: SCOPE.workspaceId, devicePubkey: other }, db.sql)).toHaveLength(1);
   });
 
+  it('WI-1552 (1): a ratified head is honored even when it is NOT among the 500 newest ratified rows in scope', async () => {
+    // Seed 501 ratified rows (distinct devices), ascending created_ts — the
+    // OLDEST is the one under test. Pre-fix, gateMemberHeadsForIntegration
+    // read only the top-500-newest ratified window, so this oldest head
+    // would have fallen out of it and been misreported as `queued`.
+    const oldest = device();
+    await queueIntegrationRequest({ ...SCOPE, devicePubkey: oldest, headSha: SHA(1000), nowMs: 1, cap: 100_000 }, db.sql);
+    expect(await ratifyIntegrationRequest({ ...SCOPE, devicePubkey: oldest, headSha: SHA(1000), nowMs: 1 }, db.sql)).toBe(true);
+    for (let n = 1; n <= 500; n++) {
+      const dev = device();
+      await queueIntegrationRequest({ ...SCOPE, devicePubkey: dev, headSha: SHA(2000 + n), nowMs: 100 + n, cap: 100_000 }, db.sql);
+      expect(await ratifyIntegrationRequest({ ...SCOPE, devicePubkey: dev, headSha: SHA(2000 + n), nowMs: 100 + n }, db.sql)).toBe(true);
+    }
+    const total = await listIntegrationRequests({ ...SCOPE, state: 'ratified', limit: 500 }, db.sql);
+    expect(total).toHaveLength(500); // confirms the window really is full — 501st (oldest) is outside it
+
+    const res = await gateMemberHeadsForIntegration({
+      ...SCOPE,
+      heads: [{ devicePubkeyBase64: oldest, sha: SHA(1000) }],
+      resolveTier: () => 'message', // below steer — must fall through to the ratified check
+      sql: db.sql,
+    });
+    expect(res.integrate).toEqual([{ deviceHex: deviceNamespaceKey(oldest), sha: SHA(1000) }]);
+    expect(res.queued).toEqual([]);
+  }, 30_000);
+
+  it('WI-1552 (2): the per-author cap is enforced PER (hive, repo) queue, not globally across an author\'s repos', async () => {
+    const dev = device();
+    const CAP = 2;
+    const scopeA = { ...SCOPE, repoKey: 'repoA' };
+    const scopeB = { ...SCOPE, repoKey: 'repoB' };
+
+    // Fill repoB's queue with 2 pending heads for this author (at the cap).
+    await queueIntegrationRequest({ ...scopeB, devicePubkey: dev, headSha: SHA(300), nowMs: 1, cap: CAP }, db.sql);
+    await queueIntegrationRequest({ ...scopeB, devicePubkey: dev, headSha: SHA(301), nowMs: 2, cap: CAP }, db.sql);
+
+    // Now the SAME author publishes to an UNRELATED repoA.
+    await queueIntegrationRequest({ ...scopeA, devicePubkey: dev, headSha: SHA(400), nowMs: 3, cap: CAP }, db.sql);
+
+    // repoB's queue must be untouched — cross-queue eviction is the bug.
+    const repoBRows = await listIntegrationRequests({ workspaceId: SCOPE.workspaceId, repoKey: 'repoB', devicePubkey: dev }, db.sql);
+    expect(repoBRows.map((r) => r.headSha).sort()).toEqual([SHA(300), SHA(301)].sort());
+
+    const repoARows = await listIntegrationRequests({ workspaceId: SCOPE.workspaceId, repoKey: 'repoA', devicePubkey: dev }, db.sql);
+    expect(repoARows).toHaveLength(1);
+  });
+
   it('the gate fails CLOSED: a tier-resolver failure excludes the head (reported), never integrates it', async () => {
     const dev = device();
     const res = await gateMemberHeadsForIntegration({
