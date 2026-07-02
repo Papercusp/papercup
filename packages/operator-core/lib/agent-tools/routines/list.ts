@@ -32,6 +32,36 @@ export default defineTool({
     installSlug: z.string().max(120).optional().describe('Filter to one install slug.'),
     name: z.string().max(200).optional().describe('Filter to one routine name.'),
   }),
+  // context-trimming-tiers P-023: rows are already lean scalars — trimmed just
+  // drops the two rarely-read columns and caps rows with a loud notice row
+  // (count keeps the true total). standard falls through to full.
+  shape: {
+    trimmed: (data) => {
+      const d = data as { count?: number; routines?: unknown[] } | null;
+      if (!d || !Array.isArray(d.routines)) return data;
+      const CAP = 60;
+      const rows = d.routines.slice(0, CAP).map((row) => {
+        const r = (row ?? {}) as Record<string, unknown>;
+        return {
+          installSlug: r.installSlug ?? null,
+          name: r.name ?? null,
+          cron: r.cron ?? null,
+          active: r.active === true,
+          nextFireAt: r.nextFireAt ?? null,
+        };
+      });
+      if (d.routines.length > CAP) {
+        rows.push({
+          installSlug: '(truncated)',
+          name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name, or payloadTier:"full"`,
+          cron: null,
+          active: false,
+          nextFireAt: null,
+        });
+      }
+      return { count: d.count ?? d.routines.length, routines: rows };
+    },
+  },
   async handler(args) {
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
@@ -67,6 +97,7 @@ export default defineTool({
       nextFireAt: iso(r.next_fire_at),
       lastFiredAt: iso(r.last_fired_at),
     }));
-    return { content: [{ type: 'text', text: JSON.stringify({ count: routines.length, routines }) }] };
+    // {data} envelope so the payload-tier shaper applies.
+    return { data: { count: routines.length, routines } };
   },
 });

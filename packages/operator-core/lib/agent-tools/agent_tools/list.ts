@@ -12,6 +12,7 @@
 
 import { z } from 'zod';
 import { defineTool, listAllProjectedTools, SU_ROLES } from '@papercusp/agent-mcp';
+import { shapeAgentToolsList } from './list-shape';
 
 export default defineTool({
   name: 'agent_tools:list',
@@ -38,6 +39,13 @@ export default defineTool({
      */
     asRole: z.string().optional(),
   }),
+  // context-trimming-tiers P-023: trimmed/standard sessions get name/capability/
+  // allowed + a description excerpt per row (see list-shape.ts) — the full
+  // guidance playbook stays behind payloadTier:"full".
+  shape: {
+    standard: (data) => shapeAgentToolsList(data, 'standard'),
+    trimmed: (data) => shapeAgentToolsList(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     // When asRole is supplied we evaluate the role allowlist against
     // that hypothetical role AND drop the isSuperuser bypass — the
@@ -138,18 +146,14 @@ export default defineTool({
       if (out.length >= limit) break;
     }
 
+    // {data} envelope so the payload-tier shapers apply.
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            callerRole: role ?? null,
-            isSuperuser,
-            count: out.length,
-            tools: out,
-          }),
-        },
-      ],
+      data: {
+        callerRole: role ?? null,
+        isSuperuser,
+        count: out.length,
+        tools: out,
+      },
     };
   },
 });

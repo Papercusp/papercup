@@ -18,6 +18,10 @@
 import os from 'node:os';
 import { isSpawnProcessAlive } from './fleet/spawn-reclaim';
 import { listPresence, type PresenceRecord } from './agent-tools/coordination/presence';
+import { listFederatedPresence } from './agent-tools/coordination/federated-presence';
+import { machineFingerprint } from './identity/device-keychain-id';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
 import {
@@ -100,6 +104,13 @@ export interface RosterEntry {
    *  loop row targeting this ownerId). A loop-armed agent counts as "live" (it keeps
    *  working on a cadence) even when its presence has gone idle between wakes. */
   loopArmed: boolean;
+  /** The machine this agent runs on. For a LOCAL agent: this machine's fingerprint;
+   *  for a FEDERATED (cross-machine, shared-hive) agent: its announced machine_label.
+   *  The key the roster groups/tabs by. */
+  machineLabel: string | null;
+  /** True for an agent on THIS machine (coord_presence); false for a federated agent
+   *  surfaced from another machine in the shared hive (shared_session_presence). */
+  isLocal: boolean;
   workspaceId: string;
   userId: string | null;
   revoked: boolean;
@@ -401,6 +412,12 @@ export function mergeRosterEntries(
       liveness,
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),
+      // Federated (cross-machine) rows carry federated:true + machineLabel; local
+      // rows get their machine label stamped in mergeRosterWithAssignments.
+      machineLabel: (p as { federated?: boolean }).federated
+        ? ((p as { machineLabel?: string | null }).machineLabel ?? p.host ?? null)
+        : null,
+      isLocal: !(p as { federated?: boolean }).federated,
       workspaceId: p.workspaceId,
       userId: p.userId,
       revoked: p.revoked,
@@ -476,6 +493,8 @@ export function pendingLaunchesToRosterEntries(
       liveness: 'pending' as Liveness,
       stale: false,
       loopArmed: false,
+      machineLabel: null,
+      isLocal: true,
       workspaceId: r.workspaceId,
       userId: null,
       revoked: false,

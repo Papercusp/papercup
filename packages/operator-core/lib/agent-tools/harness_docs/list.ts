@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveHarnessScope, harnessArg } from '../_harness-scope';
 import { buildMergedDocs } from '../../harness/docs/merged-read';
+import { shapeHarnessDocsList } from './list-shape';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -34,6 +35,13 @@ export default defineTool({
   agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'documenter', 'curator', 'operator'],
   modality: ['text'],
   args: argsSchema,
+  // context-trimming-tiers P-023: trimmed/standard sessions get lean entry
+  // rows, a clipped active-doc body with a loud continuation pointer, and the
+  // `files` duplicate collapsed to a count (see list-shape.ts).
+  shape: {
+    standard: (data) => shapeHarnessDocsList(data, 'standard'),
+    trimmed: (data) => shapeHarnessDocsList(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const scope = resolveHarnessScope(args.harness, ctx as { harnessSlug?: string });
     if (scope.kind !== 'harness') {
@@ -43,6 +51,8 @@ export default defineTool({
       ...(args.docId ? { activePath: args.docId } : {}),
       ...(args.recompute ? { recomputeActive: true } : {}),
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(merged) }] };
+    // {data} envelope so the payload-tier shapers apply (the error path above
+    // stays a raw ToolResult and passes through unshaped).
+    return { data: merged };
   },
 });

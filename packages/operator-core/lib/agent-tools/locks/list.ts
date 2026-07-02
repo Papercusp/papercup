@@ -19,6 +19,7 @@ import {
   type ResourceHolder,
   type ResourceRegistryRow,
 } from './su-lock-store';
+import { shapeLocksList } from './list-shape';
 
 function holderJson(h: ResourceHolder) {
   return {
@@ -60,6 +61,14 @@ export default defineTool({
   args: z.object({
     resource: z.string().min(1).max(200).optional(),
   }),
+  // context-trimming-tiers P-023: trimmed/standard sessions get clipped
+  // registry rules + lean holder rows (see list-shape.ts). NOT hook-consumed
+  // (only locks:acquire/release/check_command are), so the {data} conversion
+  // is safe.
+  shape: {
+    standard: (data) => shapeLocksList(data, 'standard'),
+    trimmed: (data) => shapeLocksList(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const { coordinationDomain } = readIdentity(ctx);
     const pool = getTxPool();
@@ -73,18 +82,14 @@ export default defineTool({
       resource: args.resource,
     });
 
+    // {data} envelope so the payload-tier shapers apply.
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            resources: registry.map(registryJson),
-            holders: queue.holders.map(holderJson),
-            draining: queue.draining,
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        resources: registry.map(registryJson),
+        holders: queue.holders.map(holderJson),
+        draining: queue.draining,
+      },
     };
   },
 });
