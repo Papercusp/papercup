@@ -118,7 +118,18 @@ describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnO
   // guard's tie-ACCEPTING `>=` is the only arbiter, and it accepts the remote
   // op on BOTH peers: they stably SWAP winners. `localAuthorApply` models
   // exactly that topology; `lockstep` makes the ties routine, as observed live.
-  const base = { peers: 4, ops: 40, keys: 6, regime: 'monotone' as const, lockstep: true, localAuthorApply: true };
+  // delProb: 0 — these tests pin put-vs-put tie ORDERING. Dels under this
+  // topology trip an ORTHOGONAL gap (local-del resurrection, pinned below):
+  // node ids cannot fix an arbitration the store never gets to make.
+  const base = {
+    peers: 4,
+    ops: 40,
+    keys: 6,
+    regime: 'monotone' as const,
+    lockstep: true,
+    localAuthorApply: true,
+    delProb: 0,
+  };
 
   it('TEETH (the bug): node-LESS stamps split-brain on exact hlc ties — divergent seeds exist', async () => {
     let diverged = 0;
@@ -150,5 +161,37 @@ describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnO
       if (!r.converged) failures.push(seed);
     }
     expect(failures).toEqual([]);
+  });
+});
+
+describe('WI-1674 — local-del resurrection under skipOwnOps (no tombstone): a SEPARATE open gap', () => {
+  // Found while fixing WI-1672: an author DELETES a row locally (trigger path —
+  // row gone, NO tombstone) and its own del is skipOwnOps-excluded from its own
+  // fold. A CONCURRENT foreign put with a LOWER hlc then wins the author's fold
+  // among foreign ops alone and hits the projection's no-row insert path, which
+  // has nothing to arbitrate against → the row is resurrected on the author
+  // peer ONLY. Every other peer folds del + put together, the del wins, the row
+  // stays deleted: split-brain on row PRESENCE. Node ids (migration 459) cannot
+  // fix this — it is a missing-tombstone gap, not an ordering tie.
+  // CHARACTERISATION/TEETH: pins that the gap exists TODAY. Flip to a
+  // convergence assertion when WI-1674 lands a fix (tombstones, or folding own
+  // ops into the winners map).
+  it('TEETH: dels + production topology diverge on row presence even WITH node ids', async () => {
+    let diverged = 0;
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      const r = await runConvergenceFuzz({
+        seed,
+        peers: 4,
+        ops: 40,
+        keys: 6,
+        regime: 'monotone',
+        lockstep: true,
+        localAuthorApply: true,
+        nodeIds: true, // the WI-1672 fix is ON — and does not help here
+        delProb: 0.12,
+      });
+      if (!r.converged) diverged++;
+    }
+    expect(diverged).toBeGreaterThan(0);
   });
 });

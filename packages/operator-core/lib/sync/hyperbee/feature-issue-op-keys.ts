@@ -46,6 +46,7 @@ import type { HiveMemberRow } from './projections/hive-members';
 import type { HiveEpochKeyRow } from './projections/hive-epoch-keys';
 import type { EngineerIssueRow } from './projections/engineer-issues';
 import type { PlanPartWireRow } from './projections/harness-plan-parts';
+import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -122,6 +123,12 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // (the harness_plan_parts.part_fed_key generated column, mig 270). DARK until the
   // papercusp-plan-part-federation flag flips (capture trigger is mig 271).
   harness_plan_parts: 'plan-parts',
+  // p2p-work-distribution-2026-07-02 (P-001): P2P capability grants — hive-home-scoped,
+  // receiver-enforced (the projection verifies the op author's ATTESTED gh user-id ==
+  // grantor_github_user_id). Projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts);
+  // key == '<grantor_ghid>:<grantee_kind>:<grantee_ref>' (the generated grant_fed_key
+  // column, mig 462).
+  p2p_peer_grants: 'p2p-peer-grants',
 };
 
 /**
@@ -647,6 +654,33 @@ function toPlanPartValue(row: Record<string, unknown>): PlanPartWireRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `P2pPeerGrantWireRow` the p2p-peer-grants
+ *  projection consumes (P-001, mig 462) — the federated subset. BIGINTs
+ *  (grantor_github_user_id, grantor_epoch) render as numbers via to_jsonb
+ *  (both far under 2^53); text[] columns render as JSON string arrays.
+ *  created_at/updated_at are machine-local (not federated); origin/
+ *  author_pubkey/fed_ts/fed_hlc ride the op provenance, not the wire value. */
+function toP2pPeerGrantValue(row: Record<string, unknown>): P2pPeerGrantWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    grantor_github_user_id: numOrZero(row.grantor_github_user_id),
+    grantor_login: strOrNull(row.grantor_login),
+    grantee_kind: String(row.grantee_kind ?? ''),
+    grantee_ref: String(row.grantee_ref ?? ''),
+    capabilities: Array.isArray(row.capabilities)
+      ? row.capabilities.filter((c): c is string => typeof c === 'string')
+      : [],
+    preset: strOrNull(row.preset),
+    status: String(row.status ?? ''),
+    grantor_epoch: numOrZero(row.grantor_epoch),
+    wake_rate_cap_per_hour: numOrNull(row.wake_rate_cap_per_hour),
+    excluded_device_pubkeys: Array.isArray(row.excluded_device_pubkeys)
+      ? row.excluded_device_pubkeys.filter((c): c is string => typeof c === 'string')
+      : [],
+    note: strOrNull(row.note),
+  };
+}
+
 /**
  * Thrown when an outbox row names a `table_name` this build has no mapper for.
  * This is BOTH a programming error (a new trigger shipped without its mapper) AND
@@ -713,7 +747,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | HiveMemberRow
     | HiveEpochKeyRow
     | EngineerIssueRow
-    | PlanPartWireRow;
+    | PlanPartWireRow
+    | P2pPeerGrantWireRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -768,6 +803,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'harness_plan_parts':
       value = toPlanPartValue(row);
+      break;
+    case 'p2p_peer_grants':
+      value = toP2pPeerGrantValue(row);
       break;
     default:
       value = toIssueValue(row);

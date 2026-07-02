@@ -234,6 +234,14 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // DARK until papercusp-plan-part-federation flips: nothing writes this table
   // locally until the flag-gated capture lands, so the trigger never fires.
   'harness_plan_parts',
+  // p2p-work-distribution-2026-07-02 (P-001): P2P capability grants — a grantor
+  // (numeric gh user-id, X9) grants a polymorphic {fleet|pool} grantee capabilities
+  // over the grantor's machines. Keyed (workspace_id, harness_slug = the hive HOME,
+  // grantor_github_user_id, grantee_kind, grantee_ref) → workspace-owned + peer-log;
+  // M19: federates USER-level so a revocation lands on every machine. Producer =
+  // CDC capture (mig 462); projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts),
+  // which RECEIVER-ENFORCES author-attestation == grantor before applying (M6/L9).
+  'p2p_peer_grants',
 ];
 
 /**
@@ -251,6 +259,11 @@ const WORKSPACE_OWNED_EXPLICIT = [
   'harness_brainstorm', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped (harness_plan_review retired by B-14/P-101)
   // NB: engineer_issues moved to PEER_LOG_WORKSPACE_OWNED (fed-reanchor B5) — the
   // work-queue's issue/task family now federates over the Hive peer-log.
+  // p2p-work-distribution-2026-07-02 (P-001 / X6): receiver-side high-water epoch
+  // per grantor. LOCAL-ONLY enforcement state, deliberately NEVER federated — each
+  // receiver derives it from ops it has APPLIED, so a peer cannot lower another
+  // machine's fence by federating a row.
+  'p2p_grantor_epochs',
 ];
 
 /**

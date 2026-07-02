@@ -72,6 +72,10 @@ export interface FuzzOptions {
   skewProb?: number;
   /** Probability a delivered op is duplicated in a peer's fold order. */
   dupProb?: number;
+  /** Probability a generated op is a `del` (default 0.12). Pass 0 to generate a
+   *  put-only universe — used by tests that pin put-vs-put ORDERING and must not
+   *  trip the orthogonal local-del/no-tombstone resurrection gap (WI-1674). */
+  delProb?: number;
   /** Materialised-store guard ordering: 'fed_ts' (today / bug) | 'lww' (the fix). */
   guardOrder?: GuardOrder;
   /** Author clocks carry a node identity (migration 459 / WI-1672 — the shipped
@@ -248,7 +252,7 @@ export function generateOps(opts: FuzzOptions): GenOp[] {
       // decouples HLC order from fed_ts order for this + subsequent writes.
       clock.recv({ ms: ts + 100 + Math.floor(rng() * 8000), count: 0 });
     }
-    const type = rng() < 0.12 ? 'del' : 'put';
+    const type = rng() < (opts.delProb ?? 0.12) ? 'del' : 'put';
     const base: PeerLogOp = {
       type,
       table,

@@ -48,6 +48,7 @@ import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
+import { buildP2pPeerGrantsProjection } from './p2p-peer-grants';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildHiveEpochKeysProjection } from './hive-epoch-keys';
 import { buildEngineerIssuesProjection } from './engineer-issues';
@@ -254,6 +255,12 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
     // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
     buildHarnessPlanPartsProjection(opts),
+    // p2p-work-distribution-2026-07-02 P-001: P2P capability grants are hive-home-
+    // grained (a grant/revocation must land on every member machine, M19) — scope
+    // like hive_settings. The projection RECEIVER-ENFORCES the op author's attested
+    // identity == the row's grantor (M6/L9) before applying. Inert until grants are
+    // authored (zero/empty by default — the P-005 structural-inertness pattern).
+    buildP2pPeerGrantsProjection(hiveScoped),
   ] as TableProjection<unknown>[];
 }
 
