@@ -23,8 +23,12 @@
  *      `wd_head_since_ms`), resetting the clock whenever head advances.
  *   2. fire-staleness — an ACTIVE routine whose `last_fired_at` is older than FIRE_STALE_MS
  *      (cron every 3 min, so 3h ⇒ the scheduler isn't running it).
- *   3. error/reap — `last_error` is non-null AT sweep time (caught opportunistically; the reaper
- *      writes it on a cancelled fire). Secondary because it's transient.
+ *   3. error persistence — `last_error` is non-null across ≥2 CONSECUTIVE watchdog sweeps
+ *      (`wd_error_sweeps`, watchdog-tracked like the head clock). git-sync NULLS last_error on
+ *      any healthy tick, so two 15-min sweeps both catching a fault ⇒ ~10 consecutive failed
+ *      3-min runs — a real fault streak, not a blip. A SINGLE observed error never alarms:
+ *      on 2026-07-02 a lone 240s submodule push timeout (self-recovered in 6 min) urgently
+ *      paged the owner + broadcast "code is stranding" to the whole fleet — pure alarm noise.
  *
  * On alarm: an urgent owner `notifyAttention` + a durable `harness_escalations` row (its OWN
  * phase) + a fleet BROADCAST (severe-event-broadcast — every running agent sees it next turn,
@@ -49,6 +53,10 @@ const DEFAULT_FIRE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
  *  fires start (`fire_started_at` advances) but never complete a commit. Sturdier
  *  than last_error (which flips null on any healthy tick) for the WI-1415 loop. */
 const DEFAULT_PERSISTENT_REAP_MIN = 3;
+/** A fault must be observed on this many CONSECUTIVE watchdog sweeps before error-stall alarms
+ *  (`wd_error_sweeps`). At the 15-min sweep cadence over a 3-min git-sync, 2 sweeps ⇒ the fault
+ *  survived ~10 runs — persistent, not a transient push/fetch blip. */
+const DEFAULT_ERROR_STALL_MIN_SWEEPS = 2;
 /** How often the watchdog sweeps. git-sync is every 3 min; 15m is ample + matches green-stall. */
 const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 
@@ -60,6 +68,8 @@ export interface GitSyncStallThresholds {
   fireStaleMs?: number;
   /** WI-1416: consecutive reaps that count as a persistent reap-loop (default 3). */
   persistentReapMin?: number;
+  /** consecutive watchdog sweeps a fault must persist before error-stall alarms (default 2). */
+  errorStallMinSweeps?: number;
 }
 
 /** The bits of one git-sync routine the verdict is computed from. */
@@ -71,6 +81,10 @@ export interface GitSyncStallSnapshot {
   headUnchangedMs: number | null;
   /** last recorded error/reap message (`metadata.last_error`) — NULL on a healthy tick. */
   lastError: string | null;
+  /** consecutive watchdog sweeps (INCLUDING this one) that observed a fault
+   *  (`metadata.wd_error_sweeps`, maintained by checkGitSyncStall). Absent with a
+   *  present lastError reads as 1 — a first observation, below the alarm bar. */
+  errorSweeps?: number;
   /** The routine's last recorded sync status ('synced' | 'nothing' | 'error' | …).
    *  'nothing' = clean tree ⇒ HEAD-staleness is healthy idle, never a stall. */
   lastStatus?: string | null;
@@ -88,7 +102,8 @@ export interface GitSyncStallVerdict {
   commitStale: boolean;
   /** the routine is active but hasn't fired in fireStaleMs (the scheduler is wedged). */
   fireStale: boolean;
-  /** git-sync recorded a fault (error/reap) at sweep time (secondary — transient). */
+  /** git-sync recorded a fault on ≥ errorStallMinSweeps CONSECUTIVE sweeps (a persistent fault
+   *  streak — a single observed error is transient and never alarms). */
   errorStall: boolean;
   /** WI-1416: the executor reaper has cancelled ≥ persistentReapMin consecutive fires —
    *  fires start but never complete (the WI-1415 reap→requeue→restart loop). */
@@ -113,6 +128,7 @@ export function evaluateGitSyncStall(
   const headStaleMs = opts.headStaleMs ?? DEFAULT_HEAD_STALE_MS;
   const fireStaleMs = opts.fireStaleMs ?? DEFAULT_FIRE_STALE_MS;
   const persistentReapMin = opts.persistentReapMin ?? DEFAULT_PERSISTENT_REAP_MIN;
+  const errorStallMinSweeps = opts.errorStallMinSweeps ?? DEFAULT_ERROR_STALL_MIN_SWEEPS;
 
   // FALSE-ALARM FIX (2026-07-02): an idle hive legitimately never moves HEAD — its
   // git-sync fires and records status 'nothing' (clean tree, nothing to commit).
@@ -125,7 +141,13 @@ export function evaluateGitSyncStall(
   const cleanIdle = s.lastStatus === 'nothing';
   const commitStale = !cleanIdle && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
   const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
-  const errorStall = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
+  // FALSE-ALARM FIX (2026-07-02, second class): a fault observed on a SINGLE sweep is
+  // transient (a push/fetch blip git-sync clears on its next healthy 3-min tick) — it must
+  // persist across consecutive sweeps before it alarms. commitStale stays the backstop for
+  // faults that genuinely freeze HEAD (2026-07-02 hiveloop: 2.5h frozen head still alarms).
+  const hasError = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
+  const errorSweeps = hasError ? (s.errorSweeps ?? 1) : 0;
+  const errorStall = errorSweeps >= errorStallMinSweeps;
   const persistentReap = (s.reapedCount ?? 0) >= persistentReapMin;
   const stalled = commitStale || fireStale || errorStall || persistentReap;
 
@@ -146,7 +168,9 @@ export function evaluateGitSyncStall(
       );
     }
     if (errorStall) {
-      parts.push(`git-sync is recording a FAULT: "${s.lastError!.slice(0, 200)}"`);
+      parts.push(
+        `git-sync has recorded a FAULT on ${errorSweeps} consecutive watchdog sweeps (persistent, not a blip): "${s.lastError!.slice(0, 200)}"`,
+      );
     }
     reason = parts.join('; ');
   }
@@ -210,6 +234,7 @@ export async function checkGitSyncStall(
         last_error: string | null;
         watchdog_alerted: boolean | null;
         reaped_count: number | null;
+        wd_error_sweeps: number | null;
       }[]
     >`
       SELECT install_slug,
@@ -221,7 +246,8 @@ export async function checkGitSyncStall(
              metadata->>'last_status' AS last_status,
              metadata->>'last_error' AS last_error,
              COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
-             COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count
+             COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
+             COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps
         FROM harness_shared.routines
        WHERE target_role = 'system:git-sync'
          AND active = true`;
@@ -250,11 +276,28 @@ export async function checkGitSyncStall(
         headUnchangedMs = now - wdHeadSinceMs;
       }
 
+      // ── Fault-persistence streak: consecutive sweeps observing a fault (incl. this one).
+      // git-sync NULLS last_error on any healthy tick, so a fault still present a full sweep
+      // interval later has survived ~5+ runs — persistent. Reset to 0 the moment it clears.
+      const hasError = typeof row.last_error === 'string' && row.last_error.trim().length > 0;
+      const prevErrorSweeps = row.wd_error_sweeps != null ? Number(row.wd_error_sweeps) : 0;
+      const errorSweeps = hasError ? prevErrorSweeps + 1 : 0;
+      if (errorSweeps !== prevErrorSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('wd_error_sweeps', ${errorSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${row.install_slug}
+             AND target_role = 'system:git-sync'`;
+      }
+
       const verdict = evaluateGitSyncStall(
         {
           lastFiredMs,
           headUnchangedMs,
           lastError: row.last_error,
+          errorSweeps,
           lastStatus: row.last_status,
           watchdogAlerted,
           reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
@@ -275,7 +318,12 @@ export async function checkGitSyncStall(
              AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = false`;
         if (flip.count !== 1) continue; // another process won the flip
 
-        const summary = `git-sync STALLED on ${row.install_slug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`;
+        // Say what the verdict actually is: a frozen-HEAD/fire/reap stall strands code; a pure
+        // persistent-fault streak means commits MAY not be landing (HEAD may still advance).
+        const summary =
+          verdict.commitStale || verdict.fireStale || verdict.persistentReap
+            ? `git-sync STALLED on ${row.install_slug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`
+            : `git-sync FAULTING on ${row.install_slug} — a fault has persisted across consecutive watchdog sweeps; commits may not be landing.`;
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({

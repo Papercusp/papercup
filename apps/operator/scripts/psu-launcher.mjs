@@ -1532,20 +1532,21 @@ export function assertLaunchPersona(promptFile) {
 }
 
 /**
- * omp + fable default to the FULL 1M window (owner directive 2026-07-02): inject
+ * opus + fable default to the FULL 1M window (owner directive 2026-07-02): inject
  * the `[1m]` marker into their model spec so EVERY downstream `[1m]` consumer —
  * the preflight window guard, the context-size/tier derivation, and the `--model`
  * passthrough that makes Claude Code / the gateway enable the 1M-context beta —
  * treats them as 1M. Idempotent; a no-op for a spec already carrying `[1m]` or
- * that isn't omp/fable. `[1m]` is inserted before a recognized `:effort` suffix,
+ * that isn't opus/fable. `[1m]` is inserted before a recognized `:effort` suffix,
  * else appended. Papercusp then caps their compaction at 500k
  * (agent-config-constants defaultCompactionLimitForSpec) to bound token spend.
+ * Kept in lockstep with agent-config-constants `isDefault1mModelSpec` (opus|fable).
  */
 export function normalizeModelSpec(spec) {
-  if (!spec || /\[1m\]/i.test(spec) || !/fable|omp/i.test(spec)) return spec;
+  if (!spec || /\[1m\]/i.test(spec) || !/fable|opus/i.test(spec)) return spec;
   const c = spec.lastIndexOf(':');
   const suffix = c > 0 ? spec.slice(c + 1) : '';
-  if (c > 0 && /^(low|medium|high|xhigh)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;
+  if (c > 0 && /^(low|medium|high|xhigh|max)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;
   return `${spec}[1m]`;
 }
 
