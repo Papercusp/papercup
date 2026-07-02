@@ -9,9 +9,10 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getWorkItem, createWorkItem, commentWorkItem } from '../../work-items';
+import { getWorkItem, createWorkItem, commentWorkItem, isSettledWorkItemState } from '../../work-items';
 import { planExpansion, renderExpansion } from './plan-expansion';
 import { hardText, LIMITS } from '../limits';
 
@@ -49,6 +50,15 @@ export default defineTool({
       .max(20)
       .describe('the child nodes to emit'),
     harness: z.string().max(80).optional(),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-1400: override the two default-on safety guards for a DELIBERATE re-decomposition — ' +
+          '(1) expanding an already-SETTLED parent (passed/deprecated/resolved/closed), and ' +
+          '(2) cross-call dedup (re-expanding the same child title(s) already expanded from this parent in a prior call). ' +
+          'Default false: both guards apply.',
+      ),
   }),
   async handler(args, ctx) {
     if (!(await getFlag(FLAGS.DEFERRED_EXPANSION, 'system').catch(() => false))) {
@@ -57,6 +67,33 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const parent = await getWorkItem(args.id, args.harness);
     if (!parent) return json({ ok: false, error: `work_item '${args.id}' not found` });
+
+    // WI-1400 guard 1: fail closed on a settled parent by default — expanding a
+    // passed/deprecated/resolved/closed parent risks orphaned child work with no live
+    // parent tracking it. `force:true` is the explicit escape hatch for a deliberate
+    // re-decomposition of already-settled work.
+    if (isSettledWorkItemState(parent.state) && !args.force) {
+      return json({
+        ok: false,
+        error:
+          `parent work_item '${args.id}' is already settled (state=${parent.state}) — refusing to expand it. ` +
+          'Pass force:true if this is a deliberate re-decomposition of settled work.',
+        settledState: parent.state,
+      });
+    }
+
+    // WI-1400 guard 2: cross-call idempotency. Look up titles ALREADY expanded from this
+    // parent (children always land as kind:'task' in engineer_issues, stamped
+    // payload.expanded_from) so a retried/duplicate call doesn't silently double-create.
+    // Skipped entirely under force:true (the caller wants the duplicate).
+    let existingChildTitles: Set<string> | undefined;
+    if (!args.force) {
+      const { sql } = getOrgPg();
+      const rows = await sql<{ title: string }[]>`
+        SELECT title FROM harness_shared.engineer_issues
+         WHERE payload ->> 'expanded_from' = ${args.id}`;
+      existingChildTitles = new Set(rows.map((r) => r.title.toLowerCase()));
+    }
 
     // Propose/dispose: a bee PROPOSES, every steerer (queen / operator / su) DISPOSES.
     const role = (ctx as { role?: string }).role ?? '';
@@ -68,6 +105,7 @@ export default defineTool({
       children: args.children,
       by: ident.ownerId,
       authoritative,
+      existingChildTitles,
     });
 
     // Durable record on the parent's thread either way (the proposal, or the disposed set).

@@ -76,6 +76,13 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // getOrgPg() consumer at boot. This was the REAL error behind the 12-day
     // gym-cycle:error streak (masked by the detail-dropping recorder, also fixed).
     HARNESS_DATABASE_URL: cfg.gymDatabaseUrl,
+    // GYM-1 layer-3 fix: pgbouncerEnabled() defaults ON for server-class hosts
+    // (hostClass fallback when the env is unset), and maybePgbouncer() then
+    // REWRITES the pinned container URL's host to the LIVE pooler at :6432 —
+    // whose credentials differ → "password authentication failed" at boot even
+    // with every DSN pinned. The hermetic sandbox must ALWAYS dial its container
+    // DIRECTLY: pin the bouncer OFF.
+    PAPERCUSP_PGBOUNCER: '0',
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

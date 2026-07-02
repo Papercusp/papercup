@@ -42,6 +42,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, chmod, readdir, copyFile, stat as fsStat } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { join, dirname } from 'node:path';
 import * as os from 'node:os';
 import type { DetectedHardware, GpuVendor } from './hardware-detect';
@@ -325,9 +326,9 @@ async function defaultFetchReleases(): Promise<GhRelease[]> {
  *  our own build dirs are shallow). Returns the first match or null. */
 async function findBinaryUnder(dir: string, binName: string, depth = 4): Promise<string | null> {
   if (depth < 0) return null;
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: Dirent<string>[];
   try {
-    entries = await readdir(dir, { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true, encoding: 'utf8' });
   } catch {
     return null;
   }

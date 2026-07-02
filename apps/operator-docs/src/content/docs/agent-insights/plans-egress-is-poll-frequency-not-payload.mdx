@@ -10,6 +10,8 @@ documents:
   - packages/operator-core/lib/sync-resolver/resource-delta-config.ts
   - apps/operator/providers/sync-delta-codec.ts
   - apps/operator/providers/HarnessSyncProvider.tsx
+  - libs/generic/sync/src/server/invalidation-bus.ts
+  - packages/operator-core/lib/sync-resolver/table-to-query-names.ts
 plans:
   - agent-tool-delta-client-rollout-2026-06-23
 ---
@@ -110,3 +112,51 @@ fix yet" — something else (many concurrent open sessions each on their own dri
 frequent SSE→POLLING fallback, or another caller entirely) is generating it. That's a genuine open
 question this doc can't resolve from a snapshot query; re-run the SQL above with a `spawn_id` /
 `role` breakdown to attribute it before assuming "it's the desktop UI" without checking.
+
+## Root cause found + FIXED 2026-07-02 (WI-840, third pass) — the raw PG-trigger bridge bypassed the dedupe entirely
+
+Two prior scoping passes (2026-07-02, `su-af6170b0`) confirmed the traffic was real and ruled out
+`spawn_id`-based attribution (every unauth/SU-bearer HTTP request mints a fresh `ephemeral-<16hex>`
+spawn_id — 1:1 with request count, so it can't distinguish "one session polling" from "many
+sessions"), but did not find the actual mechanism. This pass did, by reading
+`libs/generic/sync/src/server/invalidation-bus.ts` end to end instead of only the client:
+
+- **The traffic source is confirmed to be `pc-admin-plans-ui`** (`packages/operator-core/lib/
+  endpoint-route/routes/admin/plans.ts`'s synthetic client id for `/api/admin/plans/*` — the Plans
+  admin dashboard, `apps/operator/app/admin/plans/PlansClient.tsx`), via `useSyncQuery('plans.list'
+  | 'plans.attention', …)` — **already on the SSE architecture**, exactly as this doc's line 104
+  says. It is NOT bespoke `fetch + setInterval` polling.
+- **The actual driver: `harness_shared.harness_plans` is bridged to 8 query names**
+  (`plans.list`, `.get`, `.items`, `.attention`, `.search`, `.byHive`, `.schedule`,
+  `.scheduledOccurrences` — `sync-resolver/table-to-query-names.ts`), all full-bust (bare-string,
+  no scoping registered yet for this table). A Postgres trigger fires `<schema>.harness_plans.
+  changed` on **every row write** — and with dozens of concurrent fleet agents each calling
+  `plans:set-now` / `plans:set-status` / `plans:add-item` / etc. across the workspace, that's a
+  near-continuous write stream (not the ~10-30/hour this doc measured on 2026-06-23, when fleet
+  concurrency was far lower — write volume scales with **agent count**, not human viewers).
+- **The bug: `notifyInvalidate()`'s 90s source-side dedupe (`invalidation-bus.ts`'s
+  `dedupeWindowMs`, meant to "collapse a chatty per-row reconcile") only covered EXPLICIT
+  `notifySyncInvalidate(...)` call sites in application code.** The PG-trigger-bridged path
+  (`onMessage()` → `bridge()` → `fanout()`) called `fanout()` **directly**, bypassing the dedupe
+  map entirely — so every one of those 8 bridged full-bust targets fanned out, unthrottled, on
+  every single `harness_plans` row write, to every live SSE subscriber (every open Plans-admin
+  tab/window). That is the poll-shaped traffic this doc measured: it isn't a poll at all, it's an
+  invalidation storm whose rate tracks fleet write-rate 1:1 — which is why it never showed up as
+  "SSE fell back to POLLING" (line 108's hypothesis) and stayed flat/high regardless of the 2026-06-10
+  drift-repair fix (that fix only bounds the SAFETY-NET tick; it can't bound invalidation-driven
+  refetches, because those were never throttled at all).
+- **Fix landed**: `invalidation-bus.ts` now runs bridge-synthesized targets through the SAME
+  dedupe helper (`shouldFanout`, extracted from `notifyInvalidate`'s inline check) as explicit
+  calls, keyed by `name + JSON(args)` — so a full-bust target throttles to ≤1 fanout per
+  `dedupeWindowMs` (default 90s) regardless of how many rows in the bridged table were written in
+  that window, while a *scoped* `{name, args}` bridge target (once any table registers one — none
+  do yet) still fires per distinct key, since different args produce different dedupe keys. This
+  is generic to the whole bridge registry, not plans-specific — every table→query-name mapping in
+  `table-to-query-names.ts` gets the same protection. Verified via new unit tests in
+  `invalidation-bus.test.ts` (bridged full-bust dedupe / per-target independence / scoped-target
+  non-cross-suppression) and a full `npm run test:affected` run (no regressions). Not yet
+  re-measured against live `tool_invocations` post-deploy — the fix reduces invalidation *count*
+  server-side; re-run this doc's SQL a few hours after it ships to confirm the `plans:list`/
+  `plans:attention` HTTP call rate actually drops, and to see whether another bridged table now
+  dominates instead (any hot table under sustained multi-agent write load had the exact same
+  unthrottled-bridge exposure until this fix).

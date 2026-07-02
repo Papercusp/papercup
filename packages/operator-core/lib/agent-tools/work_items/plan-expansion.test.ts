@@ -48,6 +48,25 @@ describe('planExpansion', () => {
     const plan = planExpansion(inp({ children: [{ title: 't', files: ['', '  '], brief: '   ' }] }));
     expect(plan.children[0].payload).toEqual({ expanded_from: 'WI-1' });
   });
+
+  it('WI-1400: drops a title already expanded from this parent in a prior call, case-insensitively', () => {
+    const plan = planExpansion(
+      inp({
+        children: [{ title: 'dup-child' }, { title: 'Fresh Child' }],
+        existingChildTitles: new Set(['dup-child']),
+      }),
+    );
+    expect(plan.children.map((c) => c.title)).toEqual(['Fresh Child']);
+    expect(plan.dropped).toEqual([
+      { title: 'dup-child', reason: 'already expanded from this parent in a prior call — pass force:true to re-expand anyway' },
+    ]);
+  });
+
+  it('WI-1400: existingChildTitles omitted ⇒ no cross-call dedup (today\'s additive behavior)', () => {
+    const plan = planExpansion(inp({ children: [{ title: 'dup-child' }] }));
+    expect(plan.children.map((c) => c.title)).toEqual(['dup-child']);
+    expect(plan.dropped).toEqual([]);
+  });
 });
 
 describe('isExpandNode', () => {

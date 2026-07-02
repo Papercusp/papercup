@@ -37,7 +37,8 @@ doc-drift fix.
 | **NVIDIA, \<24GB VRAM** (the `nvidia-mid` / `nvidia-low` tiers) | `llama-server` GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable `num_ctx` | No vLLM lane at this tier (concurrency isn't the point; fitting in VRAM is) |
 | **Apple Silicon (Metal)** | `llama-server` built with the Metal backend, single/low-stream concurrency | No vLLM lane — vLLM is CUDA-only (D-004) |
 | **CPU-only (no GPU)** | `llama-server` CPU build, smallest certified quant | The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning |
-| **No usable local hardware** (unsupported GPU vendor, detection failure, etc.) | Route to the **cloud gateway** lane (the existing Claude/Codex account pool) | This is a *routing* decision the gateway abstraction (D-002) already covers — not a new local-backend kind |
+| **AMD GPU** (detected via `rocm-smi`, no catalog entry targets it yet) | Route to the **cloud gateway** lane, same as CPU-only | `hardware-detect.ts` DOES detect AMD (vendor + best-effort VRAM) — it is not lumped in with "detection failure". `recommend.ts`'s `tierOf()` has no AMD tier yet, so it falls through to `cpu-only`, but `recommendCombo()`'s `reason` string is honest about *why*: `"detected a amd GPU the catalog doesn't target yet"`, distinct from the plain "no GPU detected" case |
+| **No usable local hardware** (no GPU detected, detection failure, etc.) | Route to the **cloud gateway** lane (the existing Claude/Codex account pool) | This is a *routing* decision the gateway abstraction (D-002) already covers — not a new local-backend kind |
 
 ## Where this lives in code (the actual source of truth)
 
@@ -45,7 +46,13 @@ The wizard's hardware-detection → recommendation step is wired straight throug
 there is **no separate hardcoded copy of the matrix in the UI**:
 
 1. **`provisioner/hardware-detect.ts`** — read-only hardware probe (GPU vendor/VRAM via
-   `nvidia-smi` / Metal detection / CPU fallback) → a `DetectedHardware` value.
+   `nvidia-smi` / `rocm-smi` (AMD) / Metal detection / CPU fallback) → a `DetectedHardware`
+   value. NVIDIA detection also captures `computeCap` (CUDA compute capability, e.g. `"8.6"`)
+   when `nvidia-smi` reports it — this doesn't feed the tier/recommendation matrix at all; it
+   only feeds `provisioner/llama-binary.ts`'s from-source build path (`computeCapToArch`,
+   WI-1617) when the headless CLI's `--provision-binary` flag is used. AMD is genuinely
+   *detected* (not treated as a probe failure) even though no catalog entry targets it yet —
+   see the AMD row above.
 2. **`provisioner/recommend-types.ts`** — the `HardwareTier` union
    (`nvidia-24gb-plus | nvidia-mid | nvidia-low | apple-silicon | cpu-only`) that encodes the
    matrix's row boundaries.
@@ -62,7 +69,15 @@ there is **no separate hardcoded copy of the matrix in the UI**:
    a second table elsewhere.**
 5. **`provisioner/provision.ts`** — `planProvision()` composes 1–4 into a `ProvisionPlan` (plus
    the weights-download plan and backend unit-file path). This is the single function both the
-   headless CLI (`provisioner/cli.ts`) and the Desktop UI read.
+   headless CLI (`provisioner/cli.ts`) and the Desktop UI read. `planProvision()` takes an
+   optional `binPath` (an *already-resolved* `llama-server` binary path) that it threads
+   straight through to `renderLlamaServerUnit` — it deliberately does NOT resolve the binary
+   itself (that would make this "fast, read-only" function do a network fetch / from-source
+   build). Only the CLI wires this up today: `--provision-binary` calls
+   `llama-binary.ts`'s `resolveLlamaBinary()` first and passes the result in as `binPath`; the
+   Desktop route (`local-model-status.ts`, item 6) calls `planProvision()` with no `binPath`,
+   so the wizard UI still falls back to a bare `llama-server` already being on `PATH` until
+   that wiring is added.
 6. **`endpoint-route/routes/desktop/local-model-status.ts`** — `GET
    /api/desktop/local-model-status`, a thin `defineTool` wrapper over `planProvision()`.
 7. **`apps/operator/app/_components/SetupWizard/StepLocalModel.tsx`** — the wizard step
@@ -91,6 +106,12 @@ the provisioner doesn't have to reverse-engineer it from `tierOf()`'s if/else ch
   gateway abstraction), so a third `LocalBackendKind` should need zero gateway-side changes,
   only a new catalog entry + whatever backend-specific provisioning logic
   (see `provisioner/backend-config.ts`).
+- **Give AMD its own tier** (today it detects and falls straight through to `cpu-only`/cloud —
+  see the AMD row above) → add an `'amd-*'` member to `HardwareTier` (recommend-types.ts), a
+  branch in `tierOf()` keyed on `gpu.vendor === 'amd'` (recommend.ts), and at least one
+  `CERTIFIED_CATALOG` entry targeting it (catalog.ts) — `hardware-detect.ts`'s `detectAmd()`
+  already supplies vendor + best-effort VRAM, so no probe-side work is needed, only the
+  tier/catalog wiring.
 
 ## Related
 

@@ -269,6 +269,61 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
     const row = await getPendingJoin(WS, HIVE, alice.githubUserId, sql);
     expect(row?.status).toBe('denied'); // preserved — a re-request can't flip it back to pending
   });
+
+  // WI-565 audit gap: recordPendingJoin's own doc comment claims a still-PENDING
+  // re-request is idempotent (ON CONFLICT DO UPDATE refreshes identity/device
+  // fields, never resets/duplicates status) — but nothing asserted it directly.
+  // The PK is (workspace_id, harness_slug, github_user_id), so a bug here would
+  // either duplicate the row (constraint violation) or silently reset status.
+  it('double-join idempotency: a re-request while STILL PENDING refreshes fields, stays one row, status stays pending', async () => {
+    await setPolicy({ membership: 'approval' });
+    const first = await evaluateJoinAdmission(
+      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { sql },
+    );
+    expect(first.outcome).toBe('pending');
+
+    // Re-request with a NEW device + display name (e.g. joiner installed a second
+    // machine before the owner decided) — must refresh, not duplicate or reset.
+    const second = await evaluateJoinAdmission(
+      {
+        workspaceId: WS,
+        hiveHomeSlug: HIVE,
+        joiner: { ...alice, displayName: 'Alice B.', deviceAttestations: [dev('devA'), dev('devB')] },
+      },
+      { sql },
+    );
+    expect(second.outcome).toBe('pending');
+
+    const rows = await listPendingJoins(WS, HIVE, { status: null }, sql);
+    expect(rows).toHaveLength(1); // no duplicate row — the PK + ON CONFLICT held
+    const row = await getPendingJoin(WS, HIVE, alice.githubUserId, sql);
+    expect(row?.status).toBe('pending'); // still awaiting the owner, not silently reset/lost
+    expect(row?.displayName).toBe('Alice B.'); // identity fields refreshed
+    expect(row?.deviceAttestations.map((d) => d.device_pubkey)).toEqual(['devA', 'devB']); // devices refreshed
+  });
+
+  it('an APPROVED joiner who re-requests STAYS approved (a re-request cannot un-admit a member)', async () => {
+    await seedHive();
+    await setPolicy({ membership: 'approval' });
+    await evaluateJoinAdmission({ workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice }, { sql });
+    await approvePendingJoin(
+      { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: alice.githubUserId, decidedByGithubUserId: OWNER_ID },
+      { sql },
+    );
+
+    // Re-request after approval (e.g. the joiner's client retries the join call).
+    const out = await evaluateJoinAdmission(
+      { workspaceId: WS, hiveHomeSlug: HIVE, joiner: alice },
+      { sql },
+    );
+    expect(out.outcome).toBe('pending'); // policy is still approval-mode — the GATE re-runs...
+    const row = await getPendingJoin(WS, HIVE, alice.githubUserId, sql);
+    expect(row?.status).toBe('approved'); // ...but the STORED decision is preserved, not reset
+    // The member row is untouched by the re-request (evaluateJoinAdmission never
+    // calls upsertHiveMember itself — only the trust-set write matters here).
+    expect(await getHiveMember(WS, HIVE, alice.githubUserId, sql)).toMatchObject({ bindingStatus: 'verified' });
+  });
 });
 
 describe('ban — refused re-join even in open mode; unban restores', () => {

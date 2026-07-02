@@ -32,5 +32,9 @@ describe('buildGymOperatorBootSpec — hermetic DSN pinning', () => {
         'postgresql://test:test@127.0.0.1:59999/gym',
       );
     }
+    // Layer-3: the URL-REWRITE inputs must be pinned too — pgbouncerEnabled()
+    // defaults ON for server-class hosts and would re-point the pinned URL at
+    // the live pooler (:6432) whose credentials the container lacks.
+    expect(spec.env.PAPERCUSP_PGBOUNCER, 'sandbox must dial its container DIRECTLY').toBe('0');
   });
 });

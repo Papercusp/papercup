@@ -136,7 +136,7 @@ export async function autoPauseOnFailureStreak(opts: {
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[]; rearmed: number }> {
+): Promise<{ reconciled: number; paused: string[]; rearmed: number; terminated: number }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -168,12 +168,24 @@ export async function reconcileAndGovern(
   // Best-effort — a loop-rebase failure must never break the scheduled-run governance it
   // rides with (mirrors the sweep's own fail-soft contract).
   let rearmed = 0;
+  let terminated = 0;
   try {
     const loop = await reconcileLoopRoutines({ sql: db });
     rearmed = loop.rearmed;
+    // WI-1399: loops auto-paused this pass because their owner is permanently unreachable.
+    // Loud, not silent — a terminated loop is a real dead-owner finding worth seeing in the
+    // routine tick's own logs, not just diagnosable from `result.terminated` in a test.
+    terminated = loop.terminated.length;
+    if (terminated > 0) {
+      console.warn(
+        `[loop-reconcile] terminated ${terminated} dead-owner loop(s) this pass: ${loop.terminated
+          .map((t) => `${t.id} (owner ${t.targetOwnerId})`)
+          .join(', ')}`,
+      );
+    }
   } catch (e) {
     console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
   }
 
-  return { reconciled: settled.length, paused, rearmed };
+  return { reconciled: settled.length, paused, rearmed, terminated };
 }

@@ -487,39 +487,65 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
     expect((childItem.payload as Record<string, unknown>).expanded_from).toBe(parentId);
   });
 
-  it('expanding a SETTLED parent still proceeds (no "cannot expand settled" guard exists) and children inherit harness', async () => {
-    // BRIEF premise was "expand a passed parent → error OR child inherits". expand.ts has NO
-    // settled-parent guard: it expands ANY node regardless of state. We assert the ACTUAL
-    // behavior — a settled (passed) parent is expandable, and its children still inherit harness.
+  it('WI-1400: expanding a SETTLED parent is REFUSED by default (fail closed — no orphan children)', async () => {
     const parent = await createOne({ kind: 'feature', title: 'settled parent', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
     const settled = await setStateOne({ id: parentId, state: 'passed', harness: 'papercup' });
     expect((settled.workItem as Record<string, unknown>).state).toBe('passed');
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
-    expect(res.ok).toBe(true); // expansion is NOT blocked by the parent being settled
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/already settled \(state=passed\)/);
+    expect(res.settledState).toBe('passed');
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids).toHaveLength(0); // refused — no orphan children created
+  });
+
+  it('WI-1400: force:true overrides the settled-parent guard for a deliberate re-decomposition', async () => {
+    const parent = await createOne({ kind: 'feature', title: 'settled parent forced', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+    await setStateOne({ id: parentId, state: 'deprecated', harness: 'papercup' });
+
+    const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }], force: true });
+    expect(res.ok).toBe(true);
     expect(res.disposition).toBe('disposed');
     const kids = await expandedChildrenOf(parentId);
     expect(kids.map((k) => k.title)).toEqual(['late child']);
     expect(kids[0].scope).toBe('harness:papercup');
   });
 
-  it('re-expanding the SAME children is NOT idempotent — each call creates a fresh set (no dedup across calls)', async () => {
-    // plan-expansion dedups WITHIN a single call (case-insensitive title), but expand.ts has no
-    // cross-CALL dedup: the durable record is the comment + the new children. Re-expanding the
-    // same titles emits a SECOND set of children, each still stamped expanded_from=parent. We
-    // assert that documented behavior (the brief floated "idempotent" as a possibility; the
-    // engine is not — and that is the contract this test pins so a future change is deliberate).
+  it('WI-1400: re-expanding the SAME child title is now cross-call DEDUPED by default (not additive)', async () => {
+    // Was: each call creates a fresh set (unbounded duplicate growth on a retried call).
+    // Now: a title already expanded from this parent in a prior call is dropped, not
+    // recreated, UNLESS force:true is passed.
     const parent = await createOne({ kind: 'feature', title: 'twice-expanded', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
 
     const first = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
     expect(first.created).toHaveLength(1);
     const second = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
+    expect(second.ok).toBe(true);
+    expect(second.created).toHaveLength(0); // deduped, not recreated
+    expect(second.dropped).toEqual([
+      { title: 'dup-child', reason: 'already expanded from this parent in a prior call — pass force:true to re-expand anyway' },
+    ]);
+
+    const kids = await expandedChildrenOf(parentId);
+    expect(kids).toHaveLength(1); // still just the one child row from the first call
+    expect(kids[0].title).toBe('dup-child');
+  });
+
+  it('WI-1400: force:true bypasses cross-call dedup too, when a duplicate title is genuinely wanted', async () => {
+    const parent = await createOne({ kind: 'feature', title: 'twice-expanded forced', harness: 'papercup' });
+    const parentId = (parent.workItem as Record<string, unknown>).id as string;
+
+    const first = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }] });
+    expect(first.created).toHaveLength(1);
+    const second = await call(expandTool, { id: parentId, children: [{ title: 'dup-child' }], force: true });
     expect(second.created).toHaveLength(1);
 
     const kids = await expandedChildrenOf(parentId);
-    expect(kids).toHaveLength(2); // two distinct child rows, same title — re-expand is additive
+    expect(kids).toHaveLength(2); // two distinct child rows, same title — force is additive
     expect(new Set(kids.map((k) => k.issue_id)).size).toBe(2); // distinct ids
     expect(kids.every((k) => k.title === 'dup-child')).toBe(true);
   });

@@ -73,6 +73,13 @@ export function planExpansion(input: ExpansionInput): ExpansionPlan {
       dropped.push({ title, reason: 'duplicate title' });
       continue;
     }
+    if (input.existingChildTitles?.has(key)) {
+      dropped.push({
+        title,
+        reason: 'already expanded from this parent in a prior call — pass force:true to re-expand anyway',
+      });
+      continue;
+    }
     if (children.length >= max) {
       dropped.push({ title, reason: `over the ${max}-child cap` });
       continue;
