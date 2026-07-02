@@ -8,17 +8,22 @@
  * reach a stopping point and call `session:request_compaction`. Persisted per
  * session on `coord_presence.compaction_limit` (keyed by the session owner id).
  *
- * TODO(agent-managed-compaction D-007): clamp against the caller's model window
- * (`limit × 1.25 ≤ window − margin`) once the session model is resolvable in
- * ctx; for now a static sanity range applies (overshoot past a small window is
- * harmless — the model auto-compacts first, the soft limit just never fires).
+ * Clamped against the caller's model window (context-trimming-tiers D-001):
+ * `limit × 1.2 ≤ window − margin` — the spec resolves best-effort via
+ * resolveModelSpecForOwner (session settings.json → launch argv); unresolvable
+ * clamps against the conservative 200k window.
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
+import { resolveModelSpecForOwner } from '../../compaction-usage';
+import { clampCompactionLimit, defaultCompactionLimitForSpec } from '../../agent-config-constants';
 
-/** Soft limit applied when a session has set none. Read-time default (P-007). */
+/** Soft limit applied when a session has set none. Read-time default (P-007).
+ *  Superseded by the model-aware `defaultCompactionLimitForSpec` (context-
+ *  trimming-tiers D-001 — 200k window derives 158k, ≈ this value); kept as the
+ *  last-resort static fallback where no spec is in reach. */
 export const DEFAULT_COMPACTION_LIMIT_TOKENS = 160_000;
 
 export default defineTool({
@@ -42,7 +47,7 @@ export default defineTool({
       .min(20_000)
       .max(900_000)
       .describe(
-        'Soft compaction limit in tokens (below your model window; overshoot to ~125% is safe but wasteful).',
+        'Soft compaction limit in tokens. Clamped so limit × 1.2 stays under your model window minus margin (the ~20% overshoot allowance); overshooting the SOFT limit is safe but wasteful.',
       ),
   }),
   async handler(args, ctx) {

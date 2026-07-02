@@ -548,6 +548,10 @@ import './improvements/set-watchdog-tunables';
 import './config/list-overrides';
 import './config/reset-overrides';
 import './config/set-compaction-limit';
+// context-trimming-tiers-2026-07-01 P-005 — the tier-menu read/write surface
+// (per-tier soft compaction limits ride the menu):
+import './config/tiers-get';
+import './config/tiers-set';
 // agent-managed-compaction-2026-07-01 — the agent's "compact now, at a stopping point" verb:
 import './session/request-compaction';
 // sentinel-herald Phase 8 P-037 — pre-existing override mechanisms now self-register as
