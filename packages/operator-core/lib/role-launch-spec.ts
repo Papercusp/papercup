@@ -460,6 +460,9 @@ export interface LaunchSpec {
   promptFile: string;
   mcpUrl: string;
   mcpJsonContents: string;
+  /** Resolved persona tier (su path; context-trimming-tiers P-017/P-020) — the
+   *  launch route reads it to prune the fleet member's plugin surface. */
+  personaTier?: 'full' | 'fleet';
 }
 
 /**
@@ -669,5 +672,6 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     promptFile: rendered.baseSource,
     mcpUrl: mcpUrlStr,
     mcpJsonContents,
+    personaTier,
   };
 }

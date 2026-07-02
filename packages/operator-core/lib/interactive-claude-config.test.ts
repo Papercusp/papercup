@@ -42,6 +42,19 @@ function seedHome(h: string) {
   writeFileSync(join(c, '.credentials.json'), '{"token":"REAL"}');
   writeFileSync(join(c, 'settings.json'), '{"hooks":{"PreToolUse":[]}}');
   writeFileSync(join(c, 'plugins', 'config.json'), '{"verdict":true}');
+  // P-020 prune fixtures: a realistic installed_plugins registry + a heavy mcpServer.
+  writeFileSync(
+    join(c, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({
+      version: 2,
+      plugins: {
+        'github@claude-plugins-official': [{ scope: 'user' }],
+        'cloudflare@claude-plugins-official': [{ scope: 'user' }],
+        'firecrawl@claude-plugins-official': [{ scope: 'user' }],
+        'context7@claude-plugins-official': [{ scope: 'user' }],
+      },
+    }),
+  );
   writeFileSync(join(c, 'commands', 'foo.md'), '# /foo');
   // The user's PERSONAL global memory — must NOT leak into a psu session
   // (psu-isolation P-002 / D-001). On this box CLAUDE.md = `@AGENTS.md`.
@@ -49,7 +62,7 @@ function seedHome(h: string) {
   writeFileSync(join(c, 'AGENTS.md'), '# Personal rules\nAlways edit topic files, never MEMORY.md.\n');
   // A PEER's transcript already in the shared store — must NOT appear isolated.
   writeFileSync(join(c, 'projects', 'proj-hash', 'peer-uuid.jsonl'), '{"peer":1}');
-  writeFileSync(join(h, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
+  writeFileSync(join(h, '.claude.json'), '{"mcpServers":{"papercusp-su":{},"playwright":{}}}');
 }
 
 beforeEach(() => {
@@ -158,5 +171,27 @@ describe('writeInteractiveClaudeConfig', () => {
     // Still gets an isolated transcript store; just no symlinks to mirror.
     expect(lstatSync(join(configDir, 'projects')).isDirectory()).toBe(true);
     expect(existsSync(join(configDir, '.claude.json'))).toBe(false);
+  });
+
+  it('prunePlugins (context-trimming-tiers P-020): fleet members lose github/cloudflare/firecrawl + playwright, keep context7 + papercusp-su', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-prune', home, prunePlugins: true });
+    // plugins/ is a REAL dir: children link through, the registry is filtered.
+    const reg = JSON.parse(
+      readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'),
+    ) as { plugins: Record<string, unknown> };
+    expect(Object.keys(reg.plugins)).toEqual(['context7@claude-plugins-official']);
+    expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
+    // .claude.json is a filtered REAL copy: playwright gone, papercusp-su kept.
+    const cj = JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(Object.keys(cj.mcpServers)).toEqual(['papercusp-su']);
+    // Default (no prune) stays a symlink mirror with the full registry.
+    const { configDir: fullDir } = writeInteractiveClaudeConfig({ sid: 'su-full', home });
+    const fullReg = JSON.parse(
+      readFileSync(join(fullDir, 'plugins', 'installed_plugins.json'), 'utf8'),
+    ) as { plugins: Record<string, unknown> };
+    expect(Object.keys(fullReg.plugins)).toHaveLength(4);
   });
 });

@@ -84,7 +84,7 @@
  *
  * Server-only.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -215,6 +215,12 @@ export function writeInteractiveClaudeConfig(opts: {
     // memory — a psu session is steered only by the psu playbook + the P-001
     // project-guide splice, not the launching user's CLAUDE.md/AGENTS.md.
     if (PERSONAL_MEMORY_ENTRIES.has(name)) continue;
+    // P-020 fleet plugin prune: `plugins` becomes a REAL dir whose children
+    // symlink through, except installed_plugins.json which is a filtered copy.
+    if (opts.prunePlugins && name === 'plugins') {
+      writePrunedPluginsDir(join(srcClaude, name), join(configDir, name));
+      continue;
+    }
     linkInto(join(srcClaude, name), join(configDir, name));
   }
 
@@ -229,7 +235,72 @@ export function writeInteractiveClaudeConfig(opts: {
   // (no re-onboarding), theme, and MCP approvals. Writes pass through to the real
   // file, exactly as a non-isolated session shares it today.
   const srcJson = join(home, '.claude.json');
-  if (existsSync(srcJson)) linkInto(srcJson, join(configDir, '.claude.json'));
+  if (existsSync(srcJson)) {
+    if (opts.prunePlugins) {
+      // P-020: a filtered REAL copy — the playwright mcpServer dropped
+      // (papercusp-su + everything else kept verbatim).
+      writePrunedClaudeJson(srcJson, join(configDir, '.claude.json'));
+    } else {
+      linkInto(srcJson, join(configDir, '.claude.json'));
+    }
+  }
 
   return { configDir };
+}
+
+/** P-020: mirror `~/.claude/plugins` as a real dir — every child symlinked
+ *  through except `installed_plugins.json`, which is written as a FILTERED
+ *  real copy (FLEET_PRUNED_PLUGIN_NAMES dropped). Best-effort: any failure
+ *  falls back to the plain symlink (a full plugin surface, never a broken one). */
+function writePrunedPluginsDir(srcPlugins: string, destPlugins: string): void {
+  if (present(destPlugins)) return; // idempotent (resume)
+  try {
+    mkdirSync(destPlugins, { recursive: true });
+    for (const child of readdirSync(srcPlugins)) {
+      if (child === 'installed_plugins.json') continue;
+      linkInto(join(srcPlugins, child), join(destPlugins, child));
+    }
+    const regPath = join(srcPlugins, 'installed_plugins.json');
+    if (existsSync(regPath)) {
+      const reg = JSON.parse(readFileSync(regPath, 'utf8')) as {
+        plugins?: Record<string, unknown>;
+      };
+      if (reg.plugins && typeof reg.plugins === 'object') {
+        reg.plugins = Object.fromEntries(
+          Object.entries(reg.plugins).filter(([key]) => {
+            const name = key.split('@')[0] ?? key;
+            return !FLEET_PRUNED_PLUGIN_NAMES.has(name);
+          }),
+        );
+      }
+      writeFileSync(join(destPlugins, 'installed_plugins.json'), JSON.stringify(reg, null, 1));
+    }
+  } catch {
+    // Fall back to the full symlink — never a broken plugins dir.
+    try {
+      rmSync(destPlugins, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    linkInto(srcPlugins, destPlugins);
+  }
+}
+
+/** P-020: write a filtered real copy of `~/.claude.json` with the pruned
+ *  mcpServers removed. Best-effort: any failure falls back to the symlink. */
+function writePrunedClaudeJson(srcJson: string, destJson: string): void {
+  if (present(destJson)) return; // idempotent (resume)
+  try {
+    const j = JSON.parse(readFileSync(srcJson, 'utf8')) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    if (j.mcpServers && typeof j.mcpServers === 'object') {
+      j.mcpServers = Object.fromEntries(
+        Object.entries(j.mcpServers).filter(([name]) => !FLEET_PRUNED_MCP_SERVERS.has(name)),
+      );
+    }
+    writeFileSync(destJson, JSON.stringify(j, null, 1));
+  } catch {
+    linkInto(srcJson, destJson);
+  }
 }

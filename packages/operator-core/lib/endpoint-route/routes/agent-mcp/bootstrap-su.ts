@@ -1030,7 +1030,12 @@ const post = defineTool({
     let claudeConfigDir: string | null = null;
     if (agent === 'claude') {
       try {
-        claudeConfigDir = writeInteractiveClaudeConfig({ sid }).configDir;
+        // P-020: a fleet-tier member gets the pruned plugin/MCP surface
+        // (github/cloudflare/firecrawl plugins + the playwright mcpServer dropped).
+        claudeConfigDir = writeInteractiveClaudeConfig({
+          sid,
+          prunePlugins: spec.personaTier === 'fleet',
+        }).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
       }

@@ -18,7 +18,7 @@ const { estimateMock, specMock, setEstimateMock, setLimitMock, deathMock, openEs
     specMock: vi.fn(),
     setEstimateMock: vi.fn(async () => {}),
     setLimitMock: vi.fn(async () => {}),
-    deathMock: vi.fn(async () => false),
+    deathMock: vi.fn(async (_owner: string) => false),
     openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
   }));
 vi.mock('../compaction-usage', () => ({
