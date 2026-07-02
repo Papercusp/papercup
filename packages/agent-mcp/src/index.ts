@@ -19,6 +19,18 @@
 import './capability-tiers-papercusp';
 
 export { defineTool } from '@papercusp/tooldef';
+// Payload tiers (context-trimming-tiers-2026-07-01 D-004): the trimmed/standard/full
+// axis over WHAT a tool returns. Hosts parse the session tier (parsePayloadTier) into
+// ctx.contextTier; tools declare per-tier `shape` projections on defineTool.
+export {
+  applyPayloadTier,
+  extractPayloadTier,
+  parsePayloadTier,
+  resolvePayloadTier,
+  resetPayloadTierRatchet,
+  PAYLOAD_TIERS,
+} from '@papercusp/tooldef';
+export type { PayloadTier, PayloadShapers, PayloadShaperCtx } from '@papercusp/tooldef';
 // code-execution-tool-orchestration (B-CX-2A): the code-mode runtime, re-exported so the
 // operator-core `code:run` agent tool can compose it.
 export { runToolOrchestration } from '@papercusp/tooldef';

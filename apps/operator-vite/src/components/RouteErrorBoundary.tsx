@@ -34,7 +34,10 @@ interface State {
  *  have their own phrasings. */
 export const CHUNK_LOAD_ERROR_RE =
   /Importing a module script failed|Failed to fetch dynamically imported module|error loading dynamically imported module/i;
-const CHUNK_AUTO_RELOAD_KEY = 'pcusp-chunk-autoreload-at';
+/** SessionStorage key holding the last chunk-auto-reload timestamp. SHARED by
+ *  RouteErrorBoundary (Outlet) + DefaultRouterErrorComponent (root) so the two
+ *  boundaries share ONE 60s debounce and can't double-reload. Exported for tests. */
+export const CHUNK_AUTO_RELOAD_KEY = 'pcusp-chunk-autoreload-at';
 
 /** Should a chunk-shaped error auto-reload NOW? One shot per window (60s
  *  debounce via sessionStorage) so a genuinely-broken build can't reload-loop.

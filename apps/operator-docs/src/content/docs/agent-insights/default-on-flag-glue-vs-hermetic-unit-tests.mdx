@@ -52,7 +52,16 @@ Handlers that are *already* PG-bound (e.g. `system:gym-cycle` calls
 `getOrgPg()` itself) don't need this — adding glue there changes nothing
 about their test posture.
 
-**Check before you ship** (FB-05..FB-15 will all wire glue like this): grep
-the factory's existing `.test.ts` — if its tests invoke the handler without
-PG, your new default must not reach a pool. `enabled()`-first ordering is not
-enough once the flag defaults ON.
+**The pattern already recurred once** (2026-06-14, P-051): `makeScoutCycleAction`
+grew a *second* glue seam, `workspaceCeilingGate` (the workspace-wide scout
+spend ceiling preflight from `learning-governor/scout-ceiling.ts`), following
+exactly this shape — an optional param with no production default, wired only
+by `registerScoutCycleAction`, left unwired (and PG-free) in
+`scout-cycle-action.test.ts`. That confirms the fix generalizes: every new
+glue seam on this factory (and any other flag-gated-glue factory) needs the
+same optional-param-no-default treatment, not just the first one.
+
+**Check before you ship** (later frontier loops, FB-05..FB-15, wire glue the
+same way): grep the factory's existing `.test.ts` — if its tests invoke the
+handler without PG, your new default must not reach a pool. `enabled()`-first
+ordering is not enough once the flag defaults ON.

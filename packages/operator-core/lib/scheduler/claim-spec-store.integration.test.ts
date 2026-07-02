@@ -130,3 +130,57 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
   });
 
 });
+
+describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)', () => {
+  it('re-homing a spec to a DIFFERENT hive scope federates a TOMBSTONE (del) to the OLD scope + a put to the NEW', async () => {
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    await setClaimSpec({ beeId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'hiveA' }, db.sql);
+    const r = await setClaimSpec({ beeId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'hiveB' }, db.sql);
+    expect(r.ok).toBe(true);
+    const ops = await db.sql<{ op: string; harness_slug: string }[]>`
+      SELECT op, harness_slug FROM harness_shared.substrate_outbox
+       WHERE table_name='bee_claim_specs' AND key='su-rehome' ORDER BY id`;
+    // put(hiveA) from the first author, then the re-home: del(hiveA) = the tombstone
+    // to the OLD scope's peers, put(hiveB) = the spec under the NEW scope.
+    expect(ops).toEqual([
+      { op: 'put', harness_slug: 'hiveA' },
+      { op: 'del', harness_slug: 'hiveA' },
+      { op: 'put', harness_slug: 'hiveB' },
+    ]);
+    // The LOCAL row now lives under hive B, revision preserved-and-bumped.
+    const [row] = await db.sql<{ harness_slug: string; revision: number }[]>`
+      SELECT harness_slug, revision FROM harness_shared.bee_claim_specs WHERE bee_id='su-rehome'`;
+    expect(row.harness_slug).toBe('hiveB');
+    expect(row.revision).toBe(DEFAULT_CLAIM_SPEC.revision + 1);
+    // get_next reads the live row — one spec, under the new scope (no strand).
+    expect(await getClaimSpec({ beeId: 'su-rehome' }, db.sql)).toMatchObject({ specId: DEFAULT_CLAIM_SPEC.specId });
+  });
+
+  it('DOWNGRADING a hive-scoped spec to operator-scope (null) still tombstones the old scope; the new local row is not federated', async () => {
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    await setClaimSpec({ beeId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'hiveA' }, db.sql);
+    await setClaimSpec({ beeId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: null }, db.sql);
+    const ops = await db.sql<{ op: string; harness_slug: string | null }[]>`
+      SELECT op, harness_slug FROM harness_shared.substrate_outbox
+       WHERE table_name='bee_claim_specs' AND key='su-downgrade' ORDER BY id`;
+    // put(hiveA), then del(hiveA) tombstone; the re-insert is operator-scope (null
+    // harness_slug) so its INSERT never trips the mig-438 WHEN gate → not captured.
+    expect(ops).toEqual([
+      { op: 'put', harness_slug: 'hiveA' },
+      { op: 'del', harness_slug: 'hiveA' },
+    ]);
+    const [row] = await db.sql<{ harness_slug: string | null }[]>`
+      SELECT harness_slug FROM harness_shared.bee_claim_specs WHERE bee_id='su-downgrade'`;
+    expect(row.harness_slug).toBeNull();
+  });
+
+  it('a SAME-scope re-steer does NOT tombstone (only the in-place UPDATE capture)', async () => {
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    await setClaimSpec({ beeId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'hiveA' }, db.sql);
+    await setClaimSpec({ beeId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: 'hiveA' }, db.sql);
+    const ops = await db.sql<{ op: string }[]>`
+      SELECT op FROM harness_shared.substrate_outbox
+       WHERE table_name='bee_claim_specs' AND key='su-samescope' ORDER BY id`;
+    expect(ops.map((o) => o.op)).toEqual(['put', 'put']); // no 'del' — no re-home
+  });
+});

@@ -49,6 +49,47 @@ export async function setClaimSpec(
   // pin (a fixed wave), as opposed to a property-filtered standing lane. Denormalized so
   // over-reliance is a one-line COUNT, keeping the describe-by-property discipline visible.
   const idOnly = isIdOnlySelector(v.spec);
+
+  // L9 (cross-machine-coord-parity-and-trust-2026-07-01 P-058, audit D-013):
+  // TOMBSTONE ON SCOPE-DOWNGRADE. bee_claim_specs is keyed (workspace_id, bee_id)
+  // with no hive component, so a plain upsert that RE-HOMES a bee's spec to a
+  // different hive scope (H_old → H_new, or H_old → NULL/operator-local) re-homes
+  // the LOCAL row but STRANDS the stale row on H_old's peers: the UPDATE capture
+  // trigger (mig 438) federates only to the NEW scope, and a downgrade to NULL
+  // fails its `NEW.harness_slug IS NOT NULL` gate entirely — so H_old's bees keep
+  // reading the dead spec via get_next forever. On a genuine scope change, DELETE
+  // the old-scope row FIRST: its DELETE capture trigger (WHEN OLD.harness_slug IS
+  // NOT NULL) federates a tombstone to H_old's peers, who then drop the stale row.
+  // Then insert fresh under the new scope (revision preserved-and-bumped). The
+  // common same-scope path is untouched — still the in-place ON CONFLICT bump.
+  // (The audit also suggested widening the PK to include harness_slug; it is
+  // redundant here — the (ws,bee_id) PK already makes a cross-scope duplicate
+  // impossible and bee_ids are globally unique — and dropping a live federated
+  // table's PK is unjustified risk for this LOW item; the tombstone is the real
+  // strand fix.)
+  const prior = (await sql`
+    SELECT harness_slug, revision FROM harness_shared.bee_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as {
+    harness_slug: string | null;
+    revision: number;
+  }[];
+  const priorScope = prior[0]?.harness_slug ?? null;
+  const scopeChange = priorScope !== null && priorScope !== hiveSlug;
+
+  if (scopeChange) {
+    // Atomic: the tombstone (DELETE→old scope) + the re-insert (→new scope) commit
+    // together, so a bee never observes a no-spec window mid-re-home.
+    const nextRev = Math.max(prior[0]!.revision + 1, v.spec.revision);
+    const rows = (await sql.begin(async (tx: OrgSql) => {
+      await tx`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.beeId}`;
+      return (await tx`
+        INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+        VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
+        RETURNING revision`) as { revision: number }[];
+    })) as { revision: number }[];
+    return { ok: true, errors: [], revision: rows[0]?.revision };
+  }
+
   const rows = (await sql`
     INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
     VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
