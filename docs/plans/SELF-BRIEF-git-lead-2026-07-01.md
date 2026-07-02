@@ -1,115 +1,74 @@
-# SELF-BRIEF — git-plan lead (post-compaction pickup)
+# SELF-BRIEF — git-plan FLEET LEADER (post-compaction pickup)
 
 > **STALE SNAPSHOT of a live multi-agent system.** Before acting on any fleet /
 > claim / liveness statement below, re-run `coord:orient` (via the mcp-call
-> fallback — MCP is dropped) and reconcile. A separate agent is actively editing
-> the COORDINATION files in parallel; don't assume those are as you left them.
+> fallback — MCP is dropped) and reconcile. You LEAD a live 4-member fleet.
 
 ## Identity / session (structured)
-- **su-id:** `su-3700bc41-26db-4549-afb7-3dcf8fd072dc` (su-3700b)
+- **su-id:** `su-3700bc41-26db-4549-afb7-3dcf8fd072dc` (su-3700b) — on the **aviynw2** system account.
 - **workspace:** `papercusp-workspace` · **harness:** `papercusp`
 - **canonical tree (edit ONLY here):** `/home/marsh-office/papercupai-workspace/papercusp`
-  — the `…-staging` sibling is blocked by a worktree guard.
 - **MCP `papercusp-su` is DROPPED.** Drive it via:
   `node scripts/mcp-call.mjs <tool> '<json>' --client su-3700bc41-26db-4549-afb7-3dcf8fd072dc`
-  (colon tool names; `plans:set-status {slug,itemId,status}`; `plans:edit {slug,old_string,new_string,rationale}` is CAS on the plan markdown; `plans:add-item {slug,phase,items:[{text,importance}]}`).
-- **AUTO mode: ON** (D-007). **No fleet created yet** → not leading a live fleet, **no monitor loop armed**. (Leading a fleet later auto-enters AUTO + obliges `loop:arm`.)
+  (colon tool names; `plans:set-status {harness:'papercusp',slug,itemId,status}`).
+- **AUTO mode: ON.** **I LEAD fleet `git-plan`** — monitor loop ARMED (`loop:arm`, 600s;
+  `loop:end` only when the plan is done or the owner stops it).
 
-## What this project is
-ONE plan, `cross-machine-coord-parity-and-trust-2026-07-01` (papercusp harness),
-split across two agents:
-- **ME (su-3700b) = the GIT plan:** Phase 7 (`G-*`, p2p git transport) + Phase 8
-  (`DG-*`, distributed test gate). **I am responsible for driving it to a
-  production-ready release.**
-- **A separate Opus agent = the COORDINATION remainder:** Phase 9 hardening +
-  P-021. Handed off via **D-015** / `docs/plans/HANDOFF-coordination-phase9-2026-07-01.md`.
-  It is LIVE and editing `presence-gossip.ts`, `coord-message.ts`, `projections/presence.ts`,
-  `authority/lock-authority.ts`, etc. **Those files are SHARED — `coord:send` before touching.**
+## OWNER DIRECTIVES (latest wins — this is the current standing order)
+The owner changed the route THREE times; the FINAL standing order (2026-07-02) is:
+**Launch a fleet of 4 `claude-fable-5` agents @ effort xhigh, pinned to the aviynw4 account,
+take leadership, AUTO mode, and MANAGE THE FLEET until the plan is complete.** (This
+superseded "do it entirely yourself.") Also: **watch the aviynw2 account (the system login);
+before it runs out of usage, re-pin this session to another account** so work continues.
 
-## Durable docs (read these, don't re-derive)
-- `docs/plans/p2p-git-research-2026-07-01.md` — Radicle/Heartwood research → the architecture.
-- `docs/plans/FLEET-git-briefs-2026-07-01.md` — the 4 sonnet5 member briefs (shared preamble §0 + lanes A–D). **Launch material.**
-- `docs/plans/HANDOFF-coordination-phase9-2026-07-01.md` — what the other agent owns (so I don't collide).
-- The plan + decisions **D-009…D-016** (`plans:get`).
+## THE FLEET (git-plan) — 4× claude-fable-5:xhigh, account=aviynw4, leader=su-3700b
+Launched via `fleet:launch-on-plan` (one call per lane, count=1, per-lane launchContext).
+To relaunch a dead member: same call with its lane file.
+- **Lane A** — Policy/crefs, GC, scope: G-6 (P-030), G-5c (P-035), G-9 (P-042), G-1b (P-041).
+  `docs/plans/FLEET-lane-A-2026-07-01.md`
+- **Lane B** — Integrator completion + lock handoff: G-5b (P-034), G-5d (P-038), G-0 (P-033),
+  G-0b (P-037). Touches `authority/lock-authority.ts` (SHARED). `FLEET-lane-B-2026-07-01.md`
+- **Lane C** — Worktree bridge + bootstrap: G-7 (P-031), G-7b (P-036), G-7c (P-040), G-8
+  (P-032). `FLEET-lane-C-2026-07-01.md`
+- **Lane D** — Distributed test gate: DG-1..DG-6 (P-044..P-049). `FLEET-lane-D-2026-07-01.md`
+- Shared brief: `docs/plans/FLEET-git-briefs-2026-07-01.md` (§0 rules + leader-landed list).
 
-## Decisions map
-- D-009 p2p-first (skip GitHub transport, owner directive) · D-010 p2p git architecture
-  (per-device namespaces + COMPUTED canonical refs + native v2 fetch, NOT bundles/loose-objects)
-  · D-011 hole-review fixes + distributed-gate design · D-012 no queen election (P-018)
-  · D-013 audit findings · D-014 **honest completion matrix** · D-015 coordination handoff
-  · D-016 git fleet plan (4 sonnet5).
+## LEADER-HELD (mine, not the fleet's)
+- **G-3 announcements (P-027)** — `{device, sigrefsOid}` as P-009 federated events → fetch trigger.
+- **G-2 LIVE channel adapter** — open a `papercusp/hive-git` Protomux sub-stream per fetch on the
+  real hive-swarm connections, bridged to `fetchOverDuplex`/`serveUploadPack` (transport core done).
+- Review EVERY merged member diff (fable5 = capable but review closely).
 
-## GIT PLAN STATUS
-**G-1 storage — DONE + green (I built it this session).** `sync/hive-git/storage.ts`
-+ `storage.integration.test.ts` (7 tests, real bare repo). Key seams the rest build on:
-- `deviceNamespaceKey(base64→hex)` = THE device→namespace mapping (never re-encode).
-- `hiveGitRepoPath(hiveHomeSlug, repoKey)` (one bare repo per (hive, repo)); root =
-  `~/.papercusp/hive-git` (env `PAPERCUSP_HIVE_GIT_ROOT`).
-- `ensureHiveGitRepo`, `writeNamespaceRef`/`readNamespaceRef`/`deleteNamespaceRef` (CAS on write),
-  `listNamespaces`/`listNamespaceRefs`, `RunGit` seam + `defaultRunGit`.
-- (Was a PHANTOM-DONE — plan said done, no code existed; reconciled + genuinely done now.)
+## WHAT I ALREADY LANDED (leader, all green — build ON, don't redo)
+`packages/operator-core/lib/sync/hive-git/`:
+- **G-1** `storage.ts` (+`storage.integration.test.ts`, 7) — per-device-namespace bare-repo store.
+- **G-2** `fetch-transport.ts` + `git-ext-bridge.mjs` (+integration test, 4) — native v2 fetch over
+  a Duplex (ext:: bridge; sockets MUST be `allowHalfOpen:true`).
+- **G-4/G-4b** `sigrefs.ts` (+integration test, 6) — device-signed snapshots + rollback + reconcile.
+- **G-5 core** `integrator.ts` (+integration test, 5) — merge-queue staging (ff/merge-tree/skip).
+- **G-10** `secrets-guard.ts` (+unit test, 7) — publish-time secret scan.
+Plan items marked done: P-025(G-1), P-026(G-2), P-028(G-4), P-039(G-4b), P-029(G-5), P-043(G-10).
 
-**LEADER-HELD serial spine (mine, build in order):**
-- **G-2 fetch transport (P-026) — NEXT.** `papercusp/hive-git` Protomux channel on the
-  EXISTING hive-swarm connections; native git protocol-v2 fetch (spawn `git-upload-pack`
-  with `GIT_PROTOCOL=version=2`, or a remote helper with the `connect` capability) piped
-  over the duplex stream; multiplexed concurrent fetches. Reuse the `createTopicGossip`
-  chassis pattern (`sync/hyperbee/topic-gossip.ts`) for channel wiring.
-- G-3 announcements (P-027): `{device, sigrefsOid}` as **P-009 federated events** → fetch trigger.
-- G-5 integrator (P-029) + G-5b two-speed gate (P-034) + **G-5d epoch fencing (P-038, hole)**:
-  lock-authority-lease holder computes `staging` canonical ref (merge member namespace heads →
-  green gate → publish in own namespace, signed `(epoch,seq)`; ff-only accept).
-- G-7 worktree bridge (P-031) + G-7b safety (P-036) + **G-7c ff-only never-reset (P-040, hole)**.
-- G-8 cold-clone bootstrap (P-032).
-- **G-0 sha-token lock handoff (P-033) + G-0b park protocol (P-037)** — **COLLIDES with
-  `authority/lock-authority.ts` (the coord agent's P-021). Keep it myself + coordinate.**
+## COORDINATION AUDIT (su-99a02's work) — DONE, verdict: SOUND
+Audited H1/H2/H3 (P-050/51/52), M6 (P-055), M5b (P-054), M8 (P-057), L9 (P-058), P-021. All
+fixes correct AND wired (attested-id gate; del device-pin at frame+sink; M6 steer-gate via
+`hiveScoped`; reaper proven NON-federating). 81/81 audit-surface unit tests green. No bugs
+needing fixes. Residuals honestly deferred (H1 opaque owner_id; P-021 live-cutover not wired).
 
-**FLEET LANES (members; briefs written; NOT started — waiting on su-cfd1b):**
-- A Sigrefs: G-4 (P-028) + G-4b rollback (P-039)
-- B Policy/rules: G-6 (P-030) + G-5c integration-requests queue (P-035)
-- C Guards/GC: G-10 secrets guard (P-043) + G-9 GC (P-042) + G-1b (P-041)
-- D Dist-gate seed: DG-1 verdict facts (P-044) + DG-2 inputsHash/manifest (P-045)
-- Later DG: DG-3 scheduling (P-046), DG-4 gate-trust+spot-checks (P-047), DG-5 aggregator (P-048), DG-6 hermeticity (P-049).
+## THE RELEASE GATE (my red gate to green — IN PROGRESS)
+Gate was RED ~19-20 consecutive reds (deploys frozen ~13h) on a SERIES of already-fixed
+transient tests (ctx_tier, then design-primitives — both pass in HEAD now). Root cause of "no
+green": each checkpoint judged a slightly-stale candidate. **Fired a fresh `release:checkpoint-run`
+on the fixed HEAD (unit `papercup-green-checkpoint-manual-au9t47`, ~40min).** ON PICKUP: check
+`release:deploy op:status`; if green → `release:deploy op:trigger` to ship; if a NEW red →
+find it in `~/.papercusp/checkpoint-logs/` (newest) or the 01:51-style logs, fix, re-run.
+Levers: `git-sync:run` → `release:checkpoint-run` → `release:deploy op:trigger`.
 
-## THE BLOCKER + FLEET LAUNCH
-**Waiting on `su-cfd1b` to finish token-savings** before launching the fleet (else sonnet5
-members hit their cap turn one). On launch: **`fleet:launch-on-plan`** (desktop wrapper, NOT
-hand-rolled capability:terminal), **4× sonnet5 @ high**, **default system account** (ANNOUNCE
-account + model — disclosure required), worktree-isolated, assign lanes A–D from the briefs,
-**`loop:arm` a monitor loop + AUTO** the moment the fleet is created (I lead + review every
-merged diff; sonnet5 = weaker = close review).
-
-## OPEN QUESTIONS TO OWNER (unanswered — resolve on pickup)
-1. **Account routing** — I'm defaulting the fleet to the **system account**; owner may want
-   a pool pin or `auto` gateway routing. (Disclosed, awaiting steer.)
-2. **Build G-2 now vs pause all git work until the fleet launches together?** My inclination:
-   **keep building G-2** (it's mine regardless + de-risks members' integration points).
-
-## CONVENTIONS / GOTCHAS (hard-won)
-- New federated table = the **6-surface recipe** (`agent-insights/retire-or-add-a-federated-table`)
-  **+ the `stamp_local_federated_write` BEFORE trigger** in the migration (the M7 trap; the
-  `stamp-trigger-coverage.integration.test.ts` guard catches an omission — run it).
-- Reserve migs with `db:next-migration`; **strip `BEGIN;/COMMIT;`** when `sql.unsafe()`-applying
-  a mig in a test (pooled conn rejects). If `Edit` won't match a line with `—`/`…`/NUL → python heredoc.
-- Tests: `cd packages/operator-core`; unit `npx vitest run <path>`; integration (real PG/git)
-  `npx vitest run --config vitest.integration.config.ts <path>`.
-- **Fail-soft on every network/merge/apply path** (try/catch, never throw on the hot path).
-- Reuse: device-signing idiom (`presence-gossip.ts`/`hive-announce.ts`: raw-32 b64 pubkey →
-  SPKI rebuild → verify, fixed-field-order signing bytes, freshness window); the **P-009
-  federated-event rail** for announcements; `federated-wake-rate.ts` for per-author budgets;
-  `topic-gossip.ts createTopicGossip` for a new Protomux channel family.
-
-## COORDINATION PLAN CONTEXT (not mine — awareness only; see D-014 for the matrix)
-Phases 0–3 + P-016/17/18/19/20/22/24/25 DONE. Audit (D-013) fixes: **M4/M5a/M7 LANDED by me**;
-**M5b/M8/L9 + H1–H3/M6 + LIVE-1 are the other agent's** (Phase 9). **Two standing headlines
-(D-014):** (a) the whole parity layer is **UNPROVEN-LIVE** — in-process green ≠ live green;
-LIVE-1 (a 2-machine rig) is the feature-done GATE. (b) SU-to-SU parity is **FLAG-DARK**
-(`PRESENCE_GOSSIP` writer off → remote agents not addressable in prod yet). The multi-owner
-security holes (H1–H3, M6) BLOCK multi-owner enablement; same-owner dogfood unaffected.
-
-## NEXT CONCRETE ACTION (on pickup)
-1. `coord:orient` (mcp-call) — reconcile live state; check inbox for owner answers to the 2 open Qs.
-2. Check if **su-cfd1b** token-savings shipped (`coord:presence`/ask). If YES → launch the
-   4-member fleet (D-016 mechanics + briefs). If NO → continue **G-2** (per my inclination,
-   unless the owner answered Q2 otherwise).
-3. Whatever git work: SHARED-file discipline (coord:send before `lock-authority.ts`/`coord-message.ts`/`hive-policy-schema.ts`), tests green, `plans:set-status` + `plans:edit` evidence, keep D-014/`## Now` honest.
+## NEXT CONCRETE ACTIONS (each monitor wake)
+1. `coord:orient` / `coord:glance` / `fleet:assignments` — reconcile; reclaim orphaned/stalled
+   lane claims; relaunch any dead member (same lane launchContext); answer cross-lane questions.
+2. Review any member diffs landed since last wake (tests green? tsc clean? matches the lane spec?).
+3. Check the gate (`release:deploy op:status`); trigger the deploy when green.
+4. Check aviynw2 usage (`accounts:list`/`gateway:status`); re-pin this session before exhaustion.
+5. Build/advance the leader-held G-3 + G-2 adapter when not firefighting.
+6. `loop:end` only when the whole plan is done (all G-*/DG-* + LIVE-1 gate) or the owner stops it.
