@@ -66,6 +66,9 @@ import {
   hexToRgb,
   colorSwatch,
   schemeNameInAccent,
+  assertLaunchPersona,
+  preflightWindowGuard,
+  runLaunchPreflight,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -177,7 +180,8 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
     expect(full.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.full);
     expect(trimmed.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
     // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
-    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~50k' });
+    // context-trimming-tiers P-018: trimmed LIVE-measured 83.2k on sonnet (was '~50k').
+    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~83k' });
   });
 
   it('picker values are a subset of the --context-size flag values parseArgs accepts', () => {
@@ -399,6 +403,8 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       // su-context-size-variants (WI-1282): defaults to null (each client's native default).
       contextSize: null,
+      personaTier: null,
+      force: false,
       yes: false,
       brain: false,
       account: null,
@@ -455,6 +461,8 @@ describe('psu-launcher arg parsing', () => {
       launchContext: null,
       profile: null,
       contextSize: null,
+      personaTier: null,
+      force: false,
       yes: false,
       brain: false,
       account: null,
@@ -2029,5 +2037,57 @@ describe('picker color swatch (fleet-color-schemes)', () => {
     expect(schemeNameInAccent({ name: 'forest', cursor: 'nope' })).toBe('forest');
     expect(schemeNameInAccent(null)).toBe('');
     expect(schemeNameInAccent({ name: 'x' })).toBe('x');
+  });
+});
+
+describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () => {
+  it('assertLaunchPersona: missing / absent / tiny prompt files fail LOUD; a real one returns its size', () => {
+    expect(() => assertLaunchPersona(null)).toThrow(/no persona prompt file/i);
+    expect(() => assertLaunchPersona('/nonexistent/persona.md')).toThrow(/missing\/unreadable/);
+    const dir = mkdtempSync(join(tmpdir(), 'psu-p016-'));
+    const tiny = join(dir, 'tiny.md');
+    writeFileSync(tiny, '# stub');
+    expect(() => assertLaunchPersona(tiny)).toThrow(/did not render\/append/);
+    const real = join(dir, 'real.md');
+    writeFileSync(real, 'x'.repeat(5_000));
+    expect(assertLaunchPersona(real)).toBe(5_000);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('preflightWindowGuard: warn ≥35%, refuse ≥60%, [1m] widens the window', () => {
+    // trimmed baseline 55k + ~13.5k persona ≈ 68.5k of 200k ≈ 34% → ok
+    const ok = preflightWindowGuard({ personaBytes: 50_000, contextSize: 'trimmed', model: 'sonnet' });
+    expect(ok.level).toBe('ok');
+    // full baseline 152k + ~28k persona ≈ 180k of 200k = 90% → refuse
+    const refuse = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'sonnet' });
+    expect(refuse.level).toBe('refuse');
+    // same on a [1m] window → 18% → ok
+    const wide = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'sonnet[1m]' });
+    expect(wide.level).toBe('ok');
+    // trimmed + a big persona lands the warn band (55k + 27k ≈ 82k = 41%)
+    const warn = preflightWindowGuard({ personaBytes: 100_000, contextSize: 'trimmed', model: 'sonnet' });
+    expect(warn.level).toBe('warn');
+  });
+
+  it('runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psu-p018-'));
+    const persona = join(dir, 'persona.md');
+    writeFileSync(persona, 'x'.repeat(105_000));
+    expect(() =>
+      runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'sonnet', force: false }),
+    ).toThrow(/--force/);
+    const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const g = runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'sonnet', force: true });
+    expect(g.level).toBe('refuse');
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('parseArgs: --persona-tier + --force parse (P-017/P-018)', () => {
+    expect(parseArgs([]).personaTier).toBeNull();
+    expect(parseArgs(['--persona-tier=fleet']).personaTier).toBe('fleet');
+    expect(parseArgs([]).force).toBe(false);
+    expect(parseArgs(['--force']).force).toBe(true);
   });
 });

@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -2762,6 +2762,14 @@ async function roleFlow(args, role, rolesMeta) {
   // resume use. claude/codex role hooks are user-level / baked into the codex home.
   const roleCoordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const roleCoordExtPath = res.agent === 'omp' && existsSync(roleCoordExt) ? roleCoordExt : undefined;
+  // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
+  // assertion + window guard — fail loud BEFORE spawning a doomed session.
+  try {
+    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, force: args.force });
+  } catch (e) {
+    console.error(e?.message ?? String(e));
+    process.exit(1);
+  }
   const { bin, args: launchArgs } = roleLaunchArgs(res.agent, {
     promptFile: res.promptFile,
     mcpJsonPath: res.mcpJsonPath,
@@ -2956,6 +2964,14 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // P-020: exec the RAW backend (not a *-su wrapper) with the engineer
   // playbook (res.promptFile) + flags. MCP + lock hooks are user-level for
   // claude/omp (they survive a raw launch); codex runs in res.codexHome.
+  // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
+  // assertion + window guard — fail loud BEFORE spawning a doomed session.
+  try {
+    runLaunchPreflight({ promptFile: res.promptFile, contextSize: args.contextSize, model: args.model, force: args.force });
+  } catch (e) {
+    console.error(e?.message ?? String(e));
+    process.exit(1);
+  }
   const { bin, args: baseArgs } = suLaunchArgs(res.agent, {
     promptFile: res.promptFile,
     coordExtPath: res.coordExtPath,
