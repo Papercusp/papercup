@@ -21,6 +21,7 @@ import { FLAGS } from '@papercusp/flags';
 import {
   spawnSubstrateSidecar,
   registerSidecarShutdownHooks,
+  stopSubstrateSidecar,
 } from './substrate-sidecar-spawn';
 import { getSubstrateIpcClient } from './substrate-ipc-client';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
@@ -209,6 +210,24 @@ export async function bootSubstrateWithFallback(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn('[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);
+    // WI-900 (M4): this catch also covers a PARTIAL mid-boot failure — the sidecar
+    // spawned + passed healthz, `bootAllHarnessesForActiveWorkspace` ran routed
+    // through it (line ~203 above), and some harnesses booted successfully via the
+    // sidecar (opening their corestores THERE, under its exclusive per-path file
+    // lock) before a later harness's boot call threw. Without stopping the
+    // still-alive sidecar first, this in-process retry re-runs
+    // bootAllHarnessesForActiveWorkspace for EVERY harness (including the ones the
+    // sidecar already has open) — those corestore paths are lock-held by the
+    // sidecar process, so the in-process open fails too: the harness boots in
+    // NEITHER process. Stop the sidecar (idempotent no-op if it never spawned /
+    // already exited) so it releases every lock it holds BEFORE the in-process
+    // fallback tries to reacquire them.
+    await stopSubstrateSidecar().catch((e) => {
+      console.warn(
+        '[substrate-boot] stopSubstrateSidecar during fallback failed (continuing anyway):',
+        e instanceof Error ? e.message : String(e),
+      );
+    });
     // Sidecar unavailable → clear the defaults so standalone boots use in-process.
     setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false });
     const result = await bootAllHarnessesForActiveWorkspace(opts);

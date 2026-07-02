@@ -93,10 +93,15 @@ export function StepLocalModel() {
     else setInstalling(true);
     setInstallError(null);
     try {
+      // provisionBinary:true (WI-1617/D-009 #2) — resolve a real llama-server binary (a cached
+      // hit is fast; a first-time prebuilt-asset download or from-source build genuinely takes
+      // real minutes) instead of assuming one is already on the user's PATH. Safe to send on
+      // every install/start call: resolveLlamaBinary re-verifies its cache via content hash
+      // rather than re-fetching/rebuilding unconditionally.
       const r = await fetch('/api/desktop/local-model-install', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ start }),
+        body: JSON.stringify({ start, provisionBinary: true }),
       });
       const j = (await r.json()) as { ok: boolean; result?: ApplyResult; error?: string };
       if (!r.ok || !j.ok) {

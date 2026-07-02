@@ -2356,6 +2356,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pendingRetrySetTimeout = opts.pendingRetrySetTimeout ?? setTimeout;
   const pendingRetryClearTimeout = opts.pendingRetryClearTimeout ?? clearTimeout;
   let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  // WI-1631: the promise of a CURRENTLY-EXECUTING retry tick, if any. `close()`
+  // clearing `pendingRetryTimer` only cancels a still-SCHEDULED timer — a tick
+  // that already fired and is mid-`retryPendingOnce()` (e.g. awaiting an
+  // openRemoteLog call) keeps running in the background after `close()`
+  // resolves, unawaited, and can still hit the tick's own `console.error(...)`
+  // calls afterward — racing a caller that restores a `console.error` spy right
+  // after `close()` returns (as boot.test.ts's WI-1544 #3 tests do), and
+  // tripping vitest-fail-on-console on an already-restored, tracked
+  // console.error. `close()` awaits this so no tick can straggle past it.
+  let inFlightPendingRetryTick: Promise<void> | null = null;
   // WI-1544: once-per-peer stderr dedup for retry-tick failures (the tick fires
   // every ~5s for up to 30min — one line per peer is signal, 360 are noise).
   const loggedRetryErrorKeys = new Set<string>();
@@ -2482,13 +2492,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
   function armPendingRetry(): void {
     if (pendingRetryMs <= 0 || stopped) return;
+    // The callback stays `async` (its returned promise resolves only once the
+    // whole tick — including the re-arm — is done) so a caller that awaits
+    // what `pendingRetrySetTimeout` schedules (the real setTimeout ignores
+    // the return value; test doubles like admission-pending-retry.test.ts's
+    // capturePendingRetryTimer().run() explicitly `await cb()`) keeps seeing
+    // the exact same synchronization it always has. `inFlightPendingRetryTick`
+    // is set synchronously, before this callback's first await, purely so
+    // close() (running from a DIFFERENT call stack, e.g. concurrently with an
+    // already-fired real timer tick) can also find and await it — see close().
     const timer = pendingRetrySetTimeout(async () => {
+      const tick = (async () => {
+        try {
+          await retryPendingOnce();
+        } catch {
+          // Defensive: a tick failure must never kill the retry chain.
+        } finally {
+          armPendingRetry(); // arm the NEXT tick only after this one finished
+        }
+      })();
+      inFlightPendingRetryTick = tick;
       try {
-        await retryPendingOnce();
-      } catch {
-        // Defensive: a tick failure must never kill the retry chain.
+        await tick;
       } finally {
-        armPendingRetry(); // arm the NEXT tick only after this one finished
+        if (inFlightPendingRetryTick === tick) inFlightPendingRetryTick = null;
       }
     }, pendingRetryMs);
     if (typeof (timer as { unref?: () => void }).unref === 'function') {
@@ -2933,6 +2960,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           pendingRetryClearTimeout(pendingRetryTimer);
         } catch {
           // no-op
+        }
+      }
+      // WI-1631: clearTimeout above only cancels a still-SCHEDULED tick — a
+      // tick that already FIRED and is mid-flight (e.g. awaiting
+      // openRemoteLog inside retryPendingOnce) is NOT cancelled and keeps
+      // running after close() would otherwise resolve. Await it here so any
+      // console.error / side effect it still produces happens before close()
+      // returns, not stragglingly after (the race a caller that restores a
+      // console.error spy right after close() — e.g. a test's cleanup stack —
+      // would otherwise lose to).
+      if (inFlightPendingRetryTick) {
+        try {
+          await inFlightPendingRetryTick;
+        } catch {
+          // no-op — the tick's own catch already handled/logged its error.
         }
       }
       if (swarmJoinRetryTimer) {

@@ -4,14 +4,28 @@
  * (same core as the CLI and the `provisioner:install` agent-tool): writes the backend's systemd
  * unit and registers it in the gateway's durable local-backend pool.
  *
- * Body: `{ start?: boolean }`. `start` DEFAULTS TO FALSE — config-write + gateway-registration
- * only, no process started, no GPU touched. `start:true` also enables+starts the systemd unit
- * and health-checks it, which DOES load the model onto the GPU; the StepLocalModel UI gates
- * that behind an explicit confirmation (see its warning copy) — this route trusts the caller
- * already got that confirmation and does not re-derive it server-side.
+ * Body: `{ start?: boolean, provisionBinary?: boolean }`.
+ *  - `start` DEFAULTS TO FALSE — config-write + gateway-registration only, no process started,
+ *    no GPU touched. `start:true` also enables+starts the systemd unit and health-checks it,
+ *    which DOES load the model onto the GPU; the StepLocalModel UI gates that behind an
+ *    explicit confirmation (see its warning copy) — this route trusts the caller already got
+ *    that confirmation and does not re-derive it server-side.
+ *  - `provisionBinary` DEFAULTS TO FALSE (mirrors the CLI's opt-in `--provision-binary` flag,
+ *    WI-1617/D-009 #2). When true, resolves (and, on a cache miss, downloads a matching
+ *    GitHub-release prebuilt or builds from source — llama-binary.ts's `resolveLlamaBinary`,
+ *    itself opt-in/heavy on purpose) a real `llama-server` binary BEFORE planning, so the
+ *    rendered systemd unit points at that resolved binPath instead of assuming `llama-server`
+ *    is already on the user's PATH. A from-source build genuinely takes real minutes of
+ *    CPU/network — this request can be slow when `provisionBinary:true` is set and there is no
+ *    cache hit; StepLocalModel.tsx's "Installing…" state already covers an arbitrarily long
+ *    wait (no client-side timeout on this same-machine fetch). On a resolve failure, the route
+ *    returns `{ ok:false, error }` WITHOUT falling back to a bare-PATH assumption — a caller
+ *    that explicitly asked for binary provisioning gets an honest failure, not a silent skip.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { planProvision, applyProvision } from '../../../provisioner/provision';
+import { detectHardware } from '../../../provisioner/hardware-detect';
+import { resolveLlamaBinary, computeCapToArch } from '../../../provisioner/llama-binary';
 
 export default defineTool({
   method: 'POST',
@@ -19,14 +33,28 @@ export default defineTool({
   auth: {},
   async handler(req: Request) {
     let start = false;
+    let provisionBinary = false;
     try {
-      const body = (await req.json().catch(() => ({}))) as { start?: unknown };
+      const body = (await req.json().catch(() => ({}))) as { start?: unknown; provisionBinary?: unknown };
       start = body?.start === true;
+      provisionBinary = body?.provisionBinary === true;
     } catch {
-      // no/invalid body — default to start:false (the safe path)
+      // no/invalid body — default to start:false / provisionBinary:false (the safe path)
     }
     try {
-      const plan = await planProvision();
+      let binPath: string | undefined;
+      if (provisionBinary) {
+        const hw = await detectHardware();
+        const binaryResult = await resolveLlamaBinary(hw, {
+          cudaArch: hw.gpu?.vendor === 'nvidia' && hw.gpu.computeCap ? computeCapToArch(hw.gpu.computeCap) : undefined,
+          cudaHostCompiler: hw.gpu?.vendor === 'nvidia' ? process.env.PAPERCUSP_CUDA_HOST_COMPILER : undefined,
+        });
+        if (!binaryResult.ok) {
+          return Response.json({ ok: false, error: `binary provisioning failed: ${binaryResult.blocked}` }, { status: 500 });
+        }
+        binPath = binaryResult.binPath;
+      }
+      const plan = await planProvision({ binPath });
       const result = await applyProvision(plan, { start });
       return Response.json({ ok: result.ok, plan, result });
     } catch (e) {

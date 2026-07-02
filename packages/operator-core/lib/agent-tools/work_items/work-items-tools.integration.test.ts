@@ -305,7 +305,9 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const claimedFeat = await claimOne({ id: featId, harness: 'papercup' });
     expect((claimedFeat.workItem as Record<string, unknown>).assignee).toBe('su-tester');
 
-    const closed = await setStateOne({ id: bugId, state: 'closed' });
+    // 'closed' is a terminal issue-family state → the completion-integrity gate
+    // (work-items.ts setWorkItemState) requires a non-empty completionRef.
+    const closed = await setStateOne({ id: bugId, state: 'closed', completionRef: 'test: closing bug b' });
     expect((closed.workItem as Record<string, unknown>).state).toBe('closed');
     const progressed = await setStateOne({ id: featId, state: 'in_progress', harness: 'papercup' });
     expect((progressed.workItem as Record<string, unknown>).state).toBe('in_progress');
@@ -490,7 +492,14 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
   it('WI-1400: expanding a SETTLED parent is REFUSED by default (fail closed — no orphan children)', async () => {
     const parent = await createOne({ kind: 'feature', title: 'settled parent', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
-    const settled = await setStateOne({ id: parentId, state: 'passed', harness: 'papercup' });
+    // 'passed' is a terminal feature-family state → the completion-integrity gate requires
+    // a non-empty completionRef.
+    const settled = await setStateOne({
+      id: parentId,
+      state: 'passed',
+      harness: 'papercup',
+      completionRef: 'test: settling the parent',
+    });
     expect((settled.workItem as Record<string, unknown>).state).toBe('passed');
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }] });
@@ -504,7 +513,13 @@ describe('C1 — work_items:expand (tool, real PG)', () => {
   it('WI-1400: force:true overrides the settled-parent guard for a deliberate re-decomposition', async () => {
     const parent = await createOne({ kind: 'feature', title: 'settled parent forced', harness: 'papercup' });
     const parentId = (parent.workItem as Record<string, unknown>).id as string;
-    await setStateOne({ id: parentId, state: 'deprecated', harness: 'papercup' });
+    const settled = await setStateOne({
+      id: parentId,
+      state: 'deprecated',
+      harness: 'papercup',
+      completionRef: 'test: deprecating the parent',
+    });
+    expect((settled.workItem as Record<string, unknown>).state).toBe('deprecated'); // precondition actually held
 
     const res = await call(expandTool, { id: parentId, children: [{ title: 'late child' }], force: true });
     expect(res.ok).toBe(true);

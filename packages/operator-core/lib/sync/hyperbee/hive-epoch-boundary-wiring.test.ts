@@ -33,6 +33,7 @@ describe('advanceEpochOnHiveBoundary', () => {
     const seams: BoundaryRekeySeams = {
       resolveCrypto: async () => ({}) as never,
       loadAllMemberPubkeys: async () => ['A', 'B', 'C'],
+      loadRevokedPubkeys: async () => new Set(),
       resolveAuthorPubkey: async () => 'owner-pub',
       advanceAndWrap: async (_c, _ctx, remaining) => {
         seenRemaining = remaining;
@@ -63,6 +64,7 @@ describe('advanceEpochOnHiveBoundary', () => {
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A'],
+        loadRevokedPubkeys: async () => new Set(),
         resolveAuthorPubkey: async () => null,
         advanceAndWrap: async (_c, ctx) => {
           ctxSeen = ctx;
@@ -82,6 +84,7 @@ describe('advanceEpochOnHiveBoundary', () => {
       {
         resolveCrypto: async () => ({}) as never,
         loadAllMemberPubkeys: async () => ['A', 'B'],
+        loadRevokedPubkeys: async () => new Set(),
         resolveAuthorPubkey: async () => null,
         advanceAndWrap: async (_c, _ctx, remaining) => {
           seenRemaining = remaining;
@@ -92,6 +95,58 @@ describe('advanceEpochOnHiveBoundary', () => {
     );
     expect([...seenRemaining].sort()).toEqual(['A', 'B']);
     expect(r.applied).toBe(true);
+  });
+
+  // WI-566 audit: SECURITY BUG found + fixed. Before the fix, `remaining` excluded ONLY
+  // this call's own `cutOffPubkeys` — a device revoked in a PRIOR boundary call (still
+  // present in device_attestations; revocation is a blocklist, not a deletion) was NEVER
+  // excluded on any SUBSEQUENT boundary event, silently re-granting it the new epoch key
+  // and undoing the earlier cut-off. This is the K-CUT invariant's persistence across
+  // repeated boundaries, not just the single call that first revoked the member.
+  it('K-CUT PERSISTS across boundaries: a device revoked in a PRIOR call is excluded from a LATER (unrelated) boundary too', async () => {
+    let seenRemaining: readonly string[] = [];
+    // 'A' was revoked in an EARLIER call (not this one's cutOffPubkeys) — it must still be
+    // excluded here via the accumulated revoked-pubkeys union, not just this call's cutOff.
+    const r = await advanceEpochOnHiveBoundary(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true, cutOffPubkeys: ['B'] }, // THIS call revokes B, not A
+      {
+        resolveCrypto: async () => ({}) as never,
+        loadAllMemberPubkeys: async () => ['A', 'B', 'C'], // A's device_attestations row still exists
+        loadRevokedPubkeys: async () => new Set(['A']), // A was revoked in a PRIOR boundary call
+        resolveAuthorPubkey: async () => 'owner-pub',
+        advanceAndWrap: async (_c, _ctx, remaining) => {
+          seenRemaining = remaining;
+          return {
+            newEpoch: 2,
+            wrapped: remaining.map((pk) => ({ memberDevicePubkey: pk, wrappedKey: new Uint8Array([1]) })),
+          };
+        },
+        persistWrappedKeys: async (_w, _s, _e, rows) => rows.length,
+      },
+    );
+    // Only C remains: B is THIS call's fresh cut-off, A is the historically-revoked device —
+    // neither may receive the new epoch key.
+    expect([...seenRemaining].sort()).toEqual(['C']);
+    expect(r).toEqual({ applied: true, newEpoch: 2, distributed: 1 });
+  });
+
+  it('go-private also excludes historically-revoked devices (not just the live member set)', async () => {
+    let seenRemaining: readonly string[] = [];
+    await advanceEpochOnHiveBoundary(
+      { workspaceId: 'w', hiveHomeSlug: 'h', enabled: true }, // no cutOffPubkeys at all — this is the go-private shape
+      {
+        resolveCrypto: async () => ({}) as never,
+        loadAllMemberPubkeys: async () => ['A', 'B'],
+        loadRevokedPubkeys: async () => new Set(['B']), // B was revoked earlier
+        resolveAuthorPubkey: async () => null,
+        advanceAndWrap: async (_c, _ctx, remaining) => {
+          seenRemaining = remaining;
+          return { newEpoch: 3, wrapped: [] };
+        },
+        persistWrappedKeys: async () => 0,
+      },
+    );
+    expect(seenRemaining).toEqual(['A']); // B stays cut off even on a boundary that names no cutOff
   });
 });
 

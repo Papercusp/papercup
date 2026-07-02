@@ -23,7 +23,11 @@ import { advanceEpochAndWrap, type WrappedEpochKeyRow } from './hive-epoch-bound
 import { resolveHiveEpochCrypto } from './hive-epoch-serving';
 import { putWrappedKeys } from './hive-epoch-keys-store';
 import { getHiveEpoch } from './hive-epoch-state';
-import { listHiveMembers, type HiveMemberRecord } from '../../hive-membership-store';
+import {
+  listHiveMembers,
+  loadRevokedHivePubkeys,
+  type HiveMemberRecord,
+} from '../../hive-membership-store';
 import { loadHivePubkey } from '../../identity/hive-keypair';
 
 /**
@@ -56,6 +60,9 @@ export interface BoundaryRekeyResult {
 export interface BoundaryRekeySeams {
   resolveCrypto?: (enabled: boolean) => HiveEpochCrypto | Promise<HiveEpochCrypto>;
   loadAllMemberPubkeys?: (ws: string, slug: string, sql?: Sql) => Promise<string[]>;
+  /** The UNION of every member row's revoked_pubkeys blocklist (C-001 historical exclusion —
+   *  WI-566 audit fix). Default: hive-membership-store's loadRevokedHivePubkeys. */
+  loadRevokedPubkeys?: (ws: string, slug: string, sql?: Sql) => Promise<Set<string>>;
   resolveAuthorPubkey?: (ws: string, slug: string) => Promise<string | null>;
   persistWrappedKeys?: (
     ws: string,
@@ -98,6 +105,19 @@ export async function loadAllHiveMemberDevicePubkeys(
  * hiveId for deriveEpochKey / the OpAAD is the hive HOME slug — the federated hive
  * identity every peer agrees on (a joiner resolves it via the A-003 hiveHomeProjectionSlug
  * binding), so mint here ↔ encrypt/decrypt on any peer use an identical key id.
+ *
+ * WI-566 audit fix (K-CUT invariant): the remaining-member set excludes BOTH the fresh
+ * `cutOffPubkeys` (this call's own revoke/go-private) AND the ACCUMULATED
+ * `loadRevokedHivePubkeys` union (every prior revocation recorded across any member's
+ * `revoked_pubkeys` blocklist). Before this fix, only `cutOffPubkeys` was excluded — a
+ * revoked member's device stays in `device_attestations` forever (revocation is a
+ * blocklist, not a deletion), so EVERY SUBSEQUENT boundary event (a second ban, or any
+ * go-private) re-derived `remaining` from every device pubkey and RE-WRAPPED the new
+ * epoch key to that already-revoked device, silently un-cutting it. Only the single
+ * member revoked in a given call was ever actually cut off; every previously-revoked
+ * member was re-granted on the next epoch advance. `reconcileEpochKeysForCurrentMembers`
+ * already unions revoked_pubkeys correctly (self-heal path) — this brings the boundary
+ * TRIGGER path (revoke / go-private) in line with it.
  */
 export async function advanceEpochOnHiveBoundary(
   opts: {
@@ -113,6 +133,7 @@ export async function advanceEpochOnHiveBoundary(
   const {
     resolveCrypto = resolveHiveEpochCrypto,
     loadAllMemberPubkeys = loadAllHiveMemberDevicePubkeys,
+    loadRevokedPubkeys = loadRevokedHivePubkeys,
     resolveAuthorPubkey = loadHivePubkey,
     persistWrappedKeys = putWrappedKeys,
     advanceAndWrap = advanceEpochAndWrap,
@@ -121,7 +142,10 @@ export async function advanceEpochOnHiveBoundary(
   const crypto = await resolveCrypto(true);
   const all = await loadAllMemberPubkeys(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
   const cut = new Set(opts.cutOffPubkeys ?? []);
-  const remaining = all.filter((pk) => pk && !cut.has(pk));
+  // C-001: exclude every PRIOR revocation too, not just this call's own cut-off set —
+  // otherwise a previously-revoked device is silently re-granted on the next boundary.
+  const revoked = await loadRevokedPubkeys(opts.workspaceId, opts.hiveHomeSlug, opts.sql);
+  const remaining = all.filter((pk) => pk && !cut.has(pk) && !revoked.has(pk));
 
   const { newEpoch, wrapped } = await advanceAndWrap(
     crypto,

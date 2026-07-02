@@ -50,9 +50,11 @@ vi.mock('./boot-all', () => ({
 
 const spawnSidecar = vi.fn(async () => {});
 const registerShutdown = vi.fn();
+const stopSidecar = vi.fn(async () => {});
 vi.mock('./substrate-sidecar-spawn', () => ({
   spawnSubstrateSidecar: () => spawnSidecar(),
   registerSidecarShutdownHooks: () => registerShutdown(),
+  stopSubstrateSidecar: () => stopSidecar(),
 }));
 
 const ipcCalls: Array<{ method: string; params?: unknown }> = [];
@@ -98,6 +100,7 @@ beforeEach(() => {
   bootAll.mockClear();
   spawnSidecar.mockClear();
   registerShutdown.mockClear();
+  stopSidecar.mockClear();
   ipcCalls.length = 0;
   startReaper.mockClear();
   startKeepalive.mockClear();
@@ -192,6 +195,45 @@ describe('bootSubstrateWithFallback', () => {
         expect.stringContaining('sidecar spawn failed'),
         'spawn failed',
       );
+      // WI-900 (M4): stopSubstrateSidecar is called unconditionally in the fallback
+      // path (a no-op here since spawn never succeeded, but must still fire so the
+      // partial-mid-boot-failure case below is covered by the SAME code path).
+      expect(stopSidecar).toHaveBeenCalledOnce();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // WI-900 (M4): a PARTIAL mid-boot failure — the sidecar spawned + passed healthz
+  // (so it may already hold corestore file locks for harnesses it booted before a
+  // later harness's boot call threw) — must stop the sidecar BEFORE the in-process
+  // fallback retries booting, or the retry can't acquire those locks and the
+  // harness boots in NEITHER process.
+  it('a PARTIAL mid-boot failure (sidecar alive past healthz) stops the sidecar BEFORE the in-process retry', async () => {
+    h.sidecarOn = true;
+    bootAll.mockImplementationOnce(async (opts?: { bootHarness?: unknown }) => {
+      if (opts?.bootHarness) throw new Error('mid-boot failure — a later harness could not boot via sidecar');
+      return { attempted: 0, booted: 0, alreadyBooted: 0, failed: 0, results: [] };
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const callOrder: string[] = [];
+    stopSidecar.mockImplementationOnce(async () => {
+      callOrder.push('stopSidecar');
+    });
+    bootAll.mockImplementationOnce(async (opts?: { bootHarness?: unknown }) => {
+      // sidecar-routed attempt (throws, exercised by the mockImplementationOnce above)
+      if (opts?.bootHarness) throw new Error('mid-boot failure');
+      callOrder.push('bootAll:in-process');
+      return { attempted: 0, booted: 0, alreadyBooted: 0, failed: 0, results: [] };
+    });
+    try {
+      const r = await bootSubstrateWithFallback();
+      expect(r.usedSidecar).toBe(false);
+      expect(spawnSidecar).toHaveBeenCalledOnce();
+      expect(ipcCalls.map((c) => c.method)).toContain('sidecar:healthz');
+      expect(stopSidecar).toHaveBeenCalledOnce();
+      // stopSidecar must run BEFORE the in-process retry, not after.
+      expect(callOrder).toEqual(['stopSidecar', 'bootAll:in-process']);
     } finally {
       warnSpy.mockRestore();
     }

@@ -27,6 +27,7 @@ import { loadVoicePrefs } from '../../../voice-prefs';
 import { readCooldownMark, writeCooldownMark } from '../../../cooldown-marks';
 import { claimVoiceLease, releaseVoiceLease } from '../../../voice-lease';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { isTransientNetworkError } from '../../../loopback-fetch';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const inFlight = new Map<
@@ -36,23 +37,57 @@ const inFlight = new Map<
 const COOLDOWN_MS = 8_000;
 const cooldownKey = (agentId: string) => `el-ws-mint:${agentId}`;
 
+// WI-1461: a lazily-built, isolated undici dispatcher for the ONE-TIME retry
+// below. api.elevenlabs.io is hit rarely (only on a mint), so a keep-alive
+// socket the GLOBAL fetch dispatcher pooled to it can sit idle far longer
+// than either side's idle timeout and get silently dropped by an
+// intermediate NAT/firewall without a FIN/RST reaching this process — the
+// next mint then hangs on that dead pooled socket until AbortSignal.timeout
+// fires (observed: `mint-failed: The operation was aborted due to timeout`,
+// reproducibly, until the whole host process was restarted — a fresh global
+// dispatcher with no poisoned entry for this rarely-hit origin). A brand-new
+// Agent has no pooled connections to reuse, so retrying on it sidesteps a
+// stuck socket regardless of what caused it — without touching the shared
+// global dispatcher every OTHER outbound call on this process relies on.
+let elRetryDispatcher: unknown;
+async function getElRetryDispatcher(): Promise<unknown> {
+  if (!elRetryDispatcher) {
+    const { Agent } = await import('undici');
+    elRetryDispatcher = new Agent();
+  }
+  return elRetryDispatcher;
+}
+
 /** Mint the raw-WS signed URL. Exported for unit tests (fetch stubbed). */
 export async function mintSignedUrlFromEL(
   agentId: string,
   apiKey: string,
 ): Promise<{ signedUrl: string } | { error: string; status: number; detail: string }> {
+  const url = `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`;
+  const headers = { 'xi-api-key': apiKey, accept: 'application/json' };
   let res: Response;
   try {
-    res = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      {
+    res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(8000) });
+  } catch (firstErr: unknown) {
+    // WI-1461: one retry on a fresh, isolated connection for exactly the
+    // transient-network error class (timeout/reset/refused/DNS) — a genuine
+    // rejection (bad key, malformed request) never hits this path since EL
+    // still returns an HTTP response for those, handled by the !res.ok branch
+    // below, not this catch.
+    if (!isTransientNetworkError(firstErr)) {
+      return { error: 'mint-failed', status: 502, detail: (firstErr as Error)?.message ?? String(firstErr) };
+    }
+    try {
+      const dispatcher = await getElRetryDispatcher();
+      res = await fetch(url, {
         method: 'GET',
-        headers: { 'xi-api-key': apiKey, accept: 'application/json' },
+        headers,
         signal: AbortSignal.timeout(8000),
-      },
-    );
-  } catch (err: unknown) {
-    return { error: 'mint-failed', status: 502, detail: (err as Error)?.message ?? String(err) };
+        dispatcher,
+      } as RequestInit);
+    } catch (retryErr: unknown) {
+      return { error: 'mint-failed', status: 502, detail: (retryErr as Error)?.message ?? String(retryErr) };
+    }
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 400);

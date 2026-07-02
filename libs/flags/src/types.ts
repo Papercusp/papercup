@@ -977,12 +977,12 @@ export const FLAGS = {
   HIVE_REKEY: "papercusp-hive-rekey",
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
   // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a
-  // warm su session N sec after each turn settles). DEFAULT OFF (dark) because the loop
-  // engine is multi-part (B-LOOP-1 schema + B-LOOP-2 completion-rebase + B-LOOP-3 warm-wake
-  // fire) and the end-to-end warm-wake round-trip is not yet verified green — arming a loop
-  // before the fire lands would create a routine that never wakes. OFF ⇒ loop:arm refuses
-  // (loop:end/loop:status always work); inert otherwise (no loop rows exist). KNOWN_DARK_FLAGS.
-  // Owner flips ON once the B-LOOP-1..5 chain is green + the manual warm-loop e2e passes.
+  // warm su session N sec after each turn settles). DEFAULT ON (WI-612): the B-LOOP-1..5
+  // chain shipped green, the manual warm-loop e2e passed, and the post-storm live-verify
+  // gate (loop-wake-rate-limit-robustness-2026-06-23 D-001) is satisfied — the owner
+  // flipped it live-ON 2026-06-23 and it is not in DARK_FLAGS below, so it now also
+  // defaults ON for fresh hosts (the derived FLAG_DEFAULTS inversion). OFF would make
+  // loop:arm refuse (loop:end/loop:status always work); inert otherwise (no loop rows).
   LOOPS: "papercusp-loops",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
   // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per

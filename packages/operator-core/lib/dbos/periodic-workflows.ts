@@ -26,6 +26,7 @@ import { gcOldOperatorMessages } from '../agent-tools/coordination/message-log-g
 import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
 import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/escalations';
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
+import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -183,6 +184,21 @@ const planRevisionsGcWorkflow = DBOS.registerWorkflow(planRevisionsGcTick, {
   name: 'planRevisionsGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(planRevisionsGcWorkflow, { name: 'planRevisionsGc', crontab: '0 45 4 * * *' });
+
+// Daily 04:50 (off the 04:00-04:45 GC stampede): physical retention GC for
+// harness_shared.decision_ledger — an append-mostly governed-action + Queen-disposition
+// ledger with NO prior scheduled retention (WI-417, follow-up from WI-406's autovacuum
+// tuning, which reclaims dead tuples but never caps total size). Flat delete-by-age
+// (no cross-row fold to corrupt, unlike escalations); the retention window is held
+// ≥ the queen-autonomy graduation lookback (90d) by an in-function assertion so this
+// can never silently destroy graduation evidence. Safety detail in decision-ledger-gc.ts.
+async function decisionLedgerGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcOldDecisionLedgerRows(), { name: 'decision-ledger-gc' });
+}
+const decisionLedgerGcWorkflow = DBOS.registerWorkflow(decisionLedgerGcTick, {
+  name: 'decisionLedgerGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
 
 // Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
 // federation-queue rows the per-harness inline GC never reaches. An un-booted or

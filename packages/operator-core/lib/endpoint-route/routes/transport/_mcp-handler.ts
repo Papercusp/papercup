@@ -1004,6 +1004,13 @@ seen this run), bootstrap in ONE call:
   - **insights (how things work).** When you hit a confusing failure,
     \`docs:search\` the \`agent-insights/\` section before grepping code —
     many "weird bugs" already have a written runbook.
+  - **State answers NOW; only the append-only log answers EVER.** \`coord:presence\` /
+    \`fleet:assignments\` are LIVE-STATE — who is alive, who holds what RIGHT NOW; an ended
+    agent loses its fleet_slug and its presence row is TTL-reaped, so they CANNOT answer an
+    *ever / was / missed / history* question. Route those to \`coord:catch-up { audience }\`
+    (as a member of the fleet/topic) or \`coord:feed { audience }\` (the firehose) instead —
+    never a state tool. Full map:
+    \`docs:search\` \`agent-insights/presence-vs-history-who-is-on-what\`.
 
 Right layer for READS and WRITES — the memory↔docs boundary:
   - **HOW IT WORKS** (a runbook, a failure mode, why-something-is, a hard-won gotcha):

@@ -962,9 +962,16 @@ export function parkRoleScopedMcpJson(cwd) {
 export const OMP_CORE_MCP_TOOL_NAMES = [
   'coord:orient', 'coord:inbox', 'coord:ack', 'coord:send', 'coord:glance', 'coord:ask',
   'plans:get', 'plans:set-status', 'plans:items',
-  'work_items:list', 'work_items:claim', 'work_items:set_state', 'work_items:update',
+  'work_items:list', 'work_items:claim',
+  // EI-6770: self-pull (claim_next) + read (get) + finish (complete) — the rest of the
+  // canonical worker loop; their absence caused "tool not available" self-halts.
+  'work_items:claim_next', 'work_items:get', 'work_items:complete',
+  'work_items:set_state', 'work_items:update',
   'locks:acquire_granular', 'locks:release_granular',
   'docs:search', 'memory:search', 'memory:remember',
+  // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
+  // compacting cleanly ("no compaction tool available"), losing in-flight work.
+  'session:request-compaction',
   'tools:find', 'tools:invoke',
 ];
 

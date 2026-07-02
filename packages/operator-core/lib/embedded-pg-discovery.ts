@@ -26,15 +26,23 @@ export function getHarnessAdminUrl(): string {
 }
 
 export function getHarnessAdminUrlWithSource(): { url: string; source: string } {
-  // The FALLBACK is never pinned: a module-scope caller (e.g. sync-sse's
-  // invalidation bus) can resolve at IMPORT time — before serve.ts boots
-  // embedded PG and injects HARNESS_ADMIN_DATABASE_URL — and a cached fallback
-  // would then wedge every later consumer onto dead :5432 for the process
-  // lifetime (live-found on the WI-1544 rig: append-heavy-invalidator
-  // ECONNREFUSED 127.0.0.1:5432 every tick while embedded PG served :39532).
-  // Re-resolving until a real source appears self-heals post-injection calls;
-  // on a genuine native-:5432 dev box the re-resolve returns the same fallback.
-  if (cached && cached.source !== 'native-fallback') return cached;
+  // ONLY the `env` source is pinned. HARNESS_ADMIN_DATABASE_URL is injected once
+  // by Tauri main and is stable for the process lifetime, so caching it is safe.
+  // The DISCOVERY and FALLBACK sources are re-resolved on every call because the
+  // embedded-pg.json PORT CHANGES across launches (the desktop's Rust main picks a
+  // new free PG port each boot) — a caller that resolves EARLY (e.g. sync-sse's
+  // invalidation bus, before serve rewrites the discovery file this boot) would
+  // otherwise pin a PREVIOUS launch's stale port and wedge every later LISTEN/query
+  // onto a dead port for the whole process lifetime. This was the Windows bug where
+  // sync-sse / dbos / ui-intents-bus ECONNREFUSED'd a stale port thousands of times
+  // and NEVER recovered even though embedded PG was up on the fresh port (the WSL
+  // distro persists the prior-boot embedded-pg.json across launches, so the stale
+  // read is guaranteed there; 2026-07-02). Also covers WI-1544 (a module-scope
+  // caller resolving at IMPORT time, before HARNESS_ADMIN_DATABASE_URL is injected,
+  // must not pin the native :5432 fallback). Re-reading a small JSON file per call
+  // is cheap and mirrors connection.ts adminUrl()'s "discovery can change — re-read
+  // every call" contract.
+  if (cached && cached.source === 'env') return cached;
 
   const { url, source } = resolvePgUrl({
     envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],

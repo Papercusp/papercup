@@ -169,6 +169,53 @@ describe('GET operator-elevenlabs-ws-init', () => {
     await app.request(`${INIT}?owner=pui-1&force=1`);
     expect(claimMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
   });
+
+  // WI-1461: a transient network error (timeout/reset — the class a stuck
+  // pooled keep-alive socket to a rarely-hit origin produces) on the FIRST
+  // mint attempt retries once on a fresh dispatcher instead of failing outright.
+  it('retries once on a transient network error, then succeeds', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      calls++;
+      if (calls === 1) {
+        // Simulate what AbortSignal.timeout(8000) throws on a stuck socket.
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      }
+      // The retry must be on an isolated dispatcher, not the (implicitly
+      // poisoned) default one.
+      expect((init as { dispatcher?: unknown } | undefined)?.dispatcher).toBeDefined();
+      return new Response(JSON.stringify({ signed_url: 'wss://example/signed-after-retry' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await app.request(`${INIT}?owner=pui-1`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).signedUrl).toBe('wss://example/signed-after-retry');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // A genuine rejection (bad key, malformed request) is an HTTP response, not
+  // a thrown network error — it must NOT be retried (retrying a real 401
+  // burns a second EL request for no benefit).
+  it('does not retry a non-network mint-rejected response', async () => {
+    const fetchMock = stubElFetch('unauthorized', 401);
+    const res = await app.request(`${INIT}?owner=pui-1`);
+    expect(res.status).toBe(401); // passthrough: <500 EL status is forwarded verbatim
+    expect((await res.json()).error).toBe('mint-rejected');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // A non-transient thrown error (e.g. a genuine DNS/programming failure, not
+  // matching the transient-network-error class) also must not retry.
+  it('does not retry a non-transient thrown error', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError('Invalid URL');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await app.request(`${INIT}?owner=pui-1`);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe('mint-failed');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('TUI voice-lease verbs', () => {

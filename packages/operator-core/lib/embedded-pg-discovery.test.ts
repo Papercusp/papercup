@@ -59,6 +59,23 @@ describe('getHarnessAdminUrlWithSource', () => {
     expect(resolvePgUrl).toHaveBeenCalledTimes(2);
   });
 
+  it('never PINS a discovery resolve — a stale early discovery-file read heals when embedded-pg.json is rewritten with this launch’s fresh port (Windows sync-sse ECONNREFUSED-forever bug, 2026-07-02)', () => {
+    // Early boot: a module-scope LISTEN consumer (sync-sse) resolves BEFORE serve
+    // rewrites embedded-pg.json this launch → it reads the PRIOR launch's stale port
+    // (the WSL distro persists embedded-pg.json across launches).
+    resolvePgUrl.mockReturnValue({ url: 'postgres://localhost:21186/papercusp', source: 'discovery' });
+    expect(getHarnessAdminUrlWithSource()).toEqual({
+      url: 'postgres://localhost:21186/papercusp',
+      source: 'discovery',
+    });
+    // serve.ts has since rewritten embedded-pg.json with THIS launch's actual PG port.
+    resolvePgUrl.mockReturnValue({ url: 'postgres://localhost:21102/papercusp', source: 'discovery' });
+    // The next call MUST re-resolve to the fresh port, not return the pinned stale one —
+    // else the LISTEN client retries a dead port for the whole process lifetime.
+    expect(getHarnessAdminUrl()).toBe('postgres://localhost:21102/papercusp');
+    expect(resolvePgUrl).toHaveBeenCalledTimes(2);
+  });
+
   it('forwards the env-var precedence list + discovery file config', () => {
     resolvePgUrl.mockReturnValue({ url: 'u', source: 'env' });
     getHarnessAdminUrl();
