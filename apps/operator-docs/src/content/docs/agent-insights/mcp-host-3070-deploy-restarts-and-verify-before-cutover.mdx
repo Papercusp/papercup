@@ -100,10 +100,48 @@ proxy (`:9071 → :3070`) that **retries across a `:3070` restart window**, so t
 client→proxy connection stays up and a `tools/call` issued mid-restart just waits a beat.
 Safety invariant: it retries **only a refused/pre-connect upstream** (the call provably
 never reached `:3070`) — never a post-connect error — so a non-idempotent `tools/call` is
-never double-applied. **Opt-in**: nothing connects until `~/.claude.json` is repointed
-`:3070`→`:9071` (a fleet-wide attended cutover — see `apps/operator/scripts/systemd/README.md`).
+never double-applied. Since the P-006 cutover the proxy is the **default route**: psu
+launches export a proxy-preferring `PAPERCUSP_OPERATOR_URL` (`resolveOperatorUrl`), the
+installer mints configs against `:9071` when the unit is active, and (2026-07-02) the
+route decision is **unit-active alone** — the end-to-end health check is advisory/warn-only,
+because a transient health blip at launch/mint time used to pin the session/config to
+direct `:3070` for its whole life, the exact failure the proxy prevents.
 The per-call `scripts/su-mcp.ts` / `scripts/mcp-call.mjs` wrappers are the manual fallback
 when a session's client has already dropped.
+
+## 2026-07-02 triage — three ways sessions still went toolless (and the fixes)
+
+A live triage (`mcp-outage-triage-2026-07-02`) found three distinct classes behind the
+recurring "our MCP tools keep going down", all now fixed:
+
+1. **Workspace-unresolved hard reject on resume (the sneaky one).** With the
+   `papercusp-scoped-superuser-clamp` flag ON, a superuser MCP session whose request
+   resolved NO workspace was rejected `scoped_superuser_workspace_unresolved` → the
+   client retries `tools/list` ~4× (250ms→1s) → gives up → **permanently toolless
+   session**. Who hits it: an *untracked* resumed claude — env lost
+   `PAPERCUSP_WORKSPACE` (or never had it), and its fresh SID has no `adv_sessions`
+   row, so the SID→adv-row fallback misses (`resumeEnvFor`'s doc names this hole).
+   Fix: the clamp now falls back to `activeWorkspaceId()` (registry `current` /
+   `PAPERCUSP_WORKSPACE_ID` pin) — ONE concrete workspace, never `'*'`, so the
+   no-silent-god-mode guarantee is intact (`_mcp-handler.ts`, gating-matrix test).
+   Diagnostic: `~/.cache/claude-cli-nodejs/<proj>/mcp-logs-papercusp-su/*.jsonl`
+   shows `mcp_auth_failed: scoped_superuser_workspace_unresolved`.
+
+2. **Lifetime direct-`:3070` pins minted by a launch-time probe blip.** The old
+   proxy probe required unit-active AND a 2s `/api/health` curl through the proxy;
+   under load (or mid-deploy) the curl blipped, `resolveOperatorUrl` fell back to
+   `http://localhost:3070`, and psu exported that into the child env — so the session
+   bypassed the proxy forever and severed on every deploy. Two live sessions were
+   found pinned this way. Fix: unit-active decides the route; health failure warns.
+
+3. **Retry window shorter than a real deploy restart.** The 2026-07-01 23:12 deploy
+   restart took ~45s; proxy recoveries logged at 45.6s — AT the old 45s window edge,
+   so tail requests got 503/502 and the client could mark the server failed. Fix:
+   default window 90s (2× measured), plus the per-request `connect`-listener leak on
+   reused keep-alive sockets (MaxListenersExceededWarning) is fixed.
+
+Related but intentional: `:3170` (staging) restarts ~200×/day via staging-sync
+auto-track — never bind a long-lived session's MCP to `:3170`.
 
 ## TL;DR for the next agent
 

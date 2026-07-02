@@ -68,10 +68,12 @@ const run = async (
   args: Record<string, unknown>,
   workspaceId = "ws-list",
 ): Promise<unknown[]> => {
+  // The handler returns a {data} envelope (context-trimming-tiers P-021) —
+  // serialization to content[] happens in defineTool dispatch, not here.
   const res = (await tool.handler(args as never, ctx(workspaceId))) as {
-    content: { text: string }[];
+    data: { plans: unknown[] };
   };
-  return (JSON.parse(res.content[0].text) as { plans: unknown[] }).plans;
+  return res.data.plans;
 };
 
 beforeEach(async () => {
