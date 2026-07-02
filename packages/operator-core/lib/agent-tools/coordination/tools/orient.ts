@@ -34,6 +34,8 @@ import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { shapeOrient } from './orient-shape';
+import { classifyOwnerDriveMode } from '../agent-drive-mode';
+import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -97,13 +99,20 @@ export interface OrientResult {
   /** coord:inbox folded down to its summary + the most-recent bounded entries. */
   inbox: { summary?: unknown; recent?: unknown };
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
-   *  recall failed/timed out; absent when no query was given. */
-  memory?: { query: string; hits: OrientMemoryHit[] } | null;
+   *  recall failed/timed out; absent when no query was given. `withheld` counts
+   *  queen-loop-steering hits stripped for a responsive caller (P-002). */
+  memory?: { query: string; hits: OrientMemoryHit[]; withheld?: number } | null;
   /** STANDING FACTS (queen-memory-hybrid L1c) — deterministic scoped conclusions
    *  (workspace + owner + harness scopes), delivered VERBATIM every orient (unlike
    *  the fuzzy memory recall above). Assert via facts:assert; retract when stale.
-   *  null on failure; absent when none stand. */
+   *  null on failure; absent when none stand. For an OWNER-DIRECTED (responsive)
+   *  caller, queen-loop steering facts (pauseNewWork/maxBees) are withheld here —
+   *  see `factsWithheld` — since they govern the queen-bee loop, not the caller's
+   *  owner-directed task (P-002 / D-001). */
   facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null }> | null;
+  /** Present iff queen-loop steering facts were withheld from a responsive caller
+   *  (P-002) — transparent, never a silent drop. Pull live state via hive:get-steering. */
+  factsWithheld?: { count: number; reason: string };
   /** coord:plan-events delta — newest few + the true total; null on failure;
    *  absent when includePlanEvents:false. */
   planEvents?: { total: number; recent: unknown[] } | null;
@@ -131,6 +140,11 @@ export async function composeOrient(
   args: OrientArgs,
   call: InnerCall,
   ownerId: string | undefined,
+  /** The caller's drive mode (P-002). When 'responsive' (su/sentinel/planner),
+   *  queen-loop steering is withheld from the folded facts + recall. Resolved by
+   *  the handler (best-effort); injected here so the composition stays IO-free +
+   *  unit-testable. Omitted / 'auto' ⇒ nothing withheld. */
+  driveMode?: string,
 ): Promise<OrientResult> {
   const me = await call('fleet:assignments', {
     ...(ownerId ? { agent: ownerId } : {}),
@@ -173,13 +187,18 @@ export async function composeOrient(
         ...(args.harness ? { harness_slug: args.harness } : {}),
         limit: memLimit,
       })) as { results?: OrientMemoryHit[] } | undefined;
+      const hits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
+        id: r.id,
+        memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
+        score: r.score,
+      }));
+      // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as
+      // a binding recall hit (it self-drained fleet leaders). Auto callers keep all.
+      const { kept, withheld } = withholdQueenLoopControl(hits, driveMode, (h) => ({ body: h.memory }));
       result.memory = {
         query: memQuery,
-        hits: (mem?.results ?? []).slice(0, memLimit).map((r) => ({
-          id: r.id,
-          memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
-          score: r.score,
-        })),
+        hits: kept,
+        ...(withheld.length > 0 ? { withheld: withheld.length } : {}),
       };
     } catch {
       result.memory = null;
@@ -198,13 +217,21 @@ export async function composeOrient(
       ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
     ];
     const facts = await foldFacts(selectors, {});
-    if (facts.length > 0) {
-      result.facts = facts.map((f) => ({
+    // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
+    // an OWNER-DIRECTED (responsive) caller — filter the RAW facts (key + body both
+    // inspected) BEFORE projecting, so the structural `queen-loop:` key convention
+    // works alongside the body-vocabulary net. Auto callers keep every fact.
+    const { kept, withheld } = withholdQueenLoopControl(facts, driveMode, (f) => ({ key: f.key, body: f.body }));
+    if (kept.length > 0) {
+      result.facts = kept.map((f) => ({
         scope: f.scope,
         ref: f.scopeRef,
         body: f.body,
         src: f.sourceRef,
       }));
+    }
+    if (withheld.length > 0) {
+      result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };
     }
   } catch {
     result.facts = null;
@@ -383,7 +410,19 @@ export default defineTool({
     } catch {
       ownerId = undefined;
     }
-    const result = await composeOrient(args, inProcessCall(ctx), ownerId);
+    // P-002 / D-001: resolve the caller's drive mode so an OWNER-DIRECTED
+    // (responsive: su/sentinel/planner) caller doesn't get queen-loop steering
+    // pushed as binding facts/recall. Best-effort + fail-open (an su-… id resolves
+    // responsive with NO presence read; any error ⇒ undefined ⇒ nothing withheld).
+    let driveMode: string | undefined;
+    if (ownerId) {
+      try {
+        driveMode = (await classifyOwnerDriveMode(ownerId)).driveMode;
+      } catch {
+        driveMode = undefined;
+      }
+    }
+    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode);
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable

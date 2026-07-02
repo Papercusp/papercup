@@ -73,9 +73,18 @@ GROUP BY scenario, arm ORDER BY scenario, arm;
 
 - **`su-S13-code-run-batch`** — 12-item per-item loop; the headline "do X for each of N" case.
 - **`su-S15-code-run-small-batch`** — only 3 items; the *low-N* threshold ("reach for it even at 3").
-- **`su-S16-code-run-batch-write`** — per-item WRITE; the dry-run/confirm-gate path.
 - **`su-S14-code-run-not-for-single`** — the **guard**: a single-fact call must NOT be wrapped in
   code:run (over-application). Any adoption push must keep S14 green.
+
+> **`su-S16-code-run-batch-write` was repurposed (`bulk-endpoint-standardization-2026-06-21` D-004,
+> now `version: 2`) — it no longer tests code:run's write/confirm-gate path.** Once every
+> repeated-call verb went dual-arity (`items[]`/`ids[]` via `_bulk`), a HOMOGENEOUS batch write (same
+> mutation applied to every item — S16's "mark 9 open work items observed") collapses into ONE bulk
+> verb call (`work_items:set_state { ids:[…], state }`), not a `code:run` script; `code:run`'s
+> dry-run/confirm gate is now reserved for HETEROGENEOUS/CONDITIONAL batches (different per-item
+> logic, computed values, branching). S16's load-bearing assert is now `work_items:set_state` called
+> at most twice — see the "Bulk-arg adoption" section below, which S16 is now a member of alongside
+> S21/S22.
 
 `reached_coderun` (did it call the tool at all) and `clean_adopt` (called it AND didn't *also*
 hand-loop) are different metrics — a weak model often does both, which inflates `reached` while
@@ -215,7 +224,10 @@ every item in a collection, does it fire ONE `work_items:get { ids:[…] }` inst
 
 - **Scenarios:** `su-S21-bulk-read-not-hand-loop` (reach for `{ ids:[…] }` on a 6-item collection;
   load-bearing assert: at most ONE `work_items:get` call total) + its guard `su-S22-bulk-not-for-single`
-  (single known id → `{ id }` directly, no collection machinery — the over-application guard).
+  (single known id → `{ id }` directly, no collection machinery — the over-application guard). The
+  earlier **`su-S16-code-run-batch-write`** (a HOMOGENEOUS *write*: same state applied to every item)
+  was retargeted onto this same bulk-arg path (`version: 2`, D-004) rather than code:run's
+  write/confirm-gate — reach for `work_items:set_state { ids:[…], state }` in ONE call, not a script.
 - **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
 - **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar
   is lower (no language-model capability ceiling on scripting), but the model must still recognize the

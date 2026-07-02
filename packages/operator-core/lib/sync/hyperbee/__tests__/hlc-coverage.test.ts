@@ -43,14 +43,31 @@ describe('HLC send/recv coverage (P-010)', () => {
   });
 
   it('observeRemoteHlc advances the clock past a remote frontier — the causal equalizer vs a fast-clock peer', () => {
-    // A peer whose wall clock is FAR ahead (skew/step): its HLC.ms is huge.
-    const remote = encodeHlc({ ms: Date.now() + 10_000_000, count: 0 });
+    // A peer whose wall clock is ahead by a legitimately-admitted skew — WITHIN the
+    // recv ε drift bound (HlcClock.maxDriftMs = 10min = 2× the announce-admission
+    // window, WI-1672), so recv still ratchets us past it. (A remote BEYOND the bound
+    // must NOT ratchet — the amplifier guard, pinned in its own test below.)
+    const remote = encodeHlc({ ms: Date.now() + 60_000, count: 0 });
     observeRemoteHlc(remote);
-    // Our next local write — even though OUR wall clock is far behind the peer's
-    // — is stamped strictly GREATER, so it correctly wins LWW over the op we just
-    // observed. Without recv-advance our write would lose to the skewed peer.
+    // Our next local write — even though OUR wall clock is behind the peer's — is
+    // stamped strictly GREATER, so it correctly wins LWW over the op we just observed.
+    // Without recv-advance our write would lose to the skewed peer.
     const local = stampOpHlc({ table: 'queue', hbKey: 'k', ts: Date.now() });
     expect(compareHlc(decodeHlc(local.hlc), decodeHlc(remote))).toBe(1);
+  });
+
+  it('observeRemoteHlc does NOT ratchet past a remote beyond the ε drift bound (WI-1672 amplifier guard)', () => {
+    // A stamp absurdly far in the future (>maxDriftMs skew — a broken/malicious peer)
+    // must NOT pin our clock: that value would re-propagate and poison the whole hive's
+    // clock for years. recv treats it as absent for RATCHET purposes — the op's own
+    // stamp still wins LWW for its data, but our next local write stays near real time
+    // rather than leaping to the absurd frontier.
+    const farFuture = encodeHlc({ ms: Date.now() + 10_000_000, count: 0 });
+    observeRemoteHlc(farFuture);
+    const local = stampOpHlc({ table: 'queue', hbKey: 'k', ts: Date.now() });
+    // Clock not poisoned — the local stamp did NOT leap past the absurd frontier.
+    expect(compareHlc(decodeHlc(local.hlc), decodeHlc(farFuture))).toBe(-1);
+    expect(decodeHlc(local.hlc).ms).toBeLessThan(Date.now() + 600_000);
   });
 
   it('observeRemoteHlc is a no-op on a missing/blank/garbage hlc (back-compat)', () => {
@@ -88,7 +105,10 @@ describe('HLC send/recv coverage (P-010)', () => {
   });
 
   it('applyOpVia advances the process clock when applying a REMOTE op carrying an hlc', async () => {
-    const remoteHlc = encodeHlc({ ms: Date.now() + 5_000_000, count: 0 });
+    // Within the recv ε drift bound (maxDriftMs = 10min, WI-1672) so the apply-path
+    // recv ratchets our clock past the remote's frontier (a beyond-bound remote would
+    // not — the amplifier guard covered in the observeRemoteHlc tests above).
+    const remoteHlc = encodeHlc({ ms: Date.now() + 60_000, count: 0 });
     const proj: TableProjection<{ k: string }> = {
       tableTag: 'queue',
       composeKey: (r) => r.k,

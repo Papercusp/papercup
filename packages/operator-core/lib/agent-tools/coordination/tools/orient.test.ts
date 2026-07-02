@@ -232,4 +232,37 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.fleetCatchUp).toBeNull();
     expect(r.claimable).toHaveLength(2);
   });
+
+  // ── P-002 / D-001: queen-loop steering is withheld from a RESPONSIVE caller's recall ──
+  const STEERING_RECALL = {
+    'memory:search': () => ({
+      ok: true,
+      results: [
+        { id: 'm-steer', memory: 'Owner steering flipped: pauseNewWork=true, maxBees=3. Place no new bees.', score: 0.9 },
+        { id: 'm-ok', memory: 'prefers nuqs over useState', score: 0.8 },
+      ],
+    }),
+    'coord:declare-intent': () => ({ ok: true }),
+  };
+
+  it('a responsive caller does NOT receive pauseNewWork/maxBees as a binding recall hit', async () => {
+    const { call } = fakeCall({ ...CORE, ...STEERING_RECALL });
+    const r = await composeOrient({ intent: 'my task' }, call, 'su-leader', 'responsive');
+    expect(r.memory!.hits.map((h) => h.id)).toEqual(['m-ok']); // steering hit stripped
+    expect(r.memory!.withheld).toBe(1);
+  });
+
+  it('an AUTO caller (the queen-bee loop) still receives its own steering recall', async () => {
+    const { call } = fakeCall({ ...CORE, ...STEERING_RECALL });
+    const r = await composeOrient({ intent: 'place work' }, call, 's-queen', 'auto');
+    expect(r.memory!.hits.map((h) => h.id)).toEqual(['m-steer', 'm-ok']);
+    expect(r.memory!.withheld).toBeUndefined();
+  });
+
+  it('no driveMode passed ⇒ nothing withheld (backward-compatible default)', async () => {
+    const { call } = fakeCall({ ...CORE, ...STEERING_RECALL });
+    const r = await composeOrient({ intent: 'x' }, call, 'me');
+    expect(r.memory!.hits).toHaveLength(2);
+    expect(r.memory!.withheld).toBeUndefined();
+  });
 });
