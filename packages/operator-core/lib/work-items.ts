@@ -64,6 +64,7 @@ import {
   type IssueSeverity,
   createIssue,
   getIssue,
+  getIssueInWorkspace,
   getIssueDetail,
   listIssues,
   countIssues,
@@ -1842,8 +1843,31 @@ export async function claimNextIssueWorkItem(
   // map it through the issue facade (state dialect, no claim-time columns) for a consistent
   // WorkItem. featureRowToWorkItem would mislabel family/state, so re-read via the issue path.
   if (!rows[0]) return null;
-  const issue = await getIssue(rows[0].feature_id);
-  return issue ? issueToWorkItem(issue) : null;
+  // EI-6480: the UPDATE above has ALREADY committed the claim (taken_by is set) on a row in
+  // `issueWs`. Re-read in that SAME captured workspace — NOT via bare getIssue(), which
+  // re-derives issuesScopeWorkspace() and can drift (its flag cache self-heals on a TTL), so a
+  // mid-call flip would make the re-read miss the just-claimed row. A null there historically
+  // returned null: the claim LEAKED (row stayed taken_by-set, out of the pool) and the caller
+  // saw a spurious "ready but a peer raced you (retry)" miss even though the claim succeeded —
+  // the reported EI-6480 symptom (a self-consistent miss with readyUnclaimed>0). Reading in the
+  // exact claimed workspace makes that null impossible for a live claim.
+  const issue = await getIssueInWorkspace(issueWs, rows[0].feature_id);
+  if (issue) return issueToWorkItem(issue);
+  // Defense in depth: the row we just claimed is, by construction, present in `issueWs` (the
+  // UPDATE filtered on it and committed the mutation), so a null here is a genuine anomaly, NOT
+  // a race. Do not leak the claim or misreport it as a retryable miss: RELEASE it (return the
+  // row to the pool) and surface an honest error so the fault is visible, not disguised. Clear
+  // the claim with a workspace-EXACT UPDATE (not releaseWorkItem, which re-derives the scope via
+  // getIssue and would hit the same drift) so the undo can't itself leak.
+  await sql`
+    UPDATE harness_shared.work_items
+       SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL, updated_ts = ${Date.now()}
+     WHERE workspace_id = ${issueWs} AND feature_id = ${rows[0].feature_id}`;
+  throw new Error(
+    `claimNextIssueWorkItem: claimed issue ${rows[0].feature_id} in workspace '${issueWs}' but could ` +
+      `not re-read it (getIssueInWorkspace returned null); released the claim. This is an anomaly, ` +
+      `not a peer race.`,
+  );
 }
 
 export interface WorkItemObservation {

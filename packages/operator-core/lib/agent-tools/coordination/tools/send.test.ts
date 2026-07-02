@@ -33,12 +33,16 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 vi.mock('../federation-scope', () => ({
   resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
 }));
+// fleet-scoped-broadcast-default: sender's fleet lookup. Default null = non-fleeted
+// (every existing '*' test keeps its literal broadcast).
+vi.mock('../presence', () => ({ getPresence: vi.fn(async () => null) }));
 
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
+import { getPresence } from '../presence';
 import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
@@ -49,6 +53,7 @@ const wakeM = vi.mocked(wakeRecipients);
 const idleM = vi.mocked(reportIdleRecipients);
 const livenessM = vi.mocked(describeMissedRecipients);
 const fedScopeM = vi.mocked(resolveWorkspaceHiveScope);
+const getPresenceM = vi.mocked(getPresence);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
@@ -378,5 +383,43 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
     const b = await body({ to: ['su-remote-1'], summary: 'ping', wake: 'required' });
     expect(b.results[0].wake.recipient_remote_stale).toEqual(['su-remote-1']);
     expect(b.results[0].wake.note).toMatch(/STALE|probably gone|re-dispatch/i);
+  });
+});
+
+describe('coord:send — fleet-scoped broadcast default', () => {
+  it("auto-scopes a fleeted sender's bare ['*'] to @fleet:<slug> and reports the rewrite", async () => {
+    getPresenceM.mockResolvedValueOnce({ fleetSlug: 'ops' } as never);
+    const b = await body({ to: ['*'], summary: 'closed WI-123' });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    // the '*' was rewritten before send → the message went to the fleet audience
+    expect(b.results[0].to).toEqual(['@fleet:ops']);
+    expect(sendM.mock.calls[0][1].to).toEqual(['@fleet:ops']);
+    // the rewrite is surfaced (transparent, teaches the override)
+    expect(b.results[0].scopedBroadcast).toMatchObject({ from: '*', to: '@fleet:ops' });
+    expect(b.results[0].scopedBroadcast.reason).toContain('allHive:true');
+    expect(b.results[0].allHiveBroadcast).toBeUndefined();
+  });
+
+  it("honors ['*'] verbatim when a fleeted sender passes allHive:true, and flags it", async () => {
+    getPresenceM.mockResolvedValueOnce({ fleetSlug: 'ops' } as never);
+    const b = await body({ to: ['*'], summary: 'HIVE-WIDE: PG lock stampede', allHive: true });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(sendM.mock.calls[0][1].to).toEqual(['*']);
+    expect(b.results[0].allHiveBroadcast).toBe(true);
+    expect(b.results[0].scopedBroadcast).toBeUndefined();
+  });
+
+  it("leaves a non-fleeted sender's ['*'] as a literal hive broadcast (getPresence → null)", async () => {
+    // default mock returns null → no fleet → no scoping
+    const b = await body({ to: ['*'], summary: 'system notice' });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(b.results[0].scopedBroadcast).toBeUndefined();
+    expect(b.results[0].allHiveBroadcast).toBeUndefined();
+  });
+
+  it('does not read presence for a purely directed send (no wildcard → no lookup)', async () => {
+    const b = await body({ to: ['bee-1'], summary: 'hi' });
+    expect(b.results[0].to).toEqual(['bee-1']);
+    expect(getPresenceM).not.toHaveBeenCalled();
   });
 });

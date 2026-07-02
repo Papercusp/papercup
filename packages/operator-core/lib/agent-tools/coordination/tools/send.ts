@@ -18,6 +18,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
+import { getPresence } from '../presence';
+import { scopeBroadcastAudience } from '../scope-broadcast';
 import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
@@ -56,6 +58,11 @@ interface SendMsg {
    *  backstop is declared; WITHOUT one, an optimistic miss is reported as loudly as a
    *  required miss (recipient_absent) — silence must be consciously claimed. */
   backstop?: string;
+  /** fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. A
+   *  fleeted sender's bare `['*']` is auto-scoped to `@fleet:<slug>`; set allHive:true
+   *  to keep `'*'` literal and reach every agent (system-wide issue / urgent notice).
+   *  No effect for a non-fleeted sender or a directed send. */
+  allHive?: boolean;
 }
 
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
@@ -115,6 +122,13 @@ const scopeArg = z
     "Federation scope of THIS message (cross-machine-coord-parity P-001). Omitted = auto: a harness-scoped sender stamps its harness; an un-scoped (SU/operator) sender in a workspace with EXACTLY ONE shared Hive stamps that Hive's home (the message federates to the Hive's other machines); otherwise the message stays machine-local. 'hive' FORCES the shared-Hive scope — errors loudly (no_hive_scope / ambiguous_hive_scope + candidates) instead of silently staying local. 'local' keeps the message on this machine only. Every result reports `federated:` so a local-only send is never mistaken for cross-machine delivery.",
   );
 
+const allHiveArg = z
+  .boolean()
+  .optional()
+  .describe(
+    "fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. If YOU are in a fleet, a bare to:['*'] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn't flood every agent — the result reports the rewrite as `scopedBroadcast`. Set allHive:true to keep '*' literal and reach EVERY agent, for system-wide issues / urgent notices only. No effect for a non-fleeted sender or a directed send.",
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -127,6 +141,7 @@ const itemSpec = z.object({
   endTurn: endTurnArg,
   backstop: backstopArg,
   scope: scopeArg,
+  allHive: allHiveArg,
 });
 
 /**
@@ -140,6 +155,7 @@ async function sendOne(
   msg: SendMsg,
   identity: AgentIdentity,
   harnessSlug: string | undefined,
+  bcast?: { scoped?: { from: '*'; to: string; reason: string }; allHive?: boolean },
 ): Promise<BulkItemResult> {
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
@@ -457,6 +473,10 @@ async function sendOne(
     // machine-local only — never mistake it for cross-machine delivery.
     federated: Boolean(harnessSlug),
     ...(harnessSlug ? { federationScope: harnessSlug } : {}),
+    // fleet-scoped-broadcast-default: report a '*'→@fleet auto-scope so the rewrite
+    // is transparent + teaches the allHive override; flag a conscious hive-wide blast.
+    ...(bcast?.scoped ? { scopedBroadcast: bcast.scoped } : {}),
+    ...(bcast?.allHive ? { allHiveBroadcast: true } : {}),
     // P-008: await this key to confirm cross-machine delivery+wake (the
     // receiving machine emits it back as a fed event when the row applies).
     ...(wantReceipt ? { receiptEvent: `coord:receipt:${env.msg_id}` } : {}),
@@ -522,10 +542,10 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
+    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. If YOU are in a fleet, a bare ["*"] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn\'t flood every agent in the hive — the result reports it as `scopedBroadcast`; pass allHive:true only for a genuine hive-wide notice (system issue / urgent). Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
-    notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
+    notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1. In a fleet? Routine status/updates go to your fleet — a bare ["*"] is auto-scoped there; reserve allHive:true for system-wide/urgent news everyone must see.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
       'coord:inbox (read replies to what you sent)',
@@ -551,6 +571,7 @@ export default defineTool({
       endTurn: endTurnArg,
       backstop: backstopArg,
       scope: scopeArg,
+      allHive: allHiveArg,
       items: z
         .array(itemSpec)
         .min(1)
@@ -589,11 +610,30 @@ export default defineTool({
             endTurn: args.endTurn,
             backstop: args.backstop,
             scope: args.scope,
+            allHive: args.allHive,
           },
         ];
+    // fleet-scoped-broadcast-default: resolve the sender's fleet ONCE (only when a
+    // message actually broadcasts) so a fleeted agent's bare ['*'] is scoped to
+    // @fleet:<slug> rather than every agent in the hive. Fail-soft: a presence-read
+    // hiccup degrades to "no fleet" → today's literal '*' behavior.
+    const anyWildcard = list.some((m) => m.to.includes('*'));
+    let senderFleet: string | null = null;
+    if (anyWildcard) {
+      try {
+        senderFleet = (await getPresence(identity.ownerId))?.fleetSlug ?? null;
+      } catch {
+        senderFleet = null;
+      }
+    }
+
     const env = await runBulk(
       list,
       async (msg) => {
+        // Auto-scope the broadcast BEFORE resolve/persist, then thread the report
+        // through so the rewrite (or conscious all-hive claim) shows on the result.
+        const bcast = scopeBroadcastAudience({ to: msg.to, senderFleet, allHive: msg.allHive });
+        msg.to = bcast.to;
         const scoped = await effectiveFederationScope(
           msg.scope,
           ctxHarness,
@@ -601,7 +641,7 @@ export default defineTool({
           msg.to,
         );
         if ('error' in scoped) return scoped.error;
-        return sendOne(msg, identity, scoped.harnessSlug);
+        return sendOne(msg, identity, scoped.harnessSlug, { scoped: bcast.scoped, allHive: bcast.allHive });
       },
       {
         keyOf: (msg) => ({ to: msg.to }),

@@ -139,8 +139,8 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     body: 'Before you build anything, spend ~2 min confirming the fix has not already shipped — read the code/tests, check `git log` and sibling work-items. Re-implementing what a peer already fixed is the single biggest waste of fleet time. If it is already done, close it as already-fixed WITH the evidence you checked (files/tests) — do not rebuild it.',
   },
   {
-    head: 'Flag to your LEADER, not just the broadcast stream',
-    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send / coord:escalate) so it lands in their inbox — a `*` broadcast is easy to miss.',
+    head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send / coord:escalate) so it lands in their inbox — a broadcast is easy to miss. Routine status/updates belong to your fleet: a bare to:["*"] is auto-scoped to `@fleet:<slug>` (your leader included), so reserve `allHive:true` for genuinely system-wide / urgent news everyone must see.',
   },
   {
     head: 'Do not re-claim a ping-ponging item',
