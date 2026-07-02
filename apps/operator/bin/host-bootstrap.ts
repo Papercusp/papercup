@@ -975,6 +975,14 @@ export function runBootstrap(): void {
             );
           }
           const r = await reconcileSpawnAdmissionOnBoot(getOrgPg().sql, relaunch ? { relaunch } : {});
+          if (r.reattached && r.reattached.length > 0) {
+            // WI-1499: these survived the restart in their own systemd scope (own
+            // cgroup, outside this host's) — RE-ATTACHED to this fresh incarnation
+            // instead of reclaimed, so their turn just keeps running.
+            console.warn(
+              `[spawn-reclaim] boot reconcile RE-ATTACHED ${r.reattached.length} still-alive scope-isolated spawn(s) from a prior incarnation (WI-1499): ${r.reattached.join(', ')}`,
+            );
+          }
           if (r.relaunched && r.relaunched.length > 0) {
             console.warn(
               `[spawn-reclaim] boot reconcile RE-LAUNCHED ${r.relaunched.length} queen/bee(s) with non-terminal work after a host restart (EI-85): ${r.relaunched.join(', ')}`,

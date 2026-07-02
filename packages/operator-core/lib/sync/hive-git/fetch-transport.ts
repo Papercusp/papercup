@@ -83,10 +83,11 @@ export function serveUploadPack(
     let stderr = '';
     let settled = false;
     let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve({ code, stderr, timedOut });
     };
     try {
@@ -104,7 +105,7 @@ export function serveUploadPack(
     const child = spawn('git', ['upload-pack', '--strict', repoPath], {
       env: { ...process.env, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' },
     });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       stderr += `\nupload-pack timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
       try {
@@ -196,6 +197,14 @@ export function fetchOverDuplex(
         // ext:: command tokens are space-split by git — EXT_BRIDGE_PATH/sockPath
         // live under tmp/dist dirs with no spaces, so a plain command is safe.
         const url = `ext::node ${EXT_BRIDGE_PATH} ${sockPath}`;
+        // The ext helper is a plain `node` grandchild whose STDOUT *is* the git
+        // pkt-line channel — so it must boot vanilla. Strip any injected loader
+        // (NODE_OPTIONS / tsx --import|--require) that would print startup noise
+        // to fd 1 and corrupt the pack stream ("bad pack header"). git passes its
+        // env through to the ext command.
+        const cleanEnv = { ...process.env } as Record<string, string | undefined>;
+        delete cleanEnv.NODE_OPTIONS;
+        delete cleanEnv.TSX_TSCONFIG_PATH;
         const child = spawn(
           'git',
           [
@@ -208,7 +217,7 @@ export function fetchOverDuplex(
             url,
             ...refspecs,
           ],
-          { cwd: localRepoPath, env: { ...process.env, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' } },
+          { cwd: localRepoPath, env: { ...cleanEnv, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' } },
         );
         const killTimer = setTimeout(() => {
           try {

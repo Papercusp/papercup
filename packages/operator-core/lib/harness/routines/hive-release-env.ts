@@ -36,6 +36,8 @@ export interface HiveReleaseGate {
   releaseRef: string;
   /** Explicit green command, or null to fall back to testCommand → DEFAULT_GREEN_CMD. */
   greenCmd: string | null;
+  /** Empty string skips the operator SPA build for repos that have no operator frontend. */
+  spaBuildWorkspace?: string | null;
   /** Deploy target (leg 3). null/undefined ⇒ green-gate only (no release-trigger). */
   deploy: { systemdUnit?: string; healthUrl?: string } | null;
   /** The repo's detected test command (the existing `testCommand` knob) — the preferred
@@ -72,11 +74,19 @@ export function resolveHiveReleaseGate(hivePath: string): HiveReleaseGate | null
     ((validation.blueprint as { output?: { kind?: string } }).output?.kind as string | undefined) ?? 'repo-commit';
   const codingProfile = outputKind === 'repo-commit' && knobs.requiresRepo !== false;
   const enabled = gate.enabled === true || (gate.enabled !== false && codingProfile);
+  const fromRepo = (knobs.fromRepo ?? {}) as Record<string, unknown>;
+  const spaBuildWorkspace =
+    fromRepo.frontend === false
+      ? ''
+      : typeof gate.spaBuildWorkspace === 'string'
+        ? gate.spaBuildWorkspace
+        : null;
   return {
     enabled,
     integrationBranch: typeof gate.integrationBranch === 'string' ? gate.integrationBranch : 'staging',
     releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
     greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
+    spaBuildWorkspace,
     deploy: (gate.deploy as HiveReleaseGate['deploy']) ?? null,
     testCommand: typeof knobs.testCommand === 'string' ? knobs.testCommand : undefined,
   };
@@ -154,6 +164,9 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
+  if (gate.spaBuildWorkspace != null) {
+    env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace;
+  }
   return {
     enabled: true,
     env,

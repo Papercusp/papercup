@@ -88,6 +88,14 @@ describe('resolveHiveReleaseGate', () => {
     expect(gate?.greenCmd).toBeNull(); // explicit greenCmd unset → caller falls back to testCommand
   });
 
+  it('disables the operator SPA build for non-frontend generated repos', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(makeHiveDir('coding', {
+      extraKnobs: '  fromRepo:\n    frontend: false',
+    }));
+    expect(gate?.spaBuildWorkspace).toBe('');
+  });
+
   it('a coding MEMBER blueprint (coding-factory — no explicit releaseGate) gates by default (P-017 derived)', async () => {
     const { resolveHiveReleaseGate } = await import('./hive-release-env');
     // coding-factory carries no releaseGate knob but IS a code repo (requiresRepo, repo-commit
@@ -164,6 +172,18 @@ describe('resolveHiveReleaseEnv', () => {
     const res = await resolveHiveReleaseEnv('mycode', 'default');
     expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm run test:affected');
     expect(res.greenCmdOverridden).toBe(false);
+  });
+
+  it('threads an empty SPA workspace override for non-frontend repos so the gate skips operator-vite', async () => {
+    const dir = makeHiveDir('coding', {
+      git: true,
+      extraKnobs: '  testCommand: npm test\n  fromRepo:\n    frontend: false',
+    });
+    registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];
+    const { resolveHiveReleaseEnv } = await import('./hive-release-env');
+    const res = await resolveHiveReleaseEnv('oddsmith-hive', 'default');
+    expect(res.env.PAPERCUSP_GREEN_CMD).toBe('npm test');
+    expect(res.env.PAPERCUSP_SPA_BUILD_WORKSPACE).toBe('');
   });
 
   it('a per-hive owner override beats the knob/testCommand/build and sets greenCmdOverridden (P-014)', async () => {
