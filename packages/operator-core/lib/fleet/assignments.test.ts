@@ -367,3 +367,60 @@ describe('groupByAgent — named-fleet membership label (WI-1408 / P-005)', () =
     expect(groups[0].fleetRole).toBeNull();
   });
 });
+
+describe('downgradeEndedHolders — heartbeat-vs-authoritative liveness drift (EI-6374)', () => {
+  it('an ENDED holder whose warm heartbeat reads `alive`/`progressing` is downgraded to `dead`', () => {
+    // The exact bug: fleet_assignment showed the bee alive (warm heartbeat) while
+    // coord:send {wake:required} reported the session `ended` and not wakeable.
+    const rows = [
+      presence({ agentId: 'su-ended', holderAlive: true }),
+      workClaim({
+        agentId: 'su-ended',
+        workItemId: 'WI-1438',
+        holderPresent: true,
+        holderAlive: true,
+        lastProgressAt: '2026-07-02T12:00:00.000Z', // → 'progressing' before the fix
+        orphaned: false,
+      }),
+    ];
+    // Pre-fix: the claim reads as actively worked.
+    expect(deriveActivity(rows[1])).toBe('progressing');
+
+    const fixed = downgradeEndedHolders(rows, new Set(['su-ended']));
+    const claim = fixed.find((r) => r.source === 'work_item_claim')!;
+    const pres = fixed.find((r) => r.source === 'presence')!;
+    // The claim is now a dead/orphaned (reclaimable) leg — no longer false coverage.
+    expect(claim.holderAlive).toBe(false);
+    expect(claim.orphaned).toBe(true);
+    expect(deriveActivity(claim)).toBe('dead');
+    expect(isReclaimable(deriveActivity(claim))).toBe(true);
+    // The presence backbone row also drops liveness (but is never marked orphaned —
+    // it holds no claim), so the agent no longer counts as alive.
+    expect(pres.holderAlive).toBe(false);
+    expect(pres.orphaned).toBe(false);
+    expect(groupByAgent(fixed)[0].alive).toBe(false);
+  });
+
+  it('leaves a LIVE holder (not in the ended set) untouched', () => {
+    const rows = [
+      workClaim({ agentId: 'su-live', workItemId: 'WI-2', holderAlive: true, lastProgressAt: '2026-07-02T12:00:00.000Z' }),
+    ];
+    const out = downgradeEndedHolders(rows, new Set(['su-ended']));
+    expect(out[0]).toBe(rows[0]); // identity preserved — pure no-op for non-ended holders
+    expect(deriveActivity(out[0])).toBe('progressing');
+  });
+
+  it('is a no-op when the ended set is empty (returns the same array)', () => {
+    const rows = [workClaim({ agentId: 'su-x', workItemId: 'WI-3', holderAlive: true })];
+    expect(downgradeEndedHolders(rows, new Set())).toBe(rows);
+  });
+
+  it('does not revive an already-dead/stale holder or touch an inactive claim', () => {
+    // holderAlive=false already ⇒ the gate skips it (we only DOWNGRADE a live-reading
+    // holder); a lapsed claim (claimActive=false) is never freshly orphaned.
+    const dead = workClaim({ agentId: 'su-ended', workItemId: 'WI-4', holderAlive: false, orphaned: false, claimActive: false });
+    const out = downgradeEndedHolders([dead], new Set(['su-ended']));
+    expect(out[0]).toBe(dead); // untouched — holderAlive was already false
+    expect(out[0].orphaned).toBe(false);
+  });
+});

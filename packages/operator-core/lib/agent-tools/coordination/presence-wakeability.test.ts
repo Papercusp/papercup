@@ -7,7 +7,11 @@
  * whether a coordinator sees an agent as live | parked | ended.
  */
 import { describe, it, expect } from 'vitest';
-import { deriveSessionState } from './presence-wakeability';
+import {
+  deriveSessionState,
+  selectEndedOwnerIds,
+  type WakeabilitySignals,
+} from './presence-wakeability';
 
 describe('deriveSessionState', () => {
   it('not wakeable → ended (no live await; a wake reaches nobody — relaunch only)', () => {
@@ -30,5 +34,31 @@ describe('deriveSessionState', () => {
     // A stale row is NOT automatically dead: a live await means a wake relaunches it.
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: true })).toBe('parked');
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+  });
+});
+
+describe('selectEndedOwnerIds — authoritative dead-holder set (EI-6374)', () => {
+  const w = (wakeable: boolean): WakeabilitySignals => ({ wakeable, liveTurn: false });
+
+  it('not wakeable AND no live recorded session → ended (the dead bee)', () => {
+    const ended = selectEndedOwnerIds(['su-dead'], new Map([['su-dead', w(false)]]), new Set());
+    expect([...ended]).toEqual(['su-dead']);
+  });
+
+  it('wakeable → NOT ended (a wake will land)', () => {
+    const ended = selectEndedOwnerIds(['su-live'], new Map([['su-live', w(true)]]), new Set());
+    expect(ended.size).toBe(0);
+  });
+
+  it('not wakeable BUT a live recorded session → NOT ended (recorded-live / launching guard)', () => {
+    // A just-launched bee that heartbeats but has not yet registered its inbox-wake
+    // await is alive (adv_sessions.ended_at IS NULL) — must not be mistaken for dead.
+    const ended = selectEndedOwnerIds(['su-launching'], new Map([['su-launching', w(false)]]), new Set(['su-launching']));
+    expect(ended.size).toBe(0);
+  });
+
+  it('an owner with no wakeability signal at all is treated as not-wakeable → ended when not recorded-live', () => {
+    const ended = selectEndedOwnerIds(['su-unknown'], new Map(), new Set());
+    expect([...ended]).toEqual(['su-unknown']);
   });
 });
