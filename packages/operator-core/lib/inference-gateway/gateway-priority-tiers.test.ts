@@ -306,4 +306,4 @@ test('tier-aware shedding: an AIMD storm shrinks the bottom band first, holds ti
   assert.ok(cap(4)! <= cap(3)!, 'tier 4 shed at least as much as tier 3 (bottom-up)');
   assert.ok(cap(3)! <= cap(2)!, 'tier 3 shed at least as much as tier 2 (bottom-up)');
   assert.ok(cap(4)! < 13, 'the most-sheddable band actually shrank');
-});
+}, 20_000); // storm-driven — needs headroom on a loaded box (flaked at the 5s default under fleet load, 2026-07-01)
