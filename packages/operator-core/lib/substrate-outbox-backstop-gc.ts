@@ -91,6 +91,23 @@ export interface BackstopGcOptions {
   now?: number;
   /** sql handle override (tests). Defaults to the org admin pool (RLS-bypass). */
   sql?: postgres.Sql;
+  /**
+   * WI-1634 (WI-900 M3 residual): currently-STARTED (workspaceId, installSlug) pairs
+   * whose undrained rows are EXEMPT from the 48h orphan reap. A started hive's drain
+   * may be legitimately HALTED on a recoverable cause (e.g. an epoch key not yet
+   * local on this device — the C-001 re-key path outbox-drain.ts halts+retries on;
+   * WI-887 shrinks how often/long this happens but does not eliminate it) — that is
+   * NOT the same thing as a truly-orphaned / mis-routed harness_slug this GC exists
+   * to catch (M1's dominant real-world case: a write path that silently defaults
+   * workspace_id, so NO hive is ever started under that (workspace, slug) pair at
+   * all). Keying the exemption on the EXACT (workspace_id, harness_slug) pair means
+   * a mis-routed/retired-slug row (e.g. a pre-rename 'papercup' capture) still falls
+   * OUTSIDE the exemption — the currently-started hive lives under the NEW slug, not
+   * the orphaned one — so M1's original catch is preserved. Defaults to a real
+   * `listStartedHives()` read; pass `[]` to disable the exemption (old behavior,
+   * e.g. a test asserting the pre-WI-1634 semantics).
+   */
+  startedHives?: ReadonlyArray<{ workspaceId: string; installSlug: string }>;
 }
 
 /**
@@ -103,6 +120,9 @@ export async function runSubstrateOutboxBackstopGc(
   const now = opts.now ?? Date.now();
   const sql = opts.sql ?? getOrgPg().sql;
   const c = backstopGcCutoffs(now);
+  const started = opts.startedHives ?? (await listStartedHives());
+  const startedWs = started.map((h) => h.workspaceId);
+  const startedSlugs = started.map((h) => h.installSlug);
   const rows = await sql<Array<{ n: number }>>`
     WITH del AS (
       DELETE FROM harness_shared.substrate_outbox
@@ -110,7 +130,17 @@ export async function runSubstrateOutboxBackstopGc(
          SELECT id
            FROM harness_shared.substrate_outbox
           WHERE (drained_at IS NOT NULL AND drained_at < ${c.drainedBefore})
-             OR (drained_at IS NULL     AND ts         < ${c.undrainedBefore})
+             OR (
+                  drained_at IS NULL AND ts < ${c.undrainedBefore}
+                  -- WI-1634: a currently-started hive's undrained rows are exempt —
+                  -- its drain may be halted on a recoverable cause, not orphaned.
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM unnest(${startedWs}::text[], ${startedSlugs}::text[]) AS s(ws, slug)
+                     WHERE s.ws = harness_shared.substrate_outbox.workspace_id
+                       AND s.slug = harness_shared.substrate_outbox.harness_slug
+                  )
+                )
              OR (drained_at IS NULL     AND ts < ${c.ephemeralUndrainedBefore}
                  AND harness_slug LIKE ANY (${[...c.ephemeralSlugPatterns]}))
           LIMIT ${BACKSTOP_GC_BATCH}

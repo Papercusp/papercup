@@ -41,6 +41,92 @@ async function startUpstream(
   };
 }
 
+/**
+ * A minimal, real SOCKS5 relay (no-auth, CONNECT only) for END-TO-END WI-284 coverage — proves the
+ * request genuinely tunnels through a SOCKS5 hop to the real upstream, not just that the right
+ * dispatcher CLASS gets constructed. Implements just enough of RFC 1928: the no-auth handshake, a
+ * CONNECT request (IPv4 or domain-name address type), then a raw bidirectional byte pipe to the
+ * real target — exactly what undici's Socks5ProxyAgent expects a SOCKS5 proxy to do.
+ */
+interface Socks5Relay {
+  port: number;
+  getConnections: () => number;
+  close: () => Promise<void>;
+}
+
+async function startSocks5Relay(): Promise<Socks5Relay> {
+  let connections = 0;
+  const server = net.createServer((client) => {
+    connections++;
+    let stage: 'greeting' | 'request' = 'greeting';
+    let buf = Buffer.alloc(0);
+
+    const handleRequest = () => {
+      if (buf.length < 4) return; // need VER,CMD,RSV,ATYP before we can even see the address length
+      const atyp = buf[3];
+      let addr: string;
+      let offset = 4;
+      if (atyp === 0x01) {
+        if (buf.length < offset + 4 + 2) return;
+        addr = `${buf[offset]}.${buf[offset + 1]}.${buf[offset + 2]}.${buf[offset + 3]}`;
+        offset += 4;
+      } else if (atyp === 0x03) {
+        if (buf.length < offset + 1) return;
+        const len = buf[offset];
+        offset += 1;
+        if (buf.length < offset + len + 2) return;
+        addr = buf.subarray(offset, offset + len).toString('ascii');
+        offset += len;
+      } else {
+        client.end();
+        return;
+      }
+      const targetPort = buf.readUInt16BE(offset);
+      offset += 2;
+      buf = Buffer.alloc(0);
+      client.removeAllListeners('data');
+
+      const target = net.connect(targetPort, addr, () => {
+        client.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); // success, bound addr/port unused
+        client.pipe(target);
+        target.pipe(client);
+      });
+      target.on('error', () => {
+        try {
+          client.write(Buffer.from([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); // general SOCKS server failure
+        } catch {
+          /* client already gone */
+        }
+        client.end();
+      });
+    };
+
+    const onData = (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (stage === 'greeting') {
+        if (buf.length < 2) return; // VER, NMETHODS
+        const nMethods = buf[1];
+        if (buf.length < 2 + nMethods) return;
+        buf = buf.subarray(2 + nMethods);
+        client.write(Buffer.from([0x05, 0x00])); // select NO_AUTH (0x00)
+        stage = 'request';
+        if (buf.length) handleRequest();
+        return;
+      }
+      handleRequest();
+    };
+    client.on('data', onData);
+    client.on('error', () => {}); // a torn-down tunnel is expected at test teardown — never crash the relay
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const addr = server.address() as { port: number };
+  return {
+    port: addr.port,
+    getConnections: () => connections,
+    close: () => new Promise((r) => server.close(() => r())),
+  };
+}
+
 let upstream: Upstream;
 let gw: ReturnType<typeof createInferenceGateway>;
 let port = 0;
@@ -1501,9 +1587,38 @@ test('[529 overload] a PERSISTENT 529 is BOUNDED — the request settles with a 
   assert.ok(elapsed < 3_000, `terminated fast (${elapsed}ms), slot freed — no unbounded backoff loop`);
 }, 15_000);
 
-test('a non-http(s) (socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3 / WI-284)', async () => {
-  // undici's ProxyAgent is HTTP-CONNECT only; a socks:// URL would 502 EVERY request for this account.
-  // The gateway must IGNORE it and fall back to default egress (no dispatcher), not hand fetch a broken one.
+test('a genuinely unsupported (non-http(s)/non-socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3)', async () => {
+  // undici's ProxyAgent is HTTP-CONNECT only and does not understand an ftp:// URL — it would CONSTRUCT
+  // without error but 502 EVERY request for this account at request time. The gateway must IGNORE it
+  // and fall back to default egress (no dispatcher), not hand fetch a broken one.
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const unsupportedAcct: ActiveAccount = { accountId: 'sx', token: async () => 'T', egress: { proxyUrl: 'ftp://127.0.0.1:1080' } };
+  const pool: AccountPool = { active: () => unsupportedAcct, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.equal(captured?.dispatcher, undefined, 'an ftp:// proxyUrl is ignored → default shared egress (no dispatcher)');
+});
+
+test('an unsupported-scheme proxyUrl + a bound localAddress → still binds the source IP (proxy ignored, IP binding applied) (B-GW-3)', async () => {
+  let captured: { dispatcher?: unknown } | undefined;
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    captured = init;
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const acct: ActiveAccount = { accountId: 'mix', token: async () => 'T', egress: { proxyUrl: 'ftp://127.0.0.1:1080', localAddress: '127.0.0.1' } };
+  const pool: AccountPool = { active: () => acct, onExhausted: () => null };
+  gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+  port = await gw.listen(0);
+  await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
+  assert.ok(captured?.dispatcher, 'falls through to the bound-source-IP dispatcher when the proxy scheme is unusable');
+});
+
+test('a socks5:// egress proxyUrl builds a real Socks5ProxyAgent dispatcher — native SOCKS5 egress (WI-284)', async () => {
   let captured: { dispatcher?: unknown } | undefined;
   const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
     captured = init;
@@ -1514,22 +1629,49 @@ test('a non-http(s) (socks) egress proxyUrl fails SAFE → default shared egress
   gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
   port = await gw.listen(0);
   await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.equal(captured?.dispatcher, undefined, 'a socks:// proxyUrl is ignored → default shared egress (no dispatcher)');
+  assert.ok(captured?.dispatcher, 'a socks5:// proxyUrl is HONORED — a real dispatcher is built, not ignored');
+  assert.equal((captured!.dispatcher as { constructor: { name: string } }).constructor.name, 'Socks5ProxyAgent');
 });
 
-test('socks proxyUrl + a bound localAddress → still binds the source IP (socks ignored, IP binding applied) (B-GW-3)', async () => {
+test('a socks5:// proxyUrl WINS over a bound localAddress (proxy takes precedence, matching http(s) proxy precedence) (WI-284)', async () => {
   let captured: { dispatcher?: unknown } | undefined;
   const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
     captured = init;
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
-  const acct: ActiveAccount = { accountId: 'mix', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080', localAddress: '127.0.0.1' } };
+  const acct: ActiveAccount = { accountId: 'mix2', token: async () => 'T', egress: { proxyUrl: 'socks5://127.0.0.1:1080', localAddress: '127.0.0.1' } };
   const pool: AccountPool = { active: () => acct, onExhausted: () => null };
   gw = createInferenceGateway({ pool, upstreamBase: 'http://upstream.invalid', fetchImpl, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
   port = await gw.listen(0);
   await ask('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }) });
-  assert.ok(captured?.dispatcher, 'falls through to the bound-source-IP dispatcher when the proxy scheme is unusable');
+  assert.equal((captured!.dispatcher as { constructor: { name: string } }).constructor.name, 'Socks5ProxyAgent');
 });
+
+test('END-TO-END: a request through a socks5:// egress proxy genuinely tunnels to the real upstream via a real SOCKS5 relay (WI-284)', async () => {
+  // No fetchImpl override — the REAL global fetch (undici) is used, so the dispatcher option is
+  // genuinely honored end-to-end: gateway → dispatcherFor → Socks5ProxyAgent → the SOCKS5 relay
+  // below → the real upstream HTTP server. This is the correctness proof beyond "the right class
+  // gets constructed" (already covered above) — the bytes actually flow through the SOCKS5 hop.
+  const socks = await startSocks5Relay();
+  try {
+    upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, via: 'socks5-relay' }));
+    });
+    const socksAcct: ActiveAccount = { accountId: 'e2e-socks', token: async () => 'T', egress: { proxyUrl: `socks5://127.0.0.1:${socks.port}` } };
+    const pool: AccountPool = { active: () => socksAcct, onExhausted: () => null };
+    gw = createInferenceGateway({ pool, upstreamBase: upstream.base, governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }), maxQueueWaitMs: 80 });
+    port = await gw.listen(0);
+    const res = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(res.status, 200, 'the request tunneled through SOCKS5 and reached the real upstream');
+    const json = (await res.json()) as { ok: boolean; via: string };
+    assert.equal(json.via, 'socks5-relay', 'the response body genuinely came from the real upstream server');
+    assert.equal(upstream.last.method, 'POST', 'the upstream actually received the forwarded request');
+    assert.ok(socks.getConnections() >= 1, 'the SOCKS5 relay handled at least one real CONNECT tunnel');
+  } finally {
+    await socks.close();
+  }
+}, 15_000);
 
 test('a STALLED OAuth token refresh fails FAST with a retryable 503 + releases the slot (2026-06-20 token-hang wedge)', async () => {
   // active.token() does a deadline-less network refresh that runs BEFORE the upstream stall-guard, so a

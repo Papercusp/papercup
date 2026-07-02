@@ -76,13 +76,17 @@ const SURFACE_KEYWORDS: Record<NicheSurface, RegExp> = {
   'agent-behavior': /\b(agent|session|context|compaction|checkpoint|memory:|facts|lens|novelty|prim(e|ing))\b/i,
 };
 
+// Validation-gate rebalance (F0-1 finding, 15:40): the first guard set was too
+// greedy (detect/gate/sweep/protect matched everywhere → 9/11 of the real corpus
+// collapsed to guard). Each shape now anchors on STRONG, distinctive signals;
+// generic verbs live in at most one shape.
 const SHAPE_KEYWORDS: Record<NicheShape, RegExp> = {
-  guard: /\b(guard|watchdog|backstop|escalat|alert|detect|recurrence|sweep|reap|protect|gate)\b/i,
-  automation: /\b(auto|cron|schedule|routine|sweep|trigger|pipeline|promot)\b/i,
-  capability: /\b(new (tool|verb|surface)|add|enable|build|create|introduce|support)\b/i,
-  integration: /\b(integrat|wire|connect|bridge|federat|thread|route (through|via)|fold)\b/i,
-  refactor: /\b(refactor|simplif|consolidat|extract|dedup|migrat|replace|retire)\b/i,
-  observability: /\b(observab|metric|log|record|surface|report|dashboard|freshness|verbatim|scorecard)\b/i,
+  guard: /\b(watchdog|backstop|recurrence guard|kill.?switch|circuit.?breaker|dead.?man|tripwire|quarantine)\b/i,
+  automation: /\b(cron|schedule[dr]?|routine|auto-?(start|promote|pause|repair|assign)|unattended|pipeline)\b/i,
+  capability: /\b(new (tool|verb|surface|table|panel)|introduce|enable a|support for|first-class)\b/i,
+  integration: /\b(integrat|wire (in|up|into)|bridge|federat|cross-(hive|machine|harness)|interop|connect(or)? to)\b/i,
+  refactor: /\b(refactor|simplif|consolidat|extract|dedup(licat)?|unif(y|ied)|replace|retire|collapse)\b/i,
+  observability: /\b(observab|metric|telemetry|dashboard|scorecard|freshness|verbatim|surface (the|every)|diagnos|escalat|alert|report)\b/i,
 };
 
 /**
@@ -92,20 +96,28 @@ const SHAPE_KEYWORDS: Record<NicheShape, RegExp> = {
  * but merge/map code can rely on this never failing.
  */
 export function classifyHeuristically(text: string): NicheDescriptorV1 {
-  const pick = <T extends string>(dims: readonly T[], table: Record<T, RegExp>): T => {
+  const pick = <T extends string>(dims: readonly T[], table: Record<T, RegExp>, zeroSignal: T): T => {
     let best: T = dims[0];
     let bestScore = -1;
     for (const d of dims) {
-      const score = (text.match(table[d]) ?? []).length + (text.match(new RegExp(table[d].source, 'gi')) ?? []).length;
+      // One global count per dimension (the first cut double-counted, amplifying
+      // whichever regex was greediest — part of the guard-collapse finding).
+      const score = (text.match(new RegExp(table[d].source, 'gi')) ?? []).length;
       if (score > bestScore) {
         best = d;
         bestScore = score;
       }
     }
-    return best;
+    // VALIDATION-GATE CONCLUSION (F0-1, second pass): short texts (titles) often
+    // match NO shape keyword — an implicit first-dim default silently collapsed
+    // 7/8 of the real corpus to 'guard'. Zero signal now maps to an EXPLICIT
+    // neutral default, and the standing rule is: this heuristic is the FALLBACK;
+    // routing-time LLM classification is REQUIRED as primary before any elite
+    // federates (D-002 as designed).
+    return bestScore > 0 ? best : zeroSignal;
   };
-  const surface = pick(NICHE_SURFACES, SURFACE_KEYWORDS);
-  const shape = pick(NICHE_SHAPES, SHAPE_KEYWORDS);
+  const surface = pick(NICHE_SURFACES, SURFACE_KEYWORDS, 'process');
+  const shape = pick(NICHE_SHAPES, SHAPE_KEYWORDS, 'capability');
   const risk: NicheRisk = /\b(irreversib|destructive|migrat|schema|security|revoc|crypt)\b/i.test(text)
     ? 3
     : /\b(config|toggle|flag|prompt|doc|threshold|tune)\b/i.test(text)
