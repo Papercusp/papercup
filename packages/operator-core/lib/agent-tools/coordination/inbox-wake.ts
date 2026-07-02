@@ -53,6 +53,14 @@ export function ownerFromInboxWakeKey(key: string): string | null {
  *  so the no-wake report and the wake fan skip exactly the same addressees. */
 export const NON_WAKEABLE = new Set(['*', 'human', '']);
 
+/** P-022 (cross-machine-coord-parity, fan-out governance): the MAX concrete
+ *  agents ONE send's wake fan will re-invoke. Beyond it, the overflow is
+ *  INJECTED (durable, seen next turn) but NOT woken — a `@fleet:`/`@topic:` that
+ *  expands to thousands (256×10 = 2560 agents) must not turn one message into
+ *  thousands of billable turns. A legitimate directed set is far under this;
+ *  env-tunable. */
+export const MAX_WAKE_FANOUT = Number(process.env.PAPERCUSP_MAX_WAKE_FANOUT) || 64;
+
 /** A LOOP wake's source convention (loop-fire.ts: `loop:<routineId>`). */
 export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
 
@@ -81,6 +89,9 @@ export interface WakeRecipientsResult {
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the HIVE_AGENT_TABS flag (start-hive P-007). */
   staged: number;
+  /** P-022: recipients BEYOND MAX_WAKE_FANOUT — injected (durable) but not woken.
+   *  Non-empty only on an oversized audience fan (the cost-DoS shape). */
+  fanoutCapped: string[];
 }
 
 /**
@@ -101,7 +112,19 @@ export async function wakeRecipients(
   // the wake key — the key is exact (`coord:inbox-wake:<full-ownerId>`), so a short
   // prefix would fire a key nobody watches (woken:0). Best-effort + fail-soft.
   const resolved = await resolveBestEffortAgainstRoster(recipients, opts.workspaceId);
-  const targets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
+  const allTargets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
+  // P-022: cap the wake fan — beyond MAX_WAKE_FANOUT the overflow is injected but
+  // NOT woken (the durable inbox row already landed at sendMessage), so an
+  // oversized audience can't detonate thousands of billable turns from one send.
+  const targets = allTargets.slice(0, MAX_WAKE_FANOUT);
+  const fanoutCapped = allTargets.slice(MAX_WAKE_FANOUT);
+  if (fanoutCapped.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[inbox-wake] wake fan-out capped at ${MAX_WAKE_FANOUT}: ${fanoutCapped.length} recipient(s) ` +
+        'INJECTED but not woken (oversized audience — they see it on their next turn).',
+    );
+  }
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
   // the HIVE_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
   // hive's PAUSE primitive (hive:pause sets the global default to `manual`), so
@@ -161,7 +184,7 @@ export async function wakeRecipients(
       );
     }
   }
-  return { targets, keys, woken, staged };
+  return { targets, keys, woken, staged, fanoutCapped };
 }
 
 // ── Idle-recipient REPORTING on the no-wake (default inject-only) path ──────────
