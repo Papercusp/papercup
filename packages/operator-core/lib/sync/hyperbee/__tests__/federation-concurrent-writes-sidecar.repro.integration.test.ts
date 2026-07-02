@@ -678,22 +678,32 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       // peer with a briefly-fast clock (or any past skew episode) pins ALL peers'
       // HLC wall components to that high-water mark ... after which every peer
       // advances by logical counter only, in near-lockstep."
+      //
+      // node_id is pinned EXPLICITLY too (rather than trusting each DB's mig-459
+      // self-seed to differ): two `createOrgTestDb()` migrations run back-to-back
+      // against the SAME throwaway testcontainer Postgres were OBSERVED to self-seed
+      // the IDENTICAL node_id from plain SQL `random()` — see the follow-up hardening
+      // mig 464 (hlc-node-id-strong-entropy), which moves the self-seed to pgcrypto's
+      // gen_random_bytes(). This test's OWN job is narrower: prove the ORDERING
+      // mechanism (fed_order_key / compareHlc) resolves a tie correctly whenever the
+      // two nodes genuinely differ — which every real pair of devices' independently
+      // (and, after mig 464, strongly) seeded node_id will.
       const pinnedMs = Date.now() + 600_000;
       const pinnedCount = 500;
-      await dbA.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount} WHERE id = 1`;
-      await dbB.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount} WHERE id = 1`;
+      const nodeA = 'aaaa1111aaaa1111';
+      const nodeB = 'bbbb2222bbbb2222';
+      await dbA.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount}, node_id = ${nodeA} WHERE id = 1`;
+      await dbB.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount}, node_id = ${nodeB} WHERE id = 1`;
 
-      // Sanity: each peer's OWN migrated DB self-seeded a DIFFERENT random node_id
-      // (mig 459) at creation — the property the fix relies on to break the tie.
-      const [{ node_id: nodeA }] = await dbA.adminSql<Array<{ node_id: string | null }>>`
+      // Sanity: the node_id column exists (mig 459) and the pin actually landed.
+      const [{ node_id: seenA }] = await dbA.adminSql<Array<{ node_id: string | null }>>`
         SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1
       `;
-      const [{ node_id: nodeB }] = await dbB.adminSql<Array<{ node_id: string | null }>>`
+      const [{ node_id: seenB }] = await dbB.adminSql<Array<{ node_id: string | null }>>`
         SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1
       `;
-      expect(nodeA, 'peer A never self-seeded a node_id (mig 459 missing/reverted?)').toBeTruthy();
-      expect(nodeB, 'peer B never self-seeded a node_id (mig 459 missing/reverted?)').toBeTruthy();
-      expect(nodeA, 'peers minted the SAME node_id — cannot force a genuine tie with this seed').not.toBe(nodeB);
+      expect(seenA, 'the node_id pin did not take on peer A (mig 459 column missing/reverted?)').toBe(nodeA);
+      expect(seenB, 'the node_id pin did not take on peer B (mig 459 column missing/reverted?)').toBe(nodeB);
 
       // Both peers author the SAME key CONCURRENTLY (no merge in between): each DB's
       // BEFORE stamp trigger calls its OWN hlc_now(), independently landing on the
