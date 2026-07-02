@@ -677,12 +677,18 @@ profile_default = 'power' if profile == 'power' else ''
 # proxy-preferring PAPERCUSP_OPERATOR_URL per launch (resolveOperatorUrl), so a
 # re-mint of this file can never again pin sessions to a stale literal base; the
 # mint-time default (proxy when active, else :3070) only serves bare `claude`.
+# Keep in sync with desktop-install/claude-integration.ts buildClaudeMcpEntry (the
+# other writer of this entry): tools= is the trimmed tool-surface seed, ctx_tier=
+# the payload tier (context-trimming-tiers D-004) — both env-expanded per launch by
+# psu; empty ⇒ full catalog / unshaped payloads.
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
     'url': ('${PAPERCUSP_OPERATOR_URL:-' + operator_url + '}' + '/api/mcp?superuser=1'
             + '&client=${PAPERCUSP_SID:-' + agent_id + '}'
             + '&workspace=${PAPERCUSP_WORKSPACE:-}'
-            + '&profile=${PAPERCUSP_PROFILE:-' + profile_default + '}'),
+            + '&profile=${PAPERCUSP_PROFILE:-' + profile_default + '}'
+            + '&tools=${PAPERCUSP_TOOLS:-}'
+            + '&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}'),
     'headers': {
         'Authorization': 'Bearer ' + token,
     },

@@ -80,13 +80,13 @@ export async function setClaimSpec(
     // Atomic: the tombstone (DELETE→old scope) + the re-insert (→new scope) commit
     // together, so a bee never observes a no-spec window mid-re-home.
     const nextRev = Math.max(prior[0]!.revision + 1, v.spec.revision);
-    const rows = (await sql.begin(async (tx: OrgSql) => {
+    const rows = (await sql.begin(async (tx) => {
       await tx`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.beeId}`;
       return (await tx`
         INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
         VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
         RETURNING revision`) as { revision: number }[];
-    })) as { revision: number }[];
+    })) as unknown as { revision: number }[];
     return { ok: true, errors: [], revision: rows[0]?.revision };
   }
 
