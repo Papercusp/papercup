@@ -439,7 +439,12 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
       log(`failed to settle status back to idle for ${chosen.harnessSlug}: ${e instanceof Error ? e.message : e}`);
     }
     try {
-      await deps.recordFire(chosen.harnessSlug, 'gym-cycle:error', 'error');
+      // GYM-2 (gym-unwedge-scout-novelty-2026-07-02): record the VERBATIM error —
+      // the bare 'gym-cycle:error' literal left a 12-day wedge undiagnosable (the
+      // runbook's read-the-recorded-status-first rule found nothing to read).
+      // Same EI-212 convention as blueprint-run's fire recorder.
+      const detail = String(err instanceof Error ? err.message : err).replace(/\s+/g, ' ').slice(0, 200);
+      await deps.recordFire(chosen.harnessSlug, `gym-cycle:error — ${detail}`, 'error');
     } catch (e) {
       log(`recordFire(error) failed: ${e instanceof Error ? e.message : e}`);
     }
