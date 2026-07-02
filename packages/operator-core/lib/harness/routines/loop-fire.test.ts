@@ -2,12 +2,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { fireLoopWake, defaultLoopKickoff, type LoopFireDeps } from './loop-fire';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
-function mkDeps(over: Partial<LoopFireDeps> = {}): Required<Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap'>> {
+function mkDeps(
+  over: Partial<LoopFireDeps> = {},
+): Required<Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap' | 'deactivateLoop'>> {
   return {
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
     recordFire: vi.fn(async () => {}) as never,
     wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: ['coord:inbox-wake:su-pinned'], woken: 1, staged: 0 })) as never,
     costCap: vi.fn(async () => ({ breach: false, spendCents: 0, capCents: null })) as never,
+    deactivateLoop: vi.fn(async () => true) as never,
     ...over,
   };
 }
@@ -84,17 +87,19 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.costCap).not.toHaveBeenCalled();
   });
 
-  it('a missed wake (woke 0, staged 0) is NOT a failure — recorded as attempt, not error', async () => {
-    // The inbox row persisted; a busy/parked session sees it next turn. Only a genuinely dead
-    // session (DROPped by the wake layer) or the cost-cap should advance the streak.
+  it('a missed wake (woke 0, staged 0) auto-ends the orphaned loop instead of leaving it parked', async () => {
     const deps = mkDeps({
       wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: ['coord:inbox-wake:su-pinned'], woken: 0, staged: 0 })) as never,
     });
     const res = await fireLoopWake(baseInput, deps);
 
-    expect(res).toMatchObject({ fired: true, woken: 0 });
-    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'attempt');
-    expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', expect.anything(), 'error');
+    expect(res).toMatchObject({ fired: false, reason: 'no-session-now', woken: 0 });
+    expect(deps.deactivateLoop).toHaveBeenCalledWith({
+      sql: undefined,
+      installSlug: 'papercusp',
+      routineName: 'loop-su-pinned',
+    });
+    expect(deps.recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now:auto-ended', 'error');
   });
 
   it('a staged wake (manual wake-mode / hive pause) counts as reached → queued (attempt, streak preserved)', async () => {

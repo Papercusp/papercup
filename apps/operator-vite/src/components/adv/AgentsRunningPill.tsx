@@ -13,7 +13,7 @@
  * inspector / jump to the item / reach the session.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { parseAsBoolean, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { LivenessDot } from '@/app/coord/presence-ui';
@@ -39,6 +39,11 @@ export interface RosterAgent {
   lastActiveAt?: string | null;
   /** Whether an engine loop is armed for this agent (keeps working on a cadence). */
   loopArmed?: boolean;
+  /** The machine this agent runs on — this machine's fingerprint for a local agent,
+   *  the announced machine_label for a federated (cross-machine, shared-hive) agent. */
+  machineLabel?: string | null;
+  /** True for an agent on THIS machine; false for a federated cross-machine agent. */
+  isLocal?: boolean;
   fleetSlug?: string | null;
   fleetColor?: string | null;
   agentPaneKind?: string | null;
@@ -153,6 +158,52 @@ export function isLiveByActivity(
   return nowMs - t < LIVE_TURN_MS;
 }
 
+/** Distinct machines represented in the roster — local machines by their label,
+ *  a still-unlabeled local row folded under one "__local__" bucket, federated rows
+ *  by their machineLabel. Used for the "across N machines" pill count. Pure. */
+export function distinctMachineCount(
+  agents: readonly Pick<RosterAgent, 'machineLabel' | 'isLocal'>[],
+): number {
+  const set = new Set<string>();
+  for (const a of agents) {
+    set.add(a.machineLabel ?? (a.isLocal === false ? '__remote__' : '__local__'));
+  }
+  return set.size;
+}
+
+/** The machine-grouping key for an agent (matches distinctMachineCount). Pure. */
+export function machineKey(a: Pick<RosterAgent, 'machineLabel' | 'isLocal'>): string {
+  return a.machineLabel ?? (a.isLocal === false ? '__remote__' : '__local__');
+}
+
+export interface MachineTab {
+  key: string;
+  label: string;
+  isLocal: boolean;
+  count: number;
+}
+
+/**
+ * Per-machine tabs for the roster: THIS machine first (labeled "Local"), then each
+ * remote machine in the shared hive, alphabetical by label. `count` = agents on that
+ * machine. Empty/one-machine setups produce ≤1 tab (the caller then hides the bar).
+ * Pure — exported for tests.
+ */
+export function machineTabs(agents: readonly RosterAgent[]): MachineTab[] {
+  const byKey = new Map<string, MachineTab>();
+  for (const a of agents) {
+    const key = machineKey(a);
+    const isLocal = a.isLocal !== false;
+    const label = isLocal ? 'Local' : (a.machineLabel ?? 'Remote');
+    const t = byKey.get(key) ?? { key, label, isLocal, count: 0 };
+    t.count += 1;
+    byKey.set(key, t);
+  }
+  return [...byKey.values()].sort((x, y) =>
+    x.isLocal !== y.isLocal ? (x.isLocal ? -1 : 1) : x.label.localeCompare(y.label),
+  );
+}
+
 /** advRoster.list returns a single-element array wrapping the roster object. */
 interface RosterResponse {
   active: RosterAgent[];
@@ -246,6 +297,7 @@ export default function AgentsRunningPill() {
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
   const thinkingCount = running.filter((a) => a.thinking).length;
+  const machineCount = distinctMachineCount(running);
 
   return (
     <div className="pc-advshell__agents-pill-wrap">
@@ -265,6 +317,11 @@ export default function AgentsRunningPill() {
             {thinkingCount > 0 && (
               <span className="pc-agents-pill__thinking" data-testid="agents-thinking-count">
                 {' · '}{thinkingCount} thinking
+              </span>
+            )}
+            {machineCount > 1 && (
+              <span className="pc-agents-pill__machines" data-testid="agents-machine-count">
+                {' across '}{machineCount} machines
               </span>
             )}
             {fleetDots.length > 0 && (
@@ -288,7 +345,7 @@ export default function AgentsRunningPill() {
         contentClassName="pc-advshell__agents-pop"
       >
         <div id="pc-advshell-agents-pop" data-testid="agents-running-pop">
-          <AgentsRoster groups={groups} total={running.length} nowMs={nowMs} />
+          <AgentsRoster agents={running} nowMs={nowMs} />
         </div>
       </Popover>
       <RosterStyles />
@@ -298,10 +355,25 @@ export default function AgentsRunningPill() {
 
 /** The fleet-grouped roster list rendered inside the popover. Hovering a row
  *  previews that agent's plan/work-item in the detail strip; clicking pins it. */
-export function AgentsRoster({ groups, total, nowMs }: { groups: FleetGroup[]; total: number; nowMs: number }) {
+export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: number }) {
   const [pinned, setPinned] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
+  // Shared-hive per-machine tabs: THIS machine ("Local") first, then each connected
+  // machine. Only shown when >1 machine is present; otherwise the whole roster renders
+  // as before. The selected tab rides nuqs (?agentsMachine=); clearing it = Local.
+  const [machineTab, setMachineTab] = useQueryState('agentsMachine', parseAsString);
+  const tabs = useMemo(() => machineTabs(agents), [agents]);
+  const showTabs = tabs.length > 1;
+  const activeTabKey = showTabs
+    ? (machineTab && tabs.some((t) => t.key === machineTab) ? machineTab : tabs[0].key)
+    : null;
+  const shown = useMemo(
+    () => (activeTabKey ? agents.filter((a) => machineKey(a) === activeTabKey) : agents),
+    [agents, activeTabKey],
+  );
+  const groups = useMemo(() => groupByFleet(shown), [shown]);
+  const total = shown.length;
   const activeId = hovered ?? pinned;
   const active = useMemo(() => {
     for (const g of groups) {
@@ -323,6 +395,24 @@ export function AgentsRoster({ groups, total, nowMs }: { groups: FleetGroup[]; t
       data-testid="agents-roster"
       onMouseLeave={() => setHovered(null)}
     >
+      {showTabs && (
+        <div className="pc-agents-roster__tabs" role="tablist" data-testid="agents-machine-tabs">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={t.key === activeTabKey}
+              className={`pc-agents-roster__tab${t.key === activeTabKey ? ' is-active' : ''}`}
+              data-testid={`agents-machine-tab-${t.key}`}
+              title={t.isLocal ? 'Agents on this machine' : `Agents on ${t.label}`}
+              onClick={() => void setMachineTab(t.key === tabs[0].key ? null : t.key)}
+            >
+              {t.label} <span className="pc-agents-roster__tab-count">{t.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="pc-agents-roster__legend" aria-hidden>
         {Object.entries(KIND_GLYPH).map(([k, g]) => (
           <span key={k} className="pc-agents-roster__legend-item">{g} {k}</span>
@@ -511,6 +601,15 @@ function RosterStyles() {
         box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
       }
       .pc-agents-roster { font-size: 12px; }
+      .pc-agents-roster__tabs { display: flex; gap: 2px; padding: 4px 6px 0; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+      .pc-agents-roster__tab {
+        font-size: 11px; padding: 3px 9px; border-radius: 6px 6px 0 0; cursor: pointer;
+        background: transparent; color: var(--fg-mute); border: 1px solid transparent; border-bottom: none;
+      }
+      .pc-agents-roster__tab:hover { background: var(--bg-2); }
+      .pc-agents-roster__tab.is-active { background: var(--bg-2); color: var(--fg); border-color: var(--border); }
+      .pc-agents-roster__tab-count { color: var(--fg-mute); font-variant-numeric: tabular-nums; margin-left: 2px; }
+      .pc-agents-pill__machines { color: var(--fg-mute); }
       .pc-agents-roster__legend {
         display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 8px 6px;
         font-size: 10.5px; color: var(--fg-mute); border-bottom: 1px solid var(--border);

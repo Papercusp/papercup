@@ -25,6 +25,7 @@
  * delivers the fire.
  */
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import { checkFireGate as defaultCheckFireGate, recordFire as defaultRecordFire } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
@@ -69,15 +70,32 @@ export interface LoopFireDeps {
   costCap?: typeof defaultCheckLoopCostCap;
   deadMan?: typeof defaultCheckLoopDeadMan;
   incrementFireCount?: typeof defaultIncrementLoopFireCount;
+  deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
 export interface LoopFireResult {
   fired: boolean;
   /** Why a fire was withheld (when fired=false). */
-  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man';
+  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man' | 'no-session-now';
   woken?: number;
   staged?: number;
   detail?: string;
+}
+
+async function defaultDeactivateLoop(input: {
+  sql?: Sql;
+  installSlug: string;
+  routineName: string;
+}): Promise<boolean> {
+  const sql = input.sql ?? getOrgPg().sql;
+  const result = await sql`
+    UPDATE harness_shared.routines
+       SET active = FALSE, updated_at = now()
+     WHERE install_slug = ${input.installSlug}
+       AND name = ${input.routineName}
+       AND active = TRUE
+  `;
+  return Number((result as { count: number }).count ?? 0) > 0;
 }
 
 /** Read the loop kickoff (wake-turn text) from the routine's payload_template, if any. */
@@ -113,6 +131,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const costCap = deps.costCap ?? defaultCheckLoopCostCap;
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
+  const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
 
   if (!input.targetOwnerId) {
     return { fired: false, reason: 'no-target', detail: 'loop routine has no target_owner_id to wake' };
@@ -186,10 +205,32 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // the turn's completion marker, and the resume-turn-outcome handler / stuck-park backstop
   // record `error` on a death. The enqueue just refreshes last_status (counter PRESERVED).
   const reached = (fan.woken ?? 0) > 0 || (fan.staged ?? 0) > 0;
+  if (!reached) {
+    const deactivated = await deactivateLoop({
+      sql: input.sql,
+      installSlug: input.installSlug,
+      routineName: input.routineName,
+    }).catch(() => false);
+    await recordFire(
+      input.installSlug,
+      input.routineName,
+      deactivated ? 'no-session-now:auto-ended' : 'no-session-now',
+      'error',
+    ).catch(() => {});
+    return {
+      fired: false,
+      reason: 'no-session-now',
+      woken: fan.woken,
+      staged: fan.staged,
+      detail: deactivated
+        ? 'loop auto-ended: pinned warm session is no longer wakeable/resumable'
+        : 'pinned warm session is no longer wakeable/resumable',
+    };
+  }
   await recordFire(
     input.installSlug,
     input.routineName,
-    reached ? 'queued' : 'no-session-now',
+    'queued',
     'attempt',
   ).catch(() => {});
 

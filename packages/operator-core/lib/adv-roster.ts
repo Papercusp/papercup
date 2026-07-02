@@ -710,7 +710,25 @@ export async function mergeRosterWithAssignments(
   // EI-348: nursery liveness join — sequential (not in the Promise.all) only
   // because it needs the hostname; one indexed query, still cheap.
   const nurseryByOwner = await runningSpawnLivenessByOwner(os.hostname());
-  const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
+  const localPresence = scopePresenceToWorkspace(presenceAll, workspaceId);
+  // Shared-hive federation: when presence-gossip is on, fold in cross-machine agents
+  // (session-grain remote rows, each with its real ownerId + machineLabel) so the
+  // roster spans every machine in the hive. Dedup against local owners; a read
+  // failure degrades to the local roster. Flag-gated so a single-machine setup (flag
+  // off) is unchanged. Enrichment (adv_sessions/claims/pid/thinking) is local-only;
+  // federated rows degrade gracefully (no runId, no pid probe, thinking=false).
+  let presence = localPresence;
+  try {
+    if (await getFlag(FLAGS.PRESENCE_GOSSIP, 'system')) {
+      const fed = (await listFederatedPresence({ workspaceId }).catch(() => [])).filter(
+        (r) => r.remoteSession,
+      );
+      const localOwners = new Set(localPresence.map((p) => p.ownerId));
+      presence = [...localPresence, ...fed.filter((r) => !localOwners.has(r.ownerId))];
+    }
+  } catch {
+    presence = localPresence;
+  }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping.
   const fleetInfoByOwner = await resolveFleetInfoByOwner(presence);
   const entries = mergeRosterEntries(
@@ -728,6 +746,10 @@ export async function mergeRosterWithAssignments(
     loopArmedOwners,
   );
   const active = enrichPidLiveness(entries, os.hostname());
+  // Stamp local agents with this machine's label (federated rows already carry their
+  // announced machineLabel) so the roster can group/tab by machine.
+  const localLabel = machineFingerprint();
+  for (const e of active) if (e.isLocal && !e.machineLabel) e.machineLabel = localLabel;
   // "In the middle of thinking" (roster indicator): a session whose transcript was
   // appended within SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved
   // in PARALLEL (never a serial fs loop, per the perf docs) and best-effort — every

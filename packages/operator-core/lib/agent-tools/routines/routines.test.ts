@@ -31,8 +31,13 @@ const cronM = vi.mocked(computeNextFireAt);
 const listTool = (await import('./list')).default;
 const setTool = (await import('./set')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
+type Out = { content?: { text: string }[]; data?: unknown };
+// routines:list returns a {data} envelope (context-trimming-tiers P-023);
+// routines:set still self-serializes content[] — handle both.
+const body = (o: unknown) => {
+  const out = o as Out;
+  return out.data !== undefined ? out.data : JSON.parse(out.content![0]!.text);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
