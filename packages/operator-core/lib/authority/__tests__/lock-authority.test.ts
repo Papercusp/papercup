@@ -405,6 +405,9 @@ describe('routeFileLockOp — file-claim scope guard (D-009)', () => {
         ],
       },
     );
-    expect(res).toEqual({ value: 'L', via: 'local-authority' });
+    // WI-1550 (P-015): routeFileLockOp now also reports the resolved scope key so
+    // callers can append their own lock-event on a LOCALLY-decided op (this is that
+    // case — a mapped, federated domain where we ARE the authority).
+    expect(res).toEqual({ value: 'L', via: 'local-authority', scope: 'h' });
   });
 });

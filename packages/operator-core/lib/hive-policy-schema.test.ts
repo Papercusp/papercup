@@ -248,7 +248,7 @@ describe('policy.crefs (G-6 P-030 — canonical-ref rules)', () => {
     expect(resolveCanonicalRule(policy, 'refs/heads/main')?.pattern).toBe('*');
   });
 
-  it('resolveCanonicalRule SKIPS malformed rule entries instead of throwing (junk-safe read path)', () => {
+  it('resolveCanonicalRule never THROWS on malformed rule entries (junk-safe read path), but no longer silently no-ops either', () => {
     const junk = {
       crefs: {
         rules: {
@@ -259,7 +259,43 @@ describe('policy.crefs (G-6 P-030 — canonical-ref rules)', () => {
         },
       },
     } as unknown as HivePolicy;
-    expect(resolveCanonicalRule(junk, 'refs/tags/releases/v1')).toBeNull();
+    // The most-specific matching pattern ('refs/tags/releases/*') is itself malformed
+    // (not even an object) — WI-1553 fail-closed: a poisoned, unsatisfiable rule comes
+    // back for THAT pattern, not a silent null (which would read as "nothing governs
+    // this ref, fully permissive" and is a strictly weaker/wrong signal here).
+    expect(resolveCanonicalRule(junk, 'refs/tags/releases/v1')).toEqual({
+      pattern: 'refs/tags/releases/*',
+      allow: [],
+      threshold: 1,
+    });
+    // A ref that matches ONLY 'refs' (no wildcard, malformed value `null`) still fails
+    // closed rather than silently permissive-nulling.
+    expect(resolveCanonicalRule(junk, 'refs')).toEqual({ pattern: 'refs', allow: [], threshold: 1 });
+    // A ref matching NO pattern at all stays the genuine permissive default.
+    expect(resolveCanonicalRule(junk, 'unrelated/ref')).toBeNull();
+  });
+
+  it('WI-1553 repro: does NOT fall through to a broader, weaker, VALID rule when the most-specific match is malformed', () => {
+    const policy = {
+      crefs: {
+        rules: {
+          'refs/heads/release': { allow: [] }, // malformed: empty allow, no threshold
+          'refs/*': { allow: ['k'], threshold: 1 }, // valid, but broader + weaker
+        },
+      },
+    } as unknown as HivePolicy;
+    // Before the fix this returned the broad `refs/*` rule (a silent downgrade on a
+    // trust surface). Now it must fail closed on the specific, malformed rule instead.
+    const resolved = resolveCanonicalRule(policy, 'refs/heads/release');
+    expect(resolved).toEqual({ pattern: 'refs/heads/release', allow: [], threshold: 1 });
+    expect(resolved?.pattern).not.toBe('refs/*');
+    // A DIFFERENT ref not matched by the malformed specific rule still resolves to the
+    // valid broad rule normally.
+    expect(resolveCanonicalRule(policy, 'refs/heads/other')).toEqual({
+      pattern: 'refs/*',
+      allow: ['k'],
+      threshold: 1,
+    });
   });
 
   it('round-trips through the SIGNED policy (canonicalize → sign → verify → parse → resolve)', () => {

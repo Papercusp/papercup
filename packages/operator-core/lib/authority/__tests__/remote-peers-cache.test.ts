@@ -102,7 +102,10 @@ describe('routeFileLockOp — remote-peers fast path', () => {
         fetchPresenceRows: async () => [peerRow('aaa')], // only self → no remote peers
       },
     );
-    expect(res).toEqual({ value: 'L', via: 'local-authority' });
+    // WI-1550 (P-015): routeFileLockOp now also reports the resolved scope key so
+    // callers can append their own lock-event on a LOCALLY-decided op (this is that
+    // case — a mapped, federated domain hitting the no-remote-peers fast path).
+    expect(res).toEqual({ value: 'L', via: 'local-authority', scope: 'h' });
   });
 
   it('remote peers present → delegates to authority routing (fail-open without transport)', async () => {

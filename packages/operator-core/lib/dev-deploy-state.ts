@@ -134,11 +134,52 @@ async function aheadCount(repo: string, from: string, to: string): Promise<numbe
   }
 }
 
-/** Best-effort last-deploy wall-clock: mtime of the release worktree's HEAD file. */
+/**
+ * Best-effort last-deploy wall-clock: mtime of the release checkout's real HEAD
+ * ref file.
+ *
+ * The release checkout is a LINKED WORKTREE (`git worktree add`), so
+ * `<releaseRoot>/.git` is not a directory — it's a static `gitdir: <path>`
+ * pointer FILE written once at worktree-creation time and never rewritten
+ * afterwards. A `git checkout` / `git reset --hard` inside the worktree
+ * updates the ref file at `<pointer-target>/HEAD` (under the MAIN repo's
+ * `.git/worktrees/<name>/`), not the pointer file itself. Statting the
+ * pointer file (as this used to) therefore returns the worktree's CREATION
+ * time forever, silently making every past + future deploy look like it
+ * happened on day one — the exact symptom behind WI-1623 ("deployedAt
+ * ~month-stale" when deploys were in fact landing).
+ *
+ * So: resolve the real per-worktree admin dir by parsing the pointer file
+ * (same `gitdir:\s*(.+)` shape `classify-tree.ts` already parses for worktree
+ * detection) and stat ITS `HEAD`, which git does touch on every checkout.
+ * Falls back to the plain non-worktree case (`.git` is a real directory) and,
+ * failing everything, to the old best-effort stats so this never regresses to
+ * throwing or silently returning null on a shape we haven't seen.
+ */
 function lastDeployMtime(releaseRoot: string): number | null {
-  // A linked worktree's HEAD lives under <gitdir>/worktrees/<name>/HEAD; the
-  // .git entry at the worktree root is a `gitdir: …` pointer file rewritten on
-  // checkout. Stat whichever resolves — both are touched on a deploy swap.
+  const gitPath = path.join(releaseRoot, '.git');
+  try {
+    const st = fs.statSync(gitPath);
+    if (st.isDirectory()) {
+      // Not a worktree (a plain/standalone checkout) — HEAD lives right here.
+      return Math.round(fs.statSync(path.join(gitPath, 'HEAD')).mtimeMs);
+    }
+    if (st.isFile()) {
+      const raw = fs.readFileSync(gitPath, 'utf-8');
+      const match = raw.match(/^gitdir:\s*(.+?)\s*$/m);
+      const target = match?.[1];
+      if (target) {
+        // Resolve relative-to-worktree-root pointer targets too (git usually
+        // writes an absolute path, but tolerate a relative one defensively).
+        const realGitDir = path.isAbsolute(target) ? target : path.join(releaseRoot, target);
+        return Math.round(fs.statSync(path.join(realGitDir, 'HEAD')).mtimeMs);
+      }
+    }
+  } catch {
+    /* fall through to the best-effort candidates below */
+  }
+  // Last resort: the pre-fix behavior. Wrong for a worktree, but better than
+  // null when the shape above didn't match (e.g. .git missing entirely).
   const candidates = [path.join(releaseRoot, '.git', 'HEAD'), path.join(releaseRoot, '.git')];
   for (const c of candidates) {
     try {

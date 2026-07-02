@@ -98,4 +98,27 @@ describe('overwatch persona — the owner #1 hive-coordination-health scorecard 
     // so a turn cannot read as "done" without it.
     expect(persona).toMatch(/scorecard emitted/i);
   });
+
+  // EI-6365: the Overwatch died mid-turn with intent "Need schema confidence for
+  // improvements:capture to emit ... the scorecard before turn close" — it took a
+  // live schema-lookup detour at turn close and never emitted, spawning duplicate
+  // overwatch-scorecard-skipped advisories. Two root-cause defects, pinned here:
+  it('makes the scorecard emit self-sufficient — no live schema lookup needed (EI-6365)', () => {
+    // The persona must explicitly tell the Overwatch the worked example IS the complete,
+    // verified call shape and NOT to "confirm the schema" before emitting — the exact
+    // detour that stranded the turn.
+    expect(persona).toMatch(/no live schema lookup/i);
+    expect(persona).toMatch(/schema-confidence detour/i);
+  });
+
+  it('references rubrics:get with the CORRECT arg name (rubricId, not rubric) — EI-6365', () => {
+    // The real rubrics:get tool arg is `rubricId` (see rubrics/get.ts). A `{ rubric: … }`
+    // call fails validation, which is exactly what sends the Overwatch into the
+    // schema-confidence spiral. Guard against the wrong arg re-appearing.
+    expect(persona).not.toMatch(/rubrics:get\s*\{\s*rubric\s*:/);
+    // If the persona references rubrics:get at all, it uses rubricId.
+    if (/rubrics:get/.test(persona)) {
+      expect(persona).toMatch(/rubrics:get\s*\{\s*rubricId\s*:/);
+    }
+  });
 });

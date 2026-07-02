@@ -302,12 +302,21 @@ export function matchRefPattern(pattern: string, refName: string): boolean {
 /**
  * Resolve the canonical-ref rule governing `refName` under `policy` (G-6 P-030). PURE:
  * a lookup over the owner-signed policy document, no I/O. Returns the matching rule's
- * `{ allow, threshold }` (+ the matched `pattern`), or `null` when no rule matches —
- * null means the ref is NOT policy-canonical (nothing to enforce), the permissive
- * default. When several patterns match, the MOST SPECIFIC wins: most literal (non-`*`)
- * characters, then fewest wildcards, then lexicographically smallest pattern (a
- * deterministic tiebreak). Malformed rule entries (wrong shapes that predate or bypassed
- * validation) are SKIPPED, never thrown on — the read path must not crash on junk.
+ * `{ allow, threshold }` (+ the matched `pattern`), or `null` when NO rule pattern
+ * matches `refName` at all — null means the ref is NOT policy-canonical (nothing to
+ * enforce), the permissive default. When several patterns match, the MOST SPECIFIC
+ * wins: most literal (non-`*`) characters, then fewest wildcards, then
+ * lexicographically smallest pattern (a deterministic tiebreak) — determined FIRST,
+ * over every matching pattern regardless of shape validity.
+ *
+ * FAIL CLOSED, not permissive, on stored junk (WI-1553): if the MOST SPECIFIC matching
+ * pattern's rule is malformed (wrong shape — predates or bypassed `validateHivePolicy`),
+ * this does NOT fall through to a broader, valid, possibly-WEAKER rule (a real
+ * `refs/heads/release` rule with `allow: []` must never be satisfied by a laxer
+ * `refs/*` catch-all). Instead it returns a poisoned, unsatisfiable rule —
+ * `{ pattern, allow: [], threshold: 1 }` — so every consumer's satisfiability check
+ * (`allow.length >= threshold`-shaped) denies by construction. The read path still
+ * never throws on junk (a `null`-vs-poison distinction, not a crash).
  */
 export function resolveCanonicalRule(
   policy: HivePolicy | null | undefined,
@@ -315,26 +324,40 @@ export function resolveCanonicalRule(
 ): ResolvedCanonicalRule | null {
   const rules = policy?.crefs?.rules;
   if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return null;
-  let best: { resolved: ResolvedCanonicalRule; literals: number; wildcards: number } | null = null;
+  // Pass 1: find the MOST SPECIFIC matching PATTERN, independent of the rule's shape
+  // validity — a malformed entry still "claims" its pattern and must not be silently
+  // skipped in favor of a less-specific one.
+  let best: { pattern: string; rule: unknown; literals: number; wildcards: number } | null = null;
   for (const [pattern, rule] of Object.entries(rules)) {
-    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
-    const r = rule as HivePolicyCrefsRule;
-    if (!isStringArray(r.allow) || r.allow.length === 0) continue;
-    if (typeof r.threshold !== 'number' || !Number.isInteger(r.threshold) || r.threshold < 1) continue;
     if (!matchRefPattern(pattern, refName)) continue;
     const wildcards = pattern.split('*').length - 1;
     const literals = pattern.length - wildcards;
-    const candidate = { resolved: { pattern, allow: [...r.allow], threshold: r.threshold }, literals, wildcards };
     if (
       !best ||
-      candidate.literals > best.literals ||
-      (candidate.literals === best.literals && candidate.wildcards < best.wildcards) ||
-      (candidate.literals === best.literals && candidate.wildcards === best.wildcards && pattern < best.resolved.pattern)
+      literals > best.literals ||
+      (literals === best.literals && wildcards < best.wildcards) ||
+      (literals === best.literals && wildcards === best.wildcards && pattern < best.pattern)
     ) {
-      best = candidate;
+      best = { pattern, rule, literals, wildcards };
     }
   }
-  return best?.resolved ?? null;
+  if (!best) return null; // nothing matched — the permissive default.
+  // Pass 2: validate ONLY the winning entry. A malformed winner is poisoned (fail
+  // closed), never a reason to fall back to a different, broader match.
+  const r = best.rule as HivePolicyCrefsRule | null | undefined;
+  const isValidRule =
+    !!r &&
+    typeof r === 'object' &&
+    !Array.isArray(r) &&
+    isStringArray(r.allow) &&
+    r.allow.length > 0 &&
+    typeof r.threshold === 'number' &&
+    Number.isInteger(r.threshold) &&
+    r.threshold >= 1;
+  if (!isValidRule) {
+    return { pattern: best.pattern, allow: [], threshold: 1 };
+  }
+  return { pattern: best.pattern, allow: [...(r as HivePolicyCrefsRule).allow!], threshold: (r as HivePolicyCrefsRule).threshold! };
 }
 
 /**

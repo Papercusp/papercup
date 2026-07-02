@@ -257,18 +257,27 @@ describe('boot pending-retry loop (D-006)', () => {
     },
   );
 
-  // GREEN-CHECKPOINT TIER-OUT (release-fixer 2026-06-19, EI-681/D-006 area): this case
-  // boots a REAL Hypercore substrate (corestore disk I/O + mergeNow/raceWithTimeout)
-  // under fake timers. `advanceTimersByTimeAsync(...)` fires the retry tick and drains
-  // microtasks, but it CANNOT pace the real libuv fs I/O behind the admitPeer chain — so
-  // under the shared-box load of the hourly gate the admission hasn't settled when the
-  // assertion runs (`expected false to be true`, candidate 615bdcd/bbd535bf). It passes
-  // 5/5 in isolation and local dev; raising the 15s timeout doesn't help (the failure is
-  // an early assert, not a timeout). Per the GREEN_CHECKPOINT=1 contract in
-  // apps/operator/lib/release/green-checkpoint.ts, a genuinely load-sensitive real-resource
-  // test self-excludes from the loaded gate while STILL running in CI + local — so the
-  // D-006 freshness-anchoring behavior remains covered there.
-  it.skipIf(process.env.GREEN_CHECKPOINT === '1')(
+  // WI-759 root cause (traced 2026-07-02): this case boots a REAL Hypercore
+  // substrate (corestore disk I/O + mergeNow/raceWithTimeout) under fake
+  // `Date` timers — only the clock is fake, `admitPeer`'s corestore I/O is
+  // real. Under shared-box load, `openRemoteLog` (boot.ts drainAdmissionQueue)
+  // can throw (real fs/network contention) on a given attempt; when it does,
+  // TWO things happen: (a) boot.ts:1451 logs via `console.error`, which
+  // `vitest-fail-on-console` treats as a failure even though the retry loop
+  // itself already handles it gracefully (re-buffers into pendingPeers for
+  // the next tick) — hence the ~300-420ms "Expected test not to call
+  // console.error()" flake; (b) since this test previously drove only ONE
+  // retry tick before asserting, a re-buffered (still-pending) peer produced
+  // "expected false to be true" (candidate 615bdcd/bbd535bf) instead of a
+  // timeout. Fix: (1) suppress console.error for the duration of this test —
+  // the retry path's own re-buffer-and-retry IS the correct, tested behavior,
+  // so a transient warning from one attempt is not a real test failure; (2)
+  // drive the retry tick a few times (bounded, mirroring the production
+  // pendingRetryMs loop) instead of assuming single-tick success, so a
+  // transient real-I/O hiccup on one attempt doesn't redden a test whose
+  // actual subject (freshness-anchoring across the 30-min grace window) is
+  // unaffected by it.
+  it(
     'pending-retry admits a peer whose announce was built >5 min before retry fires (behavioral)',
     async () => {
       // Behavioral regression test: a peer that stays in 'pending' while the live
@@ -288,6 +297,11 @@ describe('boot pending-retry loop (D-006)', () => {
       // inside mergeNow to let the merge complete even without a network peer.
 
       vi.useFakeTimers({ toFake: ['Date'] });
+      // Suppress console.error for this test only: a real-I/O hiccup in
+      // openRemoteLog under shared-box load logs a WARNING (boot.ts:1451) that
+      // the production retry loop already recovers from on the next tick — it
+      // is not a genuine test failure and must not trip vitest-fail-on-console.
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         const retryTimer = capturePendingRetryTimer();
         let callCount = 0;
@@ -322,7 +336,18 @@ describe('boot pending-retry loop (D-006)', () => {
         // Also advance past DEFAULT_GET_TIMEOUT_MS (5000ms) to let raceWithTimeout
         // inside mergeNow complete so admitPeer can finish.
         vi.setSystemTime(Date.now() + 6 * 60 * 1000 + 50);
-        await retryTimer.run();
+
+        // Drive up to a few retry ticks: on a loaded box a single attempt can
+        // hit a transient real-corestore I/O failure (openRemoteLog throws,
+        // re-buffers into pendingPeers — the production self-heal); the next
+        // tick retries the SAME frame (freshness is still anchored to
+        // entry.since, so it never goes stale across attempts). This mirrors
+        // how the real pendingRetryMs loop behaves in production — it does
+        // not require every single tick to succeed, only eventual admission
+        // inside BOOT_PENDING_GRACE_MS.
+        for (let attempt = 0; attempt < 5 && !handle.admitted.has(logCoreKey); attempt++) {
+          await retryTimer.run();
+        }
 
         // With the fix: verifyAnnounce(entry.frame, { nowMs: entry.since=T }) → pass
         // → binding 'verified' → admitPeer → admitted.set(logCoreKey, ...).
@@ -342,6 +367,7 @@ describe('boot pending-retry loop (D-006)', () => {
         });
         expect(rejected).toHaveLength(0);
       } finally {
+        errSpy.mockRestore();
         vi.useRealTimers();
       }
     },
@@ -399,6 +425,12 @@ describe('boot pending-retry loop (D-006)', () => {
       // Only own log remains.
       expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
     },
-    3000,
+    // WI-759: this test's only real work is bootHarnessSubstrate's corestore
+    // init (own-log creation) — cheap in isolation but genuinely load-sensitive
+    // (real fs I/O) on a shared box under concurrent test/agent load, where it
+    // was observed timing out at the old 3000ms. Raised to 10000ms for headroom
+    // (matches the neighboring behavioral test's budget); it still completes in
+    // well under 1s locally.
+    10000,
   );
 });

@@ -39,6 +39,9 @@ import { registerSystemAction, type SystemActionCtx } from '../routines/system-a
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
 import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
+import { parseGithubUrl } from '../clone-github';
+import { fetchRepoPushPermission } from '../github-repo-permissions';
+import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
@@ -1064,6 +1067,78 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       prevHeadSha,
       attributionOn,
     }));
+
+  // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
+  // one bridge pass per tick — ingress origin → admission → egress canonical →
+  // divergence verdict (all FF-only; origin never forced). Its own checkpoint so
+  // a resumed fire that already bridged never re-runs the pass. Kill-switch:
+  // FLAGS.GITHUB_BRIDGE (default ON; the per-hive `hiveGit.mode` setting is the
+  // real activation — this leg only exists when the gate resolved 'bridged').
+  if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
+    await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
+  }
+}
+
+/** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
+ *  throws (the code plane must keep syncing even when GitHub is unreachable);
+ *  outcome + the `last_admitted` watermark persist on the routine metadata. */
+async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<void> {
+  try {
+    let entry: ProjectEntry | undefined;
+    try {
+      entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+    } catch {
+      return; // registry unreadable — next tick retries
+    }
+    if (!entry) return;
+    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!hiveHomeSlug) return;
+
+    // The admission watermark (P-005): the last ADMITTED github-origin head.
+    const { sql } = getOrgPg();
+    const rows = await sql<{ la: string | null }[]>`
+      SELECT metadata->'github_bridge'->>'last_admitted' AS la
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const lastAdmitted = rows[0]?.la ?? null;
+
+    // Upstream-write probe only when it can matter (a fork always wins — D-007b).
+    let upstreamWrite: boolean | null = null;
+    if (entry.github_remote && !entry.fork_remote) {
+      const parsed = parseGithubUrl(entry.github_remote);
+      if (parsed) upstreamWrite = await fetchRepoPushPermission(parsed.owner, parsed.repo);
+    }
+
+    const outcome = await runGithubBridgeTick({
+      hiveHomeSlug,
+      workspaceId,
+      repoKey: slug,
+      githubRemote: entry.github_remote,
+      forkRemote: entry.fork_remote,
+      branches: [entry.github_default_branch ?? 'main'],
+      upstreamWrite,
+      lastAdmitted,
+    });
+
+    await patchRoutineMetadata(slug, {
+      github_bridge: {
+        at: Date.now(),
+        ran: outcome.ran,
+        skipped: outcome.skipped ?? null,
+        egress_target: outcome.egressTarget,
+        ingressed: outcome.ingressed,
+        egress: outcome.egress,
+        last_admitted: outcome.lastAdmitted,
+        divergence: outcome.verdict.action,
+        needs_owner: outcome.verdict.needsOwner,
+        errors: outcome.errors.slice(0, 10),
+      },
+    });
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /** WI-1416: the outcome-recording + escalation/dispatch tail of one tick — runs as the

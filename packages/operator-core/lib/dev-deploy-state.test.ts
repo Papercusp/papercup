@@ -138,6 +138,37 @@ describe('devDeployState', () => {
     }
   });
 
+  it('deployedAtMs reflects a checkout INSIDE the linked worktree, not the worktree-creation mtime (WI-1623)', async () => {
+    // The release checkout is `git worktree add`-ed once in beforeAll (creation
+    // time long past); the worktree-root `.git` pointer FILE's mtime never
+    // changes again. A real deploy runs `git checkout <sha>` inside that
+    // worktree — assert deployedAtMs tracks THAT, not the pointer file.
+    const gitFile = path.join(release, '.git');
+    const gitFileMtimeBefore = fs.statSync(gitFile).mtimeMs;
+
+    resetDevDeployStateCache();
+    const before = await devDeployState();
+    // Sanity: deployed currently resolves to A (the worktree-creation checkout).
+    expect(before.deployed?.sha).toBe(shaA);
+
+    // Simulate a deploy: checkout a different commit inside the worktree.
+    // Bump the mtime clock forward so a coarse filesystem timestamp
+    // resolution can't make this a no-op assertion.
+    await new Promise((r) => setTimeout(r, 1100));
+    git(release, ['checkout', '-q', '--detach', shaB]);
+
+    resetDevDeployStateCache();
+    const after = await devDeployState();
+    expect(after.deployed?.sha).toBe(shaB);
+    expect(after.deployedAtMs).not.toBeNull();
+    // The bug: deployedAtMs used to equal the STATIC pointer file's mtime,
+    // which the checkout above never touches.
+    expect(after.deployedAtMs).toBeGreaterThan(gitFileMtimeBefore);
+    // And it must be close to "now" (the checkout we just ran), not the
+    // worktree's original creation time from beforeAll.
+    expect(Date.now() - (after.deployedAtMs as number)).toBeLessThan(15_000);
+  });
+
   it('populates errors[] (not throws) when a ref is missing, still returning a snapshot', async () => {
     const prev = process.env.PAPERCUSP_RELEASE_REF;
     process.env.PAPERCUSP_RELEASE_REF = 'no-such-ref';

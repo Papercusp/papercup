@@ -16,12 +16,80 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveHiveReleaseEnv } from './harness/routines/hive-release-env';
+import { getHiveGitMode, type HiveGitMode } from './harness/git-sync/hive-git-mode';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
 import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 
 export type HiveGateStatus = 'green' | 'held' | 'stalled' | 'unknown';
+
+/**
+ * The newest GitHub-bridge tick state for a hive (github-bridge-hive-egress-2026-07-02
+ * P-009) — projected from the `metadata.github_bridge` blob git-sync-action persists on
+ * each member's `system:git-sync` routine row after the bridge pass.
+ */
+export interface GitPipelineBridgeState {
+  /** When the reporting tick ran (ms). */
+  atMs: number | null;
+  ran: boolean;
+  skipped: string | null;
+  /** Where egress resolved to: fork | upstream | none | skipped. */
+  egressTarget: string | null;
+  /** The last ADMITTED github-origin head (the P-005 watermark, full sha). */
+  lastAdmitted: string | null;
+  /** The P-006 divergence verdict of the newest tick. */
+  divergence: 'clear' | 'escalate' | null;
+  /** True when resolution needs an owner lever (history rewrite / revoked author). */
+  needsOwner: boolean;
+  /** Error count reported by the newest tick. */
+  errors: number;
+  /** Which member routine reported this state (newest `at` wins across members). */
+  memberSlug: string;
+}
+
+/** Map one routine-metadata `github_bridge` blob into the row state. Junk-safe:
+ *  any malformed field degrades to its null/false default, never throws. */
+export function bridgeStateFromMetadata(gb: unknown, memberSlug: string): GitPipelineBridgeState | null {
+  if (!gb || typeof gb !== 'object') return null;
+  const g = gb as Record<string, unknown>;
+  return {
+    atMs: typeof g.at === 'number' && Number.isFinite(g.at) ? g.at : null,
+    ran: g.ran === true,
+    skipped: typeof g.skipped === 'string' ? g.skipped : null,
+    egressTarget: typeof g.egress_target === 'string' ? g.egress_target : null,
+    lastAdmitted: typeof g.last_admitted === 'string' ? g.last_admitted : null,
+    divergence: g.divergence === 'clear' || g.divergence === 'escalate' ? g.divergence : null,
+    needsOwner: g.needs_owner === true,
+    errors: Array.isArray(g.errors) ? g.errors.length : 0,
+    memberSlug,
+  };
+}
+
+/** The newest bridge state across a hive's member git-sync routines. Best-effort:
+ *  a PG failure reads as null (the surface renders "no tick yet"), never throws. */
+async function loadBridgeState(memberSlugs: string[]): Promise<GitPipelineBridgeState | null> {
+  if (memberSlugs.length === 0) return null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ install_slug: string; gb: unknown }[]>`
+      SELECT install_slug, metadata->'github_bridge' AS gb
+        FROM harness_shared.routines
+       WHERE target_role = 'system:git-sync'
+         AND install_slug = ANY(${memberSlugs})
+         AND metadata ? 'github_bridge'
+    `;
+    let newest: GitPipelineBridgeState | null = null;
+    for (const r of rows) {
+      const s = bridgeStateFromMetadata(r.gb, r.install_slug);
+      if (s && (newest === null || (s.atMs ?? 0) > (newest.atMs ?? 0))) newest = s;
+    }
+    return newest;
+  } catch {
+    return null;
+  }
+}
 
 export interface GitPipelineHiveRow {
   slug: string;
@@ -47,6 +115,11 @@ export interface GitPipelineHiveRow {
   stagingMainGap: number | null;
   lastDeployAtMs: number | null;
   lastDeployStatus: string | null;
+  // ── github bridge (github-bridge-hive-egress-2026-07-02 P-009) ──
+  /** The hive's federated `hiveGit.mode` (legacy = no bridge, today's behavior). */
+  hiveGitMode: HiveGitMode;
+  /** Newest bridge tick state; null on legacy hives / before the first tick. */
+  bridge: GitPipelineBridgeState | null;
 }
 
 /** `git -C root rev-list --count <from>..<to>` — best-effort, null on any error/missing branch. */
@@ -87,7 +160,12 @@ function lastGreenShaOf(recent: GitPipelineSnapshot['recent']): string | null {
 
 /** Build one compact per-hive row. Reuses gitPipelineSnapshot(slug) (routines/gate/events
  *  are install_slug-scoped) and overlays the per-hive command/branches/gap. */
-async function buildRow(slug: string, env: Awaited<ReturnType<typeof resolveHiveReleaseEnv>>): Promise<GitPipelineHiveRow> {
+async function buildRow(
+  slug: string,
+  env: Awaited<ReturnType<typeof resolveHiveReleaseEnv>>,
+  hiveGitMode: HiveGitMode,
+  bridge: GitPipelineBridgeState | null,
+): Promise<GitPipelineHiveRow> {
   const root = env.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
   const integrationBranch = env.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';
   const releaseRef = env.env.PAPERCUSP_RELEASE_REF ?? 'main';
@@ -117,6 +195,8 @@ async function buildRow(slug: string, env: Awaited<ReturnType<typeof resolveHive
     stagingMainGap: gap,
     lastDeployAtMs: lastDeploy?.createdAtMs ?? null,
     lastDeployStatus: lastDeploy?.status ?? null,
+    hiveGitMode,
+    bridge,
   };
 }
 
@@ -125,7 +205,7 @@ async function buildRow(slug: string, env: Awaited<ReturnType<typeof resolveHive
  * is green-gated, EXCLUDING the operator-home (it has its own full view). Sorted by slug.
  */
 export async function gitPipelineHiveRows(workspaceId: string = DEFAULT_WORKSPACE_ID): Promise<GitPipelineHiveRow[]> {
-  let projects: Array<{ slug: string }>;
+  let projects: Array<{ slug: string; hive_slug?: string }>;
   try {
     const reg = await loadHarnessRegistry(workspaceId);
     projects = reg.projects;
@@ -143,7 +223,14 @@ export async function gitPipelineHiveRows(workspaceId: string = DEFAULT_WORKSPAC
     }
     // Only GATED, repo-backed, NON-home hives appear here (the home is the main view).
     if (!env.enabled || env.isOperatorHome) continue;
-    rows.push(await buildRow(p.slug, env));
+    // P-009: the bridge cell — mode read is fail-open-to-legacy (never throws);
+    // the bridge-state PG read runs only on non-legacy hives (legacy = zero cost).
+    const hiveGitMode = await getHiveGitMode(workspaceId, p.slug);
+    const bridge =
+      hiveGitMode === 'legacy'
+        ? null
+        : await loadBridgeState([p.slug, ...projects.filter((m) => m.hive_slug === p.slug).map((m) => m.slug)]);
+    rows.push(await buildRow(p.slug, env, hiveGitMode, bridge));
   }
   rows.sort((a, b) => a.slug.localeCompare(b.slug));
   return rows;

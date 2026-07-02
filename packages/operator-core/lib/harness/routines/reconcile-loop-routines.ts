@@ -64,8 +64,9 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { recordFire as defaultRecordFire } from '../../autoloop';
+import { recordFire as defaultRecordFire, readFireState as defaultReadFireState } from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
+import { checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard } from './loop-unreachable-guard';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -118,6 +119,13 @@ export interface LoopRebaseResult {
      *  value is LEAST(cron-next, this), so it may be sooner. */
     nextFireAt: number;
     via: RebaseVia;
+  }>;
+  /** Loops auto-paused this pass because their owner is permanently unreachable (WI-1399) —
+   *  NOT re-armed; `active=false` was set instead. Diagnostics / tests. */
+  terminated: Array<{
+    id: string;
+    targetOwnerId: string;
+    reason: string;
   }>;
 }
 
@@ -173,11 +181,21 @@ function completionSignal(
  * tests.
  */
 export async function reconcileLoopRoutines(
-  opts: { sql?: Sql; nowMs?: number; recordFire?: typeof defaultRecordFire } = {},
+  opts: {
+    sql?: Sql;
+    nowMs?: number;
+    recordFire?: typeof defaultRecordFire;
+    /** Injected for tests; defaults to the real autoloop_state read. */
+    readFireState?: typeof defaultReadFireState;
+    /** Injected for tests; defaults to the real unreachable-owner terminal guard (WI-1399). */
+    checkUnreachableTerminalGuard?: typeof defaultCheckUnreachableTerminalGuard;
+  } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
   const nowMs = opts.nowMs ?? Date.now();
   const recordFire = opts.recordFire ?? defaultRecordFire;
+  const readFireState = opts.readFireState ?? defaultReadFireState;
+  const checkUnreachableTerminalGuard = opts.checkUnreachableTerminalGuard ?? defaultCheckUnreachableTerminalGuard;
 
   // Loop routines that may need a re-arm: a PARKED pure loop (rebase off completion) or an
   // armed cron+loop (fold the sooner). A pure loop still ARMED for its FIRST fire (a real
@@ -209,7 +227,7 @@ export async function reconcileLoopRoutines(
        AND (r.next_fire_at = 'infinity'::timestamptz OR jsonb_exists(r.trigger_config, 'cron'))
   `;
 
-  const result: LoopRebaseResult = { rearmed: 0, loops: [] };
+  const result: LoopRebaseResult = { rearmed: 0, loops: [], terminated: [] };
 
   for (const row of rows) {
     // PER-ROW ISOLATION (engine-loop re-arm hardening, EI-2549): one malformed row must NEVER
@@ -242,6 +260,51 @@ export async function reconcileLoopRoutines(
         via = 'stuck-backstop';
       } else {
         continue; // still in flight / nothing to fold — leave it
+      }
+
+      // WI-1399 — dead-owner terminal guard. Only reachable via the stuck-backstop branch
+      // (a genuine completion signal means the owner is obviously alive). Before re-arming
+      // to retry yet again, check whether the owner has become PERMANENTLY unreachable (no
+      // injectable/resumable wake channel) across a generous terminal window and a run of
+      // consecutive stuck-backstop fires — if so, auto-pause instead of re-arming into the
+      // void forever. Fail-soft: any probe/read failure here falls back to the normal
+      // stuck-backstop re-arm below (never blocks a retry on an uncertain read).
+      if (via === 'stuck-backstop') {
+        const priorState = await runWithWorkspace(row.routine_workspace_id, () =>
+          readFireState(row.install_slug, row.name),
+        ).catch(() => null);
+        const stuckFireCount = (priorState?.consecutiveErrors ?? 0) + 1;
+        const guard = await checkUnreachableTerminalGuard({
+          sql: db,
+          routineId: row.id,
+          targetOwnerId: row.target_owner_id,
+          parkedForMs: nowMs - lastFiredMs,
+          intervalMs,
+          stuckFireCount,
+        }).catch((e) => {
+          console.warn(
+            `[loop-reconcile] unreachable-terminal-guard check failed for '${row.id}' — falling back to stuck-backstop retry: ${e instanceof Error ? e.message : e}`,
+          );
+          return { breach: false } as { breach: boolean; reason?: string };
+        });
+        if (guard.breach) {
+          result.terminated.push({
+            id: row.id,
+            targetOwnerId: row.target_owner_id,
+            reason: guard.reason ?? 'unreachable dead-owner loop',
+          });
+          await runWithWorkspace(row.routine_workspace_id, () =>
+            recordFire(row.install_slug, row.name, 'loop-terminal-unreachable', 'error'),
+          ).catch((e) =>
+            console.warn(
+              `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
+            ),
+          );
+          console.warn(
+            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) TERMINATED (auto-paused, not re-armed): ${guard.reason}`,
+          );
+          continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
+        }
       }
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's

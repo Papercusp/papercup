@@ -39,6 +39,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { createHiveFromRepo, type CreateHiveFromRepoResult } from '../agent-tools/hive/_create_from_repo';
 import { materializeLearningSingletons } from '../blueprint/seed-learning-singletons';
+import { loadHarnessRegistry } from '../harness-registry';
 
 /**
  * The canonical public Papercusp repo (D-007a fetch-on-enable). This is the SAME
@@ -86,6 +87,12 @@ export interface EnablePlatformModeInput {
   ) => Promise<CreateHiveFromRepoResult>;
   /** Arm the Class-C singletons. Default: materializeLearningSingletons. */
   armSingletons?: typeof materializeLearningSingletons;
+  /**
+   * WI-1293: check whether the dedicated `<slug>-hive` self-hive is ALREADY a
+   * locally-registered `kind:'hive'` project. Default: a `loadHarnessRegistry`
+   * read. Injectable seam for tests.
+   */
+  checkSelfHiveRegistered?: (hiveSlug: string, workspaceId: string) => Promise<boolean>;
 }
 
 export interface EnablePlatformModeResult {
@@ -105,6 +112,13 @@ export interface EnablePlatformModeResult {
   summary: string;
 }
 
+/** Default `checkSelfHiveRegistered` seam: is `<slug>-hive` already a locally
+ *  registered `kind:'hive'` project in this workspace? (WI-1293) */
+async function defaultSelfHiveAlreadyRegistered(hiveSlug: string, workspaceId: string): Promise<boolean> {
+  const reg = await loadHarnessRegistry(workspaceId);
+  return reg.projects.some((p) => p.slug === hiveSlug && p.harness_kind === 'hive');
+}
+
 /**
  * Enable platform mode. ORDER MATTERS: flag first (so the singleton materialization
  * sees it ON), then the self-hive, then the loop arming. Each step is best-effort and
@@ -117,9 +131,11 @@ export async function enablePlatformMode(
   const sql = input.sql ?? getOrgPg().sql;
   const repoUrl = input.repoUrl ?? PAPERCUSP_CANONICAL_REPO_URL;
   const slug = input.slug ?? PLATFORM_SELF_HIVE_SLUG;
+  const hiveSlug = `${slug}-hive`;
   const setFlag = input.setFlag ?? setFlagOverride;
   const createSelfHive = input.createSelfHive ?? createHiveFromRepo;
   const armSingletons = input.armSingletons ?? materializeLearningSingletons;
+  const checkSelfHiveRegistered = input.checkSelfHiveRegistered ?? defaultSelfHiveAlreadyRegistered;
 
   // 1 — FLIP the master switch ON for this install (PG-backed override; works
   //     without PostHog). MUST precede the materialization so step 3 sees it ON.
