@@ -260,7 +260,11 @@ export function hiveMemberHarnessScopes(
  * belongs to a harness. A `harness_kind:'hive'` harness is repo-LESS — its `path`
  * is the Hive's state dir, NOT a code checkout — so its repo-backed content lives
  * in its MEMBER repo (git-sync-any-hive: a coding Hive's files ARE its member's).
- * Returns the member repo's path for such a Hive, else the harness's own path.
+ * EXCEPTION: a `self_repo` hive IS its own repo checkout (papercup→papercusp merge:
+ * the home hive and its dogfood repo are ONE entry) — it uses its OWN path and never
+ * borrows a member, so a stray project that set `hive_slug` to this hive can't hijack
+ * its docs/tests/source reads.
+ * Returns the member repo's path for a repo-less Hive, else the harness's own path.
  * Pure over the registry projects; returns undefined when the slug isn't registered.
  */
 export function resolveHarnessContentPath(
@@ -269,7 +273,9 @@ export function resolveHarnessContentPath(
 ): string | undefined {
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return undefined;
-  if (project.harness_kind === 'hive') {
+  // A repo-less hive home borrows its member's checkout; a `self_repo` hive is
+  // its OWN checkout and must use its own path (never a stray member's).
+  if (project.harness_kind === 'hive' && !project.self_repo) {
     const member = reg.projects.find(
       (p) => p.hive_slug === slug && p.harness_kind !== 'hive' && p.path,
     );

@@ -33,6 +33,7 @@ import { resolveSelfRef } from '../self-marker';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
+import { shapeOrient } from './orient-shape';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -336,6 +337,14 @@ export default defineTool({
     includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
     fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
   }),
+  // context-trimming-tiers P-012: orient is the fattest bootstrap read (one
+  // unshaped call measured ~43k tokens in the 2026-07-01 fleet incident). The
+  // tier shapers project the SAME orientation with caps + fetch-pointers;
+  // `payloadTier: 'full'` on any call returns the unshaped result.
+  shape: {
+    standard: (data, sctx) => shapeOrient(data, sctx.tier as 'standard'),
+    trimmed: (data, sctx) => shapeOrient(data, sctx.tier as 'trimmed'),
+  },
   async handler(args, ctx) {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
@@ -352,6 +361,10 @@ export default defineTool({
     // caller. See self-marker.ts for why this is a response-layer overlay.
     const self = resolveSelfRef(ctx);
     const out = self ? { self, ...(result as object) } : result;
-    return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
+    // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
+    // shaping + format-aware serialization apply. On the MCP transport this is
+    // behavior-equivalent to the prior raw-JSON text (the re-encode path
+    // already routed orient through the same serializer when TOON shrank it).
+    return { data: out };
   },
 });

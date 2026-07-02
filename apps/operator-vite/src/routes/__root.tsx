@@ -25,6 +25,7 @@ import PresenceRail from '@/app/_components/PresenceRail';
 import '@/lib/commands/voice-controls-entry';
 import GlobalFindInPage from '@/app/_components/GlobalFindInPage';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
+import ExternalLinkProvider from '@/app/_components/ExternalLinkProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
 import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
@@ -188,6 +189,11 @@ function RootComponent() {
           <Suspense fallback={null}>
             <NuqsAdapter>
               <UiPresenceProvider />
+              {/* Route EXTERNAL links (e.g. GitHub links in the Insights tab) to
+                  the OS browser instead of navigating the Tauri webview away from
+                  the SPA — a desktop window has no back button. No-op in a plain
+                  browser (isTauri() false). App-wide, not per-link. */}
+              <ExternalLinkProvider />
               {/* Cross-platform env switcher — the single env bar on every platform
                   (the Linux-only native GTK bar and the chrome-webview experiment were
                   both removed). It sources the canonical env list from the desktop/Tauri
