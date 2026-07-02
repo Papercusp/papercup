@@ -776,6 +776,39 @@ test('org-disallowed — a throwing onOrgDisallowed never breaks the request hot
   resetGovernorRegistry();
 });
 
+test('LAST-RESORT opus→sonnet downgrade when opus is walled pool-wide on every account (WI-1073)', async () => {
+  resetGovernorRegistry();
+  // Both A and B are org/subscription-disallowed for OPUS specifically (a real shape: an opus-specific
+  // cap/disallow that still leaves sonnet room) — every opus attempt 403s, every sonnet attempt 200s.
+  // With no healthy opus account left to rotate/wait onto, the gateway must rewrite the request to the
+  // fleet sonnet id and retry rather than hard-failing the caller.
+  upstream = await startUpstream((req, res, body) => {
+    const reqModel = (JSON.parse(body) as { model?: string }).model ?? '';
+    if (reqModel.includes('opus')) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    }
+  });
+  const pool = createFailoverPool([
+    { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+    { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+  ]);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  port = await gw.listen(0);
+
+  const r = await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'opus walled on every account → last-resort sonnet retry succeeds, never hard-fails the caller');
+  assert.equal(r.headers.get(MODEL_DOWNGRADED_HEADER), 'opus->sonnet', 'the silent substitution is surfaced to the caller via the downgrade header');
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6', 'the forwarded request was rewritten to the fleet-canonical sonnet id');
+
+  const s = (await (await ask('/stats')).json()) as { opusToSonnetDowngrades: number };
+  assert.equal(s.opusToSonnetDowngrades, 1, '/stats records the last-resort downgrade for observability');
+  resetGovernorRegistry();
+});
+
 test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {

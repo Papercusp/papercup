@@ -31,7 +31,8 @@ import tool from './survey';
 
 // The handler returns a {data} envelope (context-trimming-tiers P-024) —
 // serialization to content[] happens in defineTool dispatch, not here.
-const body = (r: { data: unknown }) => r.data as never;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const body = (r: unknown): any => (r as { data: unknown }).data;
 const ctx = { workspaceId: 'papercusp-workspace', role: 'queen' } as never;
 
 const ranked = (id: string, harness: string, score: number, extra: Record<string, unknown> = {}) => ({

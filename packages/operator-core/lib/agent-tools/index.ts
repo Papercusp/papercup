@@ -247,6 +247,8 @@ import './accounts/link';
 import './accounts/session-override';
 // gateway-live-control-and-egress-plan-2026-06-20 B-GWCTL — gateway:status / gateway:reload (hot-config).
 import './gateway/gateway';
+// local-concurrent-inference-2026-07-02 P-004 — gateway:local_backend_register/list/remove.
+import './gateway/local-backends';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

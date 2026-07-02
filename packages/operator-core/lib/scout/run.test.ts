@@ -81,7 +81,7 @@ describe('productionDepsBuilder', () => {
     );
 
     const built = sched.buildScoutTickDeps.mock.calls[0][0];
-    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1 }, cycleId: 'cyc-1' });
+    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 }, cycleId: 'cyc-1' });
 
     expect(runCycle.mock.calls[0][0].scoutConfig.models.ideator).toBe('chatgpt:5.5');
   });
@@ -98,7 +98,7 @@ describe('productionDepsBuilder', () => {
 
     const onPhase = vi.fn();
     const built = sched.buildScoutTickDeps.mock.calls[0][0];
-    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1 }, cycleId: 'cyc-1', onPhase });
+    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 }, cycleId: 'cyc-1', onPhase });
 
     expect(runCycle.mock.calls[0][0].onPhase).toBe(onPhase);
   });
