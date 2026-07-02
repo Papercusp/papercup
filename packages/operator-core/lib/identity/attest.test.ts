@@ -5,6 +5,22 @@ import { tmpdir } from 'node:os';
 import { generateKeyPairSync, sign as nodeSign, createPublicKey } from 'node:crypto';
 import { attestationGistFilename } from './attestation-types';
 
+// Deterministic gh-token seam: verifyAttestation now resolves the local gh
+// token for its gist fetch (WI-1544 quota guard) — never shell out to the
+// real `gh` from tests.
+const ghToken = vi.hoisted(() => ({
+  result: { kind: 'ok', token: 'tok-test' } as
+    | { kind: 'ok'; token: string }
+    | { kind: 'error'; error: { kind: string } },
+  clearCalls: 0,
+}));
+vi.mock('./gh-token', () => ({
+  getGhAuthToken: async () => ghToken.result,
+  clearGhAuthTokenCache: () => {
+    ghToken.clearCalls += 1;
+  },
+}));
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function makeTestKeychainId(suffix: string) {
@@ -526,5 +542,166 @@ describe('verifyAttestation', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
     vi.unstubAllGlobals();
+  });
+});
+
+// ─── GitHub quota guards (WI-1544 owner-admission stall) ─────────────────────
+
+describe('verifyAttestation — GitHub quota guards', () => {
+  let makeGist: () => { pubkeyBase64: string; gistResponse: unknown };
+
+  beforeEach(async () => {
+    const { clearAttestationCache, clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationCache();
+    clearAttestationQuotaGuards();
+    ghToken.result = { kind: 'ok', token: 'tok-test' };
+    ghToken.clearCalls = 0;
+
+    // Local valid-gist factory (mirrors makeFakeGistResponse; that helper is
+    // scoped to the verifyAttestation describe above).
+    makeGist = () => {
+      const kp = generateKeyPairSync('ed25519');
+      const spkiDer = kp.publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+      const pubkeyBase64 = extractRawPubkey(spkiDer).toString('base64');
+      const payload = {
+        version: 1,
+        device_pubkey: pubkeyBase64,
+        device_label: 'test-device',
+        github_user_id: 12345,
+        github_login: 'testuser',
+        created_at: Date.now(),
+      };
+      const signature_by_device = signCanonical(payload, kp.privateKey);
+      return {
+        pubkeyBase64,
+        gistResponse: {
+          id: 'g-quota',
+          owner: { id: 12345 },
+          files: {
+            [attestationGistFilename(pubkeyBase64)]: {
+              content: JSON.stringify({ ...payload, signature_by_device }, null, 2),
+            },
+          },
+        },
+      };
+    };
+  });
+  afterEach(async () => {
+    const { clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationQuotaGuards();
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches the local gh token to the gist fetch (quota, not authority)', async () => {
+    const { verifyAttestation } = await import('./attest');
+    const { pubkeyBase64, gistResponse } = makeGist();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => gistResponse,
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await verifyAttestation('g-quota', pubkeyBase64, 12345);
+    expect(result.valid).toBe(true);
+    const headers = (mockFetch.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBe('token tok-test');
+  });
+
+  it('falls back to unauthenticated when no gh token resolves', async () => {
+    ghToken.result = { kind: 'error', error: { kind: 'gh_cli_missing' } };
+    const { verifyAttestation } = await import('./attest');
+    const { pubkeyBase64, gistResponse } = makeGist();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => gistResponse,
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await verifyAttestation('g-quota', pubkeyBase64, 12345);
+    expect(result.valid).toBe(true);
+    const headers = (mockFetch.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).toBeUndefined();
+  });
+
+  it('a 401 with a token drops the cached token and retries unauthenticated in the same call', async () => {
+    const { verifyAttestation } = await import('./attest');
+    const { pubkeyBase64, gistResponse } = makeGist();
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        headers: { get: () => null },
+        json: async () => ({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => gistResponse,
+      });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await verifyAttestation('g-quota', pubkeyBase64, 12345);
+    expect(result.valid).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(ghToken.clearCalls).toBe(1);
+    const retryHeaders = (mockFetch.mock.calls[1][1] as { headers: Record<string, string> })
+      .headers;
+    expect(retryHeaders.Authorization).toBeUndefined();
+  });
+
+  it('rate-limit 403 arms a cooldown until x-ratelimit-reset — later verifies skip the fetch', async () => {
+    const { verifyAttestation } = await import('./attest');
+    const resetSec = Math.ceil(Date.now() / 1000) + 120;
+    const rateLimited = {
+      ok: false,
+      status: 403,
+      headers: {
+        get: (n: string) =>
+          n === 'x-ratelimit-remaining' ? '0' : n === 'x-ratelimit-reset' ? String(resetSec) : null,
+      },
+      json: async () => ({}),
+    };
+    const mockFetch = vi.fn().mockResolvedValue(rateLimited);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const first = await verifyAttestation('g-quota', 'pk', 12345);
+    expect(first.valid).toBe(false);
+    expect(first.valid === false && first.reason).toBe('github_api_unavailable');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Cooldown armed: the next verify (any gist) short-circuits without a fetch.
+    const second = await verifyAttestation('g-other', 'pk2', 999);
+    expect(second.valid === false && second.reason).toBe('github_api_unavailable');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Clearing the guard restores fetching.
+    const { clearAttestationQuotaGuards } = await import('./attest');
+    clearAttestationQuotaGuards();
+    await verifyAttestation('g-quota', 'pk', 12345);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('a non-rate-limit 403 (no rate-limit headers) does NOT arm the cooldown', async () => {
+    const { verifyAttestation } = await import('./attest');
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: { get: () => null },
+      json: async () => ({}),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const first = await verifyAttestation('g-quota', 'pk', 12345);
+    expect(first.valid === false && first.reason).toBe('github_api_unavailable');
+    const second = await verifyAttestation('g-quota', 'pk', 12345);
+    expect(second.valid === false && second.reason).toBe('github_api_unavailable');
+    // No cooldown → both calls really fetched.
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

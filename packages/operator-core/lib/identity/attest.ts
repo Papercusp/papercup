@@ -5,6 +5,10 @@
  *   1. `loadOrGenerateDeviceKeypair` — idempotent, persist via keychain.
  *   2. `createAttestationGist` — publish the signed binding gist.
  *   3. `verifyAttestation` — fetch + verify a peer's binding gist, 24h cache.
+ *      The fetch authenticates with the local `gh` token when available and
+ *      backs off a rate-limited window (see the quota guards below) — an
+ *      unauthenticated fetch shares 60 req/hr across every peer behind one
+ *      NAT, which live-wedged owner-side admission for ~17 min (WI-1544).
  *
  * Wire shapes are in `attestation-types.ts`; this module owns I/O only.
  *
@@ -15,6 +19,7 @@
  */
 
 import { keychainStore, keychainLoad } from './keychain';
+import { getGhAuthToken, clearGhAuthTokenCache } from './gh-token';
 import {
   generateEd25519KeypairDer,
   pubkeyBase64FromDer,
@@ -36,6 +41,87 @@ const _g = globalThis as unknown as VerifyCache;
 function getCache(): Map<string, CacheEntry> {
   if (!_g.__attestVerifyCache) _g.__attestVerifyCache = new Map();
   return _g.__attestVerifyCache;
+}
+
+// ─── GitHub-quota guards (WI-1544 owner-admission stall) ─────────────────────
+// The gist fetch used to be unauthenticated — 60 req/hr **per IP**. Peers
+// behind one NAT (office, university, the Docker-frames rig) share that
+// window, and the boot's pending-retry ticks burn it in minutes; every
+// subsequent verify then 403s → 'github_api_unavailable' → 'pending', so
+// membership admission silently wedges until the hourly window rolls
+// (live-pinned: the owner admitted a joiner exactly at the window reset,
+// ~17 min after join). Two guards:
+//   1. Attach the local `gh` token when one resolves (5,000 req/hr
+//      per-token; a public gist is readable by ANY valid token — auth here
+//      is purely for quota, never authority).
+//   2. On a rate-limit 403/429, hold a cooldown until the response's
+//      `x-ratelimit-reset` — GitHub keeps refusing until then, so earlier
+//      re-fetches can only burn sockets.
+type QuotaGuards = {
+  __attestGhRateLimitedUntilMs?: number;
+  __attestGhTokenFailUntilMs?: number;
+};
+const _q = globalThis as unknown as QuotaGuards;
+
+const RATE_LIMIT_COOLDOWN_MIN_MS = 30_000;
+const RATE_LIMIT_COOLDOWN_MAX_MS = 65 * 60_000;
+const TOKEN_RESOLVE_FAIL_TTL_MS = 5 * 60_000;
+
+/**
+ * Resolve the local gh token for the gist fetch, best-effort. A miss is
+ * memoized briefly so an unauthenticated box doesn't re-shell
+ * `gh auth token` (3s timeout each) on every admission retry tick.
+ */
+async function resolveLocalGhToken(): Promise<string | null> {
+  if (Date.now() < (_q.__attestGhTokenFailUntilMs ?? 0)) return null;
+  const res = await getGhAuthToken().catch(() => null);
+  if (res && res.kind === 'ok') return res.token;
+  _q.__attestGhTokenFailUntilMs = Date.now() + TOKEN_RESOLVE_FAIL_TTL_MS;
+  return null;
+}
+
+function fetchGist(gistId: string, token: string | null): Promise<Response> {
+  return fetch('https://api.github.com/gists/' + gistId, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(token ? { Authorization: 'token ' + token } : {}),
+    },
+  });
+}
+
+/**
+ * Arm the rate-limit cooldown from a refused response. Only a genuine
+ * rate-limit refusal (`retry-after`, or 403/429 with remaining=0) arms it —
+ * other 403s (SSO walls, abuse blocks without headers) stay un-memoized so
+ * the normal retry loop keeps probing.
+ */
+function armRateLimitCooldown(resp: Response): void {
+  if (resp.status !== 403 && resp.status !== 429) return;
+  const get = (n: string): string | null => resp.headers?.get?.(n) ?? null;
+  let cooldownMs: number | null = null;
+  const retryAfterSec = Number(get('retry-after'));
+  if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+    cooldownMs = retryAfterSec * 1000;
+  } else if (get('x-ratelimit-remaining') === '0') {
+    const resetSec = Number(get('x-ratelimit-reset'));
+    cooldownMs =
+      Number.isFinite(resetSec) && resetSec > 0
+        ? resetSec * 1000 - Date.now()
+        : RATE_LIMIT_COOLDOWN_MIN_MS;
+  }
+  if (cooldownMs == null) return;
+  const clamped = Math.min(
+    Math.max(cooldownMs, RATE_LIMIT_COOLDOWN_MIN_MS),
+    RATE_LIMIT_COOLDOWN_MAX_MS,
+  );
+  _q.__attestGhRateLimitedUntilMs = Date.now() + clamped;
+}
+
+/** Clear the rate-limit cooldown + token-miss memo. Test helper. */
+export function clearAttestationQuotaGuards(): void {
+  _q.__attestGhRateLimitedUntilMs = undefined;
+  _q.__attestGhTokenFailUntilMs = undefined;
 }
 
 // ─── keypair lifecycle ────────────────────────────────────────────────────────
@@ -255,19 +341,29 @@ async function runVerification(
 ): Promise<AttestationVerificationResult> {
   const verifiedAt = Date.now();
 
-  // Fetch gist
+  // Inside a rate-limit window every fetch is a guaranteed 403 — return the
+  // same retryable result the fetch would produce, without the socket.
+  if (Date.now() < (_q.__attestGhRateLimitedUntilMs ?? 0)) {
+    return { valid: false, reason: 'github_api_unavailable', verifiedAt };
+  }
+
+  // Fetch gist — authenticated when the box has a gh token (quota only; the
+  // gist is public and any token can read it).
   let gistData: { owner?: { id?: number }; files?: Record<string, { content?: string }> };
   try {
-    const resp = await fetch('https://api.github.com/gists/' + gistId, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
+    const token = await resolveLocalGhToken();
+    let resp = await fetchGist(gistId, token);
+    if (resp.status === 401 && token) {
+      // Stale/revoked local token — drop the cached token and finish this
+      // check unauthenticated rather than wedging on a dead credential.
+      clearGhAuthTokenCache();
+      resp = await fetchGist(gistId, null);
+    }
     if (resp.status === 404) {
       return { valid: false, reason: 'gist_not_found', verifiedAt };
     }
     if (!resp.ok) {
+      armRateLimitCooldown(resp);
       return { valid: false, reason: 'github_api_unavailable', verifiedAt };
     }
     gistData = (await resp.json()) as typeof gistData;

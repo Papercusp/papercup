@@ -14,7 +14,10 @@
  * only bind a (key, identity) pair for a gist it actually owns. There is NO
  * shared-repo contributor-file read and NO repo write at join (the prior
  * `verifyChannel2` over `{repoOwner, repoName, token}` is gone), and gists are
- * public so the adapter needs no repo context or token.
+ * public so the adapter needs no repo context — `verifyAttestation` does
+ * attach the box's own gh token opportunistically, but ONLY for API quota
+ * (WI-1544: the unauthenticated 60 req/hr-per-IP window wedged admission
+ * behind shared NATs), never for authority.
  *
  * D-002 (no collaborator gate): any real GitHub identity is admissible; GitHub's
  * PR-merge gate is the real authority over what lands. D-006 (3-state): the
