@@ -3299,6 +3299,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       ...(res.agent === 'claude'
         ? { ENABLE_TOOL_SEARCH: args.contextSize === 'full' ? 'false' : 'true' }
         : {}),
+      // P-030 (2026-07-02): OMP's default 30s MCP connect timeout is starved by a ~35s
+      // startup event-loop block (observed twice, blockedMs≈35.6k both times) — every MCP
+      // server then "times out"/"unable to connect" and the session runs TOOL-LESS with no
+      // retry (OMP never reconnects a failed server). Give the connect phase real headroom;
+      // an explicit env override still wins.
+      ...(res.agent === 'omp' && !process.env.OMP_MCP_TIMEOUT_MS
+        ? { OMP_MCP_TIMEOUT_MS: '120000' } : {}),
       // dynamic-tool-surface D-010 ("default all to trimmed"): claude is seeded BY DEFAULT
       // too — native ToolSearch defers only tool SCHEMAS, leaving all ~581 tool
       // names+descriptions (~165k, MEASURED) inline (that DOA'd sonnet-window sessions with

@@ -64,9 +64,10 @@ Leader: su-3700bc41 (this session). Any free member may execute D1–D3/D5 and
 report; D4 and D6 stay with the leader.
 
 DRILL LOG (2026-07-02):
-- D1 IN PROGRESS: baseline 10:06:11Z — iMac row startedAt 2026-07-01T16:47:02Z,
-  heartbeat field null on fed rows; freshness must be judged by bucket
-  (active/stale) + startedAt advance across reads.
+- D1 PASS (10:30Z): 4 readings 10:06→10:30Z, iMac row held the ACTIVE bucket
+  throughout (staleness classifier would demote a non-refreshing row) —
+  presence gossip is live tower←iMac. Fed rows carry no heartbeat field;
+  bucket retention is the freshness observable.
 - D2 BLOCKED (owner gate): `fed:…` machine rows are NOT addressable coord:send
   recipients (unknown_recipient). Receipts need an addressable SESSION on the
   iMac — same owner gate as D4: owner starts `psu` on the iMac.
