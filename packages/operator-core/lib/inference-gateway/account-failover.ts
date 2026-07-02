@@ -209,5 +209,10 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live.length;
   }
 
-  return { active, onExhausted, select, reload, readmit, healthyCount, peek, size };
+  /** Read-only live-entry snapshot (no cursor advance) — the proactive egress prober's enumerator. */
+  function entriesSnapshot(): readonly ActiveAccount[] {
+    return live;
+  }
+
+  return { active, onExhausted, select, reload, readmit, healthyCount, peek, size, entries: entriesSnapshot };
 }

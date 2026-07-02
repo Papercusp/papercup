@@ -985,6 +985,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const openaiUpstreamBase = (deps.openaiUpstreamBase ?? 'https://api.openai.com').replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
+  const doProbeEgress = deps.probeEgressImpl ?? probeEgress;
+  // Proactive egress probing (gateway-rayobyte-hardening P-002): 0 disables. Default 45s — well under the
+  // ~90s a dead squid needs to burn two live requests into the reactive circuit, cheap enough to run always.
+  const proactiveEgressProbeMs = deps.proactiveEgressProbeMs ?? Number(process.env.PAPERCUSP_GATEWAY_PROACTIVE_PROBE_MS ?? 45_000);
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
   const requestAbsorbMs = deps.requestAbsorbMs ?? DEFAULT_REQUEST_ABSORB_MS;
   const interactiveAbsorbMs = deps.interactiveAbsorbMs ?? INTERACTIVE_ABSORB_MS;
@@ -1296,7 +1300,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  token-healthy accounts out together → empty-pool "all throttled" sheds. Keeps probing until recovery OR
    *  the circuit pause expires (bounded fallback). Best-effort, unref'd, never throws into the request path.
    *  `EGRESS_PROBE_DELAY_MS=0` disables it (pause-expiry half-open still applies). */
-  function scheduleEgressProbe(account: ActiveAccount, gov: RateLimitGovernor, pausedUntil: number): void {
+  function scheduleEgressProbe(account: ActiveAccount, gov: RateLimitGovernor | undefined, pausedUntil: number): void {
     if (EGRESS_PROBE_DELAY_MS <= 0 || egressProbePending.has(account.accountId)) return;
     egressProbePending.add(account.accountId);
     let probeSuccessStreak = 0; // consecutive OK probes; readmit only at EGRESS_PROBE_READMIT_STREAK (flap filter)
@@ -1305,7 +1309,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       void (async () => {
         let readmitted = false;
         try {
-          const probe = await probeEgress(
+          const probe = await doProbeEgress(
             { id: account.accountId, egress: account.egress } as ClaudeAccount,
             { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS },
           );
@@ -1320,7 +1324,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // so sparse unrelated blips on a recovered-and-serving account stop compounding into a long exile.
               egressReopenCount.delete(account.accountId);
               egressLastOpenAt.delete(account.accountId);
-              gov.liftTransportPause(egressPauseUntil.get(account.accountId) ?? pausedUntil); // C3: lift the LIVE pause (an escalated reopen extends it past the captured value); no-op if a real 429 superseded it
+              gov?.liftTransportPause(egressPauseUntil.get(account.accountId) ?? pausedUntil); // C3: lift the LIVE pause (an escalated reopen extends it past the captured value); no-op if a real 429 superseded it (undefined when the PROACTIVE prober opened the circuit — it never penalized a governor)
               pool.readmit?.(account.accountId); // rejoin the round-robin
               egressPauseUntil.delete(account.accountId);
               readmitted = true;
@@ -1355,6 +1359,64 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     runProbe();
   }
+
+  // PROACTIVE EGRESS PROBING (gateway-rayobyte-hardening P-002): the reactive circuit above only opens
+  // AFTER two live requests have burned on a dead proxy (each costing a caller a transport error / stall
+  // absorb). This background loop probes each pool account's PROXY egress while it is IDLE — an account
+  // that served real traffic within the last tick already proved its route (`lastEgressOkAt`), and an
+  // account whose circuit is already open is the half-open prober's job. Two consecutive proactive
+  // failures open the egress circuit exactly like the reactive path (pause + half-open recovery probe),
+  // so a Rayobyte squid that dies while its account is idle is out of rotation BEFORE the next live
+  // request would have failed on it. No governor is penalized (there is no request/model context) — the
+  // `egressPauseUntil` map alone steers selection (keyOf ⇒ Infinity) and pin-yield away from the account.
+  const lastEgressOkAt = new Map<string, number>();
+  const proactiveProbeFailStreak = new Map<string, number>();
+  let proactiveProbeLastTickAt = 0;
+  let proactiveProbeOpens = 0;
+  async function proactiveEgressProbeTick(): Promise<void> {
+    const entries = pool.entries?.();
+    if (!entries?.length) return;
+    proactiveProbeLastTickAt = Date.now();
+    await Promise.allSettled(
+      entries.map(async (account) => {
+        const id = account.accountId;
+        const now = Date.now();
+        if (!account.egress?.proxyUrl || proxyEgressDisabled) return; // only proxy routes flap; box-direct is the fallback everything shares
+        if ((egressPauseUntil.get(id) ?? 0) > now) return; // circuit already open — half-open prober owns recovery
+        if (egressProbePending.has(id)) return;
+        if (now - (lastEgressOkAt.get(id) ?? 0) < proactiveEgressProbeMs) return; // recent real traffic proved it
+        try {
+          const probe = await doProbeEgress({ id, egress: account.egress } as ClaudeAccount, { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS });
+          if (probe.exitIp) {
+            proactiveProbeFailStreak.delete(id);
+            lastEgressOkAt.set(id, Date.now());
+            return;
+          }
+          const streak = (proactiveProbeFailStreak.get(id) ?? 0) + 1;
+          proactiveProbeFailStreak.set(id, streak);
+          if (streak < EGRESS_FAIL_CIRCUIT_THRESHOLD) {
+            log('warn', `inference-gateway: proactive egress probe for '${id}' FAILED ${streak}/${EGRESS_FAIL_CIRCUIT_THRESHOLD} (${probe.error ?? 'no exit IP'})`);
+            return;
+          }
+          proactiveProbeFailStreak.delete(id);
+          const resetAt = Date.now() + EGRESS_CIRCUIT_OPEN_MS;
+          egressCircuitOpens++;
+          proactiveProbeOpens++;
+          egressPauseUntil.set(id, resetAt);
+          log('warn', `inference-gateway: PROACTIVE EGRESS CIRCUIT OPEN for '${id}' (${EGRESS_FAIL_CIRCUIT_THRESHOLD} consecutive idle-probe failures — cooled BEFORE live traffic burned on it); half-open probe readmits after ${EGRESS_PROBE_READMIT_STREAK} stable probes`);
+          scheduleEgressProbe(account, undefined, resetAt);
+        } catch (err) {
+          log('warn', `inference-gateway: proactive egress probe error for '${id}': ${(err as Error).message}`);
+        }
+      }),
+    );
+  }
+  const proactiveProbeHandle =
+    proactiveEgressProbeMs > 0 && pool.entries
+      ? managedSetInterval('inference-gateway:proactive-egress-probe', proactiveEgressProbeMs, proactiveEgressProbeTick, {
+          category: 'health-probe',
+        })
+      : null;
 
   let totalRequests = 0;
   let upstream429 = 0;
@@ -2184,6 +2246,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // clear its transport-failure streak. A 429/5xx still means the proxy WORKED (just throttled —
           // that's the 429 path's job, not the egress circuit's).
           egressFailStreak.delete(active.accountId);
+          lastEgressOkAt.set(active.accountId, Date.now()); // real traffic proved the route — the proactive prober skips it
+          proactiveProbeFailStreak.delete(active.accountId);
         } catch (e) {
           clearStall();
           upstreamErrors++;

@@ -6,6 +6,7 @@ documents:
   - packages/operator-core/lib/release/git-sync-stall-watchdog.ts
   - packages/operator-core/lib/release/green-stall-watchdog.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts
+  - packages/operator-core/lib/agent-tools/coordination/tools/conditions.ts
 ---
 
 Severe pipeline alarms (`git-sync STALLED …`, `green-checkpoint STALLED …`) are
@@ -29,6 +30,12 @@ broadcast was never superseded — an agent waking hours later read a stale
   `resolved_at`. The scan runs over the full inbox read (pre-`limit`), so a
   windowed view still resolves correctly. A re-alarm *after* the latest
   resolution stays un-annotated — it is live again.
+
+- **State view** — `coord:conditions` (EI-6138) folds the same stream into
+  live per-condition state: open conditions first (claimable), then recently
+  resolved. Use it to answer "is anything wrong right now?" without inbox
+  archaeology. Sibling read-side hygiene: repeated categorized broadcasts in
+  `coord:inbox` coalesce to one `repeat_count`-annotated row (EI-6144).
 
 ## What this means for you
 
