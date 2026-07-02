@@ -1776,8 +1776,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
     const wantAccount = dynPin?.accountId ?? wantAccountHeader;
     const pinned = (wantAccount && pool.select?.(wantAccount)) || null;
-    // P-003: set when a soft pin yields to a sibling (unserviceable pin) — surfaced as PIN_YIELDED_HEADER.
-    let pinYieldedFrom: string | null = null;
     // HARD PIN (account-hard-pin-2026-06-29): an operator / PSU-utility pin that must NEVER fail over.
     // When set (only honored once the pin resolved to a live pool account), every "cache-affinity yields
     // to liveness/load/stall" branch below is suppressed AND the upstream retry loop never rotates off the
@@ -1932,7 +1930,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
             'warn',
             `inference-gateway: pinned '${pinned!.accountId}' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=${gov.state.inFlight}) → soft-pin failover to least-loaded '${bestCand.accountId}' (key=${bestKey.toFixed(2)}; pin resumes on recovery)`,
           );
-          pinYieldedFrom = pinned!.accountId; // P-003: surfaced on the response as PIN_YIELDED_HEADER
           active = bestCand;
           gov = bestGov;
         }
@@ -2911,8 +2908,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // off a pin (unknown id / paced-account failover) is visible to the caller, not invisible.
         outHeaders[ROUTED_ACCOUNT_HEADER] = active.accountId;
         // P-003: a soft pin served by a sibling is a STRUCTURED signal, not a silent divert — the pinned
-        // owner can distinguish "my pin is capped/paused" from ordinary routing.
-        if (pinYieldedFrom && pinYieldedFrom !== active.accountId) outHeaders[PIN_YIELDED_HEADER] = `${pinYieldedFrom}->${active.accountId}`;
+        // owner can distinguish "my pin is capped/paused/failed-over" from ordinary routing. Computed from
+        // the FINAL serving account so every divergence path (unserviceable-pin yield, paused-pin routing,
+        // mid-retry failover) is covered, not just the ones that remember to set a flag.
+        if (pinned && !hardPin && active.accountId !== pinned.accountId) {
+          outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${active.accountId}`;
+        }
         // WI-1073: surface a last-resort opus→sonnet downgrade to the caller (silent model substitution
         // is otherwise invisible). Set on ANY forwarded response after a downgrade — a 2xx means sonnet
         // served the walled-opus request; a non-2xx means even the sonnet retry failed.

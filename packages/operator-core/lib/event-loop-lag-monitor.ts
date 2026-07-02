@@ -273,6 +273,12 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           if (!stopped) profiling = false;
         });
     }
+    // WI-1088 round 2: arm the sampling heap profiler on the first tick (O(1)
+    // overhead from here on; allocation stacks accumulate from ~boot).
+    if (heapSamplingOnHighRss && !samplingArmed) {
+      samplingArmed = true;
+      void ensureHeapSampling(log);
+    }
     // P-002: when RSS is high, capture a heap snapshot so the leak is identifiable.
     // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited.
     if (
@@ -284,6 +290,16 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       if (rssMb >= heapSnapshotRssMb) {
         snapshotting = true;
         lastSnapshotAt = Date.now();
+        // Dump the sampling profile FIRST — it is instant (KBs) and survives even
+        // if the full snapshot below dies mid-serialization (the 2026-07-01 mode).
+        if (heapSamplingOnHighRss && !samplingDumping) {
+          samplingDumping = true;
+          dumpHeapSamplingProfile({ dir: heapSnapshotDir, rssMb, log })
+            .catch(() => {})
+            .finally(() => {
+              if (!stopped) samplingDumping = false;
+            });
+        }
         captureHeapSnapshot({
           dir: heapSnapshotDir,
           maxSnapshots: maxHeapSnapshots,
@@ -498,6 +514,105 @@ export async function captureHeapSnapshot(args: {
   } catch {
     // No inspector, an attached debugger, OOM during snapshot, or fs error —
     // degrade silently; the host must never crash because of a capture attempt.
+    return null;
+  }
+}
+
+// ── WI-1088 round 2: the SAMPLING heap profiler (the capture that can't lose the race) ──
+
+/** The one long-lived sampling session (armed once per process; never re-armed). */
+let _samplingSession: import('node:inspector').Session | null = null;
+
+/**
+ * Start the V8 sampling heap profiler once for this process. O(1) overhead
+ * (default 256 KiB sampling interval); allocation stacks accumulate from here.
+ * Best-effort: any failure logs once and degrades silently — the gauge must
+ * never break the host it observes.
+ */
+export async function ensureHeapSampling(
+  log: (line: string, detail?: Record<string, number | string>) => void = () => {},
+): Promise<boolean> {
+  if (_samplingSession) return true;
+  try {
+    const inspector = await import('node:inspector');
+    const session = new inspector.Session();
+    session.connect();
+    await new Promise<void>((resolve, reject) => {
+      session.post('HeapProfiler.startSampling', { samplingInterval: 262_144 }, (err) =>
+        err ? reject(err) : resolve(),
+      );
+    });
+    _samplingSession = session;
+    log('[heap-sampling] sampling heap profiler armed (256KiB interval) — allocation stacks accumulate from now');
+    return true;
+  } catch (e) {
+    log(`[heap-sampling] failed to arm (degrading silently): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+/** One node of the V8 sampling-profile tree. */
+interface SamplingNode {
+  callFrame: { functionName?: string; url?: string; lineNumber?: number };
+  selfSize: number;
+  children?: SamplingNode[];
+}
+
+/** Flatten the sampling tree to the top-N allocation SITES by live self size.
+ *  Exported for tests. */
+export function topAllocationSites(
+  head: SamplingNode,
+  topN = 8,
+): Array<{ site: string; mb: number }> {
+  const bySite = new Map<string, number>();
+  const walk = (n: SamplingNode) => {
+    if (n.selfSize > 0) {
+      const f = n.callFrame ?? {};
+      const site = `${f.functionName || '(anonymous)'} @ ${(f.url || '(unknown)').replace(/^file:\/\//, '')}:${(f.lineNumber ?? -1) + 1}`;
+      bySite.set(site, (bySite.get(site) ?? 0) + n.selfSize);
+    }
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(head);
+  return [...bySite.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([site, bytes]) => ({ site, mb: Math.round((bytes / 1_048_576) * 10) / 10 }));
+}
+
+/**
+ * Dump the accumulated sampling profile: a few-KB `.heapprofile` JSON (Chrome
+ * DevTools-loadable) written INSTANTLY at the RSS trigger, plus the top
+ * allocation sites logged to the journal — the leak names itself with no
+ * external analysis, even if the process dies seconds later. Sampling keeps
+ * running so later dumps show growth.
+ */
+export async function dumpHeapSamplingProfile(args: {
+  dir?: string;
+  rssMb: number;
+  log: (line: string, detail?: Record<string, number | string>) => void;
+}): Promise<string | null> {
+  const { rssMb, log } = args;
+  if (!_samplingSession) return null;
+  try {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const fs = await import('node:fs/promises');
+    const dir = args.dir ?? path.join(os.homedir(), '.papercusp', 'heap-snapshots');
+    await fs.mkdir(dir, { recursive: true });
+    const profile = await new Promise<{ head: SamplingNode }>((resolve, reject) => {
+      _samplingSession!.post('HeapProfiler.getSamplingProfile', (err, r) =>
+        err ? reject(err) : resolve((r as { profile: { head: SamplingNode } }).profile),
+      );
+    });
+    const file = path.join(dir, `heap-sampling-${Date.now()}-pid${process.pid}-rss_${Math.round(rssMb)}mb.heapprofile`);
+    await fs.writeFile(file, JSON.stringify(profile));
+    const top = topAllocationSites(profile.head);
+    log('[heap-sampling] profile dumped on high RSS — top live allocation sites:', { rssMb: Math.round(rssMb), file });
+    for (const t of top) log(`[heap-sampling]   ${t.mb} MB  ${t.site}`);
+    return file;
+  } catch (e) {
+    log(`[heap-sampling] dump failed: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
 }

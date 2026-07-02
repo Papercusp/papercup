@@ -2163,6 +2163,11 @@ test('[soft-pin] a PINNED request whose account is UNSERVICEABLE (governor-pause
   await r.text();
   const routed = r.headers.get('x-papercusp-routed-account');
   assert.ok(routed === 'B' || routed === 'C', `unserviceable pin yielded (routed=${routed})`);
+  assert.equal(
+    r.headers.get('x-papercusp-pin-yielded'),
+    `A->${routed}`,
+    'the yield is a STRUCTURED signal to the pinned owner (P-003), not a silent divert',
+  );
 }, 20_000);
 
 test('[soft-pin] a PINNED request to a HEALTHY idle account STAYS on its pin (cache affinity preserved)', async () => {
