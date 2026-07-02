@@ -24,7 +24,8 @@
  * checkpoints can extend this later (they'd thread resolveCheckpointRouting's extraEnv).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 
 /**
