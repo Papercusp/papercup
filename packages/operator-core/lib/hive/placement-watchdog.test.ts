@@ -736,7 +736,7 @@ describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 
   it('NO serving bee at all → re-place only, BOTH counters flat (nothing to count)', () => {
     const d = evaluatePlacement(
       obs({ hasServingBee: false, failCount: 2, infraLossCount: 5 }),
-      config(),
+      CFG,
     );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') {
@@ -748,7 +748,7 @@ describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 
   it('the SAME dead attempt (spawn id == lastLossSpawnId) is never recounted', () => {
     const d = evaluatePlacement(
       obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-1', lastLossSpawnId: 's-corpse-1', failCount: 1 }),
-      config(),
+      CFG,
     );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextFailCount).toBe(1); // flat — already charged
@@ -757,7 +757,7 @@ describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 
   it('a NEW dead attempt (different spawn id) still counts toward the pathology breaker', () => {
     const d = evaluatePlacement(
       obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-2', lastLossSpawnId: 's-corpse-1', failCount: 1 }),
-      config(),
+      CFG,
     );
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextFailCount).toBe(2); // genuine fresh failure
@@ -766,13 +766,13 @@ describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 
   it('three DISTINCT dead attempts still trip the breaker (the bound holds)', () => {
     const d = evaluatePlacement(
       obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-3', lastLossSpawnId: 's-corpse-2', failCount: 2 }),
-      config(),
+      CFG,
     );
     expect(d.kind).toBe('breaker');
   });
 
   it('legacy observation (hasServingBee undefined) keeps pre-mig-440 behavior', () => {
-    const d = evaluatePlacement(obs({ failCount: 0 }), config());
+    const d = evaluatePlacement(obs({ failCount: 0 }), CFG);
     expect(d.kind).toBe('recover');
     if (d.kind === 'recover') expect(d.nextFailCount).toBe(1);
   });
