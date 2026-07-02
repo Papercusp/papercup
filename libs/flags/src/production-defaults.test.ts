@@ -168,7 +168,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    expect(offCount).toBe(10); // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover)
+    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover) + papercusp-queen-warm-session
+    // (2026-07-02 cutover).
+    expect(offCount).toBe(11);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

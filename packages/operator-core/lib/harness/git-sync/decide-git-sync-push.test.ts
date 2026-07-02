@@ -71,6 +71,42 @@ describe('decideGitSyncPush — precedence order', () => {
   });
 });
 
+describe('decideGitSyncPush — hive git mode (github-bridge-hive-egress P-003, rule 2)', () => {
+  it('bridged hive → push false even with explicit upstream write (the bridge writer is the sole pusher)', () => {
+    const d = decideGitSyncPush({ ...base, permissionsPush: true, hiveGitMode: 'bridged' });
+    expect(d.push).toBe(false);
+    expect(d.reason).toMatch(/^bridged_hive/);
+  });
+
+  it('p2p-only hive → push false (nobody pushes GitHub)', () => {
+    const d = decideGitSyncPush({ ...base, permissionsPush: true, hiveGitMode: 'p2p-only' });
+    expect(d.push).toBe(false);
+    expect(d.reason).toMatch(/^p2p_only_hive/);
+  });
+
+  it('rule 1 outranks the mode: a fetch-less repo reads no_upstream_remote, not bridged_hive', () => {
+    const d = decideGitSyncPush({ ...base, hasUpstreamRemote: false, hiveGitMode: 'bridged' });
+    expect(d.push).toBe(false);
+    expect(d.reason).toMatch(/^no_upstream_remote/);
+  });
+
+  it('the mode outranks joiner-side: a bridged joiner reads bridged_hive (hive policy over member shape)', () => {
+    const d = decideGitSyncPush({ ...base, joinerSide: true, hiveGitMode: 'bridged' });
+    expect(d.push).toBe(false);
+    expect(d.reason).toMatch(/^bridged_hive/);
+  });
+
+  it("'legacy' / null / undefined leave the pre-bridge table byte-for-byte unchanged", () => {
+    for (const hiveGitMode of ['legacy' as const, null, undefined]) {
+      const d = decideGitSyncPush({ ...base, permissionsPush: true, hiveGitMode });
+      expect(d.push).toBe(true);
+      expect(d.reason).toMatch(/^github_permissions_push_true/);
+      const joiner = decideGitSyncPush({ ...base, joinerSide: true, hiveGitMode });
+      expect(joiner.reason).toMatch(/^joiner_side/);
+    }
+  });
+});
+
 describe('decideGitSyncPush — contract shape', () => {
   it('always returns a non-empty reason with a stable snake_case leading token', () => {
     const inputs: PushDecisionInput[] = [

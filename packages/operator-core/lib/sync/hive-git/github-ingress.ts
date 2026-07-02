@@ -66,7 +66,7 @@ const ZERO_SHA = '0'.repeat(40);
 export function normalizeGithubRemote(remoteUrl: string): string {
   const u = remoteUrl.trim();
   const m =
-    /^(?:https?:\/\/)?(?:[^@/]+@)?github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
+    /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
   if (m) return `github.com/${m[1].toLowerCase()}/${m[2].toLowerCase()}`;
   return u;
 }

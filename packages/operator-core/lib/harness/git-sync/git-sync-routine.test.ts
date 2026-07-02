@@ -172,6 +172,80 @@ describe('seedGitSyncRoutineForMember (P-001/P-008 seed side)', () => {
     expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ active: GIT_SYNC_SEED_ACTIVE_JOINER });
   });
 
+  it("bridged hive mode → seeds push:false (bridged_hive) and the probe is NEVER called (github-bridge P-003)", async () => {
+    const modeCalls: Array<{ ws: string; hive: string }> = [];
+    const { deps, probeCalls } = seedDeps({
+      resolveHiveGitMode: async (ws, hive) => {
+        modeCalls.push({ ws, hive });
+        return 'bridged';
+      },
+    });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws-1', installSlug: 'shop', entry: memberEntry() },
+      deps,
+    );
+    expect(out).toMatchObject({
+      seeded: true,
+      push: false,
+      pushReason: expect.stringContaining('bridged_hive'),
+    });
+    // the mode was resolved for the member's hive home, in the seeding workspace
+    expect(modeCalls).toEqual([{ ws: 'ws-1', hive: 'shop-hive' }]);
+    // rule 2 decides outright — the GitHub permissions probe is skipped entirely
+    expect(probeCalls).toEqual([]);
+    expect(upsertRoutineMock.mock.calls[0][1]).toMatchObject({ triggerConfig: { push: false } });
+  });
+
+  it("p2p-only hive mode → seeds push:false (p2p_only_hive)", async () => {
+    const { deps } = seedDeps({ resolveHiveGitMode: async () => 'p2p-only' });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry() },
+      deps,
+    );
+    expect(out).toMatchObject({ seeded: true, push: false, pushReason: expect.stringContaining('p2p_only_hive') });
+  });
+
+  it("legacy mode leaves the seed byte-for-byte unchanged (probe consulted, push from GitHub)", async () => {
+    const { deps, probeCalls } = seedDeps({ resolveHiveGitMode: async () => 'legacy' });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'shop', entry: memberEntry() },
+      deps,
+    );
+    expect(out).toMatchObject({ seeded: true, push: true, pushReason: expect.stringContaining('github_permissions_push_true') });
+    expect(probeCalls).toEqual([{ owner: 'acme', repo: 'shop' }]);
+  });
+
+  it('a NON-hive member (no hive_slug, not self_repo) never resolves a mode', async () => {
+    const resolveHiveGitMode = vi.fn(async () => 'bridged' as const);
+    const { deps } = seedDeps({ resolveHiveGitMode });
+    const out = await seedGitSyncRoutineForMember(
+      { workspaceId: 'ws', installSlug: 'solo', entry: memberEntry({ slug: 'solo', hive_slug: undefined }) },
+      deps,
+    );
+    expect(out).toMatchObject({ seeded: true, push: true });
+    expect(resolveHiveGitMode).not.toHaveBeenCalled();
+  });
+
+  it('a self_repo hive HOME resolves the mode against its own slug', async () => {
+    const modeCalls: Array<{ ws: string; hive: string }> = [];
+    const { deps } = seedDeps({
+      resolveHiveGitMode: async (ws, hive) => {
+        modeCalls.push({ ws, hive });
+        return 'bridged';
+      },
+    });
+    const out = await seedGitSyncRoutineForMember(
+      {
+        workspaceId: 'ws',
+        installSlug: 'papercusp',
+        entry: memberEntry({ slug: 'papercusp', hive_slug: undefined, self_repo: true }),
+      },
+      deps,
+    );
+    expect(out).toMatchObject({ seeded: true, push: false, pushReason: expect.stringContaining('bridged_hive') });
+    expect(modeCalls).toEqual([{ ws: 'ws', hive: 'papercusp' }]);
+  });
+
   it('cronKey salts the jitter key (B-03 joiner-side per-install salt); default stays installSlug', async () => {
     const { deps } = seedDeps();
     const out = await seedGitSyncRoutineForMember(
