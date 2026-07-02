@@ -1,7 +1,7 @@
 /**
  * Hyperbee → PG projection for `harness_shared.p2p_peer_grants` — P2P
  * capability grants federated as hive state
- * (p2p-work-distribution-2026-07-02 P-001, mig 462).
+ * (p2p-work-distribution-2026-07-02 P-001, mig 463).
  *
  * Mirrors projections/bee-claim-spec.ts (hive-home-scoped key over the
  * peer-log) with a STRICTER apply gate — grants are a SECURITY surface:

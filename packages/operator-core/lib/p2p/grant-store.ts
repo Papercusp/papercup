@@ -31,7 +31,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import type postgres from 'postgres';
 import type { OrgSql } from '../work-items';
+
+/** A plain client OR the TransactionSql sql.begin hands its callback. */
+type PgClient = OrgSql | postgres.TransactionSql<Record<string, never>>;
 import {
   normalizeCapabilities,
   isP2pGranteeKind,
@@ -228,7 +232,7 @@ export async function setPeerGrant(
 /** The grantor's current epoch = the receiver-side high-water for THEMSELF
  *  (the grantor's own machine is also a receiver; one counter, one table). */
 async function currentGrantorEpochTx(
-  tx: OrgSql,
+  tx: PgClient,
   ws: string,
   hive: string,
   grantorId: number,
@@ -241,7 +245,7 @@ async function currentGrantorEpochTx(
 }
 
 async function bumpGrantorEpochTx(
-  tx: OrgSql,
+  tx: PgClient,
   ws: string,
   hive: string,
   grantorId: number,

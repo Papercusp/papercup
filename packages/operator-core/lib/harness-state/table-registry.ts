@@ -239,7 +239,7 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // over the grantor's machines. Keyed (workspace_id, harness_slug = the hive HOME,
   // grantor_github_user_id, grantee_kind, grantee_ref) → workspace-owned + peer-log;
   // M19: federates USER-level so a revocation lands on every machine. Producer =
-  // CDC capture (mig 462); projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts),
+  // CDC capture (mig 463); projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts),
   // which RECEIVER-ENFORCES author-attestation == grantor before applying (M6/L9).
   'p2p_peer_grants',
 ];

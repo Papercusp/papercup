@@ -84,6 +84,12 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
   // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
   hive_settings: 'hive-settings-by-key',
+  // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts.
+  // Projection 'agent-facts-by-key' (projections/agent-facts.ts); key == the
+  // generated fed_key column (scope/coalesce(scope_ref,'')/key — mig 462).
+  // Epoch-ENCRYPTED content (deliberately NOT in REKEY_PLAINTEXT_TAGS: fact
+  // bodies must not be readable by non-members on the wire — D-006 privacy).
+  agent_facts: 'agent-facts-by-key',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): per-bee claim specs.
   // Projection 'bee-claim-specs' (projections/bee-claim-spec.ts); key == bee_id.
   bee_claim_specs: 'bee-claim-specs',
@@ -127,7 +133,7 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // receiver-enforced (the projection verifies the op author's ATTESTED gh user-id ==
   // grantor_github_user_id). Projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts);
   // key == '<grantor_ghid>:<grantee_kind>:<grantee_ref>' (the generated grant_fed_key
-  // column, mig 462).
+  // column, mig 463).
   p2p_peer_grants: 'p2p-peer-grants',
 };
 
@@ -655,7 +661,7 @@ function toPlanPartValue(row: Record<string, unknown>): PlanPartWireRow {
 }
 
 /** Map an outbox `row` jsonb to the `P2pPeerGrantWireRow` the p2p-peer-grants
- *  projection consumes (P-001, mig 462) — the federated subset. BIGINTs
+ *  projection consumes (P-001, mig 463) — the federated subset. BIGINTs
  *  (grantor_github_user_id, grantor_epoch) render as numbers via to_jsonb
  *  (both far under 2^53); text[] columns render as JSON string arrays.
  *  created_at/updated_at are machine-local (not federated); origin/

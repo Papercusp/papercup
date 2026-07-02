@@ -43,6 +43,8 @@ import { buildCoordThreadProjection } from './coord-thread';
 import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
+// F1-1 (federated-scout-gym-learning-2026-07-02): shareable standing facts.
+import { buildAgentFactsProjection } from './agent-facts';
 import { buildBeeClaimSpecProjection } from './bee-claim-spec';
 import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
@@ -156,6 +158,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
   'hive-settings-by-key',
+  // federated-scout-gym-learning-2026-07-02 (F1-1): shareable standing facts —
+  // hive-home-grained, epoch-encrypted content, source-partitioned on apply (H6).
+  'agent-facts-by-key',
   'bee-claim-specs',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
   // test gate's device-signed verdict facts — hive-home-grained, content-addressed,
@@ -184,6 +189,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
   // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
   'plan-parts',
+  // p2p-work-distribution-2026-07-02 P-001: P2P capability grants — hive-home-grained,
+  // receiver-enforced (author attestation == grantor). Inert until grants are authored.
+  'p2p-peer-grants',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -232,6 +240,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // A-003: hive_settings + hive_members demux on the hive-HOME slug — scope them
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
     buildHiveSettingsProjection(hiveScoped),
+    // F1-1 (federated-scout-gym): SHAREABLE standing facts, hive-home-grained
+    // like hive_settings (the fact's harness_slug carries the hive home slug).
+    buildAgentFactsProjection(hiveScoped),
     buildBeeClaimSpecProjection(hiveScoped),
     // P-044 DG-1: verdict facts are hive-home-grained (the gate is a hive-wide
     // aggregate) — scope like hive_settings so a joiner receives + verifies them.

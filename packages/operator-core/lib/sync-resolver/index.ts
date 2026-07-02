@@ -3134,6 +3134,130 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── p2p.* — the P2P work-sharing settings surface (p2p-work-distribution P-002) ──
+  //
+  // `p2p.settings` is a workspace-singleton (client subscribes with NO args → the
+  // p2p-settings-set write route emits NAME-ONLY notifySyncInvalidate('p2p.settings')).
+  // Degrades to the baked (structurally inert) defaults on any read failure — the
+  // settings page renders, never a 500.
+  'p2p.settings': {
+    resolve: async () => {
+      const store = await import('../p2p/settings');
+      try {
+        return [await store.readP2pSettings()];
+      } catch (err) {
+        console.warn('[p2p.settings] read failed:', err instanceof Error ? err.message : String(err));
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const baked = store.bakedP2pDefaults();
+        return [
+          {
+            workspaceId: activeWorkspaceId(),
+            baked,
+            defaultLayer: null,
+            overrideLayer: null,
+            effective: baked,
+          },
+        ];
+      }
+    },
+  },
+
+  // `p2p.devices` — the Identity & devices section (P-002): the LOCAL actor
+  // identity (github user + device pubkey) plus, per hive membership, each
+  // attested device and whether THIS device is missing from a hive's
+  // attestations. Discriminated rows: one {kind:'identity'} row (always first;
+  // null fields = identity unresolved → the page shows RED, never silence),
+  // then {kind:'device'} rows, then a {kind:'missing'} row per hive where the
+  // local device has no live attestation (grants resolve ONLY through attested
+  // devices — P-001/X9 — so "missing" means P2P-inert on that hive).
+  'p2p.devices': {
+    resolve: async () => {
+      const rows: unknown[] = [];
+      try {
+        const { resolveUsageActor } = await import('../harness/usage-actor');
+        const actor = await resolveUsageActor().catch(() => null);
+        rows.push({
+          kind: 'identity',
+          githubUserId: actor?.githubUserId ?? null,
+          devicePubkey: actor?.devicePubkey ?? null,
+        });
+        if (!actor) return rows;
+
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { sql } = getOrgPg();
+        const members = (await sql`
+          SELECT hive_home_slug, device_attestations, revoked_pubkeys
+            FROM harness_shared.hive_members
+           WHERE workspace_id = ${activeWorkspaceId()}
+             AND github_user_id = ${actor.githubUserId}
+           ORDER BY hive_home_slug`) as unknown as Array<{
+          hive_home_slug: string;
+          device_attestations: unknown;
+          revoked_pubkeys: unknown;
+        }>;
+        for (const m of members) {
+          const atts = Array.isArray(m.device_attestations)
+            ? (m.device_attestations as Array<Record<string, unknown>>)
+            : [];
+          const revoked = new Set(
+            Array.isArray(m.revoked_pubkeys) ? (m.revoked_pubkeys as string[]) : [],
+          );
+          let thisDeviceLive = false;
+          for (const a of atts) {
+            const pubkey = typeof a.device_pubkey === 'string' ? a.device_pubkey : '';
+            const isRevoked = revoked.has(pubkey);
+            const isThisDevice = pubkey === actor.devicePubkey;
+            if (isThisDevice && !isRevoked) thisDeviceLive = true;
+            rows.push({
+              kind: 'device',
+              hiveHomeSlug: m.hive_home_slug,
+              devicePubkey: pubkey,
+              deviceLabel: typeof a.device_label === 'string' ? a.device_label : null,
+              attestedAtMs: typeof a.created_at === 'number' ? a.created_at : null,
+              gistUrl: typeof a.gist_url === 'string' ? a.gist_url : null,
+              revoked: isRevoked,
+              isThisDevice,
+            });
+          }
+          if (!thisDeviceLive) {
+            rows.push({ kind: 'missing', hiveHomeSlug: m.hive_home_slug });
+          }
+        }
+        return rows;
+      } catch (err) {
+        console.warn('[p2p.devices] read failed:', err instanceof Error ? err.message : String(err));
+        // Degrade to "identity unresolved" (a RED state on the page), never a 500.
+        return rows.length > 0 ? rows : [{ kind: 'identity', githubUserId: null, devicePubkey: null }];
+      }
+    },
+  },
+
+  // `p2p.audit` — the P-002 Audit section: p2p:*-prefixed audit_log rows
+  // (kill-switch flips + starter-profile applies now; grant changes + refusal
+  // receipts join as P-001/P-004 land — same prefix convention).
+  'p2p.audit': {
+    argsSchema: z.object({ limit: z.number().int().positive().max(200).default(50) }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { sql } = getOrgPg();
+        return (await sql`
+          SELECT id, ts, actor, action, subject, details
+            FROM harness_shared.audit_log
+           WHERE workspace_id = ${activeWorkspaceId()}
+             AND action LIKE 'p2p:%'
+           ORDER BY ts DESC
+           LIMIT ${limit}`) as unknown as unknown[];
+      } catch (err) {
+        console.warn('[p2p.audit] read failed:', err instanceof Error ? err.message : String(err));
+        return [];
+      }
+    },
+  },
+
   // ── trust.list — the owner's LOCAL trusted-GitHub-user list ──
   //
   // The trust list (listTrustedUsers, ws-scoped D-004) the /settings/trust owner surface renders +
