@@ -168,6 +168,14 @@ for a loop is the fire-gate backoff + the 429-aware re-arm, not thundering the s
   counter — NO migration (reuse-first, mirrors `costCapCents`).
 * **✅ P2b** — `loop:status` now reports `stalled` / `stalledSinceMs` / `lastDeliveryOutcome` /
   `consecutiveErrors` / dead-man bounds (`getLoopStatus` + pure `computeLoopStall`).
+* **✅ P2c** — `fireLoopWake` now auto-ends an orphaned loop when a fire reaches
+  **no wakeable/resumable session at all** (`woken=0`, `staged=0`, `no-session-now`) instead of
+  leaving the routine parked at `next_fire_at='infinity'` for the stuck-backstop to rediscover.
+  This closes the clean-session-end orphan class proven on 2026-07-02: the owner's session had
+  ended and its inbox-wake was correctly canceled, but the loop row stayed active and kept
+  re-parking itself on every retry. The branch now deactivates the routine immediately and records
+  `no-session-now:auto-ended` as an error, so the watchdog sees the terminal cause once instead of
+  chasing a permanent parked row.
 * **✅ P3** — FIXED (the deferred blocker, resolved). Root cause: `interactive-usage/ingest-claude-transcripts.ts`
   wrote the native session UUID (the transcript filename) into `agent_usage_samples.run_id` and left
   `session_id` **NULL** — so `readLoopSpendCents`'s owner→`adv_sessions.session_id`→`agent_usage_samples.session_id`

@@ -20,7 +20,7 @@ There's no "public surface for agents." Agents see *either* engineering referenc
 
 ## The engine: `@papercusp/docs-engine`
 
-Pure functions operating on a `DocSource` adapter. The engine owns 100% of the retrieval logic; the per-surface tool wrappers stay mechanical (no retrieval logic of their own) but aren't tiny — each `docs:*` wrapper is \~140–170 lines (`docs/outline.ts` 163, `docs/get.ts` 168, `docs/search.ts` 140), carrying a full `resolveAdapter()` three-way branch plus a `defineTool` block (description/guidance/args/handler). The `cross_harness/docs_*` wrappers are smaller (\~77–95 lines) since they skip the context-resolution branch.
+Pure functions operating on a `DocSource` adapter. The engine owns 100% of the retrieval logic; the per-surface tool wrappers stay mechanical (no retrieval logic of their own) but aren't tiny — each `docs:*` wrapper is \~145–170 lines (`docs/outline.ts` 167, `docs/get.ts` 172, `docs/search.ts` 144), carrying an explicit-scope gate (below) + a `resolveAdapter()` three-way branch plus a `defineTool` block (description/guidance/args/handler). The `cross_harness/docs_*` wrappers are smaller (\~77–95 lines) since they skip the context-resolution branch.
 
 ### Public API
 
@@ -60,14 +60,24 @@ withPreamble(body, meta)          → '# title\nURL: ...\n\n' + body
 
 ### `docs:*` — context-aware
 
-Three tools (`outline`, `get`, `search`). Each takes an optional `harness` arg and resolves the adapter in `resolveAdapter()`. A missing `harness` arg falls back to `ctx.harnessSlug`; passing `harness: 'all'` (or the internal `'*'` sentinel SU mode sets) forces the no-harness branch even inside a session.
+Three tools (`outline`, `get`, `search`). Each takes an optional `harness` arg. Before the adapter is picked, the handler runs it through the shared **explicit-scope gate** — `resolveHarnessScope(args.harness, ctx)` in `packages/operator-core/lib/agent-tools/_harness-scope.ts` (the same helper `plans:*` and other harness-scoped tools use) — and only then hands the resolved scope to each tool's own `resolveAdapter()`.
 
-* **Inside a harness** (worker, scoper, validator, etc. spawned with `?harness=<slug>`) → returns *that harness's* docs via `harnessFsAdapter(resolveHarnessContentPath(reg, slug) ?? project.path)`. The content path is resolved override-aware, not from the bare `project.path`.
-* **Outside a harness** (`harness` omitted with no session slug, or `harness: 'all'`) — resolution order is **strict and checked in this order**:
+`resolveHarnessScope` returns one of three outcomes, in this precedence:
+
+1. an explicit `harness: 'all'` (or the raw `'*'` sentinel) arg → `{ kind: 'all' }` — deliberate operator/cross-harness scope, regardless of session.
+2. an explicit concrete `harness: '<slug>'` arg → `{ kind: 'harness', slug }` — always wins over the session's own scope.
+3. no arg, and the session's `ctx.harnessSlug` is a **concrete** slug → `{ kind: 'harness', slug }` (a worker/scoper/validator etc. spawned with `?harness=<slug>`).
+4. no arg, and `ctx.harnessSlug` is unset **or** the operator/SU auto-default `'*'` → `{ kind: 'none' }`.
+
+A `'none'` result short-circuits immediately to `{ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }` — `resolveAdapter()` is never called. This is a deliberate explicit-opt-in gate (`feat(docs): explicit harness scope`, 2026-05-31): it replaced an older silent fallback where an unscoped SU/operator call (whose ctx defaults to the `'*'` wildcard) auto-defaulted straight to the engineering reference. Now that auto-default counts as "no explicit choice," and the caller must actively pass `harness: 'all'` to reach project/engineering scope — a caller who simply forgot to scope gets a loud error, not silently-wrong data.
+
+Once scoped, `resolveAdapter(effectiveSlug, { isSuperuser })` (`effectiveSlug` is `'*'` for `{ kind: 'all' }`, or the concrete slug) resolves the adapter:
+
+* **`{ kind: 'harness', slug }`** → *that harness's* docs via `harnessFsAdapter(resolveHarnessContentPath(reg, slug) ?? project.path)`. The content path is resolved override-aware, not from the bare `project.path`. An unregistered slug → `{ error: 'harness_not_registered', slug }`.
+* **`{ kind: 'all' }`** (`effectiveSlug === '*'`) — resolution order is **strict and checked in this order**:
   1. `PAPERCUSP_PROJECT_DOCS_ROOT` set → `genericFsAdapter` over that dir, `surface: 'project'`.
   2. else if the caller is `papercusp-su` (`isSuperuser`) → the `engineeringAdapter` (`starlightContentAdapter` over `apps/operator-docs/src/content/docs/`, defined in `_engineering-adapter.ts`), `surface: 'engineering'`.
-  3. else → `{ error: 'no_docs_source' }`. Engineering is **not** the unconditional default: a non-SU caller with no harness and no `PAPERCUSP_PROJECT_DOCS_ROOT` gets the error envelope, not the engineering reference. This is a deliberate confinement so Papercusp's own engineering docs don't leak to non-SU callers (D-005/P-016).
-* **Omitting `harness` with no session slug at all** → `harness_required` (you must name a harness or pass `'all'`).
+  3. else → `{ error: 'no_docs_source' }`. Engineering is **not** the unconditional default: a non-SU caller who explicitly passes `harness: 'all'` with no `PAPERCUSP_PROJECT_DOCS_ROOT` gets the error envelope, not the engineering reference. This is a deliberate confinement so Papercusp's own engineering docs don't leak to non-SU callers (D-005/P-016).
 
 ```ts
 // Both callers use the same tool. Source picked by context (or the `harness` arg).
@@ -155,6 +165,7 @@ packages/docs-engine/
 └── __tests__/                            unit tests (mock DocSource + adapters)
 
 packages/operator-core/lib/agent-tools/
+├── _harness-scope.ts                     resolveHarnessScope / HARNESS_REQUIRED_DETAIL (shared explicit-scope gate; also used by plans:*)
 ├── docs/
 │   ├── outline.ts                        docs:outline      (context-aware)
 │   ├── get.ts                            docs:get          (context-aware)

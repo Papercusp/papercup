@@ -1,7 +1,7 @@
 # claude-code headless permission model (what --allowed-tools / --permission-mode actually do)
 URL: /internal/docs/agent-insights/claude-code-headless-permissions
 
-Verified vs claude 2.1.158 — --allowed-tools is NOT a whitelist by itself; only --permission-mode dontAsk makes it one, and even then gating is non-uniform (CronCreate/EnterWorktree bypass it). --disallowed-tools is the hard block. How the fleet spawn is locked down.
+Verified vs claude 2.1.158 — --allowed-tools is NOT a whitelist by itself; only --permission-mode dontAsk makes it one, and even then gating is non-uniform (CronCreate/EnterWorktree bypass it). --disallowed-tools is the hard block. How the fleet spawn is locked down. 2026-07-01 update — the subagent tool renamed Task→Agent, silently breaking the fleet's own deny-list.
 
 ## Why this exists
 
@@ -60,8 +60,9 @@ this first.
 --permission-mode dontAsk
 --allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"
 --disallowed-tools CronCreate CronDelete CronList ScheduleWakeup \
-  EnterWorktree ExitWorktree Workflow Task RemoteTrigger PushNotification \
+  EnterWorktree ExitWorktree Workflow Task Agent RemoteTrigger PushNotification \
   Monitor "Bash(sudo:*)" "Bash(git push:*)"
+--disallowedTools=Task,Agent
 ```
 
 Allow-list is one space-joined arg (claude splits it); deny patterns are
@@ -69,6 +70,21 @@ separate argv elements so internal spaces (`Bash(git push:*)`) survive —
 `claudeMcpArgs` is the **tail** of `finalArgv` for claude-code, so the variadic
 `--disallowed-tools` swallows nothing unintended. Defers the whole posture if the
 user set any permission flag in `AGENT_CMD`.
+
+`FLEET_DISALLOWED_TOOLS` (the `--disallowed-tools CronCreate …` list above) no
+longer hardcodes `Task` — it spreads the shared `NO_SUBAGENT_TOOLS_DENY = ['Task',
+'Agent']` from `no-subagent-deny.ts`, so both tool-name generations are always
+covered here too (belt-and-suspenders with the exec-boundary push below).
+
+The trailing `--disallowedTools=Task,Agent` is a **second, independent** deny
+emitted at the exec boundary in `invoke()` itself (`noSubagentToolsDenyFlag()`,
+single comma-joined token, camelCase flag — distinct from the space-separated
+`--disallowed-tools` Layer-A list above), pushed **unconditionally** for every
+claude spawn regardless of `userManagesPermissions` / an explicit
+`AGENT_CMD`-supplied deny list. It survives because claude *unions* repeated
+`--disallowedTools` occurrences rather than the last one winning (verified
+live) — see "Update 2026-07-01" below for why it's split out from the rest of
+the posture, which an operator-supplied deny list CAN still override.
 
 The allow-list is **per-role** (`fleetAllowedToolsForRole(role)`): most roles
 get the kit above, while any role in `FLEET_NO_WRITE_ROLES` drops `Edit`/`Write`
@@ -111,6 +127,57 @@ sandbox, which is now the default container for those reads/egress.
 * Per-role *tightening* of the built-in dev kit (e.g. deny `Write` to read-only
   roles) is deliberately NOT done — it needs per-role real-spawn verification
   because withholding a needed built-in silently breaks a role mid-pipeline.
+
+## Update 2026-07-01: `Task` → `Agent` — the fleet's own deny-list was a silent no-op
+
+This doc's own advice ("don't trust the docs here, re-verify") caught a real regression.
+The subagent-launch built-in was named `Task` when this doc's model was verified against
+claude 2.1.158 (`FLEET_DISALLOWED_TOOLS` denied `'Task'` accordingly). On claude 2.1.198 the
+**same tool is named `Agent`** — self-reported by the model, and confirmed live:
+
+```
+claude -p "spawn a subagent that writes a marker file" \
+  --permission-mode dontAsk --allowedTools "... Agent" --disallowedTools "Task"
+# marker file WAS created — denying 'Task' did nothing; the fleet's guard was a no-op.
+
+claude -p "spawn a subagent that writes a marker file" \
+  --permission-mode dontAsk --disallowedTools "Agent"
+# → "Agent exists but is not enabled in this context." — correctly blocked.
+```
+
+So every headless fleet worker had been able to fan out via the (renamed) subagent tool
+despite `FLEET_DISALLOWED_TOOLS` explicitly intending to block it — the deny-list looked
+complete (the entry was right there) but matched nothing. Fixed by carrying **both** names
+in one shared source, `libs/papercusp/packages/orchestrator/src/no-subagent-deny.ts`
+(`NO_SUBAGENT_TOOLS_DENY = ['Task', 'Agent']`), reused by `FLEET_DISALLOWED_TOOLS` (fleet/
+orchestrator spawns) and mirrored into `psu-launcher.mjs`. Denying a tool name that doesn't
+exist in a given CLI build is a no-op, never an error, so carrying both names costs nothing
+and survives either generation.
+
+**Default-deny everywhere (owner mandate 2026-07-02).** The deny is now applied to *every*
+Claude agent, not just fleet/bee sessions:
+
+* **psu** — `suLaunchArgs`, `roleLaunchArgs`, and `resumeArgsFor` all deny by default
+  (`...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG])`). The old default-OFF `--no-subagents`
+  opt-OUT + human-keeps-it-by-default carve-out (native-scheduler-lockout D-003) is INVERTED:
+  the ONLY way to keep the tool is an explicit opt-IN — `psu --allow-subagents` (a CLI flag),
+  the psu picker's **Subagents** toggle (default Disabled), or `fleet:launch-on-plan { allowSubagents: true }`.
+  `--no-subagents` is kept as a now-redundant explicit-deny alias.
+* **Headless orchestrator spawns** — `invoke.ts` pushes `noSubagentToolsDenyFlag()`
+  UNCONDITIONALLY for any claude spawn at the exec boundary (even when the operator manages
+  the rest of the permission posture, unlike the scheduler deny's D-004 operator-override
+  guard). Safe because claude *unions* repeated `--disallowedTools` occurrences (verified
+  live), so it composes with the Layer-A `--disallowed-tools` from `claudeMcpArgs` /
+  `FLEET_DISALLOWED_TOOLS`. No headless opt-in — the opt-in is a psu-launch surface only.
+* **Wake-executor resumes** — `resumeCommandFor` re-arms `noSubagentToolsDenyFlag()` every
+  wake, alongside the scheduler deny: CLI `--disallowedTools` does NOT survive into a resume,
+  so without this a woken bee silently regained its subagent tool (the same persistence gap
+  the scheduler lockout documents).
+
+**Lesson for the next rename:** a deny-list entry that matches nothing fails *silently* —
+there's no error, no warning, just a tool that still works. The only way to know is the
+live-side-effect test pattern below, run against the tool you're actually trying to close,
+not just the scheduler tools this doc originally checked.
 
 ## How to re-verify (don't trust the docs here)
 

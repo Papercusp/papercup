@@ -7,6 +7,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 Every `/api/admin/execute-action` request is authenticated against a per-harness shared-secret token. **Harness identity is derived from the token binding, not from caller-supplied body fields.** This is what makes `parent_slug` and `from_slug` cryptographically sealed.
 
+This page is about the **bearer-authenticated admin/write plane**. Several voice
+surfaces are intentionally **not** in that plane; see
+[Voice surfaces that do not use per-harness bearers](#voice-surfaces-that-do-not-use-per-harness-bearers).
+
 ## Token issuance
 
 Generated at scaffold time:
@@ -63,6 +67,25 @@ The dispatcher (`dispatchAction`) now routes nine ops, not the original four —
 
 * `create_feature` rejects cross-harness writes: caller must own the target harness — `callerSlug !== harness_slug` → `403 forbidden`.
 * `add_directive_summary` stamps `caller_slug` on the inserted row from the bearer-derived identity (not from any body field).
+
+## Voice surfaces that do not use per-harness bearers
+
+The local voice stack has several routes and sockets that are **not harness
+writes** and therefore do not use `Authorization: Bearer <harness_token>`.
+
+They use transport-local trust instead:
+
+| Surface                             | Trust model                                                 | Why                                                                                   |
+| ----------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `POST /api/operator/sentinel-input` | `auth: 'loopback'` + allowed-origin check                   | Types into the local Sentinel pane; local app-user surface, not a harness admin write |
+| `GET /api/desktop/voice-config`     | `auth: 'public'`                                            | Returns loopback runtime config (chosen WS port + framing constants), not owner data  |
+| `/api/desktop/voice` WebSocket      | loopback-only remote-address check in `desktop-voice-ws.ts` | Dumb byte-pipe from the Tauri webview into the local voice socket                     |
+| `/api/device/voice` WebSocket       | device JWT (`verifyDeviceToken`)                            | Device-session auth, not harness identity                                             |
+
+The important boundary: **per-harness bearer identity seals cross-harness admin
+writes; local voice surfaces are transport- or device-authenticated runtime
+surfaces.** Do not try to model them as `execute-action` callers, and do not
+assume the bearer invariants on this page apply to them.
 
 ## Threat model
 

@@ -8,8 +8,9 @@ URL: /internal/docs/agent-insights/sentinel-voice-in-needs-a-single-dock
 Voice-in writes an STT utterance to the Sentinel pane via
 `~/.papercusp/sentinel-pane` — a **single global file** holding
 `<zellij-session> <pane-id>`, written by the `psu-sentinel` wrapper at every dock
-launch. The endpoint (`routes/operator/sentinel-input.ts`) reads it and runs
-`zellij -s <session> action write-chars --pane-id <id>`.
+launch. The endpoint (`routes/operator/sentinel-input.ts`) delegates to the
+shared `sentinel-pane-input.ts` module (`writeToSentinelPane()`) which reads the
+file and runs `zellij -s <session> action write-chars --pane-id <id>`.
 
 But the desktop can have **several live `pui-dock-*` sessions** at once — multiple
 desktop windows/workspaces (`:3170`, `:3270`, …), plus `tauri dev`

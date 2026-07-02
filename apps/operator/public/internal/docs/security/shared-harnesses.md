@@ -46,7 +46,7 @@ Postgres:
 
 * **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**. `gh:<repository_id>` is only one of several topic bindings: the shipped multi-engineer (**Hive**) substrate is keyed by **`hive:<hive_pubkey>`**, which *replaces* the per-repo slug as the top-level federation unit (a Hive's Swarms all join this one topic), with `local:<workspace_id>/<slug>` for pre-binding/private dev and an explicit `topic:<hex>` carrier so a link-joiner lands on the owner's exact Hive topic rather than re-deriving a `gh:` topic that wouldn't match.
 * **Hypercore** — one Ed25519-signed append-only log per device.
-* **Autobase** — merges many device Hypercores into one materialized view (concurrent, eventually-consistent).
+* **Model B peer-log** — one single-writer Ed25519 log per device + a read-merge over the others (`sync/hyperbee/peer-log.ts`). This **replaced** the earlier multi-writer **Autobase** design; Autobase mentions below are the historical survey/analysis, not the shipped substrate (P-024 truth fix).
 
 Identity is anchored to **GitHub**: each device holds an Ed25519 keypair in the OS
 keychain. The OAuth `GET /user` channel is a **local self-attestation only — it is never

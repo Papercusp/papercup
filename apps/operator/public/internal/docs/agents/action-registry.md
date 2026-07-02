@@ -24,7 +24,13 @@ matter, but the load-bearing ones:
 * **The claude-sessions table was renamed to `harness_shared.delegates`** (migration
   003\); its queries are `delegates.list` / `delegates.get` / `delegates.search`.
 * **There is no `panel.*`/`harness.start`/`palette.toggle` surface in this registry** —
-  panel/palette toggles live in the separate `lib/shortcut-registry.ts`.
+  panel/palette toggles live in the separate `lib/shortcut-registry.ts`. Same for the
+  shared-voice-session bus shortcuts (`voice.toggleMute`, `voice.toggleDeafen`,
+  `voice.toggleMode`, `voice.forceHost`, `video.toggleCamera`) — they're plain
+  `ShortcutDef`s wired straight to a handler via `useShortcutAction` in
+  `GlobalVoiceShortcuts.tsx`, not registry commands. A `ShortcutDef` only touches
+  this registry when it sets the optional `command:` field (auto-bound by
+  `shortcut-shim.tsx`); as of this writing no shipped shortcut uses it.
 * **EL Conv AI is a transport shell** that proxies every turn to the local
   `/api/agent-mcp/operator-converse` brain via an `ask_operator` tool — the BYO-Haiku
   reasoning story (§6/§8/§9) is largely moot. See the §9 as-built note.

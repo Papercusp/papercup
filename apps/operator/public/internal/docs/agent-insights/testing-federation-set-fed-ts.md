@@ -79,14 +79,27 @@ two `.deb` instances: work item A→B backlog, then claim B→A, both \~4s.
 
 ## Also worth knowing
 
-* The federated set is the tables carrying `capture_substrate_outbox_trg`, not
-  just the consolidated ones. Confirmed live (2026-06-16): `harness_features_consolidated`,
+* The federated set is the tables carrying a `capture_..._outbox_trg` (per-table
+  variants of `capture_substrate_outbox`), not just the consolidated ones.
+  Confirmed live (2026-06-16): `harness_features_consolidated`,
   `harness_issues_consolidated`, **`harness_plans`** (plan sharing), and
   **`plan_item_assignments`** (collaborative-plan item assignments) all cross.
-  The other `*_consolidated` tables (messages, agent\_chats, supervisor\_notes, …)
-  and most `plan_*` / `work_item_*` tables (`harness_plan_parts`,
-  `plan_item_claims`, `work_item_claims`, …) are local-only by design — don't
-  expect them to cross. Check `pg_trigger` for the table before assuming.
+  The registry's `sync:'peer-log'` set (`table-registry.ts` `PEER_LOG_TABLES`)
+  has since grown well beyond these four — `engineer_issues`, the `coord_*`
+  tables, `bee_claim_specs`, and the whole `hive_*` family — each with its own
+  capture trigger; check `pg_trigger` for the specific table, not this list,
+  before assuming it does or doesn't cross.
+  **`harness_plan_parts` now carries a real capture trigger too**
+  (`271-harness-plan-parts-capture.sql`, `capture_harness_plan_parts_outbox_trg`)
+  — it fires on any `origin='local'` insert/update today. The plan-part
+  *federation feature* itself is still DARK behind `papercusp-plan-part-federation`
+  (nothing writes the table with `origin='local'` outside that flag's own
+  reconcile path yet), but that's a statement about what writes the table, not
+  about the trigger — a direct-PG test write with `origin='local'` **will**
+  federate. Don't assume it's inert. The other `*_consolidated` tables (messages,
+  agent\_chats, supervisor\_notes, …) and most other `plan_*` / `work_item_*`
+  tables (`plan_item_claims`, `work_item_claims`, …) remain local-only by
+  design — no capture trigger exists for them.
 * `harness_plans` carries a `version` column that is a **local CAS counter**
   (INSERT sets `0`, `ON CONFLICT DO UPDATE SET version = version + 1`), so it
   legitimately differs across peers even when the plan's `content` /
