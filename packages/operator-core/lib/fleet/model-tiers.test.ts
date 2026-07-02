@@ -338,12 +338,15 @@ describe('resolveTierSpec compactionLimit', () => {
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
     const tiers = [
       { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
+      { name: 'vast', spec: 'sonnet[1m]' },
       { name: 'wide', spec: 'opus[1m]:high' },
     ];
     const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
+    const vast = resolveTierSpec({ tier: 'vast', role: 'bee', tiers });
+    expect(vast.ok && vast.compactionLimit).toBe(825_000); // (1M − 10k) ÷ 1.2
     const wide = resolveTierSpec({ tier: 'wide', role: 'bee', tiers });
-    expect(wide.ok && wide.compactionLimit).toBe(825_000); // (1M − 10k) ÷ 1.2
+    expect(wide.ok && wide.compactionLimit).toBe(500_000); // opus/fable 500k cap (owner directive 2026-07-02)
   });
 
   it('a budget downgrade adopts the downgraded-to tier limit', () => {

@@ -78,7 +78,7 @@ beforeEach(() => {
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
-  it('seeds the model-derived default for limit-less live sessions: [1m] → 825k, unresolvable → 158k', async () => {
+  it('seeds the model-derived default for limit-less live sessions: fable [1m] → 500k cap, unresolvable → 158k', async () => {
     specMock.mockImplementation(async (owner: string) =>
       owner === 'su-wide' ? 'claude-fable-5[1m]' : null,
     );
@@ -86,7 +86,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       fakeSql({ unseeded: [{ owner_id: 'su-wide' }, { owner_id: 'su-narrow' }] }),
     );
     expect(out.seeded).toEqual(['su-wide', 'su-narrow']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 825_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 500_000);
     expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 158_000);
   });
 
@@ -96,7 +96,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       fakeSql({
         unseeded: [
           { owner_id: 's-tier' }, // spawn record names tier "deep" → explicit 120k
-          { owner_id: 's-spec' }, // spawn record carries only a [1m] spec → 825k
+          { owner_id: 's-spec' }, // spawn record carries only a fable [1m] spec → 500k cap
           { owner_id: 's-none' }, // no spawn record → resolver fallback → 158k
         ],
         spawnRecords: {
@@ -107,7 +107,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     );
     expect(out.seeded).toEqual(['s-tier', 's-spec', 's-none']);
     expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000);
-    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 825_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 500_000);
     expect(setLimitMock).toHaveBeenCalledWith('s-none', 158_000);
     // the fs/argv resolver only ran for the record-less owner
     expect(specMock).toHaveBeenCalledTimes(1);

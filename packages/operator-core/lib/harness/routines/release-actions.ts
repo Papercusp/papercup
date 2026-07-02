@@ -289,7 +289,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // LOUDER urgent alert when the gate has been HELD too long (the "stuck for a
   // while" signal, distinct from the per-candidate notification). Runs for every
   // verdict so it resets on green; fail-safe.
-  await trackGateStall(ctx, status, candidate, failingTests).catch((e) =>
+  await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null).catch((e) =>
     console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
   );
 
@@ -352,6 +352,7 @@ async function trackGateStall(
   status: string,
   candidate?: string,
   failingTests?: string[],
+  from?: string | null,
 ): Promise<void> {
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
@@ -370,11 +371,27 @@ async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean } | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string } | null }>;
   const gh = rows[0]?.gh ?? {};
+  // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
+  // `main` pin the CLI observed. If it MOVED since the last routine observation, green
+  // work landed on `main` through a path this routine never saw — a MANUAL detached run
+  // or another lineage's gate (only ROUTINE-invoked runs write pipeline events /
+  // gate_health). Without this, an hourly cron that keeps losing the run-lock to a
+  // back-to-back manual runner records only 'skipped-locked' reds while `main` is in
+  // fact advancing — 21 phantom reds, a false "main frozen ~21h" STALLED page, and a
+  // false green-stall-watchdog escalation (it keys on lastGreenAt too). A moved pin is
+  // hard evidence the pipeline is flowing, so it resets the streak like a green does.
+  const fromPin = from ? from.slice(0, 12) : null;
+  const pinMoved = fromPin != null && gh.lastFrom != null && fromPin !== gh.lastFrom;
   let next: Record<string, unknown>;
-  if (isGreen) {
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false };
+  if (isGreen || pinMoved) {
+    if (!isGreen) {
+      console.log(
+        `[green-checkpoint] release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,
+      );
+    }
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     try {
       await sql.unsafe(
@@ -436,7 +453,9 @@ async function trackGateStall(
         console.warn(`[green-checkpoint] stall escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
     }
-    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted };
+    // Seed/carry the pin so the NEXT tick can detect movement (first observation
+    // seeds it without resetting; an unchanged pin carries through).
+    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted, lastFrom: fromPin ?? gh.lastFrom ?? null };
   }
   await sql.unsafe(
     `UPDATE harness_shared.routines
