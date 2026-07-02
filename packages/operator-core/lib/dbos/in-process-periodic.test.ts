@@ -166,6 +166,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('steering-churn-sweep')!.intervalMs).toBe(300_000);
     expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);
     expect(byName.get('hive-epoch-key-reconcile')!.intervalMs).toBe(600_000);
+    expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {
