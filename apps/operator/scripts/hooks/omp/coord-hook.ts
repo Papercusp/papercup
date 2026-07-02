@@ -1584,9 +1584,10 @@ interface HookApi {
  * Discovery design (WS2 + WS4): `tools:find` is the discovery BRAIN — a hybrid
  * semantic+lexical search over the full catalog that understands intent, so it
  * works even when the model doesn't know the exact tool name. omp's native
- * `search_tool_bm25` is demoted to the LOADER: an exact-name keyword match that
- * ACTIVATES a hidden tool so it becomes callable. Flow: tools:find("<intent>")
- * → exact name → search_tool_bm25("<exact name>") → call it. The capability map
+ * `tools:invoke` is the LOADER-FREE call path: once tools:find yields an exact
+ * name, tools:invoke {name, args} runs it server-side (no activation), so omp
+ * never depends on its native search_tool_bm25. Flow: tools:find("<intent>")
+ * → exact name → tools:invoke({name, args}). The capability map
  * below (a static mirror of catalogueProjection / renderCapabilityMap — the
  * hook ships standalone to omp and can't read the live catalog) tells the model
  * WHAT namespaces exist + the vocabulary to search.

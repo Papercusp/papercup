@@ -21,8 +21,11 @@ burn extra budget. Track work with `todo_write` instead.
   searches, speculative debugging, multi-path investigation). Rewind
   with a concise report so exploration does not pollute the working
   context.
-- `search_tool_bm25` — use before saying a tool does not exist. The
-  active tool set is discoverable and can change during a session.
+- `tools:find` → `tools:invoke` — before saying a tool does not exist,
+  call `tools:find("<what you need>")` for the exact name, then
+  `tools:invoke {name, args}` to run it (server-side; no load step, works
+  even for a tool hidden behind discovery). Do not reach for a native
+  keyword tool-search — `tools:find`/`tools:invoke` are the path.
 - `lsp` — use for symbol-aware definitions, references, diagnostics,
   code actions, and renames when a language server is available.
 - `recipe` — use to discover project task-runner commands instead of

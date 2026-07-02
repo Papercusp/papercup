@@ -167,13 +167,13 @@ export default defineTool({
       'You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO ' +
       '("set a feature flag", "list open plans", "spawn a worker bee"). The intent-aware replacement for guessing names.',
     notWhen:
-      'When the tool is already in your core set or you know its exact name — just call it (in omp, search_tool_bm25("<name>") then call). ' +
+      'When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). ' +
       'For a full permission-annotated dump use agent_tools:list.',
     chaining:
       'tools:find("<intent>") activates the matches for your session → call the top tool directly. ' +
       'If the direct call errors "tool not found", do NOT guess name variants: call ' +
       'tools:invoke {name:"<tool>", args:{...}} — it runs any catalog tool without loading. ' +
-      '(In omp you can also search_tool_bm25("<name>") once to load it, then call it.)',
+      'tools:invoke works on every client (claude/codex/omp) and never needs a separate load step.',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -242,10 +242,10 @@ export default defineTool({
               ? 'The matched tools are now active for your session — call the one you want directly. ' +
                 'If that errors "tool not found", do NOT guess name variants: call ' +
                 'tools:invoke {name:"<exact tool name from hits>", args:{...}} — it runs any catalog tool ' +
-                'without loading. (In omp you can also run search_tool_bm25("<name>") once, then call it.)'
+                'without loading. tools:invoke works on every client including omp (server-side dispatch).'
               : 'Call the tool directly (Claude/Codex). If it reports unknown/not-found, call ' +
-                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — always works. ' +
-                '(In omp you can also search_tool_bm25("<tool name>") to load it first.)',
+                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — always works, on every ' +
+                'client including omp (server-side dispatch; no load step).',
           }),
         },
       ],
