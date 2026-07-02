@@ -287,7 +287,7 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
       // A file before any `>>>` header (or a non-affected-runner invocation) has no
       // known workspace; skip it — we can't run `vitest run <file>` without a cwd.
       if (!currentWs) continue;
-      const key = `${currentWs} ${file}`;
+      const key = `${currentWs}\u0000${file}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ workspace: currentWs, file });
