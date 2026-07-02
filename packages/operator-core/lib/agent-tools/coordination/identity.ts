@@ -264,9 +264,17 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
   // ── In-process / principal-gated caller ────────────────────────────
   const principal = ctx.principal;
   if (principal) {
+    // A `system:<role>` principal IS a loop role (queen/overwatch/scout…) — label
+    // it ROLE-first so the roster reads "queen · …" instead of the invisible
+    // "principal · system:queen" (owner kept asking "why don't I see the
+    // queen/overwatch running?" while both were live in the roster, 2026-07-01).
+    // Labels are display-only, never keyed on (see module header).
+    const sysRole = /^system:(.+)$/.exec(principal.slug)?.[1];
     return {
       ownerId: uiClientId ?? principal.slug,
-      ownerLabel: `${principal.kind ?? 'principal'} · ${principal.slug}`,
+      ownerLabel: sysRole
+        ? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`
+        : `${principal.kind ?? 'principal'} · ${principal.slug}`,
       source: 'principal',
       workspaceId: principal.workspaceId,
       userId: null,

@@ -80,6 +80,23 @@ describe('installClaudeIntegration', () => {
     expect(second.mcpServerInstalled).toBe(true);
   });
 
+  it('WI-1457: bakes the resilient-proxy base as the fallback when PAPERCUSP_MCP_PROXY_BASE is set', async () => {
+    await seedPhase1();
+    await writeClaudeJson({ mcpServers: {} });
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    try {
+      const res = await installClaudeIntegration({ home });
+      expect(res.changed).toBe(true);
+      const servers = (await readClaudeJson()).mcpServers as Record<string, { url: string }>;
+      // The operator-side reconciler must never re-mint a direct-:3070 fallback
+      // while the environment routes agents through the proxy (the regression
+      // that silently undid the P-006 cutover).
+      expect(servers['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
+    } finally {
+      delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    }
+  });
+
   it('NEVER creates ~/.claude.json when claude was never launched', async () => {
     await seedPhase1();
     const res = await installClaudeIntegration({ home });

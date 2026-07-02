@@ -28,6 +28,27 @@ interface State {
   expanded: boolean;
 }
 
+/** Chunk-load failures = the page predates the current build (a lazy tab's
+ *  hashed chunk 404s after `vite build --watch` rewrote dist/). Exported for
+ *  tests. Webkit says "Importing a module script failed"; Chromium/Firefox
+ *  have their own phrasings. */
+export const CHUNK_LOAD_ERROR_RE =
+  /Importing a module script failed|Failed to fetch dynamically imported module|error loading dynamically imported module/i;
+const CHUNK_AUTO_RELOAD_KEY = 'pcusp-chunk-autoreload-at';
+
+/** Should a chunk-shaped error auto-reload NOW? One shot per window (60s
+ *  debounce via sessionStorage) so a genuinely-broken build can't reload-loop.
+ *  Pure over its inputs; exported for tests. */
+export function shouldAutoReloadForChunkError(
+  error: unknown,
+  nowMs: number,
+  lastReloadAtMs: number,
+): boolean {
+  const msg = String((error as { message?: unknown } | null)?.message ?? error ?? '');
+  if (!CHUNK_LOAD_ERROR_RE.test(msg)) return false;
+  return nowMs - lastReloadAtMs > 60_000;
+}
+
 class RouteErrorBoundaryInner extends Component<Props, State> {
   state: State = { error: null, expanded: false };
 
@@ -47,6 +68,21 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // eslint-disable-next-line no-console
     console.error('[RouteErrorBoundary] caught render error:', error, info.componentStack);
+    // Stale-chunk AUTO-HEAL (2026-07-01): a long-open window whose lazy tab
+    // chunk 404s after a rebuild used to sit on "Something went wrong" until a
+    // human clicked Reload — the owner hit this as "why don't I see Overwatch
+    // running?" (the tab was fine; the window predated the rebuild). Reload
+    // once automatically; the sessionStorage debounce means a build that is
+    // ACTUALLY broken still lands on the manual fallback instead of looping.
+    try {
+      const last = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
+      if (shouldAutoReloadForChunkError(error, Date.now(), last)) {
+        window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(Date.now()));
+        hardReload();
+      }
+    } catch {
+      /* sessionStorage unavailable → manual fallback stays */
+    }
   }
 
   render(): ReactNode {

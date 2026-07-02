@@ -1,8 +1,19 @@
-# Voice mode (v4)
+# Voice mode (v4) — PARTIALLY SUPERSEDED
+
+> **2026-07-01 (voice-unified-sentinel-pipeline):** the architecture has moved
+> substantially since this doc. The current design is ONE Sentinel pipeline —
+> the pane Sentinel is the single brain for text AND voice; ElevenLabs Conv-AI
+> is a relay front-end; pane answers are synthesized server-side and fanned over
+> the voice bus; hard thinking is delegated to ephemeral background agents. Read
+> `/internal/docs/agent-insights/one-sentinel-voice-pipeline` FIRST. The engine
+> catalog below (STT/TTS adapters, keys, spend, commands) is still broadly
+> accurate, but the code moved from `apps/operator/lib/voice-*` to
+> `packages/operator-core/lib/voice-*` (engines, voice-node, prefs, spend).
 
 The voice modality on top of the v5 Operator. Local-first STT/TTS with
 opt-in cloud upgrades. For the architectural deep-dive, see the rendered
-docs at `/spec/voice-mode-v4` (source: `content/docs/spec/voice-mode-v4.mdx`).
+docs at `/spec/voice-mode-v4` (source lives in
+`apps/operator-docs/src/content/docs/spec/voice-mode-v4.mdx`).
 
 ## Quick start (end-user)
 
@@ -90,11 +101,15 @@ curl http://localhost:3055/api/agent-mcp/operator-tts-spend
 ## What lives where
 
 ```
-lib/voice-*                  parser, intents, prefs, credentials, engine
-                             framework, cost tracking, health monitor,
-                             nudges
-lib/voice-engines/           5 TTS adapters + 2 STT engines + MSE helper +
-                             cancel-race wrapper
+packages/operator-core/lib/voice-*        prefs, credentials, engine framework,
+                                          spend/cost tracking, health monitor
+packages/operator-core/lib/voice-engines/ TTS adapters (kokoro/EL/openai/cartesia)
+                                          + STT engines (whisper/deepgram/webspeech)
+                                          + EL Conv-AI + OpenAI Realtime
+packages/operator-core/lib/voice-node/    the SERVER voice host: one shared EL
+                                          session, bus fan-out, lease election,
+                                          says-pump, transcript log, P2P relay
+packages/operator-core/lib/sentinel/      pane-input mechanics + deep delegation
 app/_components/voice/       VoiceAppBridge (priority registry), voice-mode
                              (speak, STT capture), voice-leader (BroadcastChannel),
                              AriaLiveRegions (dual polite/assertive),

@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS harness_shared.sentinel_says (
 - No `workspace_id`: this is the LOCAL-APP-USER-ONLY desktop TTS channel (owner constraint) — one Sentinel, one webview, one machine — NOT the P2P voice-channel system (`voice_relay` / `operator_voice_channels`). A global queue also sidesteps any cross-process `activeWorkspaceId()` mismatch.
 - push/drain swallow errors (a relay blip must never fail the Sentinel's turn).
 
+## 2026-07-01 update — the drain now has TWO gated consumers
+
+Since `voice-unified-sentinel-pipeline-2026-07-01` (P-002), the webview poll is
+no longer the only drain. While an operator voice SESSION is live, the
+server-side **sentinel-says pump** (`voice-node/sentinel-says-pump.ts`) owns the
+FIFO: it drains, broadcasts a response transcript, synthesizes the line into bus
+audio (`broadcastOpVoice`), and persists it — every attached client displays it
+and the elected player speaks it. The webview poll stands down while
+`micOwnedByFullAgent` and still owns local (no-session) mode. Exactly one
+consumer at a time; the atomic PG drain makes a transition race deliver a line
+to one of them, never both. Debug rule: know WHICH consumer should own the
+drain right now (session live → the pump) before concluding rows are vanishing.
+
 ## Debugging checklist when "voice-out is silent"
 
 1. **Did the Sentinel actually call `voice:say`?** Dump the pane (`zellij action dump-screen --pane-id <id>`) and look for the tool call. The persona mandates it (`sentinel.persona.md` → "How you speak"); a turn that only writes terminal text is silent to the user.

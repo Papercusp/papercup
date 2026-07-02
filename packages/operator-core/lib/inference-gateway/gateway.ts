@@ -1474,6 +1474,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stallsRecorded++;
     recentStalls.push({ ownerId, accountId, soonestResetAt, at: Date.now() });
     if (recentStalls.length > STALL_BUFFER_MAX) recentStalls.splice(0, recentStalls.length - STALL_BUFFER_MAX);
+    recordOwnerOutcome(ownerId, 'stall', { account: accountId });
   }
 
   // Per-owner LAST-ROUTED account (routed-account-visibility, 2026-06-22): the account that ACTUALLY served
@@ -1507,6 +1508,59 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (oldest !== undefined) lastRouteByOwner.delete(oldest);
     }
     lastRouteByOwner.set(ownerId, { account: accountId, model, at: Date.now() });
+  }
+
+  // PER-OWNER OUTCOME LEDGER (gateway-rayobyte-hardening P-008): bounded per-owner counters + a short
+  // recent-event ring, so "agent su-X is erroring — why?" reads from ONE query (GET /admin/owner-report,
+  // surfaced as the gateway:owner_report tool) instead of grepping journald. Same bounded-Map discipline
+  // as lastRouteByOwner; one Map.set per outcome on the hot path.
+  interface OwnerOutcomeEvent { at: number; kind: string; account: string | null; detail?: string }
+  interface OwnerLedgerEntry {
+    requests: number;
+    ok: number;
+    upstreamErrors: number;
+    upstream429: number;
+    sheds: number;
+    stalls: number;
+    pinYields: number;
+    lastAccount: string | null;
+    lastStatus: number | null;
+    lastAt: number;
+    recent: OwnerOutcomeEvent[];
+  }
+  const OWNER_LEDGER_MAX = 4096;
+  const OWNER_LEDGER_RECENT_MAX = 10;
+  const ownerLedger = new Map<string, OwnerLedgerEntry>();
+  function recordOwnerOutcome(
+    ownerId: string | undefined,
+    kind: 'request' | 'ok' | 'upstream_error' | 'upstream_429' | 'shed' | 'stall' | 'pin_yield',
+    opts: { account?: string; status?: number; detail?: string } = {},
+  ): void {
+    if (!ownerId) return;
+    let e = ownerLedger.get(ownerId);
+    if (!e) {
+      if (ownerLedger.size >= OWNER_LEDGER_MAX) {
+        const oldest = ownerLedger.keys().next().value;
+        if (oldest !== undefined) ownerLedger.delete(oldest);
+      }
+      e = { requests: 0, ok: 0, upstreamErrors: 0, upstream429: 0, sheds: 0, stalls: 0, pinYields: 0, lastAccount: null, lastStatus: null, lastAt: 0, recent: [] };
+      ownerLedger.set(ownerId, e);
+    }
+    e.lastAt = Date.now();
+    if (opts.account) e.lastAccount = opts.account;
+    if (opts.status !== undefined) e.lastStatus = opts.status;
+    if (kind === 'request') e.requests++;
+    else {
+      if (kind === 'ok') e.ok++;
+      else if (kind === 'upstream_error') e.upstreamErrors++;
+      else if (kind === 'upstream_429') e.upstream429++;
+      else if (kind === 'shed') e.sheds++;
+      else if (kind === 'stall') e.stalls++;
+      else if (kind === 'pin_yield') e.pinYields++;
+      // Only non-request outcomes enter the recent ring — 'request' would drown it.
+      e.recent.push({ at: e.lastAt, kind, account: opts.account ?? null, ...(opts.detail ? { detail: opts.detail } : {}) });
+      if (e.recent.length > OWNER_LEDGER_RECENT_MAX) e.recent.splice(0, e.recent.length - OWNER_LEDGER_RECENT_MAX);
+    }
   }
 
   // Prompt-cache instrumentation (#0, 2026-06-21): a PASSIVE per-account tally of cache read/write tokens
@@ -1770,6 +1824,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // The bee's coord ownerId (== spawnId), if it identified itself — lets the gateway attribute an
     // all-throttled shed back to this bee for the stall-waker (P-002). Absent ⇒ not wake-able (no-op).
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
+    recordOwnerOutcome(wantOwner, 'request'); // P-008 per-owner ledger
     // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a runtime pin (accounts:pin) keyed by owner id
     // OVERRIDES the static x-papercusp-account spawn header — so an agent can re-route itself or another LIVE.
     // Absent ⇒ the static header (today's behavior). The dynamic pin also carries its own hard/soft choice.
@@ -2031,6 +2086,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!found && soonestPaused - Date.now() > maxQueueWaitMs) {
         totalRequests++;
         shedAllThrottled++;
+        recordOwnerOutcome(wantOwner, 'shed', { detail: 'all-throttled fail-fast' }); // P-008 ledger
         // P-002: the whole pool is out of budget until `soonestPaused` — record a stall candidate so the
         // waker can wake this bee then (only if it identified itself + its CLI doesn't recover on its own).
         recordStall(wantOwner, active.accountId, soonestPaused);
@@ -2061,6 +2117,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (!release) {
       queued429++;
+      recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'admission timeout' }); // P-008 ledger
       const retryAfterSec = Math.min(BEE_RETRY_AFTER_CAP_S, Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000)));
       log('warn', `admission timed out for ${model}; 429 retry-after ${retryAfterSec}s (account ${active.accountId})`);
       sendJson(
@@ -2211,6 +2268,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           });
           if (!res.headersSent) {
             beeTokenStall++;
+            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'token stall 503' }); // P-008 ledger
             // P-002 autowake-coverage (2026-06-22): record a stall so the stall-waker re-wakes an IDENTIFIED bee
             // when this account recovers, instead of the bee just dying on a retryable 503 with nobody retrying.
             recordStall(wantOwner, active.accountId, Math.max(gov.state.pausedUntil, Date.now() + 30_000));
@@ -2410,6 +2468,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // retries; the next request lands on the failover-rotated active()), never a terminal 502.
             if (!res.headersSent) {
               beeEgressExhausted++;
+              recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'egress exhausted 503' }); // P-008 ledger
               // P-002 autowake-coverage (2026-06-22): the dominant bee-facing-503 exit. Record a stall so the
               // stall-waker re-wakes an IDENTIFIED bee once this account/proxy recovers — without this the bee
               // just dies (the gateway's biggest "nothing goes through" path went unrecorded → /admin/stalls empty).
@@ -2757,6 +2816,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (proceed && Date.now() >= retryDeadlineAt) {
             proceed = false;
             shedAllThrottled++;
+            recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'internal-retry deadline' }); // P-008 ledger
             log('warn', `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms hit on '${active.accountId}' (model ${model}) → shed 429, free slot (wedge-prevention ladder)`);
           }
           // AIMD throttle signal (Fix B): record a throttle ONLY for a 429 we could NOT route around to a
@@ -2913,12 +2973,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // mid-retry failover) is covered, not just the ones that remember to set a flag.
         if (pinned && !hardPin && active.accountId !== pinned.accountId) {
           outHeaders[PIN_YIELDED_HEADER] = `${pinned.accountId}->${active.accountId}`;
+          recordOwnerOutcome(wantOwner, 'pin_yield', { account: active.accountId, detail: `${pinned.accountId}->${active.accountId}` });
         }
         // WI-1073: surface a last-resort opus→sonnet downgrade to the caller (silent model substitution
         // is otherwise invisible). Set on ANY forwarded response after a downgrade — a 2xx means sonnet
         // served the walled-opus request; a non-2xx means even the sonnet retry failed.
         if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
         recordRoute(wantOwner, active.accountId, model); // per-owner last-routed → GET /admin/route (statusline)
+        // P-008 ledger: the forwarded outcome — a 2xx is the ok path; a forwarded 429/5xx is what the bee
+        // experiences as an "api error" (post-retry-ladder), exactly what owner_report must show.
+        recordOwnerOutcome(
+          wantOwner,
+          up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error',
+          { account: active.accountId, status: up.status },
+        );
         res.writeHead(up.status, outHeaders);
         // P-005 (structured mid-stream failure): when the upstream body stalls/errors mid-relay, a bare
         // res.destroy() surfaces to the bee as a raw connection reset — an opaque "API Error" it may not
@@ -3498,6 +3566,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // instead of growing an unbounded backlog until it wedges.
       if (e instanceof QueueFullError) {
         shed429++;
+        recordOwnerOutcome((req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined, 'shed', { detail: 'queue full (backlog cap)' }); // P-008 ledger
         // proxy() never ran, so the request body was never consumed — drain it (and close the
         // connection) or the unread socket stays busy and can't be released cleanly (leaks sockets;
         // hangs a graceful server.close()).
