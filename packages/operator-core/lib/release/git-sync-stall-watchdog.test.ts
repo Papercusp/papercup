@@ -49,14 +49,19 @@ describe('evaluateGitSyncStall', () => {
     expect(evaluateGitSyncStall({ ...base, headUnchangedMs: null }, NOW).commitStale).toBe(false);
   });
 
-  it('error/reap (secondary): a non-null last_error ⇒ stalled when caught', () => {
+  it('error/reap (secondary): a fault persisting across >=2 consecutive sweeps ⇒ stalled', () => {
     const v = evaluateGitSyncStall(
-      { ...base, lastError: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire' },
+      {
+        ...base,
+        lastError: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire',
+        errorSweeps: 2,
+      },
       NOW,
     );
     expect(v.stalled).toBe(true);
     expect(v.errorStall).toBe(true);
     expect(v.reason).toMatch(/FAULT|reaper/i);
+    expect(v.reason).toMatch(/2 consecutive watchdog sweeps/);
   });
 
   it('fire-staleness: active routine that has not fired in >3h ⇒ stalled', () => {
@@ -73,8 +78,41 @@ describe('evaluateGitSyncStall', () => {
   });
 
   it('blank/whitespace last_error is treated as no error', () => {
-    expect(evaluateGitSyncStall({ ...base, lastError: '   ' }, NOW).errorStall).toBe(false);
-    expect(evaluateGitSyncStall({ ...base, lastError: '' }, NOW).errorStall).toBe(false);
+    expect(evaluateGitSyncStall({ ...base, lastError: '   ', errorSweeps: 5 }, NOW).errorStall).toBe(false);
+    expect(evaluateGitSyncStall({ ...base, lastError: '', errorSweeps: 5 }, NOW).errorStall).toBe(false);
+  });
+
+  describe('fault-persistence gate (false-alarm fix, 2026-07-02)', () => {
+    const fault = { ...base, lastError: 'libs/generic/sse: push failed: git push origin HEAD:main timed out after 240000ms' };
+
+    it('a fault observed on a SINGLE sweep is transient ⇒ NOT stalled (the 06:54 papercusp false alarm)', () => {
+      // The live incident: one 240s submodule push timeout, self-recovered in 6 min —
+      // yet it urgently paged the owner + broadcast "code is stranding" fleet-wide.
+      const v = evaluateGitSyncStall({ ...fault, errorSweeps: 1 }, NOW);
+      expect(v.errorStall).toBe(false);
+      expect(v.stalled).toBe(false);
+    });
+
+    it('errorSweeps absent with a present fault reads as a first observation ⇒ NOT stalled', () => {
+      const v = evaluateGitSyncStall(fault, NOW);
+      expect(v.errorStall).toBe(false);
+      expect(v.stalled).toBe(false);
+    });
+
+    it('the threshold is overridable (errorStallMinSweeps)', () => {
+      expect(evaluateGitSyncStall({ ...fault, errorSweeps: 1 }, NOW, { errorStallMinSweeps: 1 }).errorStall).toBe(true);
+      expect(evaluateGitSyncStall({ ...fault, errorSweeps: 2 }, NOW, { errorStallMinSweeps: 3 }).errorStall).toBe(false);
+    });
+
+    it('a persistent fault does NOT mask the primary signals: frozen HEAD still alarms at sweep 1 (2026-07-02 hiveloop)', () => {
+      const v = evaluateGitSyncStall(
+        { ...fault, errorSweeps: 1, headUnchangedMs: 3 * H, lastStatus: 'error' },
+        NOW,
+      );
+      expect(v.errorStall).toBe(false);
+      expect(v.commitStale).toBe(true);
+      expect(v.stalled).toBe(true);
+    });
   });
 
   it('thresholds are overridable (headStaleMs / fireStaleMs)', () => {

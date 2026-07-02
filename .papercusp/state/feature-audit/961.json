@@ -1,0 +1,9 @@
+{
+  "actor": "s-1782975215113-96f87489",
+  "feature_id": "F-FIX-045",
+  "field": "__created",
+  "id": 961,
+  "new_value": "{\"id\":\"F-FIX-045\",\"title\":\"Unresolved escalation in harness papercusp\",\"sourceIssueId\":\"EI-6383\"}",
+  "old_value": "null",
+  "ts": 1782975269433
+}

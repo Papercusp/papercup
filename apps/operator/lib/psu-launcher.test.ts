@@ -69,6 +69,7 @@ import {
   assertLaunchPersona,
   preflightWindowGuard,
   runLaunchPreflight,
+  normalizeModelSpec,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -437,7 +438,9 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs([]).brain).toBe(false);
     const both = parseArgs(['--brain', '--model=opus']);
     expect(both.brain).toBe(true);
-    expect(both.model).toBe('opus');
+    // opus is a default-1M family → parseArgs normalizes the spec to carry [1m]
+    // (owner directive 2026-07-02; see the normalizeModelSpec suite below).
+    expect(both.model).toBe('opus[1m]');
     expect(BRAIN_TOMBSTONE_MESSAGE).toMatch(/operator\/sentinel converse/i);
   });
 
@@ -1278,8 +1281,10 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
 
 describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
   it('parses the new omp-convergence flags', () => {
-    const a = parseArgs(['--no-picker', '--agent=omp', '--model=opus', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
-    expect(a.model).toBe('opus');
+    // sonnet (not a default-1M family) so this passthrough test stays decoupled
+    // from the opus/fable [1m] normalization exercised in its own suite below.
+    const a = parseArgs(['--no-picker', '--agent=omp', '--model=sonnet', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
+    expect(a.model).toBe('sonnet');
     expect(a.resumeSession).toBe('s-7');
     expect(a.launchContext).toBe('/dev/shm/k.md');
   });
