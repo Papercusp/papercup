@@ -238,6 +238,17 @@ describe('resumeCommandFor', () => {
     expect(r!.args[r!.args.length - 1]).toBe('WAKE');
   });
 
+  it('claude: re-arms the subagent-fanout deny on every wake (owner mandate 2026-07-02) — a woken bee never regains Task/Agent', () => {
+    const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
+    // Spawn-time --disallowedTools doesn't persist into a resume, so it must be
+    // re-armed every wake — same persistence gap the scheduler deny addresses. Carried
+    // as its own single `=` token alongside the scheduler one (claude unions them).
+    const subagentDeny = r!.args.find((a) => a.startsWith('--disallowedTools=') && a.includes('Task') && a.includes('Agent'));
+    expect(subagentDeny).toBeDefined();
+    expect(/\s/.test(subagentDeny!)).toBe(false);
+    expect(r!.args[r!.args.length - 1]).toBe('WAKE'); // wake text still trails
+  });
+
   it('claude WITHOUT a native session id is NOT resumable (no --continue on a shared cwd)', () => {
     expect(resumeCommandFor({ agent: 'claude', sessionId: null, ompThreadId: null }, 'WAKE')).toBeNull();
   });
