@@ -235,7 +235,10 @@ export async function joinHiveAsView(
   const announcedPubkey =
     (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim()
       ? opts.hivePubkey.trim()
-      : null) ?? (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+      : null) ??
+    // D-007: the member links carry the hive pubkey too — deterministic at join.
+    links.map((l) => l.parsed?.hivePubkey).find((v) => !!v) ??
+    (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
   const localOwnedHives = reg.projects.filter(
     (p) => p.harness_kind === 'hive' && p.remote_hive !== true,
   );
@@ -313,7 +316,12 @@ export async function joinHiveAsView(
   const ownerDevicePubkey =
     (typeof opts.ownerDevicePubkey === 'string' && opts.ownerDevicePubkey.trim()
       ? opts.ownerDevicePubkey.trim()
-      : null) ?? (await resolveOwnerDevicePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+      : null) ??
+    // The member links THEMSELVES carry the verified owner binding (D-007:
+    // formatHarnessLink emits hivePubkey+ownerDevicePubkey together) — the
+    // DETERMINISTIC source present at every real join, no directory timing.
+    links.map((l) => l.parsed?.ownerDevicePubkey).find((v) => !!v) ??
+    (await resolveOwnerDevicePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
   const viewIdentityCoords = {
     ...(announcedPubkey ? { hive_pubkey: announcedPubkey } : {}),
     ...(ownerDevicePubkey ? { owner_device_pubkey: ownerDevicePubkey } : {}),

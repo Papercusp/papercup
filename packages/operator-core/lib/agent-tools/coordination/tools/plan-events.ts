@@ -28,6 +28,44 @@ import { cachedRead, type CachedReadCtx } from "../../../cache";
  */
 const COORD_PLAN_EVENTS_SOFT_TTL_MS = 5_000;
 
+/**
+ * Per-session-tier DEFAULTS (context-trimming-tiers P-022). This tool keeps a
+ * hand-rolled JSON ToolResult — the OMP coord-hook (turn-start reminder)
+ * MCP-calls it and `JSON.parse`s the text, so a `{data}` conversion would
+ * serve it TOON and break it (the coord:inbox hazard/precedent). Instead the
+ * DEFAULT limit + per-event text clip adapt to `ctx.contextTier`; hook calls
+ * carry no ctx_tier → full defaults → byte-identical. An explicit `limit`
+ * arg always wins; `payloadTier:"full"` per call restores today's bytes.
+ * Fat fields: `detail`/`after`/`before` (a now_updated event carries whole
+ * Now-block texts). Clipped events stay loud via `payload_tier` + the clip
+ * ellipsis; full bodies come from plans:get / a full-tier re-call.
+ */
+export const PLAN_EVENTS_TIER_DEFAULTS = {
+  trimmed: { limit: 30, textChars: 200 },
+  standard: { limit: 60, textChars: 400 },
+  full: { limit: 100, textChars: 0 }, // 0 = no clip (today's behavior)
+} as const;
+
+const EVENT_CLIP_FIELDS = ["detail", "after", "before", "body"] as const;
+
+function clipEventTexts(
+  events: unknown[],
+  maxChars: number,
+): unknown[] {
+  if (maxChars <= 0) return events;
+  return events.map((ev) => {
+    if (!ev || typeof ev !== "object") return ev;
+    const out = { ...(ev as Record<string, unknown>) };
+    for (const f of EVENT_CLIP_FIELDS) {
+      const v = out[f];
+      if (typeof v === "string" && v.length > maxChars) {
+        out[f] = `${v.slice(0, maxChars - 1)}…`;
+      }
+    }
+    return out;
+  });
+}
+
 export default defineTool({
   name: "coord:plan-events",
   description:
@@ -59,7 +97,13 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
-    const limit = args.limit ?? 100;
+    // Session-tier defaults (P-022) — see PLAN_EVENTS_TIER_DEFAULTS above.
+    const sessionTier = (ctx as { contextTier?: "trimmed" | "standard" | "full" })
+      .contextTier;
+    const tierDefaults =
+      PLAN_EVENTS_TIER_DEFAULTS[sessionTier ?? "full"] ??
+      PLAN_EVENTS_TIER_DEFAULTS.full;
+    const limit = args.limit ?? tierDefaults.limit;
     // Cache the pure read, keyed on the READ dimensions only — `limit` is a presentation
     // bound applied below, so two calls differing only in limit share one entry. Debounced
     // coord_event_log tag + short SWR (see the constant above).
@@ -89,7 +133,9 @@ export default defineTool({
     // presentation `limit` here (newest `limit`, ts-ASCENDING); `total`/`truncated` tell
     // the caller more exist within the bounded window so they can widen by
     // since_ts/plan_slug/limit.
-    const events = all.length > limit ? all.slice(-limit) : all;
+    const bounded = all.length > limit ? all.slice(-limit) : all;
+    // Per-event text clip (trimmed/standard sessions only — textChars 0 = off).
+    const events = clipEventTexts(bounded, tierDefaults.textChars);
     return {
       content: [
         {
@@ -98,6 +144,11 @@ export default defineTool({
             events,
             total: all.length,
             truncated: all.length > events.length,
+            // Loud tier marker (D-004): a non-full session sees WHY the feed is
+            // shorter/clipped and how to widen (limit arg / payloadTier:"full").
+            ...(sessionTier && sessionTier !== "full"
+              ? { payload_tier: sessionTier }
+              : {}),
           }),
         },
       ],

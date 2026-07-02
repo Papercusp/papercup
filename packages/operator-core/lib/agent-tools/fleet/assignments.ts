@@ -24,6 +24,7 @@ import {
 } from '../../fleet/assignments';
 import { getAllPlanItemCoverage, compactCoverage } from '../../plan-item-coverage';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
+import { shapeFleetAssignments } from './assignments-shape';
 
 /** Coverage levels most-covered → least, for sorting the rollup. */
 const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
@@ -47,8 +48,16 @@ export default defineTool({
       const j = readJsonResult<{
         summary?: { orphaned_claims?: number; stalled_claims?: number };
       }>(result);
-      const reclaimable =
-        (j?.summary?.orphaned_claims ?? 0) + (j?.summary?.stalled_claims ?? 0);
+      // seeAlso runs on the SERIALIZED result — the {data} envelope may be TOON
+      // on the MCP transport (readJsonResult → undefined). TOON renders nested
+      // scalars as `orphaned_claims: N` lines, so a cheap regex keeps the
+      // conditional reclaim pointer alive on compact responses (fail-open to 0).
+      const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const num = (key: string): number =>
+        Number(new RegExp(`\\b${key}\\b["']?\\s*:\\s*(\\d+)`).exec(text)?.[1] ?? 0);
+      const reclaimable = j?.summary
+        ? (j.summary.orphaned_claims ?? 0) + (j.summary.stalled_claims ?? 0)
+        : num('orphaned_claims') + num('stalled_claims');
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"claims" } (the unified who-on-what-item lens)',
         'fleet:status (the fleet\'s leader + live members)',
@@ -83,6 +92,14 @@ export default defineTool({
       .optional()
       .describe('Include lapsed (expired, unreclaimed) plan-item leases. Default false.'),
   }),
+  // context-trimming-tiers P-022: trimmed/standard sessions get the placement
+  // decision core (summary + reclaimables + compact agent rows — see
+  // assignments-shape.ts). The pui bee-dossier reads this over HTTP (no
+  // ctx_tier) → always full.
+  shape: {
+    standard: (data) => shapeFleetAssignments(data, 'standard'),
+    trimmed: (data) => shapeFleetAssignments(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     // A READ — identity is used only to default the optional workspace filter
     // (null = all workspaces). Resolve it SOFTLY so a bare loopback caller (the
@@ -184,40 +201,37 @@ export default defineTool({
     // itself. Best-effort — an unattributable caller just gets no marker.
     const self = resolveSelfRef(ctx);
     const selfMarkedAgents = markSelfRows(boundedAgents, self, 'agentId');
+    // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
+    // pui bee-dossier pane) still read identical lossless JSON text.
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            ...(self ? { self } : {}),
-            summary,
-            // Abandoned work first — the reason this view is claim-primary.
-            orphaned: orphans.map(summarizeOrphan),
-            // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
-            stalled: stalled.map(summarizeOrphan),
-            // Plan-item coverage: items being worked via a linked work-item / direct
-            // claim (even with no plan-item lease). 'none' is omitted (no signal).
-            ...(coverageOut.length
-              ? {
-                  coverage: coverageOut,
-                  ...(coverageTruncated
-                    ? { coverage_truncated: true, coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.` }
-                    : {}),
-                }
-              : {}),
-            agents: selfMarkedAgents,
-            ...(agentsTruncated
-              ? {
-                  agents_truncated: true,
-                  agents_returned: selfMarkedAgents.length,
-                  agents_hint:
-                    'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents has the true total.',
-                }
-              : {}),
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        ...(self ? { self } : {}),
+        summary,
+        // Abandoned work first — the reason this view is claim-primary.
+        orphaned: orphans.map(summarizeOrphan),
+        // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
+        stalled: stalled.map(summarizeOrphan),
+        // Plan-item coverage: items being worked via a linked work-item / direct
+        // claim (even with no plan-item lease). 'none' is omitted (no signal).
+        ...(coverageOut.length
+          ? {
+              coverage: coverageOut,
+              ...(coverageTruncated
+                ? { coverage_truncated: true, coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.` }
+                : {}),
+            }
+          : {}),
+        agents: selfMarkedAgents,
+        ...(agentsTruncated
+          ? {
+              agents_truncated: true,
+              agents_returned: selfMarkedAgents.length,
+              agents_hint:
+                'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents has the true total.',
+            }
+          : {}),
+      },
     };
   },
 });

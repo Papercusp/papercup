@@ -17,6 +17,7 @@ import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-
 import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
+import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -34,7 +35,14 @@ export default defineTool({
     // relevant, so they stay static in the returned list.
     seeAlso: (result) => {
       const j = readJsonResult<{ summary?: { byState?: { ended?: number } } }>(result);
-      const ended = j?.summary?.byState?.ended ?? 0;
+      // seeAlso runs on the SERIALIZED result — on the MCP transport the {data}
+      // envelope may be TOON (readJsonResult → undefined). TOON renders nested
+      // scalars as `ended: N` lines, so a cheap regex keeps the conditional
+      // pointer alive on compact responses too (fail-open to 0).
+      const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const ended =
+        j?.summary?.byState?.ended ??
+        Number(/\bended\b["']?\s*:\s*(\d+)/.exec(text)?.[1] ?? 0);
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"live" } (the unified presence/roster door with lenses)',
         'coord:glance (one-line fleet headline for a status surface)',
@@ -75,6 +83,13 @@ export default defineTool({
       .optional()
       .describe('P-011 Tier-2/3 detail: add each agent\'s `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.'),
   }),
+  // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
+  // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
+  // The pui reads this over HTTP (no ctx_tier) → always full.
+  shape: {
+    standard: (data) => shapeCoordPresence(data, 'standard'),
+    trimmed: (data) => shapeCoordPresence(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     // P-004 hive-scoped read (D-002): resolve the effective scope from ctx + args
     // (hive default → caller's home Hive; SU/unmapped → workspace fallback), then
@@ -117,13 +132,8 @@ export default defineTool({
       ...(self ? { self } : {}),
       active: markSelfRows(snapshot.active, self),
     };
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify(out),
-        },
-      ],
-    };
+    // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
+    // pui roster panes) still read identical lossless JSON text.
+    return { data: out };
   },
 });
