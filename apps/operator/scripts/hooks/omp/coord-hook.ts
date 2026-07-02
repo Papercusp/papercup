@@ -840,6 +840,60 @@ export async function pollInboxDelta(): Promise<{ reminder: string }> {
  */
 export const OS_SCHEDULER_CMD_RE = /(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b/;
 
+/**
+ * Destructive tree-wide git guard (hive-loop-supervision-2026-06-21 / EI-2376
+ * follow-up (a)): a TypeScript mirror of the Claude+Codex PreToolUse shell
+ * hook's Python guard (pretooluse-bash-resource-gate.sh). OMP has no
+ * shell-subprocess PreToolUse contract, so it can't share that script — this
+ * duplicates its regex logic instead, applied to OMP's own bash tool call
+ * path below. A pathspec-less `git reset --hard` / `git checkout|restore .`
+ * (or `:/`) / `git clean -f*` / `git stash` on the SHARED staging checkout
+ * discards EVERY concurrent agent's UNCOMMITTED work — edits sit unstaged
+ * until the next git-sync tick, so the loss is UNRECOVERABLE (git never made
+ * a blob; kopia backs up workspace-state, ~14KB, NOT the code). Confirmed
+ * wiping a tested in-flight fix on 2026-06-21 — the root of the recurring
+ * "my edits got reverted/overwritten" reports.
+ *
+ * Per-segment + start-anchored (split on `;&|`/newline, strip a leading
+ * `sudo`) so `cd x && git reset --hard` is caught but `echo "git reset
+ * --hard"` / a commit-message mention are not. Exported for unit tests.
+ */
+const GIT_CMD_PREFIX = String.raw`git\b(?:\s+-C\s+\S+|\s+-c\s+\S+|\s+--git-dir\S*|\s+--work-tree\S*)*\s+`;
+const GIT_RESET_HARD_RE = new RegExp(`^${GIT_CMD_PREFIX}reset\\b.*--hard\\b`);
+const GIT_CLEAN_F_RE = new RegExp(`^${GIT_CMD_PREFIX}clean\\b.*-\\w*f`);
+const GIT_CHECKOUT_DOT_RE = new RegExp(`^${GIT_CMD_PREFIX}(?:checkout|restore)\\b.*\\s(?:\\.|:/)(?:\\s|$)`);
+const GIT_STASH_RE = new RegExp(`^${GIT_CMD_PREFIX}stash\\b(?!\\s+(?:pop|apply|list|show|drop|branch|clear))`);
+
+/** Returns the offending op name (e.g. `'git reset --hard'`) if `command`
+ *  contains a destructive tree-wide git op at command position in any
+ *  `;`/`&`/`|`/newline-separated segment, else `null`. Exported for tests. */
+export function destructiveGitCommandOp(command: string): string | null {
+  for (const rawSegment of command.split(/[;&|\n]/)) {
+    const seg = rawSegment.trim().replace(/^sudo\s+/, '');
+    if (GIT_RESET_HARD_RE.test(seg)) return 'git reset --hard';
+    if (GIT_CLEAN_F_RE.test(seg)) return 'git clean -f';
+    if (GIT_CHECKOUT_DOT_RE.test(seg)) return 'git checkout/restore .';
+    if (GIT_STASH_RE.test(seg) && !seg.includes(' -- ')) return 'git stash';
+  }
+  return null;
+}
+
+/** The refusal reason shown for a blocked destructive git op — mirrors the
+ *  shell hook's `_git_deny` message verbatim (same guidance, same incident
+ *  citation) so the two enforcement points give the agent identical advice. */
+export function destructiveGitDenyReason(op: string): string {
+  return (
+    `shared-tree guard: \`${op}\` would discard EVERY concurrent agent's ` +
+    "UNCOMMITTED work on the shared staging checkout — edits sit unstaged " +
+    'until the next git-sync tick, so the loss is UNRECOVERABLE (no git blob; ' +
+    'kopia backs up workspace-state, not code). This wiped a tested in-flight ' +
+    "fix on 2026-06-21. To discard only YOUR change to ONE file, re-edit it by " +
+    'hand or run `git checkout -- <that.one.file>` with an EXPLICIT path — ' +
+    'never a pathspec-less reset/checkout/clean/stash. If you wanted a clean ' +
+    "tree, you don't need one: stop editing and let git-sync commit."
+  );
+}
+
 export interface ToolCallEvent {
   type: 'tool_call';
   toolName: string;
@@ -1372,6 +1426,13 @@ export async function onToolCall(
           'hive:declare-wake instead — the routines table is the only scheduler ' +
           'the hive’s pause/status/liveness machinery can see.',
       };
+    }
+    // EI-2376 follow-up (a): the shell hook's destructive tree-wide git guard,
+    // mirrored here so OMP agent sessions get the same protection (the shell
+    // hook only fires for Claude/Codex's shell-subprocess PreToolUse contract).
+    const gitOp = destructiveGitCommandOp(cmd);
+    if (gitOp) {
+      return { block: true, reason: destructiveGitDenyReason(gitOp) };
     }
   }
 

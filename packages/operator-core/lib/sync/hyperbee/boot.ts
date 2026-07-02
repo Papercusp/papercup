@@ -926,6 +926,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // bridge between the two.
   const revoked = new Set<string>();
   const pubkeyToLogKey = new Map<string, string>();
+  // WI-193 (G8): provenance tracking for the UN-REVOKE reconciliation below.
+  // Holds ONLY pubkeys that entered `revoked` via the startup seed or
+  // applyRevocationRefresh — i.e. from the PUBLISHED revoked-pubkeys list, never
+  // from a live `revoke()` call. This is what lets applyRevocationRefresh safely
+  // remove a pubkey no longer in the published list (an owner un-banning someone)
+  // WITHOUT ever undoing an explicit, in-process `revoke()` (owner-ban / go-private
+  // boundary) — a live revoke is authoritative and is never a member of this set
+  // (revoke() also evicts it below, in case it was ALREADY refresh-sourced).
+  const revokedViaRefresh = new Set<string>();
   // `admittedIdentities` (+ the WI-259 P-002 `resolveAuthorDevice` seam) is declared
   // ABOVE `buildScopedApply` so the content projections can thread the seam — see there.
 
@@ -975,7 +984,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     });
   try {
     const seeded = await loadRevoked();
-    for (const pk of seeded) revoked.add(pk);
+    for (const pk of seeded) {
+      revoked.add(pk);
+      // WI-193 (G8): startup-seeded entries are refresh-sourced provenance —
+      // eligible for un-revoke reconciliation if a later refresh drops them.
+      revokedViaRefresh.add(pk);
+    }
   } catch (e) {
     recordBootEvent(
       opts.workspaceId,
@@ -1007,12 +1021,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // `revoke()` uses. Fail-open: a load failure is caught by the caller.
   // IMPORTANT: callers MUST hold the `merging` flag or otherwise guarantee
   // single-threaded access to `admitted` / `pendingPeers` while this runs.
+  //
+  // WI-193 (G8 fix): also RECONCILES un-revocations. `revoked` was previously
+  // monotonic for the life of the handle (union-only) — dropping a pubkey from
+  // the published list never re-admitted it; the only recovery was a full
+  // reboot. Now, any pubkey whose provenance is REFRESH-SOURCED
+  // (`revokedViaRefresh` — i.e. it was never named in a live `revoke()` call)
+  // and that is no longer present in the freshly-loaded published set is
+  // removed from `revoked`, re-admitting it on its next announce. A pubkey
+  // revoked via a live `revoke()` call is NEVER a member of `revokedViaRefresh`
+  // (revoke() evicts it there too), so this reconciliation can never silently
+  // undo an explicit owner-initiated revoke — only ever a published-list entry
+  // that the owner has since removed.
   async function applyRevocationRefresh(): Promise<void> {
     const refreshed = await loadRevoked();
     for (const pk of refreshed) {
       if (!revoked.has(pk)) {
         // New revocation discovered from PG.
         revoked.add(pk);
+        revokedViaRefresh.add(pk);
         // Drop from the pending-retry set — a revoked peer must never be retried.
         purgePendingForDevice(pk);
         // If the peer is currently admitted, drop its log.
@@ -1028,6 +1055,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(logKey),
           );
         }
+      }
+    }
+    // Un-revoke reconciliation (G8): only refresh-sourced entries are eligible.
+    for (const pk of [...revokedViaRefresh]) {
+      if (!refreshed.has(pk)) {
+        revoked.delete(pk);
+        revokedViaRefresh.delete(pk);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_unrevoked',
+          `pubkey ${pk.slice(0, 12)}… dropped from the published revoked list — re-admissible`,
+        );
       }
     }
   }
@@ -2317,6 +2357,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function revoke(devicePubkey: string): Promise<void> {
     // (a) Block future admits + re-announces (decider checks `revoked` first).
     revoked.add(devicePubkey);
+    // WI-193 (G8): a LIVE revoke is authoritative — evict from the refresh-sourced
+    // provenance set (in case this pubkey was ALREADY refresh-tracked) so a later
+    // published-list refresh can never silently reconcile this revoke away.
+    revokedViaRefresh.delete(devicePubkey);
     // (a2) Drop ALL of this device's buffered logs from the pending-retry set —
     // a revoked peer must never be retried even if its channel-2 file eventually
     // appears.

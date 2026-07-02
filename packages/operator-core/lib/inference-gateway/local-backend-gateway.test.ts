@@ -58,18 +58,20 @@ afterEach(async () => {
  *  local-backend path (it never reaches the account/token code for those routes). */
 const stubAccount = { accountId: 'unused-stub', token: async () => 'unused' };
 
-async function boot(entries: LocalBackend[]) {
+async function boot(entries: LocalBackend[], extraDeps: Partial<GatewayDeps> = {}) {
   pool = createLocalBackendPool(entries);
-  gw = createInferenceGateway({ ...stubAccount, localBackends: pool });
+  gw = createInferenceGateway({ ...stubAccount, localBackends: pool, ...extraDeps });
   port = await gw.listen(0);
 }
 
-const chatCompletions = (body: unknown) =>
+const chatCompletions = (body: unknown, headers: Record<string, string> = {}) =>
   fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
+
+const chatCompletionsAs = (ownerId: string, body: unknown) => chatCompletions(body, { [OWNER_HEADER]: ownerId });
 
 test('routes a matching model to the registered local backend', async () => {
   const b1 = await startFakeBackend('b1', okJsonReply({ id: 'chatcmpl-1', choices: [] }));
@@ -208,4 +210,120 @@ test('/v1/messages (Anthropic path) is unaffected by an unmatched local-backend 
     body: JSON.stringify({ model: 'some-local-model', messages: [] }),
   });
   assert.notEqual(res.status, 502); // NOT routed through proxyLocal's "no reachable backend" path
+});
+
+// ---------------------------------------------------------------------------------------------
+// Per-CLIENT circuit breaker (local-concurrent-inference-2026-07-02 P-015, D-010) — protects the
+// shared local-backend pool from one storming/wedged owner. See local-backend-client-circuit.ts.
+// ---------------------------------------------------------------------------------------------
+
+test('per-client in-flight cap sheds a storming owner with 429 + retry-after, without touching the backend — a DIFFERENT owner is unaffected', async () => {
+  const held: http.ServerResponse[] = [];
+  const b1 = await startFakeBackend('b1', (_req, res) => {
+    held.push(res); // never end() — keeps requests "in flight" from the pool's perspective
+  });
+  backends = [b1];
+  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 8, enabled: true }], {
+    localBackendClientMaxInFlight: 1,
+  });
+
+  // Owner A's first request is admitted and hangs (never resolves) — occupies its one allowed slot.
+  const inflightA = chatCompletionsAs('owner-a', { model: 'm' });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(pool.inFlight('b1'), 1);
+
+  // Owner A's SECOND concurrent request is shed by the in-flight cap — never reaches the backend.
+  const shedRes = await chatCompletionsAs('owner-a', { model: 'm' });
+  assert.equal(shedRes.status, 429);
+  assert.ok(shedRes.headers.get('retry-after'));
+  const shedJson = (await shedRes.json()) as { error: { message: string } };
+  assert.match(shedJson.error.message, /in-flight cap/);
+  assert.equal(pool.inFlight('b1'), 1); // unchanged — the shed never touched the backend
+
+  // A DIFFERENT owner is unaffected — its request is admitted normally onto the same backend.
+  const inflightB = chatCompletionsAs('owner-b', { model: 'm' });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(pool.inFlight('b1'), 2);
+
+  held.forEach((res) => res.writeHead(200, { 'content-type': 'application/json' }));
+  held.forEach((res) => res.end('{}'));
+  await Promise.all([inflightA, inflightB]);
+});
+
+test('per-client failure-streak circuit opens after repeated no-reachable-backend failures, sheds fast, isolates other owners, and self-closes after the cooldown', async () => {
+  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
+    localBackendClientFailureThreshold: 2,
+    localBackendClientCooldownMs: 100,
+  });
+
+  // Two failed (no-reachable-backend) requests trip owner-a's circuit (threshold 2).
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
+
+  // The THIRD request is shed immediately by the now-OPEN circuit — the backend is never touched
+  // (its recorded health failure count does not advance).
+  const failuresBefore = pool.health().get('dead')?.consecutiveFailures ?? 0;
+  const shed = await chatCompletionsAs('owner-a', { model: 'm' });
+  assert.equal(shed.status, 429);
+  const shedJson = (await shed.json()) as { error: { message: string } };
+  assert.match(shedJson.error.message, /circuit open/);
+  assert.equal(pool.health().get('dead')?.consecutiveFailures ?? 0, failuresBefore);
+
+  // A DIFFERENT owner is NOT gated by owner-a's open circuit (per-owner isolation) — its request is
+  // genuinely ATTEMPTED (502 from the dead backend, not a 429 shed).
+  assert.equal((await chatCompletionsAs('owner-b', { model: 'm' })).status, 502);
+
+  // After the cooldown elapses, owner-a's circuit self-closes and the next request is attempted again.
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502); // attempted, not shed
+});
+
+test('an unidentified caller (no owner header) is never gated by the per-client circuit, even after repeated failures', async () => {
+  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
+    localBackendClientFailureThreshold: 1,
+    localBackendClientCooldownMs: 60_000,
+  });
+  for (let i = 0; i < 4; i++) {
+    const res = await chatCompletions({ model: 'm' }); // no x-papercusp-owner header
+    assert.equal(res.status, 502); // always genuinely attempted — never 429-shed
+  }
+});
+
+test('a caller-input error (no "model" field) does not trip the owner circuit — it is the caller\'s own mistake, not a pool wedge', async () => {
+  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
+    localBackendClientFailureThreshold: 1,
+  });
+  const res = await chatCompletionsAs('owner-a', {}); // no "model" field
+  assert.equal(res.status, 400);
+  // A genuinely failing request right after should still be ATTEMPTED (502), not pre-emptively shed
+  // by a circuit the 400 should never have tripped.
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
+});
+
+test('GET /admin/local-backends reports per-client circuit state for an owner with recorded activity', async () => {
+  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
+    localBackendClientFailureThreshold: 5,
+  });
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
+
+  const adminRes = await fetch(`http://127.0.0.1:${port}/admin/local-backends`);
+  const json = (await adminRes.json()) as {
+    clients: { ownerId: string; consecutiveFailures: number; inFlight: number; circuitOpen: boolean }[];
+  };
+  const entry = json.clients.find((c) => c.ownerId === 'owner-a');
+  assert.ok(entry, 'owner-a should appear in the clients list after a failed request');
+  assert.equal(entry!.consecutiveFailures, 1);
+  assert.equal(entry!.inFlight, 0);
+  assert.equal(entry!.circuitOpen, false);
+});
+
+test('GET /admin/local-backends omits an owner with no recorded activity (clean owners are not listed)', async () => {
+  const b1 = await startFakeBackend('b1', okJsonReply({ id: 'ok' }));
+  backends = [b1];
+  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }]);
+  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 200);
+
+  const adminRes = await fetch(`http://127.0.0.1:${port}/admin/local-backends`);
+  const json = (await adminRes.json()) as { clients: { ownerId: string }[] };
+  assert.equal(json.clients.find((c) => c.ownerId === 'owner-a'), undefined);
 });

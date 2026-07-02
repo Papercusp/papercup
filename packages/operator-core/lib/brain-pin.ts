@@ -42,12 +42,13 @@ export function brainSessionKey(workspaceId: string): string {
 export async function setBrainSession(workspaceId: string, nativeSessionId: string): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     VALUES (
       ${brainSessionKey(workspaceId)},
       ${nativeSessionId},
       'The canonical brain session (native uuid) the desktop chat dock resumes for this workspace (native-terminal-desktop D-013; workspace-scoped EI-908).',
-      ${Date.now()}
+      ${Date.now()},
+      ${workspaceId}
     )
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;
@@ -91,12 +92,13 @@ async function migrateLegacyPin(workspaceId: string): Promise<string | null> {
       WHERE key = ${LEGACY_BRAIN_SESSION_KEY}
       RETURNING value, updated_at
     )
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     SELECT
       ${brainSessionKey(workspaceId)},
       legacy.value,
       'Migrated from the pre-EI-908 unscoped brain pin (workspace-scoped).',
-      legacy.updated_at
+      legacy.updated_at,
+      ${workspaceId}
     FROM legacy
     ON CONFLICT (key) DO NOTHING
     RETURNING value

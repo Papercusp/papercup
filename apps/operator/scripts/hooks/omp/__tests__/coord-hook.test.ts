@@ -15,6 +15,8 @@ import {
   callMcpTool,
   resolveHookWorkspace,
   collapseDigestNotifies,
+  destructiveGitCommandOp,
+  destructiveGitDenyReason,
   detectSymlinkedPaths,
   reportLifecycle,
   extractPathsFromToolInput,
@@ -84,6 +86,115 @@ describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
     ]) {
       expect(cmd).not.toMatch(OS_SCHEDULER_CMD_RE);
     }
+  });
+});
+
+// ── destructive tree-wide git guard (EI-2376 follow-up (a)) ──────────────────
+// TypeScript mirror of the Claude+Codex shell hook's Python guard
+// (pretooluse-bash-resource-gate.sh) — see its own bash-resource-gate.test.ts
+// for the shell-side coverage of the identical cases.
+
+describe('destructiveGitCommandOp (command-position destructive git match)', () => {
+  it.each([
+    ['bare reset --hard', 'git reset --hard', 'git reset --hard'],
+    ['reset --hard HEAD', 'git reset --hard HEAD', 'git reset --hard'],
+    ['reset --hard a remote ref', 'git reset --hard origin/staging', 'git reset --hard'],
+    ['clean -f', 'git clean -f', 'git clean -f'],
+    ['clean -fd', 'git clean -fd', 'git clean -f'],
+    ['clean -fdx', 'git clean -fdx', 'git clean -f'],
+    ['checkout .', 'git checkout .', 'git checkout/restore .'],
+    ['checkout -- .', 'git checkout -- .', 'git checkout/restore .'],
+    ['checkout :/ (repo-root pathspec)', 'git checkout :/', 'git checkout/restore .'],
+    ['restore .', 'git restore .', 'git checkout/restore .'],
+    ['bare stash', 'git stash', 'git stash'],
+    ['stash save', 'git stash save "wip"', 'git stash'],
+    ['stash push (no explicit path)', 'git stash push', 'git stash'],
+    ['sudo-prefixed reset --hard', 'sudo git reset --hard', 'git reset --hard'],
+    ['compound && reset --hard', 'cd /tmp && git reset --hard', 'git reset --hard'],
+    ['compound ; clean -f', 'git status ; git clean -f', 'git clean -f'],
+    ['newline-separated stash', 'git status\ngit stash', 'git stash'],
+    ['git -C <dir> reset --hard', 'git -C /some/repo reset --hard', 'git reset --hard'],
+  ])('flags %s', (_label, command, expectedOp) => {
+    expect(destructiveGitCommandOp(command)).toBe(expectedOp);
+  });
+
+  it.each([
+    ['checkout of an explicit single file', 'git checkout -- path/to/file.ts'],
+    ['restore of an explicit single file', 'git restore path/to/file.ts'],
+    ['stash pop', 'git stash pop'],
+    ['stash apply', 'git stash apply'],
+    ['stash list', 'git stash list'],
+    ['stash show', 'git stash show'],
+    ['stash drop', 'git stash drop'],
+    ['stash branch', 'git stash branch wip-x'],
+    ['stash clear', 'git stash clear'],
+    ['stash push with an explicit `--` path', 'git stash push -- path/to/file.ts'],
+    ['clean dry-run (no f flag)', 'git clean -n'],
+    ['reset (no --hard)', 'git reset HEAD~1'],
+    ['reset --soft', 'git reset --soft HEAD~1'],
+    ['ordinary status', 'git status'],
+    ['ordinary diff', 'git diff --stat'],
+    ['"reset --hard" only in a commit message, not command position', 'git commit -m "docs: explain git reset --hard"'],
+    ['"git reset --hard" inside a string arg, not command position', 'echo "git reset --hard"'],
+  ])('never flags %s', (_label, command) => {
+    expect(destructiveGitCommandOp(command)).toBeNull();
+  });
+});
+
+describe('destructiveGitDenyReason', () => {
+  it('names the op + the single-file escape hatch', () => {
+    const reason = destructiveGitDenyReason('git reset --hard');
+    expect(reason).toContain('shared-tree guard');
+    expect(reason).toContain('git reset --hard');
+    expect(reason).toContain('git checkout -- <that.one.file>');
+  });
+});
+
+describe('onToolCall destructive-git guard (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  it('blocks a destructive tree-wide git command when the agent-session marker is set', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'git-1',
+      input: { command: 'git reset --hard' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('shared-tree guard');
+  });
+
+  it('allows a safe single-file git command in agent sessions', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'git-2',
+      input: { command: 'git checkout -- path/to/file.ts' },
+    });
+    expect(r.block).toBeUndefined();
+  });
+
+  it("never fires for the owner's own sessions (marker unset — D-003 exemption mirrors the scheduler lockout)", async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'git-3',
+      input: { command: 'git reset --hard' },
+    });
+    expect(r.block).toBeUndefined();
   });
 });
 

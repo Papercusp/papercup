@@ -67,6 +67,7 @@ export type BootHistoryKind =
   | 'peer_cap_near'
   | 'peer_capped'
   | 'peer_revoked'
+  | 'peer_unrevoked'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'

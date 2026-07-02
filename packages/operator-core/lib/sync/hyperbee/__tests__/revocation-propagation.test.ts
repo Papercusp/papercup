@@ -18,10 +18,13 @@
  *        cross-peer propagation is mediated by federating the published
  *        `revoked_pubkeys` row → B's PG → B's loader. This test proves the
  *        ENFORCEMENT half on the peer whose loader returns X.
- *   G8 — re-admission after revocation. FINDING: there is NO un-revoke path —
- *        `revoke()` only ADDS to the set and the decider checks `revoked` FIRST,
- *        so even dropping X from the published list does NOT re-admit X while the
- *        handle lives (the in-memory `revoked` set is monotonic). Documented.
+ *   G8 — re-admission after revocation. WI-193 fix: a pubkey whose revocation is
+ *        REFRESH-SOURCED (came from the published list via the startup seed or
+ *        applyRevocationRefresh — never from a live `revoke()` call) IS re-admitted
+ *        once it is dropped from the published list and a refresh runs — no reboot
+ *        required. A pubkey revoked via a LIVE `revoke()` call is never reconciled
+ *        away by a refresh, even if the published list never named it (or later
+ *        stops naming it) — only an explicit action can undo a live revoke.
  *   G9 — on revoke, the admitted log is dropped from the merge set but the
  *        underlying Hypercore SESSION opened by `openRemoteLog` is NOT closed —
  *        a (bounded, capped-at-peer-count) resource leak. Documented + asserted.
@@ -284,47 +287,91 @@ describe('G7 — published-revocation propagation enforces a drop at merge time'
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// G8 — re-admission after revocation. FINDING: there is NO un-revoke path. The
-// in-memory `revoked` set is monotonic for the life of the handle; dropping X
-// from the published list does NOT re-admit X. Re-admission requires a REBOOT
-// (a fresh handle whose startup seed loads the now-cleaned published list).
+// G8 — re-admission after revocation. WI-193 fix: applyRevocationRefresh now
+// reconciles REFRESH-SOURCED revocations (never a live revoke() call) that have
+// been dropped from the published list — no reboot required. A live revoke()
+// is never undone by this reconciliation.
 // ───────────────────────────────────────────────────────────────────────────
-describe('G8 — un-revoke / re-admission (feature-gap finding)', () => {
+describe('G8 — un-revoke / re-admission (WI-193)', () => {
   it(
-    'dropping X from the published list does NOT re-admit X on a live handle (no un-revoke path)',
+    'dropping X from the published list + a refresh DOES re-admit X (refresh-sourced revocation, live handle, no reboot)',
     async () => {
       const writes: Array<{ id: string }> = [];
       const published = new Set<string>();
       const handle = await bootHost({
-        slug: 'g8-noun',
+        slug: 'g8-unrevoke',
         loadRevokedOverride: async () => new Set(published),
         writes,
       });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8-X-');
+      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8u-X-');
       await X.write('X-1', 100);
       await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
       expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      // Revoke X via the published list + merge → dropped.
+      // Revoke X via the published list + merge → dropped (refresh-sourced).
       published.add(X.device.devicePubkey);
       await handle.mergeNow();
       expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+      const reWhileRevoked = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+      expect(reWhileRevoked).toMatchObject({ admit: false, reason: 'revoked' });
 
       // ── UN-REVOKE: remove X from the published list (the owner reverses it). ──
       published.delete(X.device.devicePubkey);
 
-      // A merge refresh re-loads the (now empty) published list — but the
-      // in-memory `revoked` set only ever UNIONS (applyRevocationRefresh adds,
-      // never removes), so X stays revoked.
+      // A merge refresh re-loads the (now empty) published list. WI-193:
+      // applyRevocationRefresh reconciles — X's revocation was refresh-sourced
+      // (never a live revoke() call), so it is removed from `revoked`.
       await handle.mergeNow();
 
-      // X re-announces: STILL refused 'revoked' — there is no live un-revoke.
+      // X re-announces: ADMITTED — no reboot required.
       const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
       expect(
         re,
-        'FINDING: no un-revoke path — a live handle never re-admits a once-revoked pubkey, ' +
-          'even after the published list drops it. Re-admission requires a reboot.',
+        'WI-193: a refresh-sourced revocation dropped from the published list must ' +
+          're-admit the peer on a live handle, without a reboot.',
+      ).toMatchObject({ admit: true });
+      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+
+      // And X's ops merge again.
+      await X.write('X-2', 200);
+      await handle.mergeNow();
+      expect(writes.map((w) => w.id)).toContain('X-2');
+    },
+    30_000,
+  );
+
+  it(
+    'a LIVE revoke() is NEVER reconciled away by a later refresh, even though the published list never named X',
+    async () => {
+      const writes: Array<{ id: string }> = [];
+      // The published list never includes X — the revoke is purely a live,
+      // in-process call (the owner-ban path, independent of the PG-mediated
+      // published-list propagation).
+      const handle = await bootHost({
+        slug: 'g8-live-authoritative',
+        loadRevokedOverride: async () => new Set(),
+        writes,
+      });
+
+      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8l-X-');
+      await X.write('X-1', 100);
+      await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+
+      await handle.revoke(X.device.devicePubkey);
+      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+
+      // Multiple refreshes over an (always-empty, X-never-named) published list
+      // must NEVER un-revoke a live-revoked pubkey — reconciliation only ever
+      // touches refresh-sourced entries, and X was never one.
+      for (let i = 0; i < 3; i++) await handle.mergeNow();
+
+      const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+      expect(
+        re,
+        'a live revoke() must stay authoritative across any number of refreshes — ' +
+          'never silently reconciled away just because the published list never named it.',
       ).toMatchObject({ admit: false, reason: 'revoked' });
       expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
     },
@@ -332,7 +379,7 @@ describe('G8 — un-revoke / re-admission (feature-gap finding)', () => {
   );
 
   it(
-    're-admission WORKS via a reboot: a fresh handle whose startup seed loads the cleaned list admits X',
+    're-admission also still WORKS via a reboot (unchanged supported recovery path)',
     async () => {
       // Prove the ONLY re-admission path: rebooting with the published list no
       // longer naming X (the startup seed is the only place `revoked` is built

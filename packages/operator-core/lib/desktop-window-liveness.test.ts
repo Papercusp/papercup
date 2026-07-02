@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   parseWmctrlList,
   selectOnDesktopSessions,
@@ -12,9 +12,34 @@ import {
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
+import { WINDOW_TITLE_PREFIX } from './windows-desktop-windows';
+
+const listWindowsByTitleMock = vi.fn();
+
+// Keep the real parseSessionIdFromWindowTitle/WINDOW_TITLE_PREFIX (desktop-window-
+// liveness.ts's own matcher logic depends on them); only listWindowsByTitle — the
+// IO seam — is mocked, so the win32 branch of listOpenWindows is unit-testable
+// without a real powershell.exe.
+vi.mock('./windows-desktop-windows', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./windows-desktop-windows')>();
+  return { ...actual, listWindowsByTitle: (...args: unknown[]) => listWindowsByTitleMock(...args) };
+});
+
+const realPlatform = process.platform;
+
+/** Override the read-only process.platform for one test. */
+function setPlatform(p: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value: p, configurable: true });
+}
 
 beforeEach(() => {
   __resetDesktopLivenessCache();
+  listWindowsByTitleMock.mockReset();
+  listWindowsByTitleMock.mockResolvedValue([]);
+});
+
+afterEach(() => {
+  setPlatform(realPlatform);
 });
 
 describe('parseWmctrlList (pure wmctrl -lp parser)', () => {
@@ -106,6 +131,34 @@ describe('selectOnDesktopSessions (pure match: which sessions have a live window
     expect(sets.sessionIds.size).toBe(0);
     expect([...sets.advSessionIds]).toEqual([5]);
   });
+
+  describe('Windows title-tag leg (P-019 — matches by `Papercup — <sessionId>`, not wid/pid)', () => {
+    it('matches a session by its sessionId embedded in a window title, with no windowId/pid at all', () => {
+      const sets = selectOnDesktopSessions(
+        [sess({ advSessionId: 7, coordOwnerId: 'su-win', sessionId: 'native-uuid-1', windowId: null, pid: null })],
+        [win('0xHWND', 4321, `${WINDOW_TITLE_PREFIX}native-uuid-1`)],
+      );
+      expect([...sets.owners]).toEqual(['su-win']);
+      expect([...sets.sessionIds]).toEqual(['native-uuid-1']);
+      expect([...sets.advSessionIds]).toEqual([7]);
+    });
+
+    it('does not match when the title carries a DIFFERENT sessionId', () => {
+      const sets = selectOnDesktopSessions(
+        [sess({ advSessionId: 8, coordOwnerId: 'su-other', sessionId: 'native-uuid-2' })],
+        [win('0xHWND', 1, `${WINDOW_TITLE_PREFIX}some-other-session`)],
+      );
+      expect(sets.owners.size).toBe(0);
+    });
+
+    it('a session with no sessionId is never matched by the title leg (only wid/pid/tag can match it)', () => {
+      const sets = selectOnDesktopSessions(
+        [sess({ advSessionId: 9, coordOwnerId: 'su-none', sessionId: null })],
+        [win('0xHWND', 1, `${WINDOW_TITLE_PREFIX}anything`)],
+      );
+      expect(sets.owners.size).toBe(0);
+    });
+  });
 });
 
 describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
@@ -125,6 +178,32 @@ describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
   it('a failed/empty wmctrl run yields [] (headless box / no DISPLAY)', async () => {
     const run = vi.fn(() => null);
     expect(await listOpenWindows({ run, nowMs: 1, ttlMs: 0 })).toEqual([]);
+  });
+});
+
+describe('listOpenWindows — win32 branch (P-019, enumerates via listWindowsByTitle, not wmctrl)', () => {
+  it('on win32 with no injected deps.run, maps listWindowsByTitle results into OpenWindow[]', async () => {
+    setPlatform('win32');
+    listWindowsByTitleMock.mockResolvedValue([
+      { hwnd: '0xABC', pid: 4321, title: `${WINDOW_TITLE_PREFIX}sess-1` },
+    ]);
+    const windows = await listOpenWindows({ nowMs: 1, ttlMs: 0 });
+    expect(windows).toEqual<OpenWindow[]>([{ wid: '0xABC', pid: 4321, title: `${WINDOW_TITLE_PREFIX}sess-1` }]);
+    expect(listWindowsByTitleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed/empty listWindowsByTitle yields [] (mirrors the wmctrl fail-soft contract)', async () => {
+    setPlatform('win32');
+    listWindowsByTitleMock.mockRejectedValue(new Error('no powershell.exe'));
+    expect(await listOpenWindows({ nowMs: 1, ttlMs: 0 })).toEqual([]);
+  });
+
+  it('an explicitly injected deps.run STILL wins on win32 (the test seam always wins)', async () => {
+    setPlatform('win32');
+    const run = vi.fn(() => '0x1 0 100 host SH[adv:1]: x');
+    const windows = await listOpenWindows({ run, nowMs: 1, ttlMs: 0 });
+    expect(windows).toHaveLength(1);
+    expect(listWindowsByTitleMock).not.toHaveBeenCalled();
   });
 });
 

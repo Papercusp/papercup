@@ -15,6 +15,7 @@
  *
  * Server-only.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
@@ -60,6 +61,20 @@ export interface ConsoleEnvelope {
   /** True iff ~/.papercusp/superuser-token is missing. Tauri side
    *  should run install-standalone-mcp.sh before launching. */
   needsSuperuserBootstrap: boolean;
+  /**
+   * windows-desktop-feature-parity-2026-07-02 P-010: a fresh UUID minted per
+   * console launch — the WINDOW's own identity, distinct from
+   * `resumeSessionId` (an agent CLI session to resume) and adv_sessions'
+   * `session_id` (the agent's native session id). Every spawner titles the OS
+   * window `Papercup — <sessionId>` (native_console.rs / console-spawn.ts) so
+   * a launched terminal can be found + focused by TITLE. This matters most on
+   * Windows: the agent/session runs inside the `papercup-runtime` WSL2
+   * distro while the terminal window is a native Win32 process, so there is
+   * no Windows window-ancestor for a WSL pid and pid→window mapping (the
+   * Linux wmctrl path) is structurally impossible — title is the only durable
+   * link. See packages/operator-core/lib/windows-desktop-windows.ts.
+   */
+  sessionId: string;
 }
 
 export interface BuildEnvelopeOpts {
@@ -286,6 +301,7 @@ export async function buildConsoleEnvelope(
     mcpJsonContents,
     greetingCmd,
     needsSuperuserBootstrap,
+    sessionId: randomUUID(),
   };
 }
 

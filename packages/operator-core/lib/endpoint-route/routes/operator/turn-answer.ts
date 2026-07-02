@@ -9,6 +9,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { notifySyncInvalidate } from '../../../sync-sse';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
@@ -108,10 +109,10 @@ export default defineTool({
         const userSeq = Number(nextSeq[0].s);
         const inserted = (await tx.unsafe(
           `INSERT INTO harness_shared.operator_turns
-             (conversation_id, seq, role, text, source, created_at)
-           VALUES ($1, $2, 'user', $3, 'card_pick', $4)
+             (conversation_id, seq, role, text, source, created_at, workspace_id)
+           VALUES ($1, $2, 'user', $3, 'card_pick', $4, $5)
            RETURNING id, seq`,
-          [conversationId, userSeq, joinedLabels, now],
+          [conversationId, userSeq, joinedLabels, now, activeWorkspaceId()],
         )) as Array<{ id: string; seq: number }>;
 
         return { kind: 'ok' as const, userSeq, userId: inserted[0].id };

@@ -88,16 +88,33 @@ $callback = {
 $results | ForEach-Object { Write-Output $_ }
 `.trim();
 
+/**
+ * Leader VM finding (2026-07-02): `powershell.exe` is deliberately NOT on the
+ * `papercup-runtime` WSL PATH, so a bare `powershell.exe` fails with
+ * "command not found" — it must be invoked by its absolute Windows-mount path.
+ * Tried first; a bare-name fallback covers a WSL config where PATH forwarding
+ * IS enabled (still fail-soft either way).
+ */
+const POWERSHELL_ABS_PATH = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+
+async function execPowershell(bin: string, script: string): Promise<string> {
+  const { stdout } = await execFileAsync(bin, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    timeout: PS_TIMEOUT_MS,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return typeof stdout === 'string' ? stdout : '';
+}
+
 async function runPowershell(script: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', script],
-      { timeout: PS_TIMEOUT_MS, encoding: 'utf8', windowsHide: true },
-    );
-    return typeof stdout === 'string' ? stdout : null;
+    return await execPowershell(POWERSHELL_ABS_PATH, script);
   } catch {
-    return null; // no powershell.exe on PATH (WSL interop off) / timeout / spawn error
+    try {
+      return await execPowershell('powershell.exe', script); // PATH-forwarding fallback
+    } catch {
+      return null; // absolute path missing (non-standard drive) AND not on PATH / timeout / spawn error
+    }
   }
 }
 
@@ -193,13 +210,14 @@ $ok = [PapercuspFocus]::SetForegroundWindow($hwnd)
 if ($ok) { exit 0 } else { exit 1 }
 `.trim();
   try {
-    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      timeout: PS_TIMEOUT_MS,
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+    await execPowershell(POWERSHELL_ABS_PATH, script);
     return true;
   } catch {
-    return false; // no match (exit 1) / no powershell / timeout
+    try {
+      await execPowershell('powershell.exe', script); // PATH-forwarding fallback
+      return true;
+    } catch {
+      return false; // no match (non-zero exit) / no powershell / timeout
+    }
   }
 }

@@ -246,11 +246,11 @@ export async function appendTurn(input: {
       const inserted = (await rawSql.unsafe(
         `INSERT INTO harness_shared.operator_turns
            (conversation_id, seq, role, text, source, el_conv_id,
-            audio_url, created_at, tools, report)
+            audio_url, created_at, tools, report, workspace_id)
          SELECT $1,
                 COALESCE((SELECT MAX(seq) FROM harness_shared.operator_turns
                            WHERE conversation_id = $1), -1) + 1,
-                $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb
+                $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10
          RETURNING id, conversation_id, seq, role, text, source,
                    el_conv_id, audio_url, created_at, tools, report`,
         [
@@ -263,6 +263,7 @@ export async function appendTurn(input: {
           Date.now(),
           toolsJson,
           reportJson,
+          activeWorkspaceId(),
         ],
       )) as Array<Record<string, unknown>>;
       return rowToTurn(inserted[0]);

@@ -61,12 +61,13 @@ export async function setHiveStarted(
   const { sql } = getOrgPg();
   const scope = workspaceBrainScopeKey(workspaceId, installSlug, await isWorkspaceCoordinationOn());
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     VALUES (
       ${key(workspaceId, scope)},
       ${started ? 'true' : 'false'},
       ${'Start/Pause Hive state (start-hive-wake P-004 / D-006). true = the colony should be running; the watchdog holds the liveness invariant only while true.'},
-      ${Date.now()}
+      ${Date.now()},
+      ${workspaceId}
     )
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;

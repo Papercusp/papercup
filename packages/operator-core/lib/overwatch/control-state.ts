@@ -39,6 +39,7 @@ import {
   workspaceBrainScopeKey,
   workspaceBrainReadKeys,
 } from '../workspace-brain-scope';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const STARTED_PREFIX = 'overwatch_started:';
 const CADENCE_PREFIX = 'overwatch_cadence_sec:';
@@ -76,8 +77,8 @@ async function readSetting(key: string): Promise<string | undefined> {
 async function writeSetting(key: string, value: string, description: string): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
-    VALUES (${key}, ${value}, ${description}, ${Date.now()})
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+    VALUES (${key}, ${value}, ${description}, ${Date.now()}, ${activeWorkspaceId()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;
 }

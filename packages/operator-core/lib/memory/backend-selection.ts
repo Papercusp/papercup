@@ -19,6 +19,7 @@
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const SETTING_KEY = 'memory_backend';
 const osTable = generated.operatorSettingsInHarnessShared;
@@ -49,8 +50,8 @@ async function readSetting(): Promise<string | null> {
 async function writeSetting(value: string): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
-    VALUES (${SETTING_KEY}, ${value}, 'Active MemoryBackend (mem0-revive-or-retire / Brief 30)', ${Date.now()})
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+    VALUES (${SETTING_KEY}, ${value}, 'Active MemoryBackend (mem0-revive-or-retire / Brief 30)', ${Date.now()}, ${activeWorkspaceId()})
     ON CONFLICT (key) DO UPDATE
       SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;

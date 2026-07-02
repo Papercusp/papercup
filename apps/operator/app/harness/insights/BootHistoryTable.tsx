@@ -30,6 +30,7 @@ export type BootHistoryKind =
   | 'peer_rate_limited'
   | 'peer_capped'
   | 'peer_revoked'
+  | 'peer_unrevoked'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
@@ -69,6 +70,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   peer_rate_limited: 'var(--bad)',
   peer_capped: 'var(--warn)',
   peer_revoked: 'var(--bad)',
+  peer_unrevoked: 'var(--good)',
   announce_admitted: 'var(--good)',
   announce_pending: 'var(--warn)',
   announce_rejected: 'var(--warn)',
@@ -95,6 +97,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_rate_limited: '🛑',
   peer_capped: '✂',
   peer_revoked: '🚫',
+  peer_unrevoked: '↩',
   announce_admitted: '➕',
   announce_pending: '⏳',
   announce_rejected: '⛔',

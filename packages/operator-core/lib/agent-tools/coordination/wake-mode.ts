@@ -18,6 +18,7 @@
  * wakes at all; wake-mode decides how RECEIVED wakes are handled.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 export const WAKE_MODES = ['auto', 'manual'] as const;
 export type WakeMode = (typeof WAKE_MODES)[number];
@@ -50,8 +51,8 @@ async function readSetting(key: string): Promise<string | null> {
 async function writeSetting(key: string, value: string, description: string): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
-    VALUES (${key}, ${value}, ${description}, ${Date.now()})
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+    VALUES (${key}, ${value}, ${description}, ${Date.now()}, ${activeWorkspaceId()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;
 }

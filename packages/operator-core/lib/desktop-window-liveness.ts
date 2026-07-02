@@ -59,7 +59,7 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { listLiveHosts } from './events/await/psu-pty-discovery';
-import { listWindowsByTitle, parseSessionIdFromWindowTitle, WINDOW_TITLE_PREFIX } from './windows-desktop-windows';
+import { listWindowsByTitle, parseSessionIdFromWindowTitle } from './windows-desktop-windows';
 
 const execFileAsync = promisify(execFile);
 
@@ -211,7 +211,11 @@ function emptyOnDesktopSets(): OnDesktopSets {
  *   - an open window's title carries its `[adv:<id>]` launch tag (the same tag
  *     console-launch sets, so it survives even if window_id capture missed), OR
  *   - an open window's pid equals its recorded launch pid (fallback for
- *     emulators whose window pid == the spawned pid).
+ *     emulators whose window pid == the spawned pid), OR
+ *   - an open window's title carries the WINDOWS `Papercup — <sessionId>` tag
+ *     matching its `sessionId` (P-019 — the pid/windowId legs above are both
+ *     Linux-only concepts a WSL-hosted Windows session can never satisfy; the
+ *     title is the only signal that survives the WSL boundary).
  * Injected open-window list so the match logic is unit-tested without wmctrl.
  * Over-matching is SAFE by design (it only over-protects a session from the
  * reaper / shows an extra desktop flag), so the union of cheap signals is
@@ -228,12 +232,16 @@ export function selectOnDesktopSessions(
     openWindows.map((w) => w.pid).filter((p): p is number => p != null),
   );
   const titles = openWindows.map((w) => w.title);
+  const windowSessionIds = new Set(
+    titles.map((t) => parseSessionIdFromWindowTitle(t)).filter((id): id is string => id != null),
+  );
   for (const s of sessions) {
     const tag = `[adv:${s.advSessionId}]`;
     const onDesktop =
       (s.windowId != null && openWids.has(s.windowId)) ||
       (s.pid != null && openPids.has(s.pid)) ||
-      titles.some((t) => t.includes(tag));
+      titles.some((t) => t.includes(tag)) ||
+      (s.sessionId != null && windowSessionIds.has(s.sessionId));
     if (!onDesktop) continue;
     if (s.coordOwnerId) sets.owners.add(s.coordOwnerId);
     if (s.sessionId) sets.sessionIds.add(s.sessionId);

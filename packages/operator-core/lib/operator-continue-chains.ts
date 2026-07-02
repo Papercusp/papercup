@@ -26,6 +26,7 @@ import { sharedUtilityPoolMax } from './resource-profile';
 import postgres from 'postgres';
 
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { activeWorkspaceId } from './workspace-registry';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
@@ -78,6 +79,7 @@ async function writeChainEvent(input: ChainEventInput): Promise<void> {
 
   const head = recent[0];
   const chainStillActive = head !== undefined && head.trigger !== 'reset';
+  const workspaceId = activeWorkspaceId();
 
   if (input.trigger === 'reset') {
     // Only write a 'reset' row if there IS an active chain to reset.
@@ -87,10 +89,10 @@ async function writeChainEvent(input: ChainEventInput): Promise<void> {
     await sql`
       INSERT INTO harness_shared.operator_continue_chains
         (conversation_id, ui_client_id, chain_id, turn_idx,
-         trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason)
+         trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason, workspace_id)
       VALUES
         (${input.conversationId}, ${input.uiClientId}, ${head.chain_id},
-         ${head.turn_idx + 1}, 'reset', now(), ${elapsed}, false, NULL)
+         ${head.turn_idx + 1}, 'reset', now(), ${elapsed}, false, NULL, ${workspaceId})
     `;
     return;
   }
@@ -101,10 +103,10 @@ async function writeChainEvent(input: ChainEventInput): Promise<void> {
     await sql`
       INSERT INTO harness_shared.operator_continue_chains
         (conversation_id, ui_client_id, chain_id, turn_idx,
-         trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason)
+         trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason, workspace_id)
       VALUES
         (${input.conversationId}, ${input.uiClientId}, ${head.chain_id},
-         ${head.turn_idx + 1}, ${input.trigger}, now(), ${elapsed}, false, NULL)
+         ${head.turn_idx + 1}, ${input.trigger}, now(), ${elapsed}, false, NULL, ${workspaceId})
     `;
     return;
   }
@@ -113,10 +115,10 @@ async function writeChainEvent(input: ChainEventInput): Promise<void> {
   await sql`
     INSERT INTO harness_shared.operator_continue_chains
       (conversation_id, ui_client_id, chain_id, turn_idx,
-       trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason)
+       trigger, started_at, elapsed_secs_in_chain, was_capped, cap_reason, workspace_id)
     VALUES
       (${input.conversationId}, ${input.uiClientId}, ${randomUUID()},
-       0, ${input.trigger}, now(), 0, false, NULL)
+       0, ${input.trigger}, now(), 0, false, NULL, ${workspaceId})
   `;
 }
 
