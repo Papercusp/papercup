@@ -105,6 +105,7 @@ import type { HivePolicy } from '../../hive-policy-schema';
 import { getHivePolicy } from '../../hive-policy-store';
 import { isContentTakenDown } from '../../hive-moderation';
 import { MemberRateLimiter } from './rate-limiter';
+import { registerRateLimiter, unregisterRateLimiter } from './rate-limiter-registry';
 import { makeRateLimitedApply } from './rate-limit-admission';
 import { makePolicyEnforcedApply } from './policy-admission';
 
@@ -927,6 +928,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // reused; the owner policy is re-snapshotted per pass below. Inert until an owner
   // sets a rate cap (no caps ⇒ the wrapper is a pure passthrough).
   const rateLimiter = new MemberRateLimiter();
+  // WI-253 (findings-EN-4.md "EN-1 GUI snapshot surface" fast-follow): register this
+  // instance into the process-local registry so the owner-facing "member X at N/cap"
+  // observability endpoint can read it. Additive only — the merge seam below still
+  // closes over its OWN direct reference to `rateLimiter`; this is a second reference,
+  // never a behavior change. Unregistered on close() below (see closeHooks).
+  registerRateLimiter(opts.workspaceId, opts.harnessSlug, rateLimiter);
 
   // (rekeyDeps + epochDrainQueue are built above, before registerAllHarnessProjections, so
   // the re-key drain hook can wire into the projection registration — see there.)
@@ -1301,6 +1308,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let stopped = false;
   // Teardown hooks (Stage 5 outbox drain stopper, etc.) run once on close().
   const closeHooks = new Set<() => void | Promise<void>>();
+  // WI-253: drop this harness's rate-limiter registry entry on close so a stopped
+  // harness is never served as if its limiter were still live.
+  closeHooks.add(() => unregisterRateLimiter(opts.workspaceId, opts.harnessSlug));
   // EI-79 residual (p2p-performance-suite P-013): the INCREMENTAL merge cursor.
   // Replaces the lengths-snapshot steady-state skip with per-log read cursors +
   // a materialized winner-meta fold, so a changed tick decodes only the DELTA

@@ -36,5 +36,9 @@ describe('buildGymOperatorBootSpec — hermetic DSN pinning', () => {
     // defaults ON for server-class hosts and would re-point the pinned URL at
     // the live pooler (:6432) whose credentials the container lacks.
     expect(spec.env.PAPERCUSP_PGBOUNCER, 'sandbox must dial its container DIRECTLY').toBe('0');
+    // Layer-5: the WORKSPACE-RESOLUTION leaks must be pinned too — a leaked
+    // PAPERCUSP_HIVE_HOME_SLUG fatals home-harness validation against the
+    // hermetic registry (the gym operator runs no hive).
+    expect(spec.env.PAPERCUSP_HIVE_HOME_SLUG, 'gym operator runs NO hive').toBe('');
   });
 });

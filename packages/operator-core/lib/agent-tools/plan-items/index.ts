@@ -25,6 +25,9 @@ import './leave-group';
 // Reflect rules: work_item lifecycle → plan-item status (convert-at-pickup D-015).
 // Importing registers them on the event-reaction engine, like lifecycle-rules.
 import '../../plan-items/reflect-rules';
+// Reconcile rule (EI-5925): the reverse mirror — plan-item → done reconciles
+// any OTHER linked work-item still non-terminal. Importing registers it.
+import '../../plan-items/reconcile-rule';
 import { installSwarmClaimAuthority } from '../../plan-items/claim-authority-swarm';
 import { registerPlanItemClaimAuthorityOps } from '../../plan-items/plan-item-claim-authority-ops';
 

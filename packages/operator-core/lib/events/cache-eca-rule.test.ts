@@ -66,18 +66,18 @@ describe('built-in cache.bumpTags action', () => {
     expect(isBuiltinReactionAction('coord:handoff')).toBe(false);
   });
 
-  it('invalidates the given tags on the operator cache for the workspace', () => {
+  it('invalidates the given tags on the operator cache for the workspace', async () => {
     const { cache, bumps } = makeSpyCache();
     installOperatorCache(cache);
-    const r = fireBuiltinReactionAction(CACHE_BUMP_TAGS_ACTION, { tags: ['harness_plans', 'harness_plans:PL-7'] }, 'w1');
+    const r = await fireBuiltinReactionAction(CACHE_BUMP_TAGS_ACTION, { tags: ['harness_plans', 'harness_plans:PL-7'] }, 'w1');
     expect(r.ok).toBe(true);
     expect(bumps).toEqual([{ workspaceId: 'w1', tags: ['harness_plans', 'harness_plans:PL-7'] }]);
   });
 
-  it('empty tags is a no-op (ok, no bump)', () => {
+  it('empty tags is a no-op (ok, no bump)', async () => {
     const { cache, bumps } = makeSpyCache();
     installOperatorCache(cache);
-    expect(fireBuiltinReactionAction(CACHE_BUMP_TAGS_ACTION, { tags: [] }, 'w1').ok).toBe(true);
+    expect((await fireBuiltinReactionAction(CACHE_BUMP_TAGS_ACTION, { tags: [] }, 'w1')).ok).toBe(true);
     expect(bumps).toHaveLength(0);
   });
 });

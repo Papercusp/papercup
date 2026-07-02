@@ -83,6 +83,13 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // with every DSN pinned. The hermetic sandbox must ALWAYS dial its container
     // DIRECTLY: pin the bouncer OFF.
     PAPERCUSP_PGBOUNCER: '0',
+    // GYM-1 layer-5 fix (monitor-agent finding, 15:40): bg-host's
+    // PAPERCUSP_HIVE_HOME_SLUG=papercusp leaks through the process.env spread,
+    // and the home-harness STARTUP VALIDATION then fatals — 'papercusp' is not
+    // a registered project in the HERMETIC container's registry. The gym
+    // operator runs NO hive: pin the home slug EMPTY (resolveHiveHomeSlug
+    // treats blank as unset → the hive-home validation is a no-op).
+    PAPERCUSP_HIVE_HOME_SLUG: '',
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

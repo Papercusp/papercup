@@ -107,7 +107,7 @@ export async function fireReactionInProcess(opts: {
   // cache invalidation is workspace-scoped (D-010).
   if (isBuiltinReactionAction(opts.fire)) {
     if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };
-    return fireBuiltinReactionAction(opts.fire, opts.args, workspaceId);
+    return await fireBuiltinReactionAction(opts.fire, opts.args, workspaceId);
   }
 
   const projected = lookupByMcpName(opts.fire);

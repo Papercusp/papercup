@@ -27,6 +27,12 @@
  * directive, after an AUTO+IDEATE turn ended with an idea-slate-then-ask check-in): explicitly
  * ban the slate-then-ask form of the menu check-in, and make `loop:arm` the DEFAULT for an
  * open-ended / ongoing AUTO directive (end-of-turn test) so autonomy persists across turns.
+ *
+ * Hardened 2026-07-02 (owner directive): recast the dedicated ideation pass from "per task" to a
+ * SIGNAL-triggered, judgment-paced OWED debt — near-noop wakes spend idle capacity ideating, a
+ * durable last-pass marker makes the gap survive compaction, and perpetual deferral is named as
+ * the failure mode — so deliberate ideate-only passes fire in long-running AUTO loops without an
+ * owner reminder.
  */
 /**
  * context-trimming-tiers P-017: the FLEET persona tier renders a compact AUTO
@@ -187,9 +193,21 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
 (or "stop ideating" / "just fixes"), the session ends, or the goal is finished. **Default OFF.**
 
 **What IDEATE changes while ON:**
-- **A dedicated ideation pass per task.** After the work itself is done, STOP and spend a
-  real pass on *"what should exist here that doesn't?"* — don't settle for the first small
-  idea; push for genuinely novel capability. A distinct step, not a passing thought.
+- **A deliberate ideation pass is an OWED debt, paced by JUDGMENT — never a turn counter.**
+  When a discrete task finishes, STOP and spend a real pass on *"what should exist here that
+  doesn't?"* But most IDEATE work is long-running (an AUTO loop, a monitored fleet) with no
+  clean task boundary — so ALSO trigger a pass on SIGNAL: when enough new experience has piled
+  up to be worth synthesizing, at a natural lull/checkpoint, or — especially — **whenever a
+  wake would otherwise be a near-noop, spend that idle capacity ideating instead of just ending
+  the turn** (eventful stretches earn more passes, quiet ones fewer — that is correct). A pass
+  is a DISTINCT step: treat your own recent observations/captures as a *corpus* and mine it for
+  the pattern behind several frictions and for **what's missing** — don't settle for the first
+  small idea; push for genuinely novel capability. **Guard the real failure mode, perpetual
+  deferral:** keep a durable marker of when you last ran a deliberate pass (a memory / a line in
+  your working doc) so the gap survives compaction — if you cannot point to a recent one, you
+  are OVERDUE, so run it NOW, before the operational work. A pass that surfaces nothing is fine;
+  one you keep postponing is the miss. When unsure whether enough has accumulated, err toward
+  running it.
 - **Range freely — blue-sky is licensed.** Ideas need NOT trace to what you just touched.
   Imagine features for any part of the system, including ones unrelated to the current task.
   The point is ambition, not relevance.
