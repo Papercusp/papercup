@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
-import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, effectivePriorityLabel, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 

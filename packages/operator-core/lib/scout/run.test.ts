@@ -6,18 +6,19 @@
  * gate (incl. its governor mirror on a held cycle), and the fired/no-op mirror.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { BuildScoutTickDepsOptions, ScoutTickDeps } from './scheduler';
 
 const sched = vi.hoisted(() => ({
   DEFAULT_SCOUT_CYCLE_TIMEOUT_MS: 20 * 60_000,
   runScoutTick: vi.fn(),
-  buildScoutTickDeps: vi.fn((..._args: unknown[]) => ({})),
+  buildScoutTickDeps: vi.fn((_opts: BuildScoutTickDepsOptions) => ({}) as ScoutTickDeps),
 }));
 vi.mock('./scheduler', () => sched);
 
 import { runScoutCycleTick, parseScoutCycleConfig, productionDepsBuilder, type ScoutCycleDeps } from './run';
 
 const baseInput = { workspaceId: 'ws', installSlug: 'h', payloadTemplate: null };
-const runCycle = vi.fn((..._args: unknown[]) => undefined);
+const runCycle = vi.fn();
 const recordTick = vi.fn();
 const buildDeps = vi.fn(() => ({ recordTick })); // fake tick deps — the mocked runScoutTick ignores them
 

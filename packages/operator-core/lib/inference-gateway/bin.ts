@@ -50,6 +50,11 @@ async function main(): Promise<void> {
     workspace: process.env.PAPERCUSP_WORKSPACE || undefined,
     concurrency: Number(process.env.PAPERCUSP_GATEWAY_CONCURRENCY) || undefined,
     upstreamBase: process.env.ANTHROPIC_BASE_URL_UPSTREAM || undefined,
+    // Local inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): the ONLY
+    // production entrypoint that opts in to the DB-backed registry (launch.ts defaults to empty/no-PG
+    // for every other caller, incl. all tests). The registry starts empty — inert until a backend is
+    // registered (gateway:local_backend_register) — so this is safe to wire unconditionally.
+    resolveLocalBackends: (ws) => import('./local-backend-store').then(({ listLocalBackends }) => listLocalBackends({ workspaceId: ws })),
   });
   logLine(`up on 127.0.0.1:${svc.port} → account '${svc.account.accountId}' (${svc.account.source})`);
 

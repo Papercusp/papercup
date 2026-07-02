@@ -15,6 +15,8 @@ import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
+import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
+import type { LocalBackendRecord } from './local-backend-store';
 import {
   parsePriorityTierMap,
   tiersOfMap,
@@ -80,6 +82,15 @@ export interface GatewayServiceOptions {
   /** Subscribe the account-pool projection feed; returns an unsubscribe. Default: initAccountScaleObserver (record-only). */
   observePool?: (accountId: string, ws: string | undefined, log: GatewayServiceOptions['log']) => () => void;
   fetchImpl?: typeof fetch;
+  /** Resolve the local inference-backend registry (llama-server/vllm/ollama pool,
+   *  local-concurrent-inference-2026-07-02 P-004). Default: lazy-imports
+   *  local-backend-store's listLocalBackends (kept lazy so a test that injects this option, or a
+   *  deployment that never registers a local backend, never touches PG for it). */
+  resolveLocalBackends?: (ws?: string) => Promise<LocalBackendRecord[]>;
+  /** Poll interval (ms) to hot-reload the local-backend registry + run its health checks. 0 disables.
+   *  Default 30s — independent of poolReloadIntervalMs (local backends are cheaper to re-check and a
+   *  dead local process should drop out of rotation fast). */
+  localBackendReloadIntervalMs?: number;
 }
 
 export interface RunningGatewayService {
@@ -331,6 +342,40 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const log = opts.log ?? ((lvl, m) => console.log(`[inference-gateway:${lvl}] ${m}`));
   const makeResolver = opts.makeResolver ?? makeCredentialResolver;
   const observePool = opts.observePool ?? defaultObservePool;
+  // Local inference-backend pool (D-002): OPT-IN — the default resolver returns empty (no PG touch),
+  // so every existing caller (tests, and any deployment that doesn't pass resolveLocalBackends) is
+  // byte-identical to before this landed: zero registered backends ⇒ the pool stays empty ⇒ the
+  // gateway's local-backend routes just 404 like they did when the feature didn't exist. A deployment
+  // that WANTS the local-backend pool passes `resolveLocalBackends` wired to local-backend-store's
+  // listLocalBackends (see bin.ts) — mirrors defaultObservePool's lazy-import-only-when-used shape.
+  const resolveLocalBackends = opts.resolveLocalBackends ?? (async () => []);
+  const localBackendPool: LocalBackendPool = createLocalBackendPool();
+  const localBackendSig = (bs: readonly LocalBackend[]) =>
+    [...bs]
+      .map((b) => `${b.id}|${b.kind}|${b.baseUrl}|${b.models.join(',')}|${b.maxConcurrent}|${b.enabled}`)
+      .sort()
+      .join(';');
+  /** Hot-reload the local-backend registry from the DB into the live pool. Fail-soft: a load error
+   *  (e.g. migration 445 not yet applied) logs + leaves the current live pool untouched rather than
+   *  crashing gateway startup — local backends are additive, never load-bearing for the gateway itself. */
+  async function refreshLocalBackends(): Promise<{ changed: boolean; count: number }> {
+    let records: LocalBackendRecord[];
+    try {
+      records = await resolveLocalBackends(opts.workspace);
+    } catch (e) {
+      log('warn', `inference-gateway: local-backend registry load failed: ${(e as Error).message}`);
+      return { changed: false, count: localBackendPool.size() };
+    }
+    const next: LocalBackend[] = records
+      .filter((r) => r.enabled)
+      .map((r) => ({ id: r.id, kind: r.kind, baseUrl: r.baseUrl, models: r.models, maxConcurrent: r.maxConcurrent, enabled: r.enabled }));
+    const changed = localBackendSig(next) !== localBackendSig(localBackendPool.entries());
+    if (changed) {
+      localBackendPool.reload(next);
+      log('info', `inference-gateway: local-backend pool HOT-RELOADED [${next.map((b) => b.id).join(', ') || '(empty)'}]`);
+    }
+    return { changed, count: next.length };
+  }
 
   // Resolve the account pool. A legacy single `resolveAccount` injection → a one-account pool
   // (back-compat, no failover); otherwise the full pool (EI-535 failover across all accounts).
@@ -451,6 +496,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // request time (after their initialisers run), so referencing them here is safe.
     onAdminReload: () => reloadPool(),
     adminConfig: () => ({ version: configVersion, accounts: accounts.map((a) => a.accountId), codexAccounts: codexAccounts.map((a) => a.accountId) }),
+    // Local inference-backend pool (D-002): the pool object's identity is fixed for the gateway's life;
+    // refreshLocalBackends() below mutates it in place via reload(), so this reference stays live.
+    localBackends: localBackendPool,
+    onAdminReloadLocalBackends: () => refreshLocalBackends(),
   });
 
   const port = await gateway.listen(opts.port ?? DEFAULT_GATEWAY_PORT);
@@ -560,6 +609,20 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     hintTimer.unref?.();
   }
 
+  // Local inference-backend pool (D-002): load the registry now (so the FIRST request after boot
+  // already sees any registered backend, not just after the first poll tick) + a periodic
+  // reload-from-DB + health-check tick. Fail-soft — see refreshLocalBackends' own try/catch.
+  await refreshLocalBackends();
+  const localBackendReloadMs = opts.localBackendReloadIntervalMs ?? 30_000;
+  let localBackendTimer: ReturnType<typeof setInterval> | undefined;
+  if (localBackendReloadMs > 0) {
+    localBackendTimer = setInterval(() => {
+      void refreshLocalBackends();
+      void localBackendPool.runHealthChecks().catch((e) => log('warn', `inference-gateway: local-backend health check failed: ${(e as Error).message}`));
+    }, localBackendReloadMs);
+    localBackendTimer.unref?.();
+  }
+
   return {
     gateway,
     port,
@@ -572,6 +635,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       if (timer) clearInterval(timer);
       if (reloadTimer) clearInterval(reloadTimer);
       if (hintTimer) clearInterval(hintTimer);
+      if (localBackendTimer) clearInterval(localBackendTimer);
       unobserve();
       await gateway.close();
     },

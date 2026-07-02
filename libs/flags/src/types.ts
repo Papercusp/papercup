@@ -990,6 +990,14 @@ export const FLAGS = {
   // attended integration-verify. OFF ⇒ no promotion (today's behavior, byte-identical).
   // KNOWN_DARK_FLAGS.
   PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
+  // queen-memory-hybrid-2026-07-02 L2 (owner-approved hybrid): queen wakes prefer the
+  // wake-executor liveness ladder (inject-if-live / claude --resume-if-exited — the
+  // proven B-LOOP-3 machinery) over a cold invoke-once spawn, giving the Queen a WARM
+  // session with managed compaction; deterministic REBIRTH (boot-id change / age>24h /
+  // anomaly) falls through to the cold spawn (today's behavior, byte-identical).
+  // DEFAULT OFF (dark, cutover): flips after an attended A/B verify (tokens/wake,
+  // latency, time-to-place, re-derivation count). KNOWN_DARK_FLAGS.
+  QUEEN_WARM_SESSION: "papercusp-queen-warm-session",
   // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): ENFORCEMENT —
   // every plan-item claim auto-mints a tracked work-item. When ON, the three bare-claim
   // bypass paths (plan_items:claim, coord:declare-intent { items }, plans:set-status → wip
@@ -1237,6 +1245,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.PER_HIVE_RELEASE_GATE, { case: 'incomplete', reason: 'the per-hive staging→main green-checkpoint + release-trigger seeding is unverified on the live pipeline; OFF leaves the live :3070 pipeline untouched. Owner flips ON only after a canary-hive (oddsmith-hive) verify.' }],
     // cutover — the flip needs every peer on the new wire first
     [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
+    [FLAGS.QUEEN_WARM_SESSION, { case: 'cutover', reason: 'queen-memory-hybrid-2026-07-02 L2: queen session model changes from cold-spawn-per-wake to warm-resume-with-rebirth. Reversible cutover; owner flips after the attended A/B verify (tokens/wake, latency, time-to-place, re-derivation count) against the fresh-per-turn baseline. OFF = byte-identical cold spawns.' }],
     // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
     [FLAGS.OPEN_SIGNUP, { case: 'owner-authority', reason: 'SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.' }],
     [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
