@@ -23,11 +23,38 @@ export interface SessionRef {
   sessionId: string | null;
 }
 
-/** tokens ≈ transcript bytes / 4 (chars/4; JSON overhead makes it a slight
- *  over-estimate — fine for a fullness gauge). fs.stat only, no content read. */
-function tokensFromFileSize(pathStr: string): number | null {
+/** The raw JSONL key Claude writes on a compaction-summary entry. Text that
+ *  merely MENTIONS the key inside a string is escaped (\"isCompactSummary\"),
+ *  so matching the raw byte form is unambiguous (EI-6410). */
+const COMPACT_BOUNDARY_MARKER = '"isCompactSummary":true';
+/** Bound the backward boundary scan. Not-found within the cap ⇒ ≥cap bytes
+ *  since any compaction ⇒ the estimate is over every real limit anyway. */
+const BOUNDARY_SCAN_CAP = 8 * 1024 * 1024;
+/** Files below this skip the scan entirely (they can't be near any limit). */
+const BOUNDARY_SCAN_MIN = 1024 * 1024;
+
+/**
+ * tokens ≈ bytes SINCE THE LAST COMPACTION / 4 (EI-6410: the transcript JSONL
+ * accumulates across compactions, so whole-file/4 is monotonic and reads a
+ * compacted session at 150–250%+ of its limit forever — false over-limit
+ * warnings and compact-loops). Small files stay stat-only; larger ones scan a
+ * bounded tail for the last compaction-summary entry and count from there.
+ */
+export function tokensFromFileSize(pathStr: string): number | null {
   try {
-    return Math.floor(fs.statSync(pathStr).size / 4);
+    const size = fs.statSync(pathStr).size;
+    if (size < BOUNDARY_SCAN_MIN) return Math.floor(size / 4);
+    const start = Math.max(0, size - BOUNDARY_SCAN_CAP);
+    const fd = fs.openSync(pathStr, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      const idx = buf.lastIndexOf(COMPACT_BOUNDARY_MARKER);
+      const sinceBytes = idx === -1 ? size : buf.length - idx;
+      return Math.floor(sinceBytes / 4);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return null;
   }
