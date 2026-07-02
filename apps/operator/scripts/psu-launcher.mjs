@@ -236,7 +236,7 @@ export function parseArgs(argv) {
     // P-032 omp-convergence passthroughs: a model fuzzy-match, resume of a
     // specific recorded session, and a kickoff/launch-context file the server
     // pre-generated (fed to the *-su wrapper as its launch-context).
-    else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
+    else if (a.startsWith('--model=')) out.model = normalizeModelSpec(a.slice('--model='.length));
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
     // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
@@ -1529,6 +1529,24 @@ export function assertLaunchPersona(promptFile) {
     );
   }
   return size;
+}
+
+/**
+ * omp + fable default to the FULL 1M window (owner directive 2026-07-02): inject
+ * the `[1m]` marker into their model spec so EVERY downstream `[1m]` consumer —
+ * the preflight window guard, the context-size/tier derivation, and the `--model`
+ * passthrough that makes Claude Code / the gateway enable the 1M-context beta —
+ * treats them as 1M. Idempotent; a no-op for a spec already carrying `[1m]` or
+ * that isn't omp/fable. `[1m]` is inserted before a recognized `:effort` suffix,
+ * else appended. Papercusp then caps their compaction at 500k
+ * (agent-config-constants defaultCompactionLimitForSpec) to bound token spend.
+ */
+export function normalizeModelSpec(spec) {
+  if (!spec || /\[1m\]/i.test(spec) || !/fable|omp/i.test(spec)) return spec;
+  const c = spec.lastIndexOf(':');
+  const suffix = c > 0 ? spec.slice(c + 1) : '';
+  if (c > 0 && /^(low|medium|high|xhigh)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;
+  return `${spec}[1m]`;
 }
 
 /**

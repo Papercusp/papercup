@@ -134,7 +134,19 @@ export const MODEL_WINDOW_DEFAULT = 200_000;
  * models resolve via their own registry (follow-up, context-trimming D-003).
  */
 export function modelWindowForSpec(spec?: string | null): number {
-  return spec != null && spec.includes('[1m]') ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+  if (spec == null) return MODEL_WINDOW_DEFAULT;
+  return spec.includes('[1m]') || isDefault1mModelSpec(spec) ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+}
+
+/**
+ * Model families papercusp defaults to the FULL 1M window (owner directive
+ * 2026-07-02): `opus` and `fable`. Their launch spec is ALSO normalized to carry
+ * `[1m]` (psu-launcher `normalizeModelSpec`) so Claude Code / the gateway enable
+ * the 1M-context beta; this helper is the compaction-math twin, so a session that
+ * skipped normalization still gets the 1M window here (never a 200k hard death).
+ */
+export function isDefault1mModelSpec(spec?: string | null): boolean {
+  return spec != null && /fable|opus/i.test(spec);
 }
 
 /** Output-reservation + startup-attachment headroom subtracted from the hard
@@ -149,12 +161,23 @@ export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
+ * Preemptive compaction cap for the default-1M families (omp + fable): they run
+ * on the full 1M window but papercusp compacts them at 500k to bound token spend
+ * (owner directive 2026-07-02) — 500k is ample for a leanly-scoped task, and its
+ * ×1.2 overshoot (600k) stays well under the 1M − margin ceiling.
+ */
+export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
+
+/**
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
- * 200k window → 158,000; 1M → 825,000.
+ * 200k window → 158,000; 1M → 825,000. EXCEPTION: omp + fable are capped at
+ * 500,000 (owner directive 2026-07-02) so they compact preemptively despite the
+ * 1M window.
  */
 export function defaultCompactionLimitForSpec(spec?: string | null): number {
+  if (isDefault1mModelSpec(spec)) return COMPACTION_LIMIT_DEFAULT_1M_CAP;
   const window = modelWindowForSpec(spec);
   const raw = (window - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
   return Math.floor(raw / 1000) * 1000;
