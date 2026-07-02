@@ -1583,21 +1583,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const count = maybePeersCount.peersCount();
     if (count === undefined) return; // underlying core doesn't expose .peers
     const now = Date.now();
-    const state = replicationStallState.get(log.keyHex);
     if (count > 0) {
-      // Replicating (again) — reset the clock and clear any prior alarm so a
-      // later stall re-fires.
+      // Replicating (again) — (re)seed the clock and clear any prior alarm so
+      // a later stall re-fires.
       replicationStallState.set(log.keyHex, { lastNonZeroPeersAtMs: now, alarmed: false });
       return;
     }
-    if (!state) {
-      // Never seen with a live peer yet — nothing to compare against; start
-      // tracking from now (so a later stall CAN fire) without alarming on an
-      // ordinarily-offline peer.
-      replicationStallState.set(log.keyHex, { lastNonZeroPeersAtMs: now, alarmed: false });
-      return;
-    }
-    if (state.alarmed) return; // already alarmed this episode
+    // count === 0. A state entry exists ONLY for a log we've seen with peers > 0
+    // at least once (never created on a zero observation — see above) — so a
+    // MISSING entry here means this log has never shown a live replicator peer:
+    // ordinarily offline, not the WI-183 symptom, and must never alarm.
+    const state = replicationStallState.get(log.keyHex);
+    if (!state || state.alarmed) return;
     if (now - state.lastNonZeroPeersAtMs < REPLICATION_STALL_GRACE_MS) return;
     state.alarmed = true;
     recordBootEvent(

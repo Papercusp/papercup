@@ -111,6 +111,17 @@ export default defineTool({
       cwd: body.cwd,
       launchArgv: normalizeLaunchArgv(body.launchArgv),
     });
+    // windows-desktop-feature-parity-2026-07-02 P-010: on a Windows-desktop
+    // host there's no pid→window mapping to resolve LATER (see
+    // windows-desktop-windows.ts) — but we already KNOW the window's exact
+    // title, because the caller minted it before the terminal even opened
+    // (native_console.rs titled it `Papercup — <sessionId>`). Store that
+    // title AS the row's windowId directly, so /adv/sessions/focus's
+    // `latestRow?.windowId` fast path (endpoint-route/routes/adv/sessions.ts)
+    // works immediately, with no enumerate-and-search round trip needed.
+    if (id != null && isWindowsDesktopHost() && body.sessionId && SAFE_SESSION_ID_RE.test(body.sessionId)) {
+      await setAdvSessionWindowId(id, `${WINDOW_TITLE_PREFIX}${body.sessionId}`);
+    }
     return Response.json({ status: 'ok', id });
   },
 });

@@ -397,6 +397,32 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
   `);
 
+  // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
+  // not in the verbatim/condensed set above) adds terminal_owner /
+  // terminal_completion_ref to the base work_items table so setWorkItemState /
+  // setIssueState's completion-integrity gate can record "who closed it + what
+  // proves it". claimFeatureRow's FEATURE_COLS and issues-engineer.ts's
+  // ISSUE_COLS both select these columns unconditionally, so their absence
+  // 42703s ("column terminal_owner does not exist") the moment a claim/close
+  // path runs — exactly the failure this test reaches once the 374 rename
+  // (below) lets it get past seedBacklog. Condensed the same way 136/142/152/178
+  // were above: ADD the two columns to BOTH real tables this rig carries (the
+  // work_items base table the 374 block below renames the feature table to,
+  // and the rig's own real engineer_issues table for the issue family —
+  // migration 432's rewrite of engineer_issues as a compat VIEW does not apply
+  // here, since the rig's engineer_issues is a real table, not the
+  // 374-cutover view). The harness_features_consolidated compat view the 374
+  // block creates below is a fresh `CREATE VIEW … SELECT *`, so it picks up
+  // these columns automatically — no separate refresh needed here.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS terminal_owner text,
+      ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS terminal_owner text,
+      ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
+  `);
+
   // WI-1644: mirror migration 374's structural cutover (P-010 work-item
   // unification) — production RENAMEs harness_features_consolidated to the
   // TRUE base table `work_items`, then re-creates harness_features_consolidated

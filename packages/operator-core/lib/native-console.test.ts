@@ -57,6 +57,7 @@ const ENVELOPE = {
   mcpJsonContents: '{}',
   greetingCmd: 'psu',
   needsSuperuserBootstrap: false,
+  sessionId: '550e8400-e29b-41d4-a716-446655440000',
 };
 
 describe('launchNativeConsole — server-side spawn succeeds', () => {
@@ -90,6 +91,7 @@ describe('launchNativeConsole — Tauri fallback (non-Linux operator, 501)', () 
       label: 'my session',
       planSlug: 'the-plan',
       launchArgv: [ENVELOPE.greetingCmd],
+      sessionId: ENVELOPE.sessionId,
     });
     // The load-bearing safety property: the Windows-namespace pid Tauri
     // returned (4242) must NEVER be forwarded to console/record — a foreign

@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 42 as number | null);
+const setAdvSessionWindowIdMock = vi.fn(async (_id: number, _windowId: string | null) => {});
+const isWindowsDesktopHostMock = vi.fn(() => false);
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -21,7 +23,14 @@ vi.mock('../../../auth/require-principal', () => ({
   },
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+vi.mock('../../../adv-sessions', () => ({
+  recordAdvSession: recordAdvSessionMock,
+  setAdvSessionWindowId: setAdvSessionWindowIdMock,
+}));
+vi.mock('../../../windows-desktop-windows', () => ({
+  isWindowsDesktopHost: () => isWindowsDesktopHostMock(),
+  WINDOW_TITLE_PREFIX: 'Papercup — ',
+}));
 
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
@@ -39,6 +48,7 @@ async function callPost(body: unknown): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(42);
+  isWindowsDesktopHostMock.mockReturnValue(false);
 });
 
 describe('POST /api/agent-mcp/console/record', () => {
@@ -93,5 +103,39 @@ describe('POST /api/agent-mcp/console/record', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
     const call = recordAdvSessionMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.pid).toBeUndefined();
+  });
+});
+
+describe('POST /api/agent-mcp/console/record — Windows window-title wiring (P-010)', () => {
+  it('on a Windows-desktop host, stores `Papercup — <sessionId>` as the windowId', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    const res = await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    expect(res.status).toBe(200);
+    expect(setAdvSessionWindowIdMock).toHaveBeenCalledWith(42, 'Papercup — 550e8400-e29b-41d4-a716-446655440000');
+  });
+
+  it('never sets a windowId off a Windows-desktop host, even with a sessionId present', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(false);
+    await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
+  });
+
+  it('never sets a windowId when no sessionId was supplied', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    await callPost({ cwd: '/home/avi/papercup' });
+    expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed sessionId (not the crypto.randomUUID() alphabet) rather than splice it into a title', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    await callPost({ cwd: '/home/avi/papercup', sessionId: '; rm -rf / #' });
+    expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the windowId write when recordAdvSession itself returned no id', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    recordAdvSessionMock.mockResolvedValueOnce(null);
+    await callPost({ cwd: '/home/avi/papercup', sessionId: '550e8400-e29b-41d4-a716-446655440000' });
+    expect(setAdvSessionWindowIdMock).not.toHaveBeenCalled();
   });
 });
