@@ -12,6 +12,8 @@ import {
   hivePolicySignedBytes,
   parseHivePolicyJson,
   coerceHivePolicyInput,
+  matchRefPattern,
+  resolveCanonicalRule,
   HIVE_POLICY_SIG_DOMAIN,
   type HivePolicy,
 } from './hive-policy-schema';
@@ -153,5 +155,134 @@ describe('policy.comms (P-012 — cross-machine-coord-parity-and-trust-2026-07-0
     expect(coerceHivePolicyInput({ comms: { defaultTier: 'root' } }).ok).toBe(false);
     expect(coerceHivePolicyInput({ comms: 'wake' }).ok).toBe(false);
     expect(coerceHivePolicyInput({ comms: ['wake'] }).ok).toBe(false);
+  });
+});
+
+describe('policy.crefs (G-6 P-030 — canonical-ref rules)', () => {
+  const GREEN_BOT = 'greenBotPubkeyBase64';
+  const OWNER = 'ownerPubkeyBase64';
+  const releasePolicy: HivePolicy = {
+    crefs: { rules: { 'refs/tags/releases/*': { allow: [GREEN_BOT, OWNER], threshold: 2 } } },
+  };
+
+  it('accepts a valid crefs rule set (the release-class shape) + empty crefs', () => {
+    expect(coerceHivePolicyInput(releasePolicy).ok).toBe(true);
+    expect(coerceHivePolicyInput({ crefs: {} }).ok).toBe(true);
+    expect(coerceHivePolicyInput({ crefs: { rules: {} } }).ok).toBe(true);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/heads/main': { allow: [OWNER], threshold: 1 } } } }).ok).toBe(true);
+  });
+
+  it('preserves unknown crefs/rule subkeys (forward-compat, signed)', () => {
+    const res = coerceHivePolicyInput({
+      crefs: { futureKnob: 1, rules: { 'refs/tags/releases/*': { allow: [OWNER], threshold: 1, futureRuleKnob: 'x' } } },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const canon = canonicalizeHivePolicy(res.policy);
+      expect(canon).toContain('"futureKnob":1');
+      expect(canon).toContain('"futureRuleKnob":"x"');
+    }
+  });
+
+  it('rejects garbage crefs rules (each structural failure mode)', () => {
+    expect(coerceHivePolicyInput({ crefs: 'yes' }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: ['x'] }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: 'x' } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: ['x'] } }).ok).toBe(false);
+    // empty pattern key
+    expect(coerceHivePolicyInput({ crefs: { rules: { '': { allow: [OWNER], threshold: 1 } } } }).ok).toBe(false);
+    // rule not an object
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': 'canonical' } } }).ok).toBe(false);
+    // allow missing / empty / non-strings / blank key
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { threshold: 1 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [], threshold: 1 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [1], threshold: 1 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [' '], threshold: 1 } } } }).ok).toBe(false);
+    // threshold missing / zero / negative / non-integer / non-number
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER] } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER], threshold: 0 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER], threshold: -2 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER], threshold: 1.5 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER], threshold: '2' } } } }).ok).toBe(false);
+    // unsatisfiable: threshold > distinct allow keys (incl. duplicate-key inflation)
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER], threshold: 2 } } } }).ok).toBe(false);
+    expect(coerceHivePolicyInput({ crefs: { rules: { 'refs/x': { allow: [OWNER, OWNER], threshold: 2 } } } }).ok).toBe(false);
+  });
+
+  it('matchRefPattern: exact match, * crosses /, regex specials stay literal', () => {
+    expect(matchRefPattern('refs/heads/main', 'refs/heads/main')).toBe(true);
+    expect(matchRefPattern('refs/heads/main', 'refs/heads/main2')).toBe(false);
+    expect(matchRefPattern('refs/tags/releases/*', 'refs/tags/releases/v1.2.3')).toBe(true);
+    expect(matchRefPattern('refs/tags/releases/*', 'refs/tags/releases/2026/v1')).toBe(true); // * crosses /
+    expect(matchRefPattern('refs/tags/releases/*', 'refs/tags/release')).toBe(false);
+    expect(matchRefPattern('refs/tags/v1.*', 'refs/tags/v1.9')).toBe(true);
+    expect(matchRefPattern('refs/tags/v1.*', 'refs/tags/v1x9')).toBe(false); // `.` is literal
+    expect(matchRefPattern('*', 'refs/anything/at/all')).toBe(true);
+  });
+
+  it('resolveCanonicalRule returns the rule for a matching ref, null otherwise', () => {
+    const hit = resolveCanonicalRule(releasePolicy, 'refs/tags/releases/v2.0.0');
+    expect(hit).toEqual({ pattern: 'refs/tags/releases/*', allow: [GREEN_BOT, OWNER], threshold: 2 });
+    expect(resolveCanonicalRule(releasePolicy, 'refs/tags/nightly/v2.0.0')).toBeNull();
+    expect(resolveCanonicalRule(releasePolicy, 'refs/heads/staging')).toBeNull();
+    // permissive defaults: no policy / no crefs / no rules
+    expect(resolveCanonicalRule(null, 'refs/tags/releases/v1')).toBeNull();
+    expect(resolveCanonicalRule({}, 'refs/tags/releases/v1')).toBeNull();
+    expect(resolveCanonicalRule({ crefs: {} }, 'refs/tags/releases/v1')).toBeNull();
+  });
+
+  it('resolveCanonicalRule: the MOST SPECIFIC matching pattern wins, deterministically', () => {
+    const policy: HivePolicy = {
+      crefs: {
+        rules: {
+          '*': { allow: [OWNER], threshold: 1 },
+          'refs/tags/*': { allow: [OWNER], threshold: 1 },
+          'refs/tags/releases/*': { allow: [GREEN_BOT, OWNER], threshold: 2 },
+          'refs/tags/releases/v9.9.9': { allow: [GREEN_BOT], threshold: 1 },
+        },
+      },
+    };
+    expect(resolveCanonicalRule(policy, 'refs/tags/releases/v1.0.0')?.pattern).toBe('refs/tags/releases/*');
+    expect(resolveCanonicalRule(policy, 'refs/tags/releases/v9.9.9')?.pattern).toBe('refs/tags/releases/v9.9.9');
+    expect(resolveCanonicalRule(policy, 'refs/tags/nightly/n1')?.pattern).toBe('refs/tags/*');
+    expect(resolveCanonicalRule(policy, 'refs/heads/main')?.pattern).toBe('*');
+  });
+
+  it('resolveCanonicalRule SKIPS malformed rule entries instead of throwing (junk-safe read path)', () => {
+    const junk = {
+      crefs: {
+        rules: {
+          'refs/tags/releases/*': 'not-an-object',
+          'refs/tags/*': { allow: [], threshold: 1 },
+          'refs/*': { allow: [OWNER], threshold: 0 },
+          refs: null,
+        },
+      },
+    } as unknown as HivePolicy;
+    expect(resolveCanonicalRule(junk, 'refs/tags/releases/v1')).toBeNull();
+  });
+
+  it('round-trips through the SIGNED policy (canonicalize → sign → verify → parse → resolve)', () => {
+    const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
+    const res = coerceHivePolicyInput(releasePolicy);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const canonical = canonicalizeHivePolicy(res.policy);
+    const bytes = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: canonical });
+    const sig = signWithPrivateKeyDer(privateKeyDer, bytes);
+    expect(verifyEd25519(bytes, pubkeyBase64, sig)).toBe(true);
+
+    // A member re-parses the stored canonical JSON and resolves the SAME rule.
+    const parsed = parseHivePolicyJson(canonical);
+    expect(canonicalizeHivePolicy(parsed)).toBe(canonical); // stable round trip
+    const rule = resolveCanonicalRule(parsed, 'refs/tags/releases/v1.0.0');
+    expect(rule).toEqual({ pattern: 'refs/tags/releases/*', allow: [GREEN_BOT, OWNER], threshold: 2 });
+
+    // Tampering with the crefs rules breaks the signature (crefs IS signed content).
+    const tampered = canonicalizeHivePolicy({
+      crefs: { rules: { 'refs/tags/releases/*': { allow: ['attackerKey'], threshold: 1 } } },
+    });
+    const tamperedBytes = hivePolicySignedBytes({ workspaceId: 'ws', hiveHomeSlug: 'home', policyVersion: 3, canonicalPolicyJson: tampered });
+    expect(verifyEd25519(tamperedBytes, pubkeyBase64, sig)).toBe(false);
   });
 });

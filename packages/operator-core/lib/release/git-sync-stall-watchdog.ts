@@ -71,6 +71,9 @@ export interface GitSyncStallSnapshot {
   headUnchangedMs: number | null;
   /** last recorded error/reap message (`metadata.last_error`) — NULL on a healthy tick. */
   lastError: string | null;
+  /** The routine's last recorded sync status ('synced' | 'nothing' | 'error' | …).
+   *  'nothing' = clean tree ⇒ HEAD-staleness is healthy idle, never a stall. */
+  lastStatus?: string | null;
   /** the watchdog's own dedup flag (`metadata.watchdog_alerted`). */
   watchdogAlerted: boolean;
   /** WI-1416: consecutive executor-reaper cancels since the last COMPLETED fire
@@ -111,7 +114,16 @@ export function evaluateGitSyncStall(
   const fireStaleMs = opts.fireStaleMs ?? DEFAULT_FIRE_STALE_MS;
   const persistentReapMin = opts.persistentReapMin ?? DEFAULT_PERSISTENT_REAP_MIN;
 
-  const commitStale = s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
+  // FALSE-ALARM FIX (2026-07-02): an idle hive legitimately never moves HEAD — its
+  // git-sync fires and records status 'nothing' (clean tree, nothing to commit).
+  // Alarming "commits are NOT landing; code is stranding" on a CLEAN tree cried wolf
+  // on 5 stopped hives simultaneously (hiveloop/hive-canary/shared-hive-test/
+  // hello-world/spoon-knife, each 12×'nothing'/2h, working trees verified clean).
+  // A head-stale verdict now requires evidence of WORK: the last sync status must
+  // NOT be the clean-tree 'nothing'. Fire-stale / error / reap stalls are
+  // status-independent and unchanged (a dead engine can't report anything).
+  const cleanIdle = s.lastStatus === 'nothing';
+  const commitStale = !cleanIdle && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
   const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   const errorStall = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
   const persistentReap = (s.reapedCount ?? 0) >= persistentReapMin;
@@ -243,6 +255,7 @@ export async function checkGitSyncStall(
           lastFiredMs,
           headUnchangedMs,
           lastError: row.last_error,
+          lastStatus: row.last_status,
           watchdogAlerted,
           reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
         },
