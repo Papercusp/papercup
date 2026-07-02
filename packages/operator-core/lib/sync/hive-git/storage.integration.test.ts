@@ -71,6 +71,18 @@ describe('hive-git storage (real bare repo)', () => {
     expect(head.stdout.trim()).toBe('true');
   });
 
+  it('uses distinct bare repos for different repo keys under the same hive', async () => {
+    const repoA = await ensureHiveGitRepo('my-hive', 'repo-a');
+    const repoB = await ensureHiveGitRepo('my-hive', 'repo-b');
+    expect(repoA).toBe(hiveGitRepoPath('my-hive', 'repo-a'));
+    expect(repoB).toBe(hiveGitRepoPath('my-hive', 'repo-b'));
+    expect(repoA).not.toBe(repoB);
+    const headA = await defaultRunGit(['rev-parse', '--is-bare-repository'], repoA);
+    const headB = await defaultRunGit(['rev-parse', '--is-bare-repository'], repoB);
+    expect(headA.stdout.trim()).toBe('true');
+    expect(headB.stdout.trim()).toBe('true');
+  });
+
   it('deviceNamespaceKey is raw-32 → 64 hex; namespaceRefPath composes; rejects bad input', () => {
     const hex = deviceNamespaceKey(devA);
     expect(hex).toMatch(/^[0-9a-f]{64}$/);

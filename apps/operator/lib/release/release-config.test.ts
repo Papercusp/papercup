@@ -6,8 +6,10 @@
  * to the subprocess, so THIS boundary is where a hive's identity becomes its paths.
  *
  * P-008 acceptance, proved end-to-end at the releaseConfig() boundary:
- *   - papercusp (no overlay / default env) → the LEGACY ../papercup-release + ../papercup-checkpoint
- *     roots, main/staging, npm run test:affected — i.e. EXACT current behavior (regression-safe).
+ *   - papercusp (no overlay / default env) → the LEGACY ../papercup-release root plus a
+ *     PER-ROOT ../<basename>-checkpoint checkout (2026-07-02: the old fixed
+ *     `papercup-checkpoint` name let two lineages race one checkout — see release-config.ts),
+ *     main/staging, npm run test:affected.
  *   - a per-hive overlay env (the shape resolveHiveReleaseEnv emits) → the namespaced
  *     <slug>-release / <slug>-checkpoint roots, the hive's branches + green command.
  *   - an explicit caller override beats env (the operator-host PAPERCUSP_INTEGRATION_ROOT must
@@ -48,15 +50,32 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     }
   });
 
-  it('papercusp default (no overlay) → LEGACY papercup-* roots + main/staging (regression-safe)', () => {
+  it('papercusp default (no overlay) → LEGACY papercup-release + per-root <basename>-checkpoint + main/staging', () => {
     const cfg = releaseConfig();
-    // The legacy naming is derived from dirname(integrationRoot) regardless of where the
-    // integration tree actually is, so these are path-independent (no git/CWD dependency).
+    // releaseRoot keeps the legacy fixed name — the live papercup-dev-api.service points at
+    // it. checkpointRoot is per-root (disposable checkout, safe to namespace) so two
+    // lineages sharing a parent dir can never race one checkout.
     expect(basename(cfg.releaseRoot)).toBe('papercup-release');
-    expect(basename(cfg.checkpointRoot)).toBe('papercup-checkpoint');
+    expect(basename(cfg.checkpointRoot)).toBe(`${basename(cfg.integrationRoot)}-checkpoint`);
     expect(cfg.releaseRef).toBe('main');
     expect(cfg.integrationBranch).toBe('staging');
     expect(cfg.greenCmd).toBe('npm run test:affected');
+  });
+
+  it('two integration roots under ONE parent → DISTINCT checkpoint roots (cross-lineage race fix, 2026-07-02)', () => {
+    // The real incident pair: the live papercusp root and the retired papercup root both
+    // live under papercupai-workspace/. With the old fixed `papercup-checkpoint` default
+    // both resolved to the SAME checkout; the stale lineage (resurrected via .env.local on
+    // :3070) ran git checkout there mid-suite of a live papercusp run.
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/ws/papercusp';
+    const live = releaseConfig();
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/ws/papercup';
+    const retired = releaseConfig();
+    expect(live.checkpointRoot).toBe('/ws/papercusp-checkpoint');
+    // The retired root's basename still derives the LEGACY name — a straggler run of that
+    // lineage keeps its existing dir rather than colliding with papercusp's new one.
+    expect(retired.checkpointRoot).toBe('/ws/papercup-checkpoint');
+    expect(live.checkpointRoot).not.toBe(retired.checkpointRoot);
   });
 
   it('per-hive overlay env (resolveHiveReleaseEnv shape) → NAMESPACED <slug>-* roots + the hive branches/greenCmd', () => {

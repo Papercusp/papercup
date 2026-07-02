@@ -89,8 +89,20 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
   const parent = path.dirname(integrationRoot);
   const releaseRoot =
     overrides.releaseRoot ?? process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
+  // Per-root checkpoint checkout — `<basename(integrationRoot)>-checkpoint` in the parent
+  // dir, mirroring checkpointRunLockDir's per-root run lock (green-checkpoint.ts). The old
+  // FIXED `papercup-checkpoint` name made every lineage sharing a parent dir share ONE
+  // checkout: on 2026-07-02 the retired papercup-root lineage (resurrected via a stale
+  // .env.local PAPERCUSP_INTEGRATION_ROOT on :3070) ran setup/checkout on the same tree a
+  // live papercusp suite was mid-run in — only the then-shared run lock had been
+  // accidentally serializing them, and making that lock per-root exposed the race.
+  // Invariant: distinct integrationRoot ⇒ distinct checkpointRoot. The retired papercup
+  // root's basename still derives the legacy `papercup-checkpoint` name, so a straggler
+  // run of that lineage keeps its old dir instead of colliding with papercusp's.
   const checkpointRoot =
-    overrides.checkpointRoot ?? process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(parent, 'papercup-checkpoint');
+    overrides.checkpointRoot ??
+    process.env.PAPERCUSP_CHECKPOINT_ROOT ??
+    path.join(parent, `${path.basename(integrationRoot)}-checkpoint`);
   const port = process.env.PAPERCUSP_HONO_PORT ?? '3070';
   return {
     integrationRoot,
