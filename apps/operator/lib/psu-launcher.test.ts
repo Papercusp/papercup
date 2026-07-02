@@ -10,6 +10,7 @@ import {
   ompDefaultModel,
   writeOmpSessionConfigDir,
   applyOmpToolsAllowlist,
+  applyOmpOperatorOrigin,
   isWeakOmpModel,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
@@ -293,6 +294,19 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
   });
 
+  it('rewrites the papercusp server ORIGIN to the launcher-resolved operator URL (P-030)', () => {
+    // The user-level mcp.json pins :3070; a session launched with
+    // PAPERCUSP_OPERATOR_URL (or riding the resilient proxy) must have its COPY
+    // follow the launcher's operator, or the member talks to a different host.
+    const dir = writeOmpSessionConfigDir('sess1', { operatorUrl: 'http://localhost:3170' }, home);
+    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
+    const url = new URL(mcp.mcpServers['papercusp-su'].url);
+    expect(url.origin).toBe('http://localhost:3170');
+    expect(url.pathname).toBe('/api/mcp');
+    expect(url.searchParams.get('superuser')).toBe('1'); // query survives the origin swap
+    expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
+  });
+
   it('returns null for a falsy sessionId (no dir written)', () => {
     expect(writeOmpSessionConfigDir('', {}, home)).toBeNull();
     expect(writeOmpSessionConfigDir(null, {}, home)).toBeNull();
@@ -307,6 +321,29 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     } finally {
       rmSync(emptyHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe('applyOmpOperatorOrigin (P-030 — member mcp.json follows the launcher operator)', () => {
+  it('swaps the origin of a papercusp /api/mcp url, preserving path + query verbatim', () => {
+    const src = JSON.stringify({
+      mcpServers: { 'papercusp-su': { url: 'http://localhost:3070/api/mcp?superuser=1&client=x&tools=a%3Ab', headers: { Authorization: 'Bearer S' } } },
+    });
+    const out = JSON.parse(applyOmpOperatorOrigin(src, 'http://127.0.0.1:9071'));
+    expect(out.mcpServers['papercusp-su'].url).toBe('http://127.0.0.1:9071/api/mcp?superuser=1&client=x&tools=a%3Ab');
+    expect(out.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer S');
+  });
+
+  it('leaves non-papercusp server URLs untouched', () => {
+    const src = JSON.stringify({ mcpServers: { other: { url: 'http://example.com/mcp' } } });
+    const out = JSON.parse(applyOmpOperatorOrigin(src, 'http://localhost:3170'));
+    expect(out.mcpServers.other.url).toBe('http://example.com/mcp');
+  });
+
+  it('returns the input unchanged on unparseable json or a bad operator url', () => {
+    expect(applyOmpOperatorOrigin('not json', 'http://localhost:3170')).toBe('not json');
+    const src = JSON.stringify({ mcpServers: { p: { url: 'http://localhost:3070/api/mcp' } } });
+    expect(applyOmpOperatorOrigin(src, 'not-a-url')).toBe(src);
   });
 });
 
