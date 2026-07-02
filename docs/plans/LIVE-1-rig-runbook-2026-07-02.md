@@ -118,3 +118,25 @@ DRILL LOG (2026-07-02):
   (backfill decision = WI-1564 follow-ups WI-1571/72/73). D5 REMOTE read-back
   (spec row HERE with the iMac's HLC stamp, i.e. iMac-authored) still needs
   an iMac session — folded into the same owner gate as D2/D4.
+- OWNER GATE DISSOLVED ~14:00Z (user: "this isn't owner gated. you can do
+  this."): Avis-iMac is a macOS QEMU VM ON THE TOWER (bridge macbr0) —
+  `ssh aviweiss@172.31.44.2` (key auth works; Avis-iMac.local mDNS = stale
+  unreachable 169.254.x — never use it). Saved to mem0 + memory file
+  avis-imac-is-local-qemu-vm.
+- iMac APP UPDATED by leader ~13:50Z: rsynced serve.mjs (13:28Z tower build,
+  HAS PRESENCE_GOSSIP reader + stagedTargets + WI-1564 fix) +
+  sidecar-preload.js + db-sql (through 443) + scripts + harness + prompts
+  from tower papercusp-desktop/src-tauri/sidecar/ into
+  '/Applications/Papercusp Server.app/Contents/Resources/sidecar/'.
+  Backups: ~aviweiss/sidecar-serve.mjs.bak-20260702. App quit via osascript +
+  `open -a "Papercusp Server"`; new host pid 23265 (port 17630); served
+  flags now include papercusp-presence-gossip:false ⇒ NEW build confirmed
+  running, writer still off (correct until D6). READER NOW ON BOTH MACHINES.
+- iMac psu SESSION LAUNCHED ~14:22Z: `screen -dmS psu-live1 zsh -c "export
+  PATH=$HOME/.papercusp/bin:$PATH; psu --no-picker --agent=claude
+  --workspace=default --role=su"` (gotchas: VM has ONLY workspace 'default';
+  claude not on PATH in non-login shells → ENOENT without the export; psu
+  with no flags blocks on an interactive role picker that screen-hardcopy
+  can't see). claude agent pid 26545 running. AWAITING: session-grain
+  Avis-iMac row federating into tower coord:presence → then D2 (send+receipt),
+  D4 (wake parked→live), D3 full-loop, D5 remote read-back, THEN D6.
