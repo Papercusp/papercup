@@ -171,11 +171,26 @@ export async function checkFireGate(slug: string, role: string, now: Date = new 
  *   - 'ok'      — the fire succeeded; counter reset to 0 (closes the circuit).
  *   - 'error'   — the fire failed; counter incremented.
  */
+/** WI-669 (2026-07-02): classify a fire-failure message as INFRA-shaped (transient:
+ *  gateway stalls, host restarts, rate limits, timeouts, transport) vs a genuine
+ *  role/turn failure. Infra failures record 'infra-error' — status stamped, counter
+ *  PRESERVED — so a transient outage can't ratchet the exponential backoff to the
+ *  ~1-fire/hour circuit that made a healthy loop look dead (observed 2026-06-23:
+ *  consecutive_errors=7 → 3600s cap). Genuine failures still back off + trip the
+ *  circuit. Pure; exported for tests. */
+export function classifyFireError(message: string): 'infra-error' | 'error' {
+  return /HTTP 5\d\d|HTTP 404|unknown project|ECONNREFUSED|ECONNRESET|EPIPE|fetch failed|socket hang up|timed out|timeout|deadline|rate.?limit|429|overloaded|infra_loss|gateway (stall|throttl|unavailable)|reclaimed at operator|dead\/restarting launcher|resume-turn-death:(rate-limit|infra|transport)|no (Overwatch |queen )?turn/i.test(
+    message,
+  )
+    ? 'infra-error'
+    : 'error';
+}
+
 export async function recordFire(
   slug: string,
   role: string,
   status: string,
-  outcome: 'attempt' | 'ok' | 'error',
+  outcome: 'attempt' | 'ok' | 'error' | 'infra-error',
 ): Promise<void> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
@@ -185,7 +200,7 @@ export async function recordFire(
       ? dsql`${at.consecutiveErrors} + 1`
       : outcome === 'ok'
         ? dsql`0`
-        : dsql`${at.consecutiveErrors}`; // attempt: preserve
+        : dsql`${at.consecutiveErrors}`; // attempt / infra-error (WI-669): preserve
   await db
     .insert(at)
     .values({

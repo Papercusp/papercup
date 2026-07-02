@@ -28,7 +28,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
-import { recordFire as defaultRecordFire } from '../../autoloop';
+import { classifyFireError, recordFire as defaultRecordFire } from '../../autoloop';
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
   classifyResumeTurnExit,
@@ -152,7 +152,14 @@ export async function handleLoopResumeTurnExit(
     // 1. Feed the EXISTING autoloop circuit (P0b). recordFire keys off activeWorkspaceId(),
     //    so run it under the loop's workspace (the delivery lives in the coord workspace).
     await runWithWorkspace(ref.workspaceId, () =>
-      recordFire(ref.installSlug, ref.name, `resume-turn-death:${klass}`, 'error'),
+      recordFire(
+        ref.installSlug,
+        ref.name,
+        `resume-turn-death:${klass}`,
+        // WI-669: an infra-shaped death (rate-limit/transport/timeout) must not
+        // ratchet the exponential backoff — classify; genuine turn deaths still count.
+        classifyFireError(`resume-turn-death:${klass}`),
+      ),
     ).catch((e) => log(`recordFire failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
 
     // 2. 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).

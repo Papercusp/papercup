@@ -43,7 +43,7 @@
 import { getOrgPg } from "@papercusp/db-org";
 import { loopbackFetch } from "../loopback-fetch";
 import { operatorApiBase } from "../operator-api-base";
-import { recordFire } from "../autoloop";
+import { classifyFireError, recordFire } from "../autoloop";
 import {
   registerSystemAction,
   type SystemActionCtx,
@@ -224,7 +224,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
         const detail = responseBody.replace(/\s+/g, " ").slice(0, 320);
         if (!r.ok) {
           const message = `error: HTTP ${r.status}${detail ? ` — ${detail.slice(0, 160)}` : ""}`;
-          await recordFire(installSlug, role, message, "error");
+          await recordFire(installSlug, role, message, classifyFireError(message));
           await runScorecardBackstop(workspaceId, installSlug, message);
           return;
         }
@@ -234,7 +234,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
           `${installSlug}/${role}`,
         );
         if (invokeError) {
-          await recordFire(installSlug, role, invokeError, "error");
+          await recordFire(installSlug, role, invokeError, classifyFireError(invokeError));
           await runScorecardBackstop(workspaceId, installSlug, invokeError);
           return;
         }
@@ -248,7 +248,7 @@ const defaultOverwatchFire: OverwatchLaunchFireFn = ({
           `[overwatch-loop] launch fire failed (${installSlug}/${role}): ${detail}`,
         );
         const message = `error: ${detail}`;
-        await recordFire(installSlug, role, message, "error");
+        await recordFire(installSlug, role, message, classifyFireError(message));
         await runScorecardBackstop(workspaceId, installSlug, message);
       },
     )
