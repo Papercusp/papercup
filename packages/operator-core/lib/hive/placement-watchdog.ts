@@ -56,12 +56,23 @@ const TERMINAL_UNIT_STATES = new Set(['passed', 'deprecated', 'resolved', 'close
 const STUCK_BLOCKER_STATES = new Set(['failing', 'failed']);
 /** A bee spawn row in one of these is GONE (its claim/work is no longer live). */
 const TERMINAL_SPAWN_STATES = new Set(['done', 'failed', 'cancelled', 'reaped']);
+/** A placed unit's OWN status is a deliberate park (work-item-dispatch-states.ts:
+ *  FEATURE_NON_REQUEUE_STATES treats `blocked` the same way — "a deliberate park
+ *  with its own delegator-notify signal path", never auto-requeued). Distinct from
+ *  STUCK_BLOCKER_STATES above, which is about a unit BLOCKING downstream work, not
+ *  a unit that IS itself parked. */
+const UNIT_PARKED_STATES = new Set(['blocked']);
 
 export function isUnitTerminal(status: string | null | undefined): boolean {
   return status != null && TERMINAL_UNIT_STATES.has(status);
 }
 export function isStuckBlockerState(status: string | null | undefined): boolean {
   return status != null && STUCK_BLOCKER_STATES.has(status);
+}
+/** WI-1439 recovery-churn fix — is the placed unit itself deliberately parked
+ *  (e.g. owner/human-gated), so a dead/absent bee is EXPECTED, not a failure? */
+export function isUnitParked(status: string | null | undefined): boolean {
+  return status != null && UNIT_PARKED_STATES.has(status);
 }
 
 /** The system actor that owns watchdog-fired escalations. */
@@ -231,12 +242,22 @@ export interface PlacementObservation {
    *  host restart cursed the whole frontier in lockstep at infraBreakerThreshold). Only
    *  the per-item zombie signal below keeps the bounded breaker. Default false. */
   postDormancySweep?: boolean;
+  /** WI-1439 recovery-churn fix — the unit's OWN status is a deliberate park
+   *  (`isUnitParked`, e.g. `blocked` for an owner/human-gated step). A parked unit
+   *  is EXPECTED to have no live holder — that is not a failed placement, so it
+   *  must never enter the recover/breaker path (which fired a Queen recovery wake
+   *  + re-placed a fresh bee every debounce window FOREVER on a unit no bee can
+   *  ever close, observed live on WI-1439: a new bee roughly every 5-40min for
+   *  days, each one independently re-confirming the same owner-gate and dying).
+   *  Default false. */
+  unitParked?: boolean;
   now: number;
 }
 
 export type PlacementDecision =
   | { kind: 'healthy' }
   | { kind: 'completed' }
+  | { kind: 'parked'; reason: string }
   | { kind: 'recover'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
   | { kind: 'debounced' }
   | { kind: 'breaker'; nextFailCount: number; nextInfraLossCount: number; reason: string; infraAttributed?: boolean }
@@ -285,6 +306,17 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   if (!obs.unitExists) return { kind: 'abandon', reason: 'unit no longer exists' };
   if (obs.unitTerminal) return { kind: 'completed' };
   if (obs.hasLiveHolder) return { kind: 'healthy' };
+
+  // WI-1439 recovery-churn fix — a deliberately PARKED unit (isUnitParked, e.g.
+  // `blocked` for an owner/human-gated step) is EXPECTED to have no live holder.
+  // Checked BEFORE the cursed latch / debounce / breaker paths so a parked unit
+  // never enters ANY of them: no recovery wake, no counter bump, no escalation —
+  // it has its own delegator-notify signal path (mirrors FEATURE_NON_REQUEUE_STATES
+  // treating `blocked` as non-requeueable). Without this, the watchdog fired a
+  // Queen recovery wake for a parked unit every debounce window forever, each wake
+  // re-placing a fresh bee that could only re-confirm the same gate and die —
+  // observed live on WI-1439 (a new bee every ~5-40min for days).
+  if (obs.unitParked) return { kind: 'parked', reason: 'unit status is a deliberate park (e.g. blocked) — no holder expected' };
 
   // EI-865 — the cursed latch: a unit already tripped by the breaker is HALTED.
   // No live holder + not terminal + already cursed ⇒ leave it latched. Re-firing /
@@ -921,6 +953,7 @@ export async function reconcileOneHive(
         servingBeeReclaimedWhileActive,
         servingBeeMadeNoToolCalls, // F-FIX-041 — zombie (no-fair-attempt) → bounded infra breaker
         postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
+        unitParked: isUnitParked(unit?.status), // WI-1439 — deliberate park (e.g. blocked) → never recovered
         now,
       };
       const decision = evaluatePlacement(obs, cfg);
