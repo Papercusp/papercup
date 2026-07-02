@@ -136,7 +136,12 @@ export function buildClaudeMcpEntry(
       // defers only SCHEMAS, leaving all ~581 names+descriptions inline). Unset/empty ⇒ full
       // catalog (parseToolsAllowlist treats empty as no-filter — zero regression for a bare claude
       // or a full/omitted session). The long tail stays reachable via `tools:find` (in the spine).
-      `&tools=\${PAPERCUSP_TOOLS:-}`,
+      `&tools=\${PAPERCUSP_TOOLS:-}` +
+      // context-trimming-tiers D-004: the session PAYLOAD tier — psu exports
+      // PAPERCUSP_CONTEXT_TIER (trimmed by default, full for --context-size=full) and the
+      // server threads it to ctx.contextTier so defineTool `shape` projections apply.
+      // Unset/empty/invalid ⇒ 'full' (unshaped — byte-identical for a bare claude).
+      `&ctx_tier=\${PAPERCUSP_CONTEXT_TIER:-}`,
     headers: { Authorization: `Bearer ${token}` },
   };
 }

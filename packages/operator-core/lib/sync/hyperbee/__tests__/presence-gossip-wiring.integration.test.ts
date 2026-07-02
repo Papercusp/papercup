@@ -201,6 +201,26 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     expect(rows[0]?.intent).toBe('gossip presence e2e');
   });
 
+  it('L9: a put frame\'s hive_slug is PINNED to the receiver binding (spoofed sender hive ignored)', async () => {
+    // The put path previously trusted the sender-declared row.hive_slug; an admitted
+    // member could plant a presence row under a FOREIGN hive scope (which the per-hive
+    // lock authority scopes by). applyPut now pins hive_slug to binding.hiveHomeSlug,
+    // exactly as the sessions path already does.
+    channel.inbound!(
+      await buildPresencePutFrame(
+        row({ github_user_id: 43, machine_label: 'desktop', hive_slug: 'evil-foreign-hive' }),
+        T0,
+        member.sign,
+      ),
+    );
+    await settle(async () =>
+      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=43`).length > 0,
+    );
+    const [pinned] = await db.sql<{ hive_slug: string }[]>`
+      SELECT hive_slug FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=43`;
+    expect(pinned.hive_slug).toBe(HIVE); // never 'evil-foreign-hive'
+  });
+
   it('a NON-member device\'s validly-signed frame is dropped (fail-closed member gate)', async () => {
     channel.inbound!(
       await buildPresencePutFrame(

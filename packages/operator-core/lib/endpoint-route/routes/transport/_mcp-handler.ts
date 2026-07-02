@@ -45,6 +45,8 @@ import {
   isSlashPromptName,
   DeltaToolClient,
   dispatchWithConveyedDelta,
+  parsePayloadTier,
+  type PayloadTier,
   type UnifiedToolContext,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
@@ -356,6 +358,14 @@ export interface BuiltSpawnContext {
    * and call gating in the dispatcher.
    */
   profile?: 'engineer' | 'power' | 'generic';
+  /**
+   * Session payload tier (context-trimming-tiers D-004), from `?ctx_tier=`
+   * on the MCP URL — env-expanded from PAPERCUSP_CONTEXT_TIER by psu (the
+   * same channel as `?tools=`). Forwarded to `UnifiedToolContext.contextTier`
+   * so defineTool `shape` projections apply; absent/invalid ⇒ 'full'
+   * (unshaped — today's behavior, byte-identical).
+   */
+  contextTier?: PayloadTier;
 }
 
 /**
@@ -499,6 +509,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // SU callers testing the power profile pass ?profile=power (or the
         // x-papercusp-profile header — psu's per-launch --profile carrier).
         profile: profileParam === 'power' ? 'power' : 'engineer',
+        // Session payload tier (context-trimming-tiers D-004) — env-expanded by
+        // psu into the user-level MCP URL, like `tools=`.
+        contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
       },
     };
   }
@@ -562,6 +575,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // buildMcpToolContext from isSuperuser/isPowerUser.
         // Power-user tokens always imply the power profile.
         profile: 'power',
+        contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
       },
     };
   }
@@ -652,6 +666,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         uiClientId: parsed.uiClientId,
         planRunSessionId,
         sigVerifiedSpawn: sigVerified,
+        // Spawned agents get their tier from the per-spawn mcp.json URL
+        // (context-trimming-tiers D-004; the orchestrator threads it).
+        contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
       },
     };
   } catch (err) {
@@ -867,6 +884,8 @@ async function buildMcpToolContext(
     // lives in the playbook path (role-launch-spec), not tool gating. Coerce so the
     // narrow UnifiedToolContext.profile never has to carry 'generic'.
     profile: spawn.profile === 'generic' ? 'engineer' : (spawn.profile ?? 'engineer'),
+    // Payload tier (context-trimming-tiers D-004) — absent ⇒ 'full' at resolution.
+    contextTier: spawn.contextTier,
     requestedFormat,
     requestedStructured,
     requestedDelta,
