@@ -35,7 +35,7 @@
 
 import { getHarnessStore, closeHarnessStore, type HarnessStoreOpts } from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
+import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
 import {
