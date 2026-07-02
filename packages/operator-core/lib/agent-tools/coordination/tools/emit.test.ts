@@ -39,7 +39,7 @@ describe('coord:emit', () => {
     expect(env.category).toBeUndefined(); // NOT an ambient category (would exclude it)
     expect(env.to).toEqual(['*']); // default broadcast
     // result envelope
-    const out = JSON.parse((res.content[0] as { text: string }).text);
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(out).toMatchObject({ ok: true, lifecycle: 'completion' });
     expect(out.msg_id).toBeTruthy();
   });

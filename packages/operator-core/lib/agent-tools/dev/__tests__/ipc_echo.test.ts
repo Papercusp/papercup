@@ -34,7 +34,7 @@ describe('dev:ipc_echo', () => {
     expect(deltas).toHaveLength(3);
     expect((deltas[0].data as { text: string }).text).toBe('hi');
     expect(progress).toHaveLength(3);
-    const final = JSON.parse((result.content[0] as { text: string }).text);
+    const final = JSON.parse((result as { content: { text: string }[] }).content[0].text);
     expect(final.echo).toBe('hi there');
   });
 

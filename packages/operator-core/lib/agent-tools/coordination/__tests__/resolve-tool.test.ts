@@ -52,7 +52,7 @@ describe('coord:resolve handler', () => {
     const res = await run({ msg_id: e.msg_id, choice: 'go', note: 'approved' });
 
     const body = parse(res);
-    expect(res.isError).toBeFalsy();
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
     // Bulk envelope (bulk-endpoint-standardization-2026-06-21): one logical resolve
     // is n=1 of the batch — the per-item result self-describes under results[0].
     expect(body.ok).toBe(true);

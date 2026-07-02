@@ -69,7 +69,8 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     h.arm.mockRejectedValueOnce(new Error('pg down'));
     const res = await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started' });
     // The report still returns ok despite the arm hiccup (the warn is best-effort).
-    expect(JSON.parse((res.content[0] as { text: string }).text)).toMatchObject({ ok: true });
+    const content = (res as { content: { text: string }[] }).content;
+    expect(JSON.parse(content[0].text)).toMatchObject({ ok: true });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
