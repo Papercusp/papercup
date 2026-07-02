@@ -13,6 +13,7 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  type RunGit,
   defaultRunGit,
   deviceNamespaceKey,
   ensureHiveGitRepo,
@@ -171,5 +172,72 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     expect(res.ok).toBe(false);
     // Prior seeded state is untouched (3 first-seed namespaces + devC).
     expect((await listNamespaces(joinerRepo)).length).toBe(4);
+  });
+
+  it('REGRESSION (WI-1559): the joiner OWN namespace is never seeded from a peer (squat refusal)', async () => {
+    // A truly-fresh joiner, and a peer that SQUATS the joiner's own device
+    // namespace — pre-planting refs that would masquerade as the joiner's own
+    // work before its first publish.
+    const devSelf = devicePubkey();
+    const squat = await mintCommit(peerRepo, 'squatting the joiner own namespace');
+    await writeNamespaceRef(peerRepo, devSelf, WORK_REF, squat);
+
+    const joiner2 = await ensureHiveGitRepo('hive-x', 'repo-1-joiner2');
+    expect(await listNamespaces(joiner2)).toEqual([]);
+    const res = await bootstrapFromPeer(joiner2, await dial(), {
+      timeoutMs: 30_000,
+      selfDevicePubkey: devSelf,
+    });
+    expect(res.ok, res.stderr).toBe(true);
+
+    const selfKey = deviceNamespaceKey(devSelf);
+    expect(res.skippedSelf).toBe(selfKey);
+    // The squat was refused: nothing under the joiner's own namespace…
+    expect(await listNamespaceRefs(joiner2, devSelf)).toEqual([]);
+    expect(res.namespaces).not.toContain(selfKey);
+    // …while everyone ELSE's namespaces seeded normally on the fresh joiner.
+    for (const dev of [devA, devB, devC, devIntegrator]) {
+      expect(res.namespaces).toContain(deviceNamespaceKey(dev));
+    }
+    expect(res.skippedExisting).toEqual([]);
+  });
+
+  it('REGRESSION (WI-1558): a namespace created CONCURRENTLY mid-run is never clobbered (create-only CAS + rollback)', async () => {
+    // The TOCTOU window: preExisting snapshots BEFORE the (possibly long)
+    // fetch; the verified announcement pipeline (G-3/G-4) can create the
+    // namespace in between. The old plain update-ref clobbered its verified
+    // ref with the peer's UNVERIFIED quarantined sha.
+    const joiner3 = await ensureHiveGitRepo('hive-x', 'repo-1-joiner3');
+    const devAKey = deviceNamespaceKey(devA);
+    const sigrefsRef = `refs/namespaces/${devAKey}/refs/rad/sigrefs`;
+    const pipelineSha = await mintCommit(joiner3, 'verified pipeline write, mid-bootstrap');
+
+    // devA's group seeds refs/heads/work first (ref sort order), then
+    // refs/rad/sigrefs. Fire the "pipeline" write just before the sigrefs CAS
+    // so the seed loses the race AFTER a partial seed — exercising rollback.
+    let fired = false;
+    const racyRunGit: RunGit = async (args, cwd) => {
+      if (!fired && cwd === joiner3 && args[0] === 'update-ref' && args[1] === sigrefsRef) {
+        fired = true;
+        const w = await defaultRunGit(['update-ref', sigrefsRef, pipelineSha], joiner3);
+        expect(w.code, w.stderr).toBe(0);
+      }
+      return defaultRunGit(args, cwd);
+    };
+
+    const res = await bootstrapFromPeer(joiner3, await dial(), { timeoutMs: 30_000, runGit: racyRunGit });
+    expect(fired).toBe(true);
+    // Losing the CAS to the pipeline is NOT a failure…
+    expect(res.ok, res.stderr).toBe(true);
+    // …the pipeline's verified ref survives at ITS sha (never clobbered)…
+    const at = await defaultRunGit(['rev-parse', '--verify', sigrefsRef], joiner3);
+    expect(at.stdout.trim()).toBe(pipelineSha);
+    // …this run's PARTIAL seed of the namespace was rolled back wholesale…
+    expect(await readNamespaceRef(joiner3, devA, WORK_REF)).toBeNull();
+    expect(res.skippedExisting).toContain(devAKey);
+    // …and unrelated namespaces still seeded normally.
+    for (const dev of [devB, devC, devIntegrator]) {
+      expect(res.namespaces).toContain(deviceNamespaceKey(dev));
+    }
   });
 });

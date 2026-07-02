@@ -82,6 +82,12 @@ export interface WorktreeBridgeConfig {
    * be rejected as `stale-epoch-seq` (a one-message DoS). A gate-less config is
    * a programmer error and THROWS (the one deliberate exception to the
    * fail-soft contract).
+   *
+   * With `allowedDevices` (a member SET), ALSO set `maxGrantedEpoch` (WI-1560,
+   * see AcceptStagingAdvanceOpts) — the ADMITTED-member variant of the same
+   * poisoning is otherwise still open: any member key passes the set gate and
+   * can claim an arbitrary epoch. Cap it at the last verified G-0 handoff
+   * grant (`adoptHandoffToken(...).nextEpoch`) / the lease epoch.
    */
   accept: AcceptStagingAdvanceOpts;
   runGit?: RunGit;
