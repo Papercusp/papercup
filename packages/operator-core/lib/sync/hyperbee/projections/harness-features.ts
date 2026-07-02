@@ -213,9 +213,20 @@ async function writeToPg(
     origin === 'remote' && authorPubkey
       ? await resolveVerifiedAuthorGithubId(sql, { workspaceId: opts.workspaceId, authorPubkey })
       : null;
+  // WI-1612 (same class as WI-1572): ALWAYS write workspace_id explicitly from
+  // opts.workspaceId (bound at projection-registration time, so it is already the
+  // correct owning workspace for this harness) — never leave it NULL for the
+  // fill_ws_features_trg BEFORE-INSERT trigger to fill. That trigger's fallback
+  // function (fill_workspace_id_from_projects) consults ONLY the sparse
+  // harness_shared.projects table and then defaults to the literal 'default',
+  // with NO fallback to the authoritative harness_shared.harness_registry — so a
+  // harness registered only in the registry (e.g. papercusp itself) had every
+  // FEDERATED (remote-origin) feature op silently stranded at workspace_id='default'
+  // (confirmed live: 179 work_items feature-family rows). engineer-issues.ts already
+  // does this correctly for issue-family ops; this mirrors that pattern.
   await sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
+      (workspace_id, harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, last_progress_at, expires_at,
        item_kind, feature_order, swarm_affinity, redundancy, payload,
@@ -223,7 +234,7 @@ async function writeToPg(
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
-      (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
+      (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
        ${row.metadata == null ? null : JSON.stringify(normalizeJsonbInput(row.metadata))}::text::jsonb,
        ${row.kind}, ${row.project_id}, ${row.expected_cost_cents},

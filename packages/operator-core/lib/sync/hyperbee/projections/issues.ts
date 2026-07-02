@@ -136,14 +136,24 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // WI-1612 (same class as WI-1572): ALWAYS write workspace_id explicitly from
+  // opts.workspaceId (bound at projection-registration time — already the correct
+  // owning workspace for this harness) — never leave it NULL for the
+  // fill_ws_issues_trg BEFORE-INSERT trigger to fill. That trigger's fallback
+  // (fill_workspace_id_from_projects) consults ONLY the sparse harness_shared.projects
+  // table and then defaults to the literal 'default', with NO fallback to the
+  // authoritative harness_shared.harness_registry — so a harness registered only in
+  // the registry (e.g. papercusp itself) had federated issue ops silently stranded at
+  // workspace_id='default'. Mirrors the already-correct pattern in
+  // sync/hyperbee/projections/engineer-issues.ts and harness-features.ts.
   await sql`
     INSERT INTO harness_shared.harness_issues_consolidated
-      (harness_slug, issue_id, title, severity, source, status,
+      (workspace_id, harness_slug, issue_id, title, severity, source, status,
        found_at, found_during, repro, evidence, suggested_fix,
        code_pointer, linked_feature_id, attempts, notes,
        created_ts, updated_ts, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
-      (${row.harness_slug}, ${row.issue_id}, ${row.title}, ${row.severity}, ${row.source}, ${row.status},
+      (${opts.workspaceId}, ${row.harness_slug}, ${row.issue_id}, ${row.title}, ${row.severity}, ${row.source}, ${row.status},
        to_timestamp(${row.found_at} / 1000.0),
        ${row.found_during}, ${row.repro}, ${row.evidence}, ${row.suggested_fix},
        ${row.code_pointer}, ${row.linked_feature_id}, ${row.attempts},
@@ -177,7 +187,6 @@ async function writeToPg(
              AND (harness_issues_consolidated.fed_ts IS NULL
                   OR EXCLUDED.fed_ts >= harness_issues_consolidated.fed_ts))
   `;
-  void opts.workspaceId;
 }
 
 async function deleteFromPg(

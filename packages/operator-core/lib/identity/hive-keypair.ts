@@ -124,7 +124,8 @@ export async function loadHiveKeyStatus(
   const loaded = await keychainLoad(hiveKeychainId(workspaceId, slug), HIVE_KEYPAIR_SERVICE);
   if (loaded.kind === 'ok') return { kind: 'ok', pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
   if (loaded.error.kind === 'not_found') return { kind: 'not_found' };
-  return { kind: 'error', reason: loaded.error.kind === 'io_error' || loaded.error.kind === 'decryption_failed' ? loaded.error.reason : loaded.error.kind };
+  // Remaining variants (io_error | decryption_failed) both carry `.reason`.
+  return { kind: 'error', reason: loaded.error.reason };
 }
 
 /**
