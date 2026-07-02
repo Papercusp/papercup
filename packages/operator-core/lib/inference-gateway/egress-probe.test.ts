@@ -65,13 +65,24 @@ describe('probeEgress — one account', () => {
     expect(probe.error).toBeUndefined();
   });
 
-  it('reports hasEgress=true and surfaces ignoredProxyUrl for a socks (non-http) proxy', async () => {
+  it('reports hasEgress=true and does NOT ignore a socks5 proxy (WI-284: now routed, not skipped)', async () => {
     const probe = await probeEgress(acct('a', { proxyUrl: 'socks5://p:1080' }), {
       fetchImpl: queuedFetch(['203.0.113.7']),
       reputationLookup: repByIp({ '203.0.113.7': { asn: 'AS1' } }),
     });
     expect(probe.hasEgress).toBe(true);
-    expect(probe.ignoredProxyUrl).toBe('socks5://p:1080'); // socks ignored → default egress probed
+    expect(probe.ignoredProxyUrl).toBeUndefined(); // socks5 is honored — the gate verifies the SAME
+    // dispatcher the gateway would actually use, not a divergent copy that still treats it as unsupported
+    expect(probe.exitIp).toBe('203.0.113.7');
+  });
+
+  it('reports hasEgress=true and surfaces ignoredProxyUrl for a genuinely unsupported scheme', async () => {
+    const probe = await probeEgress(acct('a', { proxyUrl: 'ftp://p:1080' }), {
+      fetchImpl: queuedFetch(['203.0.113.7']),
+      reputationLookup: repByIp({ '203.0.113.7': { asn: 'AS1' } }),
+    });
+    expect(probe.hasEgress).toBe(true);
+    expect(probe.ignoredProxyUrl).toBe('ftp://p:1080'); // unsupported scheme ignored → default egress probed
     expect(probe.exitIp).toBe('203.0.113.7');
   });
 
