@@ -59,6 +59,21 @@ pub fn locate_session_transcript(uuid: &str) -> Option<PathBuf> {
             }
         }
     }
+
+    // Root 3: ~/.papercusp/codex-transcripts/<uuid>.jsonl — a CODEX wake
+    // (queen/overwatch/bee on the gpt-5.4 loop). `codex exec --ephemeral`
+    // records nothing itself, so the invoke wrapper TEES the wake into a
+    // claude-shaped transcript here (orchestrator codex-transcript.ts), named
+    // by the same uuid the roster row carries. Flat dir — no munged-cwd level.
+    // Missing this root is why both mirror panes sat on "no transcript found —
+    // waiting for the next wake…" after the loop moved to codex (2026-07-01).
+    let codex = home
+        .join(".papercusp")
+        .join("codex-transcripts")
+        .join(&want);
+    if codex.is_file() {
+        return Some(codex);
+    }
     None
 }
 
