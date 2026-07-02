@@ -115,3 +115,26 @@ export async function listCoordQuarantine(
     createdTs: Number(r.created_ts),
   }));
 }
+
+/**
+ * WI-1455/P-013: clear an author's quarantined backlog — the "grant" half of the
+ * requests surface (mirrors the membership approval queue's approve-then-drain).
+ * Called right after the owner raises the author's comms tier (trust:comms
+ * {action:'grant'}): the backlog is now moot — the sender is trusted going
+ * forward, and re-delivering stale quarantined bodies through the live merge
+ * path is out of scope (D-007 point 2 already treats quarantine as bounded,
+ * evictable buffer, not a durable inbox). Idempotent — clearing an empty
+ * backlog is a no-op returning cleared:0.
+ */
+export async function clearCoordQuarantineForAuthor(
+  opts: { workspaceId: string; authorGithubUserId: number },
+  sqlIn?: postgres.Sql,
+): Promise<{ cleared: number }> {
+  const sql = sqlIn ?? getOrgPg().sql;
+  const rows = await sql`
+    DELETE FROM harness_shared.coord_quarantine
+    WHERE workspace_id = ${opts.workspaceId}
+      AND author_github_user_id = ${opts.authorGithubUserId}
+  `;
+  return { cleared: rows.count ?? 0 };
+}

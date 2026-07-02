@@ -25,31 +25,38 @@ export default defineTool({
   // resolved workspace id (D-004 — never relies on RLS).
   crossWorkspace: true,
   description:
-    "Owner: per-user COMMS-TRUST tiers (observe<message<wake<steer) governing what a hive member's agents may do to YOUR agents across machines — below 'message' their coord quarantines; below 'wake' it delivers but never re-invokes; 'steer' unlocks handoffs. Actions: set {githubUserId, tier, note?, expiresAtMs?} | remove | list | gate {githubUserId, granted} — the DG-4 gate grant (do their test-gate verdicts count toward green?), separable from the tiers. Local-only, never federated, audited. Overrides the hive policy's comms.defaultTier per user.",
+    "Owner: per-user COMMS-TRUST tiers (observe<message<wake<steer) governing what a hive member's agents may do to YOUR agents across machines — below 'message' their coord quarantines; below 'wake' it delivers but never re-invokes; 'steer' unlocks handoffs. Actions: set {githubUserId, tier, note?, expiresAtMs?} | remove | list | gate {githubUserId, granted} — the DG-4 gate grant (do their test-gate verdicts count toward green?), separable from the tiers — | requests {githubUserId?} — the 'X wants to message you' surface: list quarantined (below-tier) coord messages, optionally for one author | grant {githubUserId, tier?} — ONE-CALL requests-queue resolution (P-013): raises the author's tier (default 'message', the minimum that unblocks quarantine) AND clears their quarantined backlog (it's moot once trusted going forward) — mirrors the membership approval queue's approve. Local-only, never federated, audited. Overrides the hive policy's comms.defaultTier per user.",
   capability: 'audit:write',
   guidance: {
-    when: "Granting/downgrading a specific member's reach into your agents: 'wake' lets their queen re-invoke your bees; 'steer' for handoffs; 'observe' mutes a noisy member below the policy default. expiresAtMs makes a grant probationary. action:'gate' grants/revokes gate trust (P-047): whether their shard verdicts count toward green(S) — a CI box can be gate-trusted but never steer, and vice versa.",
+    when: "Granting/downgrading a specific member's reach into your agents: 'wake' lets their queen re-invoke your bees; 'steer' for handoffs; 'observe' mutes a noisy member below the policy default. expiresAtMs makes a grant probationary. action:'gate' grants/revokes gate trust (P-047): whether their shard verdicts count toward green(S) — a CI box can be gate-trusted but never steer, and vice versa. action:'requests' surfaces a below-tier member's quarantined coord messages (visible + grantable, never silently dropped); action:'grant' is the one-call approve for exactly that queue.",
     notWhen:
-      "Auto-RUN of their verified work — trust:add. The hive-wide DEFAULT tier — author comms.defaultTier in the hive policy. Reading the quarantine queue — the coord quarantine store.",
-    chaining: "{action:'list'} → {action:'set', githubUserId, tier:'wake'} — picked up within the ~30s cache TTL. {action:'gate', granted:true} → the DG-5 aggregator counts their verdicts next round.",
+      "Auto-RUN of their verified work — trust:add. The hive-wide DEFAULT tier — author comms.defaultTier in the hive policy. A plain tier bump with no pending backlog to clear — action:'set' is enough; 'grant' only adds value when there IS a quarantine backlog to drain in the same call.",
+    chaining:
+      "{action:'requests'} → {action:'grant', githubUserId, tier:'message'} (or {action:'set', githubUserId, tier:'wake'} to bump without touching the backlog) — picked up within the ~30s cache TTL. {action:'gate', granted:true} → the DG-5 aggregator counts their verdicts next round.",
     seeAlso: ['trust:add (auto-run grant — separable)', 'trust:list (auto-run list)', 'hive:set-steering (policy authoring)'],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],
   args: z
     .object({
-      action: z.enum(['set', 'remove', 'list', 'gate']).describe("set | remove | list | gate (DG-4 gate-trust grant)"),
+      action: z
+        .enum(['set', 'remove', 'list', 'gate', 'requests', 'grant'])
+        .describe(
+          "set | remove | list | gate (DG-4 gate-trust grant) | requests (list the quarantine queue) | grant (one-call requests-queue approve)",
+        ),
       githubUserId: z
         .number()
         .int()
         .positive()
         .optional()
-        .describe('The member (numeric GitHub id — matches hive_members.github_user_id). Required for set/remove.'),
+        .describe(
+          'The member (numeric GitHub id — matches hive_members.github_user_id). Required for set/remove/gate/grant; optional filter for requests (omit to see every quarantined author).',
+        ),
       tier: z
         .enum(['observe', 'message', 'wake', 'steer'])
         .optional()
-        .describe("Required for action:'set'."),
-      note: softText(LIMITS.ANNOTATION).optional().describe('Optional human note (set only).'),
+        .describe("Required for action:'set'. Optional for action:'grant' (default 'message', the fallback tier)."),
+      note: softText(LIMITS.ANNOTATION).optional().describe('Optional human note (set/grant only).'),
       expiresAtMs: z
         .number()
         .int()
@@ -61,8 +68,8 @@ export default defineTool({
         .optional()
         .describe("action:'gate' only: true = this member's gate verdicts count toward green(S); false = revoke."),
     })
-    .refine((a) => a.action === 'list' || Boolean(a.githubUserId), {
-      message: 'set/remove/gate need `githubUserId`',
+    .refine((a) => a.action === 'list' || a.action === 'requests' || Boolean(a.githubUserId), {
+      message: 'set/remove/gate/grant need `githubUserId`',
     })
     .refine((a) => a.action !== 'set' || Boolean(a.tier), {
       message: "action:'set' needs `tier`",
@@ -72,13 +79,21 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const { activeWorkspaceId } = await import('../../workspace-registry');
-    const { listCommsTrust, setCommsTrust, removeCommsTrust, setGateTrust } = await import('../../trust/comms-trust');
+    const { listCommsTrust, setCommsTrust, removeCommsTrust, setGateTrust, FALLBACK_COMMS_TIER } = await import(
+      '../../trust/comms-trust'
+    );
+    const { listCoordQuarantine, clearCoordQuarantineForAuthor } = await import(
+      '../../sync/hyperbee/coord-quarantine-store'
+    );
     const principalWs = ctx?.principal?.workspaceId;
     const ws = principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId();
     const actor = ctx?.principal?.slug ?? 'agent';
     let payload: Record<string, unknown>;
     if (args.action === 'list') {
       payload = { ok: true, workspaceId: ws, entries: await listCommsTrust(ws) };
+    } else if (args.action === 'requests') {
+      const requests = await listCoordQuarantine({ workspaceId: ws, authorGithubUserId: args.githubUserId });
+      payload = { ok: true, workspaceId: ws, requests, count: requests.length };
     } else if (args.action === 'set') {
       const entry = await setCommsTrust(ws, {
         githubUserId: args.githubUserId!,
@@ -89,6 +104,18 @@ export default defineTool({
         nowMs: Date.now(),
       });
       payload = { ok: true, workspaceId: ws, entry };
+    } else if (args.action === 'grant') {
+      const tier = args.tier ?? FALLBACK_COMMS_TIER;
+      const entry = await setCommsTrust(ws, {
+        githubUserId: args.githubUserId!,
+        tier,
+        note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
+        expiresAtMs: args.expiresAtMs ?? null,
+        actor,
+        nowMs: Date.now(),
+      });
+      const { cleared } = await clearCoordQuarantineForAuthor({ workspaceId: ws, authorGithubUserId: args.githubUserId! });
+      payload = { ok: true, workspaceId: ws, entry, clearedRequests: cleared };
     } else if (args.action === 'gate') {
       const entry = await setGateTrust(ws, {
         githubUserId: args.githubUserId!,
