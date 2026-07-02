@@ -1,0 +1,239 @@
+/**
+ * hive-git/staging-advance.ts — signed, epoch-fenced staging advances (Phase 7
+ * G-5d, cross-machine-coord-parity-and-trust-2026-07-01 / P-038; D-011 hole 2).
+ *
+ * THE HOLE THIS CLOSES (integrator fencing): the lock-authority lease is a
+ * deterministic argmin over live presence (authority/lock-authority.ts) — a
+ * presence flap can briefly give TWO machines the integrator role without a
+ * network partition. If both publish staging, receivers need a total order to
+ * fence the stale ex-authority's late advance. The fix is the classic fencing
+ * token: the lease carries a monotonic `epoch` (bumped on every authority
+ * change, carried by the G-0 handoff token), the integrator stamps each staging
+ * advance with `(epoch, seq)` and SIGNS it with its device key, and a receiver
+ * accepts an advance ONLY when:
+ *
+ *   1. the signature verifies for the embedded integrator device (and that
+ *      device passes the caller's membership/authority gate),
+ *   2. `(epoch, seq)` is STRICTLY greater than the last accepted pair, and
+ *   3. the new staging sha is a FAST-FORWARD of the last accepted staging
+ *      (staging never rewinds — same invariant as G-7c on worktrees).
+ *
+ * A stale ex-authority still holds an older epoch, so its late advance fails
+ * (2); a replayed or duplicated announcement fails (2); a forged one fails (1);
+ * an equivocating authority that tries to move staging sideways fails (3).
+ *
+ * This module is the PAYLOAD + ACCEPTANCE layer: `integrateMemberHeads` (G-5)
+ * computes the sha, the announcement rail (G-3, leader-held) carries the signed
+ * envelope built here, and receivers run `acceptStagingAdvance` (pure) or
+ * `acceptStagingAdvanceFF` (adds the git ancestry check) before mirroring.
+ *
+ * Pure over ed25519.ts + storage.ts's RunGit seam — the sign/verify/accept core
+ * has no I/O at all and unit-tests without git.
+ */
+
+import { verifyEd25519 } from '../../identity/ed25519';
+import { type RunGit, defaultRunGit } from './storage';
+
+/** Wire schema version for the staging-advance envelope. */
+export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
+
+/**
+ * Domain-separation tag mixed into the signed bytes (the hive-policy idiom,
+ * HIVE_POLICY_SIG_DOMAIN) so a staging-advance signature can never be replayed
+ * as a different signed artifact (sigrefs blob, handoff token, …).
+ */
+export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-hive-git-staging-advance-v1';
+
+/** A fencing pair: the authority lease epoch + the per-epoch advance sequence. */
+export interface EpochSeq {
+  /** Monotonic lease epoch — bumps on every authority change (G-0 handoff). */
+  epoch: number;
+  /** Monotonic per-epoch advance counter — bumps on every staging publish. */
+  seq: number;
+}
+
+/** The signed staging-advance payload (fixed field order = the signing order). */
+export interface StagingAdvancePayload extends EpochSeq {
+  /** Wire schema version. */
+  v: number;
+  /** The integrator device's raw-32 Ed25519 pubkey (base64) — bound into the sig. */
+  device_pubkey: string;
+  /** The new staging head this advance publishes. */
+  staging_sha: string;
+  /** Advance time (epoch ms) — audit/freshness only, NOT part of the ordering. */
+  ts: number;
+}
+
+export interface SignedStagingAdvance extends StagingAdvancePayload {
+  /** base64 Ed25519 signature over stagingAdvanceSigningBytes(payload). */
+  sig: string;
+}
+
+function isNonNegInt(x: unknown): x is number {
+  return typeof x === 'number' && Number.isInteger(x) && x >= 0;
+}
+
+const SHA_RE = /^[0-9a-f]{40,64}$/;
+
+function isStagingAdvancePayload(x: unknown): x is StagingAdvancePayload {
+  if (!x || typeof x !== 'object') return false;
+  const s = x as Record<string, unknown>;
+  return (
+    typeof s.v === 'number' &&
+    typeof s.device_pubkey === 'string' &&
+    isNonNegInt(s.epoch) &&
+    isNonNegInt(s.seq) &&
+    typeof s.staging_sha === 'string' &&
+    SHA_RE.test(s.staging_sha) &&
+    typeof s.ts === 'number'
+  );
+}
+
+export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
+  return isStagingAdvancePayload(x) && typeof (x as Record<string, unknown>).sig === 'string';
+}
+
+/**
+ * Canonical signing bytes: the domain tag, then the payload in FIXED field
+ * order (`sig` excluded). Deterministic on both ends — the sigrefs idiom plus
+ * domain separation.
+ */
+export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buffer {
+  const ordered = {
+    v: payload.v,
+    device_pubkey: payload.device_pubkey,
+    epoch: payload.epoch,
+    seq: payload.seq,
+    staging_sha: payload.staging_sha,
+    ts: payload.ts,
+  };
+  return Buffer.from(`${STAGING_ADVANCE_SIG_DOMAIN}\n${JSON.stringify(ordered)}`, 'utf8');
+}
+
+/**
+ * Build + sign a staging advance for the integrator device. `sign` is the
+ * device signer seam (prod: `bytes => signWithDeviceKey(keychainId, bytes)`;
+ * tests: `bytes => signWithPrivateKeyDer(der, bytes)`).
+ */
+export async function signStagingAdvance(
+  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number },
+  sign: (bytes: Buffer) => Promise<Buffer>,
+): Promise<SignedStagingAdvance> {
+  const payload: StagingAdvancePayload = {
+    v: STAGING_ADVANCE_SCHEMA_VERSION,
+    device_pubkey: fields.devicePubkeyBase64,
+    epoch: fields.epoch,
+    seq: fields.seq,
+    staging_sha: fields.stagingSha,
+    ts: fields.nowMs,
+  };
+  if (!isStagingAdvancePayload(payload)) {
+    throw new Error('hive-git: signStagingAdvance called with a malformed payload');
+  }
+  const sig = (await sign(stagingAdvanceSigningBytes(payload))).toString('base64');
+  return { ...payload, sig };
+}
+
+/**
+ * Verify a signed staging advance. When `expectedDevicePubkeyBase64` is given
+ * the embedded device must equal it; otherwise the signature is verified
+ * against the EMBEDDED device key and the caller MUST separately gate that
+ * device (hive membership / current-authority check). Never throws.
+ */
+export function verifyStagingAdvance(
+  signed: SignedStagingAdvance,
+  expectedDevicePubkeyBase64?: string,
+): boolean {
+  if (!isSignedStagingAdvance(signed)) return false;
+  if (expectedDevicePubkeyBase64 !== undefined && signed.device_pubkey !== expectedDevicePubkeyBase64) {
+    return false;
+  }
+  try {
+    const bytes = stagingAdvanceSigningBytes(signed);
+    return verifyEd25519(bytes, signed.device_pubkey, Buffer.from(signed.sig, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
+/** Total order on fencing pairs: epoch first, then seq. -1 | 0 | 1. */
+export function compareEpochSeq(a: EpochSeq, b: EpochSeq): number {
+  if (a.epoch !== b.epoch) return a.epoch < b.epoch ? -1 : 1;
+  if (a.seq !== b.seq) return a.seq < b.seq ? -1 : 1;
+  return 0;
+}
+
+export type StagingAdvanceAcceptance =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: 'malformed' | 'wrong-device' | 'bad-signature' | 'stale-epoch-seq' | 'non-fast-forward' | 'unknown-sha';
+    };
+
+export interface AcceptStagingAdvanceOpts {
+  /** Pin the advance to ONE expected integrator device (strict mode). */
+  expectedDevice?: string;
+  /**
+   * Or: the set of devices allowed to integrate (e.g. current hive members).
+   * The embedded device must be in the set. Ignored when `expectedDevice` is
+   * given. Neither given ⇒ signature self-consistency only — the caller MUST
+   * gate the device itself.
+   */
+  allowedDevices?: readonly string[];
+}
+
+/**
+ * PURE acceptance for a fetched/announced staging advance (G-5d): signature +
+ * device gate + STRICT (epoch, seq) monotonicity vs the last-accepted pair
+ * (`prior`, null when none accepted yet). A lower/equal pair is rejected —
+ * this is what fences a stale ex-authority's late advance and any replay.
+ * The fast-forward leg needs git; use {@link acceptStagingAdvanceFF} for the
+ * combined check. The caller persists acceptance by mirroring the ref and
+ * storing the new (epoch, seq) watermark.
+ */
+export function acceptStagingAdvance(
+  incoming: SignedStagingAdvance,
+  prior: EpochSeq | null,
+  opts: AcceptStagingAdvanceOpts = {},
+): StagingAdvanceAcceptance {
+  if (!isSignedStagingAdvance(incoming)) return { ok: false, reason: 'malformed' };
+  if (opts.expectedDevice !== undefined) {
+    if (incoming.device_pubkey !== opts.expectedDevice) return { ok: false, reason: 'wrong-device' };
+  } else if (opts.allowedDevices !== undefined && !opts.allowedDevices.includes(incoming.device_pubkey)) {
+    return { ok: false, reason: 'wrong-device' };
+  }
+  if (!verifyStagingAdvance(incoming)) return { ok: false, reason: 'bad-signature' };
+  if (prior !== null && compareEpochSeq(incoming, prior) <= 0) {
+    return { ok: false, reason: 'stale-epoch-seq' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Full receiver-side acceptance: the pure G-5d check PLUS the fast-forward
+ * invariant — `priorStagingSha` (the last accepted staging, null when none)
+ * must be an ancestor of (or equal to) the incoming staging sha, and the
+ * incoming sha must resolve to a commit already present locally (fetch the
+ * namespace FIRST, then accept). Staging never rewinds and never moves
+ * sideways, even within a valid higher epoch.
+ */
+export async function acceptStagingAdvanceFF(
+  repoPath: string,
+  incoming: SignedStagingAdvance,
+  prior: EpochSeq | null,
+  priorStagingSha: string | null,
+  opts: AcceptStagingAdvanceOpts & { runGit?: RunGit } = {},
+): Promise<StagingAdvanceAcceptance> {
+  const pure = acceptStagingAdvance(incoming, prior, opts);
+  if (!pure.ok) return pure;
+  const runGit = opts.runGit ?? defaultRunGit;
+  const exists = await runGit(['rev-parse', '--verify', '-q', `${incoming.staging_sha}^{commit}`], repoPath);
+  if (exists.code !== 0) return { ok: false, reason: 'unknown-sha' };
+  if (priorStagingSha !== null) {
+    // merge-base --is-ancestor is reflexive: equal shas pass (a re-publish of
+    // the same staging under a higher (epoch, seq) is a legal no-op advance).
+    const ff = await runGit(['merge-base', '--is-ancestor', priorStagingSha, incoming.staging_sha], repoPath);
+    if (ff.code !== 0) return { ok: false, reason: 'non-fast-forward' };
+  }
+  return { ok: true };
+}
