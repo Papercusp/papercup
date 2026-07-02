@@ -89,6 +89,11 @@ export interface WakeRecipientsResult {
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the HIVE_AGENT_TABS flag (start-hive P-007). */
   staged: number;
+  /** EI-5957: the ACTUAL ownerIds whose wake STAGED (manual wake-mode) — the
+   *  named set behind `staged`, so a leader-steering send/dispatch can surface a
+   *  loud "directive STAGED, not delivered for <who>" warning instead of a quiet
+   *  `staged:1` that reads like success. `staged === stagedTargets.length`. */
+  stagedTargets: string[];
   /** P-022: recipients BEYOND MAX_WAKE_FANOUT — injected (durable) but not woken.
    *  Non-empty only on an oversized audience fan (the cost-DoS shape). */
   fanoutCapped: string[];
@@ -134,6 +139,7 @@ export async function wakeRecipients(
   const keys: string[] = [];
   let woken = 0;
   let staged = 0;
+  const stagedTargets: string[] = [];
   // A self-loop wake bypasses the manual gate entirely (staging it deadlocks — see
   // isLoopWakeSource). The source is per-CALL, so compute once. Everything else still honors
   // the per-agent manual pause/edit gate exactly as before (default-preserving).
@@ -157,6 +163,7 @@ export async function wakeRecipients(
             workspaceId: opts.workspaceId,
           });
           staged += 1;
+          stagedTargets.push(ownerId);
         } catch (e) {
           console.warn(
             `[inbox-wake] stage for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
