@@ -421,6 +421,14 @@ export interface BuildSuLaunchSpecInput {
    *  models, so the tier comes from THIS, never the client (D-004). Omitted →
    *  frontier (full catalog): the safe, no-regression default. */
   model?: string | null;
+  /**
+   * Persona TIER (context-trimming-tiers P-017/P-018). 'full' = today's
+   * playbook; 'fleet' = the fleet-member tier (FULL-ONLY sections stripped,
+   * compact always-AUTO clause, spine wire schemas). Omitted → AUTO-SELECT
+   * from the model window: a ≤200k-window model (e.g. sonnet) gets 'fleet'
+   * so the persona + catalog + repo guide fit; a [1m] model gets 'full'.
+   */
+  personaTier?: 'full' | 'fleet' | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
   planTitle?: string | null;
@@ -553,10 +561,20 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   } catch {
     /* flag/resolve miss → fall through to today's playbook (byte-identical) */
   }
+  // P-017/P-018 persona tier: explicit ask wins; else auto-select 'fleet' for a
+  // KNOWN ≤200k-window model (the sonnet-fleet death mode: full persona +
+  // catalog + guide left no headroom before the first turn). An OMITTED model
+  // stays 'full' — interactive launches often name no model, and the safe
+  // default is today's playbook, byte-identical.
+  const { modelWindowForSpec } = await import('./agent-config-constants');
+  const personaTier: 'full' | 'fleet' =
+    input.personaTier ??
+    (input.model && modelWindowForSpec(input.model) <= 200_000 ? 'fleet' : 'full');
   const rendered = await renderSuPlaybook({
     agent: input.agent,
     profile: input.profile,
     operatorAppRoot: input.operatorAppRoot,
+    tier: personaTier,
     projectGuideSource,
     baseSource: suBaseSource,
     overlayDir: suOverlayDir,

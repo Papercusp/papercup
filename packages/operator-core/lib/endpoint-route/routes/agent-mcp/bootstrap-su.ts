@@ -662,6 +662,10 @@ const post = defineTool({
       launch_context?: string | null;
       /** su-context-size-variants: 'full' | 'trimmed' — the initial-context size. */
       context_size?: string | null;
+      /** context-trimming-tiers P-017: persona tier — 'full' (today's playbook) |
+       *  'fleet' (spine-only fleet-member tier). Omitted ⇒ auto-select from the
+       *  model window in buildLaunchSpec (≤200k known model → fleet). */
+      persona_tier?: string | null;
       /** weak-model-tool-tier: the model id the session launches with (e.g.
        *  `ollama/ornith-35b`, `anthropic/claude-opus-4-8`). Drives the tool-tier
        *  gate in buildLaunchSpec — a WEAK/local model is hard-trimmed to the core
@@ -722,6 +726,15 @@ const post = defineTool({
       );
     }
     const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
+    // context-trimming-tiers P-017: persona tier (validated; omitted ⇒ model-window auto-select).
+    const personaTierRaw = body.persona_tier?.trim() || null;
+    if (personaTierRaw && personaTierRaw !== 'full' && personaTierRaw !== 'fleet') {
+      return jsonRes(
+        { status: 'error', error: `persona_tier must be full|fleet (got ${personaTierRaw.slice(0, 24)})` },
+        400,
+      );
+    }
+    const personaTier = personaTierRaw as 'full' | 'fleet' | null;
     // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
     const model = body.model?.trim() || null;
 
@@ -789,6 +802,7 @@ const post = defineTool({
         harnessSlug,
         profile,
         contextSize,
+        personaTier,
         model,
         planSlug,
         planTitle,

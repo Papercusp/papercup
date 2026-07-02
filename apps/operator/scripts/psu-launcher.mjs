@@ -159,7 +159,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, personaTier: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -242,6 +242,9 @@ export function parseArgs(argv) {
     // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
     // (orthogonal to --agent). Forwarded to bootstrap-su; applied per-client at launch.
     else if (a.startsWith('--context-size=')) out.contextSize = a.slice('--context-size='.length);
+    // context-trimming-tiers P-017: persona tier — full | fleet. Omitted ⇒ the
+    // server auto-selects from the model window (≤200k known model → fleet).
+    else if (a.startsWith('--persona-tier=')) out.personaTier = a.slice('--persona-tier='.length);
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
     // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
     else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
@@ -2367,6 +2370,8 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(effectiveAutoMode(args) ? { auto: true } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
+    // context-trimming-tiers P-017: explicit persona tier; omitted ⇒ server auto-select.
+    ...(args.personaTier ? { persona_tier: args.personaTier } : {}),
     // weak-model-tool-tier: forward the launch model so the server's tool-tier gate
     // (buildLaunchSpec) can hard-trim a WEAK/local model's catalog for the codex path
     // (omp trims client-side above; claude self-trims). Frontier ⇒ no trim (safe default).
