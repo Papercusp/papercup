@@ -83,8 +83,13 @@ taken recently (`taken_by`, `taken_at`):
 ```sql
 select last_fired_at, next_fire_at from harness_shared.routines where name = 'wake-brain';
 
+-- ⚠ TERMINAL STATUS IS FAMILY-SPECIFIC (verified 2026-07-02): issue-family
+-- (bug/change) resolves to 'resolved'/'closed'; feature-family to 'passed'.
+-- Counting only status='done' reads a HEALTHY loop as "zero completions" —
+-- an su burned a wake concluding the forward half was stalled when 9
+-- completions had landed that hour. Count the whole terminal set:
 select count(*) filter (where taken_by is not null) as taken,
-       count(*) filter (where status = 'done'
+       count(*) filter (where status in ('done','resolved','closed','passed')
              and updated_ts > extract(epoch from now())*1000 - 3600*1000) as done_1h
 from harness_shared.work_items
 where harness_slug = 'papercusp';
@@ -152,7 +157,7 @@ where id = 'rt__singleton_bp_singleton_scout_0';
 | table (`harness_shared.`) | gotcha |
 |---|---|
 | `scout_routed_ideas` | `routed_at`, `outcome_checked_at` are **BIGINT epoch-ms** — there is NO `created_at`. `graded_at` is timestamptz. Columns: `rail`, `lens`, `routed_ref`, `outcome`, `cycle_id`, `source_hive`. |
-| `work_items` | PK is **`feature_id`** (text), not `id`. Raw SQL status column is **`status`** — but the `work_items:get` MCP returns it as **`.state`**. `ts` / `created_ts` / `updated_ts` / `fed_ts` are **BIGINT epoch-ms**; claims use `taken_by` + `taken_at` (timestamptz). `source_plan_slug` / `source_plan_item_ids` (array) link back to a plan. |
+| `work_items` | PK is **`feature_id`** (text), not `id`. Raw SQL status column is **`status`** — but the `work_items:get` MCP returns it as **`.state`**. **Terminal statuses are FAMILY-SPECIFIC**: issue-family (bug/change) → `resolved`/`closed`, feature-family → `passed` — `'done'` alone undercounts (see Link 3). A terminal `set_state` REQUIRES a completion record — use `work_items:complete { id, state, completion:{ summary, status } }`; ⚠ `complete` WITHOUT `state` returns ok:true but writes NOTHING (EI-6502). `ts` / `created_ts` / `updated_ts` / `fed_ts` are **BIGINT epoch-ms**; claims use `taken_by` + `taken_at` (timestamptz). `source_plan_slug` / `source_plan_item_ids` (array) link back to a plan. |
 | `routines` | cron lives in **`trigger_config->>'cron'`** (jsonb), not a `cron` column. `last_fired_at` / `next_fire_at` are **timestamptz** (note: `last_fired_at`, not `last_fire_at`). `id`, `install_slug`, `name`, `active` (bool), `target_role`, `catchup`. |
 | `autoloop_state` | `harness_slug`, `role`, `last_fired_at` (timestamptz), `last_status` (text), `consecutive_errors` (int). NO `next_fire_at` here — that's on `routines`. |
 
