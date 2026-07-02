@@ -2,7 +2,7 @@
 title: claude-code headless permission model (what --allowed-tools / --permission-mode actually do)
 description: Verified vs claude 2.1.158 — --allowed-tools is NOT a whitelist by itself; only --permission-mode dontAsk makes it one, and even then gating is non-uniform (CronCreate/EnterWorktree bypass it). --disallowed-tools is the hard block. How the fleet spawn is locked down. 2026-07-01 update — the subagent tool renamed Task→Agent, silently breaking the fleet's own deny-list.
 discovered: 2026-05-31
-updated: 2026-07-01
+updated: 2026-07-02
 tags: [claude-code, permissions, orchestrator, fleet, security, allowed-tools, dontAsk]
 status: active
 documents:
@@ -152,12 +152,29 @@ despite `FLEET_DISALLOWED_TOOLS` explicitly intending to block it — the deny-l
 complete (the entry was right there) but matched nothing. Fixed by carrying **both** names
 in one shared source, `libs/papercusp/packages/orchestrator/src/no-subagent-deny.ts`
 (`NO_SUBAGENT_TOOLS_DENY = ['Task', 'Agent']`), reused by `FLEET_DISALLOWED_TOOLS` (fleet/
-orchestrator spawns) and mirrored into `psu-launcher.mjs`'s `roleLaunchArgs` (unconditional
-for role/bee sessions) — plus a new opt-in `psu --no-subagents` / `fleet:launch-on-plan
-{ noSubagents }` for interactive `su` sessions, default OFF (D-003 posture: the human
-session keeps the tool unless it asks to opt out). Denying a tool name that doesn't exist
-in a given CLI build is a no-op, never an error, so carrying both names costs nothing and
-survives either generation.
+orchestrator spawns) and mirrored into `psu-launcher.mjs`. Denying a tool name that doesn't
+exist in a given CLI build is a no-op, never an error, so carrying both names costs nothing
+and survives either generation.
+
+**Default-deny everywhere (owner mandate 2026-07-02).** The deny is now applied to *every*
+Claude agent, not just fleet/bee sessions:
+
+- **psu** — `suLaunchArgs`, `roleLaunchArgs`, and `resumeArgsFor` all deny by default
+  (`...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG])`). The old default-OFF `--no-subagents`
+  opt-OUT + human-keeps-it-by-default carve-out (native-scheduler-lockout D-003) is INVERTED:
+  the ONLY way to keep the tool is an explicit opt-IN — `psu --allow-subagents` (a CLI flag),
+  the psu picker's **Subagents** toggle (default Disabled), or `fleet:launch-on-plan { allowSubagents: true }`.
+  `--no-subagents` is kept as a now-redundant explicit-deny alias.
+- **Headless orchestrator spawns** — `invoke.ts` pushes `noSubagentToolsDenyFlag()`
+  UNCONDITIONALLY for any claude spawn at the exec boundary (even when the operator manages
+  the rest of the permission posture, unlike the scheduler deny's D-004 operator-override
+  guard). Safe because claude *unions* repeated `--disallowedTools` occurrences (verified
+  live), so it composes with the Layer-A `--disallowed-tools` from `claudeMcpArgs` /
+  `FLEET_DISALLOWED_TOOLS`. No headless opt-in — the opt-in is a psu-launch surface only.
+- **Wake-executor resumes** — `resumeCommandFor` re-arms `noSubagentToolsDenyFlag()` every
+  wake, alongside the scheduler deny: CLI `--disallowedTools` does NOT survive into a resume,
+  so without this a woken bee silently regained its subagent tool (the same persistence gap
+  the scheduler lockout documents).
 
 **Lesson for the next rename:** a deny-list entry that matches nothing fails *silently* —
 there's no error, no warning, just a tool that still works. The only way to know is the

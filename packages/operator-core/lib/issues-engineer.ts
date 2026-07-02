@@ -46,6 +46,19 @@ import type { Issue as PipelineIssue } from './harness/issue-types';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 
+/**
+ * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
+ * `WORK_ITEMS_MAX_LIMIT` (work-items.ts) — the unified work-items list requests
+ * up to that many, and a lower inner cap here was silently truncating the issue
+ * leg (the "938 of 1821" the pane showed: features loaded but issues pinned at
+ * 500 while countIssues tallied them all). Declared as a local literal, NOT
+ * imported from work-items.ts, because work-items.ts imports listIssues from
+ * here — importing back would be a circular dependency. Callers beyond this cap
+ * page via infinite scroll (a larger `limit`), so this is a per-read ceiling,
+ * not a hard product cap.
+ */
+const ISSUES_MAX_LIMIT = 2000;
+
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
 // Lifecycle vocabulary sourced from the ONE canonical LifecycleState (P-007) so a
@@ -399,7 +412,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
      ORDER BY created_at DESC
-     LIMIT ${Math.min(filter.limit ?? 100, 500)}`;
+     LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);
 }
 
