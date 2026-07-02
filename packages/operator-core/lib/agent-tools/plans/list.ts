@@ -38,6 +38,7 @@ import {
   type PlanItem,
 } from "./parser";
 import { reconcileStartStatus } from "./plan-start-state";
+import { shapePlansList } from "./list-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
@@ -270,6 +271,14 @@ export default defineTool({
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
     schemaVersion: "plans-list-v1",
     maxDeltaAge: 5 * 60_000,
+  },
+  // context-trimming-tiers P-021: trimmed/standard sessions get projected rows
+  // (recency-kept caps + flattened counts — see list-shape.ts). The cache stores
+  // the UNSHAPED rows (shaping runs post-handler in defineTool dispatch), so one
+  // cached read serves every tier; the UI (HTTP/sync path, no ctx_tier) reads full.
+  shape: {
+    standard: (data, sctx) => shapePlansList(data, "standard", sctx.args),
+    trimmed: (data, sctx) => shapePlansList(data, "trimmed", sctx.args),
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
@@ -613,8 +622,8 @@ export default defineTool({
       ...(allUnknown.length > 0 && { unknownHarnesses: allUnknown }),
     });
 
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({ plans }) }],
-    };
+    // {data} envelope (not a hand-rolled ToolResult) so the payload-tier shapers
+    // apply; HTTP/sync consumers still read identical `{"plans":[...]}` JSON text.
+    return { data: { plans } };
   },
 });

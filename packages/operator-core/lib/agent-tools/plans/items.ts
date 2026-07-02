@@ -41,6 +41,7 @@ import {
 } from "../../plan-item-coverage";
 import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from "./parser";
 import { TERMINAL_PLAN_STATUSES } from "./plan-start-state";
+import { shapePlansItems } from "./items-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /**
@@ -133,6 +134,13 @@ export default defineTool({
   agentRoles: [...SU_ROLES, "overwatch"],
   modality: ["text"],
   args: argsSchema,
+  // context-trimming-tiers P-021: trimmed/standard sessions get flattened,
+  // row-capped item rows (see items-shape.ts). The cache stores the UNSHAPED
+  // rows; the UI (HTTP/sync path, no ctx_tier) reads full.
+  shape: {
+    standard: (data) => shapePlansItems(data, "standard"),
+    trimmed: (data) => shapePlansItems(data, "trimmed"),
+  },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     const sctx = harnessScopedCtx(args.harness, ctx);
@@ -264,10 +272,8 @@ export default defineTool({
       scope: args.slug ?? "all",
     });
 
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify({ items: rows }) },
-      ],
-    };
+    // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
+    // still read identical `{"items":[...]}` JSON text.
+    return { data: { items: rows } };
   },
 });

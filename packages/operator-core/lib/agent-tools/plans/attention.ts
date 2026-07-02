@@ -58,6 +58,7 @@ import {
   type AttentionItem,
 } from "../../attention/types";
 import { readTriageByWorkspace } from "../../attention/triage-store";
+import { shapePlansAttention } from "./attention-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 
 /**
@@ -140,6 +141,14 @@ export default defineTool({
     // Periodic forced-full reconciliation: a cursor older than 5 min reconciles to a
     // full snapshot, bounding any drift the harness's incremental merge accumulates.
     maxDeltaAge: 5 * 60_000,
+  },
+  // context-trimming-tiers P-021: the fattest measured payload (avg 1.09MB).
+  // Trimmed/standard sessions get group summaries + top-N items (see
+  // attention-shape.ts); the UI (HTTP/sync path, no ctx_tier) reads full, and
+  // the cache stores the UNSHAPED groups so one read serves every tier.
+  shape: {
+    standard: (data) => shapePlansAttention(data, "standard"),
+    trimmed: (data) => shapePlansAttention(data, "trimmed"),
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
@@ -536,10 +545,8 @@ export default defineTool({
       scope: harnessFilter ?? "all",
     });
 
-    return {
-      content: [
-        { type: "text" as const, text: JSON.stringify({ groups, tierCounts }) },
-      ],
-    };
+    // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
+    // still read identical `{"groups":[...],"tierCounts":{...}}` JSON text.
+    return { data: { groups, tierCounts } };
   },
 });
