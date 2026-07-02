@@ -78,6 +78,11 @@ const upsertInboxWakeAwait = vi.fn(
 const cancelInboxWakeAwaits = vi.fn(async () => 0);
 const startAwaitSweeper = vi.fn();
 const captureWakeHandleForOwner = vi.fn(async () => ({ handle: null, note: 'no tracked session — inbox-degraded' }));
+// EI-5957: the wake-MODE gate + staging leg. Captured (not inline) so a test can
+// drive the `manual` path — a member in manual wake-mode STAGES the leader's wake
+// instead of delivering it. Default `auto` keeps every other test's behavior.
+const resolveWakeMode = vi.fn(async (_ownerId: string) => 'auto' as 'auto' | 'manual');
+const stagePendingWake = vi.fn(async () => ({ id: 1 }));
 
 vi.mock('../../../events/await/engine', () => ({
   emitAwaitedEvent: (args: { key: string }) => emitAwaitedEvent(args),
@@ -118,10 +123,10 @@ vi.mock('../conversations', () => ({
 // depend on the box's live wake-mode state: pin mode to `auto` and make staging
 // a spy.
 vi.mock('../wake-mode', () => ({
-  resolveWakeMode: vi.fn(async () => 'auto'),
+  resolveWakeMode: (ownerId: string) => resolveWakeMode(ownerId),
 }));
 vi.mock('../pending-wakes', () => ({
-  stagePendingWake: vi.fn(async () => ({ id: 1 })),
+  stagePendingWake: () => stagePendingWake(),
 }));
 
 import coordSend from './send';
@@ -170,6 +175,11 @@ describe('coord:send', () => {
       { ownerId: 'su-bee-2' },
       { ownerId: 'su-bee-3' },
     ]);
+    // EI-5957: default every recipient to `auto` (fire) unless a test opts into
+    // `manual` (stage); reset the staging spy between tests.
+    resolveWakeMode.mockReset();
+    resolveWakeMode.mockResolvedValue('auto');
+    stagePendingWake.mockClear();
   });
   afterEach(() => resetCoordLog());
 
@@ -353,6 +363,56 @@ describe('coord:send', () => {
     const { wake } = send1(res);
     expect(wake).toMatchObject({ mode: 'required', targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
     expect(wake.recipient_absent).toBeUndefined();
+  });
+
+  it('EI-5957: wake to a MANUAL-mode target STAGES with a LOUD note (not a quiet staged:1)', async () => {
+    // su-bee-1 is in manual wake-mode (the hive pause/edit gate) → the leader's
+    // wake STAGES instead of firing. The bug: this returned a quiet `staged:1`
+    // that read like success, so a fleet leader assumed delivery while the member
+    // never got the directive. The fix surfaces it LOUDLY.
+    resolveWakeMode.mockResolvedValue('manual');
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'stand down', wake: 'required' }),
+      ctx,
+    );
+    // it STAGED, not fired: no wake emitted, the pending-wake was recorded
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    const { wake } = send1(res);
+    expect(wake.woken).toBe(0);
+    expect(wake.staged).toBe(1);
+    expect(wake.stagedTargets).toEqual(['su-bee-1']); // names WHO didn't get it
+    // the LOUD signal — a note (not a bare staged:1) explaining STAGED + the remedy
+    expect(typeof wake.note).toBe('string');
+    expect(wake.note).toMatch(/STAGED/);
+    expect(wake.note).toMatch(/manual wake-mode/i);
+    expect(wake.note).toMatch(/wake-queue|wake-mode/);
+    // staged is a DISTINCT outcome from a "missed" wake — recipient_absent stays unset
+    expect(wake.recipient_absent).toBeUndefined();
+    // delivery (durable inbox) is unchanged — only the signal is louder
+    expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it('EI-5957: a MIXED batch (one auto, one manual) fires the auto wake AND stages+warns the manual one', async () => {
+    // su-bee-1 auto (fires), su-bee-2 manual (stages). The auto path is untouched;
+    // the staged one is named + warned even though a peer was woken.
+    resolveWakeMode.mockImplementation(async (ownerId: string) =>
+      ownerId === 'su-bee-2' ? 'manual' : 'auto',
+    );
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: 'required' }),
+      ctx,
+    );
+    // only the auto target's key fired
+    const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
+    expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    const { wake } = send1(res);
+    expect(wake.woken).toBe(1); // the auto peer woke
+    expect(wake.staged).toBe(1);
+    expect(wake.stagedTargets).toEqual(['su-bee-2']);
+    expect(wake.note).toMatch(/STAGED/);
+    expect(wake.recipient_absent).toBeUndefined(); // woken>0 ⇒ not a missed wake
   });
 
   it("broadcast-only with wake:'required' is EXEMPT from recipient_absent (P-005 — '*' was never wakeable)", async () => {

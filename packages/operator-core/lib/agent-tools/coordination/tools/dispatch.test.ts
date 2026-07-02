@@ -134,6 +134,33 @@ describe('composeDispatch', () => {
     expect(calls.map((c) => c.name)).toContain('coord:send');
   });
 
+  it('EI-5957: a MANUAL-mode target (staged, woken 0) gets the LOUD "STAGED not delivered" warning', async () => {
+    // The member is ALIVE (parked) but in manual wake-mode, so coord:send stages
+    // the directed note instead of delivering it: woken:0, staged:1, NOT dead/absent.
+    // Before the fix this produced NO warning (a quiet staged read as delivered).
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-manual', sessionState: 'parked', wakeable: true }]),
+      'plan_items:assign': { ok: true, results: [{ ok: true }] },
+      'coord:send': sendEnv('su-manual', {
+        mode: 'required',
+        targets: ['su-manual'],
+        woken: 0,
+        staged: 1,
+        stagedTargets: ['su-manual'],
+        note: 'wake STAGED, NOT delivered for su-manual: target(s) are in MANUAL wake-mode …',
+      }),
+    });
+    const res = await composeDispatch({ ...baseArgs, to: 'su-manual', items: ['P-001'] }, call);
+    expect(res.woken).toBe(0);
+    expect(res.staged).toBe(1);
+    expect(res.recipient_dead).toBeUndefined();
+    expect(res.recipient_absent).toBeUndefined();
+    expect(res.assigned?.ok).toBe(true); // the durable lane still landed
+    expect(res.warning).toMatch(/STAGED/);
+    expect(res.warning).toMatch(/MANUAL wake-mode/);
+    expect(res.warning).toMatch(/wake-queue|wake-mode/);
+  });
+
   it('a live-but-paused target (woken 0, not dead) gets the softer "confirm pickup" warning', async () => {
     const { call } = mockCall({
       'coord:presence': presence([{ ownerId: 'su-paused', sessionState: 'parked', wakeable: true }]),

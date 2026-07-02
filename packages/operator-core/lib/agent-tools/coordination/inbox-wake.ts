@@ -191,7 +191,27 @@ export async function wakeRecipients(
       );
     }
   }
-  return { targets, keys, woken, staged, fanoutCapped };
+  return { targets, keys, woken, staged, stagedTargets, fanoutCapped };
+}
+
+/**
+ * EI-5957: the LOUD note for a wake that STAGED instead of delivering (the
+ * target is in `manual` wake-mode — the hive pause/edit gate). The failure this
+ * fixes: a fleet LEADER's `coord:send`/`coord:dispatch` directive to a member in
+ * manual mode returns a quiet `staged:1` that reads like success, so the leader
+ * assumes delivery while the member never receives the directive (it sat in the
+ * wake-queue undelivered). Pure so it unit-tests without PG; the caller
+ * (send.ts / composeDispatch) attaches it to the wake result.
+ */
+export function buildStagedWakeNote(stagedTargets: readonly string[]): string {
+  const who = stagedTargets.join(', ');
+  return (
+    `wake STAGED, NOT delivered for ${who}: target(s) are in MANUAL wake-mode (the hive pause/edit gate), ` +
+    'so this directive was queued for owner review instead of re-invoking them — they will NOT act on it. ' +
+    'To make it land, RELEASE the staged wake (coord:wake-queue { action: "release_all", agent: <target> }) ' +
+    'or flip the target to auto (coord:wake-mode { agent: <target>, mode: "auto" }), then re-send. ' +
+    'A fleet leader steering its own members almost always wants them on auto.'
+  );
 }
 
 // ── Idle-recipient REPORTING on the no-wake (default inject-only) path ──────────

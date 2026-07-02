@@ -13,7 +13,7 @@ vi.mock('./recipient-resolve', async (importActual) => ({
   resolveBestEffortAgainstRoster: vi.fn(async (recipients: readonly string[]) => [...recipients]),
 }));
 
-import { wakeRecipients } from './inbox-wake';
+import { wakeRecipients, buildStagedWakeNote } from './inbox-wake';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -47,6 +47,7 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(r.woken).toBe(0);
     expect(r.staged).toBe(1);
+    expect(r.stagedTargets).toEqual(['s-1']); // EI-5957: names WHO staged
   });
 
   it('mixed modes → fires auto, stages manual', async () => {
@@ -58,6 +59,7 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(stagePendingWake).toHaveBeenCalledTimes(1);
     expect(r.woken).toBe(1);
     expect(r.staged).toBe(1);
+    expect(r.stagedTargets).toEqual(['s-manual']); // EI-5957: only the manual one
   });
 
   it('a LOOP self-wake (source loop:<routineId>) FIRES even in manual mode — staging a self-wake would DEADLOCK the loop', async () => {
@@ -92,6 +94,22 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     const r = await wakeRecipients(['s-1']);
     expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
     expect(r.staged).toBe(0);
+  });
+});
+
+describe('buildStagedWakeNote (EI-5957 — loud staged-directive signal)', () => {
+  it('names the staged target(s) and both remedies (release / flip to auto)', () => {
+    const note = buildStagedWakeNote(['su-member-1']);
+    expect(note).toContain('su-member-1');
+    expect(note).toMatch(/STAGED/);
+    expect(note).toMatch(/MANUAL wake-mode/);
+    expect(note).toMatch(/wake-queue/); // release remedy
+    expect(note).toMatch(/wake-mode/); // flip-to-auto remedy
+  });
+
+  it('lists every staged target when multiple', () => {
+    const note = buildStagedWakeNote(['su-a', 'su-b']);
+    expect(note).toContain('su-a, su-b');
   });
 });
 

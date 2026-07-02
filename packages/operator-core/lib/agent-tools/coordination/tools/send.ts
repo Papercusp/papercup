@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { sendMessage, getMessageById } from '../messages';
-import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
+import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
@@ -288,6 +288,9 @@ async function sendOne(
         targets: string[];
         woken: number;
         staged?: number;
+        /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
+         *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
+        stagedTargets?: string[];
         recipient_absent?: boolean;
         /** WI-574: the subset of missed targets with NO live session watching their inbox-wake key —
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
@@ -313,6 +316,16 @@ async function sendOne(
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;
+    // EI-5957: a wake that STAGED (target in manual wake-mode) is NOT delivered —
+    // the leader-steering failure was a quiet `staged:1` read as success while the
+    // member never got the directive. Surface it LOUDLY: name the staged target(s)
+    // and how to make it land (release the staged wake, or flip to auto). This does
+    // NOT run when `missed` fires below (missed requires staged === 0), so the two
+    // notes never collide.
+    if (fan.stagedTargets.length > 0) {
+      wake.stagedTargets = fan.stagedTargets;
+      wake.note = buildStagedWakeNote(fan.stagedTargets);
+    }
     const missed = fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'

@@ -67,6 +67,10 @@ export interface DispatchResult {
   delivered: string | null;
   /** How many of the target's wake awaits actually fired (0 = nobody was listening). */
   woken: number;
+  /** EI-5957: >0 when the wake STAGED (target in MANUAL wake-mode — the hive
+   *  pause/edit gate) instead of delivering. The lane is assigned durably but the
+   *  directed note was queued for owner review, NOT delivered — see `warning`. */
+  staged?: number;
   /** A REQUIRED wake that reached a live target but woke nobody (paused/just-ended). */
   recipient_absent?: boolean;
   /** The subset of targets with NO live session watching their inbox-wake key —
@@ -168,7 +172,13 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
     ok?: boolean;
     to?: string[];
     msg_id?: string;
-    wake?: { woken?: number; recipient_absent?: boolean; recipient_dead?: string[]; note?: string };
+    wake?: {
+      woken?: number;
+      staged?: number;
+      recipient_absent?: boolean;
+      recipient_dead?: string[];
+      note?: string;
+    };
     error?: string;
   };
   // coord:send resolves a short handle/prefix to the full ownerId — prefer that as
@@ -180,6 +190,8 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
 
   const wake = r0.wake ?? {};
   const woken = typeof wake.woken === 'number' ? wake.woken : 0;
+  // EI-5957: a wake STAGES (never delivers) when the target is in MANUAL wake-mode.
+  const staged = typeof wake.staged === 'number' ? wake.staged : 0;
 
   const result: DispatchResult = {
     ok: r0.ok !== false,
@@ -189,6 +201,7 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
     assigned,
     delivered: typeof r0.msg_id === 'string' ? r0.msg_id : null,
     woken,
+    ...(staged > 0 ? { staged } : {}),
     ...(wake.recipient_absent ? { recipient_absent: true } : {}),
     ...(Array.isArray(wake.recipient_dead) && wake.recipient_dead.length > 0
       ? { recipient_dead: wake.recipient_dead }
@@ -206,6 +219,18 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
       `${assigned?.ok ? ' — the lane was assigned durably (survives), but' : ' —'} the wake landed nowhere: ` +
       'this target needs a RELAUNCH/resume, not a wake. Re-dispatch to a `parked`/`live` agent ' +
       '(coord:presence → wakeable:true) or respawn this one.';
+  } else if (staged > 0 && woken === 0) {
+    // EI-5957: the target is ALIVE but in MANUAL wake-mode, so the directed note
+    // STAGED for owner review instead of delivering — the #1 leader-steering trap
+    // (a quiet staged:1 read as delivered while the member ran off-mandate). The
+    // lane is assigned durably; the wake just needs releasing or the target on auto.
+    result.warning =
+      `coord:dispatch STAGED (did NOT deliver) to ${resolvedTo}: it is in MANUAL wake-mode (the hive ` +
+      `pause/edit gate), so the note was queued for owner review, not delivered` +
+      `${assigned?.ok ? ' (the lane was still assigned durably)' : ''} — the target will NOT pick up ` +
+      `this directive until the staged wake is RELEASED (coord:wake-queue { action: "release_all", agent: "${resolvedTo}" }) ` +
+      `or it is flipped to auto (coord:wake-mode { agent: "${resolvedTo}", mode: "auto" }). A fleet leader ` +
+      'steering its own members almost always wants them on auto.';
   } else if (wake.recipient_absent && woken === 0) {
     result.warning =
       `coord:dispatch woke nobody for ${resolvedTo} (it is live-but-paused or just ended its turn) — the ` +
