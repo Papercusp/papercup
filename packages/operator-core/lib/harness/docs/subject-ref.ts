@@ -117,6 +117,43 @@ export function parseDocumentsField(value: unknown): SubjectRef[] {
   return [];
 }
 
+/**
+ * Extract the raw `documents:` value from a markdown body's YAML frontmatter.
+ * PURE regex parse (no YAML lib, no fs) — moved here (from manual-anchor.ts,
+ * agent-insight-file-citations-on-disk-migr-2026-06-12 WI-1576) so it lives
+ * alongside `parseDocumentsField`/`parseSubjectRef` in the one dependency-light
+ * module: any caller that only needs "what does this doc's frontmatter cite" —
+ * e.g. a CI lint — can import it without dragging in manual-anchor.ts's PG-backed
+ * anchoring machinery (`@papercusp/db-org` via feature-commits.ts). Re-exported
+ * from `manual-anchor.ts` unchanged for existing callers.
+ */
+export function frontmatterDocuments(body: string): unknown {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
+  if (!m) return undefined;
+  const fm = m[1];
+  // documents: a single scalar, an inline [a, b], or a block list of "- item".
+  const line = /^documents:[ \t]*(.*)$/m.exec(fm);
+  if (!line) return undefined;
+  const rhs = line[1].trim();
+  if (rhs && rhs !== '|' && rhs !== '>') {
+    if (rhs.startsWith('[')) {
+      // inline flow array
+      const inner = rhs.replace(/^\[|\]$/g, '');
+      return inner.split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+    }
+    return rhs.replace(/^['"]|['"]$/g, '');
+  }
+  // block list: collect following "  - foo" lines.
+  const after = fm.slice((line.index ?? 0) + line[0].length);
+  const items: string[] = [];
+  for (const l of after.split('\n')) {
+    const li = /^\s*-\s+(.*)$/.exec(l);
+    if (li) items.push(li[1].trim().replace(/^['"]|['"]$/g, ''));
+    else if (l.trim() && !/^\s/.test(l)) break; // next top-level key ends the list
+  }
+  return items.length ? items : undefined;
+}
+
 /** Human/compact display form (round-trips through parseSubjectRef for path/symbol/feature). */
 export function stringifySubjectRef(ref: SubjectRef): string {
   switch (ref.kind) {
