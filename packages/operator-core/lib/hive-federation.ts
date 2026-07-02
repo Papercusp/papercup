@@ -96,10 +96,26 @@ export async function hiveHomeSlugForHarness(
   // the cross-process-stale registry cache (see joinerHiveHomeSlug / boot.ts).
   opts?: { fresh?: boolean },
 ): Promise<string | null> {
-  if (await getHiveBySlug(workspaceId, harnessSlug)) return harnessSlug;
+  // Registry FIRST: it answers in EVERY process. The PG identity read used to
+  // run first, but the substrate SIDECAR (and in-process test harnesses) may
+  // have no org-PG configured — getOrgPg().sql is undefined there and the read
+  // THREW (TypeError: reading 'unsafe'), taking down every caller on this path:
+  // the owner announce-admit (boot.ts admitAnnouncedPeerAsOwner) and the
+  // joiner's home-resolve → rekey/forceReFold (empty-roster live symptom,
+  // 2026-07-01, Brief-3 rig).
   const reg = await loadHarnessRegistry(workspaceId, opts);
-  const member = reg.projects.find((x) => x.slug === harnessSlug);
-  return member?.hive_slug ?? null;
+  const entry = reg.projects.find((x) => x.slug === harnessSlug);
+  if (entry?.harness_kind === 'hive') return harnessSlug;
+  if (entry?.hive_slug) return entry.hive_slug;
+  // Registry didn't answer — the PG identity row is the fallback discriminator
+  // for a hive home with no (or a legacy) registry entry. GUARDED: an
+  // unconfigured org-PG must mean "no identity row visible here", never a crash.
+  try {
+    if (await getHiveBySlug(workspaceId, harnessSlug)) return harnessSlug;
+  } catch {
+    /* no org-PG in this process — the registry above was the best answer */
+  }
+  return null;
 }
 
 /**
