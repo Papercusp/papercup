@@ -27,11 +27,10 @@
  */
 export interface AccountEgress {
   /**
-   * Forward-proxy URL for this account's upstream requests. Must be `http://` or `https://` — the
-   * gateway routes it through undici's ProxyAgent (HTTP CONNECT). A `socks://` URL is NOT yet
-   * supported: the gateway ignores it with a warning and falls back to `localAddress` (if set) or the
-   * default shared egress, rather than silently 502-ing the account. Native SOCKS egress is tracked in
-   * WI-284.
+   * Forward-proxy URL for this account's upstream requests. Two schemes are routed: `http://`/`https://`
+   * (undici's ProxyAgent, HTTP CONNECT) and `socks5://`/`socks://` (undici's native Socks5ProxyAgent,
+   * WI-284). Any OTHER scheme is not supported: the gateway ignores it with a warning and falls back to
+   * `localAddress` (if set) or the default shared egress, rather than silently 502-ing the account.
    */
   proxyUrl?: string;
   /** Local source IP to bind the upstream socket to (when the host has multiple egress IPs). */

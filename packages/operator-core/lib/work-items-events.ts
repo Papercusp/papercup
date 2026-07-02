@@ -42,10 +42,26 @@ const SETTLED_STATES: Record<WorkItemFamily, readonly string[]> = {
   issue: ['resolved', 'closed'],
 };
 
-/** Errors a partial test schema produces — expected fail-soft, not warn-worthy. */
+/**
+ * Errors that are EXPECTED for a best-effort, fire-and-forget notification and
+ * so must never warn (vitest-fail-on-console would then flake any rig test):
+ *   - a partial test schema (a projection table the emit touches is absent →
+ *     "… does not exist");
+ *   - the emit's async query outliving the Postgres pool it ran on (a rig/test
+ *     tearing down mid-emit → postgres.js CONNECTION_ENDED/CONNECTION_DESTROYED).
+ * Anything else is a genuine surprise worth a warn.
+ */
 function failSoft(scope: string, e: unknown): void {
   const msg = e instanceof Error ? e.message : String(e);
   if (/does not exist/.test(msg)) return;
+  const code = (e as { code?: unknown } | null)?.code;
+  if (
+    code === 'CONNECTION_ENDED' ||
+    code === 'CONNECTION_DESTROYED' ||
+    /CONNECTION_ENDED|CONNECTION_DESTROYED|Connection ended/i.test(msg)
+  ) {
+    return;
+  }
   console.warn(`[work-items-events] ${scope} emit failed: ${msg}`);
 }
 

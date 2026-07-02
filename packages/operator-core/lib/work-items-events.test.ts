@@ -155,6 +155,26 @@ describe('emitWorkItemClaimedEvent', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('claimed-event'));
     warn.mockRestore();
   });
+
+  // EI-6788: a fire-and-forget emit whose query outlives the Postgres pool it
+  // ran on (a rig/test tearing down mid-emit) rejects with postgres.js
+  // CONNECTION_ENDED — expected teardown noise, NOT a warn (else it flakes any
+  // rig-based integration test via vitest-fail-on-console). Same for the partial
+  // test schema ("… does not exist"). failSoft must swallow both silently.
+  it.each([
+    ['CONNECTION_ENDED by code', Object.assign(new Error('write CONNECTION_ENDED localhost:36195'), { code: 'CONNECTION_ENDED' })],
+    ['CONNECTION_ENDED by message only', new Error('write CONNECTION_ENDED 127.0.0.1:5432')],
+    ['CONNECTION_DESTROYED by code', Object.assign(new Error('boom'), { code: 'CONNECTION_DESTROYED' })],
+    ['partial-schema does not exist', new Error('relation "harness_shared.work_items" does not exist')],
+  ])('swallows expected fire-and-forget teardown noise WITHOUT warning: %s', async (_label, thrown) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemClaimedEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw thrown; });
+    expect(() => emitWorkItemClaimedEvent(wi(), 'su-x', { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
 describe('emitWorkItemBlockedEvent', () => {

@@ -58,7 +58,7 @@ import {
 } from './codex-cli-bridge';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
-import { egressCacheKey } from './egress-dispatcher';
+import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 import {
   CLIENT_CIRCUIT_ZERO,
@@ -1242,17 +1242,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // source IP, not a datacenter proxy) is deliberately still honored.
     if (proxyEgressDisabled && eg?.proxyUrl) eg = eg.localAddress ? { ...eg, proxyUrl: undefined } : undefined;
     if (!eg || (!eg.proxyUrl && !eg.localAddress)) return undefined;
-    // undici's ProxyAgent is an HTTP-CONNECT proxy client — it does NOT speak SOCKS. A socks:// (or any
-    // non-http(s)) proxyUrl CONSTRUCTS without error but fails at REQUEST time (the proxy rejects the
-    // HTTP CONNECT), which would silently 502 every request for this account. So honor only http(s)
-    // proxies here; a non-http(s) scheme is IGNORED with a loud warning and we fall through to a bound
-    // source IP (localAddress) if set, else default shared egress — fail SAFE, never silently break an
-    // account. Native SOCKS egress is a tracked follow-up (WI-284).
-    const httpProxy = eg.proxyUrl && /^https?:\/\//i.test(eg.proxyUrl) ? eg.proxyUrl : undefined;
-    if (eg.proxyUrl && !httpProxy) {
-      log('warn', `inference-gateway: egress proxyUrl for '${account.accountId}' ('${eg.proxyUrl}') is not http(s) — undici ProxyAgent is HTTP-CONNECT only; ignoring it (native SOCKS is a follow-up, WI-284)`);
+    // Two forward-proxy schemes are honored: http(s):// (undici's ProxyAgent, HTTP-CONNECT) and
+    // socks5://|socks:// (undici's Socks5ProxyAgent, native SOCKS5 — WI-284). ANY other scheme
+    // (e.g. ftp://) would CONSTRUCT without error via the old ProxyAgent-only path but fail at
+    // REQUEST time (the proxy rejects the HTTP CONNECT), silently 502-ing every request for this
+    // account — so it is IGNORED with a loud warning and we fall through to a bound source IP
+    // (localAddress) if set, else default shared egress — fail SAFE, never silently break an
+    // account. Kept IN LOCKSTEP with the canonical egress-dispatcher.ts (see its header note).
+    const httpProxy = egressIsHttpProxy(eg.proxyUrl) ? eg.proxyUrl : undefined;
+    const socks5Proxy = !httpProxy && egressIsSocks5Proxy(eg.proxyUrl) ? eg.proxyUrl : undefined;
+    if (eg.proxyUrl && !httpProxy && !socks5Proxy) {
+      log('warn', `inference-gateway: egress proxyUrl for '${account.accountId}' ('${eg.proxyUrl}') is neither http(s) nor socks5 — ignoring it`);
     }
-    if (!httpProxy && !eg.localAddress) return undefined;
+    if (!httpProxy && !socks5Proxy && !eg.localAddress) return undefined;
     const key = egressCacheKey(account.accountId, eg);
     const hit = dispatcherCache.get(key);
     if (hit) return hit;
@@ -1260,7 +1262,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       undiciMod ??= await import('undici');
       const d: UndiciDispatcher = httpProxy
         ? new undiciMod.ProxyAgent(httpProxy)
-        : new undiciMod.Agent({ connect: { localAddress: eg.localAddress } });
+        : socks5Proxy
+          ? new undiciMod.Socks5ProxyAgent(socks5Proxy)
+          : new undiciMod.Agent({ connect: { localAddress: eg.localAddress } });
       dispatcherCache.set(key, d);
       return d;
     } catch (e) {

@@ -12,15 +12,18 @@
  *  1. NO ZOMBIE FEDERATION — B's post-revocation writes (its zombie pipeline
  *     completing the item) NEVER reach A's PG; the views diverge BY DESIGN
  *     (B's sovereignty over its own DB is not A's problem).
- *  2. ASYMMETRY → RE-KEY READ-CUTOFF (P-007, shared-hive-rekey-2026-06-19):
- *     PRE-re-key, revocation is one-sided — A's writes still reach B (B never
- *     revoked A). UNDER the re-key (C-001 read-plane revocation), member-remove
- *     advances the hive epoch and A's post-boundary content is encrypted to the
- *     REMAINING members only, so the revoked peer can no longer READ it. Step 2
- *     below is flag-gated on `papercusp-hive-rekey` (dark default → asserts the
- *     current behavior, suite stays green); the read-cutoff branch is the
- *     integration witness that activates once the op-path wiring + the flag land
- *     (su-ee7e9's P-004 boundary/op-path + P-008 live cut-off witness).
+ *  2. FEDERATION ASYMMETRY at the log layer (P-007, shared-hive-rekey-2026-06-19):
+ *     revocation is one-sided here — A's writes still reach B (B never revoked A).
+ *     This rig models federation at the PG/CDC layer with NO epoch crypto, so it
+ *     faithfully witnesses only that log-layer asymmetry. The RE-KEY content
+ *     read-cut (C-001 read-plane revocation: member-remove advances the hive epoch
+ *     and A's post-boundary content is encrypted to the REMAINING members only, so
+ *     the revoked peer reads ciphertext it cannot decrypt) runs the REAL crypto
+ *     op-path and is witnessed by its DEDICATED tests — hive-epoch-read-cut-witness
+ *     (K-CUT) + hive-late-join-epoch-decrypt-federation — NOT this rig. (EI-6788: a
+ *     prior flag-gated `rekeyOn` branch tried to witness the crypto cut-off here; it
+ *     was a false witness and broke when `papercusp-hive-rekey` graduated default-on,
+ *     since the flag was on but the read-cut it gates lives in the hyperbee layer.)
  *  3. AUTHORITY MEMBERSHIP ENFORCEMENT (EI-284 — was the probed gap, now
  *     fixed): the claim-op layer gates acquire/heartbeat on the CALLER's hive
  *     standing (`registerWorkItemClaimAuthorityOps` isCallerRevoked seam; the
@@ -39,8 +42,6 @@ import { bootCompositionRig, type CompositionRig } from './composition-rig';
 import { sweepOrphanedTakenBy } from './fleet-monitors';
 import { adoptCompletion, type CompletionRecord } from './lease-steal-semantics';
 import type { WorkItemClaim } from '../work-item-claims';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
 
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -102,14 +103,21 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
       expect(bView.get('F-601')).toBe('passed'); // B's own DB — its sovereignty
       expect(aView.get('F-601'), "the revoked swarm's completion must NOT reach the Hive").not.toBe('passed');
 
-      // ── 2. RE-KEY INVERSION (P-007, shared-hive-rekey-2026-06-19): pre-re-key this
-      //    asymmetry holds — A's work still reaches B (B never revoked A). UNDER the
-      //    re-key, member-remove cuts B's READ access: A's post-boundary content is
-      //    encrypted to the remaining members only, so the revoked peer reads ciphertext
-      //    it cannot decrypt. Flag-gated (dark default → green today); the read-cutoff
-      //    branch is the integration witness that activates with the op-path wiring + the
-      //    flag flip (su-ee7e9's P-004 op-path + P-008 live witness). ──
-      const rekeyOn = await getFlag(FLAGS.HIVE_REKEY, 'system').catch(() => false);
+      // ── 2. FEDERATION ASYMMETRY at the log layer (this hermetic rig's faithful,
+      //    crypto-free behavior). Revocation is ONE-SIDED here: A stopped reading B
+      //    (step 1), but B never revoked A, so A's post-revocation writes STILL
+      //    federate to B. This rig models federation at the PG/CDC layer with NO
+      //    epoch crypto, so it cannot — and must not — witness the RE-KEY content
+      //    read-cut (P-007: A encrypting post-boundary content to the REMAINING
+      //    members only, so the revoked peer reads ciphertext it cannot decrypt).
+      //    That end-to-end read-cut runs the REAL XChaCha20-Poly1305 op-path and is
+      //    witnessed by its dedicated tests — hive-epoch-read-cut-witness.test.ts
+      //    (K-CUT) and hive-late-join-epoch-decrypt-federation.integration.test.ts —
+      //    NOT here. (EI-6788: a prior flag-gated `rekeyOn` branch asserted the crypto
+      //    cut-off in this rig; it was a false witness — the rig has no crypto op-path
+      //    to activate — and broke the moment `papercusp-hive-rekey` graduated to
+      //    default-on, since the flag was on but the read-cut it gates lives in the
+      //    hyperbee layer, not this federation model.) ──
       const cA = await rig.claimNext(a);
       expect(cA).toMatchObject({ item: { id: 'F-602' }, leased: true, via: 'local-authority' });
       await rig.runFakePipeline(a, 'F-602');
@@ -117,17 +125,10 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
       const bF602 = new Map((await rig.readBacklog(b)).map((r) => [r.feature_id, r.status])).get(
         'F-602',
       );
-      if (rekeyOn) {
-        expect(
-          bF602,
-          "RE-KEY read-cutoff: the revoked peer cannot read A's post-boundary content (encrypted to remaining members only)",
-        ).not.toBe('passed');
-      } else {
-        expect(
-          bF602,
-          "today (no re-key): the revoking side's writes still federate to the revoked peer",
-        ).toBe('passed');
-      }
+      expect(
+        bF602,
+        "log-layer asymmetry: the revoking side's writes still federate to the revoked peer (the crypto read-cut is witnessed by the real-crypto epoch tests, not this rig)",
+      ).toBe('passed');
 
       // ── 3. Authority MEMBERSHIP ENFORCEMENT (EI-284, flipped from the filed
       //    gap): the revoked swarm's lease RPC is REFUSED on caller standing —
