@@ -1391,6 +1391,75 @@ export async function emitObjectiveTitle(): Promise<void> {
   }
 }
 
+/** True iff `toolName` is OMP's native keyword tool-search (`search_tool_bm25`) — the discovery
+ *  off-ramp the trimmed surface (weak-model-tool-tier-2026-07-01) replaces with tools:find.
+ *  Case-insensitive. Pure. */
+export function isNativeToolSearch(toolName: string): boolean {
+  return toolName.toLowerCase() === 'search_tool_bm25';
+}
+
+/** Pull the search query out of a native tool-search call, tolerant of the exact field name
+ *  (query / keyword(s) / q / search / text, else the first non-empty string value). Pure. */
+export function extractToolSearchQuery(input: Record<string, unknown> | undefined): string {
+  for (const k of ['query', 'keyword', 'keywords', 'q', 'search', 'text']) {
+    const v = input?.[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  for (const v of Object.values(input ?? {})) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
+/** Render the block-reason returned when an agent session reaches for search_tool_bm25: the
+ *  instruction to use tools:find→tools:invoke, plus the inline tools:find matches (the
+ *  "suggestion") when we have them. Pure — the I/O (running tools:find) is buildToolFindRedirect. */
+export function formatToolFindRedirect(
+  query: string,
+  hits: ReadonlyArray<{ tool?: string; description?: string }>,
+): string {
+  const head =
+    'search_tool_bm25 is disabled for agent sessions — use tools:find (semantic + lexical ' +
+    'discovery over the full catalog) to find a tool, then tools:invoke {name, args} to call it ' +
+    '(tools:invoke runs any catalog tool server-side, no load/activation step). ';
+  if (!query) return head + 'Call tools:find("<what you need>") next.';
+  const lines = hits
+    .map((h) => {
+      const name = (h.tool ?? '').trim();
+      if (!name) return '';
+      const desc = (h.description ?? '').split('\n')[0].trim().slice(0, 100);
+      return `  • ${name}${desc ? ` — ${desc}` : ''}`;
+    })
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return (
+      head +
+      `I ran tools:find(${JSON.stringify(query)}) for you and it returned no matches — refine the ` +
+      'query and call tools:find yourself.'
+    );
+  }
+  return (
+    head +
+    `I already ran tools:find(${JSON.stringify(query)}) — top matches:\n${lines.join('\n')}\n` +
+    'Call the one you need with tools:invoke {name:"<exact name>", args:{…}}.'
+  );
+}
+
+/** Off-ramp redirect (I/O): extract the query from a native tool-search call, run tools:find with
+ *  it, and return the block-reason with the matches inline. Never throws — a failed/timed-out
+ *  tools:find degrades to the plain "call tools:find yourself" instruction. */
+export async function buildToolFindRedirect(
+  input: Record<string, unknown> | undefined,
+): Promise<string> {
+  const query = extractToolSearchQuery(input);
+  if (!query) return formatToolFindRedirect('', []);
+  const res = (await callMcpTool('tools:find', { query, limit: 8 }, { timeoutMs: 5000 }).catch(
+    () => null,
+  )) as { hits?: Array<{ tool?: string; description?: string }> } | null;
+  const hits = Array.isArray(res?.hits) ? res!.hits : [];
+  return formatToolFindRedirect(query, hits);
+}
+
 export async function onToolCall(
   event: ToolCallEvent,
 ): Promise<{ block?: boolean; reason?: string }> {
@@ -1434,6 +1503,19 @@ export async function onToolCall(
     if (gitOp) {
       return { block: true, reason: destructiveGitDenyReason(gitOp) };
     }
+  }
+
+  // Off-ramp closure (weak-model-tool-tier-2026-07-01 / ornith-coordination): CLOSE OMP's native
+  // search_tool_bm25 for agent sessions and REDIRECT to tools:find. The trimmed surface hands a
+  // weak/local model (e.g. ornith IQ3_M) tools:find + tools:invoke as its ONLY discovery path —
+  // everything else stays reachable THROUGH them. search_tool_bm25 is a competing keyword search
+  // that (a) a weak model reaches for despite the prompt telling it not to, and (b) dumps dozens
+  // of tool schemas into context, after which the model mangles its NEXT tool-call JSON (the
+  // D-010 retry storm). So don't just block it — run tools:find with the model's own query and
+  // hand back the top matches inline: the model is forced onto tools:find→tools:invoke AND still
+  // gets its answer this turn. Gated on the agent-session marker (owner sessions unrestricted, D-003).
+  if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isNativeToolSearch(event.toolName)) {
+    return { block: true, reason: await buildToolFindRedirect(event.input) };
   }
 
   // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui

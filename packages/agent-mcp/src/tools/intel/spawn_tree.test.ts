@@ -109,16 +109,16 @@ describe('intel:spawn_tree — status enum arg', () => {
     "accepts the valid status %s and binds it to the query",
     async (status) => {
       await call({ harness: 'sheets', status });
-      // query values: [harness, sinceMs, status, status]
+      // query values (WI-1671, tool_invocations_spawn_tree_filtered call):
+      // [harness, sinceMs, status, limit] — status is now a single named
+      // function arg (p_status), not duplicated across an `IS NULL OR =` pair.
       expect(lastValues[2]).toBe(status);
-      expect(lastValues[3]).toBe(status);
     },
   );
 
-  it('binds null for status when omitted (the IS NULL passthrough branch)', async () => {
+  it('binds null for status when omitted (the p_status NULL default branch)', async () => {
     await call({ harness: 'sheets' });
     expect(lastValues[2]).toBeNull();
-    expect(lastValues[3]).toBeNull();
   });
 });
 

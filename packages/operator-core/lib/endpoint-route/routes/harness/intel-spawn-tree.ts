@@ -28,11 +28,16 @@ export default defineTool({
 
     try {
       const { sql } = getOrgPg();
-      // P-041: the view exposes workspace_id, so scope it EXPLICITLY. getOrgPg
-      // uses the admin role (bypasses RLS) and tool_invocations_spawn_tree is
-      // not a security_invoker view, so the prior set_config('app.workspace_id')
-      // in a tx was a dead no-op — the query returned every workspace's
-      // spawn-tree rows for a colliding harness_slug.
+      // WI-1671: tool_invocations_spawn_tree_filtered (Migration 459) — a
+      // parameterized SQL function replacing the bare `tool_invocations_spawn_tree`
+      // view. The view's `WITH RECURSIVE` base term has no filter, so Postgres
+      // can't push workspace_id/harness_slug/invoked_at/status down into it —
+      // every query scanned the WHOLE tool_invocations table (7.4M rows) before
+      // this LIMIT applied (EI-6801: a 27-min wedge, fleet-wide lock stampede).
+      // The function selects the filtered candidates FIRST (indexed), then
+      // walks UP (bounded 16 hops) to compute depth/root_spawn_id.
+      // P-041: explicit workspace_id scope — getOrgPg uses the admin role
+      // (bypasses RLS), so pass ws explicitly rather than relying on RLS.
       const rows = await sql<Array<{
         id: number;
         tool_name: string;
@@ -58,13 +63,13 @@ export default defineTool({
                window_key, invoked_at, duration_ms, status,
                output_ref, output_size, error_message,
                depth, root_spawn_id
-          FROM harness_shared.tool_invocations_spawn_tree
-         WHERE workspace_id = ${ws}
-           AND harness_slug = ${slug}
-           AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
-           AND (${status}::text IS NULL OR status = ${status})
-         ORDER BY invoked_at DESC
-         LIMIT ${limit}
+          FROM harness_shared.tool_invocations_spawn_tree_filtered(
+                 p_harness_slug => ${slug},
+                 p_since => to_timestamp(${sinceMs}::double precision / 1000.0),
+                 p_status => ${status},
+                 p_limit => ${limit},
+                 p_workspace_id => ${ws}
+               )
       `;
       return Response.json({
         rows: rows.map((r) => ({

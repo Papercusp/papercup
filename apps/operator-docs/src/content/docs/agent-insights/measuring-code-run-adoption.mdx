@@ -311,3 +311,28 @@ the quick read; this query is the precise one.)
 
 Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a regression — a new tool
 shipping a tight cap, or adoption sliding back — surfaces without a manual audit.
+
+**WI-839 — each metric is a first-class read** (mirrors `dev:code_run_adoption`'s pattern for metric #2
+above):
+- **Metric #1** (string-limit failure rate) → **`dev:limit_failure_rate { sinceDays? }`**
+  (`packages/operator-core/lib/limit-failure-rate.ts`) — a fleet total + per-tool breakdown + a graded
+  rating (`healthy` < 10 errs/window, `broken` ≥ 100).
+- **Metric #3** (orient-dedup / redundant-recall rate) → **`dev:orient_dedup_rate { sinceHours? }`**
+  (`packages/operator-core/lib/orient-dedup-rate.ts`) — oriented-spawn count, redundant-recall count,
+  `pctRedundant`, and a graded rating (`healthy` < 25%, `broken` ≥ 60%).
+- Both are pure + unit-tested (injected `RunQuery`, no PG in tests) exactly like `code-run-adoption.ts`;
+  each exports its canonical SQL (`LIMIT_FAILURE_RATE_SQL` / `ORIENT_DEDUP_RATE_SQL`) so it is also
+  directly runnable via `dev:pg_query` if a caller wants the raw rows instead of the rolled-up read.
+
+**WI-839 — now ALSO a recurring measurement, not just an on-demand `dev:` read.** The dev: tools above
+are manual (someone has to remember to call them); the item's real ask ("so a regression surfaces
+without a manual audit") needed a periodic surface. `system-health/compute.ts`'s `collectToolEfficiency`
+folds all 3 grades (adoption + limit-failure + orient-dedup) into ONE new Health-tab panel
+(`PanelKey: 'toolEfficiency'`, `types.ts`) computed on every `computeSystemHealth` tick (the same ~30s
+cadence every other panel runs on) — surfaced on the read-only Health tab (flag
+`papercusp-system-health-tab`) with zero bespoke UI code (the tab renders generically off
+`PANEL_ORDER`/`health.panels[key]`). Panel status: `crit` if any leg graded `broken`, `warn` if any is
+`degraded`, `unknown` only when every leg's window is too small to grade, else `ok`
+(`toolEfficiencyStatus`, pure + unit-tested in `compute.test.ts`). So a regression in any of the 3 now
+greys/reds a Health-tab card automatically, on the existing tick — no manual `dev:` call or
+`dev:pg_query` needed to notice one.

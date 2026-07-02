@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, tallyPlans, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 
@@ -244,5 +244,26 @@ describe('probeGatewayHealthz retry (EI-1693 sibling — one transient timeout i
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('toolEfficiencyStatus — WI-839 tool-efficiency panel status fold', () => {
+  it('any leg broken → crit, regardless of the others', () => {
+    expect(toolEfficiencyStatus(['broken', 'healthy', 'unknown'])).toBe('crit');
+    expect(toolEfficiencyStatus(['healthy', 'healthy', 'broken'])).toBe('crit');
+  });
+  it('no broken but any degraded → warn', () => {
+    expect(toolEfficiencyStatus(['degraded', 'healthy', 'unknown'])).toBe('warn');
+  });
+  it('every leg unknown (all windows too small to grade) → unknown, not ok', () => {
+    expect(toolEfficiencyStatus(['unknown', 'unknown', 'unknown'])).toBe('unknown');
+  });
+  it('all healthy (some possibly unknown) → ok', () => {
+    expect(toolEfficiencyStatus(['healthy', 'healthy', 'healthy'])).toBe('ok');
+    expect(toolEfficiencyStatus(['healthy', 'unknown', 'healthy'])).toBe('ok');
+  });
+  it('broken beats degraded beats unknown-only (precedence order)', () => {
+    expect(toolEfficiencyStatus(['broken', 'degraded'])).toBe('crit');
+    expect(toolEfficiencyStatus(['degraded', 'unknown'])).toBe('warn');
   });
 });
