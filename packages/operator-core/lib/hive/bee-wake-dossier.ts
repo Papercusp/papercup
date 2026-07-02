@@ -57,6 +57,9 @@ export interface BeeDossierInput {
   comments?: readonly string[];
   /** The hive-peer roster snapshot (D-008) — live peers the bee shares the hive with. */
   roster?: readonly BeeRosterPeer[];
+  /** STANDING FACTS (queen-memory-hybrid L1c) — pre-rendered deterministic fold
+   *  (workspace + role:bee + harness + this work_item scopes). Verbatim delivery. */
+  factsFold?: string | null;
   caps?: Partial<BeeDossierCaps>;
 }
 
@@ -133,6 +136,13 @@ export function renderBeeDossier(input: BeeDossierInput): string {
     }
     const overflow = roster.length - caps.roster;
     if (overflow > 0) out.push(`…+${overflow} more (coord:presence to drill down)`);
+  }
+
+  // STANDING FACTS (L1c) — deterministic scoped conclusions, delivered verbatim.
+  const factsFold = (input.factsFold ?? '').trim();
+  if (factsFold) {
+    out.push('');
+    out.push(factsFold);
   }
 
   return out.join('\n');
@@ -229,6 +239,23 @@ export async function computeBeeWakeDossier(input: ComputeBeeWakeDossierInput): 
     .filter(Boolean);
   const roster = await deps.listRoster(workspaceId).catch(() => [] as BeeRosterPeer[]);
 
+  // STANDING FACTS (L1c) — fail-soft: a facts outage never blocks the dossier.
+  const factsFold = await import('../agent-facts/store')
+    .then(async (m) =>
+      m.renderFactsFold(
+        await m.foldFacts(
+          [
+            { scope: 'workspace' },
+            { scope: 'role', scopeRef: 'bee' },
+            { scope: 'harness', scopeRef: harness },
+            { scope: 'work_item', scopeRef: workItemId },
+          ],
+          { workspaceId },
+        ),
+      ),
+    )
+    .catch(() => '');
+
   return renderBeeDossier({
     item,
     planItem: planItem ? dstLabel(planItem) : null,
@@ -236,6 +263,7 @@ export async function computeBeeWakeDossier(input: ComputeBeeWakeDossierInput): 
     topics: detail?.topics ?? [],
     comments,
     roster,
+    factsFold,
     caps: input.caps,
   });
 }

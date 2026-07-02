@@ -148,3 +148,71 @@ describe('focused-window attendance (gateway-rayobyte-hardening P-006)', () => {
     expect(ownerOwnsWindow(sessions, windows, 0xdead, 'su-human')).toBe(false); // active window unknown to wmctrl
   });
 });
+
+describe('proc-ancestry on-desktop detection (WI-1586 — the launch-capture-free leg)', () => {
+  // A /proc/<pid>/stat line: pid (comm) state ppid pgrp session tty_nr tpgid …
+  const stat = (pid: number, comm: string, ppid: number) => `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 4194304`;
+
+  describe('parsePpidFromStat', () => {
+    it('parses ppid from a normal stat line', () => {
+      expect(parsePpidFromStat(stat(100, 'node', 42))).toBe(42);
+    });
+
+    it('handles comm with spaces and parens (slice after the LAST close-paren)', () => {
+      expect(parsePpidFromStat('200 (my (weird) proc) S 77 200 200 0 -1 0')).toBe(77);
+    });
+
+    it('garbage / pid-1 root → null (chain ends, never a bogus walk)', () => {
+      expect(parsePpidFromStat('garbage')).toBeNull();
+      expect(parsePpidFromStat('1 (init) S 0 1 1 0 -1 0')).toBeNull(); // ppid 0
+    });
+  });
+
+  describe('pidHasWindowAncestor', () => {
+    /** In-memory proc tree: pid → [comm, ppid]. */
+    const tree = (t: Record<number, number>) => async (pid: number) =>
+      t[pid] != null ? stat(pid, 'p', t[pid]) : null;
+
+    it('matches the gnome-terminal shape: host ← shell ← terminal-server (window owner)', async () => {
+      // 363663 (psu host) ← 363649 (bash) ← 1357544 (gnome-terminal-server, owns the windows)
+      const readStat = tree({ 363663: 363649, 363649: 1357544, 1357544: 1 });
+      expect(await pidHasWindowAncestor(363663, new Set([1357544]), readStat)).toBe(true);
+    });
+
+    it('matches the pid itself (window pid == the session pid, e.g. standalone emulators)', async () => {
+      expect(await pidHasWindowAncestor(500, new Set([500]), tree({}))).toBe(true);
+    });
+
+    it('a headless chain (reparented to init / spawned by a service) never matches', async () => {
+      const readStat = tree({ 1999914: 1999867, 1999867: 1346348, 1346348: 1 });
+      expect(await pidHasWindowAncestor(1999914, new Set([1357544]), readStat)).toBe(false);
+    });
+
+    it('a vanished proc mid-walk ends the chain (best-effort, never over-protects on garbage)', async () => {
+      const readStat = tree({ 100: 99 }); // 99 has no stat (gone)
+      expect(await pidHasWindowAncestor(100, new Set([1357544]), readStat)).toBe(false);
+    });
+
+    it('empty window-pid set short-circuits to false', async () => {
+      const readStat = vi.fn(async () => stat(1, 'x', 1));
+      expect(await pidHasWindowAncestor(100, new Set(), readStat)).toBe(false);
+      expect(readStat).not.toHaveBeenCalled();
+    });
+
+    it('a ppid CYCLE (corrupt stat) is bounded by the depth cap, not an infinite loop', async () => {
+      const readStat = tree({ 100: 200, 200: 100 }); // cycle
+      expect(await pidHasWindowAncestor(100, new Set([1357544]), readStat)).toBe(false);
+    });
+  });
+
+  describe('windowOwningPids', () => {
+    it('collects distinct window pids, dropping null/zero', () => {
+      const pids = windowOwningPids([
+        { wid: '0x1', pid: 1357544, title: 'Terminal' },
+        { wid: '0x2', pid: 1357544, title: 'Terminal' },
+        { wid: '0x3', pid: null, title: 'no pid' },
+      ]);
+      expect([...pids]).toEqual([1357544]);
+    });
+  });
+});

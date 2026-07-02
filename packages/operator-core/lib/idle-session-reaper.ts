@@ -784,6 +784,12 @@ export async function reapZombieResumeProcs(
 
   for (const z of zombies) {
     try {
+      // On-desktop spare, ancestry-keyed (WI-1586): the sessionId-keyed spare in
+      // planZombieReap depends on launch-recorded window handles that can rot —
+      // this live /proc-ancestry check spares a proc inside an open terminal
+      // window even when its adv row carries no handle. Applies to dryRun too
+      // (a plan must never list a kill the real run would refuse).
+      if (await deps.pidOnDesktop(z.pid).catch(() => false)) continue;
       if (dryRun) {
         result.killedPids.push(z.pid);
         continue;

@@ -15,6 +15,8 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { readCoordLivenessConfig } from '../../coord-liveness-config';
+import { gatherOnDesktopSessions, listOpenWindows } from '../../desktop-window-liveness';
+import { listLiveHosts } from '../../events/await/psu-pty-discovery';
 import {
   runIdleSessionReap,
   findIdleLiveSessions,
@@ -26,6 +28,30 @@ import {
 registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
+
+  // On-desktop exemption HEALTH PROBE (WI-1586 recurrence guard) — runs before
+  // any destructive slice. The 2026-06-29 hard-exemption silently no-op'd for a
+  // month ("0 on-desktop/hard-exempt" every sweep — launch-handle capture had
+  // rotted) until the reaper killed a session the owner had open on screen.
+  // The broken shape is DETECTABLE: open desktop windows + live interactive psu
+  // hosts but ZERO protected owners. Surface it loudly every sweep.
+  try {
+    const [onDesktop, windows] = await Promise.all([gatherOnDesktopSessions(), listOpenWindows()]);
+    const hosts = listLiveHosts();
+    console.log(
+      `[idle-session-reaper] on-desktop exemption: ${onDesktop.owners.size} owner(s) protected ` +
+        `(${windows.length} open window(s), ${hosts.length} live psu host(s))`,
+    );
+    if (windows.length > 0 && hosts.length > 0 && onDesktop.owners.size === 0) {
+      console.warn(
+        '[idle-session-reaper] ⚠ on-desktop exemption looks BROKEN: open windows AND live interactive ' +
+          'hosts but ZERO protected owners — the WI-1586 regression shape (handle capture rot / ancestry ' +
+          'walk failure). A desktop-open session may be killable this sweep; investigate desktop-window-liveness.',
+      );
+    }
+  } catch {
+    /* best-effort probe — never blocks the sweep */
+  }
 
   // Slice 3 (EI-1873) FIRST — the dominant fleet leak: ZOMBIE `claude --resume`
   // procs whose adv_session is ENDED but the process never exited (32 of them

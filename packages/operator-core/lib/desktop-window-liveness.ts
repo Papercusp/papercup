@@ -291,6 +291,8 @@ let onDesktopCache: { at: number; sets: OnDesktopSets } | null = null;
 /** Injectable seams for gatherOnDesktopSessions so the ancestry pass unit-tests
  *  without a live psu-pty dir or /proc. Production defaults wire the real ones. */
 export interface GatherOnDesktopDeps {
+  /** Open-window enumerator. Default: listOpenWindows() (wmctrl). */
+  listWindows?: () => Promise<OpenWindow[]>;
   /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHosts(). */
   listHosts?: () => Array<{ ownerId: string; pid: number }>;
   /** /proc stat reader for the ancestry walk. Default: real /proc. */
@@ -320,7 +322,7 @@ export async function gatherOnDesktopSessions(
 
   let sets = emptyOnDesktopSets();
   try {
-    const windows = await listOpenWindows();
+    const windows = await (opts.deps?.listWindows ?? listOpenWindows)();
     // No open windows (headless box / no DISPLAY) → nobody is on the desktop.
     if (windows.length > 0) {
       const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? DESKTOP_CANDIDATE_MAX_AGE_MS) / 1000));

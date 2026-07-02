@@ -335,6 +335,8 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     procs?: ResumeProc[];
     ended?: string[];
     onDesktop?: string[];
+    /** Pids whose /proc ancestry sits under an open window (WI-1586 spare). */
+    desktopPids?: number[];
     aliveByPid?: Record<number, boolean>;
     stillByPid?: Record<number, boolean>;
   }) {
@@ -352,6 +354,7 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
       pidAlive: vi.fn((pid: number) => over.aliveByPid?.[pid] ?? false),
       sigkill: vi.fn((pid: number) => { calls.sigkill.push(pid); return true; }),
       stillTheProc: vi.fn(async (pid: number) => over.stillByPid?.[pid] ?? true),
+      pidOnDesktop: vi.fn(async (pid: number) => (over.desktopPids ?? []).includes(pid)),
       wait: vi.fn(async () => {}),
     };
     return { deps, calls };
@@ -389,6 +392,35 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     const r = await reapZombieResumeProcs({ deps });
     expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
     expect(calls.sigterm).toEqual([11]); // never 22 (on the desktop)
+  });
+
+  it('SPARES a zombie whose PID sits under an open window (WI-1586 ancestry spare) — even with NO sessionId handle', async () => {
+    // The regression shape: adv row carries no window_id/pid (capture rotted), so
+    // the sessionId-keyed onDesktop spare misses it — the live /proc-ancestry
+    // check must still refuse to signal a proc inside an open terminal window.
+    const { deps, calls } = makeDeps({
+      procs: [p(11, 'ended-x'), p(22, 'ended-in-window')],
+      ended: ['ended-x', 'ended-in-window'],
+      onDesktop: [], // handle-based spare BLIND (no captured window_id/pid)
+      desktopPids: [22], // …but the proc's ancestry reaches a window-owning pid
+      aliveByPid: { 11: false },
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(calls.sigterm).toEqual([11]); // never 22
+    expect(calls.sigkill).toHaveLength(0);
+    expect(r.killedPids).toEqual([11]);
+  });
+
+  it('dryRun also honors the ancestry spare (a plan never lists a kill the real run would refuse)', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [p(1, 'a'), p(2, 'b')],
+      ended: ['a', 'b'],
+      desktopPids: [2],
+    });
+    const r = await reapZombieResumeProcs({ deps, dryRun: true });
+    expect(r.killedPids).toEqual([1]);
+    expect(calls.sigterm).toHaveLength(0);
+    expect(calls.sigkill).toHaveLength(0);
   });
 
   it('SIGKILLs a survivor (still alive after TERM) after re-verifying the cmdline', async () => {
