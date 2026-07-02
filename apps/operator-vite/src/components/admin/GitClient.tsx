@@ -202,6 +202,19 @@ interface GitPipelineHiveRow {
   stagingMainGap: number | null;
   lastDeployAtMs: number | null;
   lastDeployStatus: string | null;
+  // ── github bridge (github-bridge-hive-egress-2026-07-02 P-009; mirrors git-pipeline-hives.ts) ──
+  hiveGitMode: 'legacy' | 'bridged' | 'p2p-only';
+  bridge: {
+    atMs: number | null;
+    ran: boolean;
+    skipped: string | null;
+    egressTarget: string | null;
+    lastAdmitted: string | null;
+    divergence: 'clear' | 'escalate' | null;
+    needsOwner: boolean;
+    errors: number;
+    memberSlug: string;
+  } | null;
 }
 
 function gateTone(s: GitPipelineHiveRow['gateStatus']): Tone {
@@ -212,6 +225,30 @@ function gateLabel(r: GitPipelineHiveRow): string {
   if (r.gateStatus === 'held') return `held · ${r.consecutiveReds} red`;
   if (r.gateStatus === 'stalled') return 'STALLED';
   return 'no runs yet';
+}
+
+/** Bridge pill tone (P-009): escalated divergence is the loud state — owner-lever cases loudest. */
+export function bridgeTone(r: Pick<GitPipelineHiveRow, 'hiveGitMode' | 'bridge'>): Tone {
+  if (!r.bridge) return 'neutral'; // mode set, no tick yet
+  if (r.bridge.divergence === 'escalate') return r.bridge.needsOwner ? 'bad' : 'warn';
+  if (r.bridge.errors > 0) return 'warn';
+  return 'good';
+}
+
+/** Bridge pill label (P-009): mode · sync state · egress target. */
+export function bridgeLabel(r: Pick<GitPipelineHiveRow, 'hiveGitMode' | 'bridge'>): string {
+  const mode = r.hiveGitMode === 'bridged' ? 'bridged' : 'p2p-only';
+  if (!r.bridge) return `${mode} · no tick yet`;
+  const state =
+    r.bridge.divergence === 'escalate'
+      ? r.bridge.needsOwner
+        ? 'diverged · owner'
+        : 'diverged'
+      : r.bridge.errors > 0
+        ? `${r.bridge.errors} err`
+        : 'in sync';
+  const target = r.bridge.egressTarget && r.bridge.egressTarget !== 'skipped' ? ` → ${r.bridge.egressTarget}` : '';
+  return `${mode} · ${state}${target}`;
 }
 
 /** The per-hive pipelines section: a row per gated coding hive + an inline editor that wires

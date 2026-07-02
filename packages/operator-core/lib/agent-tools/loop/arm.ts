@@ -1,8 +1,8 @@
 /**
- * loop:arm — arm an engine-managed LOOP on your OWN session: the tracked,
- * restart-surviving, observable replacement for Claude Code's built-in `/loop`
- * for su/interactive agents (loop-routines-interval-recurrence-2026-06-20,
- * B-LOOP-5 / P-008).
+ * loop:arm — arm an engine-managed LOOP on your OWN session (or another
+ * owner's, with `ownerId` — WI-1471): the tracked, restart-surviving,
+ * observable replacement for Claude Code's built-in `/loop` for su/interactive
+ * agents (loop-routines-interval-recurrence-2026-06-20, B-LOOP-5 / P-008).
  *
  * Each fire re-wakes THIS warm session ~intervalSec AFTER the previous turn
  * settles (a `coord:send {wake}` to the caller's ownerId, riding the wake-executor
@@ -44,16 +44,16 @@ export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
   description:
-    "Arm an engine-managed LOOP on your own session — the tracked replacement for Claude /loop. Each fire re-wakes THIS warm session ~intervalSec after your previous turn SETTLES (a warm coord wake, not a fresh run), so your context carries across iterations. The loop survives restarts, is observable (loop:status / fleet:assignments / fire-history), and inherits guardrails (failure-streak fire-gate + an optional cost-cap). End it with loop:end.",
+    "Arm an engine-managed LOOP on your own session (or another owner's, with `ownerId`) — the tracked replacement for Claude /loop. Each fire re-wakes THAT warm session ~intervalSec after its previous turn SETTLES (a warm coord wake, not a fresh run), so context carries across iterations. The loop survives restarts, is observable (loop:status / fleet:assignments / fire-history), and inherits guardrails (failure-streak fire-gate + an optional cost-cap). End it with loop:end.",
   guidance: {
-    when: 'You (an su/interactive agent working directly with a user) agree to "put this on a loop" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before you end your turn.',
+    when: 'You (an su/interactive agent working directly with a user) agree to "put this on a loop" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before you end your turn. Pass `ownerId` to arm a loop FOR another already-running, wake-reachable session (e.g. a fleet leader arming a monitor loop on a member\'s behalf) instead of the caller\'s own identity — WI-1471: without it, a caller with no per-session id (a client-less superuser bridge) silently binds the loop to the non-wake-reachable `su-loopback` fallback identity.',
     notWhen:
       "Wall-clock recurrence (a fixed time each day) — that is a SCHEDULE (plans:set-schedule). A single future wake — events:await / a one-shot. The autonomous queen/bee/scout loop — that is its OWN system (hive:declare-wake / overwatch:declare-wake); never loop:arm from an autonomous-fleet agent. Do NOT self-pace with Claude's native /loop — declare an engine loop here instead (it is tracked + pauseable).",
     chaining:
       'loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration with the wakeup prompt (create + self-assign your work_items, work them, set_state) → loop:end to stop. loop:status to inspect.',
     seeAlso: [
-      'loop:end (stop the loop)',
-      'loop:status (inspect it)',
+      'loop:end (stop the loop — also takes ownerId)',
+      'loop:status (inspect it — also takes ownerId)',
       'plans:set-schedule (wall-clock recurrence instead)',
     ],
   },
@@ -61,6 +61,13 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
+    ownerId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Arm the loop for this owner id instead of the caller\'s own resolved identity (default: yourself). Mirrors loop:end/loop:status\'s ownerId — the same "or another owner\'s" override, previously missing here (WI-1471).',
+      ),
     intervalSec: z
       .number()
       .int()

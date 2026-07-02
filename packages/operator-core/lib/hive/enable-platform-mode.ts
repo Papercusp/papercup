@@ -147,43 +147,65 @@ export async function enablePlatformMode(
     flagEnabled = { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 
-  // 2 — STAND UP the Papercusp self-hive (fetch-on-enable, D-007a). PRIVATE
-  //     visibility ⇒ zero external publish writes; the install dogfoods locally.
-  //     The self-hive inherits its per-hive gym+scout loop from createHiveHarness
-  //     (P-020 step 6c) — we do NOT re-provision it here.
+  // 2 — STAND UP the Papercusp self-hive (fetch-on-enable, D-007a). The install
+  //     dogfoods locally against a DEDICATED, isolated clone (D-007a: never the
+  //     live dev tree). The self-hive inherits its per-hive gym+scout loop from
+  //     createHiveHarness (P-020 step 6c) — we do NOT re-provision it here.
+  //
+  //     WI-1293: `createHiveFromRepo`'s paste-URL lookup matches an existing
+  //     Hive/harness by REPO IDENTITY (owner/repo, not the requested slug) — so
+  //     on a box whose OWN dev harness already tracks this same canonical repo
+  //     (this dev checkout itself is exactly such a harness), the lookup finds
+  //     THAT unrelated binding first and short-circuits with
+  //     `existing.kind:'legacy_shared_harness'` BEFORE the dedicated
+  //     `<slug>-hive` self-hive is ever created. `contribute`'s
+  //     `defaultResolveSelfHiveMember` then can't find it (it requires an exact
+  //     local `hive_slug === '<slug>-hive'` registration) and fails with
+  //     `self_hive_not_found`. Guard on the ACTUAL local registration instead —
+  //     unambiguous and slug-scoped — rather than trusting the generic
+  //     repo-identity lookup: only when `<slug>-hive` is genuinely already a
+  //     registered `kind:'hive'` project do we skip creation; otherwise force
+  //     PAST any same-repo-different-slug match so the dedicated self-hive
+  //     actually gets stood up.
   let selfHive: EnablePlatformModeResult['selfHive'];
   try {
-    const res = await createSelfHive({
-      githubUrl: repoUrl,
-      slug,
-      visibility: 'private',
-      shallow: input.shallow ?? true,
-      runTests: input.runTests ?? false,
-      workspaceId,
-    });
-    if (res.ok && 'created' in res) {
-      selfHive = {
-        ok: true,
-        status: 'created',
-        hiveSlug: res.created.hiveSlug,
-        memberSlug: res.created.memberSlug,
-      };
-    } else if (res.ok && 'existing' in res) {
-      // The repo's Hive already exists in this workspace — a join offer, zero
-      // side effects. For the enable flow that IS the success path: the self-hive
-      // is already standing. (D-007: re-enabling never double-creates.)
-      selfHive = {
-        ok: true,
-        status: 'already_standing',
-        detail: res.existing.kind,
-      };
+    const alreadyRegistered = await checkSelfHiveRegistered(hiveSlug, workspaceId);
+    if (alreadyRegistered) {
+      selfHive = { ok: true, status: 'already_standing', detail: 'platform_self_hive' };
     } else {
-      selfHive = {
-        ok: false,
-        status: 'failed',
-        error: (res as { error: string }).error,
-        ...((res as { message?: string }).message ? { message: (res as { message?: string }).message } : {}),
-      };
+      const res = await createSelfHive({
+        githubUrl: repoUrl,
+        slug,
+        shallow: input.shallow ?? true,
+        runTests: input.runTests ?? false,
+        workspaceId,
+        force: true,
+      });
+      if (res.ok && 'created' in res) {
+        selfHive = {
+          ok: true,
+          status: 'created',
+          hiveSlug: res.created.hiveSlug,
+          memberSlug: res.created.memberSlug,
+        };
+      } else if (res.ok && 'existing' in res) {
+        // Defensive fallback only — the real `createHiveFromRepo` seam never
+        // returns `existing` once `force:true` is set (it always proceeds to
+        // create, flagging `duplicateOf` instead); kept in case an injected
+        // test double for `createSelfHive` ignores `force`.
+        selfHive = {
+          ok: true,
+          status: 'already_standing',
+          detail: res.existing.kind,
+        };
+      } else {
+        selfHive = {
+          ok: false,
+          status: 'failed',
+          error: (res as { error: string }).error,
+          ...((res as { message?: string }).message ? { message: (res as { message?: string }).message } : {}),
+        };
+      }
     }
   } catch (e) {
     selfHive = { ok: false, status: 'failed', error: 'exception', message: e instanceof Error ? e.message : String(e) };

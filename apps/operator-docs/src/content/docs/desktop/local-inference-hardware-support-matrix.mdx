@@ -1,0 +1,102 @@
+---
+title: "Local-inference hardware support matrix (provisioner wizard)"
+description: "The certified hardware→backend/model recommendation matrix behind the desktop setup wizard's local-model step (NVIDIA≥24GB / smaller NVIDIA / Mac Metal / CPU-only / no-GPU→cloud) — and where it actually lives in code so a doc/code drift never happens."
+discovered: 2026-07-02
+tags: ["local-inference", "provisioner", "desktop", "setup-wizard", "hardware-detection"]
+status: active
+documents:
+  - "packages/operator-core/lib/provisioner/recommend.ts"
+  - "packages/operator-core/lib/provisioner/recommend-types.ts"
+  - "packages/operator-core/lib/provisioner/catalog.ts"
+  - "packages/operator-core/lib/provisioner/hardware-detect.ts"
+  - "packages/operator-core/lib/provisioner/provision.ts"
+  - "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx"
+  - "packages/operator-core/lib/endpoint-route/routes/desktop/local-model-status.ts"
+plans:
+  - "local-concurrent-inference-2026-07-02"
+---
+
+## What this is
+
+Decision **D-009** (plan `local-concurrent-inference-2026-07-02`) fixed the packaging story
+for local model inference and, as part of that, wrote down a **support matrix**: for a given
+piece of detected hardware, which backend + model combo the desktop setup wizard should
+recommend. This doc is that matrix, published where a human (or a future agent extending the
+catalog) can find it — **the code, not this doc, is the source of truth**; this page exists so
+the *policy* behind the code is legible in one place instead of buried in a plan decision body.
+
+If you are about to add a new hardware tier, a new catalog entry, or change a VRAM threshold —
+edit the code below, then update this doc's table. If they ever disagree, the code wins; file a
+doc-drift fix.
+
+## The matrix
+
+| Hardware tier | Recommendation | Notes |
+|---|---|---|
+| **NVIDIA, ≥24GB VRAM** | `vLLM` + AWQ/GPTQ (managed container) preferred for max concurrency; `llama-server` GGUF as the no-container fallback | Both lanes certified against the same underlying model once the P-006/P-007 certification battery runs |
+| **NVIDIA, \<24GB VRAM** (the `nvidia-mid` / `nvidia-low` tiers) | `llama-server` GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable `num_ctx` | No vLLM lane at this tier (concurrency isn't the point; fitting in VRAM is) |
+| **Apple Silicon (Metal)** | `llama-server` built with the Metal backend, single/low-stream concurrency | No vLLM lane — vLLM is CUDA-only (D-004) |
+| **CPU-only (no GPU)** | `llama-server` CPU build, smallest certified quant | The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning |
+| **No usable local hardware** (unsupported GPU vendor, detection failure, etc.) | Route to the **cloud gateway** lane (the existing Claude/Codex account pool) | This is a *routing* decision the gateway abstraction (D-002) already covers — not a new local-backend kind |
+
+## Where this lives in code (the actual source of truth)
+
+The wizard's hardware-detection → recommendation step is wired straight through this chain —
+there is **no separate hardcoded copy of the matrix in the UI**:
+
+1. **`provisioner/hardware-detect.ts`** — read-only hardware probe (GPU vendor/VRAM via
+   `nvidia-smi` / Metal detection / CPU fallback) → a `DetectedHardware` value.
+2. **`provisioner/recommend-types.ts`** — the `HardwareTier` union
+   (`nvidia-24gb-plus | nvidia-mid | nvidia-low | apple-silicon | cpu-only`) that encodes the
+   matrix's row boundaries.
+3. **`provisioner/recommend.ts`** — `tierOf()` buckets `DetectedHardware` into a `HardwareTier`
+   (this is where the `>=24GB` / `>=12GB` thresholds actually live); `recommendCombo()` matches
+   the tier against the catalog and returns a `Recommendation` (entry + human-readable reason),
+   or an honest "nothing fits, route to cloud" answer when the tier is `cpu-only` or no catalog
+   entry targets it yet.
+4. **`provisioner/catalog.ts`** — `CERTIFIED_CATALOG`: the actual list of hardware-tier →
+   backend/model combos (this is the table's *cell contents* — model ref, quant, VRAM
+   requirement, serve config). Each entry carries a `status` (`provisional` until it clears the
+   P-006/P-007 certification battery, then `certified`) and a `sourceRef` back to the decision
+   that produced it. **Add a new matrix row by adding a catalog entry here — never by hardcoding
+   a second table elsewhere.**
+5. **`provisioner/provision.ts`** — `planProvision()` composes 1–4 into a `ProvisionPlan` (plus
+   the weights-download plan and backend unit-file path). This is the single function both the
+   headless CLI (`provisioner/cli.ts`) and the Desktop UI read.
+6. **`endpoint-route/routes/desktop/local-model-status.ts`** — `GET
+   /api/desktop/local-model-status`, a thin `defineTool` wrapper over `planProvision()`.
+7. **`apps/operator/app/_components/SetupWizard/StepLocalModel.tsx`** — the wizard step
+   (rendered by both the legacy Next tree and, via the `@/app/_components/...` alias, the active
+   `operator-vite` `/setup` route). It fetches `local-model-status`, renders `plan.recommendation`
+   verbatim (surfacing `provisional` vs `certified` status and the `reason` string), and offers
+   install/start actions gated on `plan.blocked`.
+
+So "wire the wizard to the matrix as source of truth instead of a hardcoded duplicate" was, at
+the time this doc was written, **already true by construction** — the wizard has never had its
+own copy of the tiers/thresholds; it renders whatever `recommendCombo()` computes. The remaining
+piece D-009/P-014 asked for was this doc: the matrix written down somewhere a human reviewing
+the provisioner doesn't have to reverse-engineer it from `tierOf()`'s if/else chain.
+
+## Extending the matrix
+
+- **New VRAM threshold or a new tier** → edit `HardwareTier` (recommend-types.ts) +
+  `tierOf()` (recommend.ts), then add/update the corresponding row above.
+- **New certified combo for an existing tier** → add a `CatalogEntry` to `CERTIFIED_CATALOG`
+  (catalog.ts) with `status: 'provisional'` until it clears certification (P-006/P-007), then
+  flip to `'certified'`. `recommendCombo()` already picks the biggest model that fits a tier's
+  VRAM budget, so a new bigger-but-still-fitting entry is picked up automatically — no wizard
+  code changes needed.
+- **New backend kind** (beyond `llama-server` / `vllm`) → this is the case D-009 #3 flagged as
+  proving out: registration into `harness_shared.local_backends` is backend-agnostic (D-002's
+  gateway abstraction), so a third `LocalBackendKind` should need zero gateway-side changes,
+  only a new catalog entry + whatever backend-specific provisioning logic
+  (see `provisioner/backend-config.ts`).
+
+## Related
+
+- Decision **D-009** on plan `local-concurrent-inference-2026-07-02` — the full packaging
+  rationale (OMP bundling, llama-server on-demand fetch, vLLM managed-container, resumable
+  checksummed downloads) this matrix is one part of.
+- Plan items **P-012** (llama-server on-demand binary provisioning), **P-013** (vLLM
+  container provisioning), **P-011** (resumable/checksummed downloader) — the still-open
+  follow-ups this decision spawned.

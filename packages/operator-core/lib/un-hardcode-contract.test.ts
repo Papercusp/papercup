@@ -55,6 +55,15 @@ describe('un-hardcode contract', () => {
       await sql`DELETE FROM harness_shared.harness_brainstorm             WHERE harness_slug = ${TEST_SLUG}`;
       await sql`DELETE FROM harness_shared.harness_project_files          WHERE harness_slug = ${TEST_SLUG}`;
     } catch { /* best-effort */ }
+    // WI-1573: the harness_features_consolidated INSERT above (via the per-schema
+    // view) fires a CDC capture trigger into harness_shared.substrate_outbox — an
+    // ephemeral test harness (never registered, should never federate) otherwise
+    // leaves undrained outbox rows behind on every run (~2/run, unbounded growth,
+    // polluting the (default,*) drain-lag signal for every OTHER harness). Sweep
+    // them out alongside the consolidated rows.
+    try {
+      await sql`DELETE FROM harness_shared.substrate_outbox WHERE harness_slug = ${TEST_SLUG}`;
+    } catch { /* best-effort */ }
   });
 
   it('scaffolds a new harness schema with views over consolidated tables', async (ctx) => {
