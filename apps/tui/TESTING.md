@@ -98,10 +98,11 @@ PipeWire + `pactl`, so it's a local dev smoke, not CI. (Agent memory:
 
 ### Live real-EL E2E (`scripts/live-operator-voice-e2e.mjs`)
 
-The full P-011 leg — synthetic speech (espeak-ng) streamed at real-time pace into
-the RUNNING operator's voice host, through **real ElevenLabs** (STT → `ask_operator`
-brain → TTS), with two bus clients asserting the shared-session contract (both get
-input transcript + response transcript + response audio; exactly one elected player):
+The full P-011/P-013 leg — synthetic speech (espeak-ng) streamed at real-time pace
+into the RUNNING operator's voice host, through **real ElevenLabs** (STT → relay
+ack → Sentinel pane answer via `voice:say`), with two bus clients asserting the
+shared-session contract (both get the input transcript, the relay ack, the later
+pane answer, and response audio; exactly one elected player):
 
 ```bash
 node scripts/live-operator-voice-e2e.mjs ["utterance"]   # exit 0 pass · 2 EL-unconfigured · 1 fail

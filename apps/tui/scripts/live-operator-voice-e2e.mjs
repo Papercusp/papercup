@@ -27,6 +27,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const UTTERANCE = process.argv[2] ?? 'hello operator, can you hear me?';
+const VOICE_RELAY_ACK = "On it — I'll come back to you in a moment.";
 
 // ── minimal opvoice codec (mirror of operator-voice-bus.ts; bytes 0x10–0x1F) ──
 const OPV = { HELLO: 0x10, MIC: 0x11, CONTROL: 0x12, INPUT_T: 0x13, RESP_A: 0x14, RESP_T: 0x15, STATE: 0x17 };
@@ -118,19 +119,27 @@ function synthesizeSpeech(text) {
   await waitFor(() => A.ev.inputT.length > 0 && B.ev.inputT.length > 0, 30_000, 'input transcript on BOTH clients');
   console.log(`[live-e2e] ✓ EL transcribed (both clients): "${A.ev.inputT[0]}"`);
 
+  const nonAckResponses = (ev) => ev.respT.filter((t) => t && t.trim() !== VOICE_RELAY_ACK);
   await waitFor(
-    () => A.ev.respT.length > 0 && B.ev.respT.length > 0 && A.ev.respAudioBytes > 0 && B.ev.respAudioBytes > 0,
-    45_000,
-    'response transcript + audio on BOTH clients',
+    () =>
+      A.ev.respT.includes(VOICE_RELAY_ACK) &&
+      B.ev.respT.includes(VOICE_RELAY_ACK) &&
+      nonAckResponses(A.ev).length > 0 &&
+      nonAckResponses(B.ev).length > 0 &&
+      A.ev.respAudioBytes > 0 &&
+      B.ev.respAudioBytes > 0,
+    75_000,
+    'relay ack + later pane answer on BOTH clients',
   );
-  console.log(`[live-e2e] ✓ response (both clients): "${A.ev.respT[0]?.slice(0, 160)}"`);
+  console.log(`[live-e2e] ✓ relay ack (both clients): "${VOICE_RELAY_ACK}"`);
+  console.log(`[live-e2e] ✓ pane answer (both clients): "${nonAckResponses(A.ev)[0]?.slice(0, 160)}"`);
   console.log(`[live-e2e] ✓ response audio: A=${A.ev.respAudioBytes}B B=${B.ev.respAudioBytes}B (equal fan-out: ${A.ev.respAudioBytes === B.ev.respAudioBytes})`);
   console.log(`[live-e2e] ✓ exactly-one-player held: playerId stayed '${A.ev.state.at(-1)?.playerId}' (B is display-only)`);
 
   A.c.write(jframe(OPV.CONTROL, { op: 'stop' }));
   await sleep(300);
   A.c.destroy(); B.c.destroy();
-  console.log('[live-e2e] PASS — one shared EL session, both surfaces received input + response, single elected player.');
+  console.log('[live-e2e] PASS — one shared EL session, both surfaces received the relay ack and the later pane answer, single elected player.');
   process.exit(0);
 })().catch((e) => {
   console.error('[live-e2e] FAIL:', e.message);

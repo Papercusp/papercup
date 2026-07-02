@@ -313,3 +313,4 @@
 [2026-07-01T23:24:20Z] bee WI-1430: prompt-assembly tests for persona contracts are brittle if they pin whole prose sentences; prefer a short regex on the invariant phrase (for example "not the placer") so prompt wording can evolve without breaking the guard.
 [2026-07-01T23:24:55Z] bee WI-1432: `work_items:complete` records a feature completion but leaves it claimable unless you also pass the terminal `state` (for example `passed`); completion text alone is not enough to close the item.
 [2026-07-01T19:58:48-04:00] bee WI-1433: the shared operator-voice runtime can already drive bus controls; the missing seams were reducer-visible session state in the TUI and explicit left-rail affordances/tests, not new voice transport code.
+[2026-07-01T19:59:07-04:00] bee WI-1433: Voice UI tests should query the main control by exact aria-label (`"Voice mode"`), not `/voice mode/i`, once adjacent shared-session buttons like "Shared voice mode…" exist.
