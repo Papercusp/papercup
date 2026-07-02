@@ -1560,10 +1560,12 @@ async function pickAgent() {
 
 // su-context-size-variants: the per-variant ~Nk figures shown in the picker —
 // parity with the operator UI's SU_CONTEXT_OPTIONS (AdvSessionsClient.tsx). STATIC
-// measured estimates. context-trimming-tiers P-018: trimmed LIVE-measured 83.2k on a
-// sonnet launch (the old '~50k' under-sold it by 33k — the derivation missed the
-// persona playbook + hooks/memory prefix growth), full ≈ ~141k catalog + prefix.
-export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~83k' };
+// measured estimates. Re-measured 2026-07-02 AFTER the Phase-3 cuts (fleet persona
+// tier, P-020 plugin prune, P-015 zero-AGENTS.md): trimmed turn-1 boot is 60.1k on a
+// sonnet fleet member / ~66k fable fleet / ~76k full-persona power launch — the old
+// '~83k' (P-018, pre-Phase-3, full persona) over-stated by ~15-20k. '~70k' is the
+// honest mid; the preflight guard below does the exact per-launch math anyway.
+export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~70k' };
 
 // su-context-size-variants: the terminal-picker choices — the twin of the UI's
 // SU_CONTEXT_OPTIONS. Native maps to null (⇒ no --context-size flag ⇒ byte-identical
@@ -3231,7 +3233,15 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       ...(effectiveAutoMode(args) ? { PAPERCUSP_AUTO_MODE: '1' } : {}),
       // su-context-size-variants: 'full' forces every tool schema loaded up-front by
       // disabling ToolSearch deferral (fine on a 1M-window model; the whole point of full).
-      ...(res.agent === 'claude' && args.contextSize === 'full' ? { ENABLE_TOOL_SEARCH: 'false' } : {}),
+      // Everything else FORCES deferral ON: claude silently disables tool search when
+      // ANTHROPIC_BASE_URL is overridden (it can't assume a proxy forwards tool_reference
+      // blocks — ours does, it's a pass-through), so every gateway-routed (`--account`)
+      // member was booting with ALL advertised schemas inline: 106–108k vs 60k measured
+      // across the 2026-07-02 04:50 sonnet fleet (context-trimming-tiers P-031 gap 3).
+      // Redundant-but-harmless on direct-API launches where deferral is already the default.
+      ...(res.agent === 'claude'
+        ? { ENABLE_TOOL_SEARCH: args.contextSize === 'full' ? 'false' : 'true' }
+        : {}),
       // dynamic-tool-surface D-010 ("default all to trimmed"): claude is seeded BY DEFAULT
       // too — native ToolSearch defers only tool SCHEMAS, leaving all ~581 tool
       // names+descriptions (~165k, MEASURED) inline (that DOA'd sonnet-window sessions with

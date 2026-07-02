@@ -39,7 +39,12 @@ export function commsTierAtLeast(have: CommsTier, need: CommsTier): boolean {
 
 export interface CommsTrustEntry {
   githubUserId: number;
-  tier: CommsTier;
+  /** The tier OVERRIDE, or null when the row exists only for other grants
+   *  (e.g. gate) — a null tier never shadows the hive-policy default. */
+  tier: CommsTier | null;
+  /** DG-4 (P-047): do this member's distributed-test-gate verdicts count
+   *  toward green(S)? Separable from the tier lattice; default false. */
+  gate: boolean;
   note: string | null;
   /** epoch ms, null = no expiry. */
   expiresAtMs: number | null;
@@ -59,7 +64,8 @@ function assertGithubUserId(id: number, verb: string): void {
 
 interface CommsTrustRow {
   trusted_github_user_id: string | number;
-  tier: string;
+  tier: string | null;
+  gate?: boolean | null;
   note: string | null;
   expires_at: Date | string | null;
   created_ts: string | number;
@@ -69,7 +75,9 @@ interface CommsTrustRow {
 function rowToEntry(r: CommsTrustRow): CommsTrustEntry {
   return {
     githubUserId: asId(r.trusted_github_user_id),
-    tier: (isCommsTier(r.tier) ? r.tier : FALLBACK_COMMS_TIER) as CommsTier,
+    // NULL / unrecognized ⇒ no tier override (the row may exist only for gate).
+    tier: isCommsTier(r.tier) ? r.tier : null,
+    gate: r.gate === true,
     note: r.note,
     expiresAtMs: r.expires_at == null ? null : new Date(r.expires_at).getTime(),
     createdTs: Number(r.created_ts),
@@ -82,7 +90,7 @@ export async function listCommsTrust(workspaceId: string, sqlIn?: Sql): Promise<
   if (!workspaceId) return [];
   const sql = sqlIn ?? getOrgPg().sql;
   const rows = await sql<CommsTrustRow[]>`
-    SELECT trusted_github_user_id, tier, note, expires_at, created_ts, updated_ts
+    SELECT trusted_github_user_id, tier, gate, note, expires_at, created_ts, updated_ts
       FROM harness_shared.comms_trust_list
      WHERE workspace_id = ${workspaceId}
      ORDER BY updated_ts DESC, trusted_github_user_id ASC`;
@@ -123,7 +131,7 @@ export async function setCommsTrust(
       note = EXCLUDED.note,
       expires_at = EXCLUDED.expires_at,
       updated_ts = EXCLUDED.updated_ts
-    RETURNING trusted_github_user_id, tier, note, expires_at, created_ts, updated_ts`;
+    RETURNING trusted_github_user_id, tier, gate, note, expires_at, created_ts, updated_ts`;
   await recordCommsTrustAudit(sql, input.actor, 'trust:comms-set', String(input.githubUserId), workspaceId, {
     tier: input.tier,
     ...(input.expiresAtMs ? { expiresAtMs: input.expiresAtMs } : {}),
@@ -150,6 +158,86 @@ export async function removeCommsTrust(
     await recordCommsTrustAudit(sql, actor, 'trust:comms-remove', String(githubUserId), workspaceId, {});
   }
   return { removed };
+}
+
+export interface SetGateTrustInput {
+  githubUserId: number;
+  granted: boolean;
+  note?: string | null;
+  /** epoch ms; omit/null = no expiry. Applies to the ROW (shared with a tier
+   *  override when one exists on the same row). */
+  expiresAtMs?: number | null;
+  actor: string;
+  nowMs: number;
+}
+
+/**
+ * DG-4 (P-047): grant / revoke the GATE trust bit — "this member's
+ * distributed-test-gate verdicts count toward green(S)". SEPARABLE from the
+ * comms tier: a row created purely for a gate grant stores tier = NULL, which
+ * resolution skips, so granting gate never fabricates a tier override.
+ * Audited (a gate grant lets a member green YOUR release).
+ */
+export async function setGateTrust(
+  workspaceId: string,
+  input: SetGateTrustInput,
+  sqlIn?: Sql,
+): Promise<CommsTrustEntry> {
+  if (!workspaceId) throw new Error('gate-trust set — no workspace');
+  assertGithubUserId(input.githubUserId, 'gate-trust set');
+  const sql = sqlIn ?? getOrgPg().sql;
+  const expires = input.expiresAtMs == null ? null : new Date(input.expiresAtMs);
+  // ON CONFLICT touches ONLY gate/expiry/updated_ts — an existing tier
+  // override (and its note) on the same row survives a gate flip.
+  const [row] = await sql<CommsTrustRow[]>`
+    INSERT INTO harness_shared.comms_trust_list
+      (workspace_id, trusted_github_user_id, tier, gate, note, expires_at, created_ts, updated_ts)
+    VALUES (${workspaceId}, ${input.githubUserId}, NULL, ${input.granted},
+            ${input.note ?? null}, ${expires}, ${input.nowMs}, ${input.nowMs})
+    ON CONFLICT (workspace_id, trusted_github_user_id) DO UPDATE SET
+      gate = EXCLUDED.gate,
+      expires_at = EXCLUDED.expires_at,
+      updated_ts = EXCLUDED.updated_ts
+    RETURNING trusted_github_user_id, tier, gate, note, expires_at, created_ts, updated_ts`;
+  await recordCommsTrustAudit(
+    sql,
+    input.actor,
+    input.granted ? 'trust:gate-grant' : 'trust:gate-revoke',
+    String(input.githubUserId),
+    workspaceId,
+    input.expiresAtMs ? { expiresAtMs: input.expiresAtMs } : {},
+  );
+  return rowToEntry(row!);
+}
+
+/**
+ * Is this member gate-trusted RIGHT NOW? True iff an unexpired row carries
+ * gate = true. FAIL-CLOSED: no row, expired row, or a store error ⇒ false —
+ * the aggregator must never count a verdict on a defective trust read.
+ */
+export async function hasGateGrant(
+  workspaceId: string,
+  githubUserId: number,
+  nowMs?: number,
+  sqlIn?: Sql,
+): Promise<boolean> {
+  if (!workspaceId || !Number.isInteger(githubUserId) || githubUserId <= 0) return false;
+  const now = nowMs ?? Date.now();
+  try {
+    const sql = sqlIn ?? getOrgPg().sql;
+    const rows = await sql<Array<{ gate: boolean | null; expires_at: Date | string | null }>>`
+      SELECT gate, expires_at
+        FROM harness_shared.comms_trust_list
+       WHERE workspace_id = ${workspaceId}
+         AND trusted_github_user_id = ${githubUserId}
+       LIMIT 1`;
+    if (rows.length === 0) return false;
+    const r = rows[0];
+    if (r.gate !== true) return false;
+    return r.expires_at == null || new Date(r.expires_at).getTime() > now;
+  } catch {
+    return false;
+  }
 }
 
 export interface EffectiveCommsTier {
@@ -192,14 +280,16 @@ export async function effectiveCommsTier(
   try {
     const sql = sqlIn ?? getOrgPg().sql;
     const rows = await sql<CommsTrustRow[]>`
-      SELECT trusted_github_user_id, tier, note, expires_at, created_ts, updated_ts
+      SELECT trusted_github_user_id, tier, gate, note, expires_at, created_ts, updated_ts
         FROM harness_shared.comms_trust_list
        WHERE workspace_id = ${input.workspaceId}
          AND trusted_github_user_id = ${input.githubUserId}
        LIMIT 1`;
     if (rows.length > 0) {
       const entry = rowToEntry(rows[0]);
-      if (entry.expiresAtMs == null || entry.expiresAtMs > now) {
+      // A null tier is NOT an override (the row may exist only for a gate
+      // grant, mig 443) — fall through to the policy default.
+      if (entry.tier !== null && (entry.expiresAtMs == null || entry.expiresAtMs > now)) {
         return { tier: entry.tier, source: 'override' };
       }
     }

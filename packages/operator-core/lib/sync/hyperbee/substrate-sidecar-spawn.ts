@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolveSubstrateSocketPath, SUBSTRATE_SOCKET_ENV } from './substrate-socket-path';
+import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 
 // EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
 // is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
@@ -30,11 +31,103 @@ let sidecarProcess: ChildProcess | null = null;
 let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
 
+// --- WI-1504 (substrate-sidecar-memory-isolation-2026-07-02): scope isolation +
+// crash-respawn state ---------------------------------------------------------
+// `deliberateStop` distinguishes a deliberate stopSubstrateSidecar() call from an
+// unexpected crash/OOM-kill in the 'exit' handler — only the latter triggers
+// auto-respawn. Reset to false at the top of every (re)spawn attempt.
+let deliberateStop = false;
+// Sliding-window circuit breaker: MAX_RESPAWN_ATTEMPTS unexpected deaths inside
+// RESPAWN_WINDOW_MS gives up auto-respawning, so a persistently-crashing sidecar
+// (e.g. a leak that re-triggers immediately after every restart) can't loop
+// forever burning CPU + log spam. An explicit spawnSubstrateSidecar() call (e.g.
+// from substrate-boot-wrapper on the next boot) starts a fresh window.
+export const MAX_RESPAWN_ATTEMPTS = 5;
+export const RESPAWN_WINDOW_MS = 5 * 60_000;
+let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn schedules
+let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Per-sidecar memory cap (GiB) for the isolated spawn scope (systemd-run --user
+ *  --scope). WI-1504: the sidecar leaks under peer-sync load (27GB bursts observed
+ *  in the wild) — scoping it means a balloon OOM-kills ONLY the sidecar's own
+ *  cgroup, never the bg-host's (which would otherwise drag every in-flight agent
+ *  down with it), and the exit handler below auto-respawns it. Override:
+ *  PAPERCUSP_SUBSTRATE_SIDECAR_MEMORY_MAX_G. */
+export function substrateSidecarScopeMemoryMaxG(): number {
+  const raw = Number(process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MEMORY_MAX_G);
+  return Number.isFinite(raw) && raw > 0 ? raw : 8;
+}
+
+/** Isolation kill-switch (peer of orchestrator-runner.ts's PAPERCUSP_AGENT_SPAWN_SCOPE
+ *  / release-actions.ts's PAPERCUSP_CHECKPOINT_SCOPE): PAPERCUSP_SUBSTRATE_SIDECAR_SCOPE=0
+ *  forces the pre-hardening same-cgroup spawn (ops escape hatch). Linux-only —
+ *  systemd-run has no analog elsewhere, and every deployment target for this
+ *  operator is a Linux host (dev box + prod). */
+export function substrateSidecarScopeEnabled(): boolean {
+  return process.platform === 'linux' && process.env.PAPERCUSP_SUBSTRATE_SIDECAR_SCOPE !== '0';
+}
+
+/** Group-kill the sidecar's whole process tree. Under `detached: true` the wrapper
+ *  (systemd-run, when scoped) and the wrapped payload share the child's pgid, so a
+ *  single `process.kill(-pid)` reaps both; falls back to a single-pid kill if the
+ *  group signal fails (e.g. already exited / no such group). */
+function killSidecarTree(sig: NodeJS.Signals): void {
+  const proc = sidecarProcess;
+  if (!proc) return;
+  const pid = proc.pid;
+  if (pid) {
+    try {
+      process.kill(-pid, sig);
+      return;
+    } catch {
+      /* fall through to single-pid kill */
+    }
+  }
+  try {
+    proc.kill(sig);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Auto-respawn-on-crash (WI-1504 AC: "synthetic 10G allocation → sidecar
+ *  killed+respawned, bg-host main + agents untouched"). Applies a short exponential
+ *  backoff (capped at 30s) so a fast crash loop doesn't hammer systemd-run, and the
+ *  sliding-window circuit breaker above so a persistently-crashing sidecar gives up
+ *  rather than looping forever. */
+function scheduleRespawn(socketPath: string): void {
+  if (deliberateStop) return;
+  if (respawnTimer) return; // a respawn is already pending
+  const now = Date.now();
+  respawnAttempts = respawnAttempts.filter((t) => now - t < RESPAWN_WINDOW_MS);
+  if (respawnAttempts.length >= MAX_RESPAWN_ATTEMPTS) {
+    console.error(
+      `[substrate-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
+        'Substrate stays on its in-process fallback (see substrate-boot-wrapper) until an explicit spawnSubstrateSidecar() call.',
+    );
+    return;
+  }
+  respawnAttempts.push(now);
+  const backoffMs = Math.min(1000 * 2 ** (respawnAttempts.length - 1), 30_000);
+  console.warn(
+    `[substrate-sidecar] auto-respawning in ${backoffMs}ms (attempt ${respawnAttempts.length}/${MAX_RESPAWN_ATTEMPTS} in window)`,
+  );
+  respawnTimer = setTimeout(() => {
+    respawnTimer = null;
+    spawnSubstrateSidecar(socketPath).catch((err) => {
+      console.error('[substrate-sidecar] auto-respawn failed:', err);
+    });
+  }, backoffMs);
+}
+
 /**
  * Spawn the substrate sidecar process.
  * Waits for the PAPERCUSP_SUBSTRATE_READY handshake line.
  */
-export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> {
+export async function spawnSubstrateSidecar(
+  socketPath?: string,
+  useScope: boolean = substrateSidecarScopeEnabled(),
+): Promise<void> {
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;
@@ -42,6 +135,14 @@ export async function spawnSubstrateSidecar(socketPath?: string): Promise<void> 
     return new Promise((resolve) => {
       readyWaiters.push(resolve);
     });
+  }
+
+  // A fresh spawn attempt — clear any pending backoff timer and the deliberate-stop
+  // flag so the crash-respawn machinery is armed for this (re)spawn.
+  deliberateStop = false;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
   }
 
   const sidecarScript = path.join(
