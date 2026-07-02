@@ -19,7 +19,7 @@ import { invokeOnceBin, tsxBin } from './harness-paths';
 import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
-import { DEFAULT_BACKEND_CMDS, type AgentBackend } from './agent-config-constants';
+import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, type AgentBackend } from './agent-config-constants';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 
 /** Backend a command's binary drives (the same discriminator
@@ -176,6 +176,7 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
   }
   const bin = baseCmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const isCodex = /(?:^|\/)codex$/.test(bin);
+  const isClaude = /(?:^|\/)claude$/.test(bin);
   const codexEffort = effort === 'max' ? 'xhigh' : effort;
   // Strip any existing model/effort flags, then append the role's. Codex does
   // not have a `--effort` flag; its reasoning effort is a config override.
@@ -185,7 +186,14 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     .replace(/\s--effort(?:=|\s+)\S+/g, '')
     .replace(/\s-c\s+model_reasoning_effort=(?:"[^"]*"|'[^']*'|\S+)/g, '')
     .trimEnd();
-  const cliModel = isCodex ? normalizeCodexCliModel(model) : model;
+  // Claude CLI exec boundary: a default-1M-family spec (opus/fable/sonnet-5,
+  // incl. the bare `sonnet` alias) must carry the `[1m]` window marker — a bare
+  // spec runs a 200k AUTO-COMPACT window in CC 2.1.198 (live-verified via
+  // /context 2026-07-02; auto-fires ~167k, which killed a wave of sonnet fleet
+  // members). Normalizing HERE covers every channel funneling into this argv
+  // (committed role default, AGENT_MODELS, per-spawn pin) without changing
+  // their precedence. Claude-only: OMP/Codex specs never get the marker.
+  const cliModel = isCodex ? normalizeCodexCliModel(model) : isClaude ? normalizeModelSpec(model) : model;
   cmd = `${cmd} --model ${cliModel}`;
   if (effort) {
     cmd = isCodex

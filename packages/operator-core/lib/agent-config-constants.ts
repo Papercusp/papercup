@@ -167,6 +167,25 @@ export function modelWindowForSpec(spec?: string | null): number {
  * Sonnet ≤4.x (`claude-sonnet-4-6` etc.) stays outside the family — the regex
  * deliberately does not match `sonnet-4-5`.
  */
+export const DEFAULT_1M_FAMILY_RE = /fable|opus|sonnet-?5|^sonnet(\[1m\])?(:[a-z0-9]+)?$/i;
+
+/**
+ * Inject the `[1m]` window marker into a default-1M-family spec (idempotent;
+ * a no-op outside the families or when the marker is already present). The TS
+ * twin of psu-launcher `normalizeModelSpec` — psu covers its own launches;
+ * THIS one is applied at the operator exec boundary (`applyRoleModel`) so a
+ * direct `claude --model <spec>` spawn (committed role default, AGENT_MODELS,
+ * or a per-spawn pin) also gets the 1M auto-compact window. Kept in lockstep
+ * via DEFAULT_1M_FAMILY_RE.
+ */
+export function normalizeModelSpec(spec: string): string {
+  if (!spec || /\[1m\]/i.test(spec) || !DEFAULT_1M_FAMILY_RE.test(spec)) return spec;
+  const c = spec.lastIndexOf(':');
+  const suffix = c > 0 ? spec.slice(c + 1) : '';
+  if (c > 0 && /^(low|medium|high|xhigh|max)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;
+  return `${spec}[1m]`;
+}
+
 export function isDefault1mModelSpec(spec?: string | null): boolean {
   if (spec == null) return false;
   if (/fable|opus|sonnet-?5/i.test(spec)) return true;

@@ -1356,10 +1356,10 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
     expect(normalizeModelSpec('opus[1m]')).toBe('opus[1m]');
     expect(normalizeModelSpec('claude-fable-5[1m]:xhigh')).toBe('claude-fable-5[1m]:xhigh');
   });
-  it('is a no-op for non-opus/fable specs and empty specs (sonnet-5 is default-1M WITHOUT a marker, so no injection)', () => {
-    expect(normalizeModelSpec('sonnet')).toBe('sonnet');
-    expect(normalizeModelSpec('sonnet:high')).toBe('sonnet:high');
-    expect(normalizeModelSpec('claude-sonnet-5:high')).toBe('claude-sonnet-5:high');
+  it('injects [1m] for the sonnet-5 family too (its native 1M default is statsig-gated OFF — the marker is the only reliable path); no-op for non-1M families and empty specs', () => {
+    expect(normalizeModelSpec('sonnet')).toBe('sonnet[1m]');
+    expect(normalizeModelSpec('sonnet:high')).toBe('sonnet[1m]:high');
+    expect(normalizeModelSpec('claude-sonnet-5:high')).toBe('claude-sonnet-5[1m]:high');
     expect(normalizeModelSpec('haiku')).toBe('haiku');
     expect(normalizeModelSpec('')).toBe('');
     expect(normalizeModelSpec(undefined)).toBeUndefined();
@@ -1372,16 +1372,17 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
   it('parseArgs applies it — a fleet opus/fable launch spec lands normalized', () => {
     expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
     expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
-    expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet:high');
+    expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet[1m]:high');
   });
 });
 
 describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
   it('parses the new omp-convergence flags', () => {
-    // sonnet gets no [1m] injection (only opus/fable do), so this passthrough
-    // test stays decoupled from the normalization exercised in its own suite.
-    const a = parseArgs(['--no-picker', '--agent=omp', '--model=sonnet', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
-    expect(a.model).toBe('sonnet');
+    // haiku is outside the 1M families so no [1m] injection fires — this
+    // passthrough test stays decoupled from the normalization exercised in
+    // its own suite above.
+    const a = parseArgs(['--no-picker', '--agent=omp', '--model=haiku', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
+    expect(a.model).toBe('haiku');
     expect(a.resumeSession).toBe('s-7');
     expect(a.launchContext).toBe('/dev/shm/k.md');
   });

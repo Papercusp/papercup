@@ -265,7 +265,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('chatgpt:5.5');
   });
 
-  it('GAP-2: an un-steered Hive leaves the queen on her committed default (no spawnModel pin) — byte-identical to today', async () => {
+  it('GAP-2: an un-steered Hive leaves the queen on her committed default (no spawnModel pin) — the [1m] window rides the exec boundary (applyRoleModel), not a pin', async () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // default getOwnerSteering mock = un-steered; readAgentConfig = empty menu.
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];

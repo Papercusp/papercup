@@ -283,7 +283,16 @@ export function resolveRoleOwnModelSpec(
   if (!tier) return null;
   const r = resolveTierSpec({ tier, role, tiers: eff.tiers, tierCeilings: eff.tierCeilings });
   if (!r.ok) return null;
-  return r.spec && r.spec !== roleModelDefault(role) ? r.spec : null;
+  // Marker-insensitive, EFFORT-sensitive compare: the default menu's specs
+  // carry `[1m]` (owner directive 2026-07-02) while committed role defaults
+  // are bare, and a marker-only difference is NOT an override — the `[1m]`
+  // window rides the exec boundary (`applyRoleModel` normalizeModelSpec) /
+  // the psu launcher, so an un-configured menu still yields null = no pin
+  // (the docstring invariant). An effort/model difference (opus[1m]:high vs
+  // default opus) IS a real override, so plain [1m]-stripping — not
+  // specFamilyKey, which also strips effort — is the right key.
+  const sansMarker = (s: string) => s.replace(/\[1m\]/gi, '').toLowerCase();
+  return r.spec && sansMarker(r.spec) !== sansMarker(roleModelDefault(role) ?? '') ? r.spec : null;
 }
 
 /**

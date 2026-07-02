@@ -187,7 +187,7 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
 describe('applyRoleModel — per-role model override', () => {
   it('overrides the global --model for a role with an AGENT_MODELS entry', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model sonnet[1m]');
   });
 
   it('leaves a role with NO entry on the base command (fast default)', () => {
@@ -198,7 +198,7 @@ describe('applyRoleModel — per-role model override', () => {
   it('parses a <model>:<effort> spec → appends --model AND --effort', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'merge-resolver': 'claude-opus-4-8:xhigh' }));
     expect(applyRoleModel('claude -p --model haiku', 'merge-resolver')).toBe(
-      'claude -p --model claude-opus-4-8 --effort xhigh',
+      'claude -p --model claude-opus-4-8[1m] --effort xhigh',
     );
   });
 
@@ -221,15 +221,15 @@ describe('applyRoleModel — per-role model override', () => {
   it('strips a pre-existing --effort and replaces it; keeps a colon-bearing model id when the suffix is not an effort', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:max', reviewer: 'vendor/model:7b' }));
     // pre-existing --effort low is stripped, the role's max wins
-    expect(applyRoleModel('claude -p --model haiku --effort low', 'worker')).toBe('claude -p --model opus --effort max');
+    expect(applyRoleModel('claude -p --model haiku --effort low', 'worker')).toBe('claude -p --model opus[1m] --effort max');
     // ':7b' is not a known effort → the whole string stays as the model id (no --effort)
     expect(applyRoleModel('claude -p --model haiku', 'reviewer')).toBe('claude -p --model vendor/model:7b');
   });
 
   it('appends --model when the base command has none; handles --model=<x> form', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet');
-    expect(applyRoleModel('claude -p --model=haiku', 'worker')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet[1m]');
+    expect(applyRoleModel('claude -p --model=haiku', 'worker')).toBe('claude -p --model sonnet[1m]');
   });
 
   it('no / unparseable / empty-entry AGENT_MODELS → base unchanged (fail-safe, role without a committed default)', () => {
@@ -248,8 +248,8 @@ describe('applyRoleModel — per-role model override', () => {
     const w = buildInvokeOnce(spec({ role: 'worker' })).env;
     // Both must be the role command — only setting CLAUDE is masked by the
     // inherited AGENT_CMD (resolveAgentCmd reads AGENT_CMD ?? CLAUDE).
-    expect(w.AGENT_CMD).toBe('claude -p --model sonnet');
-    expect(w.CLAUDE).toBe('claude -p --model sonnet');
+    expect(w.AGENT_CMD).toBe('claude -p --model sonnet[1m]');
+    expect(w.CLAUDE).toBe('claude -p --model sonnet[1m]');
     const d = buildInvokeOnce(spec({ role: 'director' })).env;
     expect(d.AGENT_CMD).toBe('claude -p --model haiku');
     expect(d.CLAUDE).toBe('claude -p --model haiku');
@@ -259,22 +259,22 @@ describe('applyRoleModel — per-role model override', () => {
 describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => {
   it('release-manager resolves to opus:xhigh with AGENT_MODELS UNSET (no silent downgrade)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
   });
 
   it('the committed default applies even when AGENT_MODELS is set for OTHER roles only', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus --effort xhigh');
+    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
   });
 
   it('an explicit AGENT_MODELS entry OVERRIDES the committed default (env wins)', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-manager': 'claude-opus-4-8:max' }));
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model claude-opus-4-8 --effort max');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model claude-opus-4-8[1m] --effort max');
   });
 
   it('malformed AGENT_MODELS still yields the committed default (fail-safe to the floor, not the CLI default)', () => {
     vi.stubEnv('AGENT_MODELS', 'not json');
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
   });
 
   it('a role with neither an entry nor a committed default is still left unchanged', () => {
@@ -284,15 +284,15 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 
   it('P-012 model-tier policy: execution tier → sonnet, volume tier → haiku, without env', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet');
-    expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet');
-    expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet[1m]');
+    expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet[1m]');
+    expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet[1m]');
     expect(applyRoleModel('claude -p --model opus', 'bee')).toBe('claude -p --model haiku');
     expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model haiku');
     expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model haiku');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
-    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus --effort high');
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
   });
 
   it('resolveSpawnBackendModel keys release-manager to its committed opus bucket without env (RB-012)', () => {
@@ -305,24 +305,24 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-model-tier-selection P-001)', () => {
   it('the override outranks the AGENT_MODELS entry AND the committed default', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'haiku' }));
-    expect(applyRoleModel('claude -p', 'worker', 'opus:high')).toBe('claude -p --model opus --effort high');
+    expect(applyRoleModel('claude -p', 'worker', 'opus:high')).toBe('claude -p --model opus[1m] --effort high');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager', 'sonnet')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'release-manager', 'sonnet')).toBe('claude -p --model sonnet[1m]');
   });
 
   it('an empty/whitespace override falls through to the normal chain', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'worker', '')).toBe('claude -p --model sonnet');
-    expect(applyRoleModel('claude -p', 'worker', '  ')).toBe('claude -p --model sonnet');
-    expect(applyRoleModel('claude -p', 'worker', undefined)).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'worker', '')).toBe('claude -p --model sonnet[1m]');
+    expect(applyRoleModel('claude -p', 'worker', '  ')).toBe('claude -p --model sonnet[1m]');
+    expect(applyRoleModel('claude -p', 'worker', undefined)).toBe('claude -p --model sonnet[1m]');
   });
 
   it('buildInvokeOnce reads extraEnv.PAPERCUSP_SPAWN_MODEL into the role command', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const env = buildInvokeOnce(spec({ role: 'worker', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'opus:xhigh' } })).env;
-    expect(env.AGENT_CMD).toBe('claude -p --model opus --effort xhigh');
-    expect(env.CLAUDE).toBe('claude -p --model opus --effort xhigh');
+    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(env.CLAUDE).toBe('claude -p --model opus[1m] --effort xhigh');
     // and the env var itself rides to the child for invoke.ts resolveModel
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
   });

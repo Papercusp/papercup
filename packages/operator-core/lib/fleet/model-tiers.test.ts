@@ -217,9 +217,9 @@ describe('roleHomeTier — the default-menu tier a role runs at', () => {
 });
 
 describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-steering-panel)', () => {
-  it("moves a default-menu role onto the marked spec (queen home=standard → sonnet[1m] ≠ bare committed default) — the 1M window rides the menu's [1m] markers (owner directive 2026-07-02)", () => {
+  it('returns null on the default menu (queen home=standard=sonnet family) — a marker-only difference is NOT an override; [1m] rides the exec boundary (applyRoleModel)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('queen', {})).toBe('sonnet[1m]');
+    expect(resolveRoleOwnModelSpec('queen', {})).toBeNull();
   });
 
   it('an owner menu override that raises the standard tier MOVES the queen', () => {
@@ -245,10 +245,10 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
     expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus[1m]:xhigh');
   });
 
-  it("a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) — clamps UP to standard (same model, [1m]-marked)", () => {
+  it('a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) → null (stays default; marker-only diff ≠ override)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // queen floor = standard (sonnet family); ceiling 'quick' (haiku) clamps UP to standard → sonnet[1m].
-    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBe('sonnet[1m]');
+    // queen floor = standard (sonnet family); ceiling 'quick' (haiku) clamps UP to standard → sonnet[1m] ≈ committed 'sonnet' → null.
+    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBeNull();
   });
 
   it('null for a role with no home tier (no committed default)', () => {

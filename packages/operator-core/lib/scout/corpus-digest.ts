@@ -252,6 +252,12 @@ export const DigestSchema = z.object({
    *  rubric-template plan from the gap → the queen↔scout loop. Loose by design
    *  (over-propose; the Queen ratification is the real filter — D-003). */
   rubricGaps: z.array(MetaPatternSchema),
+  /** STANDING FACTS (queen-memory-hybrid L1c) — live agent_facts (harness +
+   *  workspace scopes) projected as patterns (`ref` = `fact:<scope>:<key>`), a
+   *  6th flattenDigest ideator lane. OPTIONAL: populated by the cycle seam
+   *  (cycle-deps readCorpus), not by synthesizeStateOfHive itself — absent means
+   *  no facts stand (or the fold failed soft). */
+  standingFacts: z.array(MetaPatternSchema).optional(),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });
