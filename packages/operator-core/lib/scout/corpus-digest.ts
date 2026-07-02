@@ -195,6 +195,7 @@ const META_PATTERN_CATEGORIES = [
   'capability-gap',
   'rubric-rating',
   'standing-fact',
+  'niche-map',
 ] as const;
 
 /**
@@ -258,6 +259,10 @@ export const DigestSchema = z.object({
    *  (cycle-deps readCorpus), not by synthesizeStateOfHive itself — absent means
    *  no facts stand (or the fold failed soft). */
   standingFacts: z.array(MetaPatternSchema).optional(),
+  /** QD NICHE MAP (gym-unwedge NOV-1) — occupied gym_qd_archive niches so the
+   *  ideators target unexplored behavior-space. OPTIONAL: populated by the
+   *  cycle seam (cycle-deps readCorpus), like standingFacts. */
+  nicheMap: z.array(MetaPatternSchema).optional(),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });

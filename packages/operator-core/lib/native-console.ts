@@ -212,6 +212,14 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
           label: opts.label ?? null,
           planSlug: opts.planSlug ?? null,
           launchArgv: [envelope.greetingCmd].filter(Boolean),
+          // windows-desktop-feature-parity-2026-07-02 P-010: the window's own
+          // identity (native_console.rs titled it `Papercup — <sessionId>`
+          // already). console-record.ts stores this AS the row's windowId
+          // directly — on a Windows-desktop host there's no pid→window
+          // mapping to resolve later (see windows-desktop-windows.ts), so
+          // /adv/sessions/focus needs the exact title up front, not a
+          // fragment to search for after the fact.
+          sessionId: envelope.sessionId,
         }),
       });
     } catch (e: any) {

@@ -347,7 +347,11 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS completion_ref jsonb,
       ADD COLUMN IF NOT EXISTS source_plan_slug text,
       ADD COLUMN IF NOT EXISTS source_plan_item_ids text[],
-      ADD COLUMN IF NOT EXISTS wave text;
+      ADD COLUMN IF NOT EXISTS wave text,
+      -- migration 432 (work-item-completion-integrity): FEATURE_COLS' RETURNING
+      -- list (claimFeatureRow) selects these — a genuine-completion evidence pair.
+      ADD COLUMN IF NOT EXISTS terminal_owner text,
+      ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
   `);
 
   // Map the harness slug → the workspace_id the booted handle drains on (the

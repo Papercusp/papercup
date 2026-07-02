@@ -35,6 +35,23 @@ interface ResolvedPolicy {
   updatedAt: number;
 }
 
+/** One live EN-2 rate row (mirrors `RateStateRow` from rate-limiter.ts — the owner
+ *  "member X at N/cap" observability surface, EN-1 findings "Remaining for full
+ *  release" / findings-EN-4.md "fast follow"). */
+interface RateStateRowView {
+  authorId: number;
+  cls: 'ops' | 'rows' | 'prs';
+  count: number;
+  cap: number | null;
+  throttled: boolean;
+  suspectedTimestampSkew: boolean;
+}
+interface RateStateResponse {
+  ok: boolean;
+  booted: boolean;
+  rows: RateStateRowView[];
+}
+
 const SECTION: React.CSSProperties = { marginTop: 24 };
 const ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 };
 const LABEL: React.CSSProperties = { fontSize: 13, color: 'var(--fg-mute)', minWidth: 140 };
@@ -66,6 +83,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
   const [loaded, setLoaded] = useState<ResolvedPolicy | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [rateState, setRateState] = useState<RateStateResponse | null>(null);
 
   // Draft form state.
   const [membership, setMembership] = useState<Membership | ''>('');
@@ -105,6 +123,25 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
       cancel = true;
     };
   }, [open, hive, hydrate]);
+
+  // Live EN-2 "member X at N/cap" observability (WI-253) — a separate, best-effort
+  // fetch: absence of live data (not booted on this machine, or the route predates
+  // an older release) is normal, not an error worth alarming the owner over.
+  useEffect(() => {
+    if (!open || !hive) return;
+    let cancel = false;
+    fetch(`/api/hive/${encodeURIComponent(hive)}/policy/rate`)
+      .then((r) => (r.ok ? (r.json() as Promise<RateStateResponse>) : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => {
+        if (!cancel) setRateState(j);
+      })
+      .catch(() => {
+        if (!cancel) setRateState(null);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [open, hive]);
 
   const buildPolicy = useCallback((): HivePolicyView => {
     // Start from the loaded policy to PRESERVE unknown/forward-compat keys + moderation
@@ -197,6 +234,26 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
                 ops/min &amp; rows/hr are enforced at substrate write-admission (EN-2). PRs/day is a
                 fork→PR boundary rule (EN-4 P-CONTRIB) — stored + signed now, not yet substrate-enforced.
               </p>
+              <div style={{ ...ROW, alignItems: 'flex-start' }}>
+                <span style={LABEL}>Live rate state</span>
+                <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+                  {!rateState || !rateState.booted ? (
+                    <span>Not available (Hive not currently booted on this machine).</span>
+                  ) : rateState.rows.length === 0 ? (
+                    <span>No members tracked yet this window.</span>
+                  ) : (
+                    <ul style={{ margin: 0, paddingLeft: 16 }}>
+                      {rateState.rows.map((r) => (
+                        <li key={`${r.authorId}:${r.cls}`}>
+                          member {r.authorId} — {r.cls}: {r.count}/{r.cap ?? '∞'}
+                          {r.throttled ? ' (throttled)' : ''}
+                          {r.suspectedTimestampSkew ? ' ⚠ suspected clock-skew' : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
               <div style={{ ...ROW, alignItems: 'flex-start' }}>
                 <span style={LABEL}>Allowlist (logins)</span>
                 <textarea style={TEXTAREA} value={allowlist} onChange={(e) => setAllowlist(e.target.value)} placeholder="one github login per line (used when membership=allowlist)" />

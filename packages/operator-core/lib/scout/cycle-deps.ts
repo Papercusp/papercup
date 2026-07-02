@@ -206,6 +206,33 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       } catch {
         /* best-effort */
       }
+      // NOV-1 (gym-unwedge-scout-novelty): the QD NICHE MAP lane — occupied
+      // gym_qd_archive niches (behavior space: scope × domain × risk) so the
+      // ideators actively steer toward UNEXPLORED territory (quality-diversity
+      // novelty search). Fail-soft; an empty archive adds nothing.
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { sql } = getOrgPg();
+        const niches = await sql<Array<{ niche_key: string; n: number; best: number | null }>>`
+          SELECT niche_key, count(*)::int AS n, max(fitness)::float AS best
+            FROM harness_shared.gym_qd_archive
+           GROUP BY niche_key ORDER BY n DESC LIMIT 10`;
+        if (niches.length > 0) {
+          digest.nicheMap = [
+            ...niches.map((r) => ({
+              summary: `niche ${r.niche_key}: OCCUPIED (${r.n} elite${r.n === 1 ? '' : 's'}${r.best != null ? `, best fitness ${r.best.toFixed(2)}` : ''}) — do not duplicate; beat it or move on`,
+              ref: `niche:${r.niche_key}`,
+            })),
+            {
+              summary:
+                'Behavior-space guidance: the archive covers only the niches above — PREFER proposals whose (scope, domain, risk) combination is NOT listed (unexplored = automatic novelty value).',
+              ref: 'niche:frontier',
+            },
+          ];
+        }
+      } catch {
+        /* best-effort */
+      }
       // Scout `rubric` rail (plan-templates-and-rubric-v2 P-009, SCOUT_RUBRIC_RAIL,
       // default OFF): on a detected RUBRIC GAP (digest.rubricGaps, P-008) AUTHOR a
       // `template: rubric` DRAFT plan → the existing queen↔scout loop ratifies it into

@@ -27,6 +27,7 @@ import { buildAnnounce, type SignedAnnounce } from '../announce';
 import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory } from '../boot-history';
+import type { AdmittedLog } from '../read-merge';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -1570,5 +1571,140 @@ describe('onSchemaVersionAlert', () => {
     expect(a).toHaveLength(1);    // unsubbed
     expect(b).toHaveLength(2);    // still active
     unsub2();
+  });
+});
+
+// ── WI-183 — replication-stall detector ─────────────────────────────────────
+// Repro: a hive peer restarts, the swarm re-peers (peer_connected fires), but
+// this specific admitted log's replication never resumes — SILENTLY, with no
+// error. `checkReplicationStall` (boot.ts) samples `RemoteLog.peersCount()`
+// each merge pass and records a `replication_stalled` boot-history event once
+// a log that WAS replicating has held zero live replicator peers for
+// `replicationStallGraceMs`. These tests inject a minimal fake `AdmittedLog`
+// directly into `handle.admitted` (bypassing swarm/announce entirely — the
+// detector only cares about the shape's `peersCount()`), and drive the merge
+// pass by hand via `mergeNow()` with the poll timer disabled.
+describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-stall-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  /** A minimal AdmittedLog with a controllable `peersCount()` — no real
+   *  hypercore, no ops (length 0), never actually read by the merge pass. */
+  function fakeAdmittedRemoteLog(
+    keyHex: string,
+    peersCount: () => number | undefined,
+  ): AdmittedLog & { peersCount(): number | undefined } {
+    return {
+      keyHex,
+      length: 0,
+      async get(): Promise<null> {
+        return null;
+      },
+      peersCount,
+    };
+  }
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  it('fires replication_stalled once a previously-replicating log holds zero peers past the grace window, then stays silent while still stalled', async () => {
+    const workspaceId = 'ws-stall-1';
+    const harnessSlug = 's-stall-1';
+    let peers = 1; // starts "replicating"
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      replicationStallGraceMs: 30,
+    });
+    cleanups.push(() => handle.close());
+
+    const keyHex = 'aa'.repeat(32);
+    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
+
+    // First pass observes peers=1 → seeds lastNonZeroPeersAtMs; no alarm.
+    await handle.mergeNow();
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+
+    // Drops to zero — still inside the (shrunk) grace window → no alarm yet.
+    peers = 0;
+    await handle.mergeNow();
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+
+    // Past the grace window → alarms exactly once.
+    await sleep(60);
+    await handle.mergeNow();
+    const events = listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.message).toContain(keyHex.slice(0, 12));
+
+    // Still stalled on a later pass — edge-triggered, so no re-fire.
+    await sleep(60);
+    await handle.mergeNow();
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
+  });
+
+  it('never fires for a log that has NEVER shown a live replicator peer (ordinarily offline is not a bug)', async () => {
+    const workspaceId = 'ws-stall-2';
+    const harnessSlug = 's-stall-2';
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      replicationStallGraceMs: 30,
+    });
+    cleanups.push(() => handle.close());
+
+    const keyHex = 'bb'.repeat(32);
+    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => 0)); // never replicated
+
+    await handle.mergeNow();
+    await sleep(60);
+    await handle.mergeNow();
+    await sleep(60);
+    await handle.mergeNow();
+
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+  });
+
+  it('re-arms after peers recover, so a later stall episode fires again', async () => {
+    const workspaceId = 'ws-stall-3';
+    const harnessSlug = 's-stall-3';
+    let peers = 1;
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      replicationStallGraceMs: 30,
+    });
+    cleanups.push(() => handle.close());
+
+    const keyHex = 'cc'.repeat(32);
+    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
+
+    await handle.mergeNow(); // seed lastNonZeroPeersAtMs
+    peers = 0;
+    await handle.mergeNow();
+    await sleep(60);
+    await handle.mergeNow(); // first alarm
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
+
+    // Recovers, then stalls again.
+    peers = 1;
+    await handle.mergeNow();
+    peers = 0;
+    await handle.mergeNow();
+    await sleep(60);
+    await handle.mergeNow(); // second alarm
+
+    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(2);
   });
 });

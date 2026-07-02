@@ -147,8 +147,10 @@ export interface RemoteLog {
    * the swarm otherwise reports an open connection to the same remote party is
    * the "replication silently stalled" symptom — a live transport with no
    * attached replicator session for this log. See boot.ts's stall detector.
+   * Optional — feature-detected by the caller — so hand-rolled `RemoteLog`
+   * test fixtures elsewhere in the codebase don't need a stub.
    */
-  peersCount(): number | undefined;
+  peersCount?(): number | undefined;
 }
 
 /**

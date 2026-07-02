@@ -167,6 +167,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // L1c (queen-memory-hybrid): standing facts ride the flatten too — the
     // fleet's deterministic conclusions as ideation substrate.
     ['standing-fact', digest.standingFacts ?? []],
+    // NOV-1 (gym-unwedge): the QD niche map — occupied behavior-space niches
+    // steer generation toward unexplored territory.
+    ['niche-map', digest.nicheMap ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -197,6 +200,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Rubric rating';
     case 'standing-fact':
       return 'Standing fact (deterministic conclusion — ground truth unless retracted)';
+    case 'niche-map':
+      return 'QD niche map (novelty guidance — occupied niches; propose in UNEXPLORED behavior-space)';
   }
 }
 

@@ -204,9 +204,10 @@ export function parseWindowListOutput(stdout: string): WindowsDesktopWindow[] {
 /**
  * Enumerate top-level Windows windows, optionally filtered to titles starting
  * with `prefix` (pass WINDOW_TITLE_PREFIX to get only Papercup session
- * terminals). Best-effort: non-win32, no powershell.exe, or a parse miss all
- * yield `[]` — mirrors listOpenWindows' wmctrl fail-soft contract so a caller
- * (desktop-window-liveness.ts) never has to special-case this platform.
+ * terminals). Best-effort: not a Windows desktop host, no powershell.exe, or a
+ * parse miss all yield `[]` — mirrors listOpenWindows' wmctrl fail-soft
+ * contract so a caller (desktop-window-liveness.ts) never has to special-case
+ * this platform.
  */
 export async function listWindowsByTitle(prefix?: string): Promise<WindowsDesktopWindow[]> {
   if (!isWindowsDesktopHost()) return [];

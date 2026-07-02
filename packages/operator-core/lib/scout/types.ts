@@ -63,7 +63,11 @@ export type MetaPatternCategory =
   | 'rubric-rating'
   // queen-memory-hybrid-2026-07-02 L1c: standing facts (agent_facts ledger) ride
   // the digest so ideation is grounded in the fleet's DETERMINISTIC conclusions.
-  | 'standing-fact';
+  | 'standing-fact'
+  // gym-unwedge-scout-novelty-2026-07-02 NOV-1: the QD archive's niche map —
+  // occupied behavior-space niches (avoid duplicating) so generation actively
+  // targets UNEXPLORED space (the quality-diversity novelty-search feedback).
+  | 'niche-map';
 
 /**
  * A grounded meta-pattern: a cross-corpus regularity (not a single capture),
@@ -117,6 +121,11 @@ export interface CorpusDigest {
    *  the ideators leap from the fleet's deterministic conclusions too. OPTIONAL
    *  so pre-facts digests and fixtures stay valid. */
   standingFacts?: MetaPattern[];
+  /** QD NICHE MAP (gym-unwedge NOV-1) — occupied gym_qd_archive niches
+   *  (`ref` = `niche:<key>`) so the ideators steer AWAY from crowded
+   *  behavior-space and toward unexplored (scope, domain, risk) combinations.
+   *  OPTIONAL: populated by the cycle seam; absent = archive empty/unreadable. */
+  nicheMap?: MetaPattern[];
   /** Optional one-line "state of the Hive" headline. */
   headline?: string;
   /** ISO timestamp the digest was synthesized. */

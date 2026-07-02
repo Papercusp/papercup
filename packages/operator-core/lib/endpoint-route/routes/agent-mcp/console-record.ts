@@ -51,7 +51,8 @@
  * restore); a future fix can reuse that signal to end this row too.
  */
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { recordAdvSession } from '../../../adv-sessions';
+import { recordAdvSession, setAdvSessionWindowId } from '../../../adv-sessions';
+import { isWindowsDesktopHost, WINDOW_TITLE_PREFIX } from '../../../windows-desktop-windows';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -61,7 +62,21 @@ interface RecordBody {
   label?: string | null;
   planSlug?: string | null;
   launchArgv?: string[] | null;
+  /**
+   * windows-desktop-feature-parity-2026-07-02 P-010: the window-identity UUID
+   * native_console.rs minted + titled the OS window with (`Papercup —
+   * <sessionId>`). Only meaningful on a Windows-desktop host — see
+   * `maybeRecordWindowTitle` below. Distinct from `adv_sessions.session_id`
+   * (the agent CLI's native session id, e.g. claude's --session-id) — never
+   * conflate the two.
+   */
+  sessionId?: string | null;
 }
+
+/** Same allowlist `console-launcher.ts`'s `shellSafeId` enforces — sessionId
+ *  is minted as `crypto.randomUUID()`, so anything outside `[0-9a-f-]` is a
+ *  malformed/adversarial value we refuse to splice into a stored title. */
+const SAFE_SESSION_ID_RE = /^[0-9a-f-]+$/i;
 
 function normalizeLaunchArgv(v: unknown): string[] | null {
   if (!Array.isArray(v)) return null;
