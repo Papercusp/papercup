@@ -938,15 +938,26 @@ export function listBootedHandles(): BootedHandleSummary[] {
 export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
   const facts: BootedHarnessFacts[] = [];
   for (const [k, handle] of handles) {
+    // WI-1544 Leg D: a RELOCATED (sidecar) handle reports swarm=null and
+    // admitted=∅ BY DESIGN — the real swarm + admitted set live in the sidecar
+    // process, and sidecar drain/replication activity never bumps operator-side
+    // lastAccess either. Reading those proxy fields here made every packaged-app
+    // harness look inert, so the reaper evicted LIVE federated engines
+    // (substrate:closeStore → left the topic, killed announce + log serving; the
+    // owner's hive-home harness then never re-booted — no local writes — and the
+    // roster blacked out permanently). v1 boundary, restated: only IN-PROCESS
+    // engines whose liveness we can actually observe are eviction candidates;
+    // every remote handle is pinned until facts come from sidecar status (v2).
+    const remote = handle instanceof RemoteBootedHarnessHandle;
     const hasSwarm = handle.swarm != null;
-    const hasRemotePeers = handle.admitted.size > 1;
+    const hasRemotePeers = !remote && handle.admitted.size > 1;
     facts.push({
       key: k,
       lastAccessMs: lastAccess.get(k) ?? now,
       hasActivePeer: hasRemotePeers,
-      // v1: a swarmed harness is pinned (never evicted). Private harnesses fall
-      // through to the idle/LRU eviction candidates.
-      pinned: hasSwarm,
+      // v1: a swarmed harness is pinned (never evicted). Private in-process
+      // harnesses fall through to the idle/LRU eviction candidates.
+      pinned: hasSwarm || remote,
     });
   }
   return facts;
@@ -967,6 +978,10 @@ export async function evictBootedHarnessEngine(
 ): Promise<boolean> {
   const handle = handles.get(k);
   if (!handle) return false;
+  // WI-1544 Leg D: NEVER evict a relocated (sidecar) handle — its swarm/admitted
+  // proxies are blind (always null/∅), so the v1 liveness re-check below cannot
+  // see a live federated engine. Mirrors the pin in gatherBootedHarnessFacts.
+  if (handle instanceof RemoteBootedHarnessHandle) return false;
   // Got hot since the snapshot? Skip.
   const last = lastAccess.get(k);
   if (last != null && guard.now - last < guard.idleMs) return false;

@@ -23,6 +23,7 @@ import type { BootedHarnessHandle } from '../boot';
 import type { AdmittedLog } from '../read-merge';
 import type { SwarmHandle } from '../swarm';
 import { makeFakeBootedHandle } from './fake-booted-handle';
+import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
 
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: [] as Array<{ slug: string; path: string }> }),
@@ -40,6 +41,22 @@ function fakeHandle(
     handle.admitted.set('bb'.repeat(32), {} as AdmittedLog);
   }
   return handle;
+}
+
+/** A real RemoteBootedHarnessHandle over a stub RPC client — swarm=null and
+ *  admitted=∅ by design (the engine lives in the sidecar), which is exactly
+ *  the blindness the WI-1544 Leg-D pin must guard against. */
+function fakeRemoteHandle(workspaceId: string, harnessSlug: string) {
+  const call = vi.fn(async () => ({}) as never);
+  const handle = new RemoteBootedHarnessHandle({
+    workspaceId,
+    harnessSlug,
+    storeId: `${workspaceId}::${harnessSlug}`,
+    client: { call },
+    ownLogKey: 'aa'.repeat(32),
+    ownLogLength: 0,
+  } as ConstructorParameters<typeof RemoteBootedHarnessHandle>[0]);
+  return { handle, call };
 }
 
 beforeEach(() => {
@@ -77,6 +94,16 @@ describe('gatherBootedHarnessFacts (v1 boundary)', () => {
   it('defaults lastAccessMs to `now` for an untracked handle (treated HOT)', () => {
     _setHandleForTests('ws', 'p', fakeHandle('ws', 'p'));
     expect(gatherBootedHarnessFacts(999).find((f) => f.key === 'ws::p')!.lastAccessMs).toBe(999);
+  });
+
+  it('pins a RELOCATED (sidecar) handle even though its swarm/admitted proxies read inert (WI-1544 Leg D)', () => {
+    const { handle } = fakeRemoteHandle('ws', 'relocated');
+    // The proxy really is blind — that is the hazard under test.
+    expect(handle.swarm).toBeNull();
+    expect(handle.admitted.size).toBe(0);
+    _setHandleForTests('ws', 'relocated', handle);
+    const facts = gatherBootedHarnessFacts(123);
+    expect(facts[0]).toMatchObject({ key: 'ws::relocated', pinned: true });
   });
 });
 
@@ -140,6 +167,18 @@ describe('evictBootedHarnessEngine (race-guarded)', () => {
   it('returns false for an unknown key', async () => {
     enableSubstrateEvictionTracking();
     expect(await evictBootedHarnessEngine('ws::nope', { now: 1, idleMs: 1 })).toBe(false);
+  });
+
+  it('NEVER evicts a relocated (sidecar) handle, however idle it looks (WI-1544 Leg D)', async () => {
+    enableSubstrateEvictionTracking();
+    const { handle, call } = fakeRemoteHandle('ws', 'relocated');
+    _setHandleForTests('ws', 'relocated', handle);
+    // Way past any idle window, swarm=null, admitted=∅ — pre-fix this evicted the
+    // live sidecar engine via substrate:closeStore and blacked out federation.
+    const did = await evictBootedHarnessEngine('ws::relocated', { now: 2_000_000, idleMs: 1000 });
+    expect(did).toBe(false);
+    expect(call).not.toHaveBeenCalled(); // no substrate:closeStore RPC
+    expect(getBootedHarness('ws', 'relocated')).toBe(handle); // still resident
   });
 });
 
