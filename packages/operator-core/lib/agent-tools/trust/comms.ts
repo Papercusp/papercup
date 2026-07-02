@@ -25,13 +25,13 @@ export default defineTool({
   // resolved workspace id (D-004 — never relies on RLS).
   crossWorkspace: true,
   description:
-    "Owner: set / remove / list per-user COMMS-TRUST tiers (observe<message<wake<steer) governing what a hive member's agents may do to YOUR agents across machines — below 'message' their coord quarantines; below 'wake' it delivers but never re-invokes (billable turns); 'steer' unlocks handoffs. { action:'set', githubUserId, tier, note?, expiresAtMs? } | { action:'remove', githubUserId } | { action:'list' } | { action:'gate', githubUserId, granted } — the DG-4 GATE grant (does this member's distributed-test-gate verdicts count toward green?), SEPARABLE from the tiers. Local-only, never federated, audited. Overrides the hive policy's comms.defaultTier per user.",
+    "Owner: per-user COMMS-TRUST tiers (observe<message<wake<steer) governing what a hive member's agents may do to YOUR agents across machines — below 'message' their coord quarantines; below 'wake' it delivers but never re-invokes; 'steer' unlocks handoffs. Actions: set {githubUserId, tier, note?, expiresAtMs?} | remove | list | gate {githubUserId, granted} — the DG-4 gate grant (do their test-gate verdicts count toward green?), separable from the tiers. Local-only, never federated, audited. Overrides the hive policy's comms.defaultTier per user.",
   capability: 'audit:write',
   guidance: {
-    when: "Granting or downgrading a specific hive member's reach into your agents: give a collaborator 'wake' so their queen can re-invoke your bees; give 'steer' for handoffs; set 'observe' to explicitly mute a noisy member below the policy default. expiresAtMs makes a grant probationary (decays to the policy default). action:'gate' grants/revokes the DISTRIBUTED-TEST-GATE trust (P-047): whether that member's shard verdicts count toward green(S) — separable from steer (a CI box can be gate-trusted but never steer; a steer-trusted peer's verdicts don't count until gate-granted).",
+    when: "Granting/downgrading a specific member's reach into your agents: 'wake' lets their queen re-invoke your bees; 'steer' for handoffs; 'observe' mutes a noisy member below the policy default. expiresAtMs makes a grant probationary. action:'gate' grants/revokes gate trust (P-047): whether their shard verdicts count toward green(S) — a CI box can be gate-trusted but never steer, and vice versa.",
     notWhen:
-      "Auto-RUN of their verified work items — that is trust:add (a separate grant). The hive-wide DEFAULT tier — author comms.defaultTier in the owner-signed hive policy instead. Reading the quarantine queue — that surfaces via the coord quarantine store, not here.",
-    chaining: "trust:comms {action:'list'} → {action:'set', githubUserId, tier:'wake'} — the projection picks the new tier up within its ~30s cache TTL. Gate: {action:'gate', githubUserId, granted:true} → the DG-5 aggregator starts counting their verdicts on its next round.",
+      "Auto-RUN of their verified work — trust:add. The hive-wide DEFAULT tier — author comms.defaultTier in the hive policy. Reading the quarantine queue — the coord quarantine store.",
+    chaining: "{action:'list'} → {action:'set', githubUserId, tier:'wake'} — picked up within the ~30s cache TTL. {action:'gate', granted:true} → the DG-5 aggregator counts their verdicts next round.",
     seeAlso: ['trust:add (auto-run grant — separable)', 'trust:list (auto-run list)', 'hive:set-steering (policy authoring)'],
   },
   requirePrincipal: false,
