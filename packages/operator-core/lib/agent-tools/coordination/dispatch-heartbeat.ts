@@ -32,21 +32,23 @@
  */
 import { resolveAgentIdentity, type ResolveIdentityCtx } from './identity';
 import { touchActivity } from './presence';
+import {
+  createPresenceBeatThrottle,
+  PRESENCE_BEAT_INTERVAL_MS,
+} from './presence-beat-throttle';
 
 /** Minimum gap between beats for one owner. Presence staleness windows are
  *  60s (roster LIVE_MS) and 10min (claims sweep) — 45s keeps both fresh
  *  while costing at most ~1.3 UPDATEs/min per busy agent. */
-export const DISPATCH_BEAT_INTERVAL_MS = 45_000;
+export const DISPATCH_BEAT_INTERVAL_MS = PRESENCE_BEAT_INTERVAL_MS;
 
-const lastBeat = new Map<string, number>();
-
-/** Drop throttle entries idle past this many windows (bounds the Map). */
-const GC_IDLE_WINDOWS = 10;
-const GC_SIZE_TRIGGER = 2_000;
+/** The dispatch beat's own throttle instance (EI-6797: shared factory, private
+ *  Map — never suppresses the sibling inbox heartbeat throttle). */
+const throttle = createPresenceBeatThrottle(DISPATCH_BEAT_INTERVAL_MS);
 
 /** Test seam: reset throttle state between cases. */
 export function __resetDispatchHeartbeatThrottle(): void {
-  lastBeat.clear();
+  throttle.reset();
 }
 
 /**
@@ -73,17 +75,7 @@ export function maybeBeatPresenceOnDispatch(
   }
   if (!ownerId) return;
 
-  const now = nowFn();
-  const last = lastBeat.get(ownerId) ?? 0;
-  if (now - last < DISPATCH_BEAT_INTERVAL_MS) return;
-  lastBeat.set(ownerId, now);
-
-  if (lastBeat.size > GC_SIZE_TRIGGER) {
-    const cutoff = now - GC_IDLE_WINDOWS * DISPATCH_BEAT_INTERVAL_MS;
-    for (const [k, t] of lastBeat) {
-      if (t < cutoff) lastBeat.delete(k);
-    }
-  }
+  if (!throttle.shouldBeat(ownerId, nowFn())) return;
 
   void Promise.resolve()
     .then(() => beat(ownerId))

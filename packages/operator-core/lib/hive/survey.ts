@@ -349,10 +349,29 @@ export function filterReadyFrontier(
 // ── PG reads (thin) ─────────────────────────────────────────────────────────
 
 /**
+ * Ephemeral benchmark / throwaway harness instances — the xbench fleet
+ * (`xbench-su-*`, `xbq…` hive hashes), memory-capacity probes, per-task
+ * `*-instance_*` churn. EI-1525: when a hive's membership isn't wired,
+ * {@link resolveHiveMembership}'s P-012 workspace-wide fallback (`surveySlugs
+ * === []`) has NO harness filter at all — so this ephemeral debris was being
+ * surveyed as real frontier work, going Queen-unresolvable, and escalating
+ * (~13k false escalations from ~253 torn-down xbench/instance work-items on
+ * 2026-06-18). Excluding it here closes that hole regardless of whether
+ * membership ever gets wired. Mirrors the watchdog's EPHEMERAL_BENCHMARK_SLUG_RE
+ * (watchdog.ts P-006) — kept as a local copy (same convention as
+ * git-sync-eligibility.ts's EPHEMERAL_INSTANCE_SLUG_RE) so this hot Queen-wake
+ * path gains no dependency on the heavy watchdog module. Real harness slugs
+ * (papercup, papercup-org, papercup-hive, sheets, …) never match.
+ */
+const EPHEMERAL_BENCHMARK_SLUG_SQL_RE =
+  '(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|hiveloop|memcap|memrun)|-instance[_-]|_instance[_-]|deleteme|^e2e-imp|^sb-gym|gym-eval|^bench-|smoke-p[0-9]';
+
+/**
  * The unplaced FRONTIER across the given harnesses: feature-family work-items
  * that are `todo` and unassigned — exactly what placement would dispatch.
- * `surveySlugs` empty ⇒ workspace-wide (the P-012 fallback). Oldest-first,
- * capped. One query (no per-slug loop).
+ * `surveySlugs` empty ⇒ workspace-wide (the P-012 fallback), MINUS ephemeral
+ * benchmark/instance debris (EI-1525 — see {@link EPHEMERAL_BENCHMARK_SLUG_SQL_RE}).
+ * Oldest-first, capped. One query (no per-slug loop).
  *
  * EI-865 / WI-677 — PATHOLOGY-CURSED items are excluded. A watchdog `cursed`
  * row only hard-blocks the frontier when its fail_count reached the real
