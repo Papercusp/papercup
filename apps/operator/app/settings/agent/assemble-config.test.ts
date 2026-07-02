@@ -196,3 +196,52 @@ describe('assembleAgentConfig — THE WIPE REGRESSION: invalid edits hold, never
     expect(res.problems).toEqual([]);
   });
 });
+
+// ── context-trimming-tiers-2026-07-01: per-tier compaction limit column ──────
+
+describe('tier compaction limit (context-trimming-tiers D-001/D-002)', () => {
+  const baseInput = () => ({
+    backend: 'auto' as const,
+    cmd: '',
+    modelsJson: '',
+    roleBackends: {},
+    surfaceBackends: Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
+    surfaceModels: Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
+    tierCeilings: {},
+    lastValid: { models: {}, surfaceModels: {}, tiers: [], tierCeilings: {} },
+  });
+
+  it('persists a valid limit; blank means model-derived default (field omitted)', () => {
+    const r = assembleAgentConfig({
+      ...baseInput(),
+      tierRows: [
+        { name: 'lean', spec: 'sonnet', backend: '', when: '', compactionLimit: '120000' },
+        { name: 'wide', spec: 'opus[1m]:high', backend: '', when: '', compactionLimit: '' },
+      ],
+    });
+    expect(r.problems).toEqual([]);
+    expect(r.persistable.tiers).toEqual([
+      { name: 'lean', spec: 'sonnet', compactionLimit: 120000 },
+      { name: 'wide', spec: 'opus[1m]:high' },
+    ]);
+  });
+
+  it('an out-of-range limit flags a problem and HOLDS the menu (never a silent clamp in the UI)', () => {
+    const held = [{ name: 'old', spec: 'sonnet' }];
+    const r = assembleAgentConfig({
+      ...baseInput(),
+      lastValid: { models: {}, surfaceModels: {}, tiers: held, tierCeilings: {} },
+      tierRows: [{ name: 'lean', spec: 'sonnet', backend: '', when: '', compactionLimit: '900000' }],
+    });
+    expect(r.problems.some((p) => p.includes('compaction limit'))).toBe(true);
+    expect(r.persistable.tiers).toEqual(held);
+  });
+
+  it('a non-integer limit flags a problem', () => {
+    const r = assembleAgentConfig({
+      ...baseInput(),
+      tierRows: [{ name: 'lean', spec: 'sonnet', backend: '', when: '', compactionLimit: 'many' }],
+    });
+    expect(r.problems.some((p) => p.includes('whole number'))).toBe(true);
+  });
+});
