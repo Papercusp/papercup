@@ -122,3 +122,66 @@ describe('loadHiveOwnerDeviceBindings — live directory + PG cache merge (D-007
     expect(await loadHiveOwnerDevicePubkey(WS, 'HP_missing')).toBeNull();
   });
 });
+
+describe('registry-view leg (2026-07-01 Brief-3 live finding: join-time stamped coords)', () => {
+  const regRow = (extra: object) => ({
+    projects: [
+      { slug: 'shop', path: '/m/shop' }, // member — never contributes
+      { slug: 'shop-hive', path: '/rh/shop-hive', harness_kind: 'hive', remote_hive: true, ...extra },
+    ],
+  });
+
+  it('THE DETERMINISTIC LEG: resolves the binding from a remote-hive view entry when BOTH directory legs are empty', async () => {
+    listDiscoveredHives.mockReturnValue([]);
+    readOperatorState.mockImplementation(async (table: unknown) =>
+      table === 'harness_registry'
+        ? regRow({ hive_pubkey: 'HP_reg', owner_device_pubkey: 'OD_reg' })
+        : null,
+    );
+
+    expect(await loadHiveOwnerDeviceBindings(WS)).toEqual([
+      { hivePubkey: 'HP_reg', ownerDevicePubkey: 'OD_reg' },
+    ]);
+    expect(await loadHiveOwnerDevicePubkey(WS, 'HP_reg')).toBe('OD_reg');
+  });
+
+  it('a view without the stamped coords contributes nothing (pre-stamp registries)', async () => {
+    listDiscoveredHives.mockReturnValue([]);
+    readOperatorState.mockImplementation(async (table: unknown) =>
+      table === 'harness_registry' ? regRow({}) : null,
+    );
+
+    expect(await loadHiveOwnerDeviceBindings(WS)).toEqual([]);
+  });
+
+  it('a LOCAL owned hive entry (not remote_hive) never contributes, even with stray coords', async () => {
+    listDiscoveredHives.mockReturnValue([]);
+    readOperatorState.mockImplementation(async (table: unknown) =>
+      table === 'harness_registry'
+        ? {
+            projects: [
+              {
+                slug: 'own-hive', path: '/own', harness_kind: 'hive',
+                hive_pubkey: 'HP_own', owner_device_pubkey: 'OD_own',
+              },
+            ],
+          }
+        : null,
+    );
+
+    expect(await loadHiveOwnerDeviceBindings(WS)).toEqual([]);
+  });
+
+  it('dedup: the registry leg wins over a later directory descriptor for the same hive', async () => {
+    listDiscoveredHives.mockReturnValue([disco('HP_reg', 'OD_directory_stale')]);
+    readOperatorState.mockImplementation(async (table: unknown) =>
+      table === 'harness_registry'
+        ? regRow({ hive_pubkey: 'HP_reg', owner_device_pubkey: 'OD_reg' })
+        : null,
+    );
+
+    expect(await loadHiveOwnerDeviceBindings(WS)).toEqual([
+      { hivePubkey: 'HP_reg', ownerDevicePubkey: 'OD_reg' },
+    ]);
+  });
+});

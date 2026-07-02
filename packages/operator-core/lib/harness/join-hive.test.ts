@@ -379,3 +379,65 @@ describe('self-echo guard (2026-07-01 owner split-brain: directory re-announce o
     expect(calls.joined.map((j) => j.slug)).toEqual(['shop']);
   });
 });
+
+describe('verified hive identity coords stamped on the view (owner-bootstrap admit determinism)', () => {
+  it('stamps hive_pubkey + owner_device_pubkey on a NEW view from opts', async () => {
+    const { deps, calls } = fakes();
+    const res = await joinHiveAsView(
+      {
+        hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, ownerDevicePubkey: 'OD_announce',
+        memberLinks: [link('shop', 100)], workspaceId: 'ws',
+      },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
+      remote_hive: true,
+      hive_pubkey: HIVE_PUBKEY,
+      owner_device_pubkey: 'OD_announce',
+    });
+  });
+
+  it('resolves the owner device from the directory when opts omit it', async () => {
+    const { deps, calls } = fakes();
+    deps.resolveOwnerDevicePubkey = async () => 'OD_directory';
+    await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
+      hive_pubkey: HIVE_PUBKEY, // from the fixture resolveHivePubkey
+      owner_device_pubkey: 'OD_directory',
+    });
+  });
+
+  it('idempotent re-join BACKFILLS the coords onto an existing pre-stamp view', async () => {
+    const { deps, calls } = fakes([
+      { slug: 'shop-hive', path: '/remote-hives/shop-hive', harness_kind: 'hive', remote_hive: true },
+      { slug: 'shop', path: '/joined/shop', hive_slug: 'shop-hive', github_repository_id: 100 },
+    ]);
+    deps.resolveOwnerDevicePubkey = async () => 'OD_backfill';
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', hivePubkey: HIVE_PUBKEY, memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.hiveSlug).toBe('shop-hive');
+    expect(calls.registry.find((p) => p.slug === 'shop-hive')).toMatchObject({
+      hive_pubkey: HIVE_PUBKEY,
+      owner_device_pubkey: 'OD_backfill',
+    });
+  });
+
+  it('absent values stamp nothing (no empty-string coords)', async () => {
+    const { deps, calls } = fakes();
+    deps.resolveHivePubkey = async () => null;
+    deps.resolveOwnerDevicePubkey = async () => null;
+    await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+      deps,
+    );
+    const view = calls.registry.find((p) => p.slug === 'shop-hive')!;
+    expect(view.hive_pubkey).toBeUndefined();
+    expect(view.owner_device_pubkey).toBeUndefined();
+  });
+});

@@ -290,6 +290,24 @@ export async function loadHiveOwnerDeviceBindings(
     }
   };
 
+  // (0) REGISTRY view coords — stamped at JOIN time (join-hive.ts) from the verified
+  // discovery descriptor. This is the DETERMINISTIC leg (2026-07-01 Brief-3 live
+  // finding): a link/discovery joiner gets the binding the moment it joins, in every
+  // process, instead of waiting for its own directory instance to (re-)hear the
+  // owner's announce — a multi-minute race that live-blocked owner→joiner federation
+  // (owner-admit match=false for 15+ min while the descriptor sat only in ANOTHER
+  // process's directory). The registry read is the one store proven to resolve in
+  // the substrate sidecar.
+  try {
+    const { loadHarnessRegistry } = await import('./harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    for (const p of reg.projects) {
+      if (p.remote_hive === true) accept(p.hive_pubkey, p.owner_device_pubkey);
+    }
+  } catch {
+    /* registry unavailable — fall through to the directory legs */
+  }
+
   // (1) LIVE in-process directory — present the instant the owner's fresh announce is heard,
   // independent of the racy/workspace-scoped PG cache write. This is the leg that unblocks a
   // direct-link/from-repo joiner whose PG cache row never landed (D-007). Best-effort: a

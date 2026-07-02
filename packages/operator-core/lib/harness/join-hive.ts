@@ -58,6 +58,10 @@ export interface JoinHiveOpts {
   title?: string;
   /** Owner Hive identity pubkey from the discovery listing/invite. */
   hivePubkey?: string;
+  /** Owner DEVICE pubkey from the verified discovery listing/announce — stamped
+   *  on the registry view so the substrate owner-bootstrap admit resolves the
+   *  (hivePubkey → ownerDevicePubkey) binding without directory timing luck. */
+  ownerDevicePubkey?: string;
   /** The announce's full per-member join links. */
   memberLinks: string[];
   workspaceId: string;
@@ -123,6 +127,9 @@ export interface JoinHiveDeps {
     workspaceId: string,
     homeSlug: string,
   ) => Promise<{ pubkeyBase64: string } | null>;
+  /** Resolve the discovered Hive's OWNER device pubkey (default: the local
+   *  verified directory's listing — same source as resolveHivePubkey). */
+  resolveOwnerDevicePubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
 }
 
 /** Resolve a discovered Hive's HIVE-identity pubkey from the local directory's
@@ -136,6 +143,23 @@ async function defaultResolveHivePubkey(
     const { getHiveDirectory } = await import('../hive-directory-deps');
     const hives = await getHiveDirectory().listDiscoveredHives({ includeExpired: true });
     return hives.find((h) => h.hiveId === hiveId)?.hivePubkey ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The discovered Hive's OWNER device pubkey from the same verified directory
+ *  listing defaultResolveHivePubkey reads (every descriptor there passed
+ *  verifyHiveAnnounce, which binds owner_device_pubkey ↔ hive_pubkey). */
+async function defaultResolveOwnerDevicePubkey(
+  _workspaceId: string,
+  hiveId: string,
+): Promise<string | null> {
+  try {
+    const { getHiveDirectory } = await import('../hive-directory-deps');
+    const hives = await getHiveDirectory().listDiscoveredHives({ includeExpired: true });
+    const h = hives.find((x) => x.hiveId === hiveId) as { ownerDevicePubkey?: string } | undefined;
+    return h?.ownerDevicePubkey ?? null;
   } catch {
     return null;
   }
@@ -278,12 +302,34 @@ export async function joinHiveAsView(
   const linkBySlug = new Map(
     members.filter((m) => m.ok).map((m) => [m.slug, links.find((l) => l.raw === m.link)?.parsed]),
   );
+  // Verified hive identity coords for the view (Brief-3 live finding, 2026-07-01):
+  // stamp (hive_pubkey, owner_device_pubkey) on the registry view so the substrate's
+  // owner-bootstrap admit resolves the binding from the REGISTRY (works in every
+  // process) instead of waiting on the joiner's directory instance to (re-)hear the
+  // owner's announce — the multi-minute race that live-blocked owner→joiner
+  // federation. Both values trace to verifyHiveAnnounce-gated sources: the caller's
+  // announce/listing, or the local verified directory. Best-effort — absent values
+  // stamp nothing and the old directory-timing path still applies.
+  const ownerDevicePubkey =
+    (typeof opts.ownerDevicePubkey === 'string' && opts.ownerDevicePubkey.trim()
+      ? opts.ownerDevicePubkey.trim()
+      : null) ?? (await resolveOwnerDevicePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
+  const viewIdentityCoords = {
+    ...(announcedPubkey ? { hive_pubkey: announcedPubkey } : {}),
+    ...(ownerDevicePubkey ? { owner_device_pubkey: ownerDevicePubkey } : {}),
+  };
+
   // Post-mutate member entries (hive_slug + upstream coords stamped) — the
   // git-sync seeding below feeds these to the eligibility/seed composition.
   const memberEntries = new Map<string, ProjectEntry>();
   await mutateRegistry((cur: HarnessRegistry) => {
     const hasView = cur.projects.some((p) => p.slug === hiveSlug);
     const projects = cur.projects.map((p) => {
+      if (p.slug === hiveSlug && p.remote_hive === true) {
+        // Idempotent re-join BACKFILLS the identity coords onto an existing view
+        // (views created before this stamping existed lack them).
+        return { ...p, ...viewIdentityCoords };
+      }
       const link = linkBySlug.get(p.slug);
       if (!link) return p;
       const next = {
@@ -312,6 +358,7 @@ export async function joinHiveAsView(
               path: viewPath,
               harness_kind: 'hive',
               remote_hive: true,
+              ...viewIdentityCoords,
             },
           ],
     };
