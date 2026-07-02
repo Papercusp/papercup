@@ -81,7 +81,10 @@ export default defineTool({
       hivePubkey: h.hivePubkey ?? '',
       memberTopics: h.memberTopics,
       memberLinks: h.memberLinks ?? [],
-      memberCount: h.memberTopics.length,
+      // memberTopics is empty for from-repo publishes (publishCreatedHive hardcodes
+      // []), which read as memberCount:0 despite real joinable members — fall back
+      // to the one-click member links (P-024 audit item 8).
+      memberCount: h.memberTopics.length || h.memberLinks?.length || 0,
       createdAt: h.createdAt,
       lastSeenMs: h.lastSeenMs,
       ...(h.beacon ? { beacon: h.beacon } : {}),

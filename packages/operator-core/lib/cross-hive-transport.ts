@@ -194,8 +194,10 @@ export type RecordReplyResult =
   | { outcome: 'transitioned'; row: CrossHiveAskRow }
   /** Already answered/declined/expired — a dup delivery (the outbox redelivers); do NOT re-emit. */
   | { outcome: 'already-settled'; row: CrossHiveAskRow }
-  /** No OUT row matches (correlation_id, peer_pubkey) — unsolicited, or the ledger store
-   *  has not landed yet (the null stub). The C-4 event still fires with a synthetic payload. */
+  /** No OUT row matches (correlation_id, peer_pubkey) — unsolicited/forged. NOTE: the
+   *  production wiring emits the C-4 event ONLY on 'transitioned' (cross-hive-wiring
+   *  persistAndEmitReply), so a not-found NEVER wakes the Queen — the old "synthetic
+   *  payload" contract described here is retired (stale note fixed, P-024). */
   | { outcome: 'not-found' };
 
 /** The receive side's ledger PORT (production: B-02's PG store over `cross_hive_asks`).

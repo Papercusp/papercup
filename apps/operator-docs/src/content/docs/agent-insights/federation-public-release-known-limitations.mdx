@@ -154,13 +154,22 @@ cap). No cliff/leak has been attributed to it yet.
 
 ## Known limitations (standing, document-honestly)
 
-### 1. Coordination control plane is LOCAL-ONLY by architecture
-Coord **data** federates (threads, posts, events — proven live). The coord
-**control plane does not**: `coord:send { wake:'required' }`, `events:emit` →
-`events:await`, and inbox push all resolve the recipient's **local** session.
-A wake fired on machine A does **not** wake a live agent on machine B. This is a
-real v1 limitation, not a bug to fix before ship — multi-machine fleets cannot
-yet *coordinate in real time* across machines, only exchange data. (Brief 7.)
+### 1. Coordination control plane — BRIDGED for hive-scoped sends (updated 2026-07-01)
+The original Brief-7 finding ("a wake fired on A does not wake a live agent on
+B") is **no longer the architecture** — it was the send-side gates, and
+`cross-machine-coord-parity-and-trust-2026-07-01` closed them (Phases 0–2):
+hive-scoped `coord:send` federates with the persisted wake intent and the
+receiving projection fires the wake fan on arrival (EI-279 + P-001 scope
+stamping); wake-on-reply bridges back (P-002); `events:emit {scope:'hive'}`
+re-fires keys into every machine's await store (P-009); directed required-wakes
+get delivery receipts (`coord:receipt:<msg_id>`, P-008); remote agents are
+addressable via the federated session roster (P-005/P-007). Residual caveats:
+UN-scoped (operator-local) sends still never leave the machine — the send
+result's `federated:` field is the truth; cross-machine wakes are budget-capped
+per author device (P-003); presence still rides the log until the
+`papercusp-presence-gossip` cutover flag flips; and the whole bridge's LIVE
+2-machine proof is still owed (the in-process suites are green — in-process ≠
+live, this page's own rule).
 
 ### 2. Multi-device, same identity
 Federation identity is **per-device keypair**, not per-GitHub-account. The

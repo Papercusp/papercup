@@ -15,10 +15,11 @@
  *                          (`setHiveDirectoryTransport`). A no-op until wired, so
  *                          the endpoint serves a read-only list before the
  *                          substrate join exists.
- *   - cache              → omitted for now (in-memory only). The PG offline cache
- *                          (a `hive_directory_cache` state table) lands with its
- *                          migration; until then the discovered set is rebuilt
- *                          from the live topic on each boot.
+ *   - cache              → WIRED (this line previously said "omitted" — stale):
+ *                          productionDeps() binds loadCache/saveCache to the
+ *                          `hive_directory_cache` operator-state row (mig 182)
+ *                          + tombstones, so the discovered set survives reboots
+ *                          and live announces LWW over the hydrated cache.
  *
  * Boot integration (the live join, deferred to the substrate boot path): on
  * substrate boot, call `setHiveDirectoryTransport(send, keychainId)`, join
