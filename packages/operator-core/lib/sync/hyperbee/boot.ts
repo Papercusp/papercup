@@ -973,11 +973,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
 
   // ── Pending-peer retry set (D-006) ── peers whose channel-2 file hasn't
-  // propagated yet. Stored as device_pubkey → {frame, since}. The retry timer
-  // re-runs admission for each pending peer; on 'verified' the peer is admitted
-  // normally; on conclusive failure or grace-window expiry the peer is removed
-  // without admit. Revocation also drops a peer from this set.
+  // propagated yet. Stored as log_core_key → {frame, since} — one device
+  // announces MULTIPLE logs on the same topic (A-003: a member log + the
+  // hive-home log share a device), so a device-keyed buffer silently dropped
+  // every log after the first (WI-1544 root cause #2). The retry timer
+  // re-runs admission for each pending frame; on 'verified' the peer is admitted
+  // normally; on conclusive failure or grace-window expiry the frame is removed
+  // without admit. Revocation drops ALL of a device's buffered logs.
   const pendingPeers = new Map<string, { frame: SignedAnnounce; since: number }>();
+  function purgePendingForDevice(devicePubkey: string): void {
+    for (const [key, entry] of pendingPeers) {
+      if (entry.frame.device_pubkey === devicePubkey) pendingPeers.delete(key);
+    }
+  }
 
   // ── Revocation refresh helper (D-002) ── load the current published revoked set
   // from PG (via `loadRevoked`) and union any NEW pubkeys into `revoked`. For each
@@ -992,7 +1000,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // New revocation discovered from PG.
         revoked.add(pk);
         // Drop from the pending-retry set — a revoked peer must never be retried.
-        pendingPeers.delete(pk);
+        purgePendingForDevice(pk);
         // If the peer is currently admitted, drop its log.
         const logKey = pubkeyToLogKey.get(pk);
         if (logKey) {
@@ -1926,8 +1934,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // federated to us yet → BUFFER for retry instead of a conclusive drop. Idempotent: a no-op when
     // already pending (preserving its grace clock), and the boot event is recorded ONLY on the first
     // buffering so the 5s retry re-checks don't spam the log.
-    if (!pendingPeers.has(frame.device_pubkey)) {
-      pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+    if (!pendingPeers.has(frame.log_core_key)) {
+      pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
@@ -2047,8 +2055,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // inJoinBootstrapWindow above). Distinct label so a live grep can tell this buffer
       // from the D-006 gist-propagation 'pending'.
       if (decision.reason === 'binding_invalid' && inJoinBootstrapWindow()) {
-        if (!pendingPeers.has(frame.device_pubkey)) {
-          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        if (!pendingPeers.has(frame.log_core_key)) {
+          pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
         }
         recordBootEvent(
           opts.workspaceId,
@@ -2067,8 +2075,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (decision.reason === 'pending') {
         // D-006: channel-2 file not yet visible on GitHub. Store this peer for
         // retry within the boot grace window; do NOT permanently reject.
-        if (!pendingPeers.has(frame.device_pubkey)) {
-          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        if (!pendingPeers.has(frame.log_core_key)) {
+          pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
         }
         recordBootEvent(
           opts.workspaceId,
@@ -2145,8 +2153,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // scope against the now-resolved `hiveHomeProjectionSlug` and admits iff in-scope.
       // Once home IS resolved, an out-of-scope frame is genuinely foreign → conclusive.
       if (hiveHomeProjectionSlug == null && originSlug != null && originSlug !== slug) {
-        if (!pendingPeers.has(frame.device_pubkey)) {
-          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        if (!pendingPeers.has(frame.log_core_key)) {
+          pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
         }
         recordBootEvent(
           opts.workspaceId,
@@ -2195,9 +2203,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function revoke(devicePubkey: string): Promise<void> {
     // (a) Block future admits + re-announces (decider checks `revoked` first).
     revoked.add(devicePubkey);
-    // (a2) Drop from the pending-retry set — a revoked peer must never be
-    // retried even if its channel-2 file eventually appears.
-    pendingPeers.delete(devicePubkey);
+    // (a2) Drop ALL of this device's buffered logs from the pending-retry set —
+    // a revoked peer must never be retried even if its channel-2 file eventually
+    // appears.
+    purgePendingForDevice(devicePubkey);
     // (b) Drop the already-admitted log for this pubkey, if any.
     const logKey = pubkeyToLogKey.get(devicePubkey);
     if (logKey) {

@@ -109,13 +109,15 @@ describe('startReadyScoutPlan', () => {
 });
 
 describe('buildScoutPlanTemplate seeds a startable item (WI-1574 tooth #2)', () => {
-  it('emits an open P-001 checkbox so a ratified draft has something to promote', () => {
+  it('emits an open canonical P-001 item so a ratified draft has something to promote', () => {
     const body = buildScoutPlanTemplate({
       slug: 'scout-x-2026-07-02',
       title: 'Close the loop',
       date: '2026-07-02',
     });
-    expect(body).toContain('- [ ] P-001 Close the loop');
+    // Canonical plans:add-item syntax (verified live): `- **P-001** \`todo\` <text>` —
+    // this is what readScoutReadyCandidates' has_open_items regex matches.
+    expect(body).toContain('- **P-001** `todo` Close the loop');
     expect(body).toContain('origin: scout');
   });
 });

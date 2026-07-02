@@ -55,7 +55,7 @@ ${why}
 
 ## Phase 1 — TODO
 
-- [ ] P-001 ${args.title} — first concrete slice of the proposal's mechanism (Queen: refine/split during review — a ratified plan's open items auto-promote to work_items on start, WI-1574)
+- **P-001** \`todo\` ${args.title} — first concrete slice of the proposal's mechanism (Queen: refine/split during review — a ratified plan's open items auto-promote to work_items on start, WI-1574)
 
 ## Decisions
 

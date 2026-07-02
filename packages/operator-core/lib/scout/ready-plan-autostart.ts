@@ -62,7 +62,7 @@ export function scoutReadyAutostartEnabled(): boolean {
 export interface ScoutReadyCandidate {
   planSlug: string;
   title: string | null;
-  /** Does the plan body contain at least one open item (`- [ ]`) to promote? */
+  /** Does the plan body contain at least one open item (`- **P-NNN** \`todo|wip\``) to promote? */
   hasOpenItems: boolean;
 }
 
@@ -96,9 +96,12 @@ export async function readScoutReadyCandidates(
   opts: { limit?: number } = {},
 ): Promise<ScoutReadyCandidate[]> {
   const limit = opts.limit ?? 20;
+  // Item syntax note (verified live 2026-07-02): plans:add-item writes
+  // `- **P-001** \`todo\` <text>` — NOT a `- [ ]` checkbox. Match the canonical
+  // marker with an OPEN status (todo|wip).
   const rows = await sql<ReadyRow[]>`
     SELECT plan_slug, title,
-           (content LIKE '%- [ ]%') AS has_open_items
+           (content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))) AS has_open_items
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${planWorkspaceId}
        AND harness_slug = ${installSlug}
