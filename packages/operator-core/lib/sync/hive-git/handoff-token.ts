@@ -118,7 +118,7 @@ function isHandoffTokenPayload(x: unknown): x is HandoffTokenPayload {
 }
 
 export function isSignedHandoffToken(x: unknown): x is SignedHandoffToken {
-  return isHandoffTokenPayload(x) && typeof (x as Record<string, unknown>).sig === 'string';
+  return isHandoffTokenPayload(x) && typeof (x as unknown as Record<string, unknown>).sig === 'string';
 }
 
 /** Canonical signing bytes: domain tag + fixed field order, parked pre-sorted. */

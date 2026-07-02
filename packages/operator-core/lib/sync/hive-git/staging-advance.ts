@@ -90,7 +90,7 @@ function isStagingAdvancePayload(x: unknown): x is StagingAdvancePayload {
 }
 
 export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
-  return isStagingAdvancePayload(x) && typeof (x as Record<string, unknown>).sig === 'string';
+  return isStagingAdvancePayload(x) && typeof (x as unknown as Record<string, unknown>).sig === 'string';
 }
 
 /**
