@@ -223,7 +223,7 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
     // '' = model-derived default; a number must sit in [20k, the spec's derived
     // ceiling] — the ceiling keeps limit × 1.2 under the hard window.
     let compactionLimit: number | undefined;
-    const limitText = row.compactionLimit.trim();
+    const limitText = (row.compactionLimit ?? '').trim();
     if (limitText) {
       const n = Number(limitText);
       const cap = defaultCompactionLimitForSpec(spec);

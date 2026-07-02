@@ -325,3 +325,31 @@ describe('downgradeOpusTierForBudget — floor-safe opus→sonnet shed (B-GW-4)'
     expect(d.spec).toBe('opus:high');
   });
 });
+
+// ── context-trimming-tiers-2026-07-01: resolved tiers carry a compaction limit ─
+
+describe('resolveTierSpec compactionLimit', () => {
+  it('derives the model default from the resolved spec when the tier sets none', () => {
+    const r = resolveTierSpec({ tier: 'standard', role: 'bee' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.compactionLimit).toBe(158_000); // sonnet: (200k − 10k) ÷ 1.2
+  });
+
+  it('honors an explicit per-tier limit and reflects a [1m] window', () => {
+    const tiers = [
+      { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
+      { name: 'wide', spec: 'opus[1m]:high' },
+    ];
+    const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
+    expect(lean.ok && lean.compactionLimit).toBe(90_000);
+    const wide = resolveTierSpec({ tier: 'wide', role: 'bee', tiers });
+    expect(wide.ok && wide.compactionLimit).toBe(825_000); // (1M − 10k) ÷ 1.2
+  });
+
+  it('a budget downgrade adopts the downgraded-to tier limit', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'haiku' }));
+    const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
+    expect(dg.downgraded).toBe(true);
+    expect(dg.compactionLimit).toBe(158_000); // standard/sonnet target
+  });
+});
