@@ -94,3 +94,26 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(r.staged).toBe(0);
   });
 });
+
+describe('P-022 — wake fan-out cap (cross-machine-coord-parity-and-trust-2026-07-01)', () => {
+  it('wakes at most MAX_WAKE_FANOUT recipients; the overflow is injected-not-woken and reported', async () => {
+    const { MAX_WAKE_FANOUT } = await import('./inbox-wake');
+    const many = Array.from({ length: MAX_WAKE_FANOUT + 6 }, (_, i) => `su-agent-${String(i).padStart(4, '0')}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await wakeRecipients(many, { summary: 'oversized audience' });
+      expect(r.targets).toHaveLength(MAX_WAKE_FANOUT);
+      expect(r.fanoutCapped).toHaveLength(6);
+      expect(vi.mocked(emitAwaitedEvent)).toHaveBeenCalledTimes(MAX_WAKE_FANOUT);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a normal directed set is untouched (fanoutCapped empty)', async () => {
+    const r = await wakeRecipients(['su-a', 'su-b']);
+    expect(r.fanoutCapped).toEqual([]);
+    expect(r.targets).toEqual(['su-a', 'su-b']);
+  });
+});

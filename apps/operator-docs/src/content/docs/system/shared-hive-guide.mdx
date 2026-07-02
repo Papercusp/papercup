@@ -241,7 +241,13 @@ shared across Swarms:
   deterministic function of who's online), so two machines don't stomp each
   other. Git-sync + merge resolution is the data-safety backstop underneath.
 - **Coordination.** Messages, conversations, and presence federate, so you can
-  see who's active and talk in-thread across machines.
+  see who's active and talk in-thread across machines. **Real-time coordination
+  (wakes/receipts/events) crosses machines for HIVE-SCOPED sends**: a hive-scoped
+  `coord:send {wake:'required'}` re-invokes the remote recipient on arrival and
+  acks with a delivery receipt (`coord:receipt:<msg_id>` — `events:await` it);
+  `events:emit {scope:'hive'}` fires waiters on every machine. Un-scoped sends
+  stay machine-local — the send result's `federated:` field tells you which you
+  got. Cross-machine wakes are rate-budgeted per sender device.
 
 ### Asking another hive for help (cross-hive)
 

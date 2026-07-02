@@ -31,8 +31,11 @@ one topic, and `harness_slug` demotes to the **within-Hive component demux**. Th
 was a **re-key, not a rebuild** (D-003): the Model-B peer-log, projections,
 Hyperswarm transport, and admission/revocation machinery are unchanged — only the
 topic key + scope boundary moved. Cross-Hive (message-passing between sovereign
-Hives) is deliberately **deferred** — see `phase1b-federation-limitations` and the
-plan's cross-Hive design note.
+Hives) is **BUILT and wired** (this previously said “deferred” — stale, corrected by
+cross-machine-coord-parity-and-trust-2026-07-01 P-024): `hive:ask` / `hive:request_work` /
+`hive:asks` / `hive:cross_grant` over the dedicated `papercusp/cross-hive` Protomux
+transport, with a durable outbox (mig 196), the ask-ledger state machine (migs 231/235),
+and default-deny directed grants (`packages/operator-core/lib/cross-hive-*`).
 
 <Aside type="note" title="Vocabulary (the-hive-lexicon)">
 **Hive** = a project (keypair-identified). **Swarm** = a deployment of a Hive to
@@ -268,10 +271,10 @@ no-ops by construction; cross-Swarm proof stays the owner-gated 2-machine run):
   its `coordinationDomain`). N=1 passthrough + defensive fallback. See the note above.
 - **Work-item-claim lease** — the swarm router + `claim_next`/executor lease paths are fully
   wired (`register-claim-authority-ops.ts:27` installs `SwarmWorkItemClaimAuthority`); the
-  owner ratified the switch by setting `PAPERCUSP_WORKITEM_CLAIM_LEASE=1` in the operator env
-  (effective next restart). The CODE default stays off — that's the ratification-switch test's
-  invariant + decentralized-dispatch-scaling's deterministic-test contract; env is the documented
-  flip. On a single box it's a local lease (authority = self).
+  gate has since MIGRATED to the runtime flag `papercusp-workitem-claim-lease`
+  (work-queue-stuck-item-recovery P-012/D-008) and is **DEFAULT ON** (graduated 2026-06-23,
+  WI-597 — `libs/flags/src/types.ts` is the source of truth; this paragraph previously
+  described an env gate with code-default-off, both stale — corrected by P-024). On a single box it's a local lease (authority = self).
 
 Legacy plan-item claims still append LWW-advisory to the own log
 (`orchestrator/distributed-claim.ts`) — distinct seam, unchanged.
