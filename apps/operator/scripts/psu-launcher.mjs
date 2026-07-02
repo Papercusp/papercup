@@ -968,6 +968,18 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   'tools:find', 'tools:invoke',
 ];
 
+/** The core spine minus any names in PAPERCUSP_OMP_TOOLS_EXCLUDE (comma-separated).
+ *  Escape hatch for a spine tool the target operator currently serves BROKEN — e.g. a
+ *  schema Ollama's parser 400s on until a server fix deploys (P-030: work_items:update's
+ *  unconstrained status/state on the release host). An excluded tool stays CALLABLE via
+ *  tools:invoke; only its up-front advertisement is dropped. Exported for tests. */
+export function ompCoreToolNames(env = process.env) {
+  const excluded = String(env.PAPERCUSP_OMP_TOOLS_EXCLUDE || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (!excluded.length) return [...OMP_CORE_MCP_TOOL_NAMES];
+  return OMP_CORE_MCP_TOOL_NAMES.filter((n) => !excluded.includes(n));
+}
+
 // weak-model-tool-tier: a model that runs LOCALLY (ollama/local provider prefix) is small
 // and weak for tool-use relative to a hosted frontier model. Mirror of the canonical
 // packages/operator-core/lib/model-tier.ts modelCapabilityTier heuristic (kept simple here
@@ -3250,8 +3262,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // (nothing activated ⇒ nothing callable). A ~20-tool seed needs no discovery gate;
       // exposing it directly also makes post-list_changed refreshes auto-expose surfaced
       // tools (sdk activateAll path) instead of gating them behind a second bm25 pass.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: OMP_CORE_MCP_TOOL_NAMES });
-      if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${OMP_CORE_MCP_TOOL_NAMES.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
+      const spine = ompCoreToolNames();
+      if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
+        console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
+      }
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine });
+      if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }
   }
@@ -3292,7 +3308,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // tail stays reachable via tools:find/tools:invoke (in the spine) + the capability map.
       // Only --context-size=full opts OUT (unset PAPERCUSP_TOOLS → full catalog + ToolSearch).
       ...(res.agent === 'claude' && args.contextSize !== 'full'
-        ? { PAPERCUSP_TOOLS: OMP_CORE_MCP_TOOL_NAMES.join(',') } : {}),
+        ? { PAPERCUSP_TOOLS: ompCoreToolNames().join(',') } : {}),
       // context-trimming-tiers D-004/P-009: the session PAYLOAD tier. The claude MCP url
       // env-expands ${PAPERCUSP_CONTEXT_TIER} (buildClaudeMcpEntry `ctx_tier=`) so the
       // server shapes tool payloads (defineTool `shape` projections) per tier.

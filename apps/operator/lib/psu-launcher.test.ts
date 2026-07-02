@@ -11,6 +11,7 @@ import {
   writeOmpSessionConfigDir,
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
+  ompCoreToolNames,
   isWeakOmpModel,
   OMP_CORE_MCP_TOOL_NAMES,
   SU_CONTEXT_CHOICES,
@@ -321,6 +322,25 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     } finally {
       rmSync(emptyHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)', () => {
+  it('returns the full spine when the env var is unset/empty', () => {
+    expect(ompCoreToolNames({})).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: '' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+  });
+
+  it('drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order', () => {
+    const kept = ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:update, coord:glance' });
+    expect(kept).not.toContain('work_items:update');
+    expect(kept).not.toContain('coord:glance');
+    expect(kept.length).toBe(OMP_CORE_MCP_TOOL_NAMES.length - 2);
+    expect(kept[0]).toBe(OMP_CORE_MCP_TOOL_NAMES[0]); // order preserved
+  });
+
+  it('ignores names not in the spine (no-op, no error)', () => {
+    expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
   });
 });
 
