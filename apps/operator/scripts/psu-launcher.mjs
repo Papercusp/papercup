@@ -1018,6 +1018,33 @@ export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
   }
 }
 
+/** Rewrite the ORIGIN (scheme+host+port) of every papercusp `/api/mcp` server URL in an OMP
+ *  mcp.json to the launcher's resolved operator URL, preserving path + query. The user-level
+ *  `~/.omp/agent/mcp.json` pins whatever origin it was minted with (usually direct :3070) — a
+ *  per-session copy that keeps that origin ignores PAPERCUSP_OPERATOR_URL and bypasses the
+ *  resilient proxy (WI-1457), so the member talks to a DIFFERENT operator than the launcher
+ *  that spawned it (root-caused 2026-07-02, P-030: a :3170-pinned relaunch still hit :3070).
+ *  Pure string→string; returns the input unchanged on any parse failure. Exported for tests. */
+export function applyOmpOperatorOrigin(mcpJsonText, operatorUrl) {
+  try {
+    const origin = new URL(operatorUrl).origin;
+    const obj = JSON.parse(mcpJsonText);
+    const servers = obj?.mcpServers;
+    if (servers && typeof servers === 'object') {
+      for (const key of Object.keys(servers)) {
+        const srv = servers[key];
+        if (srv && typeof srv.url === 'string' && /\/api\/mcp(\?|$)/.test(srv.url)) {
+          const u = new URL(srv.url);
+          srv.url = origin + u.pathname + u.search;
+        }
+      }
+    }
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return mcpJsonText;
+  }
+}
+
 /**
  * su-context-size-variants + weak-model-tool-tier: materialize a per-session OMP config dir
  * and return the value to export as PI_CONFIG_DIR.
@@ -1043,7 +1070,7 @@ export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
  * — no regression). Exported for tests.
  */
 export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
-  const { discoveryOff = false, toolsAllowlist = null } = opts;
+  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');
@@ -1073,6 +1100,7 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
     const srcMcp = join(srcAgent, 'mcp.json');
     if (existsSync(srcMcp)) {
       let mcpText = readFileSync(srcMcp, 'utf8');
+      mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
       if (toolsAllowlist && toolsAllowlist.length) mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
       writeFileSync(join(dstAgent, 'mcp.json'), mcpText, { mode: 0o600 });
     }
