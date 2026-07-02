@@ -39,12 +39,12 @@ describe('EI-7 — release-manager committed model pin', () => {
 
   it('resolves to opus @ xhigh effort even with AGENT_MODELS UNSET (the silent-downgrade fix)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
   });
 
   it('an explicit AGENT_MODELS entry still OVERRIDES the committed default', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-manager': 'claude-opus-4-8:max' }));
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model claude-opus-4-8 --effort max');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model claude-opus-4-8[1m] --effort max');
   });
 });
 

@@ -533,10 +533,20 @@ autonomous-fleet agent.
   GitHub issues — early when the surprise is sharp, at latest after ~3 failed
   fixes on one error class.
 
-## Memory and live context (mem0 / coord / insights)
+## Memory and live context (facts / mem0 / coord / insights)
 
-Three layers, three jobs. **mem0 = what I know; coord = what's happening;
-insights = how things work** (spec: `papercusp-su-memory-2026-05-25`).
+Four layers, four jobs. **facts = standing conclusions (deterministic delivery);
+mem0 = what I know (fuzzy recall); coord = what's happening; insights = how
+things work** (spec: `papercusp-su-memory-2026-05-25` + queen-memory-hybrid L1b).
+
+- **facts** — `facts:assert/retract/list` (queen-memory-hybrid-2026-07-02): a
+  scoped, TTL'd conclusion delivered VERBATIM into every relevant brief/dossier/
+  `coord:orient` until it expires or you retract it — unlike mem0, delivery never
+  depends on embedding similarity. Use for conclusions that must shape future
+  turns ("X is owner-residue, exclude it"; "this harness's tests need Docker");
+  scope as narrowly as true (workspace | role | owner | harness | work_item —
+  harness/work_item optional per D-001). Retract promptly when it stops being
+  true: a stale fact folded verbatim misleads every reader.
 
 > **✅ `memory:*` is LIVE + POPULATED — use it, NOT your client's built-in
 > memory.** It is the ONE shared canonical store every client (Claude / Codex /
