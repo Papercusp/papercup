@@ -18,6 +18,7 @@ import { recommendCombo } from '../../provisioner/recommend';
 import { planProvision, applyProvision } from '../../provisioner/provision';
 import { resolveLlamaBinary, computeCapToArch } from '../../provisioner/llama-binary';
 import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from '../../provisioner/vllm-container';
+import { pullOllamaWeights } from '../../provisioner/weights';
 
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
 const fail = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...p }) }] });
@@ -99,7 +100,7 @@ export const provisionerPlanInstallTool = defineTool({
 export const provisionerInstallTool = defineTool({
   name: 'provisioner:install',
   description:
-    "Plan + apply the provisioner flow: write the recommended backend's systemd user-unit + register it in the gateway's local-backend pool. Default: no start, no GPU touch — pass `start:true` to enable+start + health-check it (loads the model onto the GPU). `provisionBinary:true` (WI-1617) resolves a real `llama-server` binary first; `pullVllmImage:true` (WI-1618, vLLM combos only) pulls the pinned vLLM image first — either can take real minutes and fails the call outright rather than silently falling back. Returns {ok, plan, result:{wroteUnit,registered,started}}; `plan.blocked` non-null refuses the apply with `result.error`.",
+    "Plan + apply the provisioner flow: write the recommended backend's systemd user-unit + register it in the gateway's local-backend pool. Default: no start, no GPU touch — pass `start:true` to enable+start + health-check it (loads the model onto the GPU). `provisionBinary:true` (WI-1617) resolves a real `llama-server` binary first; `pullVllmImage:true` (WI-1618, vLLM combos only) pulls the pinned vLLM image first; `pullWeights:true` pulls missing llama-server weights first — each can take real minutes and fails the call outright rather than silently falling back. Returns {ok, plan, result:{wroteUnit,registered,started}}; `plan.blocked` non-null refuses the apply with `result.error`.",
   guidance: {
     when: 'Actually provisioning a local inference backend after reviewing provisioner:plan_install\'s output.',
     notWhen: 'A GPU-resident process may already be running — check coord:presence / coord:ask before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.',
@@ -128,8 +129,14 @@ export const provisionerInstallTool = defineTool({
       .describe(
         'Pull the pinned vLLM container image (docker/podman) before planning, instead of assuming it is already cached locally. Default false. A first pull is a real multi-GB network fetch. Only meaningful when a working container runtime is present and the recommended combo is a vllm entry.',
       ),
+    pullWeights: z
+      .boolean()
+      .optional()
+      .describe(
+        'Pull the recommended llama-server model into the local ollama blob store before planning/apply when weights are missing, instead of stopping at a manual `ollama pull` hint. Default false.',
+      ),
   }),
-  async handler({ start, provisionBinary, pullVllmImage: doPullVllmImage }) {
+  async handler({ start, provisionBinary, pullVllmImage: doPullVllmImage, pullWeights }) {
     try {
       let binPath: string | undefined;
       if (provisionBinary) {
@@ -150,7 +157,14 @@ export const provisionerInstallTool = defineTool({
           return fail({ error: `provisioner:install failed: vLLM image provisioning failed: ${imageResult.blocked}` });
         }
       }
-      const plan = await planProvision({ binPath });
+      let plan = await planProvision({ binPath });
+      if (pullWeights && plan.recommendation.entry?.backend === 'llama-server' && plan.weights?.needsDownload) {
+        const weightResult = await pullOllamaWeights(plan.recommendation.entry.model.ollamaRef);
+        if (!weightResult.ok) {
+          return fail({ error: `provisioner:install failed: weight provisioning failed: ${weightResult.blocked}` });
+        }
+        plan = await planProvision({ binPath });
+      }
       const result = await applyProvision(plan, { start: start ?? false });
       return ok({ plan, result });
     } catch (e) {

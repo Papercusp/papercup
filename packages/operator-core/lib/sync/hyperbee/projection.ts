@@ -55,14 +55,16 @@ export interface ProvenanceContext {
   ts?: number;
   /**
    * D-001 (shared-hive-release-testing Brief J): the op's HLC ordering key — the
-   * SAME causal clock `lwwPick`/`beatsStored` order the merge fold by. Writers
-   * persist it as the table's `fed_hlc` column and guard their `ON CONFLICT …`
-   * with `EXCLUDED.fed_hlc >= <table>.fed_hlc` (falling back to `fed_ts` when
-   * either side is NULL — pre-P-010 / pre-314 history). This is what unifies the
-   * fold's order and the PG guard's order onto ONE key, so the guard never
-   * rejects a fold-winner under clock skew (the D-001 split-brain). `undefined`
-   * for an op without an `hlc` (the append-only claim path; legacy ops) — the
-   * writer stores NULL and the guard falls back to `fed_ts`.
+   * SAME causal clock `lwwPick` orders the merge fold by. Writers persist it as
+   * the table's `fed_hlc` column and guard their `ON CONFLICT …` with
+   * `harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >=
+   * harness_shared.fed_order_key(<table>.fed_hlc, <table>.fed_ts)` — a SQL mirror
+   * of `lwwPick`'s single derived-order-space fix (EI-1698: `hlc ?? encodeHlc({ms:
+   * ts ?? 0, count: 0})` on both sides), so the guard compares in the exact same
+   * total order the fold does and never rejects a fold-winner under clock skew or
+   * mixed HLC presence (the D-001 split-brain). `undefined` for an op without an
+   * `hlc` (the append-only claim path; legacy ops) — the writer stores NULL and
+   * the guard derives an order key from `fed_ts` instead.
    */
   fedHlc?: string;
 }

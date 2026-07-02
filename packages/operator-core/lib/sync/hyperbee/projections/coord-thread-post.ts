@@ -113,13 +113,11 @@ async function writeToPg(
       author_pubkey = EXCLUDED.author_pubkey,
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc
-    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
-    -- merge fold uses. When both ops carry an HLC, order by it; fall back to the
-    -- wall-clock fed_ts guard when either side lacks one.
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND coord_thread_posts.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= coord_thread_posts.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR coord_thread_posts.fed_hlc IS NULL)
-             AND (coord_thread_posts.fed_ts IS NULL OR EXCLUDED.fed_ts >= coord_thread_posts.fed_ts))
+    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
+    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
+    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
+    -- so the guard never rejects what the in-process merge fold would pick).
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(coord_thread_posts.fed_hlc, coord_thread_posts.fed_ts)
   `;
 }
 
@@ -136,12 +134,10 @@ async function deleteFromPg(
   await sql`
     DELETE FROM harness_shared.coord_thread_posts
     WHERE workspace_id = ${opts.workspaceId} AND post_msg_id = ${key}
-      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
-      -- as the put guard (fall back to the ts-guard when either side lacks an HLC).
+      -- EI-79 step 2 + D-001: guard the delete by the SAME fed_order_key() order (EI-1698)
       AND (
-        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
-        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
-              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+        (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
+        OR harness_shared.fed_order_key(${hlc}::text, ${ts}::bigint) >= harness_shared.fed_order_key(fed_hlc, fed_ts)
       )
   `;
 }

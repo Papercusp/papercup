@@ -39,8 +39,6 @@ export default defineTool({
       (await sql.unsafe(query, params as never)) as unknown as T[];
     const rollup = await readLimitFailureRate(runQuery, { sinceDays });
     const grade = gradeLimitFailureRate(rollup);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, sinceDays, rollup, grade }) }],
-    };
+    return { data: { ok: true, sinceDays, rollup, grade } };
   },
 });

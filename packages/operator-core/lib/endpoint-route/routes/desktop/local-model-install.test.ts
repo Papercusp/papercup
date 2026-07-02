@@ -38,6 +38,11 @@ vi.mock('../../../provisioner/vllm-container', () => ({
   VLLM_PINNED_IMAGE: 'vllm/vllm-openai:v0.24.0',
 }));
 
+const pullOllamaWeightsMock = vi.fn();
+vi.mock('../../../provisioner/weights', () => ({
+  pullOllamaWeights: (...args: unknown[]) => pullOllamaWeightsMock(...args),
+}));
+
 import route from './local-model-install';
 
 beforeEach(() => {
@@ -47,6 +52,7 @@ beforeEach(() => {
   resolveLlamaBinaryMock.mockClear();
   detectContainerRuntimeMock.mockClear();
   pullVllmImageMock.mockClear();
+  pullOllamaWeightsMock.mockClear();
 });
 
 function jsonReq(body: unknown) {
@@ -209,6 +215,53 @@ describe('POST /desktop/local-model-install', () => {
       applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
       await route.handler(jsonReq({ pullVllmImage: 1 }), {} as never);
       expect(pullVllmImageMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pullWeights (WI-1598 auto weight download)', () => {
+    it('defaults pullWeights to false — never pulls when omitted', async () => {
+      planProvisionMock.mockResolvedValue({ blocked: null });
+      applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
+      await route.handler(jsonReq({}), {} as never);
+      expect(pullOllamaWeightsMock).not.toHaveBeenCalled();
+    });
+
+    it('pulls llama-server weights and re-plans before apply when pullWeights:true and the first plan is blocked on missing weights', async () => {
+      planProvisionMock
+        .mockResolvedValueOnce({
+          blocked: 'weights not present locally',
+          recommendation: { entry: { backend: 'llama-server', model: { ollamaRef: 'maxwell1500/ornith-35b:IQ3_M' } } },
+          weights: { needsDownload: true },
+        })
+        .mockResolvedValueOnce({
+          blocked: null,
+          recommendation: { entry: { backend: 'llama-server', model: { ollamaRef: 'maxwell1500/ornith-35b:IQ3_M' } } },
+          weights: { needsDownload: false, weightsPath: '/blob' },
+        });
+      pullOllamaWeightsMock.mockResolvedValue({ ok: true, ollamaRef: 'maxwell1500/ornith-35b:IQ3_M' });
+      applyProvisionMock.mockResolvedValue({ ok: true, wroteUnit: true, registered: true, started: false });
+
+      const res = await route.handler(jsonReq({ pullWeights: true }), {} as never);
+
+      expect(pullOllamaWeightsMock).toHaveBeenCalledWith('maxwell1500/ornith-35b:IQ3_M');
+      expect(planProvisionMock).toHaveBeenCalledTimes(2);
+      expect(applyProvisionMock).toHaveBeenCalledWith(expect.objectContaining({ blocked: null }), { start: false });
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 500 and never applies when weight pull fails', async () => {
+      planProvisionMock.mockResolvedValue({
+        blocked: 'weights not present locally',
+        recommendation: { entry: { backend: 'llama-server', model: { ollamaRef: 'maxwell1500/ornith-35b:IQ3_M' } } },
+        weights: { needsDownload: true },
+      });
+      pullOllamaWeightsMock.mockResolvedValue({ ok: false, blocked: 'ollama missing' });
+
+      const res = await route.handler(jsonReq({ pullWeights: true }), {} as never);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ ok: false, error: 'weight provisioning failed: ollama missing' });
+      expect(applyProvisionMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -221,6 +221,79 @@ export async function recentWatchdogFires(
 }
 
 /**
+ * EI-6777: atomically claim the "should I fire?" debounce slot for
+ * (workspaceId, installSlug, source, windowHours).
+ *
+ * `recentWatchdogFires(...) > 0` then, later, `recordFire(...)` is a
+ * classic check-then-act race: when multiple sweep ticks/processes race for
+ * the SAME debounce key, every one of them can observe "not fired yet" (the
+ * SELECT) before any of them commits the INSERT, producing N duplicate
+ * escalations instead of 1 (root-caused via EI-6760/6761/6762 — 3
+ * near-identical escalations filed within 20ms of each other). There is no
+ * unique constraint to lean on here (see mig 212's header: the ledger is
+ * plain append-only, and callers use varying, arbitrary `windowHours`
+ * sliding windows rather than a fixed calendar bucket a unique index could
+ * key on) — so this uses a Postgres advisory transaction lock scoped to the
+ * debounce key to serialize the check+insert instead.
+ *
+ * Callers should use this as a DOUBLE-CHECKED-LOCKING re-verification: do
+ * the ordinary cheap `recentWatchdogFires` read first (as before, to decide
+ * whether the OTHER, non-debounce conditions — staleness, demand, threshold
+ * — even warrant firing at all), and only when that says "yes" call this to
+ * atomically re-check + claim the slot immediately before performing the
+ * one-time side effect (captureImprovement, alertOwnerPausedOutage, ...).
+ * Returns true iff THIS call won the race and recorded the fire — proceed.
+ * Returns false iff a fire is already recorded within the window (either
+ * from before, or a concurrent racer who claimed it first) — skip the side
+ * effect; do NOT also call `recordFire` (this already recorded it).
+ *
+ * `pg_advisory_xact_lock` auto-releases at transaction end (commit OR
+ * rollback) — unlike a session-level `pg_advisory_lock`/`_unlock` pair, a
+ * crash or thrown error mid-claim can never leak the lock.
+ *
+ * Fail-open on any DB error (mirrors recordFire/recentWatchdogFires'
+ * existing fail-soft contract — mig 212 may be pending, or a transient PG
+ * hiccup; observability must never SUPPRESS a real watchdog escalation, only
+ * best-effort dedupe it).
+ */
+export async function claimWatchdogFire(opts: {
+  workspaceId: string;
+  installSlug: string;
+  source: WatchdogSource;
+  reason: string;
+  wakeAt: Date | null;
+  demand?: HiveDemand | null;
+  windowHours?: number;
+}): Promise<boolean> {
+  const { workspaceId, installSlug, source, windowHours = 24 } = opts;
+  try {
+    const { sql } = getOrgPg();
+    return await sql.begin(async (tx) => {
+      // hashtextextended gives a stable 64-bit lock key from the 3-part
+      // debounce key; `0` (the salt arg) keeps it deterministic across calls.
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${workspaceId}::${installSlug}::${source}`}, 0))`;
+      const rows = await tx<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM harness_shared.hive_watchdog_fires
+        WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}
+          AND fired_at > now() - make_interval(hours => ${windowHours})
+          AND source = ${source}`;
+      if (Number(rows[0]?.n ?? 0) > 0) return false;
+      await tx`
+        INSERT INTO harness_shared.hive_watchdog_fires
+          (workspace_id, install_slug, source, reason, wake_at, demand)
+        VALUES (
+          ${workspaceId}, ${installSlug}, ${source}, ${opts.reason},
+          ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::jsonb
+        )`;
+      return true;
+    });
+  } catch (e) {
+    console.warn(`[hive-watchdog] claimWatchdogFire failed (fail-open — proceeding as if unfired): ${e instanceof Error ? e.message : e}`);
+    return true;
+  }
+}
+
+/**
  * Arm the FALLBACK wake for a started hive with none armed. Idempotent and
  * self-checking: re-verifies started + not-already-armed so racing seams
  * (turn-end vs tick) collapse to one arm. Never throws (every caller is a
@@ -494,7 +567,11 @@ async function alertOwnerPausedOutage(opts: {
 export interface PausedRecoveryResult {
   workspaceId: string;
   installSlug: string;
-  outcome: 'resumed' | 'alerted' | 'skipped' | 'error';
+  // 'debounced' (EI-6777): the cheap pre-check said act, but the atomic
+  // re-check lost the race to a concurrent claim — a real "another racer
+  // already fired this window" outcome, distinct from 'skipped' (the
+  // non-debounce staleness/demand gate said not to act at all).
+  outcome: 'resumed' | 'alerted' | 'skipped' | 'debounced' | 'error';
   reason: string;
   pausedForMs: number | null;
 }
@@ -535,10 +612,28 @@ export async function pausedHiveRecoverySweep(opts: { now?: number } = {}): Prom
       const reason =
         `paused ${pausedForMs == null ? '?' : Math.round(pausedForMs / 3_600_000)}h with demand queued ` +
         `(${demand.todoItems} todo item(s), ${demand.startedPlans} started plan(s)) — silent outage`;
+      // EI-6777: the cheap `alreadyFiredRecently` read above only tells us
+      // whether the OTHER (non-debounce) conditions warrant firing at all —
+      // it is racy against a concurrent tick/process doing the same read.
+      // Atomically re-check + claim the debounce slot right before the
+      // one-time side effect so only one racer ever proceeds past this line.
+      const claimedFire = await claimWatchdogFire({
+        workspaceId,
+        installSlug,
+        source: 'paused-recovery',
+        windowHours,
+        reason,
+        wakeAt: null,
+        demand,
+      });
+      if (!claimedFire) {
+        results.push({ workspaceId, installSlug, outcome: 'debounced', reason, pausedForMs });
+        continue;
+      }
       await alertOwnerPausedOutage({ workspaceId, installSlug, reason, autoResume });
       if (!autoResume) {
-        // Alert-only: record the fire ourselves so the debounce engages next tick.
-        await recordFire({ workspaceId, installSlug, source: 'paused-recovery', reason, wakeAt: null, demand });
+        // claimWatchdogFire already recorded the fire atomically above —
+        // no separate recordFire call here (that was the race this closes).
         results.push({ workspaceId, installSlug, outcome: 'alerted', reason, pausedForMs });
         continue;
       }

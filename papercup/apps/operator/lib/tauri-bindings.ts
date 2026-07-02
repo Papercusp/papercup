@@ -96,6 +96,22 @@ export const commands = {
 	wslFinalizeReady: () => typedError<null, string>(__TAURI_INVOKE("wsl_finalize_ready")),
 	wslUninstall: () => typedError<null, string>(__TAURI_INVOKE("wsl_uninstall")),
 	consoleLaunch: (envelope: ConsoleEnvelope) => __TAURI_INVOKE<ConsoleLaunchResult>("console_launch", { envelope }),
+	/**
+	 *  Enumerate visible top-level desktop windows, optionally filtered to titles
+	 *  starting with `prefix` (pass `"Papercup — "` for session terminals). Runs
+	 *  natively in this Session-1 process — the ONLY place window enumeration works
+	 *  on Windows (D-002). Returns `[]` on non-Windows (Linux uses the operator's
+	 *  wmctrl path) so the binding exists cross-platform and is always fail-soft.
+	 */
+	listWindowsByTitle: (prefix: string | null) => __TAURI_INVOKE<DesktopWindow[]>("list_windows_by_title", { prefix }),
+	/**
+	 *  Bring the window whose title EXACTLY equals `title` to the foreground
+	 *  (restoring it first if minimized). USER-INITIATED ONLY — mirrors the
+	 *  `feedback_e2e_no_focus_steal` memory; never call from an automated driver.
+	 *  Returns true iff a matching window was found and the foreground call issued.
+	 *  No-op returning false on non-Windows (Linux focus stays the wmctrl path).
+	 */
+	focusWindowByTitle: (title: string) => __TAURI_INVOKE<boolean>("focus_window_by_title", { title }),
 	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),
 	// Show/hide the native sibling terminal. Returns the new running state.
 	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
@@ -145,6 +161,17 @@ export type ConsoleEnvelope = {
 };
 
 export type ConsoleLaunchResult = { status: "ok"; pid: number | null; displaced_mcp_json: boolean; bootstrapped: boolean } | { status: "err"; error: string };
+
+/**
+ *  A visible top-level desktop window. `hwnd` is the raw handle as a decimal
+ *  string (opaque to JS — only round-tripped back into `focus_window_by_title`).
+ *  Mirrors the TS `WindowsDesktopWindow` shape in windows-desktop-windows.ts.
+ */
+export type DesktopWindow = {
+	title: string,
+	pid: number,
+	hwnd: string,
+};
 
 /**
  *  One event surfaced to the webview JS. Tagged JSON via Serde.

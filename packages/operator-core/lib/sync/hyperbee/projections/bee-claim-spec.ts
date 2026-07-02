@@ -7,7 +7,7 @@
  * key riding the peer-log). Federated subset = harness_slug (the hive HOME
  * slug — the demux/projection guard), bee_id, spec (jsonb), revision,
  * updated_by. NOT federated (machine-local): updated_at. Standard provenance
- * columns carry the echo-guard + HLC-then-fed_ts LWW.
+ * columns carry the echo-guard + fed_order_key()-ordered LWW (EI-1698).
  *
  * Why: get_next reads the spec from LOCAL PG — without federation, a queen on
  * machine A versioning a spec never reaches a bee pulling on machine B. With
@@ -138,12 +138,11 @@ async function writeToPg(
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc,
       updated_at    = now()
-    -- PG-level LWW guard (D-001): HLC when both sides carry one, else fed_ts.
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_shared.bee_claim_specs.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= harness_shared.bee_claim_specs.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR harness_shared.bee_claim_specs.fed_hlc IS NULL)
-             AND (harness_shared.bee_claim_specs.fed_ts IS NULL
-                  OR EXCLUDED.fed_ts >= harness_shared.bee_claim_specs.fed_ts))
+    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
+    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
+    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
+    -- so the guard never rejects what the in-process merge fold would pick).
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.bee_claim_specs.fed_hlc, harness_shared.bee_claim_specs.fed_ts)
   `;
 }
 
@@ -163,9 +162,8 @@ async function deleteFromPg(
       AND harness_slug = ${opts.harnessSlug}
       AND bee_id = ${key}
       AND (
-        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
-        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
-              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+        (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
+        OR harness_shared.fed_order_key(${hlc}::text, ${ts}::bigint) >= harness_shared.fed_order_key(fed_hlc, fed_ts)
       )
   `;
 }

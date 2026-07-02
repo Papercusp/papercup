@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseOllamaRef, resolveOllamaWeights } from './weights';
+import { parseOllamaRef, pullOllamaWeights, resolveOllamaWeights } from './weights';
 
 describe('parseOllamaRef', () => {
   it('parses namespace/name:tag', () => {
@@ -76,5 +76,28 @@ describe('resolveOllamaWeights', () => {
   it('defaults candidateRoots from OLLAMA_MODELS/HOME env when not injected (no throw)', async () => {
     const plan = await resolveOllamaWeights('some/model:tag', { exists: () => false, readFile: async () => '' });
     expect(plan.needsDownload).toBe(true);
+  });
+});
+
+describe('pullOllamaWeights', () => {
+  it('runs ollama pull for the requested ref', async () => {
+    const result = await pullOllamaWeights('maxwell1500/ornith-35b:IQ3_M', {
+      exec: async (cmd, args) => {
+        expect(cmd).toBe('ollama');
+        expect(args).toEqual(['pull', 'maxwell1500/ornith-35b:IQ3_M']);
+        return { stdout: 'pulled', stderr: '' };
+      },
+    });
+    expect(result).toMatchObject({ ok: true, ollamaRef: 'maxwell1500/ornith-35b:IQ3_M' });
+  });
+
+  it('returns a blocked result when ollama pull fails', async () => {
+    const result = await pullOllamaWeights('maxwell1500/ornith-35b:IQ3_M', {
+      exec: async () => {
+        throw new Error('ollama missing');
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.blocked).toMatch(/ollama missing/);
   });
 });

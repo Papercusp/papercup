@@ -82,19 +82,19 @@ describe('StepLocalModel (SetupWizard local-inference step)', () => {
     expect(screen.getByText(/use the cloud gateway/i)).toBeTruthy();
   });
 
-  it('config-only install POSTs {start:false, provisionBinary:true} and does NOT reveal the start action by itself', async () => {
+  it('config-only install POSTs {start:false, provisionBinary:true, pullWeights:true} and does NOT reveal the start action by itself', async () => {
     installFetch();
     render(<StepLocalModel />);
     const installBtn = await screen.findByRole('button', { name: /Install \(config only, no GPU load\)/i });
     fireEvent.click(installBtn);
-    await waitFor(() => expect(installBody).toEqual({ start: false, provisionBinary: true }));
+    await waitFor(() => expect(installBody).toEqual({ start: false, provisionBinary: true, pullWeights: true, pullVllmImage: false }));
     // registered:true, started:false → the gated start action DOES become available (that's
     // the intended next step), but it must start disabled until confirmed.
     const startBtn = await screen.findByRole('button', { name: /Start backend \(loads model onto GPU\)/i });
     expect((startBtn as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('the GPU-loading start action stays disabled until the confirmation checkbox is checked, and only then POSTs {start:true, provisionBinary:true}', async () => {
+  it('the GPU-loading start action stays disabled until the confirmation checkbox is checked, and only then POSTs {start:true, provisionBinary:true, pullWeights:true}', async () => {
     installFetch();
     render(<StepLocalModel />);
     fireEvent.click(await screen.findByRole('button', { name: /Install \(config only, no GPU load\)/i }));
@@ -107,7 +107,7 @@ describe('StepLocalModel (SetupWizard local-inference step)', () => {
 
     installResponse = { ok: true, result: { ok: true, wroteUnit: true, registered: true, started: true } };
     fireEvent.click(startBtn);
-    await waitFor(() => expect(installBody).toEqual({ start: true, provisionBinary: true }));
+    await waitFor(() => expect(installBody).toEqual({ start: true, provisionBinary: true, pullWeights: true, pullVllmImage: false }));
   });
 
   it('surfaces an install error without throwing', async () => {

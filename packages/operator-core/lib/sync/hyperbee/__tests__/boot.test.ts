@@ -1617,7 +1617,21 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     };
   }
 
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  // WI-183 flaky-test fix (su-47533f4b found these wall-clock-timing flaky
+  // under fleet CPU load: a real setTimeout(60ms) sleep raced against a
+  // tight replicationStallGraceMs:30 window — under heavy scheduling
+  // pressure the interval BETWEEN two synchronous `await handle.mergeNow()`
+  // calls with no sleep at all could itself drift past the 30ms grace
+  // window, tripping (or narrowly missing) the alarm non-deterministically.
+  // `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync()` makes the elapsed
+  // time between passes EXACT and deterministic (Date.now(), which
+  // `checkReplicationStall` reads directly, is one of the mocks fake timers
+  // install by default) instead of "however long the real clock/scheduler
+  // happened to take". Installed only AFTER the handle is booted (so the
+  // real async corestore/fs boot work is unaffected) and always torn down
+  // in a `finally` so a failing assertion can't leak fake timers into a
+  // later test.
+  const sleep = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 
   it('fires replication_stalled once a previously-replicating log holds zero peers past the grace window, then stays silent while still stalled', async () => {
     const workspaceId = 'ws-stall-1';
@@ -1633,29 +1647,34 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     });
     cleanups.push(() => handle.close());
 
-    const keyHex = 'aa'.repeat(32);
-    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
+    vi.useFakeTimers();
+    try {
+      const keyHex = 'aa'.repeat(32);
+      handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
 
-    // First pass observes peers=1 → seeds lastNonZeroPeersAtMs; no alarm.
-    await handle.mergeNow();
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+      // First pass observes peers=1 → seeds lastNonZeroPeersAtMs; no alarm.
+      await handle.mergeNow();
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
 
-    // Drops to zero — still inside the (shrunk) grace window → no alarm yet.
-    peers = 0;
-    await handle.mergeNow();
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+      // Drops to zero — still inside the (shrunk) grace window → no alarm yet.
+      peers = 0;
+      await handle.mergeNow();
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
 
-    // Past the grace window → alarms exactly once.
-    await sleep(60);
-    await handle.mergeNow();
-    const events = listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] });
-    expect(events).toHaveLength(1);
-    expect(events[0]!.message).toContain(keyHex.slice(0, 12));
+      // Past the grace window → alarms exactly once.
+      await sleep(60);
+      await handle.mergeNow();
+      const events = listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] });
+      expect(events).toHaveLength(1);
+      expect(events[0]!.message).toContain(keyHex.slice(0, 12));
 
-    // Still stalled on a later pass — edge-triggered, so no re-fire.
-    await sleep(60);
-    await handle.mergeNow();
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
+      // Still stalled on a later pass — edge-triggered, so no re-fire.
+      await sleep(60);
+      await handle.mergeNow();
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never fires for a log that has NEVER shown a live replicator peer (ordinarily offline is not a bug)', async () => {
@@ -1671,16 +1690,21 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     });
     cleanups.push(() => handle.close());
 
-    const keyHex = 'bb'.repeat(32);
-    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => 0)); // never replicated
+    vi.useFakeTimers();
+    try {
+      const keyHex = 'bb'.repeat(32);
+      handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => 0)); // never replicated
 
-    await handle.mergeNow();
-    await sleep(60);
-    await handle.mergeNow();
-    await sleep(60);
-    await handle.mergeNow();
+      await handle.mergeNow();
+      await sleep(60);
+      await handle.mergeNow();
+      await sleep(60);
+      await handle.mergeNow();
 
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('re-arms after peers recover, so a later stall episode fires again', async () => {
@@ -1697,24 +1721,29 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     });
     cleanups.push(() => handle.close());
 
-    const keyHex = 'cc'.repeat(32);
-    handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
+    vi.useFakeTimers();
+    try {
+      const keyHex = 'cc'.repeat(32);
+      handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
 
-    await handle.mergeNow(); // seed lastNonZeroPeersAtMs
-    peers = 0;
-    await handle.mergeNow();
-    await sleep(60);
-    await handle.mergeNow(); // first alarm
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
+      await handle.mergeNow(); // seed lastNonZeroPeersAtMs
+      peers = 0;
+      await handle.mergeNow();
+      await sleep(60);
+      await handle.mergeNow(); // first alarm
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(1);
 
-    // Recovers, then stalls again.
-    peers = 1;
-    await handle.mergeNow();
-    peers = 0;
-    await handle.mergeNow();
-    await sleep(60);
-    await handle.mergeNow(); // second alarm
+      // Recovers, then stalls again.
+      peers = 1;
+      await handle.mergeNow();
+      peers = 0;
+      await handle.mergeNow();
+      await sleep(60);
+      await handle.mergeNow(); // second alarm
 
-    expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(2);
+      expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

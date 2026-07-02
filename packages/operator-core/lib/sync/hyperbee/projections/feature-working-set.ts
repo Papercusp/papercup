@@ -214,13 +214,11 @@ async function writeToPg(
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc
-    -- EI-79 step 2 + D-001: PG-level LWW guard, ordered by the SAME HLC key the
-    -- merge fold uses; fall back to wall-clock fed_ts when either side lacks one.
-    -- (recompute below stays unconditional: it re-derives the live set.)
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND feature_working_set.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= feature_working_set.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR feature_working_set.fed_hlc IS NULL)
-             AND (feature_working_set.fed_ts IS NULL OR EXCLUDED.fed_ts >= feature_working_set.fed_ts))
+    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
+    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
+    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
+    -- so the guard never rejects what the in-process merge fold would pick).
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(feature_working_set.fed_hlc, feature_working_set.fed_ts)
   `;
   // Reconcile the canonical working_users[] array (Phase 8 P-038): a put may
   // start work (cleared_at NULL) or tombstone it (cleared_at set), both of
@@ -250,12 +248,10 @@ async function deleteFromPg(
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
-      -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
-      -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
+      -- EI-79 step 2 + D-001: guard the delete by the SAME fed_order_key() order (EI-1698)
       AND (
-        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
-        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
-              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+        (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
+        OR harness_shared.fed_order_key(${hlc}::text, ${ts}::bigint) >= harness_shared.fed_order_key(fed_hlc, fed_ts)
       )
   `;
   // A hard delete removes a worker → recompute the canonical array (idempotent;

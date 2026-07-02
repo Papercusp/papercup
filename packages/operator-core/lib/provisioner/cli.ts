@@ -41,6 +41,14 @@
  *                                                                        # a no-op (nothing to pull yet:
  *                                                                        # no vLLM catalog entry exists
  *                                                                        # until P-008 lands one).
+ *   npx tsx packages/operator-core/lib/provisioner/cli.ts --pull-weights
+ *                                                                        # pull the recommended
+ *                                                                        # llama-server model into
+ *                                                                        # the local ollama blob
+ *                                                                        # store before planning /
+ *                                                                        # install, instead of
+ *                                                                        # stopping at a manual
+ *                                                                        # `ollama pull` hint.
  *   npx tsx packages/operator-core/lib/provisioner/cli.ts --json        # machine-readable output
  *
  * Exit code: 0 on a successful detect/plan (and, with --install, a successful apply); 1 if the
@@ -51,6 +59,7 @@ import { planProvision, applyProvision } from './provision';
 import { detectHardware } from './hardware-detect';
 import { resolveLlamaBinary, computeCapToArch } from './llama-binary';
 import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from './vllm-container';
+import { pullOllamaWeights } from './weights';
 
 interface CliArgs {
   install: boolean;
@@ -58,6 +67,7 @@ interface CliArgs {
   json: boolean;
   provisionBinary: boolean;
   provisionVllmImage: boolean;
+  pullWeights: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -67,6 +77,7 @@ function parseArgs(argv: string[]): CliArgs {
     json: argv.includes('--json'),
     provisionBinary: argv.includes('--provision-binary'),
     provisionVllmImage: argv.includes('--provision-vllm-image'),
+    pullWeights: argv.includes('--pull-weights'),
   };
 }
 
@@ -104,7 +115,20 @@ async function main(): Promise<void> {
     }
   }
 
-  const plan = await planProvision({ binPath });
+  let plan = await planProvision({ binPath });
+
+  if (args.pullWeights && plan.recommendation.entry?.backend === 'llama-server' && plan.weights?.needsDownload) {
+    const pullResult = await pullOllamaWeights(plan.recommendation.entry.model.ollamaRef);
+    if (!args.json) {
+      console.log(pullResult.ok ? `Weights: pulled ${pullResult.ollamaRef}` : `Weight provisioning BLOCKED: ${pullResult.blocked}`);
+    }
+    if (!pullResult.ok) {
+      if (args.json) console.log(JSON.stringify({ pullWeightsResult: pullResult }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    plan = await planProvision({ binPath });
+  }
 
   if (!args.json) {
     const hw = plan.hardware;

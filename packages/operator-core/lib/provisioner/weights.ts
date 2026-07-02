@@ -11,12 +11,15 @@
  * The manifest's layer with mediaType "application/vnd.ollama.image.model" is the GGUF weights;
  * its `digest` ("sha256:<hex>") maps to the blob filename above.
  *
- * This module never performs a network download itself — `needsDownload: true` + `pullHint`
- * is as far as it goes; the caller (provision.ts / the CLI / the UI) decides whether/how to run
- * the pull. No side effects beyond read-only fs probes.
+ * Read side: `resolveOllamaWeights()` only probes the local store and returns a `pullHint`.
+ * Write side: `pullOllamaWeights()` performs the actual `ollama pull` the UI/CLI can opt into.
  */
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export interface WeightsPlan {
   needsDownload: boolean;
@@ -33,6 +36,20 @@ export interface OllamaResolveDeps {
   candidateRoots?: string[];
   exists?: (path: string) => boolean | Promise<boolean>;
   readFile?: (path: string) => Promise<string>;
+}
+
+export type PullWeightsExec = (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+
+export interface PullOllamaWeightsDeps {
+  exec?: PullWeightsExec;
+}
+
+export interface PullOllamaWeightsResult {
+  ok: boolean;
+  ollamaRef: string;
+  stdout?: string;
+  stderr?: string;
+  blocked?: string;
 }
 
 /** Parse an ollama-style ref ("ns/name:tag", "name:tag", or bare "name") into its parts.
@@ -93,4 +110,31 @@ export async function resolveOllamaWeights(ollamaRef: string, deps: OllamaResolv
     pullHint: `ollama pull ${ollamaRef}`,
     detail: `weights not found in any local ollama store (searched ${roots.length} root${roots.length === 1 ? '' : 's'}) — run the pull hint to download`,
   };
+}
+
+async function defaultPullExec(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const r = await execFileAsync(cmd, args, { timeout: 0, maxBuffer: 16 * 1024 * 1024 });
+  return { stdout: r.stdout, stderr: r.stderr };
+}
+
+/**
+ * Pull the requested ollama model into the local blob store. This is the write-side companion
+ * to resolveOllamaWeights(): callers opt into the real download first, then re-run resolve/plan.
+ */
+export async function pullOllamaWeights(
+  ollamaRef: string,
+  deps: PullOllamaWeightsDeps = {},
+): Promise<PullOllamaWeightsResult> {
+  const exec = deps.exec ?? defaultPullExec;
+  try {
+    const { stdout, stderr } = await exec('ollama', ['pull', ollamaRef]);
+    return { ok: true, ollamaRef, stdout, stderr };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      ollamaRef,
+      blocked: `ollama pull failed for ${ollamaRef}: ${message}`,
+    };
+  }
 }

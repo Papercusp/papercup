@@ -4,7 +4,7 @@
  * (same core as the CLI and the `provisioner:install` agent-tool): writes the backend's systemd
  * unit and registers it in the gateway's durable local-backend pool.
  *
- * Body: `{ start?: boolean, provisionBinary?: boolean, pullVllmImage?: boolean }`.
+ * Body: `{ start?: boolean, provisionBinary?: boolean, pullVllmImage?: boolean, pullWeights?: boolean }`.
  *  - `start` DEFAULTS TO FALSE — config-write + gateway-registration only, no process started,
  *    no GPU touched. `start:true` also enables+starts the systemd unit and health-checks it,
  *    which DOES load the model onto the GPU; the StepLocalModel UI gates that behind an
@@ -27,12 +27,16 @@
  *    network fetch on a cache miss, same slow-request contract as `provisionBinary`. Only
  *    meaningful when a working Docker/Podman runtime is present and the recommended combo is a
  *    `vllm` entry; on a resolve failure the route returns `{ ok:false, error }` the same way.
+ *  - `pullWeights` DEFAULTS TO FALSE. When true, and the recommended combo is a llama-server
+ *    entry whose weights are not present locally, the route runs `ollama pull <ref>` BEFORE
+ *    re-planning so the install can complete without a separate manual shell step.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { planProvision, applyProvision } from '../../../provisioner/provision';
 import { detectHardware } from '../../../provisioner/hardware-detect';
 import { resolveLlamaBinary, computeCapToArch } from '../../../provisioner/llama-binary';
 import { detectContainerRuntime, pullVllmImage, VLLM_PINNED_IMAGE } from '../../../provisioner/vllm-container';
+import { pullOllamaWeights } from '../../../provisioner/weights';
 
 export default defineTool({
   method: 'POST',
@@ -42,13 +46,20 @@ export default defineTool({
     let start = false;
     let provisionBinary = false;
     let provisionVllmImage = false;
+    let pullWeights = false;
     try {
-      const body = (await req.json().catch(() => ({}))) as { start?: unknown; provisionBinary?: unknown; pullVllmImage?: unknown };
+      const body = (await req.json().catch(() => ({}))) as {
+        start?: unknown;
+        provisionBinary?: unknown;
+        pullVllmImage?: unknown;
+        pullWeights?: unknown;
+      };
       start = body?.start === true;
       provisionBinary = body?.provisionBinary === true;
       provisionVllmImage = body?.pullVllmImage === true;
+      pullWeights = body?.pullWeights === true;
     } catch {
-      // no/invalid body — default to start:false / provisionBinary:false / pullVllmImage:false (the safe path)
+      // no/invalid body — default to the safe path (all opts false)
     }
     try {
       let binPath: string | undefined;
@@ -70,7 +81,14 @@ export default defineTool({
           return Response.json({ ok: false, error: `vLLM image provisioning failed: ${imageResult.blocked}` }, { status: 500 });
         }
       }
-      const plan = await planProvision({ binPath });
+      let plan = await planProvision({ binPath });
+      if (pullWeights && plan.recommendation.entry?.backend === 'llama-server' && plan.weights?.needsDownload) {
+        const weightResult = await pullOllamaWeights(plan.recommendation.entry.model.ollamaRef);
+        if (!weightResult.ok) {
+          return Response.json({ ok: false, error: `weight provisioning failed: ${weightResult.blocked}` }, { status: 500 });
+        }
+        plan = await planProvision({ binPath });
+      }
       const result = await applyProvision(plan, { start });
       return Response.json({ ok: result.ok, plan, result });
     } catch (e) {

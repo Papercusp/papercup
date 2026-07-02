@@ -37,8 +37,6 @@ export default defineTool({
       (await sql.unsafe(query, params as never)) as unknown as T[];
     const rollup = await readOrientDedupRate(runQuery, { sinceHours });
     const grade = gradeOrientDedupRate(rollup);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, sinceHours, rollup, grade }) }],
-    };
+    return { data: { ok: true, sinceHours, rollup, grade } };
   },
 });

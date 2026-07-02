@@ -101,7 +101,7 @@ export function StepLocalModel() {
       const r = await fetch('/api/desktop/local-model-install', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ start, provisionBinary: true }),
+        body: JSON.stringify({ start, provisionBinary: true, pullWeights: true, pullVllmImage: entry?.backend === 'vllm' }),
       });
       const j = (await r.json()) as { ok: boolean; result?: ApplyResult; error?: string };
       if (!r.ok || !j.ok) {

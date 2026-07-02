@@ -180,12 +180,11 @@ async function writeToPg(
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,
       fed_hlc = EXCLUDED.fed_hlc
-    -- EI-79 step 2 + D-001: PG-level LWW guard — order by HLC, fall back to fed_ts.
-    WHERE (EXCLUDED.fed_hlc IS NOT NULL AND harness_issues_consolidated.fed_hlc IS NOT NULL
-             AND EXCLUDED.fed_hlc >= harness_issues_consolidated.fed_hlc)
-       OR ((EXCLUDED.fed_hlc IS NULL OR harness_issues_consolidated.fed_hlc IS NULL)
-             AND (harness_issues_consolidated.fed_ts IS NULL
-                  OR EXCLUDED.fed_ts >= harness_issues_consolidated.fed_ts))
+    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
+    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
+    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
+    -- so the guard never rejects what the in-process merge fold would pick).
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_issues_consolidated.fed_hlc, harness_issues_consolidated.fed_ts)
   `;
 }
 
@@ -203,11 +202,10 @@ async function deleteFromPg(
     DELETE FROM harness_shared.harness_issues_consolidated
     WHERE harness_slug = ${opts.harnessSlug}
       AND issue_id = ${key}
-      -- EI-79 step 2 + D-001: guard the delete by the same HLC-then-fed_ts order.
+      -- guard the delete by the SAME fed_order_key() order as the put guard (EI-1698).
       AND (
-        (${hlc}::text IS NOT NULL AND fed_hlc IS NOT NULL AND ${hlc}::text >= fed_hlc)
-        OR ((${hlc}::text IS NULL OR fed_hlc IS NULL)
-              AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint))
+        (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
+        OR harness_shared.fed_order_key(${hlc}::text, ${ts}::bigint) >= harness_shared.fed_order_key(fed_hlc, fed_ts)
       )
   `;
 }
