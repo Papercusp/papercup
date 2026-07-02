@@ -33,6 +33,31 @@ describe('sha-token-registry (G-0 P-033)', () => {
     expect(shaTokenForGrant(DOM, ['x.ts'], 5_000)).toEqual({ requiredSha: SHA2, unsyncedRisk: false });
   });
 
+  // WI-1551: a malformed publishedSha (e.g. from the cross-machine authority
+  // RPC path, which has no zod boundary of its own — see file-lock-authority-ops.ts)
+  // must be rejected at this single choke point exactly like a null/absent sha,
+  // never stored as-is and never fed downstream (classifyRequiredSha's git
+  // merge-base call) as an unvalidated string.
+  it('WI-1551: a malformed publishedSha (not a well-formed hex sha) is treated as no-publish, not stored', () => {
+    noteShaTokenGrant(DOM, ['x.ts'], 'agent-1', 10_000);
+    noteShaTokenRelease(DOM, ['x.ts'], SHA1, 2_000);
+    noteShaTokenGrant(DOM, ['x.ts'], 'agent-2', 20_000);
+    // A git-option-shaped value that could be argument-injected into `git
+    // merge-base --is-ancestor <sha> …` if it were ever trusted downstream.
+    noteShaTokenRelease(DOM, ['x.ts'], '--upload-pack=/bin/sh', 5_000);
+    // The malformed value is discarded — the PRIOR valid sha still stands
+    // (same "no publish this time" semantics as passing null).
+    expect(shaTokenForGrant(DOM, ['x.ts'], 6_000)).toEqual({ requiredSha: SHA1, unsyncedRisk: false });
+  });
+
+  it('WI-1551: an empty string / too-short / non-hex publishedSha is also rejected', () => {
+    noteShaTokenGrant(DOM, ['x.ts'], 'agent-1', 10_000);
+    noteShaTokenRelease(DOM, ['x.ts'], '', 1_000);
+    noteShaTokenRelease(DOM, ['x.ts'], 'not-a-sha', 1_000);
+    noteShaTokenRelease(DOM, ['x.ts'], 'abc123', 1_000); // valid hex chars but too short
+    expect(shaTokenForGrant(DOM, ['x.ts'], 2_000)).toEqual({ requiredSha: null, unsyncedRisk: false });
+  });
+
   it('a clean release WITHOUT a published sha keeps the prior sha and stays risk-free', () => {
     noteShaTokenGrant(DOM, ['x.ts'], 'agent-1', 10_000);
     noteShaTokenRelease(DOM, ['x.ts'], SHA1, 2_000);

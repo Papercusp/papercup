@@ -165,6 +165,14 @@ export function noteShaTokenGrant(
  * published before releasing (G-0 publish-then-release); null = the holder
  * released without publishing (nothing to carry — the prior published sha, if
  * any, stands, and there is no unsynced risk because the release was clean).
+ *
+ * WI-1551: a `publishedSha` that isn't a well-formed hex sha is treated
+ * EXACTLY like `null` (not recorded) — the same fail-open, advisory posture
+ * this registry already documents for an unsynced-risk grant, just applied to
+ * malformed input instead of absent input. This is the validation choke
+ * point for BOTH callers (the `locks:release` MCP tool, which also validates
+ * at its own zod boundary, and the cross-machine authority RPC path, which
+ * previously did not) — see SHA_RE's doc comment.
  */
 export function noteShaTokenRelease(
   domain: string,
@@ -172,10 +180,11 @@ export function noteShaTokenRelease(
   publishedSha: string | null,
   nowMs: number,
 ): void {
+  const sha = publishedSha && SHA_RE.test(publishedSha) ? publishedSha : null;
   for (const p of paths) {
     const e = entry(domain, p);
     delete e.active;
-    if (publishedSha) e.lastPublished = { sha: publishedSha, ts: nowMs };
+    if (sha) e.lastPublished = { sha, ts: nowMs };
   }
 }
 
