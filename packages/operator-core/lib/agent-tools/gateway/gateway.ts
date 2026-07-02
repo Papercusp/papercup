@@ -168,3 +168,31 @@ export const gatewayReloadTool = defineTool({
     }
   },
 });
+
+export const gatewayOwnerReportTool = defineTool({
+  name: 'gateway:owner_report',
+  description:
+    "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin. Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
+  guidance: {
+    when: "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm.",
+    notWhen: 'Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.',
+    chaining: 'gateway:owner_report { agent } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom.',
+    seeAlso: ['gateway:status (live pool + admission)', 'accounts:pin (re-route the agent)', 'accounts:list (account headroom)'],
+  },
+  capability: 'harness:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    agent: z.string().min(1).optional().describe("The target agent's owner/spawn id (x-papercusp-owner). Omit for the top-erroring-owners overview."),
+  }),
+  async handler(args) {
+    try {
+      const q = args.agent ? `?owner=${encodeURIComponent(args.agent)}` : '';
+      const r = await fetch(`${gwBase()}/admin/owner-report${q}`, { signal: AbortSignal.timeout(5000) });
+      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-report → ${r.status}`, ...b });
+    } catch (e) {
+      return fail({ error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` });
+    }
+  },
+});

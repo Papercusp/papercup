@@ -2869,3 +2869,24 @@ test('[P-005] a mid-stream SSE body stall ends the stream with an Anthropic-shap
   assert.match(text, /"type":"overloaded_error"/, 'Anthropic-shaped overloaded_error (the SDK auto-retries this)');
   assert.match(text, /"gateway":true/, 'marked as gateway-synthesized');
 }, 20_000);
+
+test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async () => {
+  resetGovernorRegistry();
+  await boot((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); });
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-ledger-test' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200);
+  await r.text();
+  const rep = (await (await ask('/admin/owner-report?owner=su-ledger-test')).json()) as {
+    ok: boolean; ledger: { requests: number; ok: number; lastAccount: string | null } | null;
+  };
+  assert.equal(rep.ok, true);
+  assert.ok(rep.ledger, 'the owner has a ledger entry');
+  assert.ok(rep.ledger!.requests >= 1, 'request counted');
+  assert.ok(rep.ledger!.ok >= 1, 'ok outcome counted');
+  const top = (await (await ask('/admin/owner-report')).json()) as { owners: Array<{ owner: string }> };
+  assert.ok(top.owners.some((o) => o.owner === 'su-ledger-test'), 'overview lists the owner');
+}, 20_000);

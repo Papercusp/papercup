@@ -421,7 +421,9 @@ export function buildSentinelContextDeps(workspaceId: string, hiveSlug: string):
            AND item_kind = 'research-task'
            AND status <> ALL(ARRAY['passed', 'deprecated']::text[])
            AND payload->>'deep_delegation' = 'true'
-         ORDER BY COALESCE(last_progress_at, updated_ts) DESC NULLS LAST, feature_id ASC
+         ORDER BY COALESCE(last_progress_at, to_timestamp(updated_ts::double precision / 1000.0))
+                  DESC NULLS LAST,
+                  feature_id ASC
          LIMIT ${DEFAULT_SENTINEL_CONTEXT_CAPS.delegations}`;
       const tsIso = (v: unknown): string | null =>
         v == null ? null : v instanceof Date ? v.toISOString() : String(v);

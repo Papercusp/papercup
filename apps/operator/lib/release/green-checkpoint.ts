@@ -29,6 +29,8 @@ import {
   refExists,
   isAncestor,
   advanceReady,
+  revListBefore,
+  commitUnixTime,
   type AdvanceResult,
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';
@@ -773,6 +775,14 @@ export interface CheckpointOpts {
  * gates, because partial FF is the deepest change to the single most fleet-critical
  * gate and D-010 calls for an OWNER-ATTENDED live cutover ("build attended not blind").
  */
+/** Quiet-cut window in seconds; 0 disables. Default 240s (~1.5 git-sync ticks) —
+ *  PAPERCUSP_QUIET_CUT=0 opts out entirely, PAPERCUSP_QUIET_CUT_SEC tunes the window. */
+export function quietCutSecFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.PAPERCUSP_QUIET_CUT === '0') return 0;
+  const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
+  return Number.isFinite(v) && v >= 0 ? v : 240;
+}
+
 export function partialGreenGateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   // Default ON (2026-07-01, owner directive): the salvage is confirm-gated — a wrong
   // prefix guess just fails the confirm run and holds — so there is no unproven-code
@@ -884,12 +894,43 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
-  const candidate = opts.candidate
+  let candidate = opts.candidate
     ? await revParse(cfg.integrationRoot, opts.candidate)
     : await revParse(cfg.integrationRoot, cfg.integrationBranch);
   const lastReady = (await refExists(cfg.integrationRoot, cfg.releaseRef))
     ? await revParse(cfg.integrationRoot, cfg.releaseRef)
     : null;
+
+  // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
+  // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
+  // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
+  // no one ever intended to ship (the 2026-07-01 camelCase facade tear: the consumer-side
+  // test update landed minutes after the candidate was cut). Stepping back to the newest
+  // commit that has been the tip-state for ≥ quietAgeSec gives an in-flight change one
+  // more tick to land its other half before being judged. Only applies when the caller
+  // didn't pin an explicit candidate; opt out with PAPERCUSP_QUIET_CUT=0, tune with
+  // PAPERCUSP_QUIET_CUT_SEC (default 240s ≈ 1.5 ticks).
+  if (!opts.candidate && quietCutSecFromEnv() > 0) {
+    try {
+      const quietSec = quietCutSecFromEnv();
+      const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (nowSec - tipTime < quietSec) {
+        const aged = await revListBefore(cfg.integrationRoot, cfg.integrationBranch, nowSec - quietSec);
+        // Guards: the aged pick must exist, differ, and still fast-forward from the pin
+        // (equal-to-lastReady is fine — the up-to-date path below reports it).
+        if (aged && aged !== candidate && (!lastReady || (await isAncestor(cfg.integrationRoot, lastReady, aged)))) {
+          deps.log(
+            `quiet-cut: tip ${candidate.slice(0, 8)} is ${nowSec - tipTime}s old (<${quietSec}s quiet window) — ` +
+              `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
+          );
+          candidate = aged;
+        }
+      }
+    } catch (e) {
+      deps.log(`quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`);
+    }
+  }
 
   if (candidate === lastReady) {
     deps.log(`${cfg.releaseRef} already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`);

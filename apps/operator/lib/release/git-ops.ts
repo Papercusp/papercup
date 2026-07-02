@@ -42,6 +42,18 @@ export async function refExists(repo: string, ref: string): Promise<boolean> {
   }
 }
 
+/** Newest commit on `ref` whose commit time is ≤ `beforeUnixSec` (first-parent walk),
+ *  or null when none qualifies. The quiet-cut primitive: "the tip as of T". */
+export async function revListBefore(repo: string, ref: string, beforeUnixSec: number): Promise<string | null> {
+  const out = await git(repo, ['rev-list', '-1', '--first-parent', `--before=${beforeUnixSec}`, ref]);
+  return out || null;
+}
+
+/** Unix commit time (seconds) of `ref`. */
+export async function commitUnixTime(repo: string, ref: string): Promise<number> {
+  return Number(await git(repo, ['show', '-s', '--format=%ct', ref]));
+}
+
 /** True iff `ancestor` is an ancestor of (or equal to) `descendant`. */
 export async function isAncestor(
   repo: string,

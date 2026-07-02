@@ -3451,6 +3451,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, { ok: true, now: Date.now(), owner: owner || null, account: e?.account ?? null, model: e?.model ?? null, at: e?.at ?? null });
       return;
     }
+    if (req.method === 'GET' && url.startsWith('/admin/owner-report')) {
+      // P-008 (gateway-rayobyte-hardening): the per-owner outcome ledger. `?owner=<id>` → that owner's
+      // counters + recent events + last-routed account + live pin; no owner → the TOP erroring owners
+      // (by non-ok outcomes) so "who is having a bad time right now" is one call.
+      const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
+      if (owner) {
+        const e = ownerLedger.get(owner) ?? null;
+        const route = lastRouteByOwner.get(owner) ?? null;
+        const pin = ownerPinMap.get(owner) ?? null;
+        sendJson(res, 200, { ok: true, now: Date.now(), owner, ledger: e, lastRoute: route, pin });
+        return;
+      }
+      const top = [...ownerLedger.entries()]
+        .map(([id, e]) => ({ owner: id, bad: e.upstream429 + e.upstreamErrors + e.sheds + e.stalls, ...e, recent: e.recent.slice(-3) }))
+        .sort((a, b) => b.bad - a.bad || b.lastAt - a.lastAt)
+        .slice(0, 25);
+      sendJson(res, 200, { ok: true, now: Date.now(), owners: top });
+      return;
+    }
     if (req.method === 'GET' && url === '/admin/config') {
       // B-HOT-2: the LIVE config snapshot — pool version + account ids + the admission/AIMD state — so an
       // operator / gateway:status tool can read what the gateway is actually running, no restart.
