@@ -66,6 +66,13 @@ export interface QueueIntegrationRequestInput extends IntegrationRequestScope {
  * Insert (idempotent on the (scope, device, sha) key — a re-queue of an
  * already-ratified head does NOT downgrade it) + evict the author's oldest
  * rows past the cap, pending first.
+ *
+ * WI-1552 fix (2): the eviction subquery is scoped to THIS (hive_slug,
+ * repo_key) queue, matching the declared one-queue-per-(ws,hive,repo) scope
+ * (see {@link IntegrationRequestScope}) — an author's cap is enforced
+ * per-queue, not globally across every repo they publish to. Without this,
+ * one author's flood of publishes to repo A could silently evict their own
+ * PENDING rows in an unrelated repo B (never reported, contract-violating).
  */
 export async function queueIntegrationRequest(
   input: QueueIntegrationRequestInput,
@@ -84,14 +91,17 @@ export async function queueIntegrationRequest(
        ${input.reason ?? 'below-steer-tier'}, 'pending', ${now})
     ON CONFLICT (workspace_id, hive_slug, repo_key, device_pubkey, head_sha) DO NOTHING
   `;
-  // Bound: keep the author's newest `cap` rows, preferring to keep RATIFIED
-  // ones (an author's junk flood must not evict their own approved head).
+  // Bound: keep the author's newest `cap` rows IN THIS (hive,repo) QUEUE,
+  // preferring to keep RATIFIED ones (an author's junk flood must not evict
+  // their own approved head — in this queue or any other).
   await sql`
     DELETE FROM harness_shared.hive_integration_requests d
     USING (
       SELECT workspace_id, hive_slug, repo_key, device_pubkey, head_sha
       FROM harness_shared.hive_integration_requests
       WHERE workspace_id = ${input.workspaceId}
+        AND hive_slug = ${input.hiveSlug}
+        AND repo_key = ${input.repoKey}
         AND device_pubkey = ${input.devicePubkey}
       ORDER BY (state = 'ratified') DESC, created_ts DESC, head_sha
       OFFSET ${cap}
@@ -191,6 +201,42 @@ export async function ratifyIntegrationRequest(
   return rows.length > 0;
 }
 
+/**
+ * Targeted (device, sha) ratified-membership check — a lookup, not a scan.
+ *
+ * WI-1552 fix (1): {@link gateMemberHeadsForIntegration} previously checked
+ * ratification via a top-500-newest-first window (`listIntegrationRequests`
+ * ordered `created_ts DESC LIMIT 500`). Ratified rows have no TTL, so once a
+ * (workspace,hive,repo) scope accumulated >500 ratified rows the OLDEST
+ * ratified head silently fell out of that window: it would never integrate
+ * again and would be misreported as `queued` even though it is already
+ * ratified. Checking exact (device_pubkey, head_sha) membership for exactly
+ * the heads being gated this pass has no window to fall out of, regardless
+ * of how many ratified rows the scope has accumulated.
+ */
+export async function listRatifiedStates(
+  scope: IntegrationRequestScope,
+  keys: { devicePubkey: string; headSha: string }[],
+  sqlIn?: postgres.Sql,
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const sql = sqlIn ?? getOrgPg().sql;
+  const devicePubkeys = keys.map((k) => k.devicePubkey);
+  const headShas = keys.map((k) => k.headSha);
+  const rows = await sql<Array<{ device_pubkey: string; head_sha: string }>>`
+    SELECT device_pubkey, head_sha
+    FROM harness_shared.hive_integration_requests
+    WHERE workspace_id = ${scope.workspaceId}
+      AND hive_slug = ${scope.hiveSlug}
+      AND repo_key = ${scope.repoKey}
+      AND state = 'ratified'
+      AND (device_pubkey, head_sha) IN (
+        SELECT * FROM UNNEST(${sql.array(devicePubkeys)}::text[], ${sql.array(headShas)}::text[])
+      )
+  `;
+  return new Set(rows.map((r) => `${r.device_pubkey}\n${r.head_sha}`));
+}
+
 /** A member head as the gate consumes it (pre-namespace-hex: identity pubkey + sha). */
 export interface GateableHead {
   /** The member device's identity pubkey (base64) — sigrefs-verified upstream. */
@@ -231,17 +277,15 @@ export async function gateMemberHeadsForIntegration(
   const out: GatedHeads = { integrate: [], queued: [], errors: [] };
   let ratified: Set<string>;
   try {
-    const rows = await listIntegrationRequests(
-      {
-        workspaceId: opts.workspaceId,
-        hiveSlug: opts.hiveSlug,
-        repoKey: opts.repoKey,
-        state: 'ratified',
-        limit: 500,
-      },
+    // WI-1552 fix (1): a targeted membership check for exactly these heads,
+    // not a top-500-newest window (see listRatifiedStates doc).
+    ratified = await listRatifiedStates(
+      { workspaceId: opts.workspaceId, hiveSlug: opts.hiveSlug, repoKey: opts.repoKey },
+      opts.heads
+        .filter((h) => h.sha)
+        .map((h) => ({ devicePubkey: h.devicePubkeyBase64, headSha: h.sha })),
       opts.sql,
     );
-    ratified = new Set(rows.map((r) => `${r.devicePubkey}\n${r.headSha}`));
   } catch (e) {
     // Can't read the ratified set → NOTHING below steer integrates this pass
     // (fail-closed), but steer-tier heads still can.

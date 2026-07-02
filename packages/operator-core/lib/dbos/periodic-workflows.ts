@@ -27,6 +27,7 @@ import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escala
 import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/escalations';
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
+import { gcOldOperatorTurns } from '../operator-turns-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -199,6 +200,23 @@ const decisionLedgerGcWorkflow = DBOS.registerWorkflow(decisionLedgerGcTick, {
   name: 'decisionLedgerGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
+
+// Daily 04:55 (off the 04:00-04:50 GC stampede): physical retention GC for
+// harness_shared.operator_turns — the operator-chat transcript table (158MB,
+// append-mostly), the SAME unbounded-growth shape as decision_ledger with no
+// prior scheduled retention (WI-1637, follow-up split from WI-417). Unlike
+// decision_ledger, a turn also backs human-facing chat history, so the GC
+// additionally requires the turn to already be folded into its conversation's
+// rolling compaction summary (seq <= summary_through_seq) before it's eligible
+// for age-based deletion — the compaction boundary is this table's analog of
+// decision_ledger's 90d graduation-lookback floor. Safety detail in operator-turns-gc.ts.
+async function operatorTurnsGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcOldOperatorTurns(), { name: 'operator-turns-gc' });
+}
+const operatorTurnsGcWorkflow = DBOS.registerWorkflow(operatorTurnsGcTick, {
+  name: 'operatorTurnsGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(operatorTurnsGcWorkflow, { name: 'operatorTurnsGc', crontab: '0 55 4 * * *' });
 
 // Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
 // federation-queue rows the per-harness inline GC never reaches. An un-booted or
