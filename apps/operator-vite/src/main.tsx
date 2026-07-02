@@ -11,9 +11,18 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
 import { routeTree } from './routeTree.gen';
+import { DefaultRouterErrorComponent } from './components/RouteErrorBoundary';
 
 const router = createRouter({
   routeTree,
+  // Chunk-aware, self-healing fallback for ANY route/root error TanStack would
+  // otherwise dead-end on its bare "Something went wrong!" boundary. Critically
+  // this catches a lazy chunk's LOAD failure (a shell component — LeftSidebar /
+  // DevAdminRail / a tab panel — whose hashed chunk 404s because the open page
+  // predates a rebuild): TanStack surfaces that at the root CatchBoundary,
+  // OUTSIDE RouteErrorBoundary (which wraps only <Outlet/>), so without this it
+  // stranded the desktop on a dead screen. See WI-1484 / RouteErrorBoundary.tsx.
+  defaultErrorComponent: DefaultRouterErrorComponent,
   // Preload routes on hover/focus/touchstart so the loader fires *before*
   // the click. For routes with a loader (e.g. /harness/$slug fetches
   // /api/harness/projects/lite), this means the data is already in TSR's

@@ -140,7 +140,20 @@ async function ensureState(): Promise<WiringState> {
           harnessSlug: row.harness_slug,
           ...(deps.sql ? { sql: deps.sql } : {}),
         });
-        await proj.writeToPg(row, { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs });
+        // L9 (audit D-013): PIN the stored hive scope to the RECEIVER's registered
+        // binding — never the sender-declared row.hive_slug. This is exactly the
+        // pin the sessions path already applies (applySessions → hiveSlug:
+        // binding.hiveHomeSlug); the put path was trusting the sender, so an
+        // admitted member could plant a presence row under a FOREIGN hive scope —
+        // and the per-hive lock authority scopes by this column
+        // (lockAuthorityForHive's `WHERE hive_slug=?`, mig 187), so a spoofed
+        // hive_slug could inject a phantom authority candidate into another hive.
+        // harness_slug stays the sender-declared within-hive demux (D-006) — the
+        // sessions path likewise keeps per-session harness_slug sender-declared.
+        await proj.writeToPg(
+          { ...row, hive_slug: binding.hiveHomeSlug },
+          { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs },
+        );
       },
       applyDel: async (del, frameTs, topicHex) => {
         const binding = bindings.get(topicHex);

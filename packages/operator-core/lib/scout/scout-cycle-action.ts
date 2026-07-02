@@ -94,7 +94,27 @@ export function makeScoutCycleAction(
     let payloadTemplate = ctx.payloadTemplate;
     try {
       const { getHiveLocalBlueprintConfig } = await import('../hive-settings-store');
-      const delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, 'scout');
+      let delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, ctx.installSlug, 'scout');
+      // WORKSPACE-scoped scout (WORKSPACE_COORDINATION ON): ctx.installSlug is the
+      // workspace SENTINEL — not a hive, so it has no hive_settings row and a per-hive
+      // scout override could NEVER apply (the owner's gpt-5.4 model config sat unread
+      // on the home hive while scout ran engine defaults, 2026-07-01). Fall back to
+      // the HOME hive's row — the same resolution the Queen's steering uses. Fail-soft
+      // like the primary read.
+      if (delta == null) {
+        try {
+          const [{ resolveHiveHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
+            import('../hive/wake'),
+            import('../harness/operator-home-harness'),
+          ]);
+          const home = resolveHiveHomeSlug(null, null) ?? operatorHomeHarnessSlug();
+          if (home && home !== ctx.installSlug) {
+            delta = await getHiveLocalBlueprintConfig(ctx.workspaceId, home, 'scout');
+          }
+        } catch {
+          /* home resolution unavailable → defaults, as before */
+        }
+      }
       if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
         const base = (payloadTemplate ?? {}) as Record<string, unknown>;
         const baseScout =

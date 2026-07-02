@@ -1,4 +1,4 @@
-import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
 import { useLocation } from '@tanstack/react-router';
 import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 
@@ -133,6 +133,77 @@ export default function RouteErrorBoundary({ children }: { children: ReactNode }
   const location = useLocation();
   return (
     <RouteErrorBoundaryInner resetKey={location.href}>{children}</RouteErrorBoundaryInner>
+  );
+}
+
+/**
+ * Router-level default error component — wired as `createRouter({
+ * defaultErrorComponent })` in `main.tsx`.
+ *
+ * Why this exists (2026-07-01, WI-1484): `RouteErrorBoundary` above wraps ONLY
+ * the `<Outlet/>`. `ChromeShell` / `LeftSidebar` / `DevAdminRail` / tab panels
+ * are SIBLINGS outside it, several in bare `<Suspense fallback={null}>` with no
+ * error boundary. When one of THEIR lazy chunks 404s — the page predates a
+ * rebuild that deleted it (a one-shot `vite build` wiped `dist/` while no watch
+ * singleton held the retain-lock, or the retain TTL elapsed, or a production
+ * redeploy rolled the hashes) — TanStack surfaces the LOAD failure at the root
+ * route's CatchBoundary, NOT at `RouteErrorBoundary`. With no
+ * `defaultErrorComponent` set that dead-ended on TanStack's bare "Something
+ * went wrong!" with no working reload (the owner hit this as a blank/broken
+ * desktop after the bundle was rebuilt underneath the open window).
+ *
+ * Same chunk-aware auto-heal as `RouteErrorBoundary`, at the layer that
+ * actually catches this failure: reload ONCE (60s-debounced via the SHARED
+ * `CHUNK_AUTO_RELOAD_KEY`, so the two boundaries can't double-reload) to pick up
+ * the fresh build; a genuinely broken build lands on the manual Reload fallback
+ * instead of looping. `reset` is TanStack's retry (re-attempts the route).
+ */
+export function DefaultRouterErrorComponent({
+  error,
+  reset,
+}: {
+  error: unknown;
+  reset?: () => void;
+}): ReactNode {
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    try {
+      const last = Number(window.sessionStorage.getItem(CHUNK_AUTO_RELOAD_KEY) ?? 0);
+      if (shouldAutoReloadForChunkError(error, Date.now(), last)) {
+        window.sessionStorage.setItem(CHUNK_AUTO_RELOAD_KEY, String(Date.now()));
+        hardReload();
+      }
+    } catch {
+      /* sessionStorage unavailable → manual fallback stays */
+    }
+  }, [error]);
+  const err = error as { stack?: string; message?: string } | null;
+  return (
+    <div role="alert" style={WRAP}>
+      <div style={CARD}>
+        <h2 style={TITLE}>This view hit an error</h2>
+        <p style={BODY}>
+          Often this just means the app was rebuilt underneath the page — the
+          dev build watcher rewrote the bundle, so an already-open view can no
+          longer load part of itself. Reloading picks up the latest build. If it
+          persists after a reload, it&rsquo;s a real bug; the details are below.
+        </p>
+        <div style={ROW}>
+          <button type="button" style={PRIMARY} onClick={() => hardReload()}>
+            Reload
+          </button>
+          {reset && (
+            <button type="button" style={SECONDARY} onClick={() => reset()}>
+              Try again
+            </button>
+          )}
+          <button type="button" style={LINK} onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Hide details' : 'Show details'}
+          </button>
+        </div>
+        {expanded && <pre style={PRE}>{String(err?.stack || err?.message || error)}</pre>}
+      </div>
+    </div>
   );
 }
 
