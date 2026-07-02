@@ -276,7 +276,13 @@ function coerceRawIdea(x: unknown): RawIdea | null {
 export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions): Promise<RunIdeatorsResult> {
   const roster = buildIdeatorRoster(opts);
   const model = opts.model ?? SCOUT_IDEATOR_MODEL;
-  const maxIdeas = opts.maxIdeasPerIdeator ?? 3;
+  // NOV-3 (gym-unwedge-scout-novelty-2026-07-02): throughput is a novelty
+  // prerequisite — 11 routed ideas ALL-TIME is no evolutionary pressure. Default
+  // raised 3→4 (critics/grading remain the filter; the USD budget ceiling still
+  // governs spend) and env-tunable so the owner can push higher without a deploy.
+  const envMax = Number(process.env.PAPERCUSP_SCOUT_MAX_IDEAS_PER_IDEATOR);
+  const maxIdeas =
+    opts.maxIdeasPerIdeator ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : 4);
   const validRefs = digestRefSet(digest);
   const thinking = opts.thinkingBudgetTokens;
 

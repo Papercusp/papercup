@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   getHivePolicy: vi.fn(),
   resolveLocalGithubIdentity: vi.fn(),
   fileReport: vi.fn(),
+  getHiveMember: vi.fn(),
 }));
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -19,6 +20,7 @@ vi.mock('../../identity/resolve-local-github-identity', () => ({
   resolveLocalGithubIdentity: h.resolveLocalGithubIdentity,
 }));
 vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport }));
+vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getHiveMember }));
 
 import tool from './report';
 
@@ -34,6 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.getHivePolicy.mockResolvedValue({ policy: { moderation: { reportable: true } } });
   h.resolveLocalGithubIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 123, githubLogin: 'alice' });
+  h.getHiveMember.mockResolvedValue({ githubUserId: 123, bindingStatus: 'verified' });
   h.fileReport.mockImplementation(async (input) => ({
     ...input,
     reportId: 'r-1',
@@ -152,6 +155,20 @@ describe('hive:report handler (member-filed moderation reports)', () => {
     });
     // fileReport handles idempotency via ON CONFLICT in the store
     expect(h.fileReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-567: a non-member (left/banned/never-joined) cannot file a report', async () => {
+    h.getHiveMember.mockResolvedValue(null);
+    const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: false, code: 'not_a_member' });
+    expect(h.fileReport).not.toHaveBeenCalled();
+  });
+
+  it('WI-567: a membership-lookup error fails CLOSED (never silently admits the report)', async () => {
+    h.getHiveMember.mockRejectedValue(new Error('db unavailable'));
+    const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: false, code: 'not_a_member' });
+    expect(h.fileReport).not.toHaveBeenCalled();
   });
 
   it('self-report allowed (member can report own content)', async () => {

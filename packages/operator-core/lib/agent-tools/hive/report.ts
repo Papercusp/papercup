@@ -13,6 +13,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { fileReport } from '../../hive-reports-store';
+import { getHiveMember } from '../../hive-membership-store';
 import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -62,6 +63,19 @@ export default defineTool({
     const identity = await resolveLocalGithubIdentity();
     if (identity.kind !== 'ok') {
       return text({ ok: false, code: 'no_reporter_identity', detail: 'could not resolve the local GitHub identity' });
+    }
+
+    // WI-567 (report-after-leave abuse vector): a departed/never-joined member must not
+    // be able to file reports — "any admitted MEMBER" is the doc contract, but nothing
+    // previously checked it. Fail closed on a lookup error (never let an unresolvable
+    // membership check silently admit the report).
+    const member = await getHiveMember(workspaceId, args.hive, identity.githubUserId).catch(() => null);
+    if (!member) {
+      return text({
+        ok: false,
+        code: 'not_a_member',
+        detail: 'you are not an admitted member of this Hive (left, banned, or never joined) — only admitted members may file reports',
+      });
     }
 
     const report = await fileReport({

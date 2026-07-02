@@ -39,6 +39,7 @@ export default defineTool({
     body: z.string().min(1).max(FACT_BODY_MAX_CHARS).describe(`The conclusion, ≤${FACT_BODY_MAX_CHARS} chars — folded verbatim.`),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it (WI-/EI- id, plan slug) so readers can verify.'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
+    shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the hive over the substrate. Default false — facts are hive-private.'),
   }),
   async handler(args, ctx) {
     const { resolveAgentIdentity } = await import('../coordination/identity');
@@ -50,6 +51,7 @@ export default defineTool({
       sourceRef: args.sourceRef ?? null,
       ttlSec: args.ttlSec,
       createdBy: resolveAgentIdentity(ctx).ownerId,
+      ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact }) }] };
   },
