@@ -1,18 +1,30 @@
 /**
  * Unit tests for windows-desktop-windows.ts (Lane 1/2/5 shared contract,
  * windows-desktop-feature-parity-2026-07-02). Hermetic — no real powershell.exe
- * is spawned; the pure parsers are covered directly, and the platform guards on
- * the async entry points are covered via `process.platform` override.
+ * is spawned; the pure parsers are covered directly, `/proc/version` is
+ * mocked (node:fs) so isWindowsDesktopHost's WSL-detection is deterministic
+ * regardless of what machine the test actually runs on, and the platform
+ * guards on the async entry points are covered via that mock + a
+ * `process.platform` override for the win32-fallback leg.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   parseWindowListOutput,
   parseSessionIdFromWindowTitle,
   listWindowsByTitle,
   focusWindowByTitle,
+  isWindowsDesktopHost,
+  __resetIsWindowsDesktopHostCache,
   WINDOW_TITLE_PREFIX,
   type WindowsDesktopWindow,
 } from './windows-desktop-windows';
+
+const readFileSyncMock = vi.fn();
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: (...args: unknown[]) => readFileSyncMock(...args) };
+});
 
 const realPlatform = process.platform;
 
@@ -21,8 +33,16 @@ function setPlatform(p: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: p, configurable: true });
 }
 
+/** A genuine Linux dev box's /proc/version — no "microsoft" anywhere. */
+const NATIVE_LINUX_PROC_VERSION =
+  'Linux version 6.8.0-generic (buildd@lcy02-amd64) (gcc (Ubuntu 13.2.0) 13.2.0) #1 SMP';
+/** A real WSL2 kernel's /proc/version signature. */
+const WSL2_PROC_VERSION = 'Linux version 5.15.153.1-microsoft-standard-WSL2 (root@…) #1 SMP';
+
 afterEach(() => {
   setPlatform(realPlatform);
+  __resetIsWindowsDesktopHostCache();
+  readFileSyncMock.mockReset();
 });
 
 describe('parseWindowListOutput (pure hwnd|pid|title parser)', () => {
@@ -70,16 +90,61 @@ describe('parseSessionIdFromWindowTitle (pure title→sessionId extractor)', () 
   });
 });
 
-describe('platform guard — never reached off win32', () => {
-  it('listWindowsByTitle short-circuits to [] on non-win32 (no spawn attempted)', async () => {
+describe('isWindowsDesktopHost (the P-025/WI-1646-sibling platform-detection fix)', () => {
+  it('win32 short-circuits true without touching /proc/version (defensive fallback leg)', () => {
+    setPlatform('win32');
+    expect(isWindowsDesktopHost()).toBe(true);
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('darwin is never WSL — false without touching /proc/version', () => {
+    setPlatform('darwin');
+    expect(isWindowsDesktopHost()).toBe(false);
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('linux + a WSL2 kernel /proc/version → true (the actual Windows-desktop-host case)', () => {
     setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    expect(isWindowsDesktopHost()).toBe(true);
+  });
+
+  it('linux + a native (non-WSL) /proc/version → false (the fleet dev box case)', () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(NATIVE_LINUX_PROC_VERSION);
+    expect(isWindowsDesktopHost()).toBe(false);
+  });
+
+  it('linux + an unreadable /proc/version → false (best-effort, never throws)', () => {
+    setPlatform('linux');
+    readFileSyncMock.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+    expect(isWindowsDesktopHost()).toBe(false);
+  });
+
+  it('caches the result — /proc/version is read at most once per cache lifetime', () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    expect(isWindowsDesktopHost()).toBe(true);
+    expect(isWindowsDesktopHost()).toBe(true);
+    expect(readFileSyncMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('platform guard — listWindowsByTitle/focusWindowByTitle never reached off a Windows desktop host', () => {
+  it('listWindowsByTitle short-circuits to [] on a native Linux/macOS host (no spawn attempted)', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(NATIVE_LINUX_PROC_VERSION);
     expect(await listWindowsByTitle()).toEqual([]);
+    __resetIsWindowsDesktopHostCache();
     setPlatform('darwin');
     expect(await listWindowsByTitle(WINDOW_TITLE_PREFIX)).toEqual([]);
   });
 
-  it('focusWindowByTitle short-circuits to false on non-win32 (no spawn attempted)', async () => {
+  it('focusWindowByTitle short-circuits to false on a native Linux host (no spawn attempted)', async () => {
     setPlatform('linux');
+    readFileSyncMock.mockReturnValue(NATIVE_LINUX_PROC_VERSION);
     expect(await focusWindowByTitle('anything')).toBe(false);
   });
 });

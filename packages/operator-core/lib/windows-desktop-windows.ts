@@ -27,15 +27,72 @@
  * against, so that pivot is a drop-in swap of the implementation only.
  *
  * Fail-soft throughout, mirroring desktop-window-liveness.ts's wmctrl contract:
- * ANY failure (not win32, no powershell, WSL interop unavailable, spawn
- * timeout, parse miss) yields `[]` / `false` — never throws. Platform-guarded
- * with `process.platform === 'win32'` so these are unreachable on Linux/macOS.
+ * ANY failure (not a Windows-via-WSL host, no powershell, WSL interop
+ * unavailable, spawn timeout, parse miss) yields `[]` / `false` — never
+ * throws.
+ *
+ * ⚠ PLATFORM-DETECTION GOTCHA (P-025 audit finding, WI-1646's sibling — do NOT
+ * regress this): `process.platform` is USELESS for gating this module.
+ * main.rs's `make_sidecar_command` ALWAYS launches the operator via
+ * `wsl.exe --distribution papercup-runtime --exec node …`, so the Node
+ * process is a genuine Linux binary running under the WSL2 kernel — it sees
+ * `process.platform === 'linux'` on a REAL Windows install, same as on the
+ * Linux dev box. `process.platform === 'win32'` can therefore never be true
+ * here in production (verified: it silently no-ops the whole module, the
+ * exact WI-1586 "0 on-desktop every sweep" failure class this plan exists to
+ * avoid). `isWindowsDesktopHost()` below is the correct guard — it detects
+ * "this Linux process is running inside a WSL2 VM that IS the Windows
+ * desktop host" via the WSL2 kernel's `/proc/version` signature, which is
+ * present regardless of how the process was spawned (exec vs. login shell,
+ * unlike env vars such as WSL_DISTRO_NAME that depend on profile scripts).
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { readFileSync } from 'node:fs';
+// Lazy/dynamic `node:child_process` import (mirrors adv-sessions.ts's wmctrl
+// calls) rather than a static top-level one: several unrelated test suites
+// do a blanket `vi.mock('node:child_process', () => ({ spawn: ... }))` that
+// fully replaces the module with just `spawn` — a static top-level
+// `execFile` import here would break their (unrelated) tests the moment
+// this module lands anywhere in their transitive import graph. A dynamic
+// import inside the one function that needs it is only resolved when
+// actually called, which the platform guard (isWindowsDesktopHost()) means
+// is never, off a Windows-via-WSL host.
+let cachedIsWindowsDesktopHost: boolean | null = null;
 
-const execFileAsync = promisify(execFile);
+/**
+ * True iff this Node process is running as the Windows desktop's operator
+ * sidecar — i.e. a Linux process (`process.platform === 'linux'`) inside the
+ * WSL2 VM that hosts it, NOT a genuine Linux/macOS dev box. Detected via the
+ * WSL2 kernel's `/proc/version` signature (contains "microsoft" — e.g.
+ * `5.15.153.1-microsoft-standard-WSL2`), which every WSL2 process can read
+ * regardless of spawn method (unlike `WSL_DISTRO_NAME`/`WSL_INTEROP`, which
+ * depend on shell-profile initialization that `wsl.exe --exec` skips).
+ * `process.platform === 'win32'` is checked first as a defensive fallback (it
+ * is never true in the current architecture — see the module doc — but costs
+ * nothing to keep in case that ever changes, e.g. a future native port).
+ * Cached: platform doesn't change at runtime. Exported so callers/tests don't
+ * need to know the detection mechanism.
+ */
+export function isWindowsDesktopHost(): boolean {
+  if (cachedIsWindowsDesktopHost != null) return cachedIsWindowsDesktopHost;
+  if (process.platform === 'win32') {
+    cachedIsWindowsDesktopHost = true;
+  } else if (process.platform !== 'linux') {
+    cachedIsWindowsDesktopHost = false; // darwin (or anything else) is never WSL
+  } else {
+    try {
+      cachedIsWindowsDesktopHost = /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
+    } catch {
+      cachedIsWindowsDesktopHost = false; // no /proc/version → not Linux-as-we-know-it → not WSL
+    }
+  }
+  return cachedIsWindowsDesktopHost;
+}
+
+/** Test seam: drop the cached platform-detection result. */
+export function __resetIsWindowsDesktopHostCache(): void {
+  cachedIsWindowsDesktopHost = null;
+}
 
 /** One enumerated top-level Windows window. */
 export interface WindowsDesktopWindow {
@@ -98,6 +155,9 @@ $results | ForEach-Object { Write-Output $_ }
 const POWERSHELL_ABS_PATH = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 
 async function execPowershell(bin: string, script: string): Promise<string> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFile);
   const { stdout } = await execFileAsync(bin, ['-NoProfile', '-NonInteractive', '-Command', script], {
     timeout: PS_TIMEOUT_MS,
     encoding: 'utf8',
@@ -149,7 +209,7 @@ export function parseWindowListOutput(stdout: string): WindowsDesktopWindow[] {
  * (desktop-window-liveness.ts) never has to special-case this platform.
  */
 export async function listWindowsByTitle(prefix?: string): Promise<WindowsDesktopWindow[]> {
-  if (process.platform !== 'win32') return [];
+  if (!isWindowsDesktopHost()) return [];
   try {
     const stdout = await runPowershell(LIST_WINDOWS_SCRIPT);
     const windows = stdout ? parseWindowListOutput(stdout) : [];
@@ -183,7 +243,7 @@ function escapeForPowershellSingleQuoted(s: string): string {
  * Best-effort: returns false on any failure (no match / no powershell / timeout).
  */
 export async function focusWindowByTitle(title: string): Promise<boolean> {
-  if (process.platform !== 'win32') return false;
+  if (!isWindowsDesktopHost()) return false;
   const escaped = escapeForPowershellSingleQuoted(title);
   const script = `
 Add-Type @"

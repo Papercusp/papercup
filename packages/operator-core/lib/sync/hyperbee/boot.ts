@@ -120,6 +120,16 @@ function peerLabel(keyHex?: string, ip?: string): string {
 /** Polled-merge fallback interval (ms). The own log + admitted remotes are
  *  re-merged on this cadence in addition to the on-admit + initial passes. */
 const MERGE_POLL_MS = 1000;
+/**
+ * WI-183: default grace window (ms) for the replication-stall detector — how
+ * long an admitted remote log may show zero live replicator peers, after
+ * having shown at least one before, before it's treated as a genuine stall
+ * rather than the ordinary churn of the two-speed swarm re-peer cadence
+ * (`DEFAULT_SUBSTRATE_FAST_WINDOW_MS`/`_SLOW_REFRESH_MS` in swarm.ts, which
+ * can legitimately take a while to re-pair). 3 minutes comfortably exceeds
+ * both.
+ */
+const DEFAULT_REPLICATION_STALL_GRACE_MS = 3 * 60 * 1000;
 /** Default pending-retry interval (ms). A pending peer is re-checked on this
  *  cadence until it becomes verified, conclusively fails, or exceeds the grace
  *  window. D-006. */
@@ -239,6 +249,14 @@ export interface BootHarnessOpts {
    * timer and drive `mergeNow()` by hand. Default 1000.
    */
   mergePollMs?: number;
+  /**
+   * WI-183: how long (ms) an admitted remote log may show zero live
+   * replicator peers, after having previously shown at least one, before
+   * `checkReplicationStall` records a `replication_stalled` boot event.
+   * Tests shrink this to exercise the detector without a real wait.
+   * Default `DEFAULT_REPLICATION_STALL_GRACE_MS` (3 minutes).
+   */
+  replicationStallGraceMs?: number;
   /**
    * Test seam — override the read-admission binding check. Production leaves
    * this undefined and the real `buildVerifyBindingAdapter` (verifyAttestation
@@ -918,6 +936,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const admitted = new Map<string, AdmittedLog>();
   admitted.set(ownLog.keyHex, ownLog);
 
+  // WI-183: replication-stall detector state, keyed by admitted remote
+  // log_core_key. See `checkReplicationStall` (called from mergeOnePass, right
+  // after each remote's `update()`) for the full rationale. Tracks, per remote
+  // log that has EVER shown a live replicator peer, when it last did — and
+  // whether we've already alarmed for the current stall episode (so a
+  // sustained stall fires exactly once, not every merge tick).
+  const replicationStallState = new Map<
+    string,
+    { lastNonZeroPeersAtMs: number; alarmed: boolean }
+  >();
+  const REPLICATION_STALL_GRACE_MS =
+    opts.replicationStallGraceMs ?? DEFAULT_REPLICATION_STALL_GRACE_MS;
+
   // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
   // (base64) the read-admission decider refuses; `pubkeyToLogKey` records the
   // device_pubkey → log_core_key mapping at admit time so `revoke()` can find
@@ -1046,6 +1077,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         const logKey = pubkeyToLogKey.get(pk);
         if (logKey) {
           admitted.delete(logKey);
+          replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
           pubkeyToLogKey.delete(pk);
           admittedIdentities.delete(logKey);
           recordBootEvent(
@@ -1200,6 +1232,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (!admitted.has(logKey) && !admittedIdentities.has(logKey)) continue;
       const identity = admittedIdentities.get(logKey);
       admitted.delete(logKey);
+      replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
       admittedIdentities.delete(logKey);
       // Clean up the pubkey→logKey reverse mapping.
       if (identity?.devicePubkey) {
@@ -1530,6 +1563,52 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return pendingMerge;
   }
 
+  /**
+   * WI-183: replication-stall detector. Samples an admitted REMOTE log's live
+   * replicator-peer count (`RemoteLog.peersCount()` — best-effort, `undefined`
+   * on a fake/mock log in tests, which is a silent no-op here) and records a
+   * `replication_stalled` boot event the first time it has held at zero for
+   * `REPLICATION_STALL_GRACE_MS`, having shown at least one peer before.
+   *
+   * Deliberately edge-triggered (fires once per stall episode, not every merge
+   * tick) and deliberately gated on "was replicating before" — a peer that has
+   * NEVER shown a live replicator peer is just offline (ordinary churn, not a
+   * bug); the WI-183 symptom is specifically a log that WAS replicating and
+   * then silently stopped while the swarm otherwise reports the peer connected.
+   * Clears (allows a future re-alarm) the moment peers are seen again.
+   */
+  function checkReplicationStall(log: AdmittedLog): void {
+    const maybePeersCount = log as Partial<{ peersCount(): number | undefined }>;
+    if (typeof maybePeersCount.peersCount !== 'function') return;
+    const count = maybePeersCount.peersCount();
+    if (count === undefined) return; // underlying core doesn't expose .peers
+    const now = Date.now();
+    const state = replicationStallState.get(log.keyHex);
+    if (count > 0) {
+      // Replicating (again) — reset the clock and clear any prior alarm so a
+      // later stall re-fires.
+      replicationStallState.set(log.keyHex, { lastNonZeroPeersAtMs: now, alarmed: false });
+      return;
+    }
+    if (!state) {
+      // Never seen with a live peer yet — nothing to compare against; start
+      // tracking from now (so a later stall CAN fire) without alarming on an
+      // ordinarily-offline peer.
+      replicationStallState.set(log.keyHex, { lastNonZeroPeersAtMs: now, alarmed: false });
+      return;
+    }
+    if (state.alarmed) return; // already alarmed this episode
+    if (now - state.lastNonZeroPeersAtMs < REPLICATION_STALL_GRACE_MS) return;
+    state.alarmed = true;
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'replication_stalled',
+      `log=${log.keyHex.slice(0, 12)}… has had 0 live replicator peers for ` +
+        `${Math.round((now - state.lastNonZeroPeersAtMs) / 1000)}s (was previously replicating)`,
+    );
+  }
+
   /** One serialized merge pass. Only ever called from mergeNow's gate. */
   async function mergeOnePass(): Promise<number> {
     try {
@@ -1588,6 +1667,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               // A remote that can't refresh (peer offline / stream closed /
               // timed out) is merged at its last-known length; next pass retries.
             }
+          }
+          // WI-183: sample this remote's live replicator-peer count and alarm
+          // on a sustained stall. Best-effort — never lets a detector hiccup
+          // block the merge pass it rides.
+          try {
+            checkReplicationStall(log);
+          } catch {
+            // diagnostic-only — swallow
           }
         }
         logs.push(versionGatedLog(slug, log));
@@ -2369,6 +2456,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const logKey = pubkeyToLogKey.get(devicePubkey);
     if (logKey) {
       admitted.delete(logKey);
+      replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
       pubkeyToLogKey.delete(devicePubkey);
       admittedIdentities.delete(logKey);
       recordBootEvent(

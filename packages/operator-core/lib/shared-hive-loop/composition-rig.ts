@@ -310,6 +310,44 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       created_by    TEXT,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    -- WI-1644: reflexive-platform-extensibility-datatypes (migration 421) — the REAL
+    -- claimFloorsWhereSql the rig drives ANDs in frontierPlacementKindClause, which
+    -- subqueries this table (opted-in generic-kind datatypes' work_item_kind) so a
+    -- built-in-only frontier (the rig's whole test surface) can stay DARK — the
+    -- subquery just needs to run, not match anything. Minimal columns only (no
+    -- vector/embedding/title_tsv — the rig never dedups or searches datatypes).
+    CREATE TABLE harness_shared.datatype_registry (
+      workspace_id   TEXT NOT NULL,
+      id             TEXT NOT NULL,
+      tier           TEXT NOT NULL DEFAULT 'generic-kind',
+      work_item_kind TEXT,
+      status         TEXT NOT NULL DEFAULT 'active',
+      tags           TEXT[] NOT NULL DEFAULT '{}',
+      PRIMARY KEY (workspace_id, id)
+    );
+  `);
+
+  // WI-1644: the writeToPg projection (harness-features.ts) INSERTs a wider
+  // column set than this schema's original CREATE TABLE carried — columns
+  // migrations 357 (last_progress_at) and the design/source-plan/wave/
+  // completion-ref set (000-baseline's harness_features_consolidated shape,
+  // predating this rig's slice point) added. Condensed here the same way the
+  // engineer_issues ALTER block below condenses 136/142/152/178 — the rig
+  // never asserts on these columns' behavior, they only need to EXIST so the
+  // real projection's INSERT/UPDATE column list doesn't 42703 (undefined_column).
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS last_progress_at timestamptz,
+      ADD COLUMN IF NOT EXISTS deprecation_reason text,
+      ADD COLUMN IF NOT EXISTS see_also text[] DEFAULT '{}'::text[] NOT NULL,
+      ADD COLUMN IF NOT EXISTS needs_design boolean DEFAULT false NOT NULL,
+      ADD COLUMN IF NOT EXISTS design_status text,
+      ADD COLUMN IF NOT EXISTS design_spec_id text,
+      ADD COLUMN IF NOT EXISTS discarded_design_work boolean DEFAULT false NOT NULL,
+      ADD COLUMN IF NOT EXISTS completion_ref jsonb,
+      ADD COLUMN IF NOT EXISTS source_plan_slug text,
+      ADD COLUMN IF NOT EXISTS source_plan_item_ids text[],
+      ADD COLUMN IF NOT EXISTS wave text;
   `);
 
   // Map the harness slug → the workspace_id the booted handle drains on (the
@@ -422,6 +460,19 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   // exactly the fix production itself needed post-374.
   await sql.unsafe(
     readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
+
+  // WI-1644 (part 3): SCHEDULER_MAINTAINED_READY reads live as ON in this test
+  // environment (flags are NOT mocked here), so claimFloorsWhereSql's
+  // useMaintainedReady branch queries harness_shared.work_item_blocked — the
+  // local, non-federated readiness sidecar migration 379 introduces, entirely
+  // in terms of the POST-374/375 `work_items` name (it was authored after that
+  // cutover shipped). Load it verbatim now that work_items is real.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '379-maintained-ready-column.sql'), 'utf8')
       .split('\n')
       .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
       .join('\n'),

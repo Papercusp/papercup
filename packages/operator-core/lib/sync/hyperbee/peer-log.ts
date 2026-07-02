@@ -140,6 +140,15 @@ export interface RemoteLog {
   readonly length: number;
   /** 64-char lowercase hex hypercore key this replica tracks. */
   readonly keyHex: string;
+  /**
+   * WI-183: number of LIVE replicator peers currently attached to this
+   * specific core (`core.peers.length`), or `undefined` when the underlying
+   * core doesn't expose `.peers` (a fake/mock in a unit test). `0` here while
+   * the swarm otherwise reports an open connection to the same remote party is
+   * the "replication silently stalled" symptom — a live transport with no
+   * attached replicator session for this log. See boot.ts's stall detector.
+   */
+  peersCount(): number | undefined;
 }
 
 /**
@@ -159,6 +168,16 @@ interface CoreLike {
   has?(index: number): boolean;
   /** Length of the contiguous downloaded prefix from 0. Present on real cores. */
   readonly contiguousLength?: number;
+  /**
+   * WI-183: live replicator peers for THIS SPECIFIC core (Hypercore's
+   * `core.peers` getter — `core.replicator.peers` once opened). Distinct from
+   * the raw swarm socket count: a swarm connection can stay open (transport
+   * live) while a particular core's replicator session never attached to it
+   * (or detached after a crash/reconnect), which is exactly the silent
+   * "peer_connected fires but this log's replication never resumes" failure
+   * mode reported in WI-183. Optional — absent on fakes/mocks in tests.
+   */
+  readonly peers?: ReadonlyArray<unknown>;
   readonly length: number;
   readonly key: Buffer;
   readonly writable: boolean;
@@ -255,6 +274,9 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
     },
     get keyHex(): string {
       return keyHex;
+    },
+    peersCount(): number | undefined {
+      return Array.isArray(core.peers) ? core.peers.length : undefined;
     },
   };
 }

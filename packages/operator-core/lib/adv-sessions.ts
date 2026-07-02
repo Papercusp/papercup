@@ -15,7 +15,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
-import { focusWindowByTitle, listWindowsByTitle } from './windows-desktop-windows';
+import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
 
 export interface AdvSessionRow {
   id: number;
@@ -775,7 +775,7 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
 export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
   const wanted = fragment.trim();
   if (!wanted) return null;
-  if (process.platform === 'win32') {
+  if (isWindowsDesktopHost()) {
     // windows-desktop-feature-parity-2026-07-02 P-010: there is no
     // pid→window mapping across the WSL↔Windows boundary (see
     // windows-desktop-windows.ts header), so the "window id" we persist for
@@ -786,6 +786,12 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
     // LATER", and re-resolving by title at focus time (rather than trusting
     // a cached hwnd) is the only approach that survives the window being
     // re-created (e.g. after a WSL restart).
+    //
+    // NOTE: guard is isWindowsDesktopHost(), NOT process.platform === 'win32'
+    // — the operator always runs as a `wsl.exe --exec node` Linux process
+    // (main.rs), so process.platform reports 'linux' even on a real Windows
+    // box (P-025 audit finding, WI-1646's sibling — see
+    // windows-desktop-windows.ts's module doc). Don't regress this.
     try {
       const windows = await listWindowsByTitle();
       const match = windows.find((w) => w.title.includes(wanted));
@@ -819,7 +825,7 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
  * drivers but fine for an explicit focus-button click.
  */
 export async function focusWindowId(windowId: string): Promise<boolean> {
-  if (process.platform === 'win32') {
+  if (isWindowsDesktopHost()) {
     try {
       return await focusWindowByTitle(windowId);
     } catch {

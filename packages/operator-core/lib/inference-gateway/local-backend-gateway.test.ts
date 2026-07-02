@@ -250,6 +250,36 @@ test('per-client in-flight cap sheds a storming owner with 429 + retry-after, wi
   await Promise.all([inflightA, inflightB]);
 });
 
+test('a saturated pool (model served, every slot busy) 429s with retry-after — retryable backpressure, NOT a 502 dead end', async () => {
+  const held: http.ServerResponse[] = [];
+  const b1 = await startFakeBackend('b1', (_req, res) => {
+    held.push(res); // never end() — occupies the backend's one slot
+  });
+  backends = [b1];
+  // A single-slot backend: once one request is in flight, the pool is saturated for 'm'.
+  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 1, enabled: true }]);
+
+  // Occupy the one slot with a hanging request (unidentified caller — isolates POOL saturation from
+  // the per-client circuit entirely).
+  const inflight = chatCompletions({ model: 'm' });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(pool.inFlight('b1'), 1);
+
+  // A second request for the SAME (served, healthy) model finds every slot busy → 429 + Retry-After,
+  // NOT a 502: the model is reachable, just at capacity, so the caller should back off and retry
+  // rather than treat it as a hard server error (D-010/D-012 graceful load-shed).
+  const busy = await chatCompletions({ model: 'm' });
+  assert.equal(busy.status, 429);
+  assert.ok(busy.headers.get('retry-after'));
+  const busyJson = (await busy.json()) as { error: { message: string } };
+  assert.match(busyJson.error.message, /at capacity/);
+  assert.equal(pool.inFlight('b1'), 1); // the shed never touched the backend
+
+  held.forEach((res) => res.writeHead(200, { 'content-type': 'application/json' }));
+  held.forEach((res) => res.end('{}'));
+  await inflight;
+});
+
 test('per-client failure-streak circuit opens after repeated no-reachable-backend failures, sheds fast, isolates other owners, and self-closes after the cooldown', async () => {
   await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
     localBackendClientFailureThreshold: 2,

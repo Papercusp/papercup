@@ -70,6 +70,7 @@ import harnessJoinLink from './harness/join-link';
 import harnessBindingClaim from './harness/binding-claim';
 import harnessClaimStatus from './harness/claim-status';
 import hivePolicy from './hive/policy-set';
+import hiveRateState from './hive/rate-state';
 import harnessContributors from './harness/contributors';
 import harnessContributorUsage from './harness/contributor-usage';
 import harnessActivity from './harness/activity';
@@ -558,6 +559,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBindingClaim as AnyRoute[]),
   ...flatten(harnessClaimStatus as AnyRoute[]),
   ...flatten(hivePolicy as AnyRoute[]),
+  ...flatten(hiveRateState as AnyRoute[]),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessContributorUsage as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),

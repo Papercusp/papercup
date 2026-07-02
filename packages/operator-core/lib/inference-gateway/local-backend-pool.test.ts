@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createLocalBackendPool,
   HEALTH_FAIL_THRESHOLD,
+  isSaturatedFor,
   nextHealthState,
   pickLeastLoaded,
   type LocalBackend,
@@ -70,6 +71,54 @@ describe('pickLeastLoaded', () => {
     const b = backend({ id: 'b' });
     const picked = pickLeastLoaded([cand({ backend: a }), cand({ backend: b })], 'ornith-35b', new Set(['a']));
     expect(picked?.id).toBe('b');
+  });
+});
+
+describe('isSaturatedFor', () => {
+  const cand = (over: Partial<LocalBackendCandidate> & { backend: LocalBackend }): LocalBackendCandidate => ({
+    inFlight: 0,
+    healthy: true,
+    ...over,
+  });
+
+  it('is true when the model is served but every backend is at maxConcurrent (retryable backpressure → 429)', () => {
+    const a = backend({ id: 'a', maxConcurrent: 2 });
+    const b = backend({ id: 'b', maxConcurrent: 1 });
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2 }), cand({ backend: b, inFlight: 1 })], 'ornith-35b')).toBe(true);
+  });
+
+  it('is false when a slot is free (select() would return a backend, not shed)', () => {
+    const a = backend({ id: 'a', maxConcurrent: 2 });
+    const b = backend({ id: 'b', maxConcurrent: 2 });
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2 }), cand({ backend: b, inFlight: 1 })], 'ornith-35b')).toBe(false);
+  });
+
+  it('is false when no backend serves the model (unmatched — a genuine dead end → 502, not saturation)', () => {
+    const a = backend({ id: 'a', models: ['other-model'], maxConcurrent: 2 });
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2 })], 'ornith-35b')).toBe(false);
+  });
+
+  it('is false when the only serving backend is unhealthy (dead end → 502, not saturation)', () => {
+    const a = backend({ id: 'a', maxConcurrent: 2 });
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2, healthy: false })], 'ornith-35b')).toBe(false);
+  });
+
+  it('is false when the only serving backend is disabled (dead end → 502, not saturation)', () => {
+    const a = backend({ id: 'a', enabled: false, maxConcurrent: 2 });
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2 })], 'ornith-35b')).toBe(false);
+  });
+
+  it('is false for an empty candidate set', () => {
+    expect(isSaturatedFor([], 'ornith-35b')).toBe(false);
+  });
+
+  it('excludes an already-tried id — saturation is judged over the REMAINING candidates', () => {
+    // `a` (saturated) is excluded; `b` still has a free slot → not saturated over what is left to try.
+    const a = backend({ id: 'a', maxConcurrent: 2 });
+    const b = backend({ id: 'b', maxConcurrent: 2 });
+    expect(
+      isSaturatedFor([cand({ backend: a, inFlight: 2 }), cand({ backend: b, inFlight: 0 })], 'ornith-35b', new Set(['a'])),
+    ).toBe(false);
   });
 });
 

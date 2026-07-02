@@ -888,6 +888,10 @@ import './harness/create';
 // P-009 (B3) — kind #1 harness creation: deterministically generate an
 // `extends: coding` blueprint from an existing repo, then compose harness:create.
 import './harness/generate_from_repo';
+// WI-1563 — harness:configure: the non-hive counterpart of hive:update's
+// configOverrides half (set per-instance blueprint-knob overrides on an
+// EXISTING harness that isn't a hive).
+import './harness/configure';
 // harness-blueprint-orchestration-2026-06-03 P-012 (Phase D) — the gym is a
 // blueprint (D-022); its judge/proposer roles re-use lib/gym primitives via these
 // tools: gym:judge (frozen Opus judge, target's rubric) + gym:signals (the

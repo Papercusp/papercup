@@ -12,14 +12,14 @@ import {
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
-import { WINDOW_TITLE_PREFIX } from './windows-desktop-windows';
+import { WINDOW_TITLE_PREFIX, __resetIsWindowsDesktopHostCache } from './windows-desktop-windows';
 
 const listWindowsByTitleMock = vi.fn();
 
-// Keep the real parseSessionIdFromWindowTitle/WINDOW_TITLE_PREFIX (desktop-window-
-// liveness.ts's own matcher logic depends on them); only listWindowsByTitle — the
-// IO seam — is mocked, so the win32 branch of listOpenWindows is unit-testable
-// without a real powershell.exe.
+// Keep the real parseSessionIdFromWindowTitle/WINDOW_TITLE_PREFIX/isWindowsDesktopHost
+// (desktop-window-liveness.ts's own matcher + platform-detection logic depends on
+// them); only listWindowsByTitle — the IO seam — is mocked, so the Windows-desktop-host
+// branch of listOpenWindows is unit-testable without a real powershell.exe.
 vi.mock('./windows-desktop-windows', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./windows-desktop-windows')>();
   return { ...actual, listWindowsByTitle: (...args: unknown[]) => listWindowsByTitleMock(...args) };
@@ -27,7 +27,11 @@ vi.mock('./windows-desktop-windows', async (importOriginal) => {
 
 const realPlatform = process.platform;
 
-/** Override the read-only process.platform for one test. */
+/** Override the read-only process.platform for one test. Note: isWindowsDesktopHost()
+ *  treats 'win32' as a defensive-fallback true WITHOUT touching /proc/version, so
+ *  this alone is enough to drive it here — but its result is CACHED at module scope
+ *  (windows-desktop-windows.ts), so every test that flips platform must also reset
+ *  that cache (below) or a later test silently inherits a stale true/false. */
 function setPlatform(p: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: p, configurable: true });
 }
@@ -40,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setPlatform(realPlatform);
+  __resetIsWindowsDesktopHostCache();
 });
 
 describe('parseWmctrlList (pure wmctrl -lp parser)', () => {
@@ -181,9 +186,9 @@ describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
   });
 });
 
-describe('listOpenWindows — win32 branch (P-019, enumerates via listWindowsByTitle, not wmctrl)', () => {
-  it('on win32 with no injected deps.run, maps listWindowsByTitle results into OpenWindow[]', async () => {
-    setPlatform('win32');
+describe('listOpenWindows — Windows-desktop-host branch (P-019, enumerates via listWindowsByTitle, not wmctrl)', () => {
+  it('on a Windows desktop host with no injected deps.run, maps listWindowsByTitle results into OpenWindow[]', async () => {
+    setPlatform('win32'); // isWindowsDesktopHost()'s defensive win32 fallback leg — see its own module tests for the real WSL /proc/version leg
     listWindowsByTitleMock.mockResolvedValue([
       { hwnd: '0xABC', pid: 4321, title: `${WINDOW_TITLE_PREFIX}sess-1` },
     ]);
@@ -198,7 +203,7 @@ describe('listOpenWindows — win32 branch (P-019, enumerates via listWindowsByT
     expect(await listOpenWindows({ nowMs: 1, ttlMs: 0 })).toEqual([]);
   });
 
-  it('an explicitly injected deps.run STILL wins on win32 (the test seam always wins)', async () => {
+  it('an explicitly injected deps.run STILL wins on a Windows desktop host (the test seam always wins)', async () => {
     setPlatform('win32');
     const run = vi.fn(() => '0x1 0 100 host SH[adv:1]: x');
     const windows = await listOpenWindows({ run, nowMs: 1, ttlMs: 0 });

@@ -35,6 +35,15 @@
  *                           longer present in the published revoked-pubkeys list —
  *                           applyRevocationRefresh reconciled it out of `revoked`,
  *                           so the peer is admissible again on its next announce.
+ *   - 'replication_stalled' — WI-183: an admitted REMOTE log has held zero live
+ *                           replicator peers (`core.peers.length`) for the stall
+ *                           grace window, having shown at least one before. This
+ *                           is the previously-SILENT failure mode from WI-183's
+ *                           repro: the swarm reports `peer_connected` (transport
+ *                           live) but this specific log's replication stream never
+ *                           resumed, so writes on the remote peer stop crossing —
+ *                           with no error and a boot log that otherwise looks
+ *                           healthy. See `checkReplicationStall` in boot.ts.
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
  *   - 'announce_pending'  — an inbound announce returned a 'pending' binding result
@@ -68,6 +77,7 @@ export type BootHistoryKind =
   | 'peer_capped'
   | 'peer_revoked'
   | 'peer_unrevoked'
+  | 'replication_stalled'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'

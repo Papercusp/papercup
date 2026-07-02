@@ -28,9 +28,15 @@ export type BootHistoryKind =
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'
+  // P-008 (harden-shared-hive-to-256-peers): drive-by fix while syncing
+  // 'replication_stalled' below — this kind existed in the canonical union
+  // (boot-history.ts) but was missing here, a pre-existing exhaustiveness
+  // drift (harmless: an unmapped kind renders with no color/mark, not a crash).
+  | 'peer_cap_near'
   | 'peer_capped'
   | 'peer_revoked'
   | 'peer_unrevoked'
+  | 'replication_stalled'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
@@ -68,9 +74,11 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   swarm_join_failed: 'var(--warn)',
   peer_rejected: 'var(--warn)',
   peer_rate_limited: 'var(--bad)',
+  peer_cap_near: 'var(--warn)',
   peer_capped: 'var(--warn)',
   peer_revoked: 'var(--bad)',
   peer_unrevoked: 'var(--good)',
+  replication_stalled: 'var(--bad)',
   announce_admitted: 'var(--good)',
   announce_pending: 'var(--warn)',
   announce_rejected: 'var(--warn)',
@@ -95,9 +103,11 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   swarm_join_failed: '⚠',
   peer_rejected: '⛔',
   peer_rate_limited: '🛑',
+  peer_cap_near: '📶',
   peer_capped: '✂',
   peer_revoked: '🚫',
   peer_unrevoked: '↩',
+  replication_stalled: '🧊',
   announce_admitted: '➕',
   announce_pending: '⏳',
   announce_rejected: '⛔',
