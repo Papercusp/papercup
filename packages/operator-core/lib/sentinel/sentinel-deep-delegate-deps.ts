@@ -20,12 +20,15 @@
  */
 import type { DeepDelegateDeps } from './sentinel-deep-delegate';
 import { DEEP_DELEGATION_LABEL } from './sentinel-deep-delegate';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /** Default harness the background agent spawns into when the caller gave none:
- *  the hive home (where the sentinel itself lives), else the workspace default
- *  resolution inside spawnAgentInHarness (single-harness workspaces). */
+ *  the operator HOME harness (where the sentinel itself lives) via the canonical
+ *  resolver — env PAPERCUSP_HIVE_HOME_SLUG when set, else the standing default.
+ *  Raw-env-only resolution left the staging process (no env) unable to mint the
+ *  research-task at all ("no harness resolved", live 2026-07-01). */
 function defaultSpawnHarness(): string | null {
-  return process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim() || null;
+  return operatorHomeHarnessSlug() || null;
 }
 
 export function defaultDeepDelegateDeps(): DeepDelegateDeps {

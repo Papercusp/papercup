@@ -1184,6 +1184,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     account: ActiveAccount,
     eg: AccountEgress | undefined = account.egress,
   ): Promise<UndiciDispatcher | undefined> {
+    // PROXY KILL-SWITCH CHOKEPOINT (egress-proxy-toggle / gateway-rayobyte-hardening, 2026-07-01): when
+    // proxy egress is disabled, NO caller may build a proxy dispatcher — including callers that passed no
+    // entry and landed on the `= account.egress` DEFAULT PARAMETER above. That default was the leak: the
+    // request path's pickEgress correctly filtered every proxy entry and passed `entry: undefined`, but an
+    // explicit `undefined` re-triggers the default, so disabled accounts kept dialing their squids (observed
+    // live 22:33: aviynw6's 216.41.233.249:3128 in use minutes after ?proxy=off). Guarding HERE covers every
+    // call site — request path, OpenAI proxy, and anything added later. A localAddress-only egress (a bound
+    // source IP, not a datacenter proxy) is deliberately still honored.
+    if (proxyEgressDisabled && eg?.proxyUrl) eg = eg.localAddress ? { ...eg, proxyUrl: undefined } : undefined;
     if (!eg || (!eg.proxyUrl && !eg.localAddress)) return undefined;
     // undici's ProxyAgent is an HTTP-CONNECT proxy client — it does NOT speak SOCKS. A socks:// (or any
     // non-http(s)) proxyUrl CONSTRUCTS without error but fails at REQUEST time (the proxy rejects the
@@ -1318,6 +1327,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  the circuit pause expires (bounded fallback). Best-effort, unref'd, never throws into the request path.
    *  `EGRESS_PROBE_DELAY_MS=0` disables it (pause-expiry half-open still applies). */
   function scheduleEgressProbe(account: ActiveAccount, gov: RateLimitGovernor | undefined, pausedUntil: number): void {
+    // Proxy kill-switch: probing a squid we will not route through is pure log noise. A circuit pause left
+    // un-lifted is bounded (≤EGRESS_CIRCUIT_OPEN_MAX_MS) and irrelevant while disabled; re-enabling proxies
+    // resumes probing on the next circuit event.
+    if (proxyEgressDisabled) return;
     if (EGRESS_PROBE_DELAY_MS <= 0 || egressProbePending.has(account.accountId)) return;
     egressProbePending.add(account.accountId);
     let probeSuccessStreak = 0; // consecutive OK probes; readmit only at EGRESS_PROBE_READMIT_STREAK (flap filter)

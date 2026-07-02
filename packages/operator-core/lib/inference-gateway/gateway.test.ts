@@ -2890,3 +2890,48 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
   const top = (await (await ask('/admin/owner-report')).json()) as { owners: Array<{ owner: string }> };
   assert.ok(top.owners.some((o) => o.owner === 'su-ledger-test'), 'overview lists the owner');
 }, 20_000);
+
+test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher — including proxy-only accounts (the default-param leak)', async () => {
+  // Account A is PROXY-ONLY (no direct pool entry). With proxy egress disabled, its requests must ride
+  // the DEFAULT box egress (init.dispatcher undefined). Before the chokepoint guard, pickEgress filtered
+  // A's entries to [] and passed entry:undefined — which re-triggered dispatcherFor's `= account.egress`
+  // default and dialed the squid anyway (observed live 2026-07-01 22:33 on aviynw6).
+  resetGovernorRegistry();
+  const dispatchersSeen: Array<unknown> = [];
+  const fetchImpl = (async (_url: string, init: { dispatcher?: unknown }) => {
+    dispatchersSeen.push(init.dispatcher);
+    return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const pool = createFailoverPool([A]);
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 200,
+  });
+  port = await gw.listen(0);
+
+  await ask('/admin/egress-mode?proxy=off', { method: 'POST' }).then((r) => r.json());
+  const r1 = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r1.status, 200);
+  await r1.text();
+  assert.equal(dispatchersSeen.length, 1);
+  assert.equal(dispatchersSeen[0], undefined, 'box-ip-only: no proxy dispatcher on a proxy-only account');
+
+  // Flip back on: the same account dials through its proxy again.
+  await ask('/admin/egress-mode?proxy=on', { method: 'POST' }).then((r) => r.json());
+  const r2 = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r2.status, 200);
+  await r2.text();
+  assert.ok(dispatchersSeen[1] !== undefined, 'proxy-pool restored: the proxy dispatcher is back');
+}, 20_000);

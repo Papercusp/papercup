@@ -196,3 +196,31 @@ export const gatewayOwnerReportTool = defineTool({
     }
   },
 });
+
+export const gatewayEgressModeTool = defineTool({
+  name: 'gateway:egress_mode',
+  description:
+    "Read or flip the inference gateway's EGRESS MODE live (GET/POST :8788/admin/egress-mode) — gateway-rayobyte-hardening. `proxy:'off'` ⇒ box-ip-only: drop the datacenter (Rayobyte squid) proxy egress and route ALL upstream through the box's own IP — the kill-switch when the proxies are flapping (transport `fetch failed` / stream stalls, NOT 429s). `proxy:'on'` ⇒ restore each account's proxy pool. Omit `proxy` to just read the current mode. LIVE, no restart. NOTE: this flip does NOT survive a gateway restart — the boot default is the PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS service env; to make it durable, also set that drop-in. Returns {ok, proxyEgressDisabled, mode}.",
+  guidance: {
+    when: "Egress proxies are flapping — agents get 'upstream stream stalled (aborted)' / 'paced/paused' on QUIET accounts (transport failures, not usage). Flip proxy:'off' to route direct through the box IP; flip back on once the proxies recover.",
+    notWhen: "A real per-account 429/usage cap (util5h≥1.0) — that's account budget, not egress; box-ip-only won't help. Check gateway:owner_report / the [429-shape=…] journal suffix first.",
+    chaining: "gateway:owner_report / gateway:status (confirm the failures are transport, not 429) → gateway:egress_mode { proxy:'off' } → (once proxies recover) gateway:egress_mode { proxy:'on' }.",
+    seeAlso: ['gateway:owner_report (per-owner outcomes — is it transport or quota?)', 'gateway:status (live pool + AIMD)'],
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    proxy: z.enum(['on', 'off']).optional().describe("'off' = box-ip-only (drop proxy egress); 'on' = restore proxy pool; omit to just read the current mode."),
+  }),
+  async handler(args) {
+    try {
+      const q = args.proxy ? `?proxy=${args.proxy}` : '';
+      const r = await fetch(`${gwBase()}/admin/egress-mode${q}`, { method: args.proxy ? 'POST' : 'GET', signal: AbortSignal.timeout(5000) });
+      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      return { data: r.ok ? { ok: true, ...b } : { ok: false, error: `gateway /admin/egress-mode → ${r.status}`, ...b } };
+    } catch (e) {
+      return { data: { ok: false, error: `gateway unreachable at ${gwBase()}: ${errMsg(e)}` } };
+    }
+  },
+});
