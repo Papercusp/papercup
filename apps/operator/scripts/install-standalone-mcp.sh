@@ -52,11 +52,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # This is precisely the re-mint path that silently REGRESSED the P-006 cutover
 # (configs re-baked to direct :3070 while the proxy sat active-but-unrouted).
 MCP_PROXY_PORT="${PAPERCUSP_MCP_PROXY_PORT:-9071}"
-if [ -z "${PAPERCUSP_OPERATOR_URL:-}" ] && [ "${PAPERCUSP_MCP_PROXY:-1}" != "0" ] \
+# An INHERITED default-direct pin (a parent process exporting the plain :3070
+# base — e.g. a long-lived pre-cutover session spawning this install) is NOT an
+# intentional override for MINTING purposes: baking a transient env pin into
+# durable config is exactly the WI-1457 regression. Only a NON-default explicit
+# PAPERCUSP_OPERATOR_URL suppresses the proxy preference.
+case "${PAPERCUSP_OPERATOR_URL:-}" in
+  ''|http://localhost:3070|http://127.0.0.1:3070) MINT_ENV_AUTHORITATIVE=0 ;;
+  *) MINT_ENV_AUTHORITATIVE=1 ;;
+esac
+if [ "$MINT_ENV_AUTHORITATIVE" = "0" ] && [ "${PAPERCUSP_MCP_PROXY:-1}" != "0" ] \
   && systemctl --user is-active --quiet papercup-mcp-proxy 2>/dev/null \
   && [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:${MCP_PROXY_PORT}/api/health" 2>/dev/null)" = "200" ]; then
   OPERATOR_URL="http://127.0.0.1:${MCP_PROXY_PORT}"
   echo "→ Resilient MCP proxy ACTIVE on :${MCP_PROXY_PORT} — minting configs against the proxy (WI-1457)"
+  if [ -n "${PAPERCUSP_OPERATOR_URL:-}" ]; then
+    echo "  (inherited PAPERCUSP_OPERATOR_URL=${PAPERCUSP_OPERATOR_URL} is the plain direct default — not baked into durable config)"
+  fi
 else
   OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 fi

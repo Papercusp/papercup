@@ -3491,8 +3491,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         return;
       }
+      // P-005: a CLIENT abort (bee interrupted / connection dropped mid-request) is not a gateway crash —
+      // the old unconditional `proxy handler crashed: aborted` error-spam made every starved/interrupted
+      // caller read as a gateway fault in the journal (8-at-a-time bursts during the 2026-07-01 tier-5
+      // starvation were exactly this). Keep the loud error for REAL handler faults.
+      const msg = (e as Error).message ?? '';
+      const clientAbort = /\baborted\b|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET/i.test(msg) && (res.destroyed || res.writableEnded || ac?.signal?.aborted !== true);
+      if (clientAbort && res.headersSent) {
+        log('info', `proxy request ended early (client abort / stream torn down): ${msg}`);
+        res.destroy();
+        return;
+      }
       upstreamErrors++;
-      log('error', `proxy handler crashed: ${(e as Error).message}`);
+      log('error', `proxy handler crashed: ${msg}`);
       if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway internal error' }, gateway: true });
       else res.destroy();
     });
