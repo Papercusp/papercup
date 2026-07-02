@@ -26,7 +26,7 @@
  */
 
 import { markDispatchOrphaned } from './dispatch-ledger';
-import { mergeIssuePayload } from '../../issues-engineer';
+import { mergeIssuePayload, getIssue } from '../../issues-engineer';
 
 export interface WorkerExitInfo {
   /** Subprocess exit code (0 = clean exit). */
@@ -61,6 +61,29 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * WI-716 — output signatures of a CONTEXT-OVERFLOW death: the worker's agentic
+ * session exceeded the model's input window during a long reproduce+fix run. This
+ * is an infra/context-management limit, NOT an item-quality signal (the item was
+ * never really attempted-and-failed) — but unlike a generic env failure it is
+ * usually NOT self-healing on a bare retry (the same oversized item tends to
+ * overflow again), so it gets its own bounded-escalation path instead of the
+ * indefinite env-failure rollback (see `classifyContextOverflow` / the
+ * CONTEXT_OVERFLOW_ESCALATE_CAP bound in `recordImplementWorkerExit`).
+ */
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /prompt is too long/i,
+  /exceeds (?:the )?(?:model'?s? )?(?:context|input) (?:window|length)/i,
+  /context.?length.?exceeded/i,
+  /input is too long for the requested model/i,
+];
+
+/** After this many context-overflow deaths for the SAME item, stop rolling the
+ *  attempt back and route to needs-human instead — bounded so an oversized item
+ *  can't thrash the auto-implement lane forever (WI-716's "naive fix is unsafe"
+ *  caveat: unconditionally rolling back causes an infinite re-dispatch loop). */
+export const CONTEXT_OVERFLOW_ESCALATE_CAP = 2;
+
+/**
  * A real implement worker (reproduce + fix + regression test + test:affected) takes
  * minutes. A non-zero exit UNDER this floor with ~no output is a dead-on-arrival
  * spawn (the binary never did work) — an env/infra death, not an attempt.
@@ -74,17 +97,25 @@ export interface EnvFailureVerdict {
   env: boolean;
   /** Why it was classed env (for the ledger detail / tests); undefined when not env. */
   reason?: string;
+  /** WI-716: 'context-overflow' when this death matched CONTEXT_OVERFLOW_PATTERNS —
+   *  still `env: true` (not charged on a first/second death) but routed through the
+   *  bounded escalation path in `recordImplementWorkerExit` instead of the plain
+   *  indefinite env-failure rollback. Absent for a generic env failure / DOA. */
+  class?: 'context-overflow';
 }
 
 /**
  * Whether a worker exit is an ENVIRONMENT failure (don't charge the attempt) vs a
  * genuine worker outcome. A clean exit (0) is never an env failure — it resolved,
  * or it's a real exited-0-without-resolve worker bug. Non-zero: a recognizable
- * env signature in the output, OR a sub-floor near-empty death (DOA). Pure.
+ * context-overflow or env signature in the output, OR a sub-floor near-empty death
+ * (DOA). Pure.
  */
 export function isEnvFailureExit(info: WorkerExitInfo): EnvFailureVerdict {
   if (info.exitCode === 0) return { env: false };
   const text = `${info.stdout ?? ''}\n${info.stderr ?? ''}`;
+  const overflowHit = CONTEXT_OVERFLOW_PATTERNS.find((re) => re.test(text));
+  if (overflowHit) return { env: true, reason: `context overflow ${overflowHit}`, class: 'context-overflow' };
   const hit = ENV_FAILURE_PATTERNS.find((re) => re.test(text));
   if (hit) return { env: true, reason: `env signature ${hit}` };
   if (info.runtimeMs < ENV_FAILURE_RUNTIME_FLOOR_MS && text.trim().length < 200) {

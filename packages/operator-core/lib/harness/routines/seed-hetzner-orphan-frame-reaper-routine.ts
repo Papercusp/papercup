@@ -3,7 +3,7 @@
  * in `hetzner-orphan-frame-reaper.ts`, handler in `hetzner-orphan-frame-reaper-action.ts`.
  *
  *   - `hetzner-orphan-frame-reaper` (every 30 min): destroys rig-named Hetzner VMs
- *     (hzdeb*/pcusp-fed-*) whose creating agent (Hetzner label `pcusp-owner`) is
+ *     (hzdeb* / pcusp-fed-*) whose creating agent (Hetzner label `pcusp-owner`) is
  *     confirmed `ended` via coord:presence, and old enough to clear the grace window.
  *     SQL/API only; spawns no agent.
  *

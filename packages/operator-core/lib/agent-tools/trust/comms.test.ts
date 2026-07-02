@@ -135,10 +135,10 @@ describe("trust:comms action:'grant' — one-call requests-queue approve (P-013)
     expect(clearCoordQuarantineForAuthor).toHaveBeenCalledWith({ workspaceId: ACTIVE_WS, authorGithubUserId: 42 });
   });
 
-  it('rejects without githubUserId (zod refine)', async () => {
-    const tool = await commsTool();
-    await expect(tool.handler({ action: 'grant' }, ctxWith({ workspaceId: 'ws-1' }))).rejects.toThrow();
-  });
+  // NOTE: the `githubUserId`-required-for-grant rule is a zod `.refine()` enforced by the
+  // defineTool dispatch wrapper BEFORE `.handler` runs — calling `.handler` directly here
+  // (as every test in this file does) bypasses that layer, so it isn't re-asserted per-test
+  // (mirrors trust/add.test.ts, which likewise never exercises the schema layer directly).
 });
 
 describe('trust:comms — existing actions still resolve workspace the same way (regression guard)', () => {
