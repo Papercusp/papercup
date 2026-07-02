@@ -28,3 +28,38 @@ describe('estimateContextTokens (backend gating + degradation)', () => {
     expect(est).toBeNull();
   });
 });
+
+describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compaction-usage-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const MB = 1024 * 1024;
+
+  it('a small file stays whole-file/4 (no scan)', () => {
+    const p = join(dir, 'small.jsonl');
+    writeFileSync(p, 'x'.repeat(40_000));
+    expect(tokensFromFileSize(p)).toBe(10_000);
+  });
+
+  it('counts only bytes AFTER the last raw compaction marker', () => {
+    const p = join(dir, 'compacted.jsonl');
+    // 2MB of pre-compaction history, a compaction-summary entry, 400KB since.
+    const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
+    writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(400_000));
+    const tokens = tokensFromFileSize(p)!;
+    // ≈ (marker + 400KB)/4 — nowhere near the whole-file 2.4MB/4 ≈ 630k.
+    expect(tokens).toBeLessThan(120_000);
+    expect(tokens).toBeGreaterThan(90_000);
+  });
+
+  it('an ESCAPED text mention of the marker does not reset the count', () => {
+    const p = join(dir, 'mention.jsonl');
+    const escapedMention = '{"content":"discussing \\"isCompactSummary\\":true in prose"}\n';
+    writeFileSync(p, 'a'.repeat(2 * MB) + escapedMention + 'b'.repeat(100_000));
+    // No RAW marker anywhere → whole-file count (the conservative old behavior).
+    expect(tokensFromFileSize(p)!).toBeGreaterThan(500_000);
+  });
+
+  it('missing file → null', () => {
+    expect(tokensFromFileSize(join(dir, 'nope.jsonl'))).toBeNull();
+  });
+});
