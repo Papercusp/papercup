@@ -26,6 +26,42 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../../flag-distinct-id';
 
+/**
+ * Per-session-tier hit shaping (context-trimming-tiers P-024). This tool's
+ * response is a BYTE-STABLE contract (the TUI Memory tab reads content[0].text
+ * over a non-mcp transport), so it keeps the hand-rolled ToolResult and adapts
+ * IN-HANDLER off ctx.contextTier — the coord:inbox precedent — instead of
+ * declaring `shape`. No-tier callers (the TUI, hooks) get full, byte-identical
+ * rows; a trimmed/standard LLM session gets each hit's text clipped (loud:
+ * memory_truncated + memory_full_chars per row, payload_tier at the top) and,
+ * at trimmed, metadata reduced to its `kind`. payloadTier:"full" per call
+ * restores everything (the dispatch overlay threads it into ctx.contextTier).
+ */
+export const MEMORY_SEARCH_TIER_CAPS = {
+  trimmed: { text: 280, metadataKindOnly: true },
+  standard: { text: 500, metadataKindOnly: false },
+} as const;
+
+export function shapeMemoryHit(
+  row: { id: string; memory: string; metadata?: Record<string, unknown>; score?: number },
+  tier: keyof typeof MEMORY_SEARCH_TIER_CAPS,
+): Record<string, unknown> {
+  const c = MEMORY_SEARCH_TIER_CAPS[tier];
+  const clipped = row.memory.length > c.text;
+  const metadata = c.metadataKindOnly
+    ? row.metadata?.kind !== undefined
+      ? { kind: row.metadata.kind }
+      : undefined
+    : row.metadata;
+  return {
+    id: row.id,
+    memory: clipped ? `${row.memory.slice(0, c.text - 1)}…` : row.memory,
+    ...(clipped ? { memory_truncated: true, memory_full_chars: row.memory.length } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+    ...(row.score !== undefined ? { score: row.score } : {}),
+  };
+}
+
 /** Map a neutral entry onto the stable wire row the surfaces consume.
  *  `kind` is materialized into `metadata.kind` — the TUI Memory tab reads
  *  it there, and non-mem0 backends (e.g. claude-file) carry kind only at
@@ -189,7 +225,14 @@ export default defineTool({
       hits = applyFeedbackRerank(hits, await loadFeedbackSignals(getOrgPg().sql));
     } catch { /* best-effort */ }
 
-    const results = hits.slice(0, limit).map(toWireRow);
+    const wireRows = hits.slice(0, limit).map(toWireRow);
+    // Session-tier hit shaping (P-024) — see MEMORY_SEARCH_TIER_CAPS above.
+    // No-tier callers (the TUI Memory tab, hooks) take the full branch.
+    const sessionTier = (ctx as { contextTier?: 'trimmed' | 'standard' | 'full' }).contextTier;
+    const results =
+      sessionTier === 'trimmed' || sessionTier === 'standard'
+        ? wireRows.map((r) => shapeMemoryHit(r, sessionTier))
+        : wireRows;
 
     // Result count into tool_invocations.metadata_json (mirrors plans:search):
     // the negative-space miner (self-learning-frontier P-010) detects zero-hit
@@ -207,7 +250,20 @@ export default defineTool({
     })();
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, results }) }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            results,
+            // Loud tier marker (D-004): a non-full session sees WHY hits are
+            // clipped and how to widen (payloadTier:"full").
+            ...(sessionTier === 'trimmed' || sessionTier === 'standard'
+              ? { payload_tier: sessionTier }
+              : {}),
+          }),
+        },
+      ],
     };
   },
 });

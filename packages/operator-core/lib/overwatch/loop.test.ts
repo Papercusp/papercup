@@ -41,8 +41,10 @@ vi.mock('./scorecard-backstop', () => ({ overwatchScorecardEndCheck: (...a: unkn
 
 const recordFire = vi.fn();
 vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
-vi.mock('../autoloop', async (orig) => ({
-  ...(await orig<typeof import('../autoloop')>()), // keep the REAL classifyFireError (WI-669)
+vi.mock('../autoloop', async () => ({
+  // The REAL dep-free classifier (WI-669) + the captured recordFire — never the full
+  // autoloop module graph (it drags db-org into the mock sandbox).
+  classifyFireError: (await vi.importActual<typeof import('../autoloop-classify')>('../autoloop-classify')).classifyFireError,
   recordFire: (...a: unknown[]) => recordFire(...a),
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));

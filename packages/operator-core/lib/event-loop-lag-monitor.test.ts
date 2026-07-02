@@ -43,7 +43,19 @@ describe('event-loop-lag-monitor', () => {
 
   it('stays silent on an idle loop (no warning under threshold)', async () => {
     const log = vi.fn();
-    handle = startEventLoopLagMonitor({ intervalMs: 50, warnP95Ms: 1000, log });
+    // Hermetic: pin the heap-sampling/snapshot options OFF so the assertion measures
+    // the committed idle-loop default regardless of ambient env. Without this, an
+    // operator host (or any shell) with PAPERCUSP_HEAP_SNAPSHOT=1 makes the monitor
+    // default heapSamplingOnHighRss=true, arm the sampler on the first tick, and log
+    // "[heap-sampling] armed" into this spy — a false failure. The gate strips
+    // PAPERCUSP_* so it stayed green there, but local runs on this host flaked.
+    handle = startEventLoopLagMonitor({
+      intervalMs: 50,
+      warnP95Ms: 1000,
+      log,
+      heapSamplingOnHighRss: false,
+      heapSnapshotOnHighRss: false,
+    });
     await new Promise((r) => setTimeout(r, 180));
     expect(log).not.toHaveBeenCalled();
   });

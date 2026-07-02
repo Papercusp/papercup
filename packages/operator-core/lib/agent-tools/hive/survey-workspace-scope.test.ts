@@ -29,7 +29,9 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp
 
 import tool from './survey';
 
-const body = (r: { content: { text: string }[] }) => JSON.parse(r.content[0].text);
+// The handler returns a {data} envelope (context-trimming-tiers P-024) —
+// serialization to content[] happens in defineTool dispatch, not here.
+const body = (r: { data: unknown }) => r.data as never;
 const ctx = { workspaceId: 'papercusp-workspace', role: 'queen' } as never;
 
 const ranked = (id: string, harness: string, score: number, extra: Record<string, unknown> = {}) => ({

@@ -125,7 +125,7 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(res.handled).toBe(true);
     expect(res.class).toBe('rate_limited');
     expect(res.rearmedMs).toBeGreaterThan(0);
-    // Fed the EXISTING circuit with the loop's exact fire-gate key + 'error'.
+    // Fed the EXISTING circuit with the loop's exact fire-gate key + 'infra-error' /* WI-669: 429 death is infra-shaped — counter preserved */.
     expect(recordFire).toHaveBeenCalledTimes(1);
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-owner', expect.stringContaining('rate_limited'), 'error');
     // Issued the re-arm UPDATE (guarded to the parked 'infinity' row).
