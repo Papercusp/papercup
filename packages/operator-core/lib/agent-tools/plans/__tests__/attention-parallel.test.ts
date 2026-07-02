@@ -67,12 +67,15 @@ const CTX = {
 } as never;
 
 const run = async () => {
-  const res = (await tool.handler({} as never, CTX)) as { content: { text: string }[] };
-  const parsed = JSON.parse(res.content[0].text) as {
-    groups: Array<{ items: Array<{ id: string; kind: string }> }>;
-    tierCounts: Record<string, number>;
+  // The handler returns a {data} envelope (context-trimming-tiers P-021) — the
+  // dispatch layer serializes it per payload tier; tests read the data directly.
+  const res = (await tool.handler({} as never, CTX)) as {
+    data: {
+      groups: Array<{ items: Array<{ id: string; kind: string }> }>;
+      tierCounts: Record<string, number>;
+    };
   };
-  return parsed;
+  return res.data;
 };
 
 const allItems = (p: Awaited<ReturnType<typeof run>>) => p.groups.flatMap((g) => g.items);

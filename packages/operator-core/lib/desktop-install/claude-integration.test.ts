@@ -42,7 +42,9 @@ describe('buildClaudeMcpEntry', () => {
         '&client=${PAPERCUSP_SID:-agent-1}&workspace=${PAPERCUSP_WORKSPACE:-}&profile=${PAPERCUSP_PROFILE:-}' +
         // su-context-size-variants: the ?tools= trim lever — empty default (full catalog) until
         // psu exports PAPERCUSP_TOOLS = CORE spine for a --context-size=trimmed claude.
-        '&tools=${PAPERCUSP_TOOLS:-}',
+        '&tools=${PAPERCUSP_TOOLS:-}' +
+        // context-trimming-tiers D-004: the payload-tier lever, same env-expanded pattern.
+        '&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}',
     );
     expect(e.headers.Authorization).toBe('Bearer TOK');
   });
