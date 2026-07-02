@@ -32,4 +32,10 @@ configureLocks({
 // Default config ⇒ adminPoolStatementTimeoutMs() returns 0 ⇒ no GUC ⇒ today's exact behavior.
 // This module is imported early + universally (every locks shim pulls it in for side effects),
 // so the provider is registered before the first org pool is constructed.
-setAdminPoolStatementTimeoutProvider(adminPoolStatementTimeoutMs);
+//
+// Guarded: many tests `vi.mock('@papercusp/db-org', …)` with only `getOrgPg`, and this
+// import-time side-effect must not explode under such a narrow mock (it took out any test
+// whose graph reaches a locks shim). In production the export always exists.
+if (typeof setAdminPoolStatementTimeoutProvider === 'function') {
+  setAdminPoolStatementTimeoutProvider(adminPoolStatementTimeoutMs);
+}

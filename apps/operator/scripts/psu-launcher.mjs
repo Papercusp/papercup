@@ -1589,9 +1589,13 @@ export const SU_CONTEXT_DEFAULT = 'trimmed';
 /** Numeric per-variant baseline estimates (tokens) for the NON-persona context
  *  (tool catalog + static prefix). The persona playbook is measured from the
  *  actual prompt file at launch, so only the remainder is estimated here.
- *  Derived from the LIVE-measured totals (SU_CONTEXT_TOKEN_ESTIMATES) minus a
- *  ~28k full-persona playbook. */
-export const SU_BASELINE_NON_PERSONA_TOKENS = { full: 152_000, trimmed: 55_000 };
+ *  Re-derived 2026-07-02 from live turn-1 boots minus the measured persona file:
+ *  60.1k sonnet-fleet − 15.6k persona ≈ 44.5k; 76.2k power − ~28k ≈ 48k; 66.1k
+ *  fable-fleet − 16k ≈ 50k → 50k (top of the measured band, guard stays
+ *  conservative). Assumes ToolSearch deferral is ON (the launch tail forces
+ *  ENABLE_TOOL_SEARCH=true for non-full launches — without it a gateway-routed
+ *  member boots ~46k heavier, P-031 gap 3). */
+export const SU_BASELINE_NON_PERSONA_TOKENS = { full: 152_000, trimmed: 50_000 };
 
 /**
  * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone

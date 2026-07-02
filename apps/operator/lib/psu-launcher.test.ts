@@ -185,8 +185,9 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
     expect(full.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.full);
     expect(trimmed.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
     // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
-    // context-trimming-tiers P-018: trimmed LIVE-measured 83.2k on sonnet (was '~50k').
-    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~83k' });
+    // Re-measured 2026-07-02 post-Phase-3: 60.1k sonnet-fleet / ~76k power boot
+    // (the P-018 '~83k' was pre-Phase-3, full persona).
+    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~70k' });
   });
 
   it('picker values are a subset of the --context-size flag values parseArgs accepts', () => {

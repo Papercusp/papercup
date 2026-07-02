@@ -163,13 +163,24 @@ const post = (b: unknown = {}) => ({
 const PROJECT = { slug: 'papercup', path: '/proj' };
 
 beforeEach(() => {
+  // WI-1499 pins the spawn chokepoint inside a systemd-run scope by default on
+  // linux; these tests assert the ROUTING (route → spawnInvokeOnce → argv), so
+  // run the direct spawn — the wrapper has its own coverage in
+  // dbos/orchestrator-runner-scope.test.ts.
+  process.env.PAPERCUSP_AGENT_SPAWN_SCOPE = '0';
   resolveProject.mockResolvedValue(PROJECT);
   resolvePhasedProject.mockResolvedValue(PROJECT);
   launchRun.mockResolvedValue({ ok: true, logPath: '/log/run.out' });
   resolveSpawnBackendModel.mockReturnValue({ backend: 'omp', model: '' });
   spawnMock.mockImplementation(() => makeFakeChild(0));
+  // clearAllMocks below clears CALLS but not resolved values — re-pin the
+  // documented null default so one test's mockResolvedValue can't leak forward.
+  computeQueenWakeBrief.mockResolvedValue(null);
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+});
 
 describe('POST /harness/:slug/launch (P-031)', () => {
   it('is reachable with no auth header + dispatches launchRun on valid input', async () => {
@@ -337,7 +348,12 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_WAKE_BRIEF');
   });
 
-  it('tracks Codex hive launches through durable CODEX_HOME instead of forced native session ids', async () => {
+  // 2026-07-01 (the gpt-5.4 switch): codex hive launches now ALSO mint a uuid —
+  // it is the TRANSCRIPT/ROSTER key (hive-tabs mirror locates the teed
+  // codex-transcripts/<uuid>.jsonl by it), NOT a resume handle; resume stays on
+  // the durable CODEX_HOME keyed by the adv_sessions row id, so the codex
+  // session key must ride alongside the native id, never be displaced by it.
+  it('tracks Codex hive launches with a transcript uuid + the durable CODEX_HOME key', async () => {
     resolveSpawnBackendModel.mockReturnValue({ backend: 'codex', model: 'gpt-5' });
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen&bpkind=hive', post({}));
     expect(res.status).toBe(200);
@@ -346,15 +362,18 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       role: 'queen',
       cwd: '/proj',
       label: 'hive · papercup/queen',
-      sessionId: null,
+      mode: 'console',
+      sessionId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
       coordOwnerId: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+      // WI-1347: the reconstructed invoke argv rides the row for forensics.
+      launchArgv: expect.arrayContaining(['invoke', '--agent=codex', '--role=queen']),
     }));
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({
       PAPERCUSP_CODEX_SESSION_KEY: '77',
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
+      PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('PAPERCUSP_NATIVE_SESSION_ID');
     expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
   });
 

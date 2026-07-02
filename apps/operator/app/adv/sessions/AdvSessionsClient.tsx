@@ -245,8 +245,10 @@ const SU_AGENT_OPTIONS = [
 // SU_CONTEXT_TOKEN_ESTIMATES — the per-variant ~Nk figures shown in the picker.
 // STATIC by deliberate choice (WI-1282): these are MEASURED estimates —
 //   full    ≈ ~141k MCP catalog + ~38k static prefix ≈ ~180k
-//   trimmed ≈ ~83k, LIVE-measured on a sonnet launch (context-trimming-tiers
-//   P-018 — the old '~50k' derivation missed the persona playbook + prefix growth)
+//   trimmed ≈ ~70k — re-measured 2026-07-02 after the Phase-3 cuts (fleet persona
+//   tier, P-020 plugin prune, P-015 zero-AGENTS.md): 60.1k sonnet fleet boot /
+//   ~66k fable fleet / ~76k full-persona power launch. The P-018 '~83k' was
+//   measured pre-Phase-3 with the full persona.
 // They are NOT computed live: js-tiktoken is a dep but there is no server seam
 // that serializes the full-vs-core-filtered tools/list catalog for tokenizing,
 // and the headline totals fold in the system-prompt prefix (not catalog-
@@ -254,7 +256,7 @@ const SU_AGENT_OPTIONS = [
 // seam lands; until then this + psu-launcher.mjs's twin are the places to update.
 const SU_CONTEXT_TOKEN_ESTIMATES = {
   full: '~180k',
-  trimmed: '~83k',
+  trimmed: '~70k',
 } as const;
 const CONTEXT_SELECT_DEFAULT = '__default_context__';
 const SU_CONTEXT_OPTIONS = [

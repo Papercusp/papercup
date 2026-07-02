@@ -19,6 +19,8 @@ import {
   listCommsTrust,
   setCommsTrust,
   removeCommsTrust,
+  setGateTrust,
+  hasGateGrant,
   effectiveCommsTier,
   commsTierAtLeast,
   FALLBACK_COMMS_TIER,
@@ -26,6 +28,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIG_435 = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql/435-comms-trust-list.sql');
+const MIG_443 = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql/443-comms-trust-gate-grant.sql');
 
 function stripMeta(sql: string): string {
   return sql
@@ -50,6 +53,7 @@ describe('comms_trust_list (real PG, mig 435)', () => {
     db = await createFreshPgDb('comms_trust');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     await db.sql.unsafe(stripMeta(readFileSync(MIG_435, 'utf8')));
+    await db.sql.unsafe(stripMeta(readFileSync(MIG_443, 'utf8')));
     // Minimal audit_log so the fire-safe audit insert lands (shape from user-trust-list).
     await db.sql.unsafe(`
       CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
@@ -144,6 +148,55 @@ describe('comms_trust_list (real PG, mig 435)', () => {
         db.sql,
       ),
     ).toEqual({ tier: FALLBACK_COMMS_TIER, source: 'fallback' });
+  });
+
+  it('DG-4 (mig 443): a pure gate grant never fabricates a tier override', async () => {
+    await setGateTrust(WS, { githubUserId: 101, granted: true, actor: 'su-t', nowMs: T0 }, db.sql);
+    expect(await hasGateGrant(WS, 101, T0 + 1, db.sql)).toBe(true);
+    // The gate-only row carries tier NULL → resolution still uses the POLICY
+    // default, not an override (the mig-443 separability property).
+    expect(
+      await effectiveCommsTier(
+        { workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 101, nowMs: T0 + 1 },
+        { loadPolicyDefaultTier: async () => 'wake' },
+        db.sql,
+      ),
+    ).toEqual({ tier: 'wake', source: 'policy' });
+    const listed = (await listCommsTrust(WS, db.sql)).find((e) => e.githubUserId === 101)!;
+    expect(listed).toMatchObject({ gate: true, tier: null });
+  });
+
+  it('DG-4: gate is separable from steer, revocable, expirable, and audited', async () => {
+    // steer WITHOUT gate
+    await setCommsTrust(WS, { githubUserId: 102, tier: 'steer', actor: 'su-t', nowMs: T0 }, db.sql);
+    expect(await hasGateGrant(WS, 102, T0 + 1, db.sql)).toBe(false);
+    // granting gate PRESERVES the tier override; revoking works
+    await setGateTrust(WS, { githubUserId: 102, granted: true, actor: 'su-t', nowMs: T0 + 10 }, db.sql);
+    expect(await hasGateGrant(WS, 102, T0 + 11, db.sql)).toBe(true);
+    expect(
+      (await effectiveCommsTier({ workspaceId: WS, hiveHomeSlug: 'h', githubUserId: 102, nowMs: T0 + 11 }, noPolicy, db.sql)).tier,
+    ).toBe('steer');
+    // a tier re-set PRESERVES the gate bit
+    await setCommsTrust(WS, { githubUserId: 102, tier: 'wake', actor: 'su-t', nowMs: T0 + 20 }, db.sql);
+    expect(await hasGateGrant(WS, 102, T0 + 21, db.sql)).toBe(true);
+    await setGateTrust(WS, { githubUserId: 102, granted: false, actor: 'su-t', nowMs: T0 + 30 }, db.sql);
+    expect(await hasGateGrant(WS, 102, T0 + 31, db.sql)).toBe(false);
+    // probationary gate grant decays at expiry (fail-closed)
+    await setGateTrust(
+      WS,
+      { githubUserId: 103, granted: true, expiresAtMs: T0 + 1000, actor: 'su-t', nowMs: T0 },
+      db.sql,
+    );
+    expect(await hasGateGrant(WS, 103, T0 + 500, db.sql)).toBe(true);
+    expect(await hasGateGrant(WS, 103, T0 + 2000, db.sql)).toBe(false);
+    // audited
+    const audits = await db.sql`
+      SELECT action FROM harness_shared.audit_log
+       WHERE workspace_id = ${WS} AND action LIKE 'trust:gate-%'`;
+    expect(audits.length).toBeGreaterThanOrEqual(3);
+    // unknown member / other workspace: fail-closed
+    expect(await hasGateGrant(WS, 999_999, T0, db.sql)).toBe(false);
+    expect(await hasGateGrant('ws_other', 102, T0 + 11, db.sql)).toBe(false);
   });
 
   it('workspace isolation (D-004): a grant in WS never leaks to WS2', async () => {
