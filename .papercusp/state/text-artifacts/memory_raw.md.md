@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1782869008170
+updated_at: 1782955196346
 _body: "content"
 ---
 
@@ -12,4 +12,6 @@ _body: "content"
 [2026-06-30T16:34:00Z] worker EI-5454: the `stalled-feature` watchdog (collectStalledFeatureSignals, watchdog.ts:1437) chronically over-fires on the papercusp HOME harness — its body text + model assume the RETIRED legacy autoloop (bp-schedule/orchestrator dispatch), but live dispatch is Queen/fleet on-demand placement which doesn't auto-drain `todo` features, so a standing todo backlog is normal not a failure. It also treats source_plan=NULL features as always-dispatchable, ignoring payload.plan_item coverage to non-started plans. Fix lives in the self-improvement loop's own code → STOP/needs-human for the auto-implement role; don't re-attempt as an auto-fix.
 
 [2026-06-30T21:19:00Z] worker EI-5842: prior implement attempt landed the overwatch-404 fix as UNCOMMITTED working-tree edits (loop.ts+loop.test.ts) but never called improvements:resolve, so the cadence re-dispatched. Lesson: check git diff/working-tree AND the test file before re-implementing; a re-dispatched bug may already be fixed-but-unresolved. For a multi-part bug ticket, resolve honestly (needs-human here: only the pinned code bug #4 was auto-fixable; #1/#2 gym-vs-plan routing = owner design decision, #3 bee infra-loss overlaps reaper work).
+
+[2026-07-01T00:00:00Z] worker EI-5965: "routine-failure:routine:<name>" watchdog EIs are usually PHANTOM. Verify before fixing: query harness_shared.routines for that name — if active=true, next_fire_at is a real future ts (parked = next_fire_at='infinity'), and last_fired_at > last_error_at, the dbos-executor-reaper just cancelled a transiently-stuck fire and re-fired successfully (last_error source=dbos-executor-reaper, "produced no DBOS operation output" = reaper doing its job, not a wedge). 7+ active routines share the identical reaper error at once; 64 such EIs were open. Resolve `fixed` with the query as evidence. The real dampen-the-watchdog / DBOS-executor fix is a protected STOP surface (self-improvement loop + scheduler). Reuse recipe ei-596x phantom routine-failure verification.
 
