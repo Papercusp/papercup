@@ -168,8 +168,11 @@ export const DEFAULT_QUEEN_BRIEF_TEXT_CAPS: QueenBriefTextCaps = {
 
 export interface QueenBriefInput {
   floor: QueenBriefFloor;
-  /** The Queen's self-authored carry-note from the prior wake (P-015). */
+  /** LEGACY single carry-note (P-015) — rendered only when `carryJournal` is absent/empty. */
   carryNote?: string | null;
+  /** The Queen's carry-JOURNAL, NEWEST FIRST (queen-memory-hybrid L1a) — her
+   *  recent wake notes rendered as the trajectory section. */
+  carryJournal?: Array<{ at: number; note: string }> | null;
   /** Override the default per-section caps. */
   caps?: Partial<QueenBriefCaps>;
   /** Override text-size caps. Intended for tests and emergency tuning only. */
@@ -462,13 +465,33 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     );
   }
 
-  // CARRY-NOTE — additive second half (P-015). Absent → floor alone (re-derive).
-  const note = (input.carryNote ?? '').trim();
-  if (note) {
+  // CARRY-JOURNAL (queen-memory-hybrid L1a) — additive second half: the Queen's
+  // recent wake notes, NEWEST FIRST, so she sees her reasoning TRAJECTORY rather
+  // than only her last thought. Falls back to the legacy single carry-note.
+  const journal = (input.carryJournal ?? []).filter((e) => (e.note ?? '').trim().length > 0);
+  if (journal.length > 0) {
     out.push('');
     out.push('---');
-    out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
-    out.push(truncateText(note, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
+    out.push(
+      '### Your carry-journal (your own notes from recent wakes, newest first — in-flight intention, not world-state; leave the next one via declare-wake { remember })',
+    );
+    const budget = Math.max(600, Math.floor(textCaps.carryNoteChars) * 3);
+    let used = 0;
+    for (const e of journal) {
+      const line = `- ${e.at > 0 ? `[${new Date(e.at).toISOString().slice(5, 16)}Z] ` : ''}${e.note}`;
+      if (used + line.length > budget) break;
+      out.push(line);
+      used += line.length;
+    }
+  } else {
+    // Legacy fallback — a pre-journal single note (P-015 shape).
+    const note = (input.carryNote ?? '').trim();
+    if (note) {
+      out.push('');
+      out.push('---');
+      out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
+      out.push(truncateText(note, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
+    }
   }
 
   return capRenderedBrief(out, textCaps);

@@ -801,6 +801,199 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     );
   });
 
+  /** Minimal in-range-empty RemoteLog replica — the drain only needs the handle to exist
+   *  (admitted.set); a length-0 replica makes every subsequent merge pass a no-op. */
+  function fakeRemoteLog(keyHex: string): RemoteLog {
+    return {
+      keyHex,
+      length: 0,
+      contiguousLength: 0,
+      get: async () => null,
+      update: async () => {},
+      prefetch: () => {},
+      has: () => false,
+    };
+  }
+
+  // WI-1544 ROOT CAUSE #3 (the nondeterministic one-shot silent loss) — a throw inside the
+  // merge-gated admission drain (e.g. openRemoteLog racing a rekey) happened AFTER the frame
+  // was shift()'d off the admission queue, and the catch was ring-only: announces are never
+  // re-delivered (sender-side sentKeys dedup), so a single throw permanently stalled every
+  // A→B surface until a restart. The drain catch now RE-BUFFERS the frame into the D-006
+  // pending set so the retry tick re-runs the full admission. Reverting the re-buffer flips
+  // this RED: the waitFor times out because the frame is gone from every buffer.
+  it('FIX (WI-1544 #3): a drain-time openRemoteLog throw re-buffers the frame; the retry tick admits it', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-drain', 9772, 'kc-1544-joiner-drain');
+    let ownerDevice: string | null = null;
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, logKeyHex: string) => {
+      if (openRemoteLogOverride.mock.calls.length === 1) {
+        throw new Error('boom-drain-1544'); // the rekey race, deterministically
+      }
+      return fakeRemoteLog(logKeyHex);
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-drain',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'e6'.repeat(32) },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 20, // the recovery path under test
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // owner bootstrap is the admitting gate
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: async () => ownerDevice,
+      joinerHiveHomeSlugOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+      openRemoteLogOverride,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: 9771,
+      github_login: 'owner-1544-drain',
+      attestation_gist_id: 'gist-1544-drain',
+      harness_slug: JOINER_MEMBER_SLUG, // in-scope (same rationale as the retry test above)
+      log_core_key: 'c8'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey; // owner bootstrap admits on FIRST announce
+
+    // The admission decision is 'admit' (the decider passed) but the merge-gated drain threw —
+    // the log must NOT be in `admitted`, and the frame must NOT be lost.
+    await handle.onAnnounce(frame);
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+    const errors = listBootHistory({
+      workspaceId: 'ws-wi1544-drain',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      kinds: ['announce_error'],
+    });
+    expect(errors.some((e) => (e.message ?? '').includes('boom-drain-1544'))).toBe(true);
+
+    // THE FIX: the re-buffered frame is re-admitted by the retry tick (pre-fix: lost forever).
+    await vi.waitFor(
+      () => { expect(handle.admitted.has(frame.log_core_key)).toBe(true); },
+      { timeout: 4000, interval: 25 },
+    );
+    expect(openRemoteLogOverride.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // WI-1544 ROOT CAUSE #3, retry-tick half — the retry tick used to delete the pending entry
+  // BEFORE the awaited admit, so a throw inside the drain during a RETRY lost the frame from
+  // every buffer (the drain re-buffer guard sees the entry still present during a retry and
+  // preserves it — so the tick's delete must be admit-FIRST and GATED on `admitted.has`).
+  // Reverting either half (delete-before-admit, or an unconditional delete after) flips this
+  // RED: the entry is erased on the first failed tick and the waitFor times out.
+  it('FIX (WI-1544 #3): a pending entry survives drain failures across retry ticks until the admit lands', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-gate', 9782, 'kc-1544-joiner-gate');
+    let ownerDevice: string | null = null;
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, logKeyHex: string) => {
+      if (openRemoteLogOverride.mock.calls.length <= 2) {
+        throw new Error('boom-retry-1544'); // fail the drain on the first TWO retry ticks
+      }
+      return fakeRemoteLog(logKeyHex);
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-gate',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'f7'.repeat(32) },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 20,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: async () => ownerDevice,
+      joinerHiveHomeSlugOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+      openRemoteLogOverride,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: 9781,
+      github_login: 'owner-1544-gate',
+      attestation_gist_id: 'gist-1544-gate',
+      harness_slug: JOINER_MEMBER_SLUG,
+      log_core_key: 'd9'.repeat(32),
+    });
+
+    // Directory unresolved → buffered pending (the WI-1544 window buffer).
+    expect(await handle.onAnnounce(frame)).toEqual({ admit: false, reason: 'pending' });
+
+    // The directory resolves → each retry tick re-runs the admission; the first two drains
+    // throw. The entry must SURVIVE both failed ticks and admit on the third.
+    ownerDevice = frame.device_pubkey;
+    await vi.waitFor(
+      () => { expect(handle.admitted.has(frame.log_core_key)).toBe(true); },
+      { timeout: 4000, interval: 25 },
+    );
+    expect(openRemoteLogOverride.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  // WI-1544 DEFECT D — the owner-device resolve read the BOOT-TIME `opts.swarmBinding`
+  // snapshot, not the current binding: after a rekey() onto a new topic (every real joiner
+  // rekeys — join-hive 2c), the bootstrap-admit consulted the directory for the OLD topic,
+  // so the owner of the NEW hive never bootstrap-admitted. The resolve now reads the live
+  // `currentBinding` that rekey() publishes FIRST. Reverting flips this RED: the directory
+  // is consulted with the boot topic and the announce is never admitted.
+  it('FIX (WI-1544 defect D): after rekey() the owner bootstrap consults the NEW topic, not the boot-time binding', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-rekey', 9792, 'kc-1544-joiner-rekey');
+    const BOOT_TOPIC = 'a1'.repeat(32);
+    const REKEY_TOPIC = 'b2'.repeat(32);
+    let ownerDevice: string | null = null;
+    // The verified directory binding exists ONLY for the rekey target topic.
+    const ownerDeviceForTopic = vi.fn(async (topicHex: string) =>
+      topicHex === REKEY_TOPIC ? ownerDevice : null,
+    );
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-rekey',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: BOOT_TOPIC },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0, // assert the onAnnounce decision in isolation
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // only the bootstrap can admit
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: ownerDeviceForTopic,
+      joinerHiveHomeSlugOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    // The join-hive 2c rekey onto the hive's real topic.
+    await handle.rekey({ kind: 'topic', topic_hex: REKEY_TOPIC });
+
+    const frame = await validAnnounce({
+      github_user_id: 9791,
+      github_login: 'owner-1544-rekey',
+      attestation_gist_id: 'gist-1544-rekey',
+      harness_slug: JOINER_MEMBER_SLUG,
+      log_core_key: 'e0'.repeat(32),
+    });
+    ownerDevice = frame.device_pubkey;
+
+    const decision = await handle.onAnnounce(frame);
+
+    // THE FIX: the resolve keys off the CURRENT (rekeyed) topic → owner bootstrap admits.
+    // Pre-fix it consulted BOOT_TOPIC → null → the announce buffered/rejected instead.
+    expect(decision).toEqual({ admit: true });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(true);
+    expect(ownerDeviceForTopic).toHaveBeenCalledWith(REKEY_TOPIC);
+    expect(ownerDeviceForTopic).not.toHaveBeenCalledWith(BOOT_TOPIC);
+  });
+
   // ADVERSARIAL (WI-797) — a FORGED owner announce (bad sig) is refused at the sig check that
   // PRECEDES the bypass (admitsAsKnownHiveMember line 1: `if (!sigValid …) return false`). A
   // forger cannot produce a valid signature for the owner's pubkey without its private key, so

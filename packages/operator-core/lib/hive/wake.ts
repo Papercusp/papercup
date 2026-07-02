@@ -64,18 +64,53 @@ export interface HiveWakeState {
   /** ms epoch of the last declare-wake call (observability). */
   declaredAt?: number;
   /**
-   * The Queen's self-authored CARRY-NOTE for her NEXT wake
-   * (queen-brief-cache-assembly-2026-06-13 P-015 / B-04). Replace-semantics
-   * (set fresh each declare-wake, any length / no fixed cap, omitted ⇒ cleared);
-   * injected into the next wake's brief tail as the additive second half of the
-   * brief (the deterministic floor is the first half — `renderQueenBrief`).
-   * Her subjective in-flight intention, NOT objective world-state. Empty/absent
-   * ⇒ the next wake re-derives from the floor alone (graceful degradation).
+   * LEGACY single carry-note slot (P-015 / B-04) — superseded by
+   * `carryJournal` (queen-memory-hybrid-2026-07-02 L1a) but kept as a
+   * back-compat MIRROR of the newest journal entry so older readers keep
+   * working. Do not write it directly; `setHiveCarryNote` maintains it.
    */
   carryNote?: string;
+  /**
+   * The Queen's carry-JOURNAL (queen-memory-hybrid-2026-07-02 L1a): an
+   * APPEND-mode, size-bounded ring of her recent wake notes (newest last in
+   * storage; rendered newest-first). Replaces the single REPLACE slot so she
+   * sees her own recent reasoning TRAJECTORY each wake, not just the last
+   * thought — the REPLACE semantics were why she re-derived the same
+   * conclusions wake after wake. Subjective in-flight intention, NOT
+   * world-state (durable conclusions belong in facts:assert).
+   */
+  carryJournal?: Array<{ at: number; note: string }>;
 }
 
 const EMPTY_STATE: HiveWakeState = { subscriptions: [] };
+
+/** Carry-journal ring bounds (L1a): entries kept, per-note chars, total chars. */
+export const CARRY_JOURNAL_MAX_ENTRIES = 15;
+export const CARRY_JOURNAL_NOTE_MAX_CHARS = 600;
+export const CARRY_JOURNAL_TOTAL_MAX_CHARS = 6_000;
+
+/**
+ * PURE (L1a): append a note to a carry-journal ring, enforcing all three bounds
+ * (entry count, per-note chars, total chars — oldest dropped first). Exported
+ * for unit tests. A blank note appends nothing (returns the input unchanged).
+ */
+export function appendCarryJournal(
+  journal: ReadonlyArray<{ at: number; note: string }> | undefined,
+  note: string,
+  at: number,
+): Array<{ at: number; note: string }> {
+  const trimmed = note.trim();
+  const cur = [...(journal ?? [])];
+  if (!trimmed) return cur;
+  cur.push({ at, note: trimmed.slice(0, CARRY_JOURNAL_NOTE_MAX_CHARS) });
+  while (cur.length > CARRY_JOURNAL_MAX_ENTRIES) cur.shift();
+  let total = cur.reduce((n, e) => n + e.note.length, 0);
+  while (total > CARRY_JOURNAL_TOTAL_MAX_CHARS && cur.length > 1) {
+    const dropped = cur.shift();
+    total -= dropped ? dropped.note.length : 0;
+  }
+  return cur;
+}
 
 /** The self-wake floor in seconds (D-002's clamp). Env-tunable, hard min 5s. */
 export function hiveWakeFloorSec(): number {
@@ -346,11 +381,30 @@ export async function setHiveCarryNote(
 ): Promise<string | null> {
   const trimmed = (note ?? '').trim();
   const carryNote = trimmed.length > 0 ? trimmed : undefined;
-  await updateOperatorState<HiveWakeState>('hive_wake', EMPTY_STATE, (cur) => ({
-    ...cur,
-    carryNote,
-  }), workspaceId);
+  await updateOperatorState<HiveWakeState>('hive_wake', EMPTY_STATE, (cur) => {
+    // L1a: APPEND to the journal ring (folding a pre-journal legacy note in as
+    // the first entry so history survives the migration). A blank note keeps
+    // the journal (trajectory persists) and clears only the legacy mirror.
+    const seeded =
+      cur.carryJournal ?? (cur.carryNote ? [{ at: 0, note: cur.carryNote }] : []);
+    const carryJournal = appendCarryJournal(seeded, trimmed, Date.now());
+    return { ...cur, carryNote, carryJournal };
+  }, workspaceId);
   return carryNote ?? null;
+}
+
+/**
+ * Read the Queen's carry-journal, NEWEST FIRST (L1a) — the brief renderer's
+ * input. Folds a pre-journal legacy carryNote in as a single entry so older
+ * state renders during the transition.
+ */
+export async function getHiveCarryJournal(
+  workspaceId?: string,
+): Promise<Array<{ at: number; note: string }>> {
+  const state = await readHiveWakeState(workspaceId);
+  const journal =
+    state.carryJournal ?? (state.carryNote ? [{ at: 0, note: state.carryNote }] : []);
+  return [...journal].reverse();
 }
 
 /**

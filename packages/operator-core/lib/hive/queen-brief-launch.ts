@@ -16,7 +16,7 @@
  * `<system-reminder>` (never the cacheable preamble — D-001).
  */
 import { surveyHive, type ScopeFilter } from './survey';
-import { getHiveCarryNote } from './wake';
+import { getHiveCarryJournal } from './wake';
 import { summarizeOpenPlacements, resolveQueenOwner } from './placement-watchdog';
 import { listEscalations } from '../agent-tools/coordination/escalations';
 import { readTriagedHandledItemIds } from '../attention/triage-store';
@@ -273,7 +273,7 @@ export async function computeQueenWakeBrief(
     //  - openPlacements (watchdog completion-state) — summarizeOpenPlacements is
     //    internally fail-soft (returns empty);
     //  - carryNote / escalations — wrapped here.
-    const [survey, carryNote, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, capacity] =
+    const [survey, carryJournal, openPlacements, escalations, changeFeed, bees, inbox, overwatchAlive, capacity] =
       await Promise.all([
         // extraSurveySlugs = the STARTED hives (owner model 2026-07-01): the
         // workspace Queen's survey covers EVERY started hive, not just the home
@@ -282,7 +282,7 @@ export async function computeQueenWakeBrief(
           ...(scopeFilter ? { scopeFilter } : {}),
           ...(placementSplit.started.length > 0 ? { extraSurveySlugs: placementSplit.started } : {}),
         }),
-        getHiveCarryNote(workspaceId).catch(() => null),
+        getHiveCarryJournal(workspaceId).catch(() => []),
         summarizeOpenPlacements(workspaceId, installSlug),
         gatherEscalations(),
         gatherRecentChanges(),
@@ -303,7 +303,7 @@ export async function computeQueenWakeBrief(
       ...(capacity ? { capacity } : {}),
       ...(ownerSteering ? { ownerSteering } : {}),
     });
-    return renderQueenBrief({ floor, carryNote });
+    return renderQueenBrief({ floor, carryJournal });
   } catch (err) {
     console.warn(
       `[queen-brief] precompute failed for '${installSlug}' — Queen falls back to the survey tools:`,
