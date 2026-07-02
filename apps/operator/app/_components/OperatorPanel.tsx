@@ -1319,7 +1319,9 @@ export function OperatorPanel(): ReactElement | null {
       // v4 §2m: tag voice-initiated audit rows. Restore on next macrotask.
       actorMethodRef.current = 'voice';
       try {
-        const { parseVoiceCommand } = await import('../../lib/voice-commands');
+        // voice-commands moved to operator-core (the old ../../lib/voice-commands
+        // path 404'd at runtime, silently killing in-panel voice commands — P-018).
+        const { parseVoiceCommand } = await import('@papercusp/operator-core/lib/voice-commands');
         const cmd = parseVoiceCommand(text);
         const orderedPending = suggestionsRef.current.filter((c) => c.status === 'pending');
         const pickByOrdinal = (ord?: number) => {

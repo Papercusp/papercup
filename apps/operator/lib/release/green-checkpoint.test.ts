@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   runGreenCheckpoint,
+  quietCutSecFromEnv,
   extractFailingTests,
   buildGreenCheckpointEnv,
   sanitizeForkNodeOptions,
@@ -922,5 +923,72 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     expect(r.reason).toBe('not-green'); // gate opted out ⇒ no salvage attempt
     expect(await revParse(repo, 'ready')).toBe(c1);
     expect(calls).not.toContain('commitsInRange'); // the salvage path never ran
+  });
+});
+
+describe('quiet-cut — never judge a tip younger than the quiet window (2026-07-01)', () => {
+  afterEach(() => {
+    delete process.env.PAPERCUSP_QUIET_CUT;
+    delete process.env.PAPERCUSP_QUIET_CUT_SEC;
+    delete process.env.GIT_COMMITTER_DATE;
+  });
+
+  it('quietCutSecFromEnv: default 240, PAPERCUSP_QUIET_CUT=0 disables, _SEC tunes', () => {
+    expect(quietCutSecFromEnv({})).toBe(240);
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT: '0' })).toBe(0);
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '60' })).toBe(60);
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: 'junk' })).toBe(240);
+  });
+
+  /** Commit with a pinned committer date (rev-list --before + %ct read COMMITTER time). */
+  async function datedCommit(file: string, msg: string, ageSec: number): Promise<string> {
+    process.env.GIT_COMMITTER_DATE = new Date(Date.now() - ageSec * 1000).toISOString();
+    try {
+      return await commit(file, `${msg}\n`, msg);
+    } finally {
+      delete process.env.GIT_COMMITTER_DATE;
+    }
+  }
+
+  it('fresh tip steps back to the newest quiet-window-old commit; the tip waits for the next run', async () => {
+    const c1 = await datedCommit('a.txt', 'c1', 600); // 10 min old — the pin
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await datedCommit('b.txt', 'c2', 300); // 5 min old — the quiet pick
+    const c3 = await commit('c.txt', 'now\n', 'c3'); // seconds old — torn-risk tip
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true });
+    expect(await revParse(repo, 'ready')).toBe(c2); // advanced to the QUIET state, not the fresh tip
+    expect(r.candidate).not.toBe(c3);
+  });
+
+  it('opt-out (PAPERCUSP_QUIET_CUT=0) judges the fresh tip exactly as before', async () => {
+    const c1 = await datedCommit('a.txt', 'c1', 600);
+    await git(repo, ['branch', 'ready', c1]);
+    await datedCommit('b.txt', 'c2', 300);
+    const c3 = await commit('c.txt', 'now\n', 'c3');
+    process.env.PAPERCUSP_QUIET_CUT = '0';
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c3 });
+  });
+
+  it('a whole-repo-fresh history has no aged pick — the tip is judged (no stall on young repos)', async () => {
+    const c1 = await commit('a.txt', 'x\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('b.txt', 'y\n', 'c2');
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, candidate: c2 });
+  });
+
+  it('an explicit opts.candidate pin bypasses the quiet cut', async () => {
+    const c1 = await datedCommit('a.txt', 'c1', 600);
+    await git(repo, ['branch', 'ready', c1]);
+    await datedCommit('b.txt', 'c2', 300);
+    const c3 = await commit('c.txt', 'now\n', 'c3');
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true, candidate: c3 });
+    expect(r).toMatchObject({ advanced: true, candidate: c3 });
   });
 });
