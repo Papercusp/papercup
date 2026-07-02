@@ -714,6 +714,19 @@ export interface RenderSuPlaybookInput {
 export const PLAYBOOK_FULL_ONLY_BEGIN = '<!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->';
 export const PLAYBOOK_FULL_ONLY_END = '<!-- PAPERCUSP-SU:FULL-ONLY:END -->';
 
+/** Remove just the FULL-ONLY marker COMMENT lines (full tier keeps the content;
+ *  no internal marker may leak into a rendered prompt — the psu-prompt-isolation
+ *  invariant). */
+export function stripFullOnlyMarkers(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => {
+      const t = l.trim();
+      return t !== PLAYBOOK_FULL_ONLY_BEGIN && t !== PLAYBOOK_FULL_ONLY_END;
+    })
+    .join('\n');
+}
+
 /** Strip every FULL-ONLY tagged block (fleet tier). Unbalanced tags fail soft:
  *  a BEGIN with no END strips nothing further (never truncate the tail). */
 export function stripFullOnlySections(text: string): string {
@@ -823,7 +836,9 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     text = spliceGeneratedSection(withNotes, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
   }
   // P-017 fleet tier: strip every FULL-ONLY tagged block (base + generated
-  // sections alike). Applied LAST so tags survive every splice above.
-  if (tier === 'fleet') text = stripFullOnlySections(text);
+  // sections alike). Applied LAST so tags survive every splice above. The
+  // FULL tier keeps the content but drops the marker comment lines — no
+  // internal marker leaks into a rendered prompt (psu-prompt-isolation).
+  text = tier === 'fleet' ? stripFullOnlySections(text) : stripFullOnlyMarkers(text);
   return { text, baseSource, overlaySource, projectGuideSource };
 }

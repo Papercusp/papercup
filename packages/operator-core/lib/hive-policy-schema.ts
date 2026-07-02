@@ -44,6 +44,33 @@ export interface HivePolicyComms {
 }
 
 /**
+ * One canonical-ref rule (G-6 P-030, cross-machine-coord-parity-and-trust-2026-07-01).
+ * Keyed by a ref PATTERN in {@link HivePolicyCrefs.rules}; a ref matching the pattern
+ * becomes CANONICAL only when `threshold` distinct keys from `allow` have signed it
+ * (e.g. `refs/tags/releases/*` → allow = [green-bot key, owner key], threshold 2).
+ */
+export interface HivePolicyCrefsRule {
+  /** Identity pubkeys (base64) whose signatures count toward the threshold. */
+  allow?: string[];
+  /** How many DISTINCT `allow` keys must have signed the ref (1 ≤ threshold ≤ allow.length). */
+  threshold?: number;
+  /** Forward-compat: future rule knobs are preserved + signed. */
+  [k: string]: unknown;
+}
+
+/**
+ * Canonical-ref rules (G-6 P-030) — the crefs-style trust rules for release-class refs,
+ * owner-signed like the rest of the policy. `rules` maps a ref pattern (exact ref name,
+ * or a glob where `*` matches any characters INCLUDING `/` — so `refs/tags/releases/*`
+ * covers `refs/tags/releases/v1` and `refs/tags/releases/2026/v1`) to its rule. Resolve
+ * with {@link resolveCanonicalRule}. Absent ⇒ no ref is policy-canonical (permissive
+ * default, consistent with the rest of the policy model).
+ */
+export interface HivePolicyCrefs {
+  rules?: Record<string, HivePolicyCrefsRule>;
+  /** Forward-compat: future crefs knobs are preserved + signed. */
+  [k: string]: unknown;
+}
 
 /**
  * The typed view of a Hive policy document. This is a forward-compatible OPEN record:
@@ -67,6 +94,8 @@ export interface HivePolicy {
    *  override → THIS default → conservative fallback). Lattice:
    *  observe < message < wake < steer. Open record for future comms knobs. */
   comms?: HivePolicyComms;
+  /** G-6 P-030 — canonical-ref rules for release-class refs (see {@link HivePolicyCrefs}). */
+  crefs?: HivePolicyCrefs;
   /** EN-4 P-CONTRIB — fork→PR contribution rules. Opaque at EN-1. */
   contrib?: Record<string, unknown>;
   /** EN-4 P-CONTENT — payload/content rules. Opaque at EN-1. */
@@ -192,6 +221,39 @@ export function coerceHivePolicyInput(
       return { ok: false, error: "policy.comms.defaultTier must be 'observe' | 'message' | 'wake' | 'steer'" };
     }
   }
+  if (p.crefs !== undefined) {
+    if (!p.crefs || typeof p.crefs !== 'object' || Array.isArray(p.crefs)) {
+      return { ok: false, error: 'policy.crefs must be an object' };
+    }
+    const cr = p.crefs as Record<string, unknown>;
+    if (cr.rules !== undefined) {
+      if (!cr.rules || typeof cr.rules !== 'object' || Array.isArray(cr.rules)) {
+        return { ok: false, error: 'policy.crefs.rules must be an object keyed by ref pattern' };
+      }
+      for (const [pattern, rule] of Object.entries(cr.rules as Record<string, unknown>)) {
+        if (pattern.trim() === '') {
+          return { ok: false, error: 'policy.crefs.rules: a ref pattern key must be non-empty' };
+        }
+        if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+          return { ok: false, error: `policy.crefs.rules['${pattern}'] must be an object` };
+        }
+        const r = rule as Record<string, unknown>;
+        if (!isStringArray(r.allow) || r.allow.length === 0 || r.allow.some((k) => k.trim() === '')) {
+          return { ok: false, error: `policy.crefs.rules['${pattern}'].allow must be a non-empty string[] of pubkeys` };
+        }
+        if (typeof r.threshold !== 'number' || !Number.isInteger(r.threshold) || r.threshold < 1) {
+          return { ok: false, error: `policy.crefs.rules['${pattern}'].threshold must be a positive integer` };
+        }
+        // Unsatisfiable rule = authoring mistake; distinct-key counting can never reach it.
+        if (r.threshold > new Set(r.allow).size) {
+          return {
+            ok: false,
+            error: `policy.crefs.rules['${pattern}'].threshold (${r.threshold}) exceeds the number of distinct allow keys (${new Set(r.allow).size})`,
+          };
+        }
+      }
+    }
+  }
   if (p.moderation !== undefined) {
     if (!p.moderation || typeof p.moderation !== 'object' || Array.isArray(p.moderation)) {
       return { ok: false, error: 'policy.moderation must be an object' };
@@ -208,6 +270,71 @@ export function coerceHivePolicyInput(
     }
   }
   return { ok: true, policy: p as HivePolicy };
+}
+
+/**
+ * A resolved canonical-ref rule: which keys may make a matching ref canonical and how
+ * many distinct signatures it takes. `pattern` is the (most specific) rule key that
+ * matched — useful for logging/audit; consumers only need `allow` + `threshold`.
+ */
+export interface ResolvedCanonicalRule {
+  pattern: string;
+  allow: string[];
+  threshold: number;
+}
+
+/**
+ * Match a crefs ref PATTERN against a concrete ref name. PURE. Pattern language is
+ * deliberately tiny (trust rules must be unambiguous): every character is literal
+ * except `*`, which matches ANY sequence of characters INCLUDING `/` (so
+ * `refs/tags/releases/*` covers nested release tags). No `?`, no character classes.
+ */
+export function matchRefPattern(pattern: string, refName: string): boolean {
+  if (!pattern.includes('*')) return pattern === refName;
+  // Escape regex specials in the literal segments, splice `.*` where the `*`s were.
+  const rx = pattern
+    .split('*')
+    .map((seg) => seg.replace(/[.+^${}()|[\]\\?]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${rx}$`).test(refName);
+}
+
+/**
+ * Resolve the canonical-ref rule governing `refName` under `policy` (G-6 P-030). PURE:
+ * a lookup over the owner-signed policy document, no I/O. Returns the matching rule's
+ * `{ allow, threshold }` (+ the matched `pattern`), or `null` when no rule matches —
+ * null means the ref is NOT policy-canonical (nothing to enforce), the permissive
+ * default. When several patterns match, the MOST SPECIFIC wins: most literal (non-`*`)
+ * characters, then fewest wildcards, then lexicographically smallest pattern (a
+ * deterministic tiebreak). Malformed rule entries (wrong shapes that predate or bypassed
+ * validation) are SKIPPED, never thrown on — the read path must not crash on junk.
+ */
+export function resolveCanonicalRule(
+  policy: HivePolicy | null | undefined,
+  refName: string,
+): ResolvedCanonicalRule | null {
+  const rules = policy?.crefs?.rules;
+  if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return null;
+  let best: { resolved: ResolvedCanonicalRule; literals: number; wildcards: number } | null = null;
+  for (const [pattern, rule] of Object.entries(rules)) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
+    const r = rule as HivePolicyCrefsRule;
+    if (!isStringArray(r.allow) || r.allow.length === 0) continue;
+    if (typeof r.threshold !== 'number' || !Number.isInteger(r.threshold) || r.threshold < 1) continue;
+    if (!matchRefPattern(pattern, refName)) continue;
+    const wildcards = pattern.split('*').length - 1;
+    const literals = pattern.length - wildcards;
+    const candidate = { resolved: { pattern, allow: [...r.allow], threshold: r.threshold }, literals, wildcards };
+    if (
+      !best ||
+      candidate.literals > best.literals ||
+      (candidate.literals === best.literals && candidate.wildcards < best.wildcards) ||
+      (candidate.literals === best.literals && candidate.wildcards === best.wildcards && pattern < best.resolved.pattern)
+    ) {
+      best = candidate;
+    }
+  }
+  return best?.resolved ?? null;
 }
 
 /**
