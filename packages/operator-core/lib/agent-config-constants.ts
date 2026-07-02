@@ -96,12 +96,19 @@ export const DEFAULT_BACKEND_CMDS: Record<AgentBackend, string> = {
  * Mirrors the fleet's implicit haiku/sonnet/opus tiering (ROLE_MODEL_DEFAULTS).
  * The `when` lines are the default placement rubric — the user's own menu
  * replaces them wholesale.
+ *
+ * The sonnet/opus specs carry `[1m]` AT THE SOURCE (owner directive
+ * 2026-07-02): every spawn path — psu-normalized or a direct `claude --model
+ * <spec>` exec (orchestrator invoke) — then launches the 1M auto-compact
+ * window. A BARE `sonnet`/`opus` spec runs a 200k auto-compact window in CC
+ * 2.1.198 (live-verified via /context 2026-07-02 — auto-fires ~167k), which is
+ * what killed a wave of sonnet fleet members; do not strip the marker.
  */
 export const DEFAULT_MODEL_TIERS: readonly ModelTier[] = [
   { name: 'quick', spec: 'haiku', when: 'trivial / mechanical work (renames, single-file fixes, mechanical sweeps)' },
-  { name: 'standard', spec: 'sonnet', when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent' },
-  { name: 'deep', spec: 'opus:high', when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier' },
-  { name: 'max', spec: 'opus:xhigh', when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive' },
+  { name: 'standard', spec: 'sonnet[1m]', when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent' },
+  { name: 'deep', spec: 'opus[1m]:high', when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier' },
+  { name: 'max', spec: 'opus[1m]:xhigh', when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive' },
 ] as const;
 
 /** Validate a `<modelId>[:<effort>]` spec string (loose on the model id —
