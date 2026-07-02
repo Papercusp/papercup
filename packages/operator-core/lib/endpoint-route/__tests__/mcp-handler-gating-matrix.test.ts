@@ -428,11 +428,21 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(seen.at(-1)?.args).toMatchObject({ workspace: 'ws-test' });
   });
 
-  it('flag ON: a superuser with an UNRESOLVED workspace is rejected (no silent god-mode)', async () => {
+  it('flag ON: a superuser with an UNRESOLVED workspace is scoped to the ACTIVE workspace (never rejected, never god-mode)', async () => {
+    // mcp-outage-triage-2026-07-02: the old hard-reject left untracked/resumed
+    // sessions permanently toolless (the client stops retrying tools/list). The
+    // clamp now falls back to activeWorkspaceId() — one concrete workspace, so
+    // the no-silent-'*' guarantee is intact while the session stays usable.
     h.scopedClampFlag.value = true;
-    const res = await callTool('gatingtest:scoped', {}, superuserExtra()); // no ?workspace=, no header
-    expect(res.isError).toBe(true);
-    expect(textOf(res)).toContain('scoped_superuser_workspace_unresolved');
+    process.env.PAPERCUSP_WORKSPACE_ID = 'ws-active-pin'; // activeWorkspaceId() precedence #2
+    try {
+      const res = await callTool('gatingtest:scoped', {}, superuserExtra()); // no ?workspace=, no header
+      expect(res.isError).not.toBe(true);
+      expect(seen.at(-1)?.ctx.workspaceId).toBe('ws-active-pin');
+      expect(h.withWorkspaceCalls).toEqual(['ws-active-pin']);
+    } finally {
+      delete process.env.PAPERCUSP_WORKSPACE_ID;
+    }
   });
 
   it('flag OFF: an unresolved-workspace superuser still gets unscoped god-mode (unchanged)', async () => {

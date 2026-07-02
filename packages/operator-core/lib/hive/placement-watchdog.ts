@@ -635,6 +635,10 @@ async function upsertPlacement(
      *  placement); callers that touch the failed path pass decision.nextInfraLossCount. */
     infraLossCount?: number;
     disposition: string;
+    /** WI-677 r2 (mig 440) — the value to persist for last_loss_spawn_id: the counted
+     *  attempt's spawn id, the preserved prior value, or null (fresh lineage). Always
+     *  written explicitly (no COALESCE) so healthy/completed can CLEAR it. */
+    lastLossSpawnId: string | null;
     escalationMsgId?: string | null;
     bumpRecovery?: boolean;
     now: number;
@@ -646,11 +650,11 @@ async function upsertPlacement(
   await sql`
     INSERT INTO harness_shared.hive_placements
       (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
-       bee_spawn_id, bee_owner_id, status, fail_count, infra_loss_count, last_disposition,
+       bee_spawn_id, bee_owner_id, status, fail_count, infra_loss_count, last_loss_spawn_id, last_disposition,
        escalation_msg_id, last_recovery_at, last_seen_at, updated_at)
     VALUES (
       ${p.workspaceId}, ${p.installSlug}, ${p.workItemId}, ${p.harnessSlug}, ${p.queenOwnerId},
-      ${p.beeSpawnId}, ${p.beeOwnerId}, ${p.status}, ${p.failCount}, ${p.infraLossCount ?? 0}, ${p.disposition},
+      ${p.beeSpawnId}, ${p.beeOwnerId}, ${p.status}, ${p.failCount}, ${p.infraLossCount ?? 0}, ${p.lastLossSpawnId}, ${p.disposition},
       ${p.escalationMsgId ?? null}, ${recoveryAt}, ${new Date(p.now).toISOString()}, ${new Date(p.now).toISOString()}
     )
     ON CONFLICT (workspace_id, install_slug, work_item_id) DO UPDATE SET
@@ -661,6 +665,7 @@ async function upsertPlacement(
       status            = EXCLUDED.status,
       fail_count        = EXCLUDED.fail_count,
       infra_loss_count  = EXCLUDED.infra_loss_count,
+      last_loss_spawn_id = EXCLUDED.last_loss_spawn_id,
       last_disposition  = EXCLUDED.last_disposition,
       escalation_msg_id = COALESCE(EXCLUDED.escalation_msg_id, harness_shared.hive_placements.escalation_msg_id),
       last_recovery_at  = COALESCE(EXCLUDED.last_recovery_at, harness_shared.hive_placements.last_recovery_at),
@@ -938,6 +943,7 @@ export async function reconcileOneHive(
             status: 'working',
             failCount: obs.failCount,
             infraLossCount: obs.infraLossCount,
+            lastLossSpawnId: null, // live attempt → fresh loss lineage (WI-677 r2)
             disposition: 'working',
           });
           break;
@@ -953,6 +959,7 @@ export async function reconcileOneHive(
               status: 'completed',
               failCount: obs.failCount,
               infraLossCount: obs.infraLossCount,
+              lastLossSpawnId: null,
               disposition: 'completed',
             });
             out.push({ workspaceId, installSlug, workItemId: unitId, decision: 'completed' });
@@ -978,6 +985,12 @@ export async function reconcileOneHive(
             status: 'recovering',
             failCount: decision.nextFailCount,
             infraLossCount: decision.nextInfraLossCount,
+            // Counted a loss ⇒ stamp WHICH corpse, so the next sweep can't recount it;
+            // flat re-place ⇒ preserve the prior stamp (WI-677 r2, mig 440).
+            lastLossSpawnId:
+              decision.nextFailCount > obs.failCount || decision.nextInfraLossCount > obs.infraLossCount
+                ? (servingBee?.spawnId ?? existing?.last_loss_spawn_id ?? null)
+                : (existing?.last_loss_spawn_id ?? null),
             disposition: 'recover',
             bumpRecovery: true,
           });

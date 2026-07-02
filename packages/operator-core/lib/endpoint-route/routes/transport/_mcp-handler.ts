@@ -76,6 +76,7 @@ import { maybeBatchNudge, maybeOrientDedupNudge, CODE_RUN_CAPABLE_ROLES } from '
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
 import { verifyAccessToken } from '../../../power-user-token';
 import {
@@ -472,7 +473,24 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       const optedUnscoped =
         workspaceId === '*' || url.searchParams.get('all_workspaces') === '1';
       if (!workspaceId && !optedUnscoped) {
-        return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
+        // mcp-outage-triage-2026-07-02: an UNTRACKED session (resumed claude whose
+        // env lost PAPERCUSP_WORKSPACE and whose fresh SID has no adv row — the hole
+        // resumeEnvFor's doc names) used to hard-fail here, leaving the session
+        // permanently TOOLLESS (the client gives up after ~4 tools/list retries).
+        // Scope it to the box's active workspace instead: ONE concrete workspace
+        // (registry `current` / PAPERCUSP_WORKSPACE_ID pin — never '*'), so the
+        // clamp's no-silent-god-mode guarantee is intact while the session stays
+        // usable. The reject remains only for the can't-happen empty resolution.
+        const active = activeWorkspaceId();
+        if (active) {
+          console.warn(
+            `[mcp] superuser session '${suIdentity || '(no sid)'}' carried no workspace and the SID→adv-row ` +
+              `fallback missed — scoping to the active workspace '${active}' (registry fallback).`,
+          );
+          workspaceId = active;
+        } else {
+          return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
+        }
       }
     }
     // Profile: header (OMP) > URL param (claude env-expanded / install-baked).
