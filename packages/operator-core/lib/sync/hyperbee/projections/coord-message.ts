@@ -198,8 +198,18 @@ async function writeToPg(
       }
       // P-014: a receipt-requesting sender learns the truth — quarantined, not
       // delivered — via the same fed-event receipt rail.
+      // M5b (audit D-013): budget-bound this emit. An admitted-but-untrusted
+      // (below-message-tier) or over-rate member could otherwise flood
+      // receipt-requesting directed messages and make us author one federated
+      // receipt row per message. Spend one token from the SAME per-author-device
+      // federated-wake budget as the apply-path fans (never a second limiter);
+      // over budget ⇒ suppress the receipt emit (the quarantine itself already
+      // landed above, so nothing is lost but the courtesy receipt, and the sender
+      // learns the truth for the first budget-worth this window). Author key is
+      // the verified source-log identity (provenance.authorPubkey), matching the
+      // apply-path fans — never the spoofable body.from.
       const qb = row.body as { receipt?: unknown };
-      if (qb.receipt === true) {
+      if (qb.receipt === true && tryConsumeFederatedWake(provenance?.authorPubkey ?? 'unknown', 1)) {
         try {
           const { sendMessage } = await import('../../../agent-tools/coordination/messages');
           const { machineFingerprint } = await import('../../../identity/device-keychain-id');
