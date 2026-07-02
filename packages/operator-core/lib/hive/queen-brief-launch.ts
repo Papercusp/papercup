@@ -319,7 +319,27 @@ export async function computeQueenWakeBrief(
         ),
       )
       .catch(() => '');
-    return renderQueenBrief({ floor, carryJournal, factsFold });
+    // L1d: mem0 background recall — fuzzy sibling of the facts fold. Harness
+    // memory pool only (the Queen is not a user), timeout-bounded, fail-soft.
+    const memoryFold = await (async () => {
+      const { getMemoryBackend } = await import('../memory/backend');
+      const { withMemoryToolTimeout } = await import('../memory/op-deadline');
+      const hits = await withMemoryToolTimeout(
+        getMemoryBackend().search(`queen ${installSlug} hive operations priorities`, {
+          scope: [`harness:${installSlug}`],
+          limit: 3,
+        }),
+        'queen-brief memory recall',
+      );
+      const lines = (hits ?? [])
+        .slice(0, 3)
+        .map((h) => (h.text?.trim() ? `- ${h.text.trim().slice(0, 200)}` : ''))
+        .filter(Boolean);
+      return lines.length
+        ? `### Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)\n${lines.join('\n')}`
+        : '';
+    })().catch(() => '');
+    return renderQueenBrief({ floor, carryJournal, factsFold, memoryFold });
   } catch (err) {
     console.warn(
       `[queen-brief] precompute failed for '${installSlug}' — Queen falls back to the survey tools:`,

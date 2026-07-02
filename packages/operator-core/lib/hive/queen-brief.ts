@@ -177,6 +177,10 @@ export interface QueenBriefInput {
    *  block (agent-facts renderFactsFold over workspace + role:queen + harness
    *  scopes). Delivered verbatim every wake until expiry/retraction. */
   factsFold?: string | null;
+  /** mem0 BACKGROUND RECALL (queen-memory-hybrid L1d) — pre-rendered fuzzy
+   *  recall block (harness memory pool, bounded). Rendered AFTER the facts fold
+   *  and labeled non-authoritative. */
+  memoryFold?: string | null;
   /** Override the default per-section caps. */
   caps?: Partial<QueenBriefCaps>;
   /** Override text-size caps. Intended for tests and emergency tuning only. */
@@ -477,6 +481,14 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push('');
     out.push('---');
     out.push(factsFold);
+  }
+
+  // mem0 BACKGROUND RECALL (L1d) — the fuzzy sibling, explicitly subordinate to
+  // the deterministic facts above.
+  const memoryFold = (input.memoryFold ?? '').trim();
+  if (memoryFold) {
+    out.push('');
+    out.push(memoryFold);
   }
 
   // CARRY-JOURNAL (queen-memory-hybrid L1a) — additive second half: the Queen's

@@ -298,7 +298,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
   it('resolveSpawnBackendModel keys release-manager to its committed opus bucket without env (RB-012)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'claude-code', model: 'opus' });
+    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 });
 
@@ -341,7 +341,7 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
   it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus' });
+    expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 
   it('resolveSpawnBackendModel infers Codex for Codex-shaped per-spawn models', () => {
@@ -409,7 +409,7 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveSpawnBackendModel('bee', 'haiku', 'omp')).toEqual({ backend: 'omp', model: 'haiku' });
     vi.stubEnv('AGENT_CMD', 'omp -p');
-    expect(resolveSpawnBackendModel('bee', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus' });
+    expect(resolveSpawnBackendModel('bee', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus[1m]' });
   });
 });
 
@@ -441,7 +441,7 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it('per-role AGENT_MODELS override flows into the resolved model (so opus/sonnet get separate buckets)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model claude-sonnet-4-6');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ architect: 'claude-opus-4-8' }));
-    expect(resolveSpawnBackendModel('architect')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
+    expect(resolveSpawnBackendModel('architect')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8[1m]' });
     expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
   });
 
@@ -452,7 +452,7 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
 
   it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p');
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet' });
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
     expect(resolveSpawnBackendModel('bee')).toEqual({ backend: 'claude-code', model: 'haiku' });
   });
 });
