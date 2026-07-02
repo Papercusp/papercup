@@ -25,6 +25,12 @@
 
 import { registerAuthorityOp } from './authority-op-registry';
 import { recordLockEvent, type LockEvent } from './lock-event-stream';
+import {
+  noteShaTokenGrant,
+  noteShaTokenRelease,
+  shaTokenForGrant,
+  type ShaTokenGrant,
+} from './sha-token-registry';
 
 /** Acquire a file-claim lock on behalf of `owner` (the requesting peer). */
 export interface FileLockAcquireParams {
@@ -51,6 +57,10 @@ export interface FileLockReleaseParams {
   allMine?: boolean;
   /** See FileLockAcquireParams.coordinationDomain. */
   coordinationDomain: string;
+  /** G-0 (P-033) publish-then-release: the head sha the holder published to its
+   *  hive-git namespace before releasing — stamped on the NEXT grant of these
+   *  paths as `requiredSha`. Null/absent = released without publishing. */
+  publishedSha?: string | null;
 }
 export interface FileLockQueueParams {
   owner: string;
@@ -65,6 +75,11 @@ export interface FileLockAcquireResult {
   expiresTs?: string;
   /** paths that were busy when ok=false. */
   busy?: Array<{ path: string; owner: string }>;
+  /** G-0 (P-033) sha-token stamp on a grant: the prior holder's published head
+   *  (`requiredSha`) + the expiry-reclaim warning (`unsyncedRisk`). The acquirer
+   *  checks requiredSha against its local staging / parked heads via
+   *  sync/hive-git/handoff-token.ts (classifyRequiredSha / gradeShaTokenGrant). */
+  shaToken?: ShaTokenGrant;
 }
 
 /** The minimal lock-store surface the authority ops drive. The operator adapts

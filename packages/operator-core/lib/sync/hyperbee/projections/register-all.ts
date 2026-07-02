@@ -44,6 +44,7 @@ import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 import { buildBeeClaimSpecProjection } from './bee-claim-spec';
+import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
@@ -155,6 +156,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
   'hive-settings-by-key',
   'bee-claim-specs',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
+  // test gate's device-signed verdict facts — hive-home-grained, content-addressed,
+  // INSERT-only. The projection verifies sig + content address + signer membership.
+  'gate-verdicts',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy
   // record federates as Hive state, scoped to the Hive home (like hive_settings). The
   // projection verifies the owner signature before applying.
@@ -227,6 +232,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
     buildHiveSettingsProjection(hiveScoped),
     buildBeeClaimSpecProjection(hiveScoped),
+    // P-044 DG-1: verdict facts are hive-home-grained (the gate is a hive-wide
+    // aggregate) — scope like hive_settings so a joiner receives + verifies them.
+    buildGateVerdictProjection(hiveScoped),
     buildHiveMembersProjection(hiveScoped),
     // EN-1: hive_policy is hive-home-grained too (the owner-signed policy demuxes on
     // the Hive home) — scope it to `hiveScoped` so a joiner receives + verifies it.

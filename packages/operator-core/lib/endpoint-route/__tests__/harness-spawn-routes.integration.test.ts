@@ -54,6 +54,15 @@ vi.mock('../../adv-sessions', () => ({
     (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),
 }));
 
+// WI-682: the Queen wake brief is computed at THIS route (the one chokepoint every
+// wake path traverses — EI-995's durable seam bypassed the old launcher-side
+// compute). Default null = compute degraded → the EI-506 kickoff fallback applies;
+// per-test overrides return a brief to assert the computed path.
+const computeQueenWakeBrief = vi.fn(async (): Promise<string | null> => null);
+vi.mock('../../hive/queen-brief-launch', () => ({
+  computeQueenWakeBrief: (...a: unknown[]) =>
+    (computeQueenWakeBrief as (...args: unknown[]) => unknown)(...a),
+}));
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
 vi.mock('../../plugin-host-runtime', () => ({
   firePluginLifecycle: vi.fn(),
@@ -290,16 +299,42 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
     expect(arg?.extraEnv).toMatchObject({ QUEEN_WAKE_BRIEF: expect.stringContaining('Woke by') });
+    // WI-682: a pre-supplied body.queenBrief is respected verbatim — no recompute.
+    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
   });
 
-  // EI-506 fallback: if the wake brief is absent (best-effort compute failed), the
-  // kickoff is still threaded as QUEEN_BRIEF so the queen isn't left with no idea
-  // why she woke (preserves the P-071 "why you woke" signal).
-  it('EI-506: keeps QUEEN_BRIEF for a queen wake with NO wake brief (degraded fallback)', async () => {
+  // WI-682: the route is the ONE chokepoint every Queen wake path traverses
+  // (durable spawn, direct fire, manual /invoke) — when the body carries no brief,
+  // the route computes it (which also drains the @role:queen parked mailbox).
+  // EI-995's durable seam bypassed the old launcher-side compute, so a scheduled
+  // Queen woke briefless with her nudges stranded — this pins the route-side seam.
+  it('WI-682: computes the Queen wake brief at the route when the body has none', async () => {
+    computeQueenWakeBrief.mockResolvedValue('## Your wake brief\n**Woke by:** timer\n### Frontier');
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
     expect(res.status).toBe(200);
+    expect(computeQueenWakeBrief).toHaveBeenCalledWith(expect.any(String), 'papercup', { wokeBy: 'timer' });
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv).toMatchObject({ QUEEN_WAKE_BRIEF: expect.stringContaining('Woke by') });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF'); // EI-506 suppression applies to the computed brief too
+  });
+
+  it('WI-682: a non-queen invoke never computes a Queen wake brief', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({ kickoff: 'go' }));
+    expect(res.status).toBe(200);
+    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+  });
+
+  // EI-506 fallback: if the wake brief is absent (best-effort compute failed — the
+  // computeQueenWakeBrief mock defaults to null here), the kickoff is still threaded
+  // as QUEEN_BRIEF so the queen isn't left with no idea why she woke (preserves the
+  // P-071 "why you woke" signal).
+  it('EI-506: keeps QUEEN_BRIEF for a queen wake whose brief compute degrades to null', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
+    expect(res.status).toBe(200);
+    expect(computeQueenWakeBrief).toHaveBeenCalledTimes(1); // it tried — the route-side seam is live
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({ QUEEN_BRIEF: 'timer' });
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_WAKE_BRIEF');
   });
 
   it('tracks Codex hive launches through durable CODEX_HOME instead of forced native session ids', async () => {

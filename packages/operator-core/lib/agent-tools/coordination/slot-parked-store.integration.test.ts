@@ -116,6 +116,74 @@ describe('park → drain', () => {
     });
     expect(h1.map((e) => e.msg_id)).toEqual(['a']);
   });
+
+  // WI-682: the workspace Queen is ONE session covering every started hive, but
+  // senders park @role:queen rows under whatever harness context they had —
+  // including NULL. A slug-keyed drain stranded those rows forever (18 undelivered
+  // nudges 06-25→07-02); anyHarnessSlug drains the slot across the whole workspace.
+  it('anyHarnessSlug drains across every harness scope, including NULL-slug rows', async () => {
+    await parkSlotMessage(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      harnessSlug: 'h1',
+      envelope: env({ msg_id: 'slugged', to: ['@role:queen'] }),
+      nowMs: 1000,
+    });
+    await parkSlotMessage(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      envelope: env({ msg_id: 'slugless', ts: '2026-06-14T00:00:01.000Z', to: ['@role:queen'] }),
+      nowMs: 1001,
+    });
+    await parkSlotMessage(sql, {
+      // A DIFFERENT slot must stay untouched — anyHarnessSlug widens the slug key only.
+      slot: { kind: 'wave', ref: 'W-03' },
+      harnessSlug: 'h1',
+      envelope: env({ msg_id: 'other-slot' }),
+      nowMs: 1002,
+    });
+
+    const drained = await drainSlotMessages(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      anyHarnessSlug: true,
+      toOwner: 'queen-owner',
+      nowMs: 2000,
+    });
+    expect(drained.map((e) => e.msg_id).sort()).toEqual(['slugged', 'slugless']);
+
+    // Claimed exactly once — a second any-slug drain finds nothing.
+    const again = await drainSlotMessages(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      anyHarnessSlug: true,
+      toOwner: 'queen-owner',
+      nowMs: 2001,
+    });
+    expect(again).toEqual([]);
+
+    // The unrelated slot is still drainable under its own key.
+    const other = await drainSlotMessages(sql, {
+      slot: { kind: 'wave', ref: 'W-03' },
+      harnessSlug: 'h1',
+      toOwner: 'bee',
+      nowMs: 2002,
+    });
+    expect(other.map((e) => e.msg_id)).toEqual(['other-slot']);
+  });
+
+  it('anyHarnessSlug stays workspace-scoped (never drains another workspace)', async () => {
+    await parkSlotMessage(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      harnessSlug: 'h1',
+      envelope: env({ msg_id: 'ws-other', to: ['@role:queen'] }),
+      nowMs: 1000,
+      workspaceId: 'ws-other',
+    });
+    const drained = await drainSlotMessages(sql, {
+      slot: { kind: 'role', ref: 'queen' },
+      anyHarnessSlug: true,
+      toOwner: 'queen-owner',
+      nowMs: 2000,
+    });
+    expect(drained).toEqual([]);
+  });
 });
 
 describe('TTL expiry', () => {

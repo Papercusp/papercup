@@ -53,6 +53,10 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // peer-log (projections/hive-settings.ts → hive_settings; tableTag 'hive-settings-by-key').
   'hive-settings-by-key': 'hive_settings',
   'bee-claim-specs': 'bee_claim_specs',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
+  // test gate's device-signed shard-run verdict facts federate over the peer-log
+  // (projections/gate-verdicts.ts → gate_verdicts; content-addressed, INSERT-only).
+  'gate-verdicts': 'gate_verdicts',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive admission federates over the
   // peer-log (projections/hive-members.ts → hive_members).
   'hive-members': 'hive_members',

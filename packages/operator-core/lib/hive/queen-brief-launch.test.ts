@@ -248,7 +248,10 @@ test('computeQueenWakeBrief — drains stable @role:queen parked nudges into the
   assert.match(out!, /Queen placement drift: re-open stranded item/);
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.slot?.kind, 'role');
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.slot?.ref, 'queen');
-  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.harnessSlug, 'papercup');
+  // WI-682: the workspace Queen drains role:queen across EVERY harness scope —
+  // senders park under whatever slug they had (often NULL), so a slug-keyed
+  // drain strands rows. anyHarnessSlug replaces the harnessSlug key here.
+  assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.anyHarnessSlug, true);
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.toOwner, 's-queen-1');
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.workspaceId, 'ws-1');
 });

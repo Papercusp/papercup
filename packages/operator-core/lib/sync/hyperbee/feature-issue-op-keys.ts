@@ -31,6 +31,7 @@ import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HiveSettingRow } from './projections/hive-settings';
 import type { BeeClaimSpecRow } from './projections/bee-claim-spec';
+import type { GateVerdictWireRow } from './projections/gate-verdicts';
 import type { HivePolicyRow } from './projections/hive-policy';
 import type { ReportWireRow } from './projections/hive-reports';
 import type { PendingJoinWireRow } from './projections/hive-pending-joins';
@@ -85,6 +86,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): per-bee claim specs.
   // Projection 'bee-claim-specs' (projections/bee-claim-spec.ts); key == bee_id.
   bee_claim_specs: 'bee-claim-specs',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
+  // test gate's device-signed verdict facts. Projection 'gate-verdicts'
+  // (projections/gate-verdicts.ts); key == verdict_id (the content address).
+  gate_verdicts: 'gate-verdicts',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-signed Hive policy
   // record. Projection 'hive-policy' (projections/hive-policy.ts); SINGLETON, so
   // key == harness_slug (the Hive home).
@@ -483,6 +488,28 @@ function toBeeClaimSpecValue(row: Record<string, unknown>): BeeClaimSpecRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `GateVerdictWireRow` the gate-verdicts
+ *  projection consumes — the federated subset (harness_slug = the hive home,
+ *  verdict_id = the content address, the signed verdict fields + sig).
+ *  created_at is machine-local. bigint columns (duration_ms, verdict_ts) render
+ *  as numbers via to_jsonb (epoch-ms scale, well under 2^53). */
+function toGateVerdictValue(row: Record<string, unknown>): GateVerdictWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    verdict_id: String(row.verdict_id ?? ''),
+    schema_v: numOrZero(row.schema_v),
+    repo_key: String(row.repo_key ?? ''),
+    staging_sha: String(row.staging_sha ?? ''),
+    shard_id: String(row.shard_id ?? ''),
+    inputs_hash: String(row.inputs_hash ?? ''),
+    verdict: String(row.verdict ?? ''),
+    duration_ms: numOrZero(row.duration_ms),
+    device_pubkey: String(row.device_pubkey ?? ''),
+    verdict_ts: numOrZero(row.verdict_ts),
+    sig: String(row.sig ?? ''),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `HivePolicyRow` the hive-policy projection INSERT
  *  consumes — the owner-signed federated subset (harness_slug = the Hive home,
  *  policy_json = the canonical signed JSON TEXT, owner_pubkey, signature,
@@ -716,6 +743,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'bee_claim_specs':
       value = toBeeClaimSpecValue(row);
+      break;
+    case 'gate_verdicts':
+      value = toGateVerdictValue(row);
       break;
     case 'hive_policy':
       value = toHivePolicyValue(row);

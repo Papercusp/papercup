@@ -183,6 +183,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // harness_slug = the hive HOME slug demux (NULL = operator-scope, stays local —
   // the mig-438 WHEN gate).
   'bee_claim_specs',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
+  // test gate's verdict facts (projections/gate-verdicts.ts) — content-addressed,
+  // device-SIGNED shard-run results federated as data so the DG-5 aggregator on any
+  // member machine assembles green(S) from every runner's verdicts. Keyed
+  // (workspace_id, verdict_id); harness_slug = the hive HOME slug demux (NULL =
+  // machine-local, stays local — the mig-442 WHEN gate). Immutable INSERT-only facts.
+  'gate_verdicts',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members — the Hive-grain analog of contributors) federates across the Hive's
   // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,
