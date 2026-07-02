@@ -223,6 +223,55 @@ const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceS
 const announcePairedMuxers = new WeakSet<object>();
 const guardCountedSockets = new WeakSet<object>();
 
+// ── WI-1544 (defect iii): periodic announce re-flush ──
+// The announce exchange is ONE-SHOT per (muxer, topic): `sentKeys` dedups
+// forever, and the receive side never re-requests. So any single loss — a
+// send that raced the channel teardown, a receiver whose admission threw once,
+// a topic rejoin over a surviving connection — permanently suppressed this
+// log's announce until a process restart (the WI-1544 m-run A→B stall class).
+// A slow sweep clears each LIVE topic state's dedup set and re-flushes fresh
+// signed frames. Receivers are idempotent (an already-admitted log is a cheap
+// map hit; a pending one re-buffers with its grace clock preserved), so the
+// steady-state cost is one small frame per log per interval — and every
+// one-shot-loss failure mode self-heals in ≤ the interval.
+const ANNOUNCE_REFLUSH_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_ANNOUNCE_REFLUSH_MS);
+  return Number.isFinite(raw) ? raw : 5 * 60 * 1000;
+})();
+type AnnounceReflushEntry = {
+  state: TopicAnnounceState;
+  stream: { destroyed?: boolean };
+};
+const announceReflushEntries = new Set<AnnounceReflushEntry>();
+let announceReflushTimer: ManagedHandle | null = null;
+function sweepAnnounceReflush(): void {
+  for (const entry of announceReflushEntries) {
+    if (entry.stream.destroyed === true) {
+      announceReflushEntries.delete(entry);
+      continue;
+    }
+    if (!entry.state.opened || !entry.state.message) continue;
+    entry.state.sentKeys.clear();
+    flushTopicAnnounces(entry.state);
+  }
+  if (announceReflushEntries.size === 0 && announceReflushTimer) {
+    announceReflushTimer.stop();
+    announceReflushTimer = null;
+  }
+}
+function trackAnnounceReflush(entry: AnnounceReflushEntry): void {
+  if (ANNOUNCE_REFLUSH_MS <= 0) return; // env kill-switch (tests / diagnostics)
+  announceReflushEntries.add(entry);
+  if (!announceReflushTimer) {
+    announceReflushTimer = managedSetInterval(
+      'hyperbee-announce-reflush',
+      ANNOUNCE_REFLUSH_MS,
+      () => sweepAnnounceReflush(),
+      { category: 'lifecycle' },
+    );
+  }
+}
+
 function announceDebug(message: string): void {
   if (process.env.PAPERCUSP_ANNOUNCE_DEBUG !== '1') return;
   // eslint-disable-next-line no-console
@@ -417,11 +466,21 @@ export function openAnnounceChannel(
     if (!state) {
       state = { entries: new Map(), paired: false, message: null, opened: false, sentKeys: new Set() };
       states.set(topicHex, state);
+      // WI-1544 (defect iii): enroll this live topic state in the slow
+      // announce re-flush sweep so a one-shot announce loss self-heals.
+      trackAnnounceReflush({ state, stream: muxStream as { destroyed?: boolean } });
     }
     // Register/refresh THIS harness's entry, keyed by its own log_core_key so a
     // reconnect/replay on the same muxer de-dups rather than double-registering.
     // (A send-only harness with no ourAnnounce falls back to a positional key.)
     const entryKey = opts.ourAnnounce?.log_core_key ?? `__reader-${state.entries.size}`;
+    // WI-1544 (defect iii): a RE-registration of an already-known log on this
+    // (muxer, topic) means the harness re-joined the topic over a surviving
+    // connection (rekey / join-retry). The peer may have missed (or dropped)
+    // the original announce, and sentKeys would suppress it forever — clear
+    // this log's dedup mark so the flush below re-sends a fresh signed frame
+    // (receivers are idempotent).
+    if (state.entries.has(entryKey)) state.sentKeys.delete(entryKey);
     state.entries.set(entryKey, opts);
     // LAZY-ACCEPT pair-notifier, ONCE per muxer. Register at protocol scope and
     // dispatch by the incoming topic id, matching directory-swarm.ts. Live

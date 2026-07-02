@@ -818,6 +818,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       pendingMemberContent,
     });
 
+  // WI-1544 (defect D): `rekey()` swaps topics IN PLACE, but `opts.swarmBinding` is
+  // frozen at boot — every post-boot reader (owner-device resolve, the join-bootstrap
+  // window, the swarm-join retry loop) must observe the CURRENT binding or it acts on
+  // the pre-rekey topic (the retry loop could even rejoin the OLD topic during the
+  // swarmHandle=null window mid-rekey). Kept current by rekey(); read it, not opts.
+  let currentBinding: SwarmBinding | null = opts.swarmBinding ?? null;
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
   // A-003 diagnostic (env-gated, off by default → zero test impact): show the
   // boot-time hive-home binding decision in the harness log so a live witness can
@@ -1401,11 +1407,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           })();
         }
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
           'announce_error',
-          e instanceof Error ? e.message : String(e),
+          msg,
+        );
+        // WI-1544 root cause #3 (one-shot silent loss): the frame was already
+        // shift()'d off the queue, announces are never re-delivered (sender-side
+        // sentKeys dedup), and this catch was ring-only — a single throw here
+        // (e.g. openRemoteLog racing a rekey) permanently stalled every A→B
+        // surface until a restart. Re-buffer the frame into the D-006 pending
+        // set so the retry tick re-runs the FULL admission, and say so on
+        // stderr (the boot-history ring is in-memory only).
+        if (
+          !admitted.has(frame.log_core_key) &&
+          !revoked.has(frame.device_pubkey) &&
+          !pendingPeers.has(frame.log_core_key)
+        ) {
+          pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
+        }
+        // eslint-disable-next-line no-console
+        console.error(
+          `[hyperbee-admission] admit failed for ${peerLabel(frame.log_core_key)} — re-buffered for retry: ${msg}`,
         );
       }
     }
@@ -1421,6 +1446,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // forever and awaiters never resolved — peers stopped converging.
   let runningMerge: Promise<number> | null = null;
   let pendingMerge: Promise<number> | null = null;
+  // WI-1544: stderr dedup state for the mergeOnePass outer catch (the poll
+  // fires ~1Hz — a repeating failure logs once a minute, not 60 times).
+  let lastMergeErrorMsg = '';
+  let lastMergeErrorLogTs = 0;
   function mergeNow(): Promise<number> {
     if (stopped) return Promise.resolve(0);
     if (!runningMerge) {
@@ -1462,10 +1491,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // so a `changed` pass ingested the revoked-era ops before the drop). This
       // mirrors the ordering `revoke()` already uses: delete from `admitted`,
       // THEN merge. The cursor-reset check below sees the removed log and
-      // re-folds the survivors without it. Fail-open per D-002 (a load error is
-      // caught inside applyRevocationRefresh's caller contract — it runs under
-      // the merge lock here, same as before).
-      await applyRevocationRefresh();
+      // re-folds the survivors without it. Fail-open per D-002 — and isolated
+      // (WI-1544): a loadRevoked() throw at the TOP of the pass used to reach
+      // the outer catch and abort EVERY pass, ring-only, silently stalling all
+      // federation. A failed refresh now skips only the refresh; the next pass
+      // retries it.
+      try {
+        await applyRevocationRefresh();
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'merge_error',
+          `revocation-refresh: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
 
       const logs: AdmittedLog[] = [];
       for (const log of admitted.values()) {
@@ -1521,7 +1561,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // position yet, so steady-state passes are O(logs) cheap `.has()` checks.
       // OFF ⇒ never called ⇒ cursor seeds at 0 (unchanged).
       if (snapshotEnabled) {
-        await seedCursorFromSnapshots(logs, mergeCursor);
+        // WI-1544 isolation: a seed failure means "start that log at 0" (slower,
+        // still correct) — it must never abort the pass via the outer catch.
+        try {
+          await seedCursorFromSnapshots(logs, mergeCursor);
+        } catch (e) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            `snapshot-seed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       }
 
       // EI-79 steady-state skip (cursor form): nothing new past any log's
@@ -1539,7 +1590,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // applyRevocationRefresh + drainReverifyDropQueue already ran at the top
         // of this pass; on the idle tick maybeReverifyAdmitted only re-drains and
         // (cadence permitting) kicks off the LOCKLESS verify — zero I/O here.
-        await maybeReverifyAdmitted();
+        // Isolated (WI-1544): a reverify kick-off failure never aborts the pass.
+        try {
+          await maybeReverifyAdmitted();
+        } catch (e) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            `reverify: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
         return 0;
       }
 
@@ -1648,11 +1709,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // member that receives content before its key would silently lose it — this is the
       // pre-ship convergence guarantee. Runs inside the serialized merge block.
       if (rekeyDeps && epochDrainQueue.length > 0) {
-        await drainQueuedEpochContent({
-          pending: rekeyDeps.pending,
-          drainQueue: epochDrainQueue,
-          applyImpl: mergeOpts.applyImpl,
-        });
+        // WI-1544 isolation: the pass already merged its ops — a drain failure
+        // must not discard that progress via the outer catch (the queue keeps
+        // its entries; the next keyed pass re-drains).
+        try {
+          await drainQueuedEpochContent({
+            pending: rekeyDeps.pending,
+            drainQueue: epochDrainQueue,
+            applyImpl: mergeOpts.applyImpl,
+          });
+        } catch (e) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            `epoch-drain: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       }
 
       // P-005 (design A, flag-gated): compact the OWN log once it has grown past
@@ -1698,16 +1771,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       //   (a) reverifyIntervalMs <= 0 (disabled; tests drive reverifyAdmitted directly), or
       //   (b) the slow cadence hasn't elapsed since the last kick-off.
       // No `verifyBinding` network call ever runs under this lock.
-      await maybeReverifyAdmitted();
+      // Isolated (WI-1544): the pass's `applied` count is already earned —
+      // a reverify kick-off failure must not turn it into a merge_error+0.
+      try {
+        await maybeReverifyAdmitted();
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'merge_error',
+          `reverify: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
 
       return applied;
     } catch (e) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'merge_error',
-        e instanceof Error ? e.message : String(e),
-      );
+      const msg = e instanceof Error ? e.message : String(e);
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'merge_error', msg);
+      // WI-1544: this catch was ring-only (in-memory, lost on restart) — a
+      // persistently-throwing pass silently stalled ALL federation with zero
+      // serve.log evidence. Mirror to stderr, deduped: log when the message
+      // changes or at most once a minute for a repeating one.
+      if (msg !== lastMergeErrorMsg || Date.now() - lastMergeErrorLogTs > 60_000) {
+        lastMergeErrorMsg = msg;
+        lastMergeErrorLogTs = Date.now();
+        // eslint-disable-next-line no-console
+        console.error(
+          `[hyperbee-merge] merge pass FAILED harness=${opts.harnessSlug}: ${e instanceof Error ? (e.stack ?? msg) : msg}`,
+        );
+      }
       return 0;
     }
   }
@@ -1817,7 +1909,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // by BOTH owner-bootstrap sites (admitsAsKnownHiveMember + resolveSameHiveMember) so they
   // can't drift. Returns null for a non-hive/non-topic binding (no hive to bootstrap).
   const resolveJoinedHiveOwnerDevice = async (): Promise<string | null> => {
-    const binding = opts.swarmBinding;
+    // WI-1544 defect D: read the CURRENT binding (rekey() updates it), not the
+    // boot-time opts snapshot — post-rekey the owner lookup must key off the
+    // NEW hive/topic or the bootstrap-admit vouches for the wrong hive.
+    const binding = currentBinding;
     if (!binding) return null;
     const resolved =
       binding.kind === 'hive'
@@ -2024,7 +2119,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // observability for genuinely foreign frames.
   const inJoinBootstrapWindow = (): boolean =>
     hiveHomeProjectionSlug == null &&
-    (opts.swarmBinding?.kind === 'hive' || opts.swarmBinding?.kind === 'topic');
+    (currentBinding?.kind === 'hive' || currentBinding?.kind === 'topic');
 
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
@@ -2242,6 +2337,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const pendingRetrySetTimeout = opts.pendingRetrySetTimeout ?? setTimeout;
   const pendingRetryClearTimeout = opts.pendingRetryClearTimeout ?? clearTimeout;
   let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  // WI-1544: once-per-peer stderr dedup for retry-tick failures (the tick fires
+  // every ~5s for up to 30min — one line per peer is signal, 360 are noise).
+  const loggedRetryErrorKeys = new Set<string>();
   async function retryPendingOnce(): Promise<void> {
     if (stopped || pendingPeers.size === 0) return;
     const nowMs = Date.now();
@@ -2294,13 +2392,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           const originSlug = entry.frame.harness_slug ?? null;
           const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
           if (inScope) {
-            pendingPeers.delete(logCoreKey);
+            // WI-1544 root cause #3: this used to delete BEFORE the awaited
+            // admit — any throw inside the merge-gated drain made the frame a
+            // one-shot silent loss (gone from every buffer; announces never
+            // re-flow). Admit first; drop the buffer entry only once the log
+            // actually landed in `admitted` (a failed drain re-buffers the
+            // frame into pendingPeers — an unconditional delete here would
+            // erase that re-buffered entry).
             await admitPeer(entry.frame);
+            if (admitted.has(logCoreKey)) pendingPeers.delete(logCoreKey);
           } else {
             const sameHive = await resolveSameHiveMember(entry.frame);
             if (sameHive?.admit) {
-              // resolveSameHiveMember admitted it (called admitPeer) → stop retrying.
-              pendingPeers.delete(logCoreKey);
+              // resolveSameHiveMember admitted it (called admitPeer) → stop
+              // retrying — but only once the log actually landed in `admitted`
+              // (WI-1544: a failed drain re-buffers; delete only on success).
+              if (admitted.has(logCoreKey)) pendingPeers.delete(logCoreKey);
             } else if (sameHive && sameHive.reason === 'pending') {
               // membership still not federated → leave pending (it re-buffered idempotently).
             } else if (hiveHomeProjectionSlug != null) {
@@ -2332,8 +2439,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         }
         // If still 'pending', leave in the map for the next tick.
-      } catch {
-        // Defensive: retry errors are silent (observability stays non-fatal).
+      } catch (e) {
+        // Defensive: a tick failure never kills the retry chain — but it is
+        // NOT silent anymore (WI-1544: a silently-swallowed retry error looks
+        // identical to "still pending" and can hide a permanent stall). Ring
+        // every time; stderr once per peer.
+        const msg = e instanceof Error ? e.message : String(e);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          `pending-retry ${peerLabel(entry.frame.log_core_key)}: ${msg}`,
+        );
+        if (!loggedRetryErrorKeys.has(logCoreKey)) {
+          loggedRetryErrorKeys.add(logCoreKey);
+          // eslint-disable-next-line no-console
+          console.error(
+            `[hyperbee-admission] pending-retry failed for ${peerLabel(entry.frame.log_core_key)} (kept pending; will retry until grace expiry): ${msg}`,
+          );
+        }
       }
     }
   }
@@ -2534,8 +2658,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
-  if (opts.swarmBinding) {
-    await joinForBinding(opts.swarmBinding);
+  if (currentBinding) {
+    await joinForBinding(currentBinding);
   }
 
   // ── WI-752 / FED-2 JOIN-retry self-heal ──
@@ -2553,14 +2677,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let swarmJoinRetryDelay = swarmJoinRetryBaseMs;
   function armSwarmJoinRetry(): void {
     if (swarmJoinRetryBaseMs <= 0 || stopped) return;
-    if (swarmHandle !== null || !opts.swarmBinding) return; // already federating / nothing to join
+    if (swarmHandle !== null || !currentBinding) return; // already federating / nothing to join
     swarmJoinRetryTimer = setTimeout(async () => {
       swarmJoinRetryTimer = null;
-      if (stopped || swarmHandle !== null || !opts.swarmBinding) return;
+      if (stopped || swarmHandle !== null || !currentBinding) return;
       // joinForBinding swallows its own errors (records swarm_join_failed); it
-      // sets swarmHandle on success. A retry that re-keyed in the meantime is
-      // covered by the swarmHandle !== null guard.
-      await joinForBinding(opts.swarmBinding);
+      // sets swarmHandle on success. WI-1544 defect D: join the CURRENT binding —
+      // a retry firing inside a rekey's swarmHandle=null window must join the
+      // NEW topic, never re-join the boot-time one from the opts snapshot.
+      await joinForBinding(currentBinding);
       if (swarmHandle !== null) {
         // eslint-disable-next-line no-console
         console.info(
@@ -2575,7 +2700,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       (swarmJoinRetryTimer as { unref: () => void }).unref();
     }
   }
-  if (opts.swarmBinding && swarmHandle === null) {
+  if (currentBinding && swarmHandle === null) {
     armSwarmJoinRetry();
   }
 
@@ -2639,6 +2764,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // joiner but never UPLOADED its log → the feature never crossed). Re-keying
       // in place never tears down the replication streams, so serving continues.
       if (stopped) return;
+      // WI-1544 defect D: publish the new binding FIRST so every reader
+      // (owner resolve, bootstrap window, the swarm-join retry) sees the
+      // rekey target throughout the close→rejoin window below.
+      currentBinding = binding;
       const previous = swarmHandle;
       swarmHandle = null;
       if (previous) {

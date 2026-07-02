@@ -17,13 +17,21 @@ import {
 const T: DesktopTarget = { display: ':99', width: 1024, height: 768 };
 
 describe('assertSandboxDisplay — never the host :0', () => {
-  // QUARANTINED (gate-greening 2026-06-30, WI follow-up): hardcodes `:1` as a sandbox display,
-  // but on the CI/dev runner `:1` IS the operator host display, so assertSandboxDisplay(':1')
-  // correctly refuses it. Confirmed-unrelated to the gate-greening work; needs an env-agnostic
-  // rewrite by the desktop-isolation owner (don't assume a specific host display number).
-  it.skip('accepts a sandbox display', () => {
-    expect(() => assertSandboxDisplay(':99')).not.toThrow();
-    expect(() => assertSandboxDisplay(':1')).not.toThrow();
+  it('accepts a sandbox display', () => {
+    // WI-1318: env-agnostic — assertSandboxDisplay also refuses whatever display
+    // process.env.DISPLAY currently points at (the operator's real seat, which on
+    // some runners IS :1), so this test must pin DISPLAY to a known value rather
+    // than assume the ambient host display number. Mirrors the ISOLATION describe
+    // block below (save/restore around a controlled DISPLAY).
+    const saved = process.env.DISPLAY;
+    process.env.DISPLAY = ':0'; // any fixed value distinct from the displays asserted below
+    try {
+      expect(() => assertSandboxDisplay(':99')).not.toThrow();
+      expect(() => assertSandboxDisplay(':1')).not.toThrow();
+    } finally {
+      if (saved === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = saved;
+    }
   });
   it.each([':0', ':0.0'])('REFUSES the host display %s', (d) => {
     expect(() => assertSandboxDisplay(d)).toThrow(/HOST display :0/);

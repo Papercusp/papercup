@@ -136,7 +136,7 @@ vi.mock('../identity', () => ({
 
 vi.mock('../self-marker', () => ({
   resolveSelfRef: vi.fn(() => 'agent-1'),
-  markSelfRows: vi.fn((rows, self) =>
+  markSelfRows: vi.fn((rows: Array<Record<string, unknown>>, self: string) =>
     rows.map((r) => ({ ...r, isSelf: r.ownerId === self })),
   ),
 }));
@@ -145,18 +145,30 @@ vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'test-ws'),
 }));
 
+// The handler's declared return type is a ToolResult|ToolResponse union and its
+// ctx param is the full UnifiedToolContext; tests only need the `content[0].text`
+// shape and a partial ctx, so route every call through this thin, explicitly-typed
+// wrapper rather than fighting the union/strict-ctx types at each call site.
+type TextResult = { content: Array<{ type: string; text: string }> };
+const call = async (
+  args: Record<string, unknown>,
+  ctx?: Record<string, unknown>,
+) => {
+  const result = (await rosterTool.handler(
+    args as never,
+    ctx as never,
+  )) as unknown as TextResult;
+  return { raw: result, output: JSON.parse(result.content[0]!.text) as Record<string, unknown> };
+};
+
 describe('coord:roster', () => {
   const tool = rosterTool;
 
   describe('view=live (default)', () => {
     it('should return presence snapshot with live view', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'live', scope: 'hive' },
         { workspaceId: 'test-ws', harnessSlug: 'test-harness' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output).toMatchObject({
@@ -178,56 +190,42 @@ describe('coord:roster', () => {
     });
 
     it('should support scope=workspace', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'live', scope: 'workspace' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output.scope).toBe('workspace');
     });
 
     it('should support targeted owner lookup', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'live', owner: 'agent-1' },
         { workspaceId: 'test-ws' },
       );
 
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
-      );
-
-      expect(output.active).toHaveLength(1);
-      expect(output.active[0].ownerId).toBe('agent-1');
+      const active = output.active as Array<{ ownerId: string }>;
+      expect(active).toHaveLength(1);
+      expect(active[0]!.ownerId).toBe('agent-1');
     });
 
     it('should include self marker', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'live' },
         { workspaceId: 'test-ws', ownerId: 'agent-1' },
       );
 
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
-      );
-
       expect(output.self).toBe('agent-1');
-      expect(output.active.some((r: { isSelf: boolean }) => r.isSelf)).toBe(true);
+      const active = output.active as Array<{ isSelf: boolean }>;
+      expect(active.some((r) => r.isSelf)).toBe(true);
     });
   });
 
   describe('view=members', () => {
     it('should return members view with fleet membership', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'members', scope: 'hive' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output).toMatchObject({
@@ -251,13 +249,9 @@ describe('coord:roster', () => {
 
   describe('view=claims', () => {
     it('should return work-item claims', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'claims', scope: 'hive' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output).toMatchObject({
@@ -272,21 +266,18 @@ describe('coord:roster', () => {
       });
 
       // Agents should have their claims
-      expect(output.agents).toHaveLength(2);
-      expect(output.agents[0]).toMatchObject({
+      const agents = output.agents as Array<{ ownerId: string; claims: unknown }>;
+      expect(agents).toHaveLength(2);
+      expect(agents[0]).toMatchObject({
         ownerId: 'agent-1',
         claims: expect.any(Array),
       });
     });
 
     it('should support plan filter', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'claims', plan: 'test-plan' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output.view).toBe('claims');
@@ -295,13 +286,9 @@ describe('coord:roster', () => {
     });
 
     it('should support agent filter', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'claims', agent: 'agent-1' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output.view).toBe('claims');
@@ -310,13 +297,9 @@ describe('coord:roster', () => {
 
   describe('view=history', () => {
     it('should return history placeholder (WI-1346 pending)', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'history' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output).toMatchObject({
@@ -332,26 +315,18 @@ describe('coord:roster', () => {
 
   describe('scope resolution', () => {
     it('should default to hive scope', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         {},
         { workspaceId: 'test-ws', harnessSlug: 'test-harness' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output.scope).toBe('hive');
     });
 
     it('should downgrade scope=all for non-superusers', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { view: 'live', scope: 'all' },
         { workspaceId: 'test-ws', isSuperuser: false },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       // Non-superuser asking for 'all' should be downgraded to 'workspace'
@@ -359,13 +334,9 @@ describe('coord:roster', () => {
     });
 
     it('should accept explicit hive', async () => {
-      const result = await tool.handler(
+      const { output } = await call(
         { hive: 'custom-hive' },
         { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
       );
 
       expect(output.hive).toBe('custom-hive');
@@ -374,14 +345,7 @@ describe('coord:roster', () => {
 
   describe('error handling', () => {
     it('should handle missing context gracefully', async () => {
-      const result = await tool.handler(
-        { view: 'live' },
-        undefined,
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
-      );
+      const { output } = await call({ view: 'live' }, undefined);
 
       expect(output).toHaveProperty('scope');
       expect(output).toHaveProperty('active');
@@ -389,10 +353,7 @@ describe('coord:roster', () => {
 
     it('should handle invalid view gracefully', async () => {
       try {
-        await tool.handler(
-          { view: 'invalid' as any },
-          { workspaceId: 'test-ws' },
-        );
+        await call({ view: 'invalid' as unknown as string }, { workspaceId: 'test-ws' });
         // If it doesn't throw during parsing, zod validation catches it
       } catch (e) {
         // Expected: zod validation error
@@ -403,28 +364,18 @@ describe('coord:roster', () => {
 
   describe('output format', () => {
     it('should always return text/json content', async () => {
-      const result = await tool.handler(
-        { view: 'live' },
-        { workspaceId: 'test-ws' },
-      );
+      const { raw } = await call({ view: 'live' }, { workspaceId: 'test-ws' });
 
-      expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe('text');
-      expect(typeof result.content[0].text).toBe('string');
+      expect(raw.content).toHaveLength(1);
+      expect(raw.content[0]!.type).toBe('text');
+      expect(typeof raw.content[0]!.text).toBe('string');
 
       // Should be valid JSON
-      expect(() => JSON.parse(result.content[0].text)).not.toThrow();
+      expect(() => JSON.parse(raw.content[0]!.text)).not.toThrow();
     });
 
     it('should include as_of timestamp', async () => {
-      const result = await tool.handler(
-        { view: 'live' },
-        { workspaceId: 'test-ws' },
-      );
-
-      const output = JSON.parse(
-        result.content[0].type === 'text' ? result.content[0].text : '',
-      );
+      const { output } = await call({ view: 'live' }, { workspaceId: 'test-ws' });
 
       expect(output).toHaveProperty('as_of');
       // Should be ISO timestamp or close to now
