@@ -14,9 +14,11 @@ import { existsSync } from 'node:fs';
 import { appendFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { harnessPath } from '../../../harness-paths';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const supervisor = defineTool({
@@ -56,19 +58,23 @@ const resolveEscalation = defineTool({
   async handler(req, ctx) {
     const url = new URL(req.url);
     const slug = ctx.params.slug as string;
+    const requestedPhase = url.searchParams.get('phase') ?? undefined;
     const project = await resolvePhasedProject(
       slug,
-      phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
+      phasePhaseLabel(requestedPhase),
     );
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const body = (await req.json().catch(() => ({}))) as { response?: unknown; action?: unknown };
     const response = typeof body.response === 'string' ? body.response.trim() : '';
     const action = body.action === 'clear' ? 'clear' : 'keep';
+    const rowPhase = requestedPhase ?? 'staging';
 
     const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
     const { appendTextArtifact, loadTextArtifact, deleteTextArtifact } = await import('../../../text-artifacts');
+    const block = response
+      ? `\n## Human response ${new Date().toISOString()}\n\n${response}\n`
+      : '';
     if (response) {
-      const block = `\n## Human response ${new Date().toISOString()}\n\n${response}\n`;
       await appendTextArtifact(slug, 'supervisor-notes.md', block);
       try { await appendFile(supervisorNotesPath, block, 'utf8'); } catch {}
     }
@@ -76,6 +82,26 @@ const resolveEscalation = defineTool({
     if (action === 'clear') {
       await deleteTextArtifact(slug, 'escalation.md');
       try { await unlink(join(harnessDir(project), 'escalation.md')); } catch {}
+    }
+
+    if (block || action === 'clear') {
+      const { sql } = getOrgPg();
+      await sql.unsafe(
+        `UPDATE harness_shared.harness_escalations
+            SET supervisor_notes = CASE
+                  WHEN $4 <> '' THEN COALESCE(supervisor_notes, '') || $4
+                  ELSE supervisor_notes
+                END,
+                escalation = CASE
+                  WHEN $5 THEN NULL
+                  ELSE escalation
+                END,
+                mtime_ms = $6
+          WHERE workspace_id = $1
+            AND harness_slug = $2
+            AND phase = $3`,
+        [activeWorkspaceId(), slug, rowPhase, block, action === 'clear', Date.now()],
+      );
     }
 
     const pgNotes = await loadTextArtifact(slug, 'supervisor-notes.md');

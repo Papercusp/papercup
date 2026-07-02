@@ -8,7 +8,6 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { phasePhaseLabel } from '../../harness-phases';
 import { getEscalation } from '../../harness-readers';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): reads aging escalations to nudge/escalate.
@@ -34,7 +33,7 @@ export default defineTool({
     phase: z.string().optional(),
   }),
   async handler(args) {
-    const result = await getEscalation(args.slug, phasePhaseLabel(args.phase));
+    const result = await getEscalation(args.slug, args.phase);
     if (!result.ok) {
       return {
         content: [

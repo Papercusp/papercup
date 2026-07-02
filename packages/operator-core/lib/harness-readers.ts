@@ -23,7 +23,7 @@ import {
   safeRead,
   tailFile,
 } from './harness-core';
-import type { Phase } from './harness-phases';
+import { phasePhaseLabel, type Phase } from './harness-phases';
 import type { ProjectEntry } from './harness-registry';
 
 export type HarnessReadResult<T> =
@@ -40,9 +40,9 @@ export interface EscalationData {
 
 export async function getEscalation(
   slug: string,
-  phase: Phase,
+  phase?: string,
 ): Promise<HarnessReadResult<EscalationData>> {
-  const project = await resolvePhasedProject(slug, phase);
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(phase));
   if (!project) return { ok: false, status: 404, error: 'unknown project' };
   const escalationPath = join(harnessDir(project), 'escalation.md');
   const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
@@ -63,14 +63,23 @@ export async function getEscalation(
   try {
     const { sql } = getOrgPg();
     const wid = activeWorkspaceId();
-    const rows = await sql<{ escalation: string; mtime_ms: number }[]>`
-      SELECT escalation, mtime_ms
-        FROM harness_shared.harness_escalations
-       WHERE workspace_id = ${wid}
-         AND harness_slug  = ${slug}
-       ORDER BY mtime_ms DESC
-       LIMIT 1
-    `;
+    const rows = phase
+      ? await sql<{ escalation: string; mtime_ms: number }[]>`
+          SELECT escalation, mtime_ms
+            FROM harness_shared.harness_escalations
+           WHERE workspace_id = ${wid}
+             AND harness_slug = ${slug}
+             AND phase = ${phase}
+           LIMIT 1
+        `
+      : await sql<{ escalation: string; mtime_ms: number }[]>`
+          SELECT escalation, mtime_ms
+            FROM harness_shared.harness_escalations
+           WHERE workspace_id = ${wid}
+             AND harness_slug = ${slug}
+           ORDER BY mtime_ms DESC
+           LIMIT 1
+        `;
     if (rows.length > 0) {
       pgEscalation = rows[0].escalation;
       pgMtimeMs = rows[0].mtime_ms;

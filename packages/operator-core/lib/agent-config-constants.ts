@@ -161,7 +161,7 @@ export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
- * Preemptive compaction cap for the default-1M families (omp + fable): they run
+ * Preemptive compaction cap for the default-1M families (opus + fable): they run
  * on the full 1M window but papercusp compacts them at 500k to bound token spend
  * (owner directive 2026-07-02) — 500k is ample for a leanly-scoped task, and its
  * ×1.2 overshoot (600k) stays well under the 1M − margin ceiling.
@@ -172,7 +172,7 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
- * 200k window → 158,000; 1M → 825,000. EXCEPTION: omp + fable are capped at
+ * 200k window → 158,000; 1M → 825,000. EXCEPTION: opus + fable are capped at
  * 500,000 (owner directive 2026-07-02) so they compact preemptively despite the
  * 1M window.
  */

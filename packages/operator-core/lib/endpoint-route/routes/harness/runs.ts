@@ -12,7 +12,6 @@
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProject, harnessDir, safeRead } from '../../../harness-core';
-import { phasePhaseLabel } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const getRuns = defineTool({
@@ -82,7 +81,7 @@ const getEscalation = defineTool({
     const slug = ctx.params.slug as string;
     const { getEscalation: read } = await import('../../../harness-readers');
     const url = new URL(req.url);
-    const result = await read(slug, phasePhaseLabel(url.searchParams.get('phase') ?? undefined));
+    const result = await read(slug, url.searchParams.get('phase') ?? undefined);
     if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
     return Response.json(result.data);
   },
