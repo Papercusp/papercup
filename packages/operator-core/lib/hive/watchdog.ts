@@ -150,7 +150,15 @@ export async function hiveMidTurn(installSlug: string): Promise<boolean> {
 
 // ── the fallback arm (P-009/P-010/P-011 share; P-012 records) ────────────────
 
-export type WatchdogSource = 'turn-end' | 'boot' | 'tick' | 'paused-recovery' | 'scout-draft-review';
+export type WatchdogSource =
+  | 'turn-end'
+  | 'boot'
+  | 'tick'
+  | 'paused-recovery'
+  | 'scout-draft-review'
+  // WI-1574: the ready-plan autostart sweep's decompose-wake (a ratified scout
+  // plan with no open items cannot start — the Queen is woken to add items).
+  | 'scout-ready-decompose';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
