@@ -126,13 +126,15 @@ async function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]>
   }
   if (remoteRes.status === 'fulfilled') {
     for (const id of remoteRes.value) {
-      // H1 (audit D-013): a REMOTE session-presence row must NEVER shadow a LOCAL
-      // identity. shared_session_presence is device-signed but owner_id is
-      // sender-declared free text, so an admitted-but-hostile member could gossip a
-      // session claiming a local ownerId (e.g. 'queen' or a local su-<uuid>) to make
-      // coord:send resolve/federate that id to THEIR machine (impersonation +
-      // prefix-ambiguity DoS + partial wake-eavesdrop). The local agent is
-      // authoritative for its own id, so a colliding remote claim is dropped here.
+      // H1 (audit D-013): the LOCAL roster is AUTHORITATIVE for its own ownerIds.
+      // shared_session_presence is device-signed but owner_id is sender-declared
+      // free text, so an admitted-but-hostile member can gossip a session claiming a
+      // LOCAL ownerId (e.g. 'queen' or a local su-<uuid>). A remote row is admitted
+      // as a resolvable id ONLY when it does not collide with a locally-homed
+      // identity — a colliding remote claim is never the SOURCE of that id being
+      // known, so it can't repoint / shadow the local agent. (The upstream control
+      // is the presence-gossip pipeline binding the announcing github_user_id to the
+      // signer's attestation; this is the receiver-side belt-and-suspenders.)
       if (!localIds.has(id)) ids.add(id);
     }
   }

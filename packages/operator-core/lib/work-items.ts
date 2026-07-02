@@ -1678,11 +1678,17 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        useMaintainedReady,
      })}`;
   let pendingUnclaimed = poolRows[0]?.n ?? 0;
-  const readyUnclaimed = readyRows[0]?.n ?? 0;
+  let readyUnclaimed = readyRows[0]?.n ?? 0;
 
-  // Tier 3 of the same ladder: fold in the issue-family POOL when the gate is on, so an
+  // Tier 3 of the same ladder: fold in the issue-family counts when the gate is on, so an
   // issue-only backlog is never reported as a drained queue (claim_next would have widened
-  // into it too before missing).
+  // into it too before missing). BOTH halves must count issues, not just the POOL: the
+  // feature `readyRows` above reads only harness_features_consolidated, so an issue-only
+  // backlog that is READY (unblocked) would leave readyUnclaimed=0 while pendingUnclaimed>0
+  // — the "genuinely blocked/gated, don't hot-retry" verdict — even though claim_next's
+  // issue tier would have served it (a lost-lease/race that SHOULD retry). Count the ready
+  // issue pool with the SAME floors claimNextIssueWorkItem enforces (affinity + redundancy +
+  // the inline blocker-terminality readiness) so readyUnclaimed reflects the whole ladder.
   if (await schedulerIssuesClaimableEnabled()) {
     const issueWs = issuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
@@ -1695,6 +1701,41 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND (wi.taken_by IS NULL OR wi.taken_by = '')
          AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
+
+    // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
+    // above PLUS swarm affinity, the excludeRedundant floor, and the inline readiness
+    // predicate (no PRESENT non-terminal blocker across BOTH families). One readiness source
+    // of truth with the issue-claim path, so this never drifts from what claim_next serves.
+    const issueReadyRows = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.work_items wi
+       WHERE wi.item_kind IN ('bug', 'change', 'task')
+         AND wi.workspace_id = ${issueWs}
+         AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
+         AND (wi.taken_by IS NULL OR wi.taken_by = '')
+         AND wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[])
+         AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
+         AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
+         AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.work_item_deps d
+              WHERE d.workspace_id = 'default'
+                AND d.dep_type = 'blocks'
+                AND d.blocked_ref = wi.feature_id
+                AND (
+                  EXISTS (
+                    SELECT 1 FROM harness_shared.harness_features_consolidated bf
+                     WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                       AND bf.status NOT IN ('passed', 'deprecated')
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM harness_shared.engineer_issues bi
+                     WHERE bi.workspace_id = 'default'
+                       AND bi.issue_id = d.blocker_ref
+                       AND bi.state NOT IN ('resolved', 'closed')
+                  )
+                )
+         )`;
+    readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
   return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed };

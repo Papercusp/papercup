@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('./presence', () => ({ listPresence: vi.fn() }));
 vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn() }));
+vi.mock('../../sync/hyperbee/session-presence-store', () => ({ listLiveSessionPresence: vi.fn() }));
 import {
   isSelectorOrWildcard,
   resolveBestEffort,
@@ -10,9 +11,15 @@ import {
 } from './recipient-resolve';
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
+import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
 
 const mockedList = vi.mocked(listPresence);
 const mockedRecorded = vi.mocked(listRecordedLiveSessions);
+const mockedRemote = vi.mocked(listLiveSessionPresence);
+const remoteSess = (ids: string[]) =>
+  ids.map((owner_id) => ({ owner_id, last_seen_ms: 1 })) as unknown as Awaited<
+    ReturnType<typeof listLiveSessionPresence>
+  >;
 const roster = (ids: string[]) => ids.map((ownerId) => ({ ownerId })) as Awaited<ReturnType<typeof listPresence>>;
 const recorded = (ids: string[]) =>
   ids.map((coordOwnerId) => ({ coordOwnerId })) as Awaited<ReturnType<typeof listRecordedLiveSessions>>;
@@ -153,6 +160,36 @@ describe('resolveRecipients (host wrapper — fail-open against the live roster)
       unknown: [],
       ambiguous: [],
     });
+  });
+});
+
+describe('H1 (audit D-013) — remote session presence never shadows a LOCAL identity', () => {
+  beforeEach(() => {
+    mockedList.mockReset();
+    mockedRecorded.mockReset();
+    mockedRemote.mockReset();
+    mockedRecorded.mockResolvedValue([]);
+    mockedRemote.mockResolvedValue(remoteSess([]));
+  });
+
+  it('a genuine remote session id resolves like a local one (the P-007 parity path)', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    mockedRemote.mockResolvedValue(remoteSess(['su-remote-abc123']));
+    const r = await resolveRecipients(['su-remote-abc123'], 'ws-1');
+    expect(r.resolved).toEqual(['su-remote-abc123']);
+    expect(r.unknown).toEqual([]);
+  });
+
+  it('a remote session CLAIMING a local ownerId stays resolvable to the LOCAL agent — never doubled/ambiguous', async () => {
+    // Local presence owns 'queen'; a hostile admitted member ALSO gossips a session
+    // claiming 'queen'. The local agent is authoritative: 'queen' resolves cleanly,
+    // the colliding remote claim never introduces a phantom/ambiguity.
+    mockedList.mockResolvedValue(roster(['queen', 'su-local-xyz']));
+    mockedRemote.mockResolvedValue(remoteSess(['queen']));
+    const r = await resolveRecipients(['queen'], 'ws-1');
+    expect(r.resolved).toEqual(['queen']);
+    expect(r.ambiguous).toEqual([]);
+    expect(r.unknown).toEqual([]);
   });
 });
 
