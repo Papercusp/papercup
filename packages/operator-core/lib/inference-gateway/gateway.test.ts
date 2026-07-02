@@ -2789,3 +2789,54 @@ test('effectivePriorityLabel leaves unknown owners and headerless requests in th
   // An empty/whitespace priority header must not mask owner inference.
   assert.equal(effectivePriorityLabel({ 'x-papercusp-priority': '  ', 'x-papercusp-owner': 'su-x' }), 'su');
 });
+
+/* ── proactive egress probing (gateway-rayobyte-hardening P-002) ── */
+
+test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before any live request, and a pinned request routes around it', async () => {
+  // A has a proxy egress whose probe always fails; B is healthy. No live traffic touches A — the
+  // proactive prober alone must cool it (the reactive circuit would need two live requests to burn
+  // first). A subsequent request PINNED to A yields (unserviceable pin) and serves via B.
+  resetGovernorRegistry();
+  const probed: string[] = [];
+  const probeEgressImpl = (async (acct: { id: string }) => {
+    probed.push(acct.id);
+    return acct.id === 'A'
+      ? { accountId: acct.id, hasEgress: true, exitIp: null, reputation: null, asn: null, error: 'connect ECONNREFUSED' }
+      : { accountId: acct.id, hasEgress: true, exitIp: '203.0.113.7', reputation: null, asn: null };
+  }) as unknown as typeof import('./egress-probe').probeEgress;
+  const A: ActiveAccount = { accountId: 'A', token: async () => 'A-tok', egress: { proxyUrl: 'http://127.0.0.1:3128' } };
+  const B: ActiveAccount = { accountId: 'B', token: async () => 'B-tok' };
+  const pool = createFailoverPool([A, B]);
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl: (async () => new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 200,
+    proactiveEgressProbeMs: 25,
+    probeEgressImpl,
+  });
+  port = await gw.listen(0);
+
+  // Wait for the prober to reach the open threshold (3 consecutive failures at 25ms cadence).
+  const deadline = Date.now() + 5_000;
+  let opens = 0;
+  for (;;) {
+    const s = (await (await ask('/stats')).json()) as { proactiveEgressProbe: { circuitOpens: number; enabled: boolean } };
+    assert.equal(s.proactiveEgressProbe.enabled, true, 'prober armed');
+    opens = s.proactiveEgressProbe.circuitOpens;
+    if (opens >= 1 || Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(opens >= 1, `the idle prober opened A's egress circuit (opens=${opens}) with zero live traffic`);
+  assert.ok(probed.filter((id) => id === 'A').length >= 3, 'A was probed to the threshold');
+
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200);
+  await r.text();
+  assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'pinned-to-A request yielded around the proactively-cooled proxy');
+}, 20_000);

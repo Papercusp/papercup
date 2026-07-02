@@ -69,6 +69,17 @@ export interface LagMonitorOpts {
   minHeapSnapshotGapMs?: number;
   /** Retain at most this many `.heapsnapshot` files (oldest pruned). Default 5. */
   maxHeapSnapshots?: number;
+  /**
+   * WI-1088 leak hunt round 2: SAMPLING heap profiler. A FULL snapshot of a
+   * multi-GB heap takes minutes to serialize and the leaking process dies first
+   * (three 5-6 GB `.partial`s and zero completed captures on 2026-07-01). The
+   * sampling profiler is the tool that CANNOT lose that race: it runs from boot
+   * at O(1) overhead and its dump is a few-KB JSON of ALLOCATION STACKS —
+   * written instantly at the same RSS trigger, with the top allocation sites
+   * logged straight to the journal (self-pinpointing). Defaults to
+   * heapSnapshotOnHighRss (same enable, no new knob).
+   */
+  heapSamplingOnHighRss?: boolean;
 }
 
 export interface LagMonitorHandle {
@@ -229,6 +240,11 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   const heapSnapshotDir = opts.heapSnapshotDir;
   let snapshotting = false;
   let lastSnapshotAt = 0;
+  // WI-1088 round 2: sampling heap profiler — armed lazily on the first tick so
+  // startup cost is off the boot path; dumped at the same RSS trigger.
+  const heapSamplingOnHighRss = opts.heapSamplingOnHighRss ?? heapSnapshotOnHighRss;
+  let samplingArmed = false;
+  let samplingDumping = false;
 
   const timer = managedSetInterval('event-loop-lag-monitor', intervalMs, () => {
     const s = read();
