@@ -551,6 +551,33 @@ const hiveEpochKeyReconcileCheck: PeriodicCheck = {
   },
 };
 
+// Every 5min: FEDERATED presence reaper (cross-machine-coord-parity-and-trust
+// P-057 / M8, audit D-013). shared_presence / shared_session_presence are
+// gossip-published liveness beats with NO retention — a crashed device's rows are
+// immortal, and a member can rotate the sender-controlled machine_label / owner_id
+// to leak fresh rows forever (the writer's full-set-replace prune covers only a
+// device's CURRENT label set). This tick drops rows past the TTL (well beyond every
+// reader's 40m staleness window) and caps rows per signing device. PURELY LOCAL: no
+// capture trigger on these tables, so the DELETEs never federate. Cheap (small,
+// bounded tables) so NOT shed — the security bound should hold under load too.
+const sharedPresenceReaperCheck: PeriodicCheck = {
+  name: 'shared-presence-reaper',
+  intervalMs: 300_000,
+  shed: false,
+  tick: async () => {
+    const { reapStaleSharedPresence } = await import('../sync/hyperbee/shared-presence-reaper');
+    const r = await reapStaleSharedPresence();
+    const total = r.presenceTtlReaped + r.sessionTtlReaped + r.presenceCapReaped + r.sessionCapReaped;
+    if (total > 0) {
+      console.warn(
+        `[shared-presence-reaper] reaped ${total} federated presence row(s) — ` +
+          `TTL: presence=${r.presenceTtlReaped} session=${r.sessionTtlReaped}; ` +
+          `per-device cap: presence=${r.presenceCapReaped} session=${r.sessionCapReaped}`,
+      );
+    }
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -565,6 +592,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     steeringChurnSweepCheck,
     federationDrainReconcileCheck,
     hiveEpochKeyReconcileCheck,
+    sharedPresenceReaperCheck,
   ];
 }
 

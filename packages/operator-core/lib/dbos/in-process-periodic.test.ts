@@ -135,7 +135,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
-  it('converts exactly the 11 high-frequency ephemeral probes', () => {
+  it('converts exactly the 12 high-frequency ephemeral probes', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
         'completion-ref-verify',
@@ -145,6 +145,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'hive-epoch-key-reconcile',
         'learning-infra-health',
         'service-health',
+        'shared-presence-reaper',
         'spawn-reclaim-sweep',
         'stale-claim-sweep',
         'steering-churn-sweep',

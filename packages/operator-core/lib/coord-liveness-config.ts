@@ -38,6 +38,18 @@ export interface CoordLivenessConfig {
    *  last heartbeat before the scheduled reaper deletes it. A wakeable ("parked") row is never
    *  reaped regardless of this TTL. Default PRESENCE_REAPER_TTL_MS = 4h. */
   presenceReaperTtlMs?: number;
+  /** Override the FEDERATED presence reaper TTL (cross-machine-coord-parity-and-trust-2026-07-01
+   *  P-057 / M8) — how long a shared_presence / shared_session_presence gossip row survives past
+   *  its last_seen_at beat before the scheduled reaper deletes it. Must stay well beyond every
+   *  reader's staleness window (PRESENCE_STALE_MS×4 = 40m) so a still-surfaced row is never
+   *  removed. Default 4h. */
+  sharedPresenceReaperTtlMs?: number;
+  /** Override the per-signing-device row cap on the federated presence tables
+   *  (cross-machine-coord-parity-and-trust-2026-07-01 P-057 / M8). The reaper keeps only the N
+   *  most-recent rows per (workspace, device_pubkey) and deletes the overflow — bounding the total
+   *  rows one device can hold regardless of how fast it rotates the sender-controlled machine_label
+   *  / owner_id (the TTL alone can't catch a fast rotator whose rows stay fresh). Default 128. */
+  sharedPresenceMaxRowsPerDevice?: number;
 }
 
 /** The consumers' baked defaults — for the diff/display + the tools' "default" reporting only.
@@ -50,6 +62,8 @@ export const COORD_LIVENESS_DEFAULTS = {
   assignmentReclaimGraceMs: 60 * 60 * 1000,
   sessionReaperGraceMs: STALE_MS,
   presenceReaperTtlMs: 4 * 60 * 60 * 1000,
+  sharedPresenceReaperTtlMs: 4 * 60 * 60 * 1000,
+  sharedPresenceMaxRowsPerDevice: 128,
 } as const;
 
 export async function readCoordLivenessConfig(): Promise<CoordLivenessConfig> {
