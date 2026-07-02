@@ -2,7 +2,7 @@
  * intel:spawn_tree — read tool_invocations as a parent→child tree.
  *
  * Backs the harness Intel panel's Spawns sub-tab. Reads via
- * harness_shared.tool_invocations_spawn_tree_filtered (Migration 459), a
+ * harness_shared.tool_invocations_spawn_tree_filtered (Migration 460), a
  * parameterized SQL function that exposes every matching row plus a `depth`
  * column and a `root_spawn_id` so the UI can group by root spawn. WI-1671:
  * replaced the bare tool_invocations_spawn_tree VIEW, whose unfiltered

@@ -28,7 +28,7 @@ export default defineTool({
 
     try {
       const { sql } = getOrgPg();
-      // WI-1671: tool_invocations_spawn_tree_filtered (Migration 459) — a
+      // WI-1671: tool_invocations_spawn_tree_filtered (Migration 460) — a
       // parameterized SQL function replacing the bare `tool_invocations_spawn_tree`
       // view. The view's `WITH RECURSIVE` base term has no filter, so Postgres
       // can't push workspace_id/harness_slug/invoked_at/status down into it —
