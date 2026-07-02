@@ -461,6 +461,26 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'scout-ready-autostart-sweep' },
   );
 
+  // WI-1623: the release-deploy STALENESS recurrence guard. The green pin can sit
+  // deployable-but-not-live far past the documented ≤15-min auto-deploy cadence with
+  // NOTHING catching it (confirmed live: a stuck `deployedAt` display field went
+  // unnoticed for ~a month even though the gate/pin were otherwise healthy — see the
+  // work-item + release-deploy-staleness-watchdog.ts's header for the full root
+  // cause). This sweep alerts (debounced, via the shared hive_watchdog_fires ledger)
+  // whenever the green pin has been deployable-but-not-live longer than the
+  // threshold. Never ships/restarts anything itself — alert only. Fail-soft;
+  // kill switch: PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      const { releaseDeployStalenessSweep } = await import('../release-deploy-staleness-watchdog');
+      const result = await releaseDeployStalenessSweep({});
+      if (result.outcome === 'alerted' || result.outcome === 'error') {
+        console.warn(`[release-deploy-staleness] ${result.outcome}: ${result.reason}`);
+      }
+    },
+    { name: 'release-deploy-staleness-sweep' },
+  );
+
   // queen-memory-hybrid-2026-07-02 L1b — agent_facts hygiene: hard-delete facts
   // expired/retracted >30d (bounded audit trail). Fail-soft like every sweep here.
   await DBOS.runStep(

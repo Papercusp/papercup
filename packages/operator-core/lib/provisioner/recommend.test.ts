@@ -81,4 +81,52 @@ describe('recommendCombo', () => {
     expect(rec.entry).toBeNull();
     expect(rec.reason).toMatch(/no catalog combo targets tier/);
   });
+
+  describe('containerRuntimeAvailable gate (D-009 #3 — downgrade to llama-server)', () => {
+    const vllmEntry: CatalogEntry = {
+      id: 'awq-vllm',
+      displayName: 'awq model via vLLM',
+      backend: 'vllm',
+      model: { ollamaRef: 'awq-model', quant: 'AWQ', sizeGB: 20, hfRepo: 'org/awq-model', quantization: 'awq' },
+      hardwareTier: 'nvidia-24gb-plus',
+      minVramGB: 24,
+      serve: { host: '127.0.0.1', portDefault: 8000, parallelSlots: 4, ctxTotal: 65536, kvCacheType: 'n/a', flashAttn: false, gpuMemoryUtilization: 0.9 },
+      status: 'provisional',
+      sourceRef: 'test',
+    };
+    const llamaServerEntry: CatalogEntry = {
+      id: 'small-llama-server',
+      displayName: 'small model via llama-server',
+      backend: 'llama-server',
+      model: { ollamaRef: 'x/small:Q4', quant: 'Q4', sizeGB: 5 },
+      hardwareTier: 'nvidia-24gb-plus',
+      minVramGB: 24,
+      serve: { host: '127.0.0.1', portDefault: 11001, parallelSlots: 1, ctxTotal: 8192, kvCacheType: 'f16', flashAttn: false },
+      status: 'certified',
+      sourceRef: 'test',
+    };
+
+    it('prefers the (bigger) vllm candidate when containerRuntimeAvailable is unset (default, backward-compatible)', () => {
+      const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', vramGB: 24 } }), [llamaServerEntry, vllmEntry]);
+      expect(rec.entry?.id).toBe('awq-vllm');
+    });
+
+    it('still prefers the vllm candidate when containerRuntimeAvailable is explicitly true', () => {
+      const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', vramGB: 24 } }), [llamaServerEntry, vllmEntry], { containerRuntimeAvailable: true });
+      expect(rec.entry?.id).toBe('awq-vllm');
+    });
+
+    it('skips the vllm candidate and downgrades to llama-server when containerRuntimeAvailable is false', () => {
+      const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', vramGB: 24 } }), [llamaServerEntry, vllmEntry], { containerRuntimeAvailable: false });
+      expect(rec.entry?.id).toBe('small-llama-server');
+      expect(rec.reason).toMatch(/vLLM candidate was skipped/);
+    });
+
+    it('reports no combo (with the skip noted) when vllm was the ONLY candidate for the tier and no runtime is available', () => {
+      const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', vramGB: 24 } }), [vllmEntry], { containerRuntimeAvailable: false });
+      expect(rec.entry).toBeNull();
+      expect(rec.reason).toMatch(/no catalog combo targets tier/);
+      expect(rec.reason).toMatch(/skipping vLLM candidates/);
+    });
+  });
 });

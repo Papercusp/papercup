@@ -16,10 +16,16 @@ recorded and cheap to read. There are **two failure surfaces** and they do
 ## Surface 1 — recorded tool errors (`tool_invocations`)
 
 Every dispatched tool call (including `?superuser=1`) writes a row to
-`harness_shared.tool_invocations` in the **`papercusp`** DB. On the standing
-dev box that's the embedded PG the operator connects to on **port 5432**
-(`harness_admin` / `harness_admin_pwd`; resolve the DSN via
-`getHarnessAdminUrl()` / [embedded-pg-discovery](/internal/docs/agent-insights/embedded-pg-discovery) in code — don't hardcode).
+`harness_shared.tool_invocations` in the **`papercusp`** DB. Which PG
+instance/port that is is **not** a fixed `:5432` — the operator resolves it
+at runtime via `getHarnessAdminUrl()` (discovery-file-first, port shifts
+across boots/machines; see
+[embedded-pg-discovery](/internal/docs/agent-insights/embedded-pg-discovery)).
+`:5432` is only the *native-PG dev-box fallback* value baked into
+`NATIVE_FALLBACK`/`connection.ts`'s hardcoded fallback string, used when no
+discovery file and no explicit env var are present — don't assume it's the
+live port; resolve it (`getHarnessAdminUrl()` in code, or read
+`~/.papercusp/embedded-pg.json` from a shell) rather than hardcoding.
 
 Quick triage without SQL: the **`dev:telemetry`** MCP tool returns a per-tool
 rollup (`call_count`, `error_count`, p50/p95) over the last N hours. Narrow
@@ -77,8 +83,11 @@ Two that bit while adding the regression tests for these bugs:
 
 ## Live-DB checks are fair game
 
-You can `psql` the embedded PG (5432, `harness_admin`) read-only to reproduce a
-query or confirm a `has_table_privilege(...)`. For a faithful migration test,
+You can `psql` the embedded PG (`harness_admin`; resolve the live host:port via
+`jq -r .url ~/.papercusp/embedded-pg.json` — see
+[embedded-pg-discovery](/internal/docs/agent-insights/embedded-pg-discovery),
+don't assume `:5432`) read-only to reproduce a query or confirm a
+`has_table_privilege(...)`. For a faithful migration test,
 execute the **real** `NNN-*.sql` files against a testcontainer DB (see
 `apps/operator/test/harness-plan-status-grants.integration.test.ts`) rather than
 re-stating the DDL.

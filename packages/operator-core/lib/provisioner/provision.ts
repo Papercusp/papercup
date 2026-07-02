@@ -21,6 +21,14 @@ import { recommendCombo, type Recommendation } from './recommend';
 import { resolveOllamaWeights, type WeightsPlan, type OllamaResolveDeps } from './weights';
 import { renderLlamaServerUnit } from './backend-config';
 import {
+  detectContainerRuntime,
+  resolveVllmImage,
+  renderVllmContainerUnit,
+  VLLM_PINNED_IMAGE,
+  type ContainerRuntimeInfo,
+  type VllmImageDeps,
+} from './vllm-container';
+import {
   registerLocalBackend,
   type RegisterLocalBackendInput,
   type LocalBackendRecord,
@@ -33,6 +41,11 @@ export interface ProvisionPlan {
   hardware: DetectedHardware;
   recommendation: Recommendation;
   weights: WeightsPlan | null;
+  /** Container-runtime probe result (D-009 #3) — only populated when the detected hardware is
+   *  NVIDIA (the only tier a vLLM candidate can ever target, D-004); `null` on Apple/AMD/CPU
+   *  hardware where the probe would be moot. Feeds `recommendCombo`'s "downgrade to
+   *  llama-server when no working Docker/Podman runtime" gate. */
+  containerRuntime: ContainerRuntimeInfo | null;
   backendId: string;
   unitFileContent: string | null;
   unitFilePath: string;
@@ -56,6 +69,15 @@ export interface PlanProvisionOptions {
    *  its own contract below). Omitted -> `renderLlamaServerUnit`'s default of relying on a
    *  bare `llama-server` already being on PATH, unchanged from before WI-1617. */
   binPath?: string;
+  /** Exec injection for the container-runtime probe (D-009 #3/P-013) — tests only; production
+   *  callers rely on the default (real `docker`/`podman` exec). */
+  vllmDeps?: VllmImageDeps;
+  /** Override the vLLM image pin — tests / a future multi-image catalog. Defaults to
+   *  `VLLM_PINNED_IMAGE`. */
+  vllmImage?: string;
+  /** Host directory bind-mounted to the vLLM container's `/root/.cache/huggingface`. Defaults
+   *  to `${home}/.cache/huggingface`. */
+  hfCacheDir?: string;
 }
 
 function defaultHome(): string {
@@ -68,13 +90,20 @@ function defaultHome(): string {
  */
 export async function planProvision(opts: PlanProvisionOptions = {}): Promise<ProvisionPlan> {
   const hardware = await detectHardware(opts.hardwareDeps);
-  const recommendation = recommendCombo(hardware, opts.catalog);
+  // Container-runtime probing only matters where a vLLM candidate could ever match (NVIDIA —
+  // D-004: vLLM is CUDA-only) — skip the two extra subprocess spawns on Apple/AMD/CPU hardware.
+  const containerRuntime: ContainerRuntimeInfo | null =
+    hardware.gpu?.vendor === 'nvidia' ? await detectContainerRuntime(opts.vllmDeps?.exec) : null;
+  const recommendation = recommendCombo(hardware, opts.catalog, {
+    containerRuntimeAvailable: containerRuntime ? containerRuntime.runtime !== null : undefined,
+  });
 
   if (!recommendation.entry) {
     return {
       hardware,
       recommendation,
       weights: null,
+      containerRuntime,
       backendId: '',
       unitFileContent: null,
       unitFilePath: '',
@@ -84,10 +113,13 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
   }
 
   const entry = recommendation.entry;
-  const weights =
+  const vllmImage = opts.vllmImage ?? VLLM_PINNED_IMAGE;
+  const weights: WeightsPlan =
     entry.backend === 'llama-server'
       ? await resolveOllamaWeights(entry.model.ollamaRef, opts.ollamaDeps)
-      : { needsDownload: true, detail: `download flow for backend kind '${entry.backend}' is not implemented yet`, pullHint: undefined };
+      : entry.backend === 'vllm'
+        ? await resolveVllmImage(vllmImage, { ...opts.vllmDeps, runtimeInfo: containerRuntime ?? undefined })
+        : { needsDownload: true, detail: `download flow for backend kind '${entry.backend}' is not implemented yet`, pullHint: undefined };
 
   const backendId = opts.backendId ?? `provisioner-${entry.id}`;
   const home = opts.home ?? defaultHome();
@@ -96,18 +128,35 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
 
   const unitFileContent =
     !weights.needsDownload && weights.weightsPath
-      ? renderLlamaServerUnit({
-          alias: entry.model.ollamaRef,
-          weightsPath: weights.weightsPath,
-          host: entry.serve.host,
-          port: entry.serve.portDefault,
-          parallelSlots: entry.serve.parallelSlots,
-          ctxTotal: entry.serve.ctxTotal,
-          kvCacheType: entry.serve.kvCacheType,
-          flashAttn: entry.serve.flashAttn,
-          logPath,
-          binPath: opts.binPath,
-        })
+      ? entry.backend === 'vllm' && containerRuntime?.runtime
+        ? renderVllmContainerUnit({
+            runtime: containerRuntime.runtime,
+            containerName: backendId,
+            image: weights.weightsPath,
+            hfModelRepo: entry.model.hfRepo ?? entry.model.ollamaRef,
+            servedModelName: entry.model.ollamaRef,
+            quantization: entry.model.quantization ?? 'awq',
+            host: entry.serve.host,
+            port: entry.serve.portDefault,
+            maxModelLen: entry.serve.ctxTotal,
+            gpuMemoryUtilization: entry.serve.gpuMemoryUtilization ?? 0.9,
+            hfCacheDir: opts.hfCacheDir ?? `${home}/.cache/huggingface`,
+            logPath,
+          })
+        : entry.backend === 'llama-server'
+          ? renderLlamaServerUnit({
+              alias: entry.model.ollamaRef,
+              weightsPath: weights.weightsPath,
+              host: entry.serve.host,
+              port: entry.serve.portDefault,
+              parallelSlots: entry.serve.parallelSlots,
+              ctxTotal: entry.serve.ctxTotal,
+              kvCacheType: entry.serve.kvCacheType,
+              flashAttn: entry.serve.flashAttn,
+              logPath,
+              binPath: opts.binPath,
+            })
+          : null
       : null;
 
   const gatewayRegisterInput: RegisterLocalBackendInput | null =
@@ -121,9 +170,11 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
         }
       : null;
 
-  const blocked = weights.needsDownload ? `weights not present locally — ${weights.pullHint ?? 'a download is required'}` : null;
+  const blocked = weights.needsDownload
+    ? `${entry.backend === 'vllm' ? 'container image' : 'weights'} not present locally — ${weights.pullHint ?? weights.detail ?? 'a download is required'}`
+    : null;
 
-  return { hardware, recommendation, weights, backendId, unitFileContent, unitFilePath, gatewayRegisterInput, blocked };
+  return { hardware, recommendation, weights, containerRuntime, backendId, unitFileContent, unitFilePath, gatewayRegisterInput, blocked };
 }
 
 export interface ApplyProvisionOptions {

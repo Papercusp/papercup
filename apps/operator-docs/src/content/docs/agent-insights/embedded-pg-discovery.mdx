@@ -29,6 +29,25 @@ which reads this file. `getHarnessPg(slug)` (per-harness scoped) lives in
 `libs/papercusp/libs/db/src/connection.ts`. The port is **not** stable — it can
 shift between boots, machines, and Papercusp installs.
 
+### Caching: only the `env` source is safe to pin — re-read `discovery`/`fallback` every call
+
+`getHarnessAdminUrlWithSource()` caches its result **only** when the resolved
+source is `env` (`HARNESS_ADMIN_DATABASE_URL` etc. — injected once by Tauri
+main and stable for the process lifetime). A `discovery-file` or `fallback`
+result is **re-resolved on every call** — never cached. This isn't
+incidental: the embedded-pg.json port genuinely *changes* across boots (the
+desktop's Rust main picks a fresh free port each launch), and a caller that
+memoized an early `discovery`/`fallback` read (e.g. before `serve` rewrote
+the discovery file for *this* boot) would pin a previous launch's stale
+port for the whole process lifetime. That exact bug wedged every later
+LISTEN/query on a dead port on Windows/WSL — the WSL distro persists the
+prior-boot `embedded-pg.json` across launches, so a memoized early read is
+guaranteed stale there (fixed 2026-07-02). `connection.ts`'s `adminUrl()` /
+`appUrl()` follow the identical contract: cache `env`, re-read + invalidate
+the cached pool on every `discovery` change, never cache the native
+fallback. If you write a NEW caller around `resolvePgUrl`, mirror this —
+memoizing a `discovery`/`fallback` result is the bug class to avoid.
+
 ## Why it matters
 
 Code that hardcodes `:5432` (host PG default) or `:16534` (an older

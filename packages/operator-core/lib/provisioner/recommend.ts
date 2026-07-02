@@ -35,12 +35,24 @@ export interface Recommendation {
   reason: string;
 }
 
+export interface RecommendOptions {
+  /** D-009 #3's "gate the vLLM lane on a working container runtime; downgrade to llama-server
+   *  when absent". Explicit `false` skips every `backend: 'vllm'` candidate and falls through
+   *  to the next-best (typically llama-server) candidate for the same tier. `undefined` (the
+   *  default — every pre-P-013 call site) applies NO filter, matching prior behavior exactly. */
+  containerRuntimeAvailable?: boolean;
+}
+
 /**
  * Recommend a catalog entry for the given hardware. Picks the largest-model entry that fits
  * the tier and the detected VRAM budget; returns `entry: null` with an explanatory `reason`
  * when nothing in the catalog targets this hardware (including the CPU-only → cloud case).
  */
-export function recommendCombo(hw: DetectedHardware, catalog: readonly CatalogEntry[] = CERTIFIED_CATALOG): Recommendation {
+export function recommendCombo(
+  hw: DetectedHardware,
+  catalog: readonly CatalogEntry[] = CERTIFIED_CATALOG,
+  opts: RecommendOptions = {},
+): Recommendation {
   const tier = tierOf(hw);
 
   if (tier === 'cpu-only') {
@@ -54,15 +66,18 @@ export function recommendCombo(hw: DetectedHardware, catalog: readonly CatalogEn
   }
 
   const vramGB = hw.gpu?.vramGB ?? 0;
-  const candidates = catalog
-    .filter((e) => e.hardwareTier === tier && vramGB >= e.minVramGB)
+  const tierMatches = catalog.filter((e) => e.hardwareTier === tier && vramGB >= e.minVramGB);
+  const runtimeGated = opts.containerRuntimeAvailable === false;
+  const skippedVllm = runtimeGated && tierMatches.some((e) => e.backend === 'vllm');
+  const candidates = tierMatches
+    .filter((e) => !(runtimeGated && e.backend === 'vllm'))
     .sort((a, b) => b.model.sizeGB - a.model.sizeGB); // biggest model that still fits, first
 
   if (candidates.length === 0) {
     return {
       entry: null,
       tier,
-      reason: `no catalog combo targets tier '${tier}' yet (${vramGB}GB VRAM detected) — catalog currently covers: ${[...new Set(catalog.map((e) => e.hardwareTier))].join(', ') || '(empty)'}`,
+      reason: `no catalog combo targets tier '${tier}' yet (${vramGB}GB VRAM detected)${skippedVllm ? ' after skipping vLLM candidates (no working Docker/Podman runtime — D-009 #3 downgrade)' : ''} — catalog currently covers: ${[...new Set(catalog.map((e) => e.hardwareTier))].join(', ') || '(empty)'}`,
     };
   }
 
@@ -70,6 +85,6 @@ export function recommendCombo(hw: DetectedHardware, catalog: readonly CatalogEn
   return {
     entry,
     tier,
-    reason: `matched '${entry.displayName}' for tier '${tier}' (${vramGB}GB VRAM)${entry.status === 'provisional' ? ' — catalog entry is PROVISIONAL, not yet through the certification battery (P-006/P-007)' : ''}`,
+    reason: `matched '${entry.displayName}' for tier '${tier}' (${vramGB}GB VRAM)${entry.status === 'provisional' ? ' — catalog entry is PROVISIONAL, not yet through the certification battery (P-006/P-007)' : ''}${skippedVllm ? ' — a vLLM candidate was skipped: no working Docker/Podman runtime found, downgraded per D-009 #3' : ''}`,
   };
 }

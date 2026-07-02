@@ -12,6 +12,7 @@ documents:
   - "packages/operator-core/lib/provisioner/provision.ts"
   - "apps/operator/app/_components/SetupWizard/StepLocalModel.tsx"
   - "packages/operator-core/lib/endpoint-route/routes/desktop/local-model-status.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/desktop/local-model-install.ts"
 plans:
   - "local-concurrent-inference-2026-07-02"
 ---
@@ -67,24 +68,38 @@ there is **no separate hardcoded copy of the matrix in the UI**:
    P-006/P-007 certification battery, then `certified`) and a `sourceRef` back to the decision
    that produced it. **Add a new matrix row by adding a catalog entry here — never by hardcoding
    a second table elsewhere.**
-5. **`provisioner/provision.ts`** — `planProvision()` composes 1–4 into a `ProvisionPlan` (plus
-   the weights-download plan and backend unit-file path). This is the single function both the
-   headless CLI (`provisioner/cli.ts`) and the Desktop UI read. `planProvision()` takes an
-   optional `binPath` (an *already-resolved* `llama-server` binary path) that it threads
-   straight through to `renderLlamaServerUnit` — it deliberately does NOT resolve the binary
-   itself (that would make this "fast, read-only" function do a network fetch / from-source
-   build). Only the CLI wires this up today: `--provision-binary` calls
-   `llama-binary.ts`'s `resolveLlamaBinary()` first and passes the result in as `binPath`; the
-   Desktop route (`local-model-status.ts`, item 6) calls `planProvision()` with no `binPath`,
-   so the wizard UI still falls back to a bare `llama-server` already being on `PATH` until
-   that wiring is added.
+5. **`provisioner/provision.ts`** — `planProvision(opts?: { binPath?: string })` composes 1–4 into a
+   `ProvisionPlan` (plus the weights-download plan and backend unit-file path). This is the
+   single function the headless CLI (`provisioner/cli.ts`), the Desktop status route, and the
+   Desktop install route all call. `planProvision()`'s optional `binPath` (an *already-resolved*
+   `llama-server` binary path) threads straight through to `renderLlamaServerUnit` —
+   `planProvision()` itself deliberately does NOT resolve the binary (that would make this
+   "fast, read-only" function do a network fetch / from-source build); the *caller* resolves it
+   first and passes it in.
 6. **`endpoint-route/routes/desktop/local-model-status.ts`** — `GET
-   /api/desktop/local-model-status`, a thin `defineTool` wrapper over `planProvision()`.
-7. **`apps/operator/app/_components/SetupWizard/StepLocalModel.tsx`** — the wizard step
+   /api/desktop/local-model-status`, a thin read-only `defineTool` wrapper over
+   `planProvision()` with **no** `binPath` (it's a status/display read, not an install — the
+   rendered `unitFilePath` in this response assumes a bare `llama-server` on `PATH` until an
+   install actually resolves one).
+7. **`endpoint-route/routes/desktop/local-model-install.ts`** — `POST
+   /api/desktop/local-model-install`, the write side: writes the backend's systemd unit and
+   registers it in the gateway's local-backend pool (`applyProvision()`), optionally
+   enable+starts it (`start`). Takes `{ start?, provisionBinary? }`. `provisionBinary:true`
+   (WI-1617/D-009 #2 — mirrors the CLI's opt-in `--provision-binary` flag, default **false**)
+   calls `llama-binary.ts`'s `resolveLlamaBinary()` FIRST (cache-hit fast; a cache-miss
+   downloads a matching GitHub-release prebuilt or builds from source — genuinely slow) and
+   passes the resolved path into `planProvision({ binPath })` before applying, so the rendered
+   unit points at that real binary instead of assuming one is already on `PATH`. A resolve
+   failure returns `{ ok:false, error }` — no silent bare-PATH fallback for a caller that
+   explicitly opted into binary provisioning.
+8. **`apps/operator/app/_components/SetupWizard/StepLocalModel.tsx`** — the wizard step
    (rendered by both the legacy Next tree and, via the `@/app/_components/...` alias, the active
-   `operator-vite` `/setup` route). It fetches `local-model-status`, renders `plan.recommendation`
-   verbatim (surfacing `provisional` vs `certified` status and the `reason` string), and offers
-   install/start actions gated on `plan.blocked`.
+   `operator-vite` `/setup` route). It fetches `local-model-status` for display, renders
+   `plan.recommendation` verbatim (surfacing `provisional` vs `certified` status and the
+   `reason` string), and offers install/start actions gated on `plan.blocked`. Both its
+   Install and Start actions POST to `local-model-install` with `provisionBinary: true` — so
+   the wizard's own install path DOES resolve a real `llama-server` binary today (the item-5
+   "assumes PATH" caveat applies only to the read-only status display, not the actual install).
 
 So "wire the wizard to the matrix as source of truth instead of a hardcoded duplicate" was, at
 the time this doc was written, **already true by construction** — the wizard has never had its

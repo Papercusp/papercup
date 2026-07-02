@@ -24,11 +24,21 @@ export interface CatalogEntry {
   backend: LocalBackendKind;
   model: {
     /** ollama-style reference, e.g. "maxwell1500/ornith-35b:IQ3_M" — used both to resolve an
-     *  already-pulled ollama blob (weights.ts) and as the `ollama pull` hint when it's missing. */
+     *  already-pulled ollama blob (weights.ts) and as the `ollama pull` hint when it's missing.
+     *  For a `backend: 'vllm'` entry this doubles as the gateway registry's model id / OpenAI
+     *  `/v1/models` id (kept equal to `serve`'s rendered `--served-model-name` — see
+     *  vllm-container.ts) rather than an actual ollama reference. */
     ollamaRef: string;
     quant: string;
     /** Approximate on-disk weights size, for the wizard's "this will download ~NGB" messaging. */
     sizeGB: number;
+    /** HF model repo id for a vLLM backend's `--model` (an AWQ/GPTQ requant repo). Only
+     *  meaningful when `backend === 'vllm'`; llama-server/ollama entries resolve weights via
+     *  `ollamaRef` (weights.ts) instead and leave this unset. */
+    hfRepo?: string;
+    /** vLLM quantization method for `--quantization`. Only meaningful when `backend === 'vllm'`
+     *  (vllm-container.ts's `renderVllmContainerUnit` defaults to 'awq' when unset). */
+    quantization?: 'awq' | 'gptq';
   };
   hardwareTier: HardwareTier;
   /** Minimum VRAM (GB) required to run this combo at the tuning below. */
@@ -40,6 +50,9 @@ export interface CatalogEntry {
     ctxTotal: number;
     kvCacheType: string;
     flashAttn: boolean;
+    /** vLLM `--gpu-memory-utilization` (0-1). Only meaningful when `backend === 'vllm'`;
+     *  defaults to 0.9 in provision.ts's rendering when unset. */
+    gpuMemoryUtilization?: number;
   };
   status: CatalogEntryStatus;
   /** Plan/decision this entry's config was sourced from, for audit trail. */

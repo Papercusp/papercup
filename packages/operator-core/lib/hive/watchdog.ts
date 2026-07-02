@@ -161,7 +161,11 @@ export type WatchdogSource =
   | 'scout-ready-decompose'
   // GYM-2 (gym-unwedge): the chronic-autoloop-failure escalator's per-(harness,role)
   // 24h debounce (a cycle red >= threshold consecutive fires files an observation).
-  | 'autoloop-chronic';
+  | 'autoloop-chronic'
+  // WI-1623: the release-deploy staleness recurrence guard — the green pin has
+  // sat deployable-but-not-live longer than the threshold (a genuinely wedged
+  // pipeline OR a lying deployedAt field; either way, worth an alert).
+  | 'release-deploy-staleness';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
