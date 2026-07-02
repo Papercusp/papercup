@@ -602,7 +602,11 @@ export function armInProcessPeriodicChecks(
   const checks = opts.checks ?? buildDefaultChecks();
   armed = checks.map((check) => ({
     name: check.name,
-    handle: managedSetInterval(check.name, check.intervalMs, () => void runPeriodicCheck(check, opts.deps), {
+    // Return the tick's PROMISE to the registry — `() => void runPeriodicCheck(...)` discarded it, which
+    // made every tick look SYNCHRONOUS to managedSetInterval, so its re-entrancy guard released before the
+    // async tick finished and a slow tick could fire concurrently (the re-entrancy-guard test caught this;
+    // gate-red 2026-07-01). runPeriodicCheck never rejects (it catches internally).
+    handle: managedSetInterval(check.name, check.intervalMs, () => runPeriodicCheck(check, opts.deps).then(() => undefined), {
       category: 'global-sweep',
       shed: check.shed,
       fireOnArm: check.fireOnArm,

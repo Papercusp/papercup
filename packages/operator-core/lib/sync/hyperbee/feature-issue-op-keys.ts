@@ -30,6 +30,7 @@ import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HiveSettingRow } from './projections/hive-settings';
+import type { BeeClaimSpecRow } from './projections/bee-claim-spec';
 import type { HivePolicyRow } from './projections/hive-policy';
 import type { ReportWireRow } from './projections/hive-reports';
 import type { PendingJoinWireRow } from './projections/hive-pending-joins';
@@ -81,6 +82,9 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
   // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
   hive_settings: 'hive-settings-by-key',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): per-bee claim specs.
+  // Projection 'bee-claim-specs' (projections/bee-claim-spec.ts); key == bee_id.
+  bee_claim_specs: 'bee-claim-specs',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-signed Hive policy
   // record. Projection 'hive-policy' (projections/hive-policy.ts); SINGLETON, so
   // key == harness_slug (the Hive home).
@@ -464,6 +468,21 @@ function toHiveSettingValue(row: Record<string, unknown>): HiveSettingRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `BeeClaimSpecRow` the bee-claim-spec projection
+ *  consumes — the federated subset (harness_slug = the hive home, bee_id, spec
+ *  jsonb, revision, updated_by). updated_at is machine-local. */
+function toBeeClaimSpecValue(row: Record<string, unknown>): BeeClaimSpecRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    bee_id: String(row.bee_id ?? ''),
+    spec: (row.spec && typeof row.spec === 'object' && !Array.isArray(row.spec)
+      ? (row.spec as Record<string, unknown>)
+      : {}),
+    revision: Number(row.revision ?? 0),
+    updated_by: strOrNull(row.updated_by),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `HivePolicyRow` the hive-policy projection INSERT
  *  consumes — the owner-signed federated subset (harness_slug = the Hive home,
  *  policy_json = the canonical signed JSON TEXT, owner_pubkey, signature,
@@ -659,6 +678,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | CoordThreadPostRow
     | PlanItemAssignmentRow
     | HiveSettingRow
+    | BeeClaimSpecRow
     | HivePolicyRow
     | ReportWireRow
     | PendingJoinWireRow
@@ -693,6 +713,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_settings':
       value = toHiveSettingValue(row);
+      break;
+    case 'bee_claim_specs':
+      value = toBeeClaimSpecValue(row);
       break;
     case 'hive_policy':
       value = toHivePolicyValue(row);

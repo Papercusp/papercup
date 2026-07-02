@@ -177,6 +177,12 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // harness_slug = the Hive home, setting_key) → workspace-owned + peer-log; rides
   // the Hive-pubkey topic (P-004).
   'hive_settings',
+  // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): the Queen's per-bee
+  // claim SPECS federate as hive state (projections/bee-claim-spec.ts) so a remote
+  // bee's get_next sees spec authoring/versioning. Keyed (workspace_id, bee_id);
+  // harness_slug = the hive HOME slug demux (NULL = operator-scope, stays local —
+  // the mig-438 WHEN gate).
+  'bee_claim_specs',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members — the Hive-grain analog of contributors) federates across the Hive's
   // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,

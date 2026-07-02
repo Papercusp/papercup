@@ -43,6 +43,7 @@ import { buildCoordThreadProjection } from './coord-thread';
 import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
+import { buildBeeClaimSpecProjection } from './bee-claim-spec';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
@@ -153,6 +154,7 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
   'hive-settings-by-key',
+  'bee-claim-specs',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy
   // record federates as Hive state, scoped to the Hive home (like hive_settings). The
   // projection verifies the owner signature before applying.
@@ -224,6 +226,7 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // A-003: hive_settings + hive_members demux on the hive-HOME slug — scope them
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
     buildHiveSettingsProjection(hiveScoped),
+    buildBeeClaimSpecProjection(hiveScoped),
     buildHiveMembersProjection(hiveScoped),
     // EN-1: hive_policy is hive-home-grained too (the owner-signed policy demuxes on
     // the Hive home) — scope it to `hiveScoped` so a joiner receives + verifies it.

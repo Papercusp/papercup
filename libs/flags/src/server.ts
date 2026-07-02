@@ -221,6 +221,18 @@ export async function getFlag(
   if (stored[key] !== undefined) return stored[key] as boolean;
   if (!client) return FLAG_DEFAULTS[key];
   try {
+    // posthog-node v5 deprecated isFeatureEnabled in favor of evaluateFlags (one /flags request,
+    // scoped via flagKeys) — and its deprecation console.warn trips vitest-fail-on-console in ANY
+    // test that touches a flag (host-spa gate-red, 2026-07-01). Feature-detect so the v4 range in
+    // package.json keeps working.
+    const c = client as typeof client & {
+      evaluateFlags?: (distinctId: string, opts?: { flagKeys?: string[] }) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
+    };
+    if (typeof c.evaluateFlags === "function") {
+      const flags = await c.evaluateFlags(distinctId, { flagKeys: [key] });
+      const v = flags.isEnabled(key);
+      return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
+    }
     const v = await client.isFeatureEnabled(key, distinctId);
     return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
   } catch {

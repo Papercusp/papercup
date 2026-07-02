@@ -52,6 +52,7 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate over the
   // peer-log (projections/hive-settings.ts → hive_settings; tableTag 'hive-settings-by-key').
   'hive-settings-by-key': 'hive_settings',
+  'bee-claim-specs': 'bee_claim_specs',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive admission federates over the
   // peer-log (projections/hive-members.ts → hive_members).
   'hive-members': 'hive_members',
