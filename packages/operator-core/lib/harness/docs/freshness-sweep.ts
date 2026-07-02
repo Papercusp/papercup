@@ -21,6 +21,8 @@ import type { GitRunner, FeatureCommitLookup, SubjectRef } from './subject-ref';
 import {
   listDocRecords,
   setDocStatus,
+  touchRegenLatch,
+  touchReverifyLatch,
   type HarnessDocRecord,
   type DocStatus,
 } from './doc-record';
@@ -131,20 +133,26 @@ export function anchorMatchesChanged(anchorPaths: string[], changedPaths: string
  * Injectable store seam — defaults to the doc-record module bound to a workspace,
  * overridden in unit tests with in-memory fakes (no PG).
  *
- * NOTE (WI-1661): this deliberately does NOT include a markRegen/markReverify —
- * spending a doc's retry attempt is now the DISPATCHER's job (sweep-after-sync.ts),
- * gated on `dispatchDocStewardForDrift` actually launching an agent. See the
- * "attempt spend" comment on `sweepHarnessDocs` below for why.
+ * NOTE (WI-1661): `touchRegen`/`touchReverify` bump ONLY the retry-clock latch (pacing
+ * how often a still-drifted doc is re-considered for the dispatch batch) — they do
+ * NOT spend one of the doc's 5 give-up attempts. Spending an attempt is now the
+ * DISPATCHER's job (sweep-after-sync.ts), gated on `dispatchDocStewardForDrift`
+ * actually confirming it launched an agent. See the doc-comment on `sweepHarnessDocs`
+ * below for the full why.
  */
 export interface DocStore {
   load: () => Promise<HarnessDocRecord[]>;
   setStatus: (docId: string, status: DocStatus, detail: string | null) => Promise<void>;
+  touchRegen: (docId: string) => Promise<void>;
+  touchReverify: (docId: string) => Promise<void>;
 }
 
 export function pgDocStore(harnessSlug: string, workspaceId: string = DEFAULT_WORKSPACE_ID): DocStore {
   return {
     load: async () => [...(await listDocRecords(harnessSlug, workspaceId)).values()],
     setStatus: (docId, status, detail) => setDocStatus(harnessSlug, docId, status, detail, workspaceId),
+    touchRegen: (docId) => touchRegenLatch(harnessSlug, docId, workspaceId),
+    touchReverify: (docId) => touchReverifyLatch(harnessSlug, docId, workspaceId),
   };
 }
 
@@ -249,15 +257,18 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
     if (status === 'stale') {
       result.flippedStale += becameStale ? 1 : 0;
       if (due) {
-        // NOTE: does NOT bump regen_attempts here — see the doc-comment above. The
-        // caller spends the attempt only once it confirms a doc-steward actually launched.
+        // Touch the retry-clock (paces re-batching) but do NOT bump regen_attempts —
+        // see the doc-comment above. The caller spends the attempt only once it
+        // confirms a doc-steward actually launched.
+        await store.touchRegen(doc.docId);
         await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.regenEnqueued.push(doc.docId);
       }
     } else if (status === 'review') {
       result.flippedReview += becameReview ? 1 : 0;
       if (due) {
-        // NOTE: does NOT bump reverify_attempts here — see the doc-comment above.
+        // Touch the retry-clock but do NOT bump reverify_attempts — see above.
+        await store.touchReverify(doc.docId);
         await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.reverifyFlagged.push(doc.docId);
       }

@@ -59,10 +59,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // P-004 D-008): every hive peer must carry the gossip READER before a writer
   // flips, so it ships dark until the 2-machine verify.
   'papercusp-presence-gossip',
-  // 2026-07-02 — queen warm-session cutover (queen-memory-hybrid-2026-07-02 L2):
-  // queen session model changes from cold-spawn-per-wake to warm-resume-with-
-  // rebirth; owner flips after an attended A/B verify against the cold baseline.
-  'papercusp-queen-warm-session',
+  // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
+  // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
+  // snapshot; the count assertion below dropped from 11 to 10 to match.
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -168,9 +167,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover) + papercusp-queen-warm-session
-    // (2026-07-02 cutover).
-    expect(offCount).toBe(11);
+    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover). papercusp-queen-warm-session
+    // graduated to default-ON 2026-07-02 (owner flip directive) and was removed from the snapshot.
+    expect(offCount).toBe(10);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

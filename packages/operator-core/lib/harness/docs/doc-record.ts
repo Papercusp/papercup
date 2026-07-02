@@ -292,6 +292,43 @@ export async function markReverifyFlagged(
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
+// ── WI-1661: latch-only touches (no attempt spend) ──────────────────────────────
+// The freshness sweep (freshness-sweep.ts) needs to re-pace how often it re-considers
+// a still-drifted doc for the dispatch batch (the retry BACKOFF clock) WITHOUT
+// spending one of the doc's 5 give-up attempts — an attempt should only be spent once
+// a doc-steward is CONFIRMED to have actually launched for it (sweep-after-sync.ts
+// calls markRegenEnqueued/markReverifyFlagged above for that). Touching only the latch
+// timestamp keeps the backoff cadence (30min → ... → 6h) intact — so a congested sweep
+// doesn't re-batch the same doc every tick — without inflating the attempt counter.
+
+/** Touch ONLY the regen retry-clock (no attempt spent). See the WI-1661 note above. */
+export async function touchRegenLatch(
+  harnessSlug: string,
+  docId: string,
+  workspaceId?: string,
+): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.harness_docs
+       SET regen_enqueued_at = now()
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
+}
+
+/** Touch ONLY the reverify retry-clock (no attempt spent). See the WI-1661 note above. */
+export async function touchReverifyLatch(
+  harnessSlug: string,
+  docId: string,
+  workspaceId?: string,
+): Promise<void> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.harness_docs
+       SET reverify_flagged_at = now()
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
+}
+
 export async function deleteDocRecord(
   harnessSlug: string,
   docId: string,

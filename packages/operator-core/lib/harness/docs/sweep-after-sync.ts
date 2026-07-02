@@ -19,7 +19,7 @@ import { relative } from 'node:path';
 import { runGit, repoHeadSha, repoChangedPaths, listSubmodulePaths } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { sweepHarnessDocs, recomputeDocStatus, type SweepResult } from './freshness-sweep';
-import { listDocRecords, setDocStatus } from './doc-record';
+import { listDocRecords, setDocStatus, markRegenEnqueued, markReverifyFlagged } from './doc-record';
 import { resolveHarnessDocPaths } from './harness-repo';
 import { anchorManualDoc } from './manual-anchor';
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
@@ -219,7 +219,23 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // P-008 doc-steward — dispatch the LLM consumer to FIX the newly-drifted docs against the
   // current code (the deterministic counterpart to detection). Best-effort + flag-gated; the
   // sweep already deduped (once per drift episode), so this fires ONE doc-steward for the batch.
-  await dispatchDocStewardForDrift(harnessSlug, workspaceId, staleDocs);
+  const dispatched = await dispatchDocStewardForDrift(harnessSlug, workspaceId, staleDocs);
+
+  // WI-1661: spend each dispatched doc's retry attempt HERE — only once a doc-steward is
+  // CONFIRMED to have actually launched for this batch — never inside sweepHarnessDocs
+  // itself (which only touches the retry-CLOCK, so a skipped dispatch — flag off, an
+  // exception, or `activeDocStewardExists` finding a prior steward still mid-flight — no
+  // longer silently burns an attempt toward the 5-attempt give-up cap with zero agent turns
+  // ever spent on the doc). A skipped dispatch just leaves the doc due again next backoff.
+  if (dispatched) {
+    for (const d of staleDocs) {
+      if (d.source === 'manual') {
+        await markReverifyFlagged(harnessSlug, d.docId, workspaceId).catch(() => {});
+      } else {
+        await markRegenEnqueued(harnessSlug, d.docId, workspaceId).catch(() => {});
+      }
+    }
+  }
 
   return result;
 }

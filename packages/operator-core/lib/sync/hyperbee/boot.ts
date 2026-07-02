@@ -77,7 +77,7 @@ import {
 import { offloadReplicationToSidecar } from './substrate-replication-offload';
 import {
   buildAnnounce,
-  verifyAnnounce,
+  verifyAnnounceDetailed,
   type SignedAnnounce,
 } from './announce';
 import {
@@ -2277,7 +2277,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     try {
-      const sigValid = verifyAnnounce(frame);
+      const verifyResult = verifyAnnounceDetailed(frame);
+      const sigValid = verifyResult.ok;
+      // WI-1662: a stale_ts rejection means the sig itself is VALID but the sender's
+      // clock is >5min off — record this distinctly (alongside the announce_rejected
+      // this frame still gets below) so it doesn't read identically to a forged sig.
+      if (verifyResult.reason === 'stale_ts') {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_clock_skew',
+          `peer clock >5min off this machine — check clock/NTP ${peerLabel(frame.log_core_key)}`,
+        );
+      }
       const input: AdmissionInput = {
         device_pubkey: frame.device_pubkey,
         github_login: frame.github_login,
@@ -2535,7 +2547,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // at DEFAULT_ANNOUNCE_WINDOW_MS (5 min), defeating the 30-min
       // BOOT_PENDING_GRACE_MS grace window that the pending-retry exists for.
       try {
-        const sigValid = verifyAnnounce(entry.frame, { nowMs: entry.since });
+        const verifyResult = verifyAnnounceDetailed(entry.frame, { nowMs: entry.since });
+        const sigValid = verifyResult.ok;
+        // WI-1662: same distinct clock-skew signal as onAnnounce, above.
+        if (verifyResult.reason === 'stale_ts') {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'announce_clock_skew',
+            `peer clock >5min off this machine (pending-retry) — check clock/NTP ${peerLabel(entry.frame.log_core_key)}`,
+          );
+        }
         const input: AdmissionInput = {
           device_pubkey: entry.frame.device_pubkey,
           github_login: entry.frame.github_login,

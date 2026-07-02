@@ -26,6 +26,7 @@ import {
   announceSigningBytes,
   buildAnnounce,
   verifyAnnounce,
+  verifyAnnounceDetailed,
   DEFAULT_ANNOUNCE_WINDOW_MS,
   type AnnounceBody,
   type SignedAnnounce,
@@ -324,5 +325,98 @@ describe('announce', () => {
     const { attestation_gist_id: _omit, ...without } = frame;
     void _omit;
     expect(verifyAnnounce(without as unknown as SignedAnnounce, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  // ── WI-1662: verifyAnnounceDetailed — discriminated failure reasons ──
+  // (verifyAnnounce is a thin `.ok`-only wrapper over this; covered above via
+  // its own boolean assertions. These tests pin the `reason` discriminant so a
+  // stale-clock peer is distinguishable from a genuinely bad/forged signature.)
+
+  describe('verifyAnnounceDetailed', () => {
+    it('returns { ok: true } (no reason) for a valid, fresh announce', async () => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const body = makeBody(rawPubkeyBase64(publicKey));
+      const frame = await buildTestAnnounce(body, privateKey);
+      expect(verifyAnnounceDetailed(frame, { nowMs: FIXED_NOW_MS })).toEqual({ ok: true });
+    });
+
+    it("reason: 'stale_ts' for a valid sig outside the freshness window (clock skew)", async () => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const body = makeBody(rawPubkeyBase64(publicKey));
+      const buildMs = FIXED_NOW_MS;
+      const windowMs = DEFAULT_ANNOUNCE_WINDOW_MS;
+      const frame = await buildTestAnnounce(body, privateKey, { nowMs: buildMs });
+      // Sig is valid — only the clock is skewed past the window.
+      expect(
+        verifyAnnounceDetailed(frame, { nowMs: buildMs + windowMs + 1, windowMs }),
+      ).toEqual({ ok: false, reason: 'stale_ts' });
+    });
+
+    it("reason: 'bad_sig' for a tampered field (sig no longer matches)", async () => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const body = makeBody(rawPubkeyBase64(publicKey));
+      const frame = await buildTestAnnounce(body, privateKey);
+      const tampered: SignedAnnounce = { ...frame, log_core_key: 'b'.repeat(64) };
+      expect(verifyAnnounceDetailed(tampered, { nowMs: FIXED_NOW_MS })).toEqual({
+        ok: false,
+        reason: 'bad_sig',
+      });
+    });
+
+    it("reason: 'bad_pubkey' when device_pubkey is not 32 raw bytes", () => {
+      expect(
+        verifyAnnounceDetailed(
+          {
+            device_pubkey: Buffer.from('short').toString('base64'),
+            github_user_id: 1,
+            github_login: 'x',
+            attestation_gist_id: TEST_GIST_ID,
+            log_core_key: 'a'.repeat(64),
+            ts: FIXED_NOW_MS,
+            sig: Buffer.alloc(64).toString('base64'),
+          },
+          { nowMs: FIXED_NOW_MS },
+        ),
+      ).toEqual({ ok: false, reason: 'bad_pubkey' });
+    });
+
+    it("reason: 'malformed' for bad-shape / missing-field frames", () => {
+      expect(verifyAnnounceDetailed({} as unknown as SignedAnnounce)).toEqual({
+        ok: false,
+        reason: 'malformed',
+      });
+      expect(verifyAnnounceDetailed(null as unknown as SignedAnnounce)).toEqual({
+        ok: false,
+        reason: 'malformed',
+      });
+    });
+
+    it('stale_ts takes precedence over a would-also-fail bad signature (freshness checked first)', async () => {
+      // A frame that is BOTH stale AND has a tampered (post-sign) field — the freshness
+      // check runs before the sig check, so the caller learns "check your clock" rather
+      // than the less-actionable "bad signature" when both are true.
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const body = makeBody(rawPubkeyBase64(publicKey));
+      const buildMs = FIXED_NOW_MS;
+      const windowMs = DEFAULT_ANNOUNCE_WINDOW_MS;
+      const frame = await buildTestAnnounce(body, privateKey, { nowMs: buildMs });
+      const staleAndTampered: SignedAnnounce = { ...frame, github_login: 'mallory' };
+      expect(
+        verifyAnnounceDetailed(staleAndTampered, { nowMs: buildMs + windowMs + 1, windowMs }),
+      ).toEqual({ ok: false, reason: 'stale_ts' });
+    });
+
+    it('verifyAnnounce stays a behavior-identical boolean wrapper over verifyAnnounceDetailed', async () => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const body = makeBody(rawPubkeyBase64(publicKey));
+      const frame = await buildTestAnnounce(body, privateKey);
+      expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(
+        verifyAnnounceDetailed(frame, { nowMs: FIXED_NOW_MS }).ok,
+      );
+      const tampered: SignedAnnounce = { ...frame, log_core_key: 'b'.repeat(64) };
+      expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(
+        verifyAnnounceDetailed(tampered, { nowMs: FIXED_NOW_MS }).ok,
+      );
+    });
   });
 });

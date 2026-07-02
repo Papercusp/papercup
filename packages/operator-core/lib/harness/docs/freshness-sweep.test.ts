@@ -115,9 +115,12 @@ function rec(partial: Partial<HarnessDocRecord> & Pick<HarnessDocRecord, 'docId'
   };
 }
 
-// Mirrors the PG DocStore semantics (mig 386): a dispatch bumps the latch timestamp
-// AND the per-episode attempt counter; returning to `fresh` clears both. `stampAt`
-// lets a test control the latch clock so the backoff is actually exercised.
+// Mirrors the PG DocStore semantics (mig 386 + WI-1661): `touchRegen`/`touchReverify`
+// bump ONLY the retry-clock latch timestamp — NOT the attempt counter (spending an
+// attempt is now the sweep-after-sync.ts caller's job, gated on a CONFIRMED doc-steward
+// dispatch, so it's exercised in sweep-after-sync's own tests, not here). Returning to
+// `fresh` still clears both. `stampAt` lets a test control the latch clock so the
+// backoff is actually exercised.
 function memStore(
   records: HarnessDocRecord[],
   stampAt: () => string = () => new Date().toISOString(),
@@ -135,8 +138,8 @@ function memStore(
         r.regenAttempts = 0; r.reverifyAttempts = 0;
       }
     },
-    markRegen: async (docId) => { const r = byId.get(docId)!; r.regenEnqueuedAt = stampAt(); r.regenAttempts += 1; },
-    markReverify: async (docId) => { const r = byId.get(docId)!; r.reverifyFlaggedAt = stampAt(); r.reverifyAttempts += 1; },
+    touchRegen: async (docId) => { const r = byId.get(docId)!; r.regenEnqueuedAt = stampAt(); },
+    touchReverify: async (docId) => { const r = byId.get(docId)!; r.reverifyFlaggedAt = stampAt(); },
   };
 }
 
@@ -155,8 +158,10 @@ describe('sweepHarnessDocs', () => {
     expect(r.regenEnqueued).toEqual(['features/F-1.md']);
     expect(regen).toEqual(['features/F-1.md']);
     expect(store.records[0].status).toBe('stale');
-    expect(store.records[0].regenEnqueuedAt).toBeTruthy();
-    expect(store.records[0].regenAttempts).toBe(1);
+    expect(store.records[0].regenEnqueuedAt).toBeTruthy(); // retry-clock touched
+    // WI-1661: the sweep itself never SPENDS an attempt — only the caller does, once a
+    // doc-steward dispatch is confirmed (see sweep-after-sync.ts). Stays 0 here.
+    expect(store.records[0].regenAttempts).toBe(0);
   });
 
   it('flips a manual doc to review + flags re-verify; idempotent on re-run', async () => {
@@ -244,8 +249,12 @@ describe('sweepHarnessDocs — steward retry', () => {
       store, onReverifyNeeded: (d) => { reverify.push(d.docId); },
     });
     expect(r.candidates).toBe(1); // re-considered via the retry leg despite no anchor hit
-    expect(reverify).toEqual(['m.md']); // re-dispatched
-    expect(store.records[0].reverifyAttempts).toBe(2); // attempt bumped
+    expect(reverify).toEqual(['m.md']); // re-batched for dispatch
+    expect(store.records[0].reverifyFlaggedAt).not.toBe(longAgo); // retry-clock touched
+    // WI-1661: the sweep only touches the clock — it does NOT spend the attempt (that's
+    // the caller's job, gated on a CONFIRMED doc-steward dispatch), so this stays at the
+    // seeded 1 rather than bumping to 2.
+    expect(store.records[0].reverifyAttempts).toBe(1);
   });
 
   it('does NOT re-dispatch while still inside the backoff window', async () => {
