@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { Checkbox } from '../../harness/Checkbox';
+
 /* Mirrors provisioner/hardware-detect.ts + recommend.ts + provision.ts's ProvisionPlan shape
  * (local-concurrent-inference-2026-07-02 P-009, D-006). Kept as a small local shape rather than
  * importing operator-core types into a client component — this step only reads a handful of
@@ -237,11 +239,7 @@ export function StepLocalModel() {
                 machine is currently GPU-resident before continuing.
               </p>
               <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginTop: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={confirmStart}
-                  onChange={(e) => setConfirmStart(e.target.checked)}
-                />
+                <Checkbox checked={confirmStart} onChange={setConfirmStart} />
                 I&apos;ve confirmed the GPU is free — start the backend now.
               </label>
               <button

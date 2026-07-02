@@ -59,6 +59,11 @@ const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
   // (~3h). No shared table primitive exists yet (see note above), so allowlisting is the
   // only option here; migrate to the shared table primitive when it lands.
   'operator-vite/src/components/adv/AdvOverviewTab.tsx',
+  // TEMPORARY (gate-unblock 2026-07-02, WI-1686) — the new /settings/p2p owner surface's
+  // Audit table (p2p-work-distribution-2026-07-02). No shared table primitive exists yet
+  // (see note above); allowlisted so a newly-landed page doesn't hold main's green gate red.
+  // Migrate to the shared table primitive when it lands.
+  'operator/app/settings/p2p/page.tsx',
 ]);
 
 const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([

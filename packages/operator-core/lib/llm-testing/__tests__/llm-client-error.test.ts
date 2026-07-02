@@ -5,7 +5,7 @@
  * (a bare `claude-code exited 1` is undiagnosable; su-S11's first scored run
  * died exactly this opaquely, coord-system-e2e-testing-2026-06-10 P-011).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
@@ -19,6 +19,29 @@ vi.mock('../../agent-chat-stream', async (importOriginal) => {
       yield* events as never[];
     },
   };
+});
+
+// These assertions pin the DEFAULT (no explicit-override) backend routing, which
+// `backendForLlmCall` derives from `process.env.LLM_TEST_BACKEND` captured at
+// llm-client module-init (the module-level `TEST_BACKEND` const). operator-core's
+// vitest fork pool reuses a worker across test files, and several gym/ab-run CLI
+// entry modules set `LLM_TEST_BACKEND='claude-code'` at module load — so whichever
+// sibling file ran first could leak that value into this worker and flip
+// `backendForLlmCall` to 'claude-code', reddening these pure routing tests
+// ORDER-DEPENDENTLY (the operator-core "flaky gate" class; green-checkpoint
+// 2026-07-02). Deleting the env BEFORE the first dynamic import makes llm-client
+// capture a clean `TEST_BACKEND`. vitest isolates the module registry per file, so
+// no `vi.resetModules()` is needed here — and it WOULD duplicate
+// `@papercusp/testing-shell/llm`, breaking the `LlmCallError` class identity the
+// subprocess tests below assert via `isLlmCallError` (instanceof).
+let savedLlmTestBackend: string | undefined;
+beforeAll(() => {
+  savedLlmTestBackend = process.env.LLM_TEST_BACKEND;
+  delete process.env.LLM_TEST_BACKEND;
+});
+afterAll(() => {
+  if (savedLlmTestBackend === undefined) delete process.env.LLM_TEST_BACKEND;
+  else process.env.LLM_TEST_BACKEND = savedLlmTestBackend;
 });
 
 describe('llmCall backend selection', () => {

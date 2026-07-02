@@ -30,6 +30,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { Select } from '../../harness/Select';
+import { Checkbox } from '../../harness/Checkbox';
 
 /* ── Wire types — mirror operator-core/lib/p2p/settings.ts, kept local per the
  *    client wire-type decoupling convention. ── */
@@ -242,14 +243,14 @@ function OptInEditor({
           <div key={i} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
             {DAY_LABELS.map((d, di) => (
               <label key={d} style={{ fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                <input
-                  type="checkbox"
+                <Checkbox
+                  ariaLabel={d}
                   checked={w.days.includes(di)}
-                  onChange={(e) =>
+                  onChange={(checked) =>
                     setWindows((ws) =>
                       ws.map((x, xi) =>
                         xi === i
-                          ? { ...x, days: e.target.checked ? [...x.days, di].sort() : x.days.filter((v) => v !== di) }
+                          ? { ...x, days: checked ? [...x.days, di].sort() : x.days.filter((v) => v !== di) }
                           : x,
                       ),
                     )
