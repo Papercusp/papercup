@@ -63,6 +63,16 @@ export function specModelId(spec: string): string {
     : trimmed;
 }
 
+/** The COMPARISON key for "same model" checks: the model id with the `[1m]`
+    window marker stripped, lowercased. The marker changes the WINDOW, not the
+    model — role defaults (ROLE_MODEL_DEFAULTS) store bare ids (`sonnet`) while
+    the tier menu carries marked specs (`sonnet[1m]`, owner directive
+    2026-07-02), and an exact-id match between the two would silently drop the
+    role floor (EI-7/EI-286). */
+export function specFamilyKey(spec: string): string {
+  return specModelId(spec).replace(/\[1m\]/gi, '').toLowerCase();
+}
+
 /** The role's resolved DEFAULT spec — what it runs with no tier: the
     user-level AGENT_MODELS env entry, else the committed floor. Empty when
     the role has neither (→ the CLI default; no floor protection possible). */

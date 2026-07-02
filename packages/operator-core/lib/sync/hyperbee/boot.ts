@@ -1355,8 +1355,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             peerLabel(frame.log_core_key),
           );
           emitAdmitted(frame.log_core_key);
-          // WI-639 + WI-280: the OWNER's trust-admit of a freshly-admitted peer, gated on
-          // the owner-signed membership policy. admitAnnouncedPeerAsOwner resolves the Hive
+        }
+        // WI-639 + WI-280 + WI-1585: the OWNER's trust-admit of an announced peer, gated on
+        // the owner-signed membership policy. Runs for EVERY drained announce — NOT only the
+        // first core-admission (WI-1585): announces arrive on (re)connect, and a peer whose
+        // core is already admitted (presence flowing) still needs its membership refreshed —
+        // the SECOND DEVICE of an already-member GitHub user would otherwise NEVER be
+        // attested in this process lifetime (the ownerAdmitOrPend already_member branch is
+        // the designed reconnect self-heal: idempotent upsert + BUG-B epoch-key re-grant).
+        {
+          // admitAnnouncedPeerAsOwner resolves the Hive
           // home (member→hive_slug via a fresh registry read, the WI-280 fix), self-gates to
           // the OWNER box, then routes the decision through ownerAdmitOrPend: open/allowlisted
           // → upsertHiveMember (+ idempotent epoch [0..current] re-grant); approval → record a

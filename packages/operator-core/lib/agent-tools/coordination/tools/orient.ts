@@ -99,6 +99,11 @@ export interface OrientResult {
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
    *  recall failed/timed out; absent when no query was given. */
   memory?: { query: string; hits: OrientMemoryHit[] } | null;
+  /** STANDING FACTS (queen-memory-hybrid L1c) — deterministic scoped conclusions
+   *  (workspace + owner + harness scopes), delivered VERBATIM every orient (unlike
+   *  the fuzzy memory recall above). Assert via facts:assert; retract when stale.
+   *  null on failure; absent when none stand. */
+  facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null }> | null;
   /** coord:plan-events delta — newest few + the true total; null on failure;
    *  absent when includePlanEvents:false. */
   planEvents?: { total: number; recent: unknown[] } | null;
@@ -179,6 +184,30 @@ export async function composeOrient(
     } catch {
       result.memory = null;
     }
+  }
+
+  // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
+  // the fuzzy memory recall above: scoped conclusions delivered VERBATIM every
+  // orient (workspace + this owner + the named harness). BEST-EFFORT like every
+  // other leg — a facts outage must never break orientation.
+  try {
+    const { foldFacts } = await import('../../../agent-facts/store');
+    const selectors = [
+      { scope: 'workspace' as const },
+      ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
+      ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
+    ];
+    const facts = await foldFacts(selectors, {});
+    if (facts.length > 0) {
+      result.facts = facts.map((f) => ({
+        scope: f.scope,
+        ref: f.scopeRef,
+        body: f.body,
+        src: f.sourceRef,
+      }));
+    }
+  } catch {
+    result.facts = null;
   }
 
   // ── coord:plan-events — the "what plans changed" delta (default on; the bootstrap's

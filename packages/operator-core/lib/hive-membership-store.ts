@@ -339,10 +339,27 @@ export async function loadHiveOwnerDeviceBindings(
 }
 
 /**
- * Upsert a Hive member row (admission). On conflict the mutable fields are
- * updated; device_attestations / revoked_pubkeys are REPLACED with the supplied
- * arrays when provided (the caller owns the merge — mirrors single-writer
- * peer-log semantics where a peer rewrites its own whole row).
+ * Upsert a Hive member row (admission). On conflict the scalar fields are
+ * updated and the device/revocation sets are MERGED, never replaced
+ * (WI-1585, LIVE-1 second-device admission):
+ *
+ *   - `device_attestations` — UNION by device_pubkey, the SUPPLIED entry wins
+ *     per device. The old REPLACE semantics meant a one-device upsert (every
+ *     announce admission passes only the ANNOUNCING device) clobbered every
+ *     other attested device of the same GitHub user — so a user's tower +
+ *     iMac devices could never BOTH stay attested (last announce won), and
+ *     M6/H3 content projections then refused the clobbered device's rows:
+ *     content federation dead while presence (machine-grain, unattested)
+ *     still flowed. Merged entries whose pubkey is in the merged revoked set
+ *     are dropped (C-001: a revoked device must not resurface via merge).
+ *   - `revoked_pubkeys` — UNION (revocation is STICKY/monotone). The old
+ *     REPLACE let any announce-driven upsert (revokedPubkeys defaults to [])
+ *     silently wipe revocations — resurrecting revoked devices. Un-revoking
+ *     is deliberately NOT expressible through this upsert; that is an
+ *     explicit owner surface (none exists today).
+ *
+ * Device REMOVAL is likewise not this function's job — revoke the pubkey
+ * (revokeHiveMemberPubkeys); the merge then drops its attestation.
  */
 export async function upsertHiveMember(
   input: UpsertHiveMemberInput,
@@ -358,8 +375,21 @@ export async function upsertHiveMember(
        github_username = EXCLUDED.github_username,
        display_name = EXCLUDED.display_name,
        avatar_url = EXCLUDED.avatar_url,
-       device_attestations = EXCLUDED.device_attestations,
-       revoked_pubkeys = EXCLUDED.revoked_pubkeys,
+       device_attestations = (
+         SELECT COALESCE(jsonb_agg(att ORDER BY ord), '[]'::jsonb)
+           FROM (
+             SELECT DISTINCT ON (t.att->>'device_pubkey') t.att AS att, t.ord AS ord
+               FROM jsonb_array_elements(
+                      harness_shared.hive_members.device_attestations || EXCLUDED.device_attestations
+                    ) WITH ORDINALITY AS t(att, ord)
+              ORDER BY t.att->>'device_pubkey', t.ord DESC
+           ) merged
+          WHERE NOT (merged.att->>'device_pubkey' = ANY (
+                  harness_shared.hive_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys))
+       ),
+       revoked_pubkeys = ARRAY(
+         SELECT DISTINCT unnest(harness_shared.hive_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys)
+       ),
        binding_status = EXCLUDED.binding_status
      RETURNING ${COLS}`,
     [
