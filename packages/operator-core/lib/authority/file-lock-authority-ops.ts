@@ -170,9 +170,14 @@ export function buildFileLockAuthorityHandlers(
       if (result.ok) {
         const ts = now();
         const expiresAtMs = expiryMs(result.expiresTs, ts, ttlSec);
+        // G-0 (P-033): stamp the grant with the prior holder's published sha /
+        // the expiry-reclaim warning, THEN record this grant.
+        const shaToken = shaTokenForGrant(p.coordinationDomain, p.paths, ts);
+        noteShaTokenGrant(p.coordinationDomain, p.paths, p.owner, expiresAtMs);
         for (const path of p.paths) {
           emit({ kind: 'acquire', scope, path, owner: p.owner, expiresAtMs, ts });
         }
+        return { ...result, shaToken };
       }
       return result;
     },
@@ -192,8 +197,13 @@ export function buildFileLockAuthorityHandlers(
       });
       if (result.ok && result.released) {
         const ts = now();
+        // G-0 (P-033) publish-then-release: remember the published sha for the
+        // next grant; the release event carries it so a failover authority can
+        // rebuild sha-token state from the P-015 stream.
+        const publishedSha = typeof p.publishedSha === 'string' ? p.publishedSha : null;
+        noteShaTokenRelease(p.coordinationDomain, result.released, publishedSha, ts);
         for (const path of result.released) {
-          emit({ kind: 'release', scope, path, owner, ts });
+          emit({ kind: 'release', scope, path, owner, ts, ...(publishedSha ? { publishedSha } : {}) });
         }
       }
       return result;

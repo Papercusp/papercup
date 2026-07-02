@@ -16,6 +16,7 @@ import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { FILE_LOCK_OP_KINDS, type FileLockReleaseParams } from '../../authority/file-lock-authority-ops';
+import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 export default defineTool({
@@ -40,6 +41,14 @@ export default defineTool({
     lock_ids: z.array(z.string().uuid()).min(1).max(200).optional(),
     paths: z.array(z.string()).optional(),
     all_mine: z.boolean().optional(),
+    // G-0 (P-033) publish-then-release: the head sha you published to your
+    // hive-git namespace before releasing. The authority stamps the NEXT grant
+    // of these paths with it as requiredSha, so the next holder builds on your
+    // work. Omit when you released without publishing.
+    published_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .optional(),
   }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
@@ -84,6 +93,15 @@ export default defineTool({
           }),
         );
 
+      const noteShaToken = (released: string[] | undefined): void => {
+        // G-0 (P-033): remember the published sha for the next grant. On the
+        // remote-authority path the authority records it too (from the routed
+        // payload); this local note keeps the local-authority + fail-open paths
+        // covered and is a harmless mirror otherwise.
+        if (released && released.length > 0) {
+          noteShaTokenRelease(coordinationDomain, released, args.published_sha ?? null, Date.now());
+        }
+      };
       try {
         const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
           coordinationDomain,
@@ -97,14 +115,18 @@ export default defineTool({
                 paths: args.paths,
                 allMine,
                 coordinationDomain,
+                publishedSha: args.published_sha ?? null,
               } satisfies FileLockReleaseParams,
               decode: (raw) => ({ released: (raw as { released?: string[] }).released ?? [] }),
             },
           },
         );
+        noteShaToken(routed.value.released);
         return routed.value;
       } catch {
-        return localRelease();
+        const local = await localRelease();
+        noteShaToken(local.released);
+        return local;
       }
     }
 

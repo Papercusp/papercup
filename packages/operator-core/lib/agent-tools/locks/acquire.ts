@@ -53,6 +53,11 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { recordEditAttribution } from '../../edit-attribution';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
+  noteShaTokenGrant,
+  shaTokenForGrant,
+  type ShaTokenGrant,
+} from '../../authority/sha-token-registry';
+import {
   FILE_LOCK_OP_KINDS,
   type FileLockAcquireParams,
   type FileLockAcquireResult,
@@ -170,9 +175,9 @@ export default defineTool({
         }),
       );
 
-    let first: Awaited<ReturnType<typeof tryAcquire>>;
+    let first: Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant };
     try {
-      const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>>>(
+      const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant }>(
         coordinationDomain,
         {
           local: localAcquire,
