@@ -369,28 +369,42 @@ export async function checkGitSyncStall(
         }
         out.alarmed.push(row.install_slug);
         console.warn(`[git-sync-stall-watchdog] ALARM ${row.install_slug}: ${verdict.reason}`);
-      } else if (watchdogAlerted) {
-        // Recovered. Clear the watchdog flag + escalation row, both idempotently.
-        await sql`
-          UPDATE harness_shared.routines
-             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":false}'::jsonb,
-                 updated_at = now()
-           WHERE install_slug = ${row.install_slug}
-             AND target_role = 'system:git-sync'`;
-        await sql`
+      } else {
+        // Healthy. ALWAYS converge the escalation row — not only when OUR flag is set.
+        // Multiple hosts run this watchdog concurrently (bg-host / staging / release
+        // bootstraps), on DIFFERENT code versions during the staging→release lag; a
+        // raced or wiped `watchdog_alerted` flag used to strand a non-null escalation
+        // forever (observed live 2026-07-02: shared-hive-test carried a 4h-old cleared-
+        // alarm escalation with alerted=false — the `else if (alerted)` gate meant no
+        // healthy sweep could ever null it). The UPDATE is idempotent + row-scoped, so
+        // running it on every healthy sweep is a no-op unless something is stranded.
+        const cleared = await sql`
           UPDATE harness_shared.harness_escalations
              SET escalation = NULL, mtime_ms = ${now}
            WHERE harness_slug = ${row.install_slug}
              AND phase = ${WATCHDOG_PHASE}
              AND escalation IS NOT NULL`;
-        // WI-1444: supersede the fleet alarm — coord:inbox annotates every prior
-        // `git-sync-stall:<slug>` broadcast resolved, so a late reader never
-        // investigates a condition that already cleared. Fail-soft by design.
-        await broadcastSevereEventResolved({
-          conditionKey: `git-sync-stall:${row.install_slug}`,
-          summary: `git-sync RECOVERED on ${row.install_slug} — commits are landing again; the earlier stall alarm is stale.`,
-        });
-        out.recovered.push(row.install_slug);
+        if (watchdogAlerted) {
+          // Recovered from OUR alarm: clear the flag + supersede the fleet broadcast.
+          await sql`
+            UPDATE harness_shared.routines
+               SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":false}'::jsonb,
+                   updated_at = now()
+             WHERE install_slug = ${row.install_slug}
+               AND target_role = 'system:git-sync'`;
+          // WI-1444: supersede the fleet alarm — coord:inbox annotates every prior
+          // `git-sync-stall:<slug>` broadcast resolved, so a late reader never
+          // investigates a condition that already cleared. Fail-soft by design.
+          await broadcastSevereEventResolved({
+            conditionKey: `git-sync-stall:${row.install_slug}`,
+            summary: `git-sync RECOVERED on ${row.install_slug} — commits are landing again; the earlier stall alarm is stale.`,
+          });
+          out.recovered.push(row.install_slug);
+        } else if (cleared.count > 0) {
+          console.warn(
+            `[git-sync-stall-watchdog] cleared a STRANDED escalation for ${row.install_slug} (alerted flag was already false — flag/escalation divergence, likely a multi-host race)`,
+          );
+        }
       }
     }
     return out;

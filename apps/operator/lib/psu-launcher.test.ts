@@ -1279,6 +1279,40 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
   });
 });
 
+describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-02)', () => {
+  it('injects [1m] for a bare opus/fable spec', () => {
+    expect(normalizeModelSpec('opus')).toBe('opus[1m]');
+    expect(normalizeModelSpec('claude-fable-5')).toBe('claude-fable-5[1m]');
+    expect(normalizeModelSpec('fable')).toBe('fable[1m]');
+  });
+  it('inserts [1m] BEFORE a recognized :effort suffix (so effort still splits out)', () => {
+    expect(normalizeModelSpec('claude-fable-5:xhigh')).toBe('claude-fable-5[1m]:xhigh');
+    expect(normalizeModelSpec('opus:high')).toBe('opus[1m]:high');
+    expect(normalizeModelSpec('opus:max')).toBe('opus[1m]:max');
+  });
+  it('is idempotent — a spec already carrying [1m] is unchanged', () => {
+    expect(normalizeModelSpec('opus[1m]')).toBe('opus[1m]');
+    expect(normalizeModelSpec('claude-fable-5[1m]:xhigh')).toBe('claude-fable-5[1m]:xhigh');
+  });
+  it('is a no-op for non-1M families and empty specs', () => {
+    expect(normalizeModelSpec('sonnet')).toBe('sonnet');
+    expect(normalizeModelSpec('sonnet:high')).toBe('sonnet:high');
+    expect(normalizeModelSpec('haiku')).toBe('haiku');
+    expect(normalizeModelSpec('')).toBe('');
+    expect(normalizeModelSpec(undefined)).toBeUndefined();
+    expect(normalizeModelSpec(null)).toBeNull();
+  });
+  it('a non-effort `:` segment is treated as part of the id (marker appended at end)', () => {
+    // A bedrock-style id whose tail is not an effort level: [1m] appends, not mid-string.
+    expect(normalizeModelSpec('opus-v2:0')).toBe('opus-v2:0[1m]');
+  });
+  it('parseArgs applies it — a fleet opus/fable launch spec lands normalized', () => {
+    expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
+    expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
+    expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet:high');
+  });
+});
+
 describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
   it('parses the new omp-convergence flags', () => {
     // sonnet (not a default-1M family) so this passthrough test stays decoupled
@@ -1971,9 +2005,11 @@ describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
       '--context-size=full', '--model=opus', '--add-dir=/x', '--', '--verbose',
     ]);
     const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
+    // opus normalizes to opus[1m] at parse — the recorded relaunch argv must carry
+    // the marker so a re-launch reproduces the 1M window (owner directive 2026-07-02).
     expect(argv).toEqual(expect.arrayContaining([
       '--fleet=shared-hive-testing', '--account=acct1', '--profile=power',
-      '--context-size=full', '--model=opus', '--add-dir=/x', '--auto', '--', '--verbose',
+      '--context-size=full', '--model=opus[1m]', '--add-dir=/x', '--auto', '--', '--verbose',
     ]));
   });
   it('derives --fleet from a picker-entered fleet NAME', () => {
