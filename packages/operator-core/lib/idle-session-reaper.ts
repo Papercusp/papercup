@@ -42,7 +42,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
 import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
-import { gatherOnDesktopSessions } from './desktop-window-liveness';
+import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
@@ -654,6 +654,10 @@ export interface ZombieReapDeps {
   sigkill: (pid: number) => boolean;
   /** PID-recycle guard: true iff pid's cmdline still carries `--resume <sessionId>`. */
   stillTheProc: (pid: number, sessionId: string) => Promise<boolean>;
+  /** True iff the pid sits under an open desktop window (proc ancestry, WI-1586)
+   *  — the launch-capture-free on-desktop spare. Never kill a proc inside a
+   *  window the user can see, whatever its adv rows say. */
+  pidOnDesktop: (pid: number) => Promise<boolean>;
   /** Pause between SIGTERM and the SIGKILL re-check. */
   wait: (ms: number) => Promise<void>;
 }
@@ -727,6 +731,7 @@ const defaultZombieDeps: ZombieReapDeps = {
     try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
   },
   stillTheProc: (pid, sessionId) => defaultStillTheProc(pid, sessionId),
+  pidOnDesktop: (pid) => isPidUnderOpenWindow(pid).catch(() => false),
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 

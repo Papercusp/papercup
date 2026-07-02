@@ -6,9 +6,23 @@
  *
  * Decision (2026-06-29, owner): "on the desktop" == the session's OS window is
  * still present RIGHT NOW — a live `wmctrl` enumeration of the open windows,
- * matched against the launch-recorded `adv_sessions.window_id` (with the unique
- * `[adv:<id>]` window-title tag and the recorded pid as fallbacks). Purely
- * DERIVED — no new column, no migration, recomputed each read.
+ * matched against the session TWO ways (union — over-matching only ever
+ * over-protects):
+ *   1. LAUNCH-RECORDED handles: `adv_sessions.window_id` (with the unique
+ *      `[adv:<id>]` window-title tag and the recorded pid as fallbacks). Only
+ *      covers launches that captured a handle (the console-launch route).
+ *   2. LIVE PROC ANCESTRY (WI-1586, 2026-07-02): each live interactive psu
+ *      session's host pid (psu-pty discovery, `listLiveHosts`) whose /proc
+ *      ancestor chain reaches a window-owning pid IS inside an open terminal
+ *      window. This is the load-bearing signal: launch-handle capture ROTTED
+ *      silently (window_id dead since 2026-05-31 — Claude Code's TUI rewrites
+ *      the `[adv:N]` title tag; gnome-terminal windows all report the shared
+ *      gnome-terminal-server pid, never the launch pid), which made the reaper's
+ *      on-desktop exemption a no-op ("0 on-desktop/hard-exempt" every sweep) and
+ *      let it SIGKILL a session the owner had open on screen. The ancestry
+ *      signal cannot rot: closing the window SIGHUPs the shell, so the host dies
+ *      or is reparented away from the terminal-server — it expires WITH the
+ *      window. Purely DERIVED — no new column, no migration, recomputed each read.
  *
  * Box-local by design: `wmctrl` talks to the X server of THIS host, so on a
  * headless fleet box (no DISPLAY) it returns nothing → zero on-desktop sessions
@@ -28,7 +42,9 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
+import { listLiveHosts } from './events/await/psu-pty-discovery';
 
 const execFileAsync = promisify(execFile);
 
@@ -187,6 +203,80 @@ export function selectOnDesktopSessions(
   return sets;
 }
 
+/* ── Live proc-ancestry detection (WI-1586) ──────────────────────────────────
+ * The launch-handle-free half of "on the desktop": a session's LIVE host pid
+ * whose /proc ancestor chain reaches a pid that owns an open window is inside
+ * an open terminal window (gnome-terminal-server owns every terminal window AND
+ * parents every shell it hosts; same shape for other emulators + Tauri-embedded
+ * terminals). Works for every session with a live psu-pty host — no launch
+ * capture, no title tag, no recorded pid needed. */
+
+/** PURE: ppid from `/proc/<pid>/stat`. comm (field 2) is parenthesised and may
+ *  contain spaces/parens, so slice after the LAST ')'; the remaining 0-indexed
+ *  fields are 0=state 1=ppid … (same parse as idle-session-reaper's
+ *  parseForegroundFromStat). Exported for unit coverage without /proc. */
+export function parsePpidFromStat(stat: string): number | null {
+  const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+  const ppid = Number(after[1]);
+  return Number.isFinite(ppid) && ppid > 0 ? ppid : null;
+}
+
+/** Ancestry depth cap — a real desktop chain is ~3 (host ← shell ← emulator);
+ *  32 is a loop/corruption guard, not a tuning knob. */
+const ANCESTRY_MAX_DEPTH = 32;
+
+async function defaultReadStat(pid: number): Promise<string | null> {
+  try {
+    return await readFile(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return null; // proc gone / not Linux → chain ends, no match
+  }
+}
+
+/**
+ * Does `pid`'s ancestor chain (inclusive) reach a window-owning pid? Injected
+ * stat reader so the walk unit-tests without /proc. Best-effort → false: a
+ * vanished proc or unreadable stat just ends the walk (never over-protects on
+ * garbage, never throws).
+ */
+export async function pidHasWindowAncestor(
+  pid: number,
+  windowPids: ReadonlySet<number>,
+  readStat: (pid: number) => Promise<string | null> = defaultReadStat,
+): Promise<boolean> {
+  if (windowPids.size === 0) return false;
+  let p = pid;
+  for (let depth = 0; depth < ANCESTRY_MAX_DEPTH && Number.isFinite(p) && p > 1; depth += 1) {
+    if (windowPids.has(p)) return true;
+    const stat = await readStat(p);
+    if (stat == null) return false;
+    const ppid = parsePpidFromStat(stat);
+    if (ppid == null) return false;
+    p = ppid;
+  }
+  return false;
+}
+
+/** The pids that own at least one open window (null/0 pids dropped). */
+export function windowOwningPids(windows: readonly OpenWindow[]): Set<number> {
+  return new Set(windows.map((w) => w.pid).filter((p): p is number => p != null && p > 0));
+}
+
+/**
+ * Is this LIVE pid sitting under an open desktop window (proc ancestry)?
+ * The slice-3 zombie-reap spare: a leaked `claude --resume` proc still inside
+ * an open terminal window must never be killed, whatever its adv rows say.
+ * Best-effort → false (headless / no wmctrl / proc gone).
+ */
+export async function isPidUnderOpenWindow(pid: number): Promise<boolean> {
+  try {
+    const windows = await listOpenWindows();
+    return await pidHasWindowAncestor(pid, windowOwningPids(windows));
+  } catch {
+    return false;
+  }
+}
+
 /** Candidate recency bound — a session whose window could still be open. Includes
  *  ended-but-recent rows on purpose: a still-open window on an ended adv row is
  *  exactly the "marked dead but still on screen" case we must spare. Mirrors
@@ -198,15 +288,31 @@ export const DESKTOP_CANDIDATE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const ON_DESKTOP_TTL_MS = 5000;
 let onDesktopCache: { at: number; sets: OnDesktopSets } | null = null;
 
+/** Injectable seams for gatherOnDesktopSessions so the ancestry pass unit-tests
+ *  without a live psu-pty dir or /proc. Production defaults wire the real ones. */
+export interface GatherOnDesktopDeps {
+  /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHosts(). */
+  listHosts?: () => Array<{ ownerId: string; pid: number }>;
+  /** /proc stat reader for the ancestry walk. Default: real /proc. */
+  readStat?: (pid: number) => Promise<string | null>;
+}
+
 /**
  * The sessions currently on the desktop, keyed three ways (owners / sessionIds /
- * advSessionIds). Enumerates the open windows, joins them to the recently-launched
- * adv_sessions that carry a window handle, and returns the matches. Short-TTL
- * cached. Best-effort → empty sets on ANY failure (the reaper/presence then behave
- * as if nothing is on the desktop, never crashing and never over-killing).
+ * advSessionIds). Enumerates the open windows, then matches sessions two ways:
+ *   1. launch-recorded handles (window_id / pid / `[adv:N]` title tag) against
+ *      the recently-launched adv_sessions rows, and
+ *   2. LIVE PROC ANCESTRY (WI-1586): every live psu-pty host whose pid sits
+ *      under a window-owning pid — the signal that works when handle capture
+ *      rotted (it did: window_id dead since 2026-05-31, pid since 2026-06-23,
+ *      which made the reaper's hard-exemption a silent no-op and killed an
+ *      on-screen session).
+ * Short-TTL cached. Best-effort → empty sets on ANY failure (the reaper/presence
+ * then behave as if nothing is on the desktop, never crashing and never
+ * over-killing).
  */
 export async function gatherOnDesktopSessions(
-  opts: { maxAgeMs?: number; nowMs?: number; ttlMs?: number } = {},
+  opts: { maxAgeMs?: number; nowMs?: number; ttlMs?: number; deps?: GatherOnDesktopDeps } = {},
 ): Promise<OnDesktopSets> {
   const ttl = opts.ttlMs ?? ON_DESKTOP_TTL_MS;
   const now = opts.nowMs ?? Date.now();
@@ -219,13 +325,15 @@ export async function gatherOnDesktopSessions(
     if (windows.length > 0) {
       const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? DESKTOP_CANDIDATE_MAX_AGE_MS) / 1000));
       const { sql } = getOrgPg();
+      // Recent rows with ANY join key — a launch handle (leg 1) OR a coord owner
+      // (leg 2's join back from the live-host ownerId to sessionIds/advIds).
       const rows = await sql<
         Array<{ id: number; coord_owner_id: string | null; session_id: string | null; window_id: string | null; pid: number | null }>
       >`
         SELECT id, coord_owner_id, session_id, window_id, pid
           FROM harness_shared.adv_sessions
          WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
-           AND (window_id IS NOT NULL OR pid IS NOT NULL)`;
+           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`;
       sets = selectOnDesktopSessions(
         rows.map((r) => ({
           advSessionId: r.id,
@@ -236,6 +344,33 @@ export async function gatherOnDesktopSessions(
         })),
         windows,
       );
+
+      // Leg 2 — live-host proc ancestry. Each live interactive session's host
+      // pid whose ancestor chain reaches a window-owning pid is inside an open
+      // terminal window; fold its owner in and join its adv rows for the
+      // sessionId/advSessionId keyings. Per-host best-effort: a failed walk
+      // skips one protect, never the sweep.
+      const winPids = windowOwningPids(windows);
+      if (winPids.size > 0) {
+        let hosts: Array<{ ownerId: string; pid: number }> = [];
+        try {
+          hosts = (opts.deps?.listHosts ?? listLiveHosts)();
+        } catch {
+          hosts = [];
+        }
+        for (const h of hosts) {
+          if (!h.ownerId || !h.pid) continue;
+          if (sets.owners.has(h.ownerId)) continue; // already matched by handle
+          if (await pidHasWindowAncestor(h.pid, winPids, opts.deps?.readStat ?? defaultReadStat)) {
+            sets.owners.add(h.ownerId);
+            for (const r of rows) {
+              if (r.coord_owner_id !== h.ownerId) continue;
+              if (r.session_id) sets.sessionIds.add(r.session_id);
+              sets.advSessionIds.add(r.id);
+            }
+          }
+        }
+      }
     }
   } catch (e) {
     console.warn('[desktop-window-liveness] gather failed (non-fatal):', (e as Error)?.message ?? e);

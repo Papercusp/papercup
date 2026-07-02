@@ -20,7 +20,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import net from 'node:net';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
@@ -93,6 +93,34 @@ export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPty
     /* unreadable / partial write — treat as no host */
   }
   return null;
+}
+
+/**
+ * EVERY live psu-pty host on this box (the fleet's interactive sessions), not
+ * just one owner's. Same self-validation as findLiveHost (recorded ownerId
+ * present, socket exists, pid alive) so a crashed host's leftover file is
+ * skipped. Consumers: desktop-window-liveness's ancestry-based on-desktop
+ * detection (WI-1586) — the live host pid is the one session handle that cannot
+ * rot, unlike the launch-recorded adv_sessions window_id/pid. Best-effort: a
+ * missing dir or unreadable file yields fewer hosts, never a throw.
+ */
+export function listLiveHosts(dir: string = PSU_PTY_DIR): PsuPtyHost[] {
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return []; // no discovery dir yet → no live interactive sessions
+  }
+  const out: PsuPtyHost[] = [];
+  for (const f of files) {
+    try {
+      const h = JSON.parse(readFileSync(join(dir, f), 'utf8')) as PsuPtyHost;
+      if (h && h.ownerId && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid)) out.push(h);
+    } catch {
+      /* unreadable / partial write — skip this host */
+    }
+  }
+  return out;
 }
 
 /**
