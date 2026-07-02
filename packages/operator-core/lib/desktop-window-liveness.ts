@@ -244,3 +244,117 @@ export async function gatherOnDesktopSessions(
   onDesktopCache = { at: now, sets };
   return sets;
 }
+
+/* ── FOCUSED-window attendance (gateway-rayobyte-hardening P-006) ────────────────
+ * The auto-ESC un-wedge (stall-waker) injects keystrokes into a session's pty. That
+ * is safe for a background/fleet window, but NEVER for the window the human is
+ * focused on RIGHT NOW: in the Claude Code TUI a stray Esc at the prompt (twice)
+ * opens the rewind/restore picker — the 2026-07-01 accidental-conversation-restore.
+ * Focus, not mere visibility, is the harm signal: fleet members in visible-but-
+ * unfocused terminals stay eligible for auto-recovery. Best-effort: no X / no
+ * xprop / no match ⇒ null/false ⇒ the caller behaves as before. */
+
+/** PURE: parse `xprop -root _NET_ACTIVE_WINDOW` stdout → the active window id as a
+ *  NUMBER (wmctrl prints `0x04200007`, xprop `0x4200007` — compare numerically),
+ *  or null when unparseable / no active window (0x0). */
+export function parseActiveWindowId(stdout: string): number | null {
+  const m = stdout.match(/window id #\s*(0x[0-9a-fA-F]+)/);
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 16);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+const XPROP_TIMEOUT_MS = 1500;
+const ACTIVE_WINDOW_TTL_MS = 2000; // focus moves fast — cache only briefly
+let activeWindowCache: { at: number; wid: number | null } | null = null;
+
+/** Injectable seam for tests. */
+export interface ActiveWindowDeps {
+  run?: () => string | null | Promise<string | null>;
+  nowMs?: number;
+  ttlMs?: number;
+}
+
+async function defaultRunXprop(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('xprop', ['-root', '_NET_ACTIVE_WINDOW'], {
+      timeout: XPROP_TIMEOUT_MS,
+      encoding: 'utf8',
+    });
+    return typeof stdout === 'string' ? stdout : null;
+  } catch {
+    return null; // no xprop / no DISPLAY / timeout → focus unknown
+  }
+}
+
+/** The currently-FOCUSED window id (numeric), or null when unknown. Short-TTL cached. */
+export async function getActiveWindowId(deps: ActiveWindowDeps = {}): Promise<number | null> {
+  const ttl = deps.ttlMs ?? ACTIVE_WINDOW_TTL_MS;
+  const now = deps.nowMs ?? Date.now();
+  if (activeWindowCache && now - activeWindowCache.at < ttl) return activeWindowCache.wid;
+  const stdout = await (deps.run ?? defaultRunXprop)();
+  const wid = stdout ? parseActiveWindowId(stdout) : null;
+  activeWindowCache = { at: now, wid };
+  return wid;
+}
+
+/** Test seam: drop the active-window cache. */
+export function __resetActiveWindowCache(): void {
+  activeWindowCache = null;
+}
+
+/** PURE: does the ACTIVE window belong to `ownerId`? Matches the same three ways as
+ *  selectOnDesktopSessions (window id, owning pid, `[adv:<id>]` title tag), but for
+ *  the single focused window. */
+export function ownerOwnsWindow(
+  sessions: readonly DesktopCandidateSession[],
+  windows: readonly OpenWindow[],
+  activeWid: number,
+  ownerId: string,
+): boolean {
+  const win = windows.find((w) => Number.parseInt(w.wid, 16) === activeWid);
+  if (!win) return false;
+  return sessions.some(
+    (s) =>
+      s.coordOwnerId === ownerId &&
+      ((s.windowId != null && Number.parseInt(s.windowId, 16) === activeWid) ||
+        (s.pid != null && s.pid === win.pid) ||
+        win.title.includes(`[adv:${s.advSessionId}]`)),
+  );
+}
+
+/** Is `ownerId`'s session the one the human is FOCUSED on right now? Best-effort →
+ *  false (headless / no xprop / no match), so a guard built on this can only ever
+ *  SKIP keystroke injection for the focused session, never block recovery elsewhere. */
+export async function isOwnerFocusedOnDesktop(ownerId: string): Promise<boolean> {
+  try {
+    const activeWid = await getActiveWindowId();
+    if (activeWid == null) return false;
+    const windows = await listOpenWindows();
+    if (windows.length === 0) return false;
+    const maxAgeSec = Math.max(1, Math.round(DESKTOP_CANDIDATE_MAX_AGE_MS / 1000));
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{ id: number; coord_owner_id: string | null; session_id: string | null; window_id: string | null; pid: number | null }>
+    >`
+      SELECT id, coord_owner_id, session_id, window_id, pid
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId}
+         AND started_at > now() - make_interval(secs => ${maxAgeSec})
+         AND (window_id IS NOT NULL OR pid IS NOT NULL)`;
+    return ownerOwnsWindow(
+      rows.map((r) => ({
+        advSessionId: r.id,
+        coordOwnerId: r.coord_owner_id,
+        sessionId: r.session_id,
+        windowId: r.window_id,
+        pid: r.pid,
+      })),
+      windows,
+      activeWid,
+      ownerId,
+    );
+  } catch {
+    return false;
+  }
+}

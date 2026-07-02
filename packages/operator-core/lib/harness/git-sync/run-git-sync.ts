@@ -333,15 +333,46 @@ export function addFailureStrayPaths(output: string): string[] {
  * hardcoded list. Skips uninitialized submodules (leading '-'). Deepest-first so a
  * child lands on its origin before a parent's pointer to it is pushed.
  */
-const discoverSubmodulesRecursive = async (runGit: RunGit, repo: string): Promise<string[]> => {
+// Exported for the stray-gitlink fallback regression test (2026-07-01).
+export const discoverSubmodulesRecursive = async (
+  runGit: RunGit,
+  repo: string,
+  log: (msg: string) => void = () => {},
+): Promise<string[]> => {
   const r = await runGit(['submodule', 'status', '--recursive'], repo);
-  if (r.code !== 0) return [];
-  const paths = r.stdout
-    .split('\n')
-    .filter(Boolean)
-    .filter((l) => l[0] !== '-') // skip uninitialized
-    .map((l) => l.slice(1).trim().split(/\s+/)[1]) // "<flag><sha> <path> (<describe>)" → path
-    .filter(Boolean);
+  if (r.code === 0) {
+    const paths = r.stdout
+      .split('\n')
+      .filter(Boolean)
+      .filter((l) => l[0] !== '-') // skip uninitialized
+      .map((l) => l.slice(1).trim().split(/\s+/)[1]) // "<flag><sha> <path> (<describe>)" → path
+      .filter(Boolean);
+    return paths.sort((a, b) => b.split('/').length - a.split('/').length);
+  }
+  // ONE stray index gitlink with no .gitmodules mapping (e.g. a test's temp repo swept in
+  // by an auto-commit) makes `git submodule status --recursive` exit 128 — and a silent []
+  // here strands EVERY submodule's commits, every tick, while the routine keeps reporting
+  // "synced" (2026-07-01: `.papercusp/scratch/tmp/relgit-*` did exactly this for days).
+  // Never silently skip the pass: SAY SO, then fall back to the .gitmodules mapping
+  // (authoritative for top-level paths; nested submodules wait until the stray is removed —
+  // `git rm --cached <stray-path>` is the operator fix, named in the log line).
+  log(
+    `[git-sync] submodule discovery FAILED (${(r.stderr || r.stdout || 'no output').trim().slice(0, 200)}) — ` +
+      `falling back to .gitmodules top-level paths; if this names a stray gitlink, fix with: git rm --cached <path>`,
+  );
+  const cfg = await runGit(['config', '-f', '.gitmodules', '--get-regexp', String.raw`^submodule\..*\.path$`], repo);
+  if (cfg.code !== 0) return [];
+  const paths: string[] = [];
+  for (const line of cfg.stdout.split('\n')) {
+    const p = line.trim().split(/\s+/)[1];
+    if (!p) continue;
+    try {
+      await lstat(join(repo, p, '.git')); // initialized submodules only (worktree has .git)
+      paths.push(p);
+    } catch {
+      /* uninitialized — skip */
+    }
+  }
   return paths.sort((a, b) => b.split('/').length - a.split('/').length);
 };
 
@@ -799,7 +830,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     if (doSub) {
       subPaths = opts.submodulePaths
         ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
-        : await discoverSubmodulesRecursive(runGit, repo);
+        : await discoverSubmodulesRecursive(runGit, repo, log);
     }
     for (const s of subPaths) {
       // P-004: a submodule's last-resort default is its own 'main' (resolved via

@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGitSync, addFailureStrayPaths, type RunGit } from './run-git-sync';
+import { runGitSync, addFailureStrayPaths, discoverSubmodulesRecursive, type RunGit } from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
@@ -710,5 +710,65 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     // it fetched origin MAIN (the remote default), never origin staging (cfg.branch)
     expect(fetched.join('|')).toContain('fetch origin main');
     expect(fetched.join('|')).not.toContain('staging');
+  });
+});
+
+describe('discoverSubmodulesRecursive — stray-gitlink fallback (2026-07-01)', () => {
+  // The incident: ONE index gitlink with no .gitmodules mapping (a test's temp repo swept
+  // in by an auto-commit) makes `git submodule status --recursive` exit 128 — the old
+  // silent-[] return then stranded EVERY submodule's commits, every tick, while the
+  // routine kept reporting "synced". The fallback must (a) SAY SO and (b) still discover
+  // the top-level submodules from .gitmodules.
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'gitsync-discover-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const fakeGit = (onStatus: { code: number; stdout: string; stderr: string }): RunGit =>
+    async (args: string[], _cwd: string) => {
+      if (args[0] === 'submodule') return onStatus;
+      if (args[0] === 'config' && args.includes('.gitmodules')) {
+        return {
+          code: 0,
+          stdout: 'submodule.libs/a.path libs/a\nsubmodule.libs/deep/b.path libs/deep/b\nsubmodule.libs/uninit.path libs/uninit\n',
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+  it('healthy path: parses recursive status, deepest-first, skipping uninitialized', async () => {
+    const runGit = fakeGit({
+      code: 0,
+      stdout: ' abc123 libs/a (v1)\n def456 libs/deep/b (v2)\n-000000 libs/uninit\n',
+      stderr: '',
+    });
+    expect(await discoverSubmodulesRecursive(runGit, dir)).toEqual(['libs/deep/b', 'libs/a']);
+  });
+
+  it('recursive status failure falls back to .gitmodules (initialized only) and logs loudly', async () => {
+    // Simulate initialized worktrees for libs/a + libs/deep/b (a .git file), NOT libs/uninit.
+    mkdirSync(join(dir, 'libs', 'a'), { recursive: true });
+    mkdirSync(join(dir, 'libs', 'deep', 'b'), { recursive: true });
+    writeFileSync(join(dir, 'libs', 'a', '.git'), 'gitdir: ../../.git/modules/libs/a\n');
+    writeFileSync(join(dir, 'libs', 'deep', 'b', '.git'), 'gitdir: ../../../.git/modules/libs/deep/b\n');
+    const logs: string[] = [];
+    const runGit = fakeGit({
+      code: 128,
+      stdout: '',
+      stderr: "fatal: no submodule mapping found in .gitmodules for path '.papercusp/scratch/tmp/relgit-XYZ'",
+    });
+    const paths = await discoverSubmodulesRecursive(runGit, dir, (m) => logs.push(m));
+    expect(paths).toEqual(['libs/deep/b', 'libs/a']); // deepest-first, uninit skipped
+    expect(logs.join('\n')).toContain('submodule discovery FAILED');
+    expect(logs.join('\n')).toContain('relgit-XYZ'); // the stray path is NAMED for the operator
+    expect(logs.join('\n')).toContain('git rm --cached'); // ...with the fix command
+  });
+
+  it('fallback with no .gitmodules yields [] without throwing', async () => {
+    const runGit: RunGit = async (args) =>
+      args[0] === 'submodule'
+        ? { code: 128, stdout: '', stderr: 'fatal: broken' }
+        : { code: 1, stdout: '', stderr: 'no such file' };
+    expect(await discoverSubmodulesRecursive(runGit, dir, () => {})).toEqual([]);
   });
 });

@@ -42,6 +42,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { resolveInstallPaths } from './papercusp-files';
+import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 
 /** The default operator url baked as the `${PAPERCUSP_OPERATOR_URL:-…}` fallback.
  *  Only used for a bare `claude` (no psu); psu always exports the live url. Kept
@@ -217,7 +218,13 @@ export async function installClaudeIntegration(
     };
   }
 
-  const operatorUrl = opts.operatorUrl ?? DEFAULT_OPERATOR_URL_FALLBACK;
+  // WI-1457: route the baked fallback through the resilient MCP proxy when the
+  // operator environment opts in (PAPERCUSP_MCP_PROXY_BASE, WI-573) — this writer
+  // is the operator-side RECONCILER (ensureOmpSuInstalled fires it per console
+  // launch), so a direct-:3070 default here silently re-minted away the P-006
+  // cutover minutes after every manual re-point. Still byte-stable: the proxy
+  // base is a static loopback URL, so the merge stays idempotent across boots.
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(DEFAULT_OPERATOR_URL_FALLBACK);
   const entry = buildClaudeMcpEntry(operatorUrl, token, agentId, profileDefault(opts.profile));
 
   cfg.mcpServers = cfg.mcpServers ?? {};

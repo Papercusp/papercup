@@ -80,12 +80,20 @@ interface WiringState {
 let state: WiringState | null = null;
 let creating: Promise<WiringState> | null = null;
 
-/** Injectable seams (tests swap PG/identity reads without a swarm). */
+/** Injectable seams (tests swap the swarm/PG/identity reads). */
 export interface PresenceGossipWiringDeps {
   listHiveMembers: typeof listHiveMembers;
   loadRevokedHivePubkeys: typeof loadRevokedHivePubkeys;
+  /** The swarm the gossip rides (default: the shared process swarm). */
+  getSwarm: () => Promise<import('./swarm').HyperswarmLike>;
+  /** PG client for the apply bindings (default: getOrgPg().sql at call time). */
+  sql?: import('postgres').Sql;
 }
-let deps: PresenceGossipWiringDeps = { listHiveMembers, loadRevokedHivePubkeys };
+let deps: PresenceGossipWiringDeps = {
+  listHiveMembers,
+  loadRevokedHivePubkeys,
+  getSwarm: () => getSharedSwarm(),
+};
 
 async function admittedDeviceSet(binding: TopicBinding): Promise<Set<string>> {
   const now = Date.now();
@@ -111,7 +119,7 @@ async function ensureState(): Promise<WiringState> {
   if (state) return state;
   if (creating) return creating;
   creating = (async () => {
-    const swarm = await getSharedSwarm();
+    const swarm = await deps.getSwarm();
     const bindings = new Map<string, TopicBinding>();
     const gossip = createPresenceGossip({
       swarm,
@@ -130,6 +138,7 @@ async function ensureState(): Promise<WiringState> {
         const proj = buildPresenceProjection({
           workspaceId: binding.workspaceId,
           harnessSlug: row.harness_slug,
+          ...(deps.sql ? { sql: deps.sql } : {}),
         });
         await proj.writeToPg(row, { authorPubkey: row.device_pubkey, origin: 'remote', ts: frameTs });
       },
@@ -139,24 +148,28 @@ async function ensureState(): Promise<WiringState> {
         const proj = buildPresenceProjection({
           workspaceId: binding.workspaceId,
           harnessSlug: del.harness_slug,
+          ...(deps.sql ? { sql: deps.sql } : {}),
         });
         await proj.deleteFromPg(`${del.github_user_id}/${del.machine_label}`, frameTs);
       },
       applySessions: async (input, frameTs, topicHex) => {
         const binding = bindings.get(topicHex);
         if (!binding) return;
-        await applySessionPresenceSet({
-          workspaceId: binding.workspaceId,
-          devicePubkey: input.devicePubkey,
-          githubUserId: input.githubUserId,
-          machineLabel: input.machineLabel,
-          // Pin the stored hive scope to the RECEIVER's registered binding —
-          // never the sender-declared hive_slug (an admitted member could
-          // otherwise plant rows under a foreign hive scope).
-          hiveSlug: binding.hiveHomeSlug,
-          sessions: input.sessions,
-          frameTs,
-        });
+        await applySessionPresenceSet(
+          {
+            workspaceId: binding.workspaceId,
+            devicePubkey: input.devicePubkey,
+            githubUserId: input.githubUserId,
+            machineLabel: input.machineLabel,
+            // Pin the stored hive scope to the RECEIVER's registered binding —
+            // never the sender-declared hive_slug (an admitted member could
+            // otherwise plant rows under a foreign hive scope).
+            hiveSlug: binding.hiveHomeSlug,
+            sessions: input.sessions,
+            frameTs,
+          },
+          deps.sql,
+        );
       },
       getHelloFrames: async (topicHex) => {
         const binding = bindings.get(topicHex);
@@ -292,6 +305,6 @@ export async function __resetPresenceGossipWiring(): Promise<void> {
   const s = state;
   state = null;
   creating = null;
-  deps = { listHiveMembers, loadRevokedHivePubkeys };
+  deps = { listHiveMembers, loadRevokedHivePubkeys, getSwarm: () => getSharedSwarm() };
   if (s) await s.gossip.close().catch(() => {});
 }

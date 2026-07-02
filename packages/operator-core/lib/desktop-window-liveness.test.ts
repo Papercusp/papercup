@@ -4,6 +4,8 @@ import {
   selectOnDesktopSessions,
   listOpenWindows,
   __resetDesktopLivenessCache,
+  parseActiveWindowId,
+  ownerOwnsWindow,
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
@@ -120,5 +122,29 @@ describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
   it('a failed/empty wmctrl run yields [] (headless box / no DISPLAY)', async () => {
     const run = vi.fn(() => null);
     expect(await listOpenWindows({ run, nowMs: 1, ttlMs: 0 })).toEqual([]);
+  });
+});
+
+describe('focused-window attendance (gateway-rayobyte-hardening P-006)', () => {
+  it('parseActiveWindowId parses xprop output and normalizes hex numerically', () => {
+    expect(parseActiveWindowId('_NET_ACTIVE_WINDOW(WINDOW): window id # 0x4200007')).toBe(0x4200007);
+    expect(parseActiveWindowId('_NET_ACTIVE_WINDOW(WINDOW): window id # 0x0')).toBeNull(); // no active window
+    expect(parseActiveWindowId('garbage')).toBeNull();
+  });
+
+  it('ownerOwnsWindow matches the FOCUSED window by wid / pid / [adv:] tag, only for the right owner', () => {
+    const windows = [
+      { wid: '0x04200007', pid: 111, title: 'claude — su console [adv:42]' },
+      { wid: '0x04200009', pid: 222, title: 'fleet member [adv:43]' },
+    ];
+    const sessions = [
+      { advSessionId: 42, coordOwnerId: 'su-human', sessionId: null, windowId: '0x4200007', pid: null },
+      { advSessionId: 43, coordOwnerId: 'su-fleet', sessionId: null, windowId: null, pid: 222 },
+    ];
+    const active = 0x4200007;
+    expect(ownerOwnsWindow(sessions, windows, active, 'su-human')).toBe(true); // wid match (xprop short-hex vs wmctrl padded)
+    expect(ownerOwnsWindow(sessions, windows, active, 'su-fleet')).toBe(false); // focused window is NOT theirs
+    expect(ownerOwnsWindow(sessions, windows, 0x4200009, 'su-fleet')).toBe(true); // pid match on their own window
+    expect(ownerOwnsWindow(sessions, windows, 0xdead, 'su-human')).toBe(false); // active window unknown to wmctrl
   });
 });

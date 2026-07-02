@@ -33,6 +33,7 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveInstallPaths } from './papercusp-files';
+import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 import { parseDocument } from 'yaml';
 
 const exec = promisify(execFile);
@@ -434,7 +435,13 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     };
   }
 
-  const operatorUrl = opts.operatorUrl ?? 'http://localhost:3070';
+  // WI-1457: prefer the resilient MCP proxy when the operator environment opts
+  // in (PAPERCUSP_MCP_PROXY_BASE, WI-573). OMP reads this url LITERALLY (no env
+  // interpolation), so this reconciler — fired per console launch via
+  // ensureOmpSuInstalled — is the ONLY thing that decides whether OMP sessions
+  // ride the proxy; its direct-:3070 default re-minted away every manual
+  // re-point within minutes.
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl('http://localhost:3070');
   const actions: string[] = [];
 
   // 1. mcp.json merge — idempotent (compares to existing entry).

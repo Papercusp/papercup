@@ -12,6 +12,7 @@ import { getSpawnPg } from '../fleet/pg-stores';
 import { accountStatus } from '../deployment/account-pool-store';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { forceEndTurn } from '../agent-tools/turn/interrupt';
+import { isOwnerFocusedOnDesktop } from '../desktop-window-liveness';
 
 const POLL_MS = Number(process.env.PAPERCUSP_STALL_WAKER_POLL_MS) || 20_000;
 /** A bee stream-silent this long is idle/sleeping (turn ended, waiting on its wake key) — NOT actively
@@ -78,6 +79,15 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       // StallWaker.tick() always treated the attempt as a success even when NOTHING was delivered — exactly
       // what happened to every owner past the storm guard's per-actor cap during a correlated gateway outage.
       // Surface the real outcome so tick() can tell the difference and log it instead of lying about it.
+      // FOCUS GUARD (gateway-rayobyte-hardening P-006): NEVER inject keystrokes into the session the
+      // human is focused on right now — in the Claude Code TUI a stray Esc at the prompt (twice) opens
+      // the rewind/restore picker (the 2026-07-01 accidental-conversation-restore). A focused human can
+      // press Esc themselves; background/fleet windows stay auto-recoverable. Best-effort → false, so a
+      // headless box behaves exactly as before.
+      if (await isOwnerFocusedOnDesktop(ownerId).catch(() => false)) {
+        console.log(`[stall-waker] unwedge(${ownerId}) skipped: session is the FOCUSED desktop window (human present — not injecting Esc)`);
+        return { ok: false, expected: true };
+      }
       const r = await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: 'gateway error — ESC to re-arm (un-wedge)' });
       // `no_live_session` is the EXPECTED outcome (owner idle / already ended its turn — not wedged): non-
       // actionable and it recurs every cooldown, so surface it as `expected` and DON'T warn. A genuine refusal
@@ -94,8 +104,12 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       // (the CLI returns to idle + re-arms its watch), settle, THEN wake → a real fresh turn resumes on the
       // now-recovered account. Best-effort; the wake proceeds even if the ESC found no live pty.
       try {
-        await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: summary });
-        await new Promise((r) => setTimeout(r, ENDTURN_SETTLE_MS));
+        // FOCUS GUARD (P-006, same as unwedge): the coord wake MESSAGE below is always safe; only the
+        // pre-wake Esc keystroke is withheld from the human's focused window.
+        if (!(await isOwnerFocusedOnDesktop(ownerId).catch(() => false))) {
+          await forceEndTurn({ actor: 'stall-waker', workspaceId, owner: ownerId, reason: summary });
+          await new Promise((r) => setTimeout(r, ENDTURN_SETTLE_MS));
+        }
       } catch {
         /* no live turn to end (already idle) → just wake */
       }
