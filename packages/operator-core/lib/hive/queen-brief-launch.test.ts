@@ -10,7 +10,7 @@ const getHiveCarryNote = vi.fn();
 const summarizeOpenPlacements = vi.fn(
   async (..._a: unknown[]) => ({ recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] as unknown[] }),
 );
-const gatherFleetSignals = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
+const listEscalations = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const gatherCompletions = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const gatherLiveBees = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const resolveQueenOwner = vi.fn(async (..._a: unknown[]) => 's-queen-1' as string | null);
@@ -22,8 +22,7 @@ vi.mock('./placement-watchdog', () => ({
   summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a),
   resolveQueenOwner: (...a: unknown[]) => resolveQueenOwner(...a),
 }));
-vi.mock('../curation/fleet-signals', () => ({ gatherFleetSignals: (...a: unknown[]) => gatherFleetSignals(...a) }));
-vi.mock('../curation/deps', () => ({ buildFleetReaders: () => ({}) }));
+vi.mock('../agent-tools/coordination/escalations', () => ({ listEscalations: (...a: unknown[]) => listEscalations(...a) }));
 vi.mock('../curation/change-feed', () => ({ gatherCompletions: (...a: unknown[]) => gatherCompletions(...a) }));
 vi.mock('../curation/change-feed-deps', () => ({ buildChangeFeedReaders: () => ({}) }));
 vi.mock('../fleet/placement-gather', () => ({ gatherLiveBees: (...a: unknown[]) => gatherLiveBees(...a) }));
@@ -139,16 +138,27 @@ test('computeQueenWakeBrief — eligibleHives scopes the survey via allowedHarne
 test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a flaky escalations read is fail-soft', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
   getHiveCarryNote.mockResolvedValue(null);
-  gatherFleetSignals.mockResolvedValue([
-    { id: 'escalation:m1', kind: 'blocker', title: 'staging deploy red', severity: 'blocker', ref: 'escalation:m1' },
+  listEscalations.mockResolvedValue([
+    { msg_id: 'm-new', from: 'bee-2', severity: 'blocker', summary: 'new blocker', ts: '2026-06-14T00:00:03.000Z' },
+    { msg_id: 'm-old', from: 'bee-1', severity: 'advisory', summary: 'old advisory', repeatCount: 3, ts: '2026-06-14T00:00:01.000Z' },
+    { msg_id: 'm-mid', from: 'bee-3', severity: 'question', summary: 'middle question', ts: '2026-06-14T00:00:02.000Z' },
   ]);
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out);
   assert.match(out!, /### Open escalations/);
-  assert.match(out!, /escalation:m1 \(blocker\): staging deploy red/);
+  assert.ok(
+    out!.indexOf('escalation:m-old (advisory): old advisory (x3)') <
+      out!.indexOf('escalation:m-mid (question): middle question'),
+    'oldest escalation should render first',
+  );
+  assert.ok(
+    out!.indexOf('escalation:m-mid (question): middle question') <
+      out!.indexOf('escalation:m-new (blocker): new blocker'),
+    'newest escalation should render last within the quota',
+  );
 
   // Fail-soft: a throwing escalations read degrades that section, not the whole brief.
-  gatherFleetSignals.mockRejectedValueOnce(new Error('curation pg down'));
+  listEscalations.mockRejectedValueOnce(new Error('coord pg down'));
   const out2 = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out2, 'the brief survives a failed escalations read');
   assert.doesNotMatch(out2!, /### Open escalations/);

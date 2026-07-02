@@ -34,7 +34,9 @@
  * leader-held wiring; tests: a unix socket). Omit `openDuplex` when the
  * objects are already local (the integrator's own machine).
  *
- * Fail-soft by contract: never throws; every failure is a typed outcome.
+ * Fail-soft by contract: never throws on runtime data; every failure is a
+ * typed outcome. (Sole exception: a config missing the mandatory device gate
+ * throws — that is a wiring bug, not runtime data.)
  */
 
 import type { Duplex } from 'node:stream';
@@ -69,9 +71,19 @@ export interface WorktreeBridgeConfig {
    * to already be in the local mirror (e.g. this machine IS the integrator).
    */
   openDuplex?: () => Promise<Duplex>;
-  /** Device gate for the announcement (expectedDevice = the current authority,
-   *  or allowedDevices = the admitted member set). See staging-advance.ts. */
-  accept?: AcceptStagingAdvanceOpts;
+  /**
+   * Device gate for the announcement — MANDATORY (HIGH fix, 2026-07-02
+   * cross-review): `expectedDevice` = the current integrator authority, or
+   * `allowedDevices` = the admitted member set (see staging-advance.ts). One of
+   * the two MUST be set — without a device gate `acceptStagingAdvance` checks
+   * signature SELF-consistency only, so ANY key can self-sign an
+   * `epoch: 1e9` envelope over the CURRENT sha; the fence would accept it,
+   * poison the persisted watermark, and every legitimate future advance would
+   * be rejected as `stale-epoch-seq` (a one-message DoS). A gate-less config is
+   * a programmer error and THROWS (the one deliberate exception to the
+   * fail-soft contract).
+   */
+  accept: AcceptStagingAdvanceOpts;
   runGit?: RunGit;
   fetchTimeoutMs?: number;
 }
@@ -152,11 +164,27 @@ export async function bridgeStagingShaToWorktree(
  *
  * On `outcome: 'accepted'` the caller MUST persist `watermark` — including
  * when the worktree advance was deferred (the sweep catches it up later).
+ *
+ * Never throws on runtime DATA (announcements, transport, git) — but a config
+ * with no device gate is a programmer error and throws immediately (see
+ * `WorktreeBridgeConfig.accept`).
  */
 export async function handleStagingAdvance(
   cfg: WorktreeBridgeConfig,
   incoming: SignedStagingAdvance,
 ): Promise<StagingAdvanceBridgeResult> {
+  // MANDATORY device gate — misconfiguration must fail LOUD, before any
+  // envelope can reach a self-consistency-only fence (watermark poisoning).
+  if (
+    cfg.accept === undefined ||
+    (cfg.accept.expectedDevice === undefined && cfg.accept.allowedDevices === undefined)
+  ) {
+    throw new TypeError(
+      'worktree-bridge: cfg.accept must pin a device gate (expectedDevice or allowedDevices) — ' +
+        'without one, any key can self-sign a max-epoch staging-advance over the current sha ' +
+        'and poison the watermark fence (accepted, then every real advance is stale-epoch-seq)',
+    );
+  }
   const runGit = cfg.runGit ?? defaultRunGit;
   try {
     // 1) Pure fence FIRST — reject junk before any network or git I/O.

@@ -24,6 +24,7 @@ import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
 import { gcOldOperatorMessages } from '../agent-tools/coordination/message-log-gc';
 import { gcResolvedEscalationFamilies } from '../agent-tools/coordination/escalation-log-gc';
+import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/escalations';
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { readRegistry } from '../workspace-registry';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
@@ -240,6 +241,21 @@ const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick,
   name: 'attentionReconcile', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
+
+// Hourly (:32, off the :20 reconcile tick): expire stale OPEN advisory
+// escalations. These are the lowest-severity band, so once they age past the
+// TTL they are backlog noise, not durable human decisions. Blocker/question rows
+// are never auto-expired.
+async function advisoryEscalationExpiryTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('advisory-escalation-expiry')) return;
+    await expireStaleAdvisoryEscalations();
+  }, { name: 'advisory-escalation-expiry' });
+}
+const advisoryEscalationExpiryWorkflow = DBOS.registerWorkflow(advisoryEscalationExpiryTick, {
+  name: 'advisoryEscalationExpiry', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(advisoryEscalationExpiryWorkflow, { name: 'advisoryEscalationExpiry', crontab: '0 32 * * * *' });
 
 // Every 30 min (:26 + :56, off the :00/:20/:23 stampede): the coord-handoff
 // invariant passes. (1) F-FIX-037 EXPIRE — auto-expire handoffs left pending past

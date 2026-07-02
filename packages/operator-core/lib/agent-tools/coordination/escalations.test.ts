@@ -6,7 +6,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog, coordLog } from './log';
-import { listEscalationsPaginated, resolveEscalationsBatch, openEscalation } from './escalations';
+import {
+  expireStaleAdvisoryEscalations,
+  listEscalations,
+  listEscalationsPaginated,
+  openEscalation,
+  resolveEscalationsBatch,
+} from './escalations';
 import type { AgentIdentity } from './identity';
 
 afterEach(() => resetCoordLog());
@@ -169,6 +175,94 @@ describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {
     const r = await resolveEscalationsBatch([]);
     expect(r).toEqual({ resolved: 0, notFound: 0, alreadyResolved: 0, requiresSpawnApprove: 0 });
     expect(log.readEventsCalls).toBe(0);
+  });
+});
+
+describe('openEscalation dedup + advisory expiry (WI-1503)', () => {
+  const identity = { ownerId: 'bee-7' } as AgentIdentity;
+
+  it('dedups a repeat open escalation onto the existing row instead of stacking a second open event', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    const first = await openEscalation(identity, { severity: 'advisory', summary: 'same subject' });
+    const second = await openEscalation(identity, { severity: 'advisory', summary: 'same subject' });
+
+    expect(second.msg_id).toBe(first.msg_id);
+    expect((second as Record<string, unknown>).repeatCount).toBe(2);
+
+    const open = await listEscalations({ status: 'open' });
+    expect(open.map((e) => e.msg_id)).toEqual([first.msg_id]);
+
+    const raw = await coordLog.readEvents('escalations');
+    expect(raw.filter((r) => r.kind === 'escalation')).toHaveLength(1);
+  });
+
+  it('does not dedup across dedupKind boundaries', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    const advisory = await openEscalation(identity, { severity: 'advisory', summary: 'same subject' });
+    const blocker = await openEscalation(identity, { severity: 'blocker', summary: 'same subject' });
+
+    expect(blocker.msg_id).not.toBe(advisory.msg_id);
+    expect((await listEscalations({ status: 'open' })).map((e) => e.msg_id).sort()).toEqual(
+      [advisory.msg_id, blocker.msg_id].sort(),
+    );
+  });
+
+  it('auto-expires only stale advisory escalations; blocker/question rows remain open', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    await coordLog.putEvent('escalations', 'adv-old', {
+      ts: '2026-01-01T00:00:00.000Z',
+      msg_id: 'adv-old',
+      from: 'bee-1',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'advisory',
+      summary: 'old advisory',
+      resolved: null,
+      dedupKind: 'advisory',
+      subjectSignature: 'old advisory',
+      repeatCount: 1,
+      lastSeenTs: '2026-01-01T00:00:00.000Z',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'ask-old', {
+      ts: '2026-01-01T00:00:00.000Z',
+      msg_id: 'ask-old',
+      from: 'bee-2',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'question',
+      summary: 'old question',
+      resolved: null,
+      dedupKind: 'question',
+      subjectSignature: 'old question',
+      repeatCount: 1,
+      lastSeenTs: '2026-01-01T00:00:00.000Z',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'block-old', {
+      ts: '2026-01-01T00:00:00.000Z',
+      msg_id: 'block-old',
+      from: 'bee-3',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'blocker',
+      summary: 'old blocker',
+      resolved: null,
+      dedupKind: 'blocker',
+      subjectSignature: 'old blocker',
+      repeatCount: 1,
+      lastSeenTs: '2026-01-01T00:00:00.000Z',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await expireStaleAdvisoryEscalations({
+      olderThanMs: 60 * 60 * 1000,
+      limit: 10,
+    });
+
+    expect(out).toMatchObject({ scanned: 3, eligible: 1, expired: 1, truncated: false });
+    expect((await listEscalations({ status: 'open' })).map((e) => e.msg_id).sort()).toEqual(['ask-old', 'block-old']);
+    expect((await listEscalations({ status: 'resolved' })).map((e) => e.msg_id)).toContain('adv-old');
   });
 });
 

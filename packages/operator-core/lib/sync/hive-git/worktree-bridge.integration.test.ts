@@ -213,6 +213,33 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
     expect(await readFile(join(wt, 'f.txt'), 'utf8')).toBe('v2\n');
   });
 
+  it('REGRESSION (HIGH): a gate-less config THROWS — the watermark-poisoning DoS is unreachable', async () => {
+    // The attack: any key self-signs an epoch-1e9 envelope over the CURRENT
+    // sha. With no device gate, acceptStagingAdvance checks signature
+    // SELF-consistency only — the fence would accept it, the caller would
+    // persist the poisoned watermark, and every real advance thereafter would
+    // be stale-epoch-seq. The bridge now refuses to run without a device gate.
+    const attacker = keypair();
+    const poison = await signStagingAdvance(
+      { devicePubkeyBase64: attacker.pubkeyBase64, epoch: 1e9, seq: 1, stagingSha: s3, nowMs: 1 },
+      attacker.sign,
+    );
+    const dialsBefore = dials;
+    const gateless = { ...cfg(watermark), accept: {} };
+    await expect(handleStagingAdvance(gateless, poison)).rejects.toThrow(/device gate/);
+    const missing = { ...cfg(watermark) } as { accept?: unknown };
+    delete missing.accept;
+    await expect(
+      handleStagingAdvance(missing as unknown as WorktreeBridgeConfig, poison),
+    ).rejects.toThrow(/device gate/);
+    expect(dials).toBe(dialsBefore); // it never even dialed out
+
+    // And WITH the gate, the same poison envelope is rejected pre-fetch.
+    const gated = await handleStagingAdvance(cfg(watermark), poison);
+    expect(gated).toEqual({ outcome: 'rejected', reason: 'wrong-device', preFetch: true });
+    expect(dials).toBe(dialsBefore);
+  });
+
   it('a dead transport is fetch-failed (retry next announce), never a throw', async () => {
     const res = await handleStagingAdvance(
       {

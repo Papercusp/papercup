@@ -50,6 +50,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
   let server: Server;
   const devA = devicePubkey();
   const devB = devicePubkey();
+  const devC = devicePubkey();
   const devIntegrator = devicePubkey();
 
   const dial = (): Promise<Socket> =>
@@ -116,8 +117,10 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     }
   });
 
-  it('re-running the bootstrap is an incremental no-op that picks up NEW state', async () => {
-    // The peer's member A advances after the first seed.
+  it('a re-run seeds only namespaces NEW on the peer; existing ones are skipped untouched', async () => {
+    // After the first seed the peer gains a NEW member C, and member A advances.
+    const c1 = await mintCommit(peerRepo, 'C work');
+    await writeNamespaceRef(peerRepo, devC, WORK_REF, c1);
     const prev = await readNamespaceRef(peerRepo, devA, WORK_REF);
     expect(prev).not.toBeNull();
     const a2 = await mintCommit(peerRepo, 'A work 2', prev as string);
@@ -125,9 +128,39 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
 
     const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
     expect(res.ok, res.stderr).toBe(true);
-    expect(await readNamespaceRef(joinerRepo, devA, WORK_REF)).toBe(a2);
-    // deviceNamespaceKey is the mapping under it all — spot-check one.
-    expect(res.namespaces).toContain(deviceNamespaceKey(devA));
+    // The NEW namespace was seeded…
+    expect(await readNamespaceRef(joinerRepo, devC, WORK_REF)).toBe(c1);
+    expect(res.namespaces).toContain(deviceNamespaceKey(devC));
+    // …but A's EXISTING namespace was skipped: still at the first-seed sha.
+    // Updates to existing namespaces flow via the verified announcement
+    // pipeline (G-3/G-4), never via bootstrap.
+    expect(await readNamespaceRef(joinerRepo, devA, WORK_REF)).toBe(prev);
+    expect(res.skippedExisting).toEqual(
+      [devA, devB, devIntegrator].map(deviceNamespaceKey).sort(),
+    );
+    // Quarantine left no debris behind.
+    const leftover = await defaultRunGit(
+      ['for-each-ref', '--format=%(refname)', 'refs/bootstrap-quarantine/'],
+      joinerRepo,
+    );
+    expect(leftover.stdout.trim()).toBe('');
+  });
+
+  it('REGRESSION (HIGH): a re-run against a STALE peer never rewinds a locally-advanced namespace', async () => {
+    // The joiner's A namespace advances LOCALLY (as the verified announcement
+    // pipeline would move it — the G-4b sigrefs watermark now points past the
+    // peer's stale view).
+    const localPrev = await readNamespaceRef(joinerRepo, devA, WORK_REF);
+    expect(localPrev).not.toBeNull();
+    const j1 = await mintCommit(joinerRepo, 'A local-verified advance', localPrev as string);
+    await writeNamespaceRef(joinerRepo, devA, WORK_REF, j1, defaultRunGit, localPrev as string);
+
+    // The peer still serves its older view of A. The old forced wildcard
+    // refspec force-rewound the joiner here; the quarantine+skip path must not.
+    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    expect(res.ok, res.stderr).toBe(true);
+    expect(await readNamespaceRef(joinerRepo, devA, WORK_REF)).toBe(j1); // NOT rewound
+    expect(res.skippedExisting).toContain(deviceNamespaceKey(devA));
   });
 
   it('a dead duplex fails soft (ok:false), leaving the joiner intact for a retry', async () => {
@@ -136,7 +169,7 @@ describe('bootstrap (G-8: one wildcard fetch seeds the whole hive repo)', () => 
     dead.end(); // nothing will ever answer
     const res = await bootstrapFromPeer(joinerRepo, dead, { timeoutMs: 3_000 });
     expect(res.ok).toBe(false);
-    // Prior seeded state is untouched.
-    expect((await listNamespaces(joinerRepo)).length).toBe(3);
+    // Prior seeded state is untouched (3 first-seed namespaces + devC).
+    expect((await listNamespaces(joinerRepo)).length).toBe(4);
   });
 });

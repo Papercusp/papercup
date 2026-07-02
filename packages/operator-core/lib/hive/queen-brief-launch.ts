@@ -18,10 +18,9 @@
 import { surveyHive, type ScopeFilter } from './survey';
 import { getHiveCarryNote } from './wake';
 import { summarizeOpenPlacements, resolveQueenOwner } from './placement-watchdog';
-import { gatherFleetSignals } from '../curation/fleet-signals';
-import { buildFleetReaders } from '../curation/deps';
-import { dropTriagedHandledSignals } from '../curation/salience-policy';
+import { listEscalations } from '../agent-tools/coordination/escalations';
 import { readTriagedHandledItemIds } from '../attention/triage-store';
+import { isOperationalEscalation } from '../attention/adapters';
 import { gatherCompletions } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import { gatherLiveBees } from '../fleet/placement-gather';
@@ -70,18 +69,27 @@ async function gatherBees(workspaceId: string): Promise<BriefBee[]> {
 }
 
 /** Fleet signals (escalations/blockers/decisions) → the floor's escalation digest.
- *  Fail-soft: a flaky read degrades to no-escalations, never kills the brief. */
-async function gatherEscalations(): Promise<BriefEscalation[]> {
+ *  Drain OLDEST-FIRST so each wake works down the backlog instead of re-reading
+ *  the newest duplicates. Fail-soft: a flaky read degrades to no-escalations,
+ *  never kills the brief. */
+async function gatherEscalations(limit = 10): Promise<BriefEscalation[]> {
   try {
-    const signals = await gatherFleetSignals(buildFleetReaders());
-    // EI-1687: drop escalations the operator triaged to "handled" so the Queen's
-    // wake brief stops re-listing them as open (the re-downgrade-thrash bug).
     const handled = await readTriagedHandledItemIds();
-    return dropTriagedHandledSignals(signals, handled).map((s) => ({
-      id: s.id,
-      severity: s.severity,
-      summary: s.title,
-    }));
+    return (await listEscalations({ status: 'open' }))
+      .filter((e) => !handled.has(`escalation:${e.msg_id}`))
+      .filter((e) => !isOperationalEscalation(e.from, (e.options?.length ?? 0) > 0))
+      .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id))
+      .slice(0, limit)
+      .map((e) => {
+        const repeatCount = typeof (e as { repeatCount?: unknown }).repeatCount === 'number'
+          ? Math.max(1, Math.floor((e as { repeatCount: number }).repeatCount))
+          : 1;
+        return {
+          id: `escalation:${e.msg_id}`,
+          severity: e.severity,
+          summary: repeatCount > 1 ? `${e.summary} (x${repeatCount})` : e.summary,
+        };
+      });
   } catch {
     return [];
   }

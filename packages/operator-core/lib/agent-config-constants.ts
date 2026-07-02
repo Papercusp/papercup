@@ -139,14 +139,20 @@ export function modelWindowForSpec(spec?: string | null): number {
 }
 
 /**
- * Model families papercusp defaults to the FULL 1M window (owner directive
- * 2026-07-02): `opus` and `fable`. Their launch spec is ALSO normalized to carry
- * `[1m]` (psu-launcher `normalizeModelSpec`) so Claude Code / the gateway enable
- * the 1M-context beta; this helper is the compaction-math twin, so a session that
- * skipped normalization still gets the 1M window here (never a 200k hard death).
+ * Model families papercusp defaults to the FULL 1M window: `opus` and `fable`
+ * (owner directive 2026-07-02), plus `sonnet-5` (P-031 correction 2026-07-02:
+ * Sonnet 5's 1M window is the DEFAULT — Anthropic ships no 200k variant, and
+ * CC 2.1.198's own model table gives `claude-sonnet-5` a 967k default window,
+ * no `[1m]` suffix or beta needed; the old 200k assumption was Sonnet-4.x-era
+ * and mis-derived a 158k soft limit for sonnet-5 fleet members). Sonnet ≤4.x
+ * (`claude-sonnet-4-6` etc.) stays 200k-default — the regex deliberately does
+ * not match `sonnet-4-5`. opus/fable launch specs are ALSO normalized to carry
+ * `[1m]` (psu-launcher `normalizeModelSpec`); this helper is the
+ * compaction-math twin, so a session that skipped normalization still gets the
+ * 1M window here (never a 200k hard death).
  */
 export function isDefault1mModelSpec(spec?: string | null): boolean {
-  return spec != null && /fable|opus/i.test(spec);
+  return spec != null && /fable|opus|sonnet-?5/i.test(spec);
 }
 
 /** Output-reservation + startup-attachment headroom subtracted from the hard
