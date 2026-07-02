@@ -10,7 +10,8 @@ export type BackendParitySmokeArea =
   | 'prompt-materialization'
   | 'operator-command-run'
   | 'delegate-work-items'
-  | 'plan-agent-backend-run';
+  | 'plan-agent-backend-run'
+  | 'agent-attribution';
 
 export type BackendParitySmokeCoverageKind =
   | 'vitest'
@@ -51,6 +52,7 @@ export const REQUIRED_BACKEND_PARITY_SMOKE_AREAS: readonly BackendParitySmokeAre
   'operator-command-run',
   'delegate-work-items',
   'plan-agent-backend-run',
+  'agent-attribution',
 ];
 
 export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
@@ -236,6 +238,25 @@ export const BACKEND_PARITY_SMOKE_MATRIX: readonly BackendParitySmokeRow[] = [
       { backend: 'claude', feature: 'role-session', state: 'supported' },
       { backend: 'codex', feature: 'role-session', state: 'supported' },
       { backend: 'omp', feature: 'role-session', state: 'supported' },
+    ],
+  },
+  {
+    id: 'agent-attribution-contract',
+    area: 'agent-attribution',
+    title: 'Agent attribution surfaces stay populated for every interactive backend',
+    backends: ['claude', 'codex', 'omp'],
+    requirement:
+      'session-handle, transcript-resolver, roster and usage attribution never regress to claude-only population (WI-1500 — the gpt-5.4 three-seam class: TUI transcript mirror, placement-watchdog zombie signal, roster labels); missing durable keys degrade to an explicit missingReason, never silence',
+    coverage: [
+      { kind: 'vitest', path: 'packages/operator-core/lib/agent-attribution-contract.test.ts' },
+      { kind: 'vitest', path: 'packages/operator-core/lib/native-session-handles.test.ts' },
+      { kind: 'vitest', path: 'packages/operator-core/lib/adv-roster.test.ts' },
+      { kind: 'vitest', path: 'packages/operator-core/lib/compaction-usage.test.ts' },
+    ],
+    capabilities: [
+      { backend: 'claude', feature: 'resume', state: 'supported' },
+      { backend: 'codex', feature: 'resume', state: 'supported' },
+      { backend: 'omp', feature: 'resume', state: 'supported' },
     ],
   },
   {

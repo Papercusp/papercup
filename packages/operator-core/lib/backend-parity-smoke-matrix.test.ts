@@ -80,6 +80,7 @@ describe('BACKEND_PARITY_SMOKE_MATRIX', () => {
       'operator-command-run',
       'delegate-work-items',
       'plan-agent-backend-run',
+      'agent-attribution',
     ];
     for (const area of crossBackendAreas) {
       const row = BACKEND_PARITY_SMOKE_MATRIX.find((candidate) => candidate.area === area);

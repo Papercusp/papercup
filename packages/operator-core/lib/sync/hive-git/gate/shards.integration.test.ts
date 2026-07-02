@@ -162,8 +162,12 @@ describe('gate shards (real git repo)', () => {
   });
 
   it('a gitlink boundary falls back to the submodule pointer OID (change-complete, loud discovery)', async () => {
-    // Fabricate a gitlink without a real submodule: point it at an existing commit oid.
+    // Fabricate a gitlink without a real submodule: point it at an existing
+    // commit oid. Capture TWO DISTINCT commits up front (the pointer move
+    // below must actually change the index).
     const target = await git(repo, 'rev-parse', 'HEAD');
+    const other = await git(repo, 'rev-parse', 'HEAD~1');
+    expect(other).not.toBe(target);
     await git(repo, 'update-index', '--add', '--cacheinfo', `160000,${target},pkgs/sub`);
     await git(repo, 'commit', '-q', '-m', 'add gitlink');
     const shaG = await git(repo, 'rev-parse', 'HEAD');
@@ -179,7 +183,6 @@ describe('gate shards (real git repo)', () => {
     const h1 = await shardInputsHash(repo, shaG, fake);
     expect(h1).toMatch(/^[0-9a-f]{64}$/);
     // Move the gitlink pointer → the hash changes.
-    const other = await git(repo, 'rev-parse', 'HEAD~1');
     await git(repo, 'update-index', '--add', '--cacheinfo', `160000,${other},pkgs/sub`);
     await git(repo, 'commit', '-q', '-m', 'move gitlink');
     const shaG2 = await git(repo, 'rev-parse', 'HEAD');
