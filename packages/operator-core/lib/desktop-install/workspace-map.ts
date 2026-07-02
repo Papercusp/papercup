@@ -43,7 +43,11 @@ export function resolveWorkspaceMapConfig(): WorkspaceMapConfig {
   return {
     integrationRoot,
     releaseRoot: process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release'),
-    checkpointRoot: process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(parent, 'papercup-checkpoint'),
+    // Per-root, matching release-config.ts (2026-07-02 cross-lineage race fix):
+    // <basename(integrationRoot)>-checkpoint, never a fixed shared name.
+    checkpointRoot:
+      process.env.PAPERCUSP_CHECKPOINT_ROOT ??
+      path.join(parent, `${path.basename(integrationRoot)}-checkpoint`),
     integrationBranch: process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
     releaseRef: process.env.PAPERCUSP_RELEASE_REF ?? 'main',
   };

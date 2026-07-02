@@ -73,4 +73,13 @@ describe('resolveWorkspaceMapConfig', () => {
     expect(cfg.integrationBranch).toBe('staging'); // code default mirrors release-config.ts
     expect(cfg.releaseRef).toBe('main');
   });
+
+  it('checkpoint default is per-root (<basename>-checkpoint), matching release-config.ts', () => {
+    // releaseRoot keeps the legacy fixed name; checkpointRoot must NOT — the 2026-07-02
+    // cross-lineage race fix namespaces it by the integration root's basename.
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/srv/papercusp');
+    const cfg = resolveWorkspaceMapConfig();
+    expect(cfg.releaseRoot).toBe('/srv/papercup-release');
+    expect(cfg.checkpointRoot).toBe('/srv/papercusp-checkpoint');
+  });
 });
