@@ -146,7 +146,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, noSubagents: false };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -198,6 +198,13 @@ export function parseArgs(argv) {
     // native branch command.
     else if (a === '--fork' || a === '--fork-session') out.fork = true;
     else if (a === '--no-plan') out.noPlan = true;
+    // psu --no-subagents (owner request 2026-07-01, default OFF): opt a human `su`
+    // session OUT of its built-in subagent-launch tool — same deny bees/fleet
+    // workers always carry (NO_SUBAGENTS_DENY_FLAG), applied here on request instead
+    // of unconditionally (D-003: the human session keeps the tool by default). Also
+    // usable as a fleet-launch arg — every fleet member IS a psu launch (see
+    // fleet:launch-on-plan's `noSubagents` field / `extraArgs`).
+    else if (a === '--no-subagents') out.noSubagents = true;
     // improve-fleet-launch-autokickoff (EI-5503): opt OUT of the auto-kickoff first
     // user turn that a scripted plan launch (`--no-picker --plan=…`) otherwise seeds.
     // Default ON for scripted plan launches; this flag restores the old open-at-an-
@@ -334,6 +341,26 @@ export function forkUnsupportedMessage(agent) {
  */
 export const NATIVE_SCHEDULER_DENY_FLAG =
   '--disallowedTools=CronCreate,CronDelete,CronList,ScheduleWakeup,Skill(schedule),Skill(loop),Bash(crontab:*),Bash(systemd-run:*),Bash(batch:*)';
+
+/**
+ * Subagent-fanout deny (owner request 2026-07-01): AGENT role/bee sessions
+ * lose the built-in subagent-launch tool — unconditional, no opt-out, mirrors
+ * the native-scheduler lockout's posture for role sessions. `Task` is the
+ * pre-rename name (verified vs claude 2.1.158); `Agent` is the name as of
+ * 2.1.198 — re-verifying live found the `Task`-only form had become a silent
+ * no-op (a spawned Agent-tool subagent still ran), so both are carried. A
+ * SEPARATE `--disallowedTools=` token from NATIVE_SCHEDULER_DENY_FLAG
+ * (verified live: claude unions repeated `--disallowedTools` occurrences) so
+ * this doesn't disturb that flag's own lockstep-pinned literal. MUST stay one
+ * `=` token — same greed-guard reason as NATIVE_SCHEDULER_DENY_FLAG. The
+ * literal mirrors `NO_SUBAGENT_TOOLS_DENY` in
+ * `@papercusp/orchestrator/no-subagent-deny`; the lockstep test in
+ * `lib/psu-launcher.test.ts` pins the two copies together. Exported for tests.
+ *
+ * The human `psu su` session keeps the tool by default (D-003 posture) —
+ * `--no-subagents` (default OFF) opts a human session OUT of it explicitly.
+ */
+export const NO_SUBAGENTS_DENY_FLAG = '--disallowedTools=Task,Agent';
 export const BRAIN_TOMBSTONE_MESSAGE =
   'psu: --brain is deprecated and no longer launches a pinned brain session. Use the live operator/sentinel converse surface or a normal `psu` session.';
 
@@ -378,6 +405,9 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
         // Agent sessions must schedule ONLY via the harness routines table —
         // never claude's own cron/schedule/loop surfaces (D-001).
         NATIVE_SCHEDULER_DENY_FLAG,
+        // Agent sessions (role panes + bees) never fan out via their own subagent
+        // tool, unconditionally — see NO_SUBAGENTS_DENY_FLAG's doc comment.
+        NO_SUBAGENTS_DENY_FLAG,
       ],
     };
   }
@@ -433,7 +463,7 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId, replaceClaudeBase } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId, replaceClaudeBase, noSubagents } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // when armed, the playbook REPLACES the Claude coding base (--system-prompt-file +
@@ -455,6 +485,9 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
         // No --mcp-config: claude's papercusp-su is user-level (~/.claude.json)
         // and survives a raw launch; adding it would duplicate the server.
         '--permission-mode', 'bypassPermissions',
+        // psu --no-subagents (default OFF — D-003 posture, the human session keeps
+        // its subagent tool unless explicitly opted out): owner request 2026-07-01.
+        ...(noSubagents ? [NO_SUBAGENTS_DENY_FLAG] : []),
       ],
     };
   }
@@ -2271,6 +2304,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
   for (const d of args.addDir || []) argv.push(`--add-dir=${d}`);
+  if (args.noSubagents) argv.push('--no-subagents');
   if (brain) argv.push('--brain');
   if (args.passthrough?.length) argv.push('--', ...args.passthrough);
   return argv;
@@ -2799,11 +2833,16 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // threads it via envelopeEnv (same env name the fleet path reads). Off/absent ⇒
     // suLaunchArgs uses --append (byte-identical to today).
     replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
+    // psu --no-subagents (default OFF): claude-only flag; see suLaunchArgs.
+    noSubagents: args.noSubagents,
   });
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
   if (args.addDir?.length && res.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');
+  }
+  if (args.noSubagents && res.agent !== 'claude') {
+    console.error(`psu: --no-subagents has no ${res.agent} equivalent wired up yet; ignoring it (claude-only for now).`);
   }
   // First-class --add-dir (claude/codex) then the generic `--` passthrough — both
   // forwarded verbatim to the backend CLI after psu's own flags.

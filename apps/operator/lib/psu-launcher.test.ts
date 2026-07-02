@@ -52,6 +52,7 @@ import {
   AGENTS,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
+  NO_SUBAGENTS_DENY_FLAG,
   BRAIN_TOMBSTONE_MESSAGE,
   fetchWithResilience,
   resolveOperatorUrl,
@@ -67,6 +68,7 @@ import {
   schemeNameInAccent,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
+import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
@@ -412,7 +414,15 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      // no-subagent-fanout (owner request 2026-07-01): default OFF — the human su
+      // session keeps its subagent tool unless --no-subagents opts out.
+      noSubagents: false,
     });
+  });
+
+  it('parses --no-subagents (owner request 2026-07-01); defaults false', () => {
+    expect(parseArgs([]).noSubagents).toBe(false);
+    expect(parseArgs(['--no-subagents']).noSubagents).toBe(true);
   });
 
   it('parses retired --brain as a tombstoned flag, not a backend-specific capability', () => {
@@ -457,6 +467,7 @@ describe('psu-launcher arg parsing', () => {
       setClaudeToken: false,
       setClaudeTokenValue: null,
       clearClaudeToken: false,
+      noSubagents: false,
     });
   });
 
@@ -999,7 +1010,7 @@ describe('psu-launcher arg parsing', () => {
 describe('roleLaunchArgs (interactive role session)', () => {
   const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
 
-  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout', () => {
+  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout, no-subagent-fanout', () => {
     const { bin, args } = roleLaunchArgs('claude', files);
     expect(bin).toBe('claude');
     expect(args).toEqual([
@@ -1009,6 +1020,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
       '--strict-mcp-config',
       '--permission-mode', 'bypassPermissions',
       NATIVE_SCHEDULER_DENY_FLAG,
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
 
@@ -1021,6 +1033,21 @@ describe('roleLaunchArgs (interactive role session)', () => {
   it('the scheduler lockout is one `=` token (the variadic space form would eat following args)', () => {
     expect(NATIVE_SCHEDULER_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
     expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
+  });
+
+  it('the no-subagent-fanout deny carries both tool names (Task + Agent — no-subagent-deny.ts)', () => {
+    // psu-launcher.mjs duplicates the rendered flag from the canonical TS source
+    // (same lockstep pattern as the scheduler-deny flag above).
+    expect(NO_SUBAGENTS_DENY_FLAG).toBe(noSubagentToolsDenyFlag());
+    expect(NO_SUBAGENTS_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+    expect(/\s/.test(NO_SUBAGENTS_DENY_FLAG)).toBe(false);
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Task');
+    expect(NO_SUBAGENTS_DENY_FLAG).toContain('Agent');
+  });
+
+  it('role sessions ALWAYS deny subagent fanout — unconditional, no opt-out (bees/fleet posture)', () => {
+    expect(roleLaunchArgs('claude', files).args).toContain(NO_SUBAGENTS_DENY_FLAG);
+    expect(roleLaunchArgs('claude', { ...files, replaceClaudeBase: true }).args).toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
   it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
@@ -1072,6 +1099,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
       '--strict-mcp-config',
       '--permission-mode', 'bypassPermissions',
       NATIVE_SCHEDULER_DENY_FLAG,
+      NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(args).not.toContain('--append-system-prompt-file');
   });
@@ -1121,6 +1149,16 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
   it('claude su: the HUMAN session keeps native schedulers — NO lockout flag (native-scheduler-lockout D-003)', () => {
     const { args } = suLaunchArgs('claude', files);
     expect(args.some((a) => a.startsWith('--disallowedTools'))).toBe(false);
+  });
+
+  it('claude su: keeps the subagent tool by DEFAULT — no --no-subagents deny unless opted in (D-003 posture)', () => {
+    const { args } = suLaunchArgs('claude', files);
+    expect(args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
+  });
+
+  it('claude su: noSubagents:true opts the human session OUT of the subagent tool (owner request 2026-07-01)', () => {
+    const { args } = suLaunchArgs('claude', { ...files, noSubagents: true });
+    expect(args).toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
   it('omp: yolo + playbook prompt + coordination extension (-e, P-021)', () => {
