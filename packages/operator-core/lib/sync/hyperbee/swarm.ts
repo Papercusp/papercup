@@ -284,12 +284,21 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
           try {
             msg.send(fresh);
             announceDebug(`sent fresh log=${fresh.log_core_key.slice(0, 12)}...`);
-          } catch {
-            // best-effort — replication still proceeds
+          } catch (e) {
+            // best-effort — replication still proceeds. WI-1544: this drop is
+            // one-shot per connection (sentKeys already marked) — make it loud.
+            announceDebug(
+              `send-failed log=${fresh.log_core_key.slice(0, 12)}... err=${e instanceof Error ? e.message : String(e)}`,
+            );
           }
         })
-        .catch(() => {
-          // a build/sign failure must never crash the swarm handler
+        .catch((e: unknown) => {
+          // a build/sign failure must never crash the swarm handler — but it
+          // silently suppresses this core's announce for the whole connection
+          // (WI-1544 round-1 candidate), so trace it.
+          announceDebug(
+            `build-failed log=${key.slice(0, 12)}... err=${e instanceof Error ? e.message : String(e)}`,
+          );
         });
       continue;
     }
@@ -299,8 +308,11 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
     try {
       msg.send(ann);
       announceDebug(`sent static log=${ann.log_core_key.slice(0, 12)}...`);
-    } catch {
-      // best-effort — replication still proceeds
+    } catch (e) {
+      // best-effort — replication still proceeds (loud: one-shot per connection)
+      announceDebug(
+        `send-failed static log=${ann.log_core_key.slice(0, 12)}... err=${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 }

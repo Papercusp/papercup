@@ -10,20 +10,26 @@ import {
   MIN_COMPACTION_LIMIT_TOKENS,
 } from './agent-config-constants';
 
-// opus + fable default to the FULL 1M window but papercusp compacts them
-// preemptively at 500k (owner directive 2026-07-02). This file pins BOTH halves:
-// the window (isDefault1mModelSpec / modelWindowForSpec) and the compaction cap
-// (defaultCompactionLimitForSpec / clampCompactionLimit). Twin of psu-launcher
-// normalizeModelSpec, which injects the [1m] launch marker for the same families.
+// opus + fable + sonnet-5 default to the FULL 1M window but papercusp compacts
+// them preemptively at 500k (owner directive 2026-07-02). This file pins BOTH
+// halves: the window (isDefault1mModelSpec / modelWindowForSpec) and the
+// compaction cap (defaultCompactionLimitForSpec / clampCompactionLimit). Twin of
+// psu-launcher normalizeModelSpec, which injects the [1m] launch marker for
+// opus/fable (sonnet-5 needs no marker — its 1M window is Anthropic's default).
 
-describe('isDefault1mModelSpec (opus/fable are the default-1M families)', () => {
+describe('isDefault1mModelSpec (opus/fable/sonnet-5 are the default-1M families)', () => {
   it('is true for opus and fable specs (with or without effort / id prefix)', () => {
     for (const spec of ['opus', 'opus:high', 'claude-opus-4-8', 'fable', 'claude-fable-5:xhigh']) {
       expect(isDefault1mModelSpec(spec)).toBe(true);
     }
   });
-  it('is false for other families and nullish specs', () => {
-    for (const spec of ['sonnet', 'sonnet:high', 'haiku', 'gpt-5.5', 'ornith']) {
+  it('is true for sonnet-5 (1M is its DEFAULT window per Anthropic — P-031 correction 2026-07-02)', () => {
+    for (const spec of ['claude-sonnet-5', 'claude-sonnet-5:high', 'sonnet-5', 'sonnet5:medium']) {
+      expect(isDefault1mModelSpec(spec)).toBe(true);
+    }
+  });
+  it('is false for sonnet ≤4.x, bare "sonnet", other families, and nullish specs', () => {
+    for (const spec of ['sonnet', 'sonnet:high', 'claude-sonnet-4-5', 'claude-sonnet-4-6:high', 'haiku', 'gpt-5.5', 'ornith']) {
       expect(isDefault1mModelSpec(spec)).toBe(false);
     }
     expect(isDefault1mModelSpec(null)).toBe(false);
@@ -32,9 +38,10 @@ describe('isDefault1mModelSpec (opus/fable are the default-1M families)', () => 
 });
 
 describe('modelWindowForSpec', () => {
-  it('opus/fable get the 1M window even without the [1m] marker', () => {
+  it('opus/fable/sonnet-5 get the 1M window even without the [1m] marker', () => {
     expect(modelWindowForSpec('opus')).toBe(MODEL_WINDOW_1M);
     expect(modelWindowForSpec('claude-fable-5:xhigh')).toBe(MODEL_WINDOW_1M);
+    expect(modelWindowForSpec('claude-sonnet-5:high')).toBe(MODEL_WINDOW_1M);
   });
   it('an explicit [1m] marker forces 1M for any family', () => {
     expect(modelWindowForSpec('sonnet[1m]')).toBe(MODEL_WINDOW_1M);
@@ -49,11 +56,12 @@ describe('modelWindowForSpec', () => {
 });
 
 describe('defaultCompactionLimitForSpec', () => {
-  it('opus/fable are capped at 500k (preemptive compaction despite the 1M window)', () => {
+  it('opus/fable/sonnet-5 are capped at 500k (preemptive compaction despite the 1M window)', () => {
     expect(COMPACTION_LIMIT_DEFAULT_1M_CAP).toBe(500_000);
     expect(defaultCompactionLimitForSpec('opus')).toBe(500_000);
     expect(defaultCompactionLimitForSpec('opus:xhigh')).toBe(500_000);
     expect(defaultCompactionLimitForSpec('claude-fable-5:xhigh')).toBe(500_000);
+    expect(defaultCompactionLimitForSpec('claude-sonnet-5:high')).toBe(500_000);
   });
   it('a non-opus/fable [1m] spec keeps the window-derived 825k default', () => {
     // floor((1_000_000 - 10_000) / 1.2 / 1000) * 1000 = 825_000

@@ -1636,8 +1636,15 @@ export function assertLaunchPersona(promptFile) {
  * that isn't opus/fable. `[1m]` is inserted before a recognized `:effort` suffix,
  * else appended. Papercusp then caps their compaction at 500k
  * (agent-config-constants defaultCompactionLimitForSpec) to bound token spend.
- * Kept in lockstep with agent-config-constants `isDefault1mModelSpec` (opus|fable).
+ * sonnet-5 is ALSO a default-1M family (P-031 correction 2026-07-02: Anthropic
+ * ships sonnet-5 with the 1M window as its DEFAULT — no beta/marker needed) but
+ * deliberately gets NO `[1m]` injection here: the marker exists to flip the 1M
+ * beta on for families whose default is 200k, which sonnet-5's isn't.
+ * Kept in lockstep with agent-config-constants `isDefault1mModelSpec`
+ * (opus|fable|sonnet-5) via DEFAULT_1M_FAMILY_RE.
  */
+export const DEFAULT_1M_FAMILY_RE = /fable|opus|sonnet-?5/i;
+
 export function normalizeModelSpec(spec) {
   if (!spec || /\[1m\]/i.test(spec) || !/fable|opus/i.test(spec)) return spec;
   const c = spec.lastIndexOf(':');
@@ -1655,7 +1662,8 @@ export function normalizeModelSpec(spec) {
  * Pure + exported for tests; the caller decides how to surface it.
  */
 export function preflightWindowGuard({ personaBytes, contextSize, model }) {
-  const window = /\[1m\]/i.test(String(model ?? '')) ? 1_000_000 : 200_000;
+  const spec = String(model ?? '');
+  const window = /\[1m\]/i.test(spec) || DEFAULT_1M_FAMILY_RE.test(spec) ? 1_000_000 : 200_000;
   const personaTokens = Math.round((personaBytes ?? 0) / 3.7);
   const variant = contextSize === 'full' ? 'full' : 'trimmed';
   const estTokens = personaTokens + SU_BASELINE_NON_PERSONA_TOKENS[variant];
