@@ -169,12 +169,25 @@ export interface OrphanSignalOpts {
  *     and since that EI is itself auto-implement-eligible, it would DOA on the SAME
  *     outage and file ANOTHER orphan EI: a self-amplifying backlog-noise loop (EI-536/
  *     523/512/509). The dispatch-stats rollup still counts it; the human signal does not.
+ *   - a CONTEXT-OVERFLOW death (resolved_by 'worker-exit-backedge-context-overflow',
+ *     WI-716) — the worker's session ran out of context window on an oversized item;
+ *     says nothing about the DISPATCH lane (other items dispatch and run fine), only
+ *     about that one item's scope. Its OWN escalation path (needsHuman after
+ *     CONTEXT_OVERFLOW_ESCALATE_CAP deaths, implement-worker-exit.ts) is the correct
+ *     human signal — filing a SECOND "lane broken" EI on top would be the same
+ *     self-amplifying-noise failure mode as the env-failure case above.
  * INCLUDED (genuine breakage): the 2h orphan collector's catch-all + a genuine non-env
  * worker crash — a worker that actually died/hung for a reason that IS about the lane.
  */
 export function isLaneBreakageOrphan(r: ImprovementDispatchRow): boolean {
-  if (r.resolvedBy === 'host-restart-recovery' || r.resolvedBy === 'worker-exit-backedge-env') return false;
+  if (
+    r.resolvedBy === 'host-restart-recovery' ||
+    r.resolvedBy === 'worker-exit-backedge-env' ||
+    r.resolvedBy === 'worker-exit-backedge-context-overflow'
+  )
+    return false;
   if ((r.fireError ?? '').includes('[env-failure')) return false; // legacy rows (pre-distinct resolved_by)
+  if ((r.fireError ?? '').includes('[context-overflow')) return false;
   return true;
 }
 

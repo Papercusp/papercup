@@ -151,6 +151,20 @@ describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT fal
     expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
   });
 
+  it('WI-716: a context-overflow orphan (resolved_by …-context-overflow) is NOT lane breakage (per-item scope issue, has its own escalation path)', () => {
+    const r = row({ id: 'd-of', itemId: 'EI-OF', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-context-overflow' });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
+  it('WI-716: a LEGACY-shaped context-overflow orphan (detail carries [context-overflow) is still excluded', () => {
+    const r = row({
+      id: 'd-of2', itemId: 'EI-OF2', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-context-overflow',
+      fireError: 'worker exit 1 after 600s [context-overflow death 1/2; attempt 2 not charged]: Prompt is too long',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+  });
+
   it('a GENUINE non-env worker death (attempt charged) DOES signal — the lane may be broken', () => {
     const r = row({
       id: 'd4', itemId: 'EI-4', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',

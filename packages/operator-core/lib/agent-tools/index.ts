@@ -251,6 +251,9 @@ import './gateway/gateway';
 import './gateway/local-backends';
 // local-concurrent-inference-2026-07-02 P-009 — provisioner:detect_hardware/recommend/plan_install/install.
 import './provisioner/provisioner';
+// WI-1659 (P-006 fast-follow) — cert:run/cert:catalog, the on-demand agent surface for the
+// model-certification battery (lib/inference-gateway/cert-battery).
+import './cert/battery';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

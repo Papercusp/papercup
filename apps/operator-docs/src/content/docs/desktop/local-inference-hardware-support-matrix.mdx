@@ -34,7 +34,7 @@ doc-drift fix.
 
 | Hardware tier | Recommendation | Notes |
 |---|---|---|
-| **NVIDIA, ≥24GB VRAM** | `vLLM` + AWQ/GPTQ (managed container) preferred for max concurrency; `llama-server` GGUF as the no-container fallback | The pipeline (`recommend.ts`/`provision.ts`/`vllm-container.ts`) is fully wired for the vLLM lane — including downgrading to `llama-server` when no working Docker/Podman runtime is found (D-009 #3) — but as of this writing `CERTIFIED_CATALOG` (catalog.ts) has only ONE entry for this tier, `llama-server`-backed and `status: 'provisional'`. So today's actual recommendation at this tier is still `llama-server`; the vLLM lane activates automatically the moment a `backend: 'vllm'` entry is added to the catalog — no wizard/recommend code changes needed |
+| **NVIDIA, ≥24GB VRAM** | `vLLM` + AWQ/GPTQ (managed container) preferred for max concurrency; `llama-server` GGUF as the no-container fallback | The pipeline (`recommend.ts`/`provision.ts`/`vllm-container.ts`) is fully wired for the vLLM lane — including downgrading to `llama-server` when no working Docker/Podman runtime is found (D-009 #3) — but as of this writing `CERTIFIED_CATALOG` (catalog.ts) has only ONE entry for this tier, `llama-server`-backed. It cleared the P-006/P-007 certification battery on 2026-07-02 (`status: 'certified'`, 3/3 critical probes, 0% mangling) — see its `certification` record in catalog.ts. So today's actual recommendation at this tier is still `llama-server`, now CERTIFIED rather than provisional; the vLLM lane activates automatically the moment a `backend: 'vllm'` entry is added to the catalog — no wizard/recommend code changes needed |
 | **NVIDIA, \<24GB VRAM** (the `nvidia-mid` / `nvidia-low` tiers) | `llama-server` GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable `num_ctx` | No vLLM lane at this tier (concurrency isn't the point; fitting in VRAM is) |
 | **Apple Silicon (Metal)** | `llama-server` built with the Metal backend, single/low-stream concurrency | No vLLM lane — vLLM is CUDA-only (D-004) |
 | **CPU-only (no GPU)** | `llama-server` CPU build, smallest certified quant | The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning |
@@ -73,8 +73,9 @@ there is **no separate hardcoded copy of the matrix in the UI**:
    that produced it. **Add a new matrix row by adding a catalog entry here — never by hardcoding
    a second table elsewhere.** As of this writing the catalog holds exactly one entry
    (`ornith-35b-iq3m-llama-server`, `backend: 'llama-server'`, tier `nvidia-24gb-plus`,
-   `status: 'provisional'`) — no `backend: 'vllm'` entry exists yet, even though the rest of the
-   pipeline (below) already supports one.
+   `status: 'certified'` — it cleared the P-006/P-007 battery 2026-07-02, with a `certification`
+   record: verdict `certified`, 3/3 critical probes, 0% mangling) — no `backend: 'vllm'` entry
+   exists yet, even though the rest of the pipeline (below) already supports one.
 5. **`provisioner/provision.ts`** — `planProvision(opts?: { binPath?, vllmDeps?, vllmImage?,
    hfCacheDir? })` composes 1–4 into a `ProvisionPlan` (plus the weights/image-download plan and
    backend unit-file path). This is the single function the headless CLI (`provisioner/cli.ts`),
