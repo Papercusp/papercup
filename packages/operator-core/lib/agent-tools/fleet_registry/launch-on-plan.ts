@@ -76,6 +76,12 @@ export interface MemberLaunchOpts {
   contextSize?: 'full' | 'trimmed';
   brain?: boolean;
   addDir?: string[];
+  /** psu --no-subagents (default OFF — owner request 2026-07-01): opt every member's
+   *  su session OUT of its built-in subagent-launch tool. Bees/pipeline-role sessions
+   *  already deny it unconditionally; this is the su-session opt-in, so a desktop
+   *  fleet member (which runs as an su session, not a role session) can carry the
+   *  same posture when asked for. */
+  noSubagents?: boolean;
   extraArgs?: string[];
 }
 
@@ -111,6 +117,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // su-context-size-variants: enum-constrained ('full'|'trimmed'), so no shq needed.
   if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
   if (opts.brain) parts.push('--brain');
+  if (opts.noSubagents) parts.push('--no-subagents');
   for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
   for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
   return parts.join(' ');
@@ -123,7 +130,7 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, context-size (full|trimmed), brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, context-size (full|trimmed), brain, add-dir, noSubagents (opt every member OUT of its own subagent-launch tool, default off), plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
   guidance: {
     when: 'Routing option (3) — "spawn a new desktop fleet to work a plan" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user\'s desktop and start working immediately.',
     notWhen:
@@ -194,6 +201,12 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe("psu --add-dir (repeatable): extra directories added to each member's workspace."),
+    noSubagents: z
+      .boolean()
+      .optional()
+      .describe(
+        "psu --no-subagents (default OFF): opt every member's su session OUT of its own built-in subagent-launch tool. Off by default — members keep the tool like any interactive su session, matching D-003.",
+      ),
     extraArgs: z
       .array(z.string())
       .optional()
@@ -297,6 +310,7 @@ export default defineTool({
       contextSize: args.contextSize,
       brain: args.brain || undefined,
       addDir: args.addDir,
+      noSubagents: args.noSubagents || undefined,
       extraArgs: args.extraArgs,
     });
     const opened: Array<{ terminal: string; pid: number | null }> = [];

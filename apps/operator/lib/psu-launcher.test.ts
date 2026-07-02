@@ -1958,6 +1958,12 @@ describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
     const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, args);
     expect(argv).toContain(`--fleet=${storeFleetSlugFromName('My New Fleet')}`);
   });
+  it('captures --no-subagents (owner request 2026-07-01); omitted when not requested', () => {
+    const withFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--no-subagents']);
+    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withFlag)).toContain('--no-subagents');
+    const withoutFlag = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']);
+    expect(psuLaunchArgvRecord({ agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' }, withoutFlag)).not.toContain('--no-subagents');
+  });
 });
 
 describe('fleetSlugFromName client/server parity', () => {
