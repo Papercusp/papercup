@@ -25,6 +25,7 @@ import {
   snapshotCachedReadStats,
   resetCachedReadStatsForTests,
   __setCachedReadEnabledForTests,
+  DEFAULT_CACHED_READ_HARD_TTL_MS,
 } from "./cached-read";
 
 const CACHE_LAYER = "papercusp-cache-layer";
@@ -313,5 +314,75 @@ describe("cachedRead — per-tool telemetry", () => {
     const stats = snapshotCachedReadStats();
     expect(stats["plans:list"]).toMatchObject({ misses: 1, hits: 0 });
     expect(stats["plans:attention"]).toMatchObject({ misses: 1, hits: 1 });
+  });
+});
+
+describe("WI-1547 — default hard TTL bounds worst-case staleness", () => {
+  // The defect shape: the cache-ECA invalidation rail silently inert in a process
+  // (its lazily-SSE-started LISTEN never started), so an SWR entry was served stale
+  // at ANY age (a ~45-min-old plans:get snapshot). The default hard TTL is the
+  // defense-in-depth bound: past it, the read REBUILDS BLOCKING even when no
+  // invalidation ever arrived.
+  const OLD = DEFAULT_CACHED_READ_HARD_TTL_MS + 60_000;
+
+  it("an un-invalidated entry past the default hard TTL rebuilds BLOCKING (not a stale serve)", async () => {
+    let now = 0;
+    setOperatorCache({ clock: () => now });
+    let n = 0;
+    const f = (): string => `v${++n}`;
+    const opts = { tool: "t:hard", key: "k", tags: ["x"], softTtlMs: 45_000 };
+    expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1");
+    now = OLD; // soft TTL long expired AND past the default hard TTL; no bumpTags ever fired
+    // Without the WI-1547 default this would SWR-serve the stale "v1".
+    expect(await cachedRead(ctx("w1"), opts, f)).toBe("v2");
+  });
+
+  it("an explicit hardTtlMs overrides the default (a long explicit TTL still stale-serves)", async () => {
+    let now = 0;
+    setOperatorCache({ clock: () => now });
+    let n = 0;
+    const f = (): string => `v${++n}`;
+    const opts = {
+      tool: "t:hard-explicit",
+      key: "k",
+      tags: ["x"],
+      softTtlMs: 45_000,
+      hardTtlMs: OLD * 10,
+    };
+    expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1");
+    now = OLD; // past the default, but the caller's explicit hard TTL wins
+    expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1"); // SWR stale serve
+  });
+
+  it("PAPERCUSP_CACHED_READ_HARD_TTL_MS=0 disables the default (opt-out preserved)", async () => {
+    vi.stubEnv("PAPERCUSP_CACHED_READ_HARD_TTL_MS", "0");
+    try {
+      let now = 0;
+      setOperatorCache({ clock: () => now });
+      let n = 0;
+      const f = (): string => `v${++n}`;
+      const opts = { tool: "t:hard-off", key: "k", tags: ["x"], softTtlMs: 45_000 };
+      expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1");
+      now = OLD;
+      expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1"); // stale serve — default disabled
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("PAPERCUSP_CACHED_READ_HARD_TTL_MS tunes the bound", async () => {
+    vi.stubEnv("PAPERCUSP_CACHED_READ_HARD_TTL_MS", "1000");
+    try {
+      let now = 0;
+      setOperatorCache({ clock: () => now });
+      let n = 0;
+      const f = (): string => `v${++n}`;
+      const opts = { tool: "t:hard-env", key: "k", tags: ["x"] };
+      expect(await cachedRead(ctx("w1"), opts, f)).toBe("v1");
+      now = 1_500; // past the env bound
+      expect(await cachedRead(ctx("w1"), opts, f)).toBe("v2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

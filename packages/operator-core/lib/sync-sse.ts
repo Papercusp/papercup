@@ -99,6 +99,45 @@ export const subscribe: (send: (e: SyncEvent) => void) => Promise<SubscribeHandl
 export const backfillSince: (lastEventId: number) => SyncEvent[] = bus.backfillSince;
 
 /**
+ * Eagerly start the `sync_invalidate` LISTEN in THIS process (WI-1547 root-cause
+ * fix). The bus starts its single PG LISTEN lazily on the first SSE subscribe —
+ * but the cache-ECA (`bridge` → `emitSystemEvent` → `cache.bumpTags`) rides that
+ * SAME listen, so a process that never receives an SSE subscriber (a `:3070`
+ * reuseport cluster worker serving only MCP/tool HTTP; the staging host) had a
+ * cache layer that was built but INERT: entries never invalidated on real writes,
+ * and cachedRead's SWR served arbitrarily old snapshots once per idle period
+ * (the plans:get ~45-min-stale read-consistency flap, WI-1547). Every operator
+ * host process MUST call this at boot (hono-host `startRequestServers`).
+ *
+ * Bounded retry, fail-soft: a failed attempt is logged and retried (PG may still
+ * be coming up at boot); after the attempts are exhausted the host keeps serving
+ * (cache degrades to the pre-fix behavior, now bounded by cachedRead's default
+ * hard TTL) and the next SSE subscribe retries via the bus's own reset. Once
+ * connected, postgres-js re-issues LISTEN on reconnect and the `onListen`
+ * cold-bust (`clearL1`) covers any missed-bump gap.
+ */
+export async function ensureInvalidationListener(
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<boolean> {
+  const attempts = Math.max(1, opts.attempts ?? 6);
+  const delayMs = opts.delayMs ?? 5_000;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await bus.start();
+      return true;
+    } catch (e) {
+      console.error(
+        `[sync-sse] invalidation LISTEN start attempt ${i}/${attempts} failed` +
+          (i < attempts ? ` (retrying in ${delayMs}ms):` : ' (giving up — cache-ECA inert in this process until an SSE subscribe retries):'),
+        e,
+      );
+      if (i < attempts) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return false;
+}
+
+/**
  * Server-side notify helper. Mutation/watcher code calls this after writes;
  * fires `pg_notify('sync_invalidate', ...)` which the LISTEN above fans out
  * to all SSE subscribers. Dedupe + 32KB payload cap live in the bus.

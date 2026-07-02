@@ -36,6 +36,30 @@ export interface CachedReadCtx {
   principal?: { workspaceId?: string | null } | null;
 }
 
+/**
+ * Default HARD TTL applied when a consumer sets no `hardTtlMs` (WI-1547 defense-
+ * in-depth). SWR (`softTtlMs`) serves a stale entry of ANY age and revalidates in
+ * the background — which is only bounded when the cache-ECA invalidation rail is
+ * live. WI-1547 (plans:get returning ~45-min-stale snapshots) proved the rail can
+ * be silently inert in a whole process (a reuseport cluster worker whose lazy
+ * SSE-started LISTEN never started), making "stale once per idle period" unbounded.
+ * A hard TTL forces a BLOCKING rebuild past this age, so the worst-case staleness
+ * of ANY cachedRead is bounded even with the rail down. Env-tunable
+ * (`PAPERCUSP_CACHED_READ_HARD_TTL_MS`; `0` disables the default). An explicit
+ * caller `hardTtlMs` always wins — including `0`, which in the underlying lib
+ * means "always rebuild".
+ */
+export const DEFAULT_CACHED_READ_HARD_TTL_MS = 600_000;
+
+function defaultHardTtlMs(): number | undefined {
+  const raw = process.env.PAPERCUSP_CACHED_READ_HARD_TTL_MS;
+  if (raw !== undefined && raw !== "") {
+    const v = Number(raw);
+    if (Number.isFinite(v) && v >= 0) return v > 0 ? v : undefined; // 0 ⇒ disabled
+  }
+  return DEFAULT_CACHED_READ_HARD_TTL_MS;
+}
+
 export interface CachedReadOptions {
   /** Tool name — the key namespace AND the telemetry bucket (e.g. 'plans:list'). */
   tool: string;
@@ -51,7 +75,11 @@ export interface CachedReadOptions {
   tags: readonly string[];
   /** Serve-stale-and-revalidate after this many ms (backstop for un-triggered deps). */
   softTtlMs?: number;
-  /** Force a blocking rebuild after this many ms. */
+  /**
+   * Force a blocking rebuild after this many ms. Omitted ⇒ the WI-1547 default
+   * ({@link DEFAULT_CACHED_READ_HARD_TTL_MS}) bounds worst-case staleness; an
+   * explicit value (including 0 = always rebuild) is passed through verbatim.
+   */
   hardTtlMs?: number;
   /** Also cache null/undefined factory results (negative caching). Default false. */
   cacheEmpty?: boolean;
@@ -168,7 +196,11 @@ export async function cachedRead<V>(
   return getOperatorCache().getOrSet(workspaceId, fullKey, factory, {
     tags: opts.tags,
     ...(opts.softTtlMs !== undefined ? { softTtlMs: opts.softTtlMs } : {}),
-    ...(opts.hardTtlMs !== undefined ? { hardTtlMs: opts.hardTtlMs } : {}),
+    // WI-1547: no explicit hardTtl ⇒ the bounded-staleness default (see above).
+    ...(() => {
+      const hard = opts.hardTtlMs !== undefined ? opts.hardTtlMs : defaultHardTtlMs();
+      return hard !== undefined ? { hardTtlMs: hard } : {};
+    })(),
     ...(opts.cacheEmpty !== undefined ? { cacheEmpty: opts.cacheEmpty } : {}),
     onOutcome: (outcome) => recordOutcome(opts.tool, outcome),
   });

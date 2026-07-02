@@ -192,6 +192,12 @@ export async function spawnSubstrateSidecar(
       cmd = isTs ? 'npx' : process.execPath;
       args = isTs ? ['tsx', sidecarScript] : [sidecarScript];
     }
+    const launchedAt = Date.now();
+    const [spawnCommand, ...spawnArgs] = useScope
+      ? buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG())
+      : [cmd, ...args];
+    let stderr = '';
+    let settled = false;
 
     // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel —
     // the out-of-band Duplex *handle* transport the Option B socket-handoff
@@ -199,23 +205,36 @@ export async function spawnSubstrateSidecar(
     // (msg, handle))). Without it `process.send` is undefined in the child and
     // the handle listener no-ops, so the raw socket can never cross the process
     // boundary. Harmless on the OFF path (the sidecar is never spawned there).
-    sidecarProcess = spawn(cmd, args, {
+    sidecarProcess = spawn(spawnCommand, spawnArgs, {
       env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      detached: false,
+      detached: true,
     });
+    const child = sidecarProcess;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+    };
+    const isScopeLaunchFailure = (code: number | null): boolean =>
+      useScope &&
+      !sidecarReady &&
+      code !== 0 &&
+      Date.now() - launchedAt < 5_000 &&
+      SCOPE_LAUNCH_FAILURE_RE.test(stderr);
 
     const timeout = setTimeout(() => {
-      if (!sidecarReady && sidecarProcess) {
-        sidecarProcess.kill();
+      if (!sidecarReady && sidecarProcess === child) {
+        killSidecarTree('SIGKILL');
         sidecarProcess = null;
       }
+      if (settled) return;
+      settled = true;
       reject(new Error('Sidecar startup timeout'));
     }, 10000);
 
     // Listen for ready handshake
     let stdoutBuffer = '';
-    sidecarProcess.stdout?.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split('\n');
 
@@ -227,7 +246,9 @@ export async function spawnSubstrateSidecar(
 
         if (line.includes('PAPERCUSP_SUBSTRATE_READY')) {
           sidecarReady = true;
-          clearTimeout(timeout);
+          cleanup();
+          if (settled) return;
+          settled = true;
           resolve();
 
           // Wake any other waiters
@@ -239,23 +260,62 @@ export async function spawnSubstrateSidecar(
       }
     });
 
-    sidecarProcess.stderr?.on('data', (chunk: Buffer) => {
-      console.warn('[substrate-sidecar-err]', chunk.toString().trim());
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+      console.warn('[substrate-sidecar-err]', text.trim());
     });
 
-    sidecarProcess.on('error', (err) => {
-      sidecarProcess = null;
+    child.on('error', (err) => {
+      cleanup();
+      if (sidecarProcess === child) sidecarProcess = null;
       sidecarReady = false;
+      if (settled) return;
+      if (useScope) {
+        settled = true;
+        resolve(spawnSubstrateSidecar(resolvedSocket, false));
+        return;
+      }
+      settled = true;
       reject(err);
     });
 
-    sidecarProcess.on('exit', (code) => {
+    child.on('exit', (code) => {
+      cleanup();
       const msg = code !== null ? `exit code ${code}` : 'killed';
       console.warn(`[substrate-sidecar] died (${msg})`);
-      sidecarProcess = null;
+      const launchFailed = isScopeLaunchFailure(code);
+      if (sidecarProcess === child) {
+        sidecarProcess = null;
+      }
       sidecarReady = false;
+      if (launchFailed) {
+        if (settled) return;
+        settled = true;
+        resolve(spawnSubstrateSidecar(resolvedSocket, false));
+        return;
+      }
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Sidecar exited before ready (${msg})`));
+        return;
+      }
+      scheduleRespawn(resolvedSocket);
     });
   });
+}
+
+/** Test seam — reset the module-global respawn/scope state between unit tests. */
+export function _resetSubstrateSidecarSpawnStateForTests(): void {
+  deliberateStop = false;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
+  }
+  respawnAttempts = [];
+  sidecarProcess = null;
+  sidecarReady = false;
+  readyWaiters.length = 0;
 }
 
 /**
@@ -290,11 +350,16 @@ export function _setSubstrateSidecarProcessForTests(proc: ChildProcess | null): 
  */
 export async function stopSubstrateSidecar(): Promise<void> {
   if (!sidecarProcess || sidecarProcess.killed) return;
+  deliberateStop = true;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
+  }
 
   return new Promise<void>((resolve) => {
     const timeout = setTimeout(() => {
       if (sidecarProcess && !sidecarProcess.killed) {
-        sidecarProcess.kill('SIGKILL');
+        killSidecarTree('SIGKILL');
       }
       sidecarProcess = null;
       sidecarReady = false;
@@ -308,7 +373,7 @@ export async function stopSubstrateSidecar(): Promise<void> {
       resolve();
     });
 
-    sidecarProcess!.kill('SIGTERM');
+    killSidecarTree('SIGTERM');
   });
 }
 

@@ -47,6 +47,7 @@ import {
 import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
+import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-sse';
 import {
   startCluster,
   resolveClusterWorkers,
@@ -116,6 +117,16 @@ function startRequestServers(): void {
   // dispatch). Without it selfUrl() falls back to the :3055 dev default — post-
   // Vite-migration :3055 is the frontend SPA, not this API host.
   process.env.PORT = String(port);
+
+  // WI-1547: eagerly start the `sync_invalidate` LISTEN in THIS process. The
+  // cache-ECA invalidation (change stream → cache.bumpTags) rides the SSE
+  // invalidation bus's single PG LISTEN, which otherwise starts lazily on the
+  // first SSE subscribe — a reuseport cluster worker that only ever serves
+  // MCP/tool HTTP never subscribes, so its L1 never saw a bump and cachedRead's
+  // SWR served arbitrarily stale entries (the plans:get ~45-min-stale flap: 16
+  // workers on :3070, exactly ONE holding the LISTEN). Fire-and-forget; the
+  // helper retries with backoff and is loud on exhaustion.
+  void ensureInvalidationListener();
 
   // EI-79 observability: a standing event-loop-lag gauge. Silent on a healthy
   // host; logs a single structured warning when p95 loop delay over a 10s window

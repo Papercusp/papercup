@@ -46,6 +46,17 @@ D6 writer flip (the gate's tail): after D1–D5 pass AND the release with the
    writer flag. PASS: session roster/resolver stays coherent for 30 min after
    the flip (no dupe/ghost sessions), then mark P-059 done.
 
+DRIVER WIRING INVARIANTS (from D→A review cautions, su-1c2e7, 2026-07-02):
+W1: the trust gate is optional by construction — the live driver MUST make it
+    mandatory: collectMemberHeads (integrator.ts:189) →
+    gateMemberHeadsForIntegration (integration-requests.ts:218) →
+    integrateMemberHeads(gated.integrate) (integrator.ts:114). Never feed
+    collect's output straight to integrate; today NO production caller wires
+    the gate, so the quarantine-twin property holds only vacuously.
+W2: null crefs rule = REFUSE for release-class refs — when resolveCanonicalRule
+    returns no rule for a release ref, promotion must fail closed, never
+    default-allow.
+
 FAILURE PROTOCOL: any drill fail → file work item with the drill id, the
 msg_id/event key used, and both machines' timestamps; do NOT flip D6.
 
