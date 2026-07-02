@@ -41,7 +41,10 @@ vi.mock('./scorecard-backstop', () => ({ overwatchScorecardEndCheck: (...a: unkn
 
 const recordFire = vi.fn();
 vi.mock('../operator-api-base', () => ({ operatorApiBase: () => 'http://op' }));
-vi.mock('../autoloop', () => ({ recordFire: (...a: unknown[]) => recordFire(...a) }));
+vi.mock('../autoloop', async (orig) => ({
+  ...(await orig<typeof import('../autoloop')>()), // keep the REAL classifyFireError (WI-669)
+  recordFire: (...a: unknown[]) => recordFire(...a),
+}));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 const resolveHiveHomeSlug = vi.fn();
 vi.mock('../hive/wake', () => ({ resolveHiveHomeSlug: (...a: unknown[]) => resolveHiveHomeSlug(...a) }));
@@ -271,7 +274,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
         SLUG,
         'overwatch',
         expect.stringContaining('invoke produced no Overwatch turn'),
-        'error',
+        'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
     expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
@@ -291,7 +294,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
         SLUG,
         'overwatch',
         expect.stringContaining('empty invoke response body'),
-        'error',
+        'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
     expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
@@ -311,7 +314,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
         SLUG,
         'overwatch',
         expect.stringContaining('produced no Overwatch turn'),
-        'error',
+        'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     });
     expect(recordFire).not.toHaveBeenCalledWith(SLUG, 'overwatch', 'ok', 'ok');
@@ -324,7 +327,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
     await handleOverwatchLaunch(ctx);
 
     await vi.waitFor(() => {
-      expect(recordFire).toHaveBeenCalledWith(SLUG, 'overwatch', expect.stringContaining('connection refused'), 'error');
+      expect(recordFire).toHaveBeenCalledWith(SLUG, 'overwatch', expect.stringContaining('connection refused'), 'infra-error'); // WI-669
     });
     await vi.waitFor(() => {
       expect(overwatchScorecardEndCheck).toHaveBeenCalledWith({ workspaceId: WS, installSlug: SLUG });
@@ -346,7 +349,7 @@ describe('the default fire — the real launch wiring (URL + body shape)', () =>
         SLUG,
         'overwatch',
         expect.stringContaining(`no complete scorecard within ${OVERWATCH_INVOKE_TIMEOUT_MS}ms launch deadline`),
-        'error',
+        'infra-error', // WI-669: infra-shaped failure — counter preserved
       );
     } finally {
       vi.useRealTimers();

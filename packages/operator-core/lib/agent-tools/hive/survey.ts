@@ -21,6 +21,7 @@ import { resolveHiveHomeSlug } from '../../hive/wake';
 import { surveyHive, surveyWorkspace } from '../../hive/survey';
 import { placementRankerSpec } from '../../hive/placement-ranker';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
+import { shapeHiveSurvey } from './survey-shape';
 import type { Ranked } from '../../queue-ranker';
 import type { PlacementCandidate } from '../../hive/placement-ranker';
 
@@ -82,21 +83,23 @@ export default defineTool({
       .optional()
       .describe('Max ranked rows returned per view (default 20).'),
   }),
+  // context-trimming-tiers P-024: trimmed/standard sessions get capped ranked
+  // rows (top-reason why, clipped titles) and — trimmed — the static ranker
+  // spec replaced by a pointer (see survey-shape.ts).
+  shape: {
+    standard: (data) => shapeHiveSurvey(data, 'standard'),
+    trimmed: (data) => shapeHiveSurvey(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolveHiveHomeSlug(args.harness, undefined);
     if (!installSlug) {
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the survey is Hive-scoped.',
-            }),
-          },
-        ],
+        data: {
+          ok: false,
+          error: 'no_home_harness',
+          message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the survey is Hive-scoped.',
+        },
       };
     }
 
@@ -114,39 +117,35 @@ export default defineTool({
         frontierLimit: args.frontierLimit,
         fallbackHome: installSlug,
       });
+      // {data} envelope so the payload-tier shapers apply (P-024).
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              scope: 'workspace',
-              hives: ws.hives,
-              counts: {
-                hives: ws.hives.length,
-                plans: ws.crossHive.plans.length,
-                frontier: ws.crossHive.frontier.length,
-                frontierBlocked: ws.crossHive.frontierBlocked,
-              },
-              // The cross-hive ranked priority — the central-dispatch ordering.
-              crossHive: {
-                plans: ws.crossHive.plans.slice(0, limit).map(compact),
-                frontier: ws.crossHive.frontier.slice(0, limit).map(compact),
-              },
-              // The per-hive sections — focused, so ideation/placement stays scoped.
-              perHive: ws.perHive.map(({ hive, survey }) => ({
-                hive,
-                home: survey.home,
-                members: survey.members,
-                scope: survey.scope,
-                counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked },
-                plans: survey.plans.slice(0, limit).map(compact),
-                frontier: survey.frontier.slice(0, limit).map(compact),
-              })),
-              ranker: placementRankerSpec(),
-            }),
+        data: {
+          ok: true,
+          scope: 'workspace',
+          hives: ws.hives,
+          counts: {
+            hives: ws.hives.length,
+            plans: ws.crossHive.plans.length,
+            frontier: ws.crossHive.frontier.length,
+            frontierBlocked: ws.crossHive.frontierBlocked,
           },
-        ],
+          // The cross-hive ranked priority — the central-dispatch ordering.
+          crossHive: {
+            plans: ws.crossHive.plans.slice(0, limit).map(compact),
+            frontier: ws.crossHive.frontier.slice(0, limit).map(compact),
+          },
+          // The per-hive sections — focused, so ideation/placement stays scoped.
+          perHive: ws.perHive.map(({ hive, survey }) => ({
+            hive,
+            home: survey.home,
+            members: survey.members,
+            scope: survey.scope,
+            counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked },
+            plans: survey.plans.slice(0, limit).map(compact),
+            frontier: survey.frontier.slice(0, limit).map(compact),
+          })),
+          ranker: placementRankerSpec(),
+        },
       };
     }
 
@@ -154,22 +153,18 @@ export default defineTool({
       frontierLimit: args.frontierLimit,
     });
 
+    // {data} envelope so the payload-tier shapers apply (P-024).
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            home: survey.home,
-            members: survey.members,
-            scope: survey.scope,
-            counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked },
-            plans: survey.plans.slice(0, limit).map(compact),
-            frontier: survey.frontier.slice(0, limit).map(compact),
-            ranker: placementRankerSpec(),
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        home: survey.home,
+        members: survey.members,
+        scope: survey.scope,
+        counts: { plans: survey.plans.length, frontier: survey.frontier.length, frontierBlocked: survey.frontierBlocked },
+        plans: survey.plans.slice(0, limit).map(compact),
+        frontier: survey.frontier.slice(0, limit).map(compact),
+        ranker: placementRankerSpec(),
+      },
     };
   },
 });
