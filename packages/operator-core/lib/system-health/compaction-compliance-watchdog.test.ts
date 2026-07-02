@@ -26,16 +26,35 @@ vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
   setCompactionLimit: setLimitMock,
 }));
+// The spawn-record honor leg lazily imports the tier menu — pin a small one so
+// the test never reads the real workspace agent-config.
+vi.mock('../agent-config', () => ({
+  readAgentConfig: async () => ({
+    tiers: [{ name: 'deep', spec: 'opus:high', compactionLimit: 120_000 }],
+  }),
+}));
+vi.mock('../fleet/model-tiers', () => ({
+  effectiveTierConfig: (cfg: { tiers?: unknown } | null) => ({ tiers: cfg?.tiers }),
+}));
 
 import { checkCompactionCompliance } from './compaction-compliance-watchdog';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
- *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`. */
-function fakeSql(opts: { unseeded?: Array<{ owner_id: string }>; seeded?: Array<{ owner_id: string; owner_label: string; compaction_limit: number }> }) {
-  return ((strings: TemplateStringsArray) => {
+ *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
+ *  `spawned_agents` keyed by the interpolated ownerId (first tag value). */
+function fakeSql(opts: {
+  unseeded?: Array<{ owner_id: string }>;
+  seeded?: Array<{ owner_id: string; owner_label: string; compaction_limit: number }>;
+  spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
+}) {
+  return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
     if (q.includes('compaction_limit IS NULL')) return Promise.resolve(opts.unseeded ?? []);
     if (q.includes('compaction_limit IS NOT NULL')) return Promise.resolve(opts.seeded ?? []);
+    if (q.includes('spawned_agents')) {
+      const rec = opts.spawnRecords?.[String(values[0])];
+      return Promise.resolve(rec ? [rec] : []);
+    }
     return Promise.resolve([]);
   }) as never;
 }
@@ -59,6 +78,30 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     expect(out.seeded).toEqual(['su-wide', 'su-narrow']);
     expect(setLimitMock).toHaveBeenCalledWith('su-wide', 825_000);
     expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 158_000);
+  });
+
+  it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
+    specMock.mockResolvedValue(null); // resolver would give the 158k fallback
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        unseeded: [
+          { owner_id: 's-tier' }, // spawn record names tier "deep" → explicit 120k
+          { owner_id: 's-spec' }, // spawn record carries only a [1m] spec → 825k
+          { owner_id: 's-none' }, // no spawn record → resolver fallback → 158k
+        ],
+        spawnRecords: {
+          's-tier': { model_spec: 'opus:high', model_tier: 'deep' },
+          's-spec': { model_spec: 'claude-fable-5[1m]', model_tier: null },
+        },
+      }),
+    );
+    expect(out.seeded).toEqual(['s-tier', 's-spec', 's-none']);
+    expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 825_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-none', 158_000);
+    // the fs/argv resolver only ran for the record-less owner
+    expect(specMock).toHaveBeenCalledTimes(1);
+    expect(specMock).toHaveBeenCalledWith('s-none');
   });
 
   it('a per-owner seed failure never fails the pass (best-effort)', async () => {

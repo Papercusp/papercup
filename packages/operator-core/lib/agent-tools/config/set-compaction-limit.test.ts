@@ -8,7 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { setLimitMock, getPresenceMock, specMock } = vi.hoisted(() => ({
-  setLimitMock: vi.fn(async () => {}),
+  // Args typed so `.mock.calls.at(-1)?.[1]` (the echo in beforeEach) typechecks.
+  setLimitMock: vi.fn(async (_owner: string, _limit: number) => {}),
   getPresenceMock: vi.fn(),
   specMock: vi.fn(),
 }));

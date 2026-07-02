@@ -88,8 +88,9 @@ export interface CompactionComplianceResult {
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
   const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [] };
   // Seeding step — one server-side place instead of N spawn paths (D-006).
-  // Model spec resolves best-effort (session settings.json → launch argv);
-  // unresolvable ⇒ the conservative 200k-window default (~158k). An agent's own
+  // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
+  // default) > the fs/argv model resolver (session settings.json → launch
+  // argv) > the conservative 200k-window default (~158k). An agent's own
   // config:set-compaction-limit overwrites this at any time.
   try {
     const unseeded = await sql<{ owner_id: string }[]>`
@@ -99,10 +100,29 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
          AND heartbeat_at > now() - interval '10 minutes'
        LIMIT ${MAX_SEEDS_PER_PASS}
     `;
+    // Lazy per-pass tier menu: one workspace-config read even when many owners
+    // seed; fail-soft to undefined (⇒ spec-derived defaults only).
+    let tiersPromise: Promise<readonly ModelTier[] | undefined> | null = null;
+    const tierMenu = () =>
+      (tiersPromise ??= (async () => {
+        try {
+          const [{ effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
+            import('../fleet/model-tiers'),
+            import('../agent-config'),
+          ]);
+          const cfg = await readAgentConfig().catch(() => null);
+          return effectiveTierConfig(cfg, null).tiers;
+        } catch {
+          return undefined;
+        }
+      })());
     for (const r of unseeded) {
       try {
-        const spec = await resolveModelSpecForOwner(r.owner_id);
-        await setCompactionLimit(r.owner_id, defaultCompactionLimitForSpec(spec));
+        const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu);
+        const limit =
+          fromSpawn ??
+          defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id));
+        await setCompactionLimit(r.owner_id, limit);
         out.seeded.push(r.owner_id);
       } catch {
         /* best-effort per owner */

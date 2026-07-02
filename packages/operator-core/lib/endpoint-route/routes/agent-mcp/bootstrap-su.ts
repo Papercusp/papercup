@@ -431,6 +431,23 @@ export const AUTO_MODE_DIRECTIVE =
   'brakes still apply.)';
 
 /**
+ * context-trimming-tiers P-007: the context-discipline line a fleet launch bakes
+ * next to the AUTO directive — durable system prompt (survives compaction) +
+ * turn-1 kickoff, same dual delivery. Six 200k-window members died mid-task on
+ * 2026-07-01 ("Prompt is too long") because nothing told them to act on the
+ * `context: N/LIMIT (X%)` signal the coord inbox injects (agent-managed-compaction
+ * P-007) once the compliance watchdog seeds their limit.
+ */
+export const CONTEXT_DISCIPLINE_DIRECTIVE =
+  'CONTEXT DISCIPLINE: your coord inbox injects a `context: N/LIMIT (X%)` usage line once ' +
+  'your session carries a compaction limit. HONOR it — past ~80%, finish the current unit of ' +
+  'work, write durable state (plan `## Now` / work_items:checkpoint), then call ' +
+  'session:request-compaction at that clean stopping point. Do NOT run to the hard window: ' +
+  '"Prompt is too long" kills the session mid-task and loses your in-flight work. On a ' +
+  'trimmed session, tool payloads are already tier-shaped; pass payloadTier:"full" on a call ' +
+  'only when you genuinely need the unshaped result.';
+
+/**
  * launch-path-argv-reconstruction (WI-1343): normalize a caller-supplied
  * `launch_argv` (the literal `psu …` invocation the launcher built) into the
  * string[] recorded on `adv_sessions.launch_argv`. Defensive: only strings,
@@ -925,7 +942,7 @@ const post = defineTool({
     // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
     // so injecting here covers all three.
     if (autoMode) {
-      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n`;
+      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
@@ -1055,7 +1072,7 @@ const post = defineTool({
     // (gated to --no-picker) submits it as the first turn.
     const kickoffBase: string | null = planSlug ? deriveLaunchPromptText(null) : null;
     const kickoffPrompt: string | null = autoMode
-      ? [AUTO_MODE_DIRECTIVE, kickoffBase].filter(Boolean).join('\n\n')
+      ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, kickoffBase].filter(Boolean).join('\n\n')
       : kickoffBase;
 
     const result: BootstrapSuResult = {

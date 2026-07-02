@@ -743,6 +743,26 @@ export async function reconcileOneHive(
          AND kind = 'tool'`;
     for (const r of toolRows) ownersWithToolCalls.add(r.owner_id);
   }
+  // 2026-07-02 (gpt-5.4 switch fallout): CODEX bees never land in agent_activity —
+  // the recorder is a claude-session seam — so on the agent_activity signal alone
+  // EVERY codex bee read as a zombie, every restart-reclaim accrued the bounded
+  // infra breaker, and the whole frontier cursed in lockstep at fail_count=0 /
+  // infra_loss_count=12-15 (observed live 07-02 00:10, 17 items). The
+  // tool_invocations ledger is backend-AGNOSTIC (queen/bee/overwatch codex rows
+  // land there — 850+ bee invocations in the same window agent_activity had zero),
+  // so ALSO count a bee as having made a fair attempt when its spawn_id has ≥1
+  // invocation there. Union, not replacement: agent_activity still covers legacy
+  // owners whose spawn ids predate invocation stamping.
+  const beeSpawnIds = beeRows.map((b) => b.spawn_id);
+  const spawnsWithToolCalls = new Set<string>();
+  if (beeSpawnIds.length > 0) {
+    const invRows = await sql<{ spawn_id: string }[]>`
+      SELECT DISTINCT spawn_id
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${workspaceId}
+         AND spawn_id = ANY(${beeSpawnIds})`;
+    for (const r of invRows) spawnsWithToolCalls.add(r.spawn_id);
+  }
 
   const beeByOwner = new Map<string, BeeLite>();
   for (const b of beeRows) {
@@ -765,8 +785,10 @@ export async function reconcileOneHive(
       reclaimedWhileActive:
         recentlyActive &&
         (b.status === 'running' || b.status === 'restarting' || isReaperReclaim(b.status, b.error_message)),
-      // F-FIX-041 — no native tool call across this bee's life ⇒ no fair attempt (zombie).
-      madeNoToolCalls: !ownersWithToolCalls.has(ownerId),
+      // F-FIX-041 — no native tool call across this bee's life ⇒ no fair attempt
+      // (zombie). Checked against BOTH ledgers (see the union note above): a hit in
+      // either means the bee demonstrably worked.
+      madeNoToolCalls: !ownersWithToolCalls.has(ownerId) && !spawnsWithToolCalls.has(b.spawn_id),
     };
     // Index by both owner and spawn id so a unit's taken_by resolves either way.
     beeByOwner.set(ownerId, bee);
