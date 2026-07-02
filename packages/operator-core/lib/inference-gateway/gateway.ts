@@ -506,6 +506,9 @@ export interface AccountPool {
   size?(): number;
   /** H3: non-advancing "current best" for read-only callers (stats/startup/health pollers) — see active(). */
   peek?(): ActiveAccount;
+  /** Read-only snapshot of the live pool entries (no cursor advance) — the proactive egress prober's
+   *  enumerator (gateway-rayobyte-hardening P-002). Optional: probing is skipped when absent. */
+  entries?(): readonly ActiveAccount[];
 }
 
 export interface GatewayDeps {
@@ -537,6 +540,15 @@ export interface GatewayDeps {
   openaiUpstreamBase?: string;
   /** `fetch` impl (injected in tests). Default global fetch. */
   fetchImpl?: typeof fetch;
+  /** PROACTIVE egress probe cadence (ms) — gateway-rayobyte-hardening P-002. Every tick, each pool
+   *  account with a PROXY egress that hasn't proven itself with real traffic recently is probed through
+   *  its dispatcher; 2 consecutive probe failures open its egress circuit BEFORE live requests burn on
+   *  it (the reactive circuit needs 2 live-request failures first). 0 disables. Default
+   *  `PAPERCUSP_GATEWAY_PROACTIVE_PROBE_MS` or 45s. */
+  proactiveEgressProbeMs?: number;
+  /** Probe impl (injected in tests). Default `probeEgress` (egress-probe.ts). Used by BOTH the
+   *  half-open recovery probe and the proactive prober. */
+  probeEgressImpl?: typeof probeEgress;
   /** The governor for a model (default: the shared per-account `claude-code` governor). */
   governorFor?(model: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
