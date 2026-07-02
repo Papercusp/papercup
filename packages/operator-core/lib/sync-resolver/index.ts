@@ -3236,6 +3236,50 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.soakReport — machine-checkable production-readiness gate (WI-1501) ──
+  //
+  // One hive-soak verdict per hive: READY only when the rolling 12–24h window stays
+  // healthy across bg-host stability, infra curses, bee/queen/overwatch turn success,
+  // escalation backlog, green-checkpoint ratio, and deploy latency. Derived on demand
+  // from existing durable signals + the local bg-host journal. Returns a 1-element array
+  // (client reads data[0]). Fail-soft: an individual hive read failure is omitted rather
+  // than taking the whole panel down.
+  'learning.soakReport': {
+    argsSchema: z.object({
+      hive: z.string().max(120).optional(),
+      windowHours: z.number().int().min(12).max(24).optional(),
+    }),
+    resolve: async (args) => {
+      const hive = typeof (args as { hive?: unknown })?.hive === 'string' ? (args as { hive: string }).hive : undefined;
+      const windowHours =
+        typeof (args as { windowHours?: unknown })?.windowHours === 'number'
+          ? (args as { windowHours: number }).windowHours
+          : undefined;
+      try {
+        const { listHives } = await import('../agent-tools/hive/_resolve');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { readHiveSoakReport } = await import('../hive/soak-report');
+        const ws = activeWorkspaceId();
+        const homes = hive ? [{ slug: hive }] : await listHives(ws).catch(() => []);
+        const reports = (
+          await Promise.all(
+            homes.map(async (home) => {
+              try {
+                return await readHiveSoakReport(home.slug, { windowHours });
+              } catch {
+                return null;
+              }
+            }),
+          )
+        ).filter((report): report is NonNullable<typeof report> => report != null);
+        return [{ hives: reports }];
+      } catch (err) {
+        console.warn('[learning.soakReport] read failed:', err instanceof Error ? err.message : err);
+        return [{ hives: [] }];
+      }
+    },
+  },
+
   // ── learning.hive — one hive's shared learnings pool (learning-packs P-008) ──
   //
   // Rows + per-pack rollups + organic count for `hive:<args.hive>`, pack

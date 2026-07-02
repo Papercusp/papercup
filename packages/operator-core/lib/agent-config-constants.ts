@@ -120,8 +120,9 @@ export function isValidModelSpec(spec: string): boolean {
 
 /** 1M-window models — a spec carrying the `[1m]` marker. */
 export const MODEL_WINDOW_1M = 1_000_000;
-/** The conservative default window: subscription-routed models without the
-    `[1m]` marker (incl. sonnet, which has no subscription 1M path) run 200k. */
+/** The conservative default window: models outside the default-1M families
+    (`isDefault1mModelSpec`) and without the `[1m]` marker — haiku, sonnet ≤4.x,
+    unknown/null specs — run 200k. */
 export const MODEL_WINDOW_DEFAULT = 200_000;
 
 /**
@@ -152,7 +153,14 @@ export function modelWindowForSpec(spec?: string | null): number {
  * 1M window here (never a 200k hard death).
  */
 export function isDefault1mModelSpec(spec?: string | null): boolean {
-  return spec != null && /fable|opus|sonnet-?5/i.test(spec);
+  if (spec == null) return false;
+  if (/fable|opus|sonnet-?5/i.test(spec)) return true;
+  // The bare `sonnet` alias (whole spec, optional [1m] marker / :effort suffix)
+  // resolves to the LATEST sonnet in Claude Code — claude-sonnet-5 today
+  // (live-verified 2026-07-02: a `--model sonnet:medium` member's transcript
+  // reports "model":"claude-sonnet-5"). Versioned sonnet ≤4.x ids don't hit
+  // this branch (they carry the version digits and fail the anchor).
+  return /^sonnet(\[1m\])?(:[a-z0-9]+)?$/i.test(spec);
 }
 
 /** Output-reservation + startup-attachment headroom subtracted from the hard
@@ -167,10 +175,10 @@ export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
- * Preemptive compaction cap for the default-1M families (opus + fable): they run
- * on the full 1M window but papercusp compacts them at 500k to bound token spend
- * (owner directive 2026-07-02) — 500k is ample for a leanly-scoped task, and its
- * ×1.2 overshoot (600k) stays well under the 1M − margin ceiling.
+ * Preemptive compaction cap for the default-1M families (opus + fable + sonnet-5):
+ * they run on the full 1M window but papercusp compacts them at 500k to bound
+ * token spend (owner directive 2026-07-02) — 500k is ample for a leanly-scoped
+ * task, and its ×1.2 overshoot (600k) stays well under the 1M − margin ceiling.
  */
 export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
 
@@ -178,9 +186,9 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
- * 200k window → 158,000; 1M → 825,000. EXCEPTION: opus + fable are capped at
- * 500,000 (owner directive 2026-07-02) so they compact preemptively despite the
- * 1M window.
+ * 200k window → 158,000; 1M → 825,000. EXCEPTION: the default-1M families
+ * (opus/fable/sonnet-5 — `isDefault1mModelSpec`) are capped at 500,000 (owner
+ * directive 2026-07-02) so they compact preemptively despite the 1M window.
  */
 export function defaultCompactionLimitForSpec(spec?: string | null): number {
   if (isDefault1mModelSpec(spec)) return COMPACTION_LIMIT_DEFAULT_1M_CAP;

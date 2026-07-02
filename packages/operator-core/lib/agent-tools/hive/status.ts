@@ -19,6 +19,7 @@ import {
 import { getHiveStarted } from '../../hive/started';
 import { recentWatchdogFires, watchdogFallbackSleepSec, watchdogStaleSec } from '../../hive/watchdog';
 import { summarizeOpenPlacements } from '../../hive/placement-watchdog';
+import { readHiveSoakReport } from '../../hive/soak-report';
 
 export default defineTool({
   name: 'hive:status',
@@ -70,6 +71,7 @@ export default defineTool({
     // B-09 P-020/P-023: the open placements the Queen must drive to terminal —
     // recovering (re-place now), cursed (escalated), stranded (blocker stuck).
     const placements = installSlug ? await summarizeOpenPlacements(workspaceId, installSlug) : null;
+    const soakReport = installSlug ? await readHiveSoakReport(installSlug).catch(() => null) : null;
 
     return {
       content: [
@@ -88,6 +90,7 @@ export default defineTool({
               fallbackSleepSec: watchdogFallbackSleepSec(),
               staleSec: watchdogStaleSec(),
             },
+            soakReport,
             time: time
               ? {
                   active: time.active,

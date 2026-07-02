@@ -45,6 +45,7 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
   afterEach(() => {
     _resetSubstrateSidecarSpawnStateForTests();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('wraps the sidecar in a memory-capped transient user scope', async () => {
@@ -82,6 +83,9 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
   });
 
   it('falls back to a direct spawn once when the scope cannot launch', async () => {
+    // The scope-launch failure + fallback are INTENTIONALLY loud (console.warn);
+    // mock + assert per the fail-on-console convention.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const scoped = makeChild();
     const direct = makeChild();
     spawnMock.mockReturnValueOnce(scoped).mockReturnValueOnce(direct);
@@ -92,6 +96,7 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     direct.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
     await ready;
 
+    expect(warn).toHaveBeenCalled();
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const [cmd1] = spawnMock.mock.calls[0] as [string, string[]];
     const [cmd2, args2] = spawnMock.mock.calls[1] as [string, string[]];
@@ -101,6 +106,8 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
   });
 
   it('does not retry on a payload failure inside a healthy scope', async () => {
+    // The pre-ready death is INTENTIONALLY loud (console.warn); mock + assert.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const child = makeChild();
     spawnMock.mockReturnValueOnce(child);
 
@@ -109,10 +116,14 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     child.emit('exit', 1);
 
     await expect(ready).rejects.toThrow(/Sidecar exited before ready/);
+    expect(warn).toHaveBeenCalled();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
   it('auto-respawns after an unexpected post-ready exit', async () => {
+    // The unexpected exit + respawn schedule are INTENTIONALLY loud (console.warn);
+    // mock + assert the respawn announcement specifically.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const first = makeChild();
     const second = makeChild();
     spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
@@ -124,6 +135,7 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
 
     first.emit('exit', 137);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auto-respawning'));
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(spawnMock).toHaveBeenCalledTimes(2);

@@ -217,6 +217,7 @@ import './autoloop/control';
 // end it, inspect it. Gated by FLAGS.LOOPS (loop:arm); loop:end/status are always available.
 import './loop/arm';
 import './loop/end';
+import './loop/soak_report';
 import './loop/status';
 import './operator/dedup_check';
 import './wiki/backlinks';
