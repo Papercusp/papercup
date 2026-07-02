@@ -395,3 +395,53 @@ describe('cooperativeYield / yieldToEventLoop (event-loop-lag root fix)', () => 
     expect(n).toBe(2);
   });
 });
+
+describe('sampling heap profiler (WI-1088 round 2 — the capture that cannot lose the race)', () => {
+  it('topAllocationSites flattens the tree, aggregates per site, sorts by size', async () => {
+    const { topAllocationSites } = await import('./event-loop-lag-monitor');
+    const head = {
+      callFrame: { functionName: '(root)', url: '', lineNumber: -1 },
+      selfSize: 0,
+      children: [
+        {
+          callFrame: { functionName: 'leaky', url: 'file:///x/leak.ts', lineNumber: 41 },
+          selfSize: 3 * 1_048_576,
+          children: [
+            { callFrame: { functionName: 'leaky', url: 'file:///x/leak.ts', lineNumber: 41 }, selfSize: 2 * 1_048_576 },
+          ],
+        },
+        { callFrame: { functionName: 'small', url: 'file:///x/ok.ts', lineNumber: 9 }, selfSize: 1_048_576 },
+      ],
+    };
+    const top = topAllocationSites(head);
+    expect(top[0]).toEqual({ site: 'leaky @ /x/leak.ts:42', mb: 5 }); // aggregated + 1-based line
+    expect(top[1].site).toContain('small @ /x/ok.ts:10');
+  });
+
+  it('arms once and dumps a small .heapprofile with top sites logged (real inspector, end-to-end)', async () => {
+    const { ensureHeapSampling, dumpHeapSamplingProfile } = await import('./event-loop-lag-monitor');
+    const { mkdtemp, readdir, readFile, rm } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'heap-sampling-'));
+    const lines: string[] = [];
+    const log = (line: string) => lines.push(line);
+    try {
+      expect(await ensureHeapSampling(log)).toBe(true);
+      expect(await ensureHeapSampling(log)).toBe(true); // idempotent
+      // Allocate something attributable so the profile is non-trivial.
+      const hog: string[] = [];
+      for (let i = 0; i < 2_000; i++) hog.push('x'.repeat(1_024));
+      const file = await dumpHeapSamplingProfile({ dir, rssMb: 1234, log });
+      expect(file).toBeTruthy();
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.heapprofile'));
+      expect(files).toHaveLength(1);
+      const profile = JSON.parse(await readFile(path.join(dir, files[0]), 'utf8')) as { head?: unknown };
+      expect(profile.head).toBeTruthy(); // DevTools-loadable shape
+      expect(lines.some((l) => l.includes('top live allocation sites'))).toBe(true);
+      expect(hog.length).toBe(2_000); // keep the hog alive through the dump
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});

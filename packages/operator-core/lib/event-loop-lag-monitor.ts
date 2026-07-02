@@ -277,7 +277,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     // overhead from here on; allocation stacks accumulate from ~boot).
     if (heapSamplingOnHighRss && !samplingArmed) {
       samplingArmed = true;
-      void ensureHeapSampling(log);
+      void ensureHeapSampling((line, detail) => log(line, detail ?? {}));
     }
     // P-002: when RSS is high, capture a heap snapshot so the leak is identifiable.
     // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited.
@@ -294,7 +294,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         // if the full snapshot below dies mid-serialization (the 2026-07-01 mode).
         if (heapSamplingOnHighRss && !samplingDumping) {
           samplingDumping = true;
-          dumpHeapSamplingProfile({ dir: heapSnapshotDir, rssMb, log })
+          dumpHeapSamplingProfile({ dir: heapSnapshotDir, rssMb, log: (line, detail) => log(line, detail ?? {}) })
             .catch(() => {})
             .finally(() => {
               if (!stopped) samplingDumping = false;
