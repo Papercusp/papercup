@@ -16,6 +16,7 @@ import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from '../coordinat
 import { COORD_ROLES } from '../coordination/roles';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { shapeWorkItemWriteEcho } from './write-echo-shape';
 
 interface ClaimItem {
   id: string;
@@ -107,6 +108,14 @@ export default defineTool({
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
     }),
+  // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
+  // get a compact workItem ref per result instead of the full echoed row;
+  // outcome fields (ok/error/holder/hint/reflect) pass through verbatim —
+  // see write-echo-shape.ts.
+  shape: {
+    standard: (data) => shapeWorkItemWriteEcho(data, 'standard'),
+    trimmed: (data) => shapeWorkItemWriteEcho(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const list: ClaimItem[] = args.items?.length

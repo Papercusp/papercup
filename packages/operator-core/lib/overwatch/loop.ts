@@ -319,7 +319,7 @@ function armScorecardDeadlineBackstop(opts: {
           opts.installSlug,
           opts.role,
           `error: ${reason}; backstop ${res.outcome}`,
-          "error",
+          classifyFireError(`error: ${reason}; backstop ${res.outcome}`), // WI-669
         );
         invalidateOverwatchLiveness();
       }
@@ -330,7 +330,7 @@ function armScorecardDeadlineBackstop(opts: {
         opts.installSlug,
         opts.role,
         `error: scorecard deadline backstop threw: ${detail}`,
-        "error",
+        classifyFireError(detail), // WI-669
       ).finally(invalidateOverwatchLiveness);
     });
   }, OVERWATCH_INVOKE_TIMEOUT_MS + OVERWATCH_SCORECARD_DEADLINE_GRACE_MS);

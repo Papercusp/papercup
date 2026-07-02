@@ -37,6 +37,7 @@ import { CompletionRecordSchema, type CompletionRecord } from '../../coord-lifec
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -225,6 +226,14 @@ export default defineTool({
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
       message: 'pass { id, completion } for one, or items:[{ id, completion }] for many',
     }),
+  // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
+  // get a compact workItem ref per result instead of the full echoed row;
+  // outcome fields (ok/error/holder/hint/reflect) pass through verbatim —
+  // see write-echo-shape.ts.
+  shape: {
+    standard: (data) => shapeWorkItemWriteEcho(data, 'standard'),
+    trimmed: (data) => shapeWorkItemWriteEcho(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const list: CompleteItem[] = args.items?.length
