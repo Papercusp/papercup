@@ -120,7 +120,10 @@ function LoginForm() {
       });
       const j = await r.json();
       if (!r.ok) {
-        toast.error(j.error === 'bad_password' ? 'Wrong password.' : j.error === 'unknown_user' ? 'No such user.' : `Login failed: ${j.error}`);
+        toast.error(
+          j.error === 'bad_password' ? 'Wrong password.' : j.error === 'unknown_user' ? 'No such user.' : `Login failed: ${j.error}`,
+          { description: `Login attempt for username "${username}" (${j.error})` },
+        );
         return;
       }
       // Stash a one-shot welcome flag for OperatorConversationProvider
@@ -173,7 +176,10 @@ function LoginForm() {
       });
       const j = await r.json();
       if (!r.ok) {
-        toast.error(j.error === 'username_taken' ? 'That username is taken.' : `Signup failed: ${j.error}`);
+        toast.error(
+          j.error === 'username_taken' ? 'That username is taken.' : `Signup failed: ${j.error}`,
+          { description: `Signup attempt for username "${username}" (${j.error})` },
+        );
         return;
       }
       try {
