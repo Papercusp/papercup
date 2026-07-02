@@ -62,3 +62,17 @@ msg_id/event key used, and both machines' timestamps; do NOT flip D6.
 
 Leader: su-3700bc41 (this session). Any free member may execute D1–D3/D5 and
 report; D4 and D6 stay with the leader.
+
+DRILL LOG (2026-07-02):
+- D1 IN PROGRESS: baseline 10:06:11Z — iMac row startedAt 2026-07-01T16:47:02Z,
+  heartbeat field null on fed rows; freshness must be judged by bucket
+  (active/stale) + startedAt advance across reads.
+- D2 BLOCKED (owner gate): `fed:…` machine rows are NOT addressable coord:send
+  recipients (unknown_recipient). Receipts need an addressable SESSION on the
+  iMac — same owner gate as D4: owner starts `psu` on the iMac.
+- D3 HALF-LOOP PASS 10:0xZ: events:emit scope:hive federated:true for key
+  live1-d3-probe-su3700b. GOTCHA: a harness-'*' client gets
+  federation_error:ambiguous_hive_scope — ALWAYS pin `--harness papercusp`
+  (mcp-call flag) on drill calls. Full loop (peer re-fire) needs an iMac awaiter.
+- Review gate: both Lane C HIGH fixes RE-VERIFIED PASS 10:03Z (su-89b88).
+  Release gate: fresh verdict run in flight, su-1c2e7 watching → deploy.
