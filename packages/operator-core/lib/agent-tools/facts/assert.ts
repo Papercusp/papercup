@@ -29,6 +29,7 @@ export default defineTool({
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
   },
+  requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({

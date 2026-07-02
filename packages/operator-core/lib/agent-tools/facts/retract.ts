@@ -19,6 +19,7 @@ export default defineTool({
     chaining: 'facts:list { scope } → facts:retract { scope, scopeRef, key }.',
     seeAlso: ['facts:assert (re-assert same key = update)', 'facts:list'],
   },
+  requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({

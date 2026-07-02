@@ -19,6 +19,7 @@ export default defineTool({
     chaining: 'facts:list → facts:assert (refresh) / facts:retract (stale).',
     seeAlso: ['facts:assert', 'facts:retract'],
   },
+  requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({

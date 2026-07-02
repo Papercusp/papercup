@@ -233,7 +233,11 @@ describe('boot-all — substrate orchestrator', () => {
       let peak = 0;
       const slugs = Array.from({ length: N }, (_, i) => `fed-h${i}`);
       return bootAllHarnessesForActiveWorkspace({
-        workspaceIds: ['ws-fed'],
+        // Distinct workspace per run — bootSingleHarness caches handles by
+        // (workspace, harness), so a reused 'ws-fed' would make the second run
+        // short-circuit every slug to 'already-booted' without ever invoking
+        // bootHarness (failed=0 and nothing measured).
+        workspaceIds: [`ws-fed-c${bootConcurrency}`],
         discoverHarnessSlugs: async () => slugs,
         bootConcurrency,
         perHarnessTimeoutMs: TIMEOUT_MS,
