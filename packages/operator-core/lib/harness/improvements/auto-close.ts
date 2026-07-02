@@ -128,6 +128,13 @@ export interface AutoCloseOutcome {
   reason: string;
 }
 
+interface CanonicalWatchdogIssue {
+  id: string;
+  watchdogKey: string;
+  updatedAtMs: number;
+  createdAtMs: number;
+}
+
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 export interface AutoCloseDeps {
@@ -142,6 +149,54 @@ const watchdogKeyOfIssue = (i: EngineerIssue): string => {
   const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
   return typeof p.watchdogKey === 'string' ? p.watchdogKey : '';
 };
+
+const issueUpdatedAtMs = (i: EngineerIssue): number => {
+  const ms = Date.parse(i.updatedAt ?? '');
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+};
+
+const issueCreatedAtMs = (i: EngineerIssue): number => {
+  const ms = Date.parse(i.createdAt ?? '');
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+};
+
+function selectCanonicalOpenIssues(open: EngineerIssue[]): {
+  canonicalByKey: Map<string, CanonicalWatchdogIssue>;
+  duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }>;
+} {
+  const canonicalByKey = new Map<string, CanonicalWatchdogIssue>();
+  const duplicates: Array<{ issueId: string; watchdogKey: string; keepId: string }> = [];
+
+  for (const issue of open) {
+    const watchdogKey = watchdogKeyOfIssue(issue);
+    if (!watchdogKey) continue;
+    const candidate: CanonicalWatchdogIssue = {
+      id: issue.id,
+      watchdogKey,
+      updatedAtMs: issueUpdatedAtMs(issue),
+      createdAtMs: issueCreatedAtMs(issue),
+    };
+    const existing = canonicalByKey.get(watchdogKey);
+    if (!existing) {
+      canonicalByKey.set(watchdogKey, candidate);
+      continue;
+    }
+    const replace =
+      candidate.updatedAtMs > existing.updatedAtMs
+      || (candidate.updatedAtMs === existing.updatedAtMs && candidate.createdAtMs > existing.createdAtMs)
+      || (candidate.updatedAtMs === existing.updatedAtMs
+        && candidate.createdAtMs === existing.createdAtMs
+        && candidate.id > existing.id);
+    if (replace) {
+      duplicates.push({ issueId: existing.id, watchdogKey, keepId: candidate.id });
+      canonicalByKey.set(watchdogKey, candidate);
+    } else {
+      duplicates.push({ issueId: candidate.id, watchdogKey, keepId: existing.id });
+    }
+  }
+
+  return { canonicalByKey, duplicates };
+}
 
 /** Default deps: the real PG-backed reads + close. */
 export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
@@ -202,14 +257,26 @@ export async function processAutoClose(
   // Pre-filter to watchdog-keyed candidates before the (cheaper) tick + dispatch reads.
   const keyed = open.filter((i) => watchdogKeyOfIssue(i));
   if (keyed.length === 0) return [];
+  const out: AutoCloseOutcome[] = [];
+
+  const { canonicalByKey, duplicates } = selectCanonicalOpenIssues(keyed);
+  for (const dup of duplicates) {
+    try {
+      const reason = `duplicate of ${dup.keepId} — canonical open watchdog item retained for \`${dup.watchdogKey}\``;
+      await d.close(dup.issueId, dup.watchdogKey, reason);
+      out.push({ issueId: dup.issueId, watchdogKey: dup.watchdogKey, reason });
+    } catch (e) {
+      console.warn(`[watchdog-auto-close] duplicate close failed for ${dup.issueId}:`, e instanceof Error ? e.message : e);
+    }
+  }
 
   const { seenKeys, ranTickCount } = await d.recentRanTickKeys(minTicks);
   if (ranTickCount < minTicks) return []; // not enough history — never close on a fresh watchdog
-  const inFlight = await d.inFlightDispatchIds(keyed.map((i) => i.id));
+  const canonical = keyed.filter((i) => canonicalByKey.get(watchdogKeyOfIssue(i))?.id === i.id);
+  const inFlight = await d.inFlightDispatchIds(canonical.map((i) => i.id));
   const nowMs = d.nowMs();
 
-  const out: AutoCloseOutcome[] = [];
-  for (const i of keyed) {
+  for (const i of canonical) {
     const watchdogKey = watchdogKeyOfIssue(i);
     const candidate: AutoCloseCandidate = {
       issueId: i.id,
@@ -231,7 +298,7 @@ export async function processAutoClose(
     }
   }
   if (out.length > 0) {
-    console.log(`[watchdog-auto-close] resolved ${out.length} EI(s) whose signal cleared: ${out.map((o) => o.issueId).join(', ')}`);
+    console.log(`[watchdog-auto-close] retired ${out.length} watchdog EI(s): ${out.map((o) => o.issueId).join(', ')}`);
   }
   return out;
 }

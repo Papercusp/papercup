@@ -159,7 +159,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, personaTier: null, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -245,6 +245,8 @@ export function parseArgs(argv) {
     // context-trimming-tiers P-017: persona tier — full | fleet. Omitted ⇒ the
     // server auto-selects from the model window (≤200k known model → fleet).
     else if (a.startsWith('--persona-tier=')) out.personaTier = a.slice('--persona-tier='.length);
+    // context-trimming-tiers P-018: override the preflight window-guard refusal.
+    else if (a === '--force') out.force = true;
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
     // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
     else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
@@ -1468,8 +1470,10 @@ async function pickAgent() {
 
 // su-context-size-variants: the per-variant ~Nk figures shown in the picker —
 // parity with the operator UI's SU_CONTEXT_OPTIONS (AdvSessionsClient.tsx). STATIC
-// measured estimates (full ≈ ~141k catalog + ~38k prefix; trimmed ≈ ~9k core + ~38k).
-export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~50k' };
+// measured estimates. context-trimming-tiers P-018: trimmed LIVE-measured 83.2k on a
+// sonnet launch (the old '~50k' under-sold it by 33k — the derivation missed the
+// persona playbook + hooks/memory prefix growth), full ≈ ~141k catalog + prefix.
+export const SU_CONTEXT_TOKEN_ESTIMATES = { full: '~180k', trimmed: '~83k' };
 
 // su-context-size-variants: the terminal-picker choices — the twin of the UI's
 // SU_CONTEXT_OPTIONS. Native maps to null (⇒ no --context-size flag ⇒ byte-identical
@@ -1487,6 +1491,80 @@ export const SU_CONTEXT_CHOICES = [
 // prompt opens; Enter with no arrow keys picks this). Trimmed keeps initial context
 // small without giving up on-demand discovery. Native/Full remain one keypress away.
 export const SU_CONTEXT_DEFAULT = 'trimmed';
+
+// ── Launch preflight guards (context-trimming-tiers P-016 / P-018) ──────────
+
+/** Numeric per-variant baseline estimates (tokens) for the NON-persona context
+ *  (tool catalog + static prefix). The persona playbook is measured from the
+ *  actual prompt file at launch, so only the remainder is estimated here.
+ *  Derived from the LIVE-measured totals (SU_CONTEXT_TOKEN_ESTIMATES) minus a
+ *  ~28k full-persona playbook. */
+export const SU_BASELINE_NON_PERSONA_TOKENS = { full: 152_000, trimmed: 55_000 };
+
+/**
+ * P-016 persona-append assertion: with the $HOME AGENTS.md mirrors gone
+ * (P-015), the --append-system-prompt file IS the session's whole behavioral
+ * spine — a missing/empty/tiny prompt file means a bare agent with no
+ * playbook. Fail LOUD before spawning instead of launching a spineless
+ * session. Returns the file's byte size for the window guard.
+ */
+export function assertLaunchPersona(promptFile) {
+  const MIN_PERSONA_BYTES = 2_000;
+  if (!promptFile) {
+    throw new Error(
+      'psu: launch spec carried NO persona prompt file — refusing to launch a session with no behavioral spine (context-trimming-tiers P-016).',
+    );
+  }
+  let size = 0;
+  try {
+    size = statSync(promptFile).size;
+  } catch {
+    throw new Error(
+      `psu: persona prompt file missing/unreadable at ${promptFile} — refusing to launch (context-trimming-tiers P-016).`,
+    );
+  }
+  if (size < MIN_PERSONA_BYTES) {
+    throw new Error(
+      `psu: persona prompt file at ${promptFile} is only ${size} bytes (< ${MIN_PERSONA_BYTES}) — the playbook did not render/append; refusing to launch (context-trimming-tiers P-016).`,
+    );
+  }
+  return size;
+}
+
+/**
+ * P-018 preflight window guard: estimate the session's BASELINE context
+ * (persona file + catalog/prefix estimate) against the model window.
+ *   - ≥60% of the window → refuse (unless force) — the session would have
+ *     almost no working headroom and dies mid-task ("Prompt is too long").
+ *   - ≥35% → warn loudly, proceed.
+ * Pure + exported for tests; the caller decides how to surface it.
+ */
+export function preflightWindowGuard({ personaBytes, contextSize, model }) {
+  const window = /\[1m\]/i.test(String(model ?? '')) ? 1_000_000 : 200_000;
+  const personaTokens = Math.round((personaBytes ?? 0) / 3.7);
+  const variant = contextSize === 'full' ? 'full' : 'trimmed';
+  const estTokens = personaTokens + SU_BASELINE_NON_PERSONA_TOKENS[variant];
+  const pct = estTokens / window;
+  const level = pct >= 0.6 ? 'refuse' : pct >= 0.35 ? 'warn' : 'ok';
+  return { level, pct, estTokens, window };
+}
+
+/** Run both preflight guards before a launch; exits/throws per policy. */
+export function runLaunchPreflight({ promptFile, contextSize, model, force }) {
+  const personaBytes = assertLaunchPersona(promptFile);
+  const guard = preflightWindowGuard({ personaBytes, contextSize, model });
+  if (guard.level === 'refuse' && !force) {
+    throw new Error(
+      `psu: estimated baseline context ~${Math.round(guard.estTokens / 1000)}k tokens is ${Math.round(guard.pct * 100)}% of the ${Math.round(guard.window / 1000)}k model window — the session would die mid-task ("Prompt is too long"). Use --context-size=trimmed / a wider-window model, or --force to launch anyway (context-trimming-tiers P-018).`,
+    );
+  }
+  if (guard.level !== 'ok') {
+    console.error(
+      `psu: WARNING — estimated baseline context ~${Math.round(guard.estTokens / 1000)}k tokens (${Math.round(guard.pct * 100)}% of the ${Math.round(guard.window / 1000)}k window)${guard.level === 'refuse' ? ' [--force override active]' : ''} — headroom is thin; prefer --context-size=trimmed or a wider-window model (P-018).`,
+    );
+  }
+  return guard;
+}
 
 /** su-context-size-variants: choose the initial-context size for the SU session —
  *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Defaults to
