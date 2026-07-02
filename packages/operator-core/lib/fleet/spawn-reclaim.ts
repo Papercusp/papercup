@@ -455,7 +455,11 @@ export async function reclaimOrphanedSpawns(
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
   if (candidates.length === 0) {
-    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+    // No fresh orphans — but still run the stale-claim backstop: the HISTORIC
+    // class (claims whose holder was settled terminal by a pre-fix sweep) must
+    // clear on idle sweeps too, not only when a new orphan happens to appear.
+    const claimsReleased = await sweepStaleSpawnClaims(sql);
+    return { reclaimed: 0, spawnIds: [], workspaces: [], claimsReleased };
   }
 
   const me = hostname();

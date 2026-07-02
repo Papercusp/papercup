@@ -21,6 +21,8 @@ import {
   reconcileSpawnAdmissionOnBoot,
   launcherBootId,
   __setLauncherBootIdForTests,
+  releaseClaimsOfDeadSpawns,
+  sweepStaleSpawnClaims,
 } from './spawn-reclaim';
 
 const SPAWNED_AGENTS_DDL = `
@@ -41,11 +43,27 @@ const SPAWNED_AGENTS_DDL = `
 
 // Minimal stand-in for the prod `harness_features_consolidated` VIEW — the boot
 // reconcile LEFT JOINs it (feature_id, workspace_id, harness_slug → status) to
-// decide whether a reclaimed bee's work-item is non-terminal (EI-85 relaunch).
+// decide whether a reclaimed bee's work-item is non-terminal (EI-85 relaunch),
+// and the dead-holder release UPDATEs its claim columns (taken_by/taken_at/…).
 const FEATURES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
     feature_id text NOT NULL, workspace_id text NOT NULL, harness_slug text NOT NULL,
-    status text, PRIMARY KEY (feature_id, workspace_id, harness_slug))`;
+    status text, taken_by text, taken_at timestamptz, last_progress_at timestamptz,
+    updated_ts bigint, PRIMARY KEY (feature_id, workspace_id, harness_slug))`;
+
+// Minimal stand-ins for the other two claim surfaces the dead-holder release
+// frees: engineer_issues.assignee (+ assigned_at/origin/updated_at — the columns
+// releaseIssue writes) and plan_item_claims.owner.
+const ISSUES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
+    workspace_id text NOT NULL DEFAULT 'default', issue_id text NOT NULL,
+    assignee text, assigned_at timestamptz, origin text NOT NULL DEFAULT 'local',
+    updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, issue_id))`;
+const PLAN_CLAIMS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
+    workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
+    item_id text NOT NULL, owner text NOT NULL,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id))`;
 
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };
@@ -116,11 +134,15 @@ beforeAll(async () => {
   db = await createFreshPgDb('spawn-reclaim');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
   await db.sql.unsafe(FEATURES_DDL);
+  await db.sql.unsafe(ISSUES_DDL);
+  await db.sql.unsafe(PLAN_CLAIMS_DDL);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.spawned_agents`;
   await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
+  await db.sql`TRUNCATE harness_shared.engineer_issues`;
+  await db.sql`TRUNCATE harness_shared.plan_item_claims`;
   alivePids.clear();
 });
 
@@ -790,5 +812,131 @@ describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, rea
     const { fn } = recordingReap();
     const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
     expect(r.reclaimed).toBe(1);
+  });
+});
+
+// ————————————————————————————————————————————————————————————————————————————
+// Dead-holder claim release (2026-07-02): reclaiming a nursery row to 'failed'
+// must also free the durable claims the dead spawn still holds — feature
+// taken_by, issue assignee, plan_item_claims.owner — or every re-placement's
+// compare-and-claim rejects until a slower lane ages the claim off.
+// ————————————————————————————————————————————————————————————————————————————
+
+/** Seed a feature row already CLAIMED by `takenBy` (taken_at seconds-ago). */
+async function insertClaimedFeature(
+  featureId: string,
+  takenBy: string,
+  opts: { status?: string; takenAgoSec?: number } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (feature_id, workspace_id, harness_slug, status, taken_by, taken_at)
+    VALUES (${featureId}, ${WS}, 'papercup', ${opts.status ?? 'wip'}, ${takenBy},
+            now() - ${opts.takenAgoSec ?? 60}::int * interval '1 second')`;
+}
+
+async function featureClaim(featureId: string): Promise<{ taken_by: string | null; status: string | null }> {
+  const rows = await db.sql<{ taken_by: string | null; status: string | null }[]>`
+    SELECT taken_by, status FROM harness_shared.harness_features_consolidated
+     WHERE feature_id = ${featureId}`;
+  return rows[0] ?? { taken_by: '(none)', status: '(none)' };
+}
+
+describe('dead-holder claim release (reclaim frees taken_by/assignee/plan claims)', () => {
+  it('reclaimOrphanedSpawns frees the reclaimed spawn’s feature + issue + plan claims and requeues the feature', async () => {
+    await insertSpawn('s-dead-1', 'running', 10 * 60);
+    await insertClaimedFeature('F-100', 's-dead-1', { status: 'wip' });
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, assignee, assigned_at)
+      VALUES (${WS}, 'EI-9001', 's-dead-1', now())`;
+    await db.sql`
+      INSERT INTO harness_shared.plan_item_claims (workspace_id, harness_slug, plan_slug, item_id, owner)
+      VALUES (${WS}, 'papercup', 'some-plan', 'P-001', 's-dead-1')`;
+
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(1);
+    expect(r.claimsReleased).toEqual({ features: 1, issues: 1, planClaims: 1 });
+
+    expect(await featureClaim('F-100')).toEqual({ taken_by: null, status: 'todo' });
+    const [issue] = await db.sql<{ assignee: string | null; assigned_at: Date | null }[]>`
+      SELECT assignee, assigned_at FROM harness_shared.engineer_issues WHERE issue_id = 'EI-9001'`;
+    expect(issue.assignee).toBeNull();
+    expect(issue.assigned_at).toBeNull();
+    const claims = await db.sql<{ item_id: string }[]>`
+      SELECT item_id FROM harness_shared.plan_item_claims WHERE owner = 's-dead-1'`;
+    expect(claims).toHaveLength(0);
+  });
+
+  it('a claim in a NON-requeue state is freed but keeps its status (mirrors releaseSpawnWorkItemClaim)', async () => {
+    await insertSpawn('s-dead-2', 'running', 10 * 60);
+    await insertClaimedFeature('F-101', 's-dead-2', { status: 'blocked' });
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(1);
+    expect(await featureClaim('F-101')).toEqual({ taken_by: null, status: 'blocked' });
+  });
+
+  it('a LIVE spawn’s claim is untouched by the reclaim sweep', async () => {
+    await insertSpawn('s-live-1', 'running', 5); // fresh heartbeat — not a candidate
+    await insertClaimedFeature('F-102', 's-live-1');
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(0);
+    expect(await featureClaim('F-102')).toEqual({ taken_by: 's-live-1', status: 'wip' });
+  });
+
+  it('IDLE sweep (no fresh orphans) still clears the HISTORIC backlog: claims whose s-… holder is already terminal', async () => {
+    await insertSpawn('s-settled', 'failed', 60); // settled by a pre-fix sweep — terminal row, claim left behind
+    await insertClaimedFeature('F-103', 's-settled');
+    const r = await reclaimOrphanedSpawns(db.sql, STALE);
+    expect(r.reclaimed).toBe(0);
+    expect(r.claimsReleased).toEqual({ features: 1, issues: 0, planClaims: 0 });
+    expect(await featureClaim('F-103')).toEqual({ taken_by: null, status: 'todo' });
+  });
+
+  it('sweepStaleSpawnClaims: absent-row guard — a young claim with NO nursery row is kept (fleet:spawn’s claim-then-insert window), an old one is freed', async () => {
+    await insertClaimedFeature('F-104', 's-ghost-young', { takenAgoSec: 5 * 60 });
+    await insertClaimedFeature('F-105', 's-ghost-old', { takenAgoSec: 2 * 3600 });
+    const released = await sweepStaleSpawnClaims(db.sql);
+    expect(released.features).toBe(1);
+    expect(await featureClaim('F-104')).toEqual({ taken_by: 's-ghost-young', status: 'wip' });
+    expect(await featureClaim('F-105')).toEqual({ taken_by: null, status: 'todo' });
+  });
+
+  it('sweepStaleSpawnClaims never touches a claim held by a RUNNING spawn, or a non-spawn (human/session) holder', async () => {
+    await insertSpawn('s-running', 'running', 5);
+    await insertClaimedFeature('F-106', 's-running');
+    await insertClaimedFeature('F-107', 'su-human-session', { takenAgoSec: 3 * 3600 });
+    const released = await sweepStaleSpawnClaims(db.sql);
+    expect(released.features).toBe(0);
+    expect(await featureClaim('F-106')).toEqual({ taken_by: 's-running', status: 'wip' });
+    expect(await featureClaim('F-107')).toEqual({ taken_by: 'su-human-session', status: 'wip' });
+  });
+
+  it('releaseClaimsOfDeadSpawns is a no-op for an empty id list', async () => {
+    await insertClaimedFeature('F-108', 's-whoever');
+    const released = await releaseClaimsOfDeadSpawns(db.sql, []);
+    expect(released).toEqual({ features: 0, issues: 0, planClaims: 0 });
+    expect(await featureClaim('F-108')).toEqual({ taken_by: 's-whoever', status: 'wip' });
+  });
+
+  it('boot reconcile frees the dead bee’s claim BEFORE relaunch, so the relaunched bee can re-claim under its new spawn id', async () => {
+    __setLauncherBootIdForTests('boot-now');
+    try {
+      await insertSpawn('s-boot-dead', 'running', 5, {
+        host: hostname(), bootId: 'boot-prior', childRole: 'bee', featureId: 'F-109',
+      });
+      await insertClaimedFeature('F-109', 's-boot-dead', { status: 'wip' });
+      // Relaunch seam records what it saw; by the time it fires the claim must be free.
+      const claimStateAtRelaunch: Array<string | null> = [];
+      const r = await reconcileSpawnAdmissionOnBoot(db.sql, {
+        relaunch: async () => {
+          claimStateAtRelaunch.push((await featureClaim('F-109')).taken_by);
+          return true;
+        },
+      });
+      expect(r.relaunched).toEqual(['s-boot-dead']);
+      expect(claimStateAtRelaunch).toEqual([null]);
+    } finally {
+      __setLauncherBootIdForTests(null);
+    }
   });
 });
