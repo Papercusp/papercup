@@ -106,3 +106,15 @@ DRILL LOG (2026-07-02):
   Cross-machine claim-spec steering never federates via this tool as-is.
   Per failure protocol: D6 stays closed until fixed + D5 re-drilled.
   Fix dispatched to Lane A (su-89b88).
+- WI-1564 FIXED (su-89b88, shared workspace resolver in both scheduler
+  handlers, 18/18 regression) and DEPLOYED 13:10Z (release 2ba09c57, operator
+  restarted). Same window: leader fixed the OTHER gate-red (send.test.ts
+  mocks lacking stagedTargets after EI-5957 — 10/29 red on tip since 10:38Z;
+  minimal mock fix 98817077f, deconflicted with su-a9faf). Gate GREEN 13:20Z,
+  base 94b17b25 -> 98817077.
+- D5 RE-DRILL 13:22Z — DRAIN LEG PASS: rev-2 probe spec landed under
+  (papercusp-workspace, papercusp), outbox id 5929915 drained_at 13:22:13Z
+  (on the peer-log, federating). Rev-1 row remains stranded under 'default'
+  (backfill decision = WI-1564 follow-ups WI-1571/72/73). D5 REMOTE read-back
+  (spec row HERE with the iMac's HLC stamp, i.e. iMac-authored) still needs
+  an iMac session — folded into the same owner gate as D2/D4.

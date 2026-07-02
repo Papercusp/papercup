@@ -2247,12 +2247,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const nowMs = Date.now();
     // Snapshot keys to iterate safely while the map mutates.
     const keys = [...pendingPeers.keys()];
-    for (const devicePubkey of keys) {
-      const entry = pendingPeers.get(devicePubkey);
+    for (const logCoreKey of keys) {
+      const entry = pendingPeers.get(logCoreKey);
       if (!entry) continue; // removed between snapshot + loop body
       // Grace-window expiry: remove + reject, don't retry forever.
       if (nowMs - entry.since > BOOT_PENDING_GRACE_MS) {
-        pendingPeers.delete(devicePubkey);
+        pendingPeers.delete(logCoreKey);
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
@@ -2294,18 +2294,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           const originSlug = entry.frame.harness_slug ?? null;
           const inScope = announceSlugInScope(originSlug, slug, hiveHomeProjectionSlug);
           if (inScope) {
-            pendingPeers.delete(devicePubkey);
+            pendingPeers.delete(logCoreKey);
             await admitPeer(entry.frame);
           } else {
             const sameHive = await resolveSameHiveMember(entry.frame);
             if (sameHive?.admit) {
               // resolveSameHiveMember admitted it (called admitPeer) → stop retrying.
-              pendingPeers.delete(devicePubkey);
+              pendingPeers.delete(logCoreKey);
             } else if (sameHive && sameHive.reason === 'pending') {
               // membership still not federated → leave pending (it re-buffered idempotently).
             } else if (hiveHomeProjectionSlug != null) {
               // not a same-hive candidate AND home resolved → genuinely foreign → conclusive.
-              pendingPeers.delete(devicePubkey);
+              pendingPeers.delete(logCoreKey);
               recordBootEvent(
                 opts.workspaceId,
                 opts.harnessSlug,
@@ -2323,7 +2323,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ) {
           // Conclusive failure (binding_invalid / bad_sig / revoked) —
           // stop retrying.
-          pendingPeers.delete(devicePubkey);
+          pendingPeers.delete(logCoreKey);
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
