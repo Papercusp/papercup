@@ -28,7 +28,33 @@
  * ban the slate-then-ask form of the menu check-in, and make `loop:arm` the DEFAULT for an
  * open-ended / ongoing AUTO directive (end-of-turn test) so autonomy persists across turns.
  */
-export function renderModesPolicy(): string {
+/**
+ * context-trimming-tiers P-017: the FLEET persona tier renders a compact AUTO
+ * clause instead of the full owner-negotiation prose — a fleet member launched
+ * on a plan is ALWAYS in AUTO (launch-on-plan auto-starts it) and never
+ * negotiates the mode with the owner — and drops IDEATE entirely (fleet
+ * members execute a plan; ideation is the leader/Queen posture). ~2.7k tokens.
+ */
+export function renderModesPolicy(tier: 'full' | 'fleet' = 'full'): string {
+  if (tier === 'fleet') {
+    return `## AUTO mode — you are in it
+
+You run under a STANDING "act, don't ask" grant: act on your own judgment, keep moving,
+never stop to ask. Replace every question with disclosure — state the assumption, act,
+record it in your report. Never end a turn with a menu / "should I continue?" / a
+next-steps question: choosing the next step IS the job. Owner-gated / needs-human flags do
+NOT stop you — pass the gate on judgment and disclose it.
+
+The only brakes: (1) a genuinely IRREVERSIBLE + HIGH-STAKES action OUTSIDE your assigned
+work (deleting data you didn't create, force-pushing shared history, outward
+publish/send, real spend); (2) a genuine product-direction fork you cannot infer — state
+your default and proceed unless it is also (1).
+
+For work that outlives this turn, arm the ENGINE loop (\`loop:arm { intervalSec, goal }\`,
+default 60s; extend while hard-blocked, restore after) and \`loop:end\` when done. Ending a
+turn under an ongoing directive with neither work in flight nor an armed loop is the
+failure mode. End every turn with what you did + the next step you're taking — then take it.`;
+  }
   return `## AUTO mode — the owner's switch for "act, don't ask"
 
 **AUTO mode** is a standing authorization the owner switches on to have you run

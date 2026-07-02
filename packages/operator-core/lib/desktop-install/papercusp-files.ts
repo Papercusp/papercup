@@ -695,7 +695,52 @@ export interface RenderSuPlaybookInput {
    * - `''` → no guide (marker removed). Only read when the base carries the marker.
    */
   projectGuideSource?: string;
+  /**
+   * Persona TIER (context-trimming-tiers P-017). 'full' (default) = today's
+   * playbook, byte-identical. 'fleet' = the fleet-member tier rendered from
+   * the SAME base: FULL-ONLY tagged sections stripped (orientation, named
+   * workflows, mid-call interactivity), the AUTO clause compacted + IDEATE
+   * dropped (renderModesPolicy('fleet')), and the wire-schema legend filtered
+   * to the coordination/work-item/plan/lock spine. The engineering-discipline
+   * + shared-dev-environment + project-guide spine is KEPT — fleet members
+   * code in the repo.
+   */
+  tier?: 'full' | 'fleet';
 }
+
+/** FULL-ONLY section tags (P-017): content between these comment markers is
+ *  stripped from the FLEET persona tier. Author them in the base .tools.md
+ *  (or inside a generated section) around owner-facing / leader-only prose. */
+export const PLAYBOOK_FULL_ONLY_BEGIN = '<!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->';
+export const PLAYBOOK_FULL_ONLY_END = '<!-- PAPERCUSP-SU:FULL-ONLY:END -->';
+
+/** Strip every FULL-ONLY tagged block (fleet tier). Unbalanced tags fail soft:
+ *  a BEGIN with no END strips nothing further (never truncate the tail). */
+export function stripFullOnlySections(text: string): string {
+  let out = '';
+  let rest = text;
+  for (;;) {
+    const b = rest.indexOf(PLAYBOOK_FULL_ONLY_BEGIN);
+    if (b === -1) return out + rest;
+    const e = rest.indexOf(PLAYBOOK_FULL_ONLY_END, b);
+    if (e === -1) return out + rest; // unbalanced — keep everything
+    out += rest.slice(0, b).replace(/\n+$/, '\n');
+    rest = rest.slice(e + PLAYBOOK_FULL_ONLY_END.length).replace(/^\n+/, '\n');
+  }
+}
+
+/** The wire-schema families a FLEET member keeps (the coordination/work-item/
+ *  plan/lock spine); every other tool's legend entry is full-tier only. */
+const FLEET_WIRE_SCHEMA_FAMILIES = [
+  'coord:',
+  'work_items:',
+  'plans:',
+  'plan_items:',
+  'locks:',
+  'events:',
+  'memory:',
+  'improvements:',
+];
 
 export interface RenderedSuPlaybook {
   /** The spliced playbook text (base + per-agent overlay at the marker). */
@@ -724,6 +769,7 @@ export interface RenderedSuPlaybook {
  */
 export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<RenderedSuPlaybook> {
   const profile = input.profile ?? 'engineer';
+  const tier = input.tier ?? 'full';
   const explicitRoot = !!input.operatorAppRoot;
   const operatorAppRoot = input.operatorAppRoot ?? resolveOperatorAppRoot();
   const baseSource =
@@ -742,7 +788,12 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   const withWire = spliceGeneratedSection(
     spliceToolingOverlay(base, overlay),
     WIRE_SCHEMAS_MARKER,
-    renderWireSchemasSection(),
+    // P-017: the fleet tier keeps only the spine families' legend entries.
+    renderWireSchemasSection(
+      tier === 'fleet'
+        ? (name) => FLEET_WIRE_SCHEMA_FAMILIES.some((f) => name.startsWith(f))
+        : undefined,
+    ),
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
@@ -751,7 +802,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // relationship, plus the IDEATE invent-vs-patch switch and the AUTO×IDEATE table, apply to
   // every interactive su surface), so splice them BEFORE the engineer-only shared-base notes —
   // both engineer + power carry the marker and get the one canonical clause.
-  const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderModesPolicy());
+  const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderModesPolicy(tier));
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   const withCompaction = spliceGeneratedSection(
     withAuto,
@@ -771,5 +822,8 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     projectGuideSource = guide.source;
     text = spliceGeneratedSection(withNotes, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
   }
+  // P-017 fleet tier: strip every FULL-ONLY tagged block (base + generated
+  // sections alike). Applied LAST so tags survive every splice above.
+  if (tier === 'fleet') text = stripFullOnlySections(text);
   return { text, baseSource, overlaySource, projectGuideSource };
 }

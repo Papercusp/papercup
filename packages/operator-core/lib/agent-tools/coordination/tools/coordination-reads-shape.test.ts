@@ -206,6 +206,31 @@ describe("shapeFleetAssignments (P-022)", () => {
     for (const row of out.agents) expect(Object.keys(row).sort()).toEqual(keys);
   });
 
+  it("carries coverage_collisions through both tiers (EI-6074 — the reclaimable-grade smell)", () => {
+    const withCollision = {
+      ...data,
+      summary: { ...data.summary, coverage_collisions: 1 },
+      coverage_collisions: [
+        {
+          ref: "plan-x#P-004",
+          directHolder: "su-A",
+          workItemHolders: [{ workItemId: "WI-1347", holder: "su-B" }],
+          principals: ["su-A", "su-B"],
+        },
+      ],
+    };
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeFleetAssignments(withCollision, tier) as Record<string, unknown>;
+      expect(out.coverage_collisions).toEqual(withCollision.coverage_collisions);
+      expect((out.summary as Record<string, unknown>).coverage_collisions).toBe(1);
+    }
+  });
+
+  it("omits coverage_collisions when clean", () => {
+    const out = shapeFleetAssignments(data, "trimmed") as Record<string, unknown>;
+    expect(out).not.toHaveProperty("coverage_collisions");
+  });
+
   it("non-conforming data passes through", () => {
     const weird = { ok: false, error: "x" };
     expect(shapeFleetAssignments(weird, "trimmed")).toBe(weird);

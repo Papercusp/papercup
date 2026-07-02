@@ -93,3 +93,127 @@ describe('compactCoverage', () => {
     expect(compactCoverage(lean)).toEqual({ level: 'none' });
   });
 });
+
+describe('coverageCollisions (EI-6074)', () => {
+  /** Build a PlanItemCoverage with a direct claim + linked live work-items. */
+  const cov = (
+    over: Partial<PlanItemCoverage> & { ref: string },
+  ): PlanItemCoverage => ({
+    links: [],
+    directlyClaimed: false,
+    directHolder: null,
+    directActivity: null,
+    level: 'none',
+    workers: [],
+    ...over,
+  });
+
+  const liveLink = (workItemId: string, holder: string): CoverageWorkLink => ({
+    workItemId,
+    rel: 'relates',
+    terminal: false,
+    activity: 'progressing',
+    holder,
+  });
+
+  it('flags the reported case: a direct plan-item claim + a linked live work-item held by a DIFFERENT principal', () => {
+    // The exact EI-6074 shape: bee-A holds the P-004 plan-item claim ("Implement
+    // WI-1347"), bee-B is actively implementing the linked WI-1347.
+    const map = [
+      cov({
+        ref: 'presence-coord-unification#P-004',
+        directlyClaimed: true,
+        directHolder: 's-A',
+        directActivity: 'alive',
+        links: [liveLink('WI-1347', 's-B')],
+        level: 'full',
+        workers: ['s-A', 's-B'],
+      }),
+    ];
+    expect(coverageCollisions(map)).toEqual([
+      {
+        ref: 'presence-coord-unification#P-004',
+        directHolder: 's-A',
+        workItemHolders: [{ workItemId: 'WI-1347', holder: 's-B' }],
+        principals: ['s-A', 's-B'],
+      },
+    ]);
+  });
+
+  it('no collision when the SAME principal holds the direct claim and its linked work-item', () => {
+    const map = [
+      cov({
+        ref: 'p#P-1',
+        directlyClaimed: true,
+        directHolder: 's-A',
+        directActivity: 'progressing',
+        links: [liveLink('WI-9', 's-A')],
+        level: 'full',
+        workers: ['s-A'],
+      }),
+    ];
+    expect(coverageCollisions(map)).toEqual([]);
+  });
+
+  it('no collision for legitimate parallel decomposition — several distinct linked work-items, NO direct plan-item claim', () => {
+    // Two bees on two DIFFERENT work-items under one plan item is parallel work,
+    // not a duplicate: without a direct plan-item claim there is no cross-table dup.
+    const map = [
+      cov({
+        ref: 'p#P-2',
+        directlyClaimed: false,
+        directHolder: null,
+        links: [liveLink('WI-1', 's-A'), liveLink('WI-2', 's-B')],
+        level: 'full',
+        workers: ['s-A', 's-B'],
+      }),
+    ];
+    expect(coverageCollisions(map)).toEqual([]);
+  });
+
+  it('no collision when the linked work-item is stalled/dead (holder null — reclaimable, not a live duplicate)', () => {
+    const map = [
+      cov({
+        ref: 'p#P-3',
+        directlyClaimed: true,
+        directHolder: 's-A',
+        directActivity: 'alive',
+        // getAllPlanItemCoverage leaves holder null for a non-live (stalled/dead) link.
+        links: [{ workItemId: 'WI-3', rel: 'relates', terminal: false, activity: 'stalled', holder: null }],
+        level: 'partial',
+        workers: ['s-A'],
+      }),
+    ];
+    expect(coverageCollisions(map)).toEqual([]);
+  });
+
+  it('collects distinct principals across multiple colliding links + dedups the direct holder', () => {
+    const map = [
+      cov({
+        ref: 'p#P-4',
+        directlyClaimed: true,
+        directHolder: 's-A',
+        directActivity: 'alive',
+        links: [liveLink('WI-1', 's-B'), liveLink('WI-2', 's-C'), liveLink('WI-3', 's-A')],
+        level: 'full',
+        workers: ['s-A', 's-B', 's-C'],
+      }),
+    ];
+    // s-A's own linked work-item is NOT a collision; s-B and s-C are.
+    expect(coverageCollisions(map)).toEqual([
+      {
+        ref: 'p#P-4',
+        directHolder: 's-A',
+        workItemHolders: [
+          { workItemId: 'WI-1', holder: 's-B' },
+          { workItemId: 'WI-2', holder: 's-C' },
+        ],
+        principals: ['s-A', 's-B', 's-C'],
+      },
+    ]);
+  });
+
+  it('empty coverage map → no collisions', () => {
+    expect(coverageCollisions([])).toEqual([]);
+  });
+});
