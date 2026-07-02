@@ -2,13 +2,13 @@
  * provisioner/catalog — the certified-combo catalog the provisioner wizard recommends from
  * (local-concurrent-inference-2026-07-02 D-005 "catalog is a HARNESS, not a list", D-006).
  *
- * D-005's certification battery (plan items P-006/P-007) is the thing that's supposed to
- * PRODUCE a catalog entry — it hasn't run yet (P-006 is still `todo`, and P-009/this wizard
- * is plan-blockedBy it). So every entry here carries an explicit `status`:
+ * D-005's certification battery (plan items P-006/P-007, lib/inference-gateway/cert-battery)
+ * is the thing that PRODUCES a catalog entry. Each entry carries an explicit `status`:
  *   - 'provisional': grounded in a real, currently-running config (verified against this
  *     box's live `llama-ornith.service` unit) but NOT yet run through the cert battery.
- *   - 'certified':   passed the P-006/P-007 battery. None yet — flip the first entry once
- *     that lands, don't add a parallel "real" catalog.
+ *   - 'certified':   passed the cert battery — the `certification` field records the verdict,
+ *     run timestamp, and mangling rate. ornith-35b IQ3_M @ llama-server is entry #1. Flip an
+ *     entry here when the battery certifies it live; never add a parallel "real" catalog.
  *
  * The wizard is honest about this in the UI/CLI (recommend.ts's `reason` string surfaces
  * `status`), rather than presenting a provisional entry as fully vetted.
@@ -17,6 +17,25 @@ import type { LocalBackendKind } from '../inference-gateway/local-backend-store'
 import type { HardwareTier } from './recommend-types';
 
 export type CatalogEntryStatus = 'provisional' | 'certified';
+
+/** Certification evidence attached to a `status: 'certified'` entry — a compact stamp of the
+ *  cert-battery run that certified this locked config (lib/inference-gateway/cert-battery). The
+ *  full per-probe report is transient run data; the durable audit fact is this summary. */
+export interface CatalogCertification {
+  /** The battery verdict at certification (a certified entry is always 'certified' here). */
+  verdict: 'certified' | 'failed';
+  /** ISO timestamp of the certifying run. */
+  ranAt: string;
+  /** Aggregate tool-call mangling rate at certification (0..1) — the metric that separates a
+   *  healthy model from a tool-JSON storm. */
+  manglingRate: number;
+  /** Critical probes that passed / total, e.g. "3/3" (behavior · trimmed-shape · comms). */
+  criticalProbes: string;
+  /** The battery's one-line summary. */
+  summary: string;
+  /** How it was certified (battery + endpoint), for the audit trail. */
+  method: string;
+}
 
 export interface CatalogEntry {
   id: string;
@@ -55,6 +74,8 @@ export interface CatalogEntry {
     gpuMemoryUtilization?: number;
   };
   status: CatalogEntryStatus;
+  /** Present iff `status === 'certified'` — the cert-battery run that certified this config. */
+  certification?: CatalogCertification;
   /** Plan/decision this entry's config was sourced from, for audit trail. */
   sourceRef: string;
 }
@@ -75,8 +96,19 @@ export const CERTIFIED_CATALOG: readonly CatalogEntry[] = [
       kvCacheType: 'q8_0',
       flashAttn: true,
     },
-    status: 'provisional',
-    sourceRef: 'local-concurrent-inference-2026-07-02 D-005/D-006 — config verified against the live llama-ornith.service unit; awaiting P-006/P-007 certification battery',
+    status: 'certified',
+    certification: {
+      verdict: 'certified',
+      ranAt: '2026-07-02T20:21:49.813Z',
+      manglingRate: 0,
+      criticalProbes: '3/3',
+      summary:
+        '[certified] maxwell1500/ornith-35b:IQ3_M IQ3_M @ llama-server (2×90112 ctx): 3/3 critical probes pass, mangling 0.0%',
+      method:
+        'cert-battery (behavior · trimmed-shape · comms · mangling-rate) run live via the D-011 sanitizer at :11435',
+    },
+    sourceRef:
+      'local-concurrent-inference-2026-07-02 D-005/D-006 — config verified against the live llama-ornith.service unit; certified 2026-07-02 by the P-006 cert battery (lib/inference-gateway/cert-battery)',
   },
 ] as const;
 

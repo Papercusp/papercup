@@ -219,6 +219,13 @@ import './doc-anchor-reconcile-action';
 // reaper — marks dead-process open adv_sessions ended (reclaims roster +
 // unblocks session-dir-gc). Flag-gated DEFAULT-OFF + seeded INACTIVE.
 import './idle-session-reaper-action';
+// WI-1442 fix (c) / WI-1628: the Hetzner orphan-frame reaper — destroys ad-hoc
+// federation-rig VMs (hzdeb*/pcusp-fed-*) whose creating agent's coord:presence
+// is confirmed `ended`, closing the billing leak + the permanent-2-server-cap
+// deadlock a dead agent's leftover frames cause. Not flag-gated (a destructive
+// reaper deleting real billed VMs is the owner-authority carve-out); seeded
+// INACTIVE (seed-hetzner-orphan-frame-reaper-routine.ts --active --dry-run first).
+import './hetzner-orphan-frame-reaper-action';
 // infra-perf-reliability-audit-round3-2026-06-19 P-013 / WI-345 (F12): the
 // test-webview reaper — DETECTION (toast) + KILL of leaked agent-spawned
 // papercusp-desktop/WebKitWebProcess instances whose adv_session is ENDED.

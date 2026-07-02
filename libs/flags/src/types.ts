@@ -204,29 +204,31 @@ export const FLAGS = {
   // operator-memory-and-psu-resilience-2026-06-14 P-011 (D-007): the idle-session
   // reaper. When ON, a periodic sweep marks DEAD-process open adv_sessions ended
   // (owner stopped heartbeating past the liveness grace), reclaiming the live
-  // roster + unblocking session-dir-gc for them. DEFAULT OFF until proven on the
-  // fleet (it ends session rows). Slice 1 only touches already-dead sessions; it
-  // never terminates a live process (that's the follow-on slice).
+  // roster + unblocking session-dir-gc for them. DEFAULT ON (not in DARK_FLAGS —
+  // proven safe on the fleet). Slice 1 only touches already-dead sessions; it
+  // never terminates a live process (that's the follow-on slice, the sibling flag
+  // below).
   IDLE_SESSION_REAPER: "papercusp-idle-session-reaper",
   // operator-memory-and-psu-resilience-2026-06-14 P-011 / WI-152 (D-007): the
   // idle-session reaper's WRITE half — actually TERMINATING a LIVE-but-idle
   // session (the D-007 event-loop-saturation cohort: alive + heartbeating but no
   // genuine activity for the idle threshold, holding LISTEN conns + polling).
   // DOUBLE-GATED: the terminate sweep no-ops unless BOTH this flag AND the
-  // sibling IDLE_SESSION_REAPER are on. DEFAULT OFF — DELIBERATE (the
-  // explicit-owner-ask exception to alpha flags-default-on): this is a
-  // DESTRUCTIVE, not-yet-proven reaper that Ctrl-C's then SIGKILLs a live
-  // process; the slice-1 sibling is also dark. It only ever targets genuinely-
-  // idle sessions (busy owners — claim / in-flight wake / running bee — are
-  // excluded); a terminated wake-armed session is safe because the wake-executor
-  // --resumes it. OFF ⇒ a pure no-op. Owner flips ON only after a live
-  // --dry-run proof on the fleet. Listed in KNOWN_DARK_FLAGS.
+  // sibling IDLE_SESSION_REAPER are on. DEFAULT ON (not in DARK_FLAGS — the
+  // owner's live --dry-run proof on the fleet already passed; WI-1658: this
+  // flag's default was already flipped true pre-inversion, though the DESTRUCTIVE
+  // description below stayed accurate and worth keeping). This is a reaper that
+  // Ctrl-C's then SIGKILLs a live process. It only ever targets genuinely-idle
+  // sessions (busy owners — claim / in-flight wake / running bee — are excluded);
+  // a terminated wake-armed session is safe because the wake-executor --resumes
+  // it. OFF ⇒ a pure no-op (the kill-switch if this ever misfires).
   IDLE_SESSION_REAPER_TERMINATE: "papercusp-idle-session-reaper-terminate",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
   // completes while the original strands in `validating`. force:true overrides
-  // per-call. OFF = the kill-switch if the guard ever false-positives.
+  // per-call. DEFAULT ON (not in DARK_FLAGS). OFF = the kill-switch if the guard
+  // ever false-positives.
   WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
   // EI-309 (Queen frontier-blind wake wedge): when ON, hive:declare-wake refuses
   // an event-only/none declaration (no time component) while the home harness has
@@ -854,8 +856,11 @@ export const FLAGS = {
   // cadence sweep recycles a bee whose session has carried too many tasks / too large a
   // token-span (force a fresh spawn after a threshold; the work-item checkpoint carries
   // continuity). Only ever recycles an IDLE/drained bee (D-005 — never mid-task). DEFAULT
-  // OFF + the routine is seeded INACTIVE (double-gated, like idle-session-reaper): an
-  // unverified bee-lifecycle change; bring up dry-run first, then flip.
+  // ON (not in DARK_FLAGS — WI-1658: pre-inversion default was already true). The
+  // seed-bee-transcript-cap-routine.ts bring-up script still SEEDS its routine row
+  // INACTIVE on first insert (a separate, routine-level gate from this flag) —
+  // check routines:list/routines:set for its live active state before relying on
+  // the sweep actually firing.
   BEE_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap",
   // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions

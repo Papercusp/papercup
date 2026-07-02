@@ -85,6 +85,14 @@ export function recommendCombo(
   return {
     entry,
     tier,
-    reason: `matched '${entry.displayName}' for tier '${tier}' (${vramGB}GB VRAM)${entry.status === 'provisional' ? ' — catalog entry is PROVISIONAL, not yet through the certification battery (P-006/P-007)' : ''}${skippedVllm ? ' — a vLLM candidate was skipped: no working Docker/Podman runtime found, downgraded per D-009 #3' : ''}`,
+    reason: `matched '${entry.displayName}' for tier '${tier}' (${vramGB}GB VRAM)${
+      entry.status === 'provisional'
+        ? ' — catalog entry is PROVISIONAL, not yet through the certification battery (P-006/P-007)'
+        : ` — catalog entry is CERTIFIED by the P-006 battery${
+            entry.certification
+              ? ` (mangling ${(entry.certification.manglingRate * 100).toFixed(0)}%, ${entry.certification.ranAt.slice(0, 10)})`
+              : ''
+          }`
+    }${skippedVllm ? ' — a vLLM candidate was skipped: no working Docker/Podman runtime found, downgraded per D-009 #3' : ''}`,
   };
 }

@@ -30,7 +30,9 @@ describe('recommendCombo', () => {
     const rec = recommendCombo(hw({ gpu: { vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3090', vramGB: 24 } }));
     expect(rec.entry?.id).toBe('ornith-35b-iq3m-llama-server');
     expect(rec.tier).toBe('nvidia-24gb-plus');
-    expect(rec.reason).toMatch(/PROVISIONAL/);
+    // ornith entry #1 is now CERTIFIED by the P-006 cert battery (was provisional).
+    expect(rec.reason).toMatch(/CERTIFIED by the P-006 battery/);
+    expect(rec.reason).not.toMatch(/PROVISIONAL/);
   });
 
   it('returns no entry + a cloud-fallback reason for cpu-only hardware', () => {

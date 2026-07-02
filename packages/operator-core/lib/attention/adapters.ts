@@ -147,8 +147,28 @@ export interface CoordEscalationInput {
  *  whose option-less escalations are operational status, not owner decisions.
  *  `system[:…]` is matched by the prefix check; this set is for the named bots
  *  (D-006 ext 1). Extend it as new infra emitters appear — never add an AGENT
- *  alias (a bee's escalation can be a genuine ask). */
-const AUTOMATED_INFRA_EMITTERS = new Set<string>(['green-checkpoint']);
+ *  alias (a bee's escalation can be a genuine ask).
+ *
+ *  EI-6789/EI-6782 (escalation-aging metric mismatch, 2026-07-02): 'steering-lease'
+ *  and 'compaction-watchdog' floods were driving `harness_shared.coord_open_escalations`
+ *  to 630+ rows (395 from steering-lease alone, accumulating since 2026-06-25) — the
+ *  SAME flood-class EI-1490 fixed for placement-watchdog, just from two NEW automated
+ *  senders that predate this set. Each fires a per-instance "Steering proposal:
+ *  papercusp/WI-… → feature_order=… (non-holder Swarm; holder …)" /
+ *  "fleet member … died on \"Prompt is too long\"…" message whose text embeds a
+ *  changing id/count, so the dedup-by-subjectSignature in coordination/escalations.ts
+ *  never matches two firings and each becomes a NEW, never-resolved "open" row. This
+ *  is what made `computeEscalationsHealth`'s `aging` count (593→596, unbounded) wildly
+ *  diverge from the live `coord:escalations{status:open}` page (single/low-double-digit)
+ *  — the health panel's full unbounded fold counts every one of these zombie rows; the
+ *  paginated read only shows whatever's in its recent-events window. Both are neither a
+ *  human decision-with-a-choice (`options` is always null on these) nor a real agent ask
+ *  — they're status broadcasts from a named coordination/lifecycle mechanism. */
+const AUTOMATED_INFRA_EMITTERS = new Set<string>([
+  'green-checkpoint',
+  'steering-lease',
+  'compaction-watchdog',
+]);
 
 export function isOperationalEscalation(from: string | null | undefined, hasOptions: boolean): boolean {
   if (hasOptions || typeof from !== 'string') return false;

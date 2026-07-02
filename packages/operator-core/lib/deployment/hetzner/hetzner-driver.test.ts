@@ -24,6 +24,9 @@ function fakeClient(script: HetznerServer[]): HetznerApiClient & { deleted: stri
     async deleteServer(id) {
       deleted.push(id);
     },
+    async listServers() {
+      return [];
+    },
   };
 }
 const srv = (o: Partial<HetznerServer>): HetznerServer => ({ id: '101', status: 'initializing', ...o });
@@ -78,6 +81,9 @@ describe('HetznerDriver provision/teardown', () => {
         deleted.push(id);
         const err = deleteErrs[d++];
         if (err) throw err;
+      },
+      async listServers() {
+        return [];
       },
     };
   }
@@ -160,5 +166,29 @@ describe('createHetznerApiClient (different envelope from Latitude)', () => {
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://api.hetzner.cloud/v1/servers');
     expect(init?.headers?.Authorization).toBe('Bearer T');
+  });
+
+  // WI-1628: the orphan-frame reaper's read path — parses name/labels/created too.
+  it('listServers parses {servers:[...]} including name/labels/created (WI-1628)', async () => {
+    const fetchImpl = fetchMock(200, {
+      servers: [
+        { id: 101, status: 'running', name: 'hzdeb1234', labels: { 'pcusp-owner': 'su-abc' }, created: '2026-07-01T00:00:00Z' },
+        { id: 102, status: 'running', name: 'papercusp-prod', labels: {}, created: '2026-07-02T00:00:00Z' },
+      ],
+    });
+    const client = createHetznerApiClient({ apiToken: 'T', fetchImpl: fetchImpl as never });
+    const servers = await client.listServers();
+    expect(servers).toEqual([
+      { id: '101', status: 'running', name: 'hzdeb1234', ipv4: undefined, labels: { 'pcusp-owner': 'su-abc' }, createdAt: '2026-07-01T00:00:00Z', raw: servers[0].raw },
+      { id: '102', status: 'running', name: 'papercusp-prod', ipv4: undefined, labels: {}, createdAt: '2026-07-02T00:00:00Z', raw: servers[1].raw },
+    ]);
+  });
+
+  it('listServers with a labelSelector appends the query param', async () => {
+    const fetchImpl = fetchMock(200, { servers: [] });
+    const client = createHetznerApiClient({ apiToken: 'T', fetchImpl: fetchImpl as never });
+    await client.listServers({ labelSelector: 'pcusp-owner=su-abc' });
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.hetzner.cloud/v1/servers?label_selector=pcusp-owner%3Dsu-abc');
   });
 });

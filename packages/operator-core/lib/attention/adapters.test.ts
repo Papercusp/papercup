@@ -421,6 +421,17 @@ describe('isOperationalEscalation — operational status vs a genuine owner ask 
     expect(isOperationalEscalation('green-checkpoint', false)).toBe(true); // named AUTOMATED_INFRA_EMITTER
   });
 
+  it('EI-6789/EI-6782: steering-lease and compaction-watchdog (named AUTOMATED_INFRA_EMITTERs) are operational', () => {
+    // Both fire per-instance status broadcasts (a changing WI-id/count or session-id
+    // embedded in the text) that never dedup-match a prior firing, so each becomes a
+    // brand-new never-resolved "open" escalation — the flood that drove
+    // computeEscalationsHealth's aging count to 593+ while the live paginated read
+    // stayed single-digit. Neither carries options (a choice to make), matching every
+    // observed production row.
+    expect(isOperationalEscalation('steering-lease', false)).toBe(true);
+    expect(isOperationalEscalation('compaction-watchdog', false)).toBe(true);
+  });
+
   it('an escalation WITH options is a genuine ask — never operational, even from system', () => {
     expect(isOperationalEscalation('system', true)).toBe(false);
     expect(isOperationalEscalation('green-checkpoint', true)).toBe(false);
