@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyCoverage,
   compactCoverage,
+  coverageCollisions,
   type CoverageWorkLink,
   type PlanItemCoverage,
 } from './plan-item-coverage';

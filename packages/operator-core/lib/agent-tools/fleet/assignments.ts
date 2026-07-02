@@ -22,7 +22,12 @@ import {
   stalledClaims,
   summarizeOrphan,
 } from '../../fleet/assignments';
-import { getAllPlanItemCoverage, compactCoverage } from '../../plan-item-coverage';
+import {
+  getAllPlanItemCoverage,
+  compactCoverage,
+  coverageCollisions,
+  type CoverageCollision,
+} from '../../plan-item-coverage';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
 
@@ -132,24 +137,19 @@ export default defineTool({
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
     const stalled = stalledClaims(rows);
-    // Summary is computed over the FULL agent set so the counts stay accurate even
-    // when the returned `agents` array is bounded below.
-    const summary = {
-      agents: agents.length,
-      alive: agents.filter((a) => a.alive).length,
-      claims: rows.filter((r) => r.source !== 'presence').length,
-      orphaned_claims: orphans.length,
-      stalled_claims: stalled.length,
-      declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
-      // P-021: total work-item load across live agents (the warm-inject signal).
-      work_item_load: agents.reduce((n, a) => n + a.load, 0),
-    };
     // Plan-item COVERAGE rollup: which plan items are being worked via a LINKED
     // work-item (or a direct claim) even when no plan-item lease names them — the
     // blind spot that makes plans:items show an actively-worked item as unworked.
     // Fuses work→plan_item edges + the work-item's liveness + any direct plan-item
     // claim. Filtered to the queried plan when `plan` is set; bounded for output.
     // Non-fatal — a coverage outage just omits the section.
+    //
+    // The SAME fused map also yields COVERAGE COLLISIONS (EI-6074): a plan item
+    // directly claimed by one principal while a linked live work-item covering the
+    // same deliverable is held by a DIFFERENT principal — the cross-claim-table
+    // duplicate the per-type dedup floor can't see (orphaned/stalled both read 0
+    // while two live bees run the same work). Surfaced as a reclaimable-grade
+    // coordination smell so the Queen sees it without eyeballing intents.
     const COVERAGE_CAP = 60;
     let coverageOut: {
       plan: string;
@@ -159,16 +159,21 @@ export default defineTool({
       links?: { id: string; rel: string; activity: string; terminal: boolean }[];
     }[] = [];
     let coverageTruncated = false;
+    let collisions: CoverageCollision[] = [];
     try {
       const covMap = await getAllPlanItemCoverage();
-      const entries = [...covMap.values()]
+      // Scope to the queried plan (when set) the same way coverage is, so a
+      // { plan } filter narrows both the coverage rollup AND the collision list.
+      const inScope = (ref: string): boolean => {
+        if (!args.plan) return true;
+        const hash = ref.indexOf('#');
+        return hash > 0 && ref.slice(0, hash) === args.plan;
+      };
+      const scoped = [...covMap.values()].filter((c) => inScope(c.ref));
+      collisions = coverageCollisions(scoped);
+      const entries = scoped
         // 'none' carries no signal worth surfacing here (it's the absence of coverage).
         .filter((c) => c.level !== 'none')
-        .filter((c) => {
-          if (!args.plan) return true;
-          const hash = c.ref.indexOf('#');
-          return hash > 0 && c.ref.slice(0, hash) === args.plan;
-        })
         // Most-covered first: complete/full/partial/unclaimed.
         .sort((a, b) => COVERAGE_ORDER.indexOf(a.level) - COVERAGE_ORDER.indexOf(b.level));
       coverageTruncated = entries.length > COVERAGE_CAP;
@@ -186,6 +191,21 @@ export default defineTool({
     } catch {
       // Non-fatal — omit the coverage section.
     }
+    // Summary is computed over the FULL agent set so the counts stay accurate even
+    // when the returned `agents` array is bounded below.
+    const summary = {
+      agents: agents.length,
+      alive: agents.filter((a) => a.alive).length,
+      claims: rows.filter((r) => r.source !== 'presence').length,
+      orphaned_claims: orphans.length,
+      stalled_claims: stalled.length,
+      // EI-6074: distinct plan-item deliverables held by >1 principal via the
+      // work-item↔plan-item coverage edge — the silent cross-table duplicate.
+      coverage_collisions: collisions.length,
+      declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
+      // P-021: total work-item load across live agents (the warm-inject signal).
+      work_item_load: agents.reduce((n, a) => n + a.load, 0),
+    };
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so
     // the byte-budget trim drops the least-relevant tail. Excerpt the long `intent`
@@ -212,6 +232,9 @@ export default defineTool({
         orphaned: orphans.map(summarizeOrphan),
         // Stalled work (live holder, no progress) — also reclaimable, also "not covered".
         stalled: stalled.map(summarizeOrphan),
+        // Coverage collisions (EI-6074): two distinct principals resolving to the
+        // same deliverable via the work-item↔plan-item coverage edge. Omitted when clean.
+        ...(collisions.length ? { coverage_collisions: collisions } : {}),
         // Plan-item coverage: items being worked via a linked work-item / direct
         // claim (even with no plan-item lease). 'none' is omitted (no signal).
         ...(coverageOut.length

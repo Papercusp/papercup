@@ -13,6 +13,11 @@
  * Kept as a standalone .mjs (not bundled TS) precisely because git execs it as
  * an external command — it must be a runnable node script on disk. Everything is
  * best-effort/quiet: a broken pipe just ends the fetch.
+ *
+ * allowHalfOpen:true is LOAD-BEARING: git's pack is delimited IN-BAND (a flush
+ * pkt), so the stream must not be destroyed on the first FIN — a half-open close
+ * lets every buffered byte flush before teardown. Default `pipe` (end:true) then
+ * propagates each half-close cleanly.
  */
 import net from 'node:net';
 
@@ -22,7 +27,7 @@ if (!sockPath) {
   process.exit(2);
 }
 
-const sock = net.connect(sockPath);
+const sock = net.connect({ path: sockPath, allowHalfOpen: true });
 sock.on('error', (e) => {
   process.stderr.write(`git-ext-bridge: socket error: ${e && e.message ? e.message : e}\n`);
   process.exit(1);
@@ -32,16 +37,8 @@ process.stdin.on('error', () => {});
 process.stdout.on('error', () => {});
 
 // git → us (stdin) → peer (socket); peer (socket) → us (stdout) → git.
+// Default end:true half-closes each direction as its source ends.
 process.stdin.pipe(sock);
 sock.pipe(process.stdout);
 
-// Propagate half-close both ways so pack negotiation terminates cleanly.
-process.stdin.on('end', () => sock.end());
-sock.on('end', () => {
-  try {
-    process.stdout.end();
-  } catch {
-    /* already closed */
-  }
-});
 sock.on('close', () => process.exit(0));

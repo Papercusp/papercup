@@ -101,6 +101,57 @@ export function classifyCoverage(
   return 'partial';
 }
 
+/**
+ * One coverage COLLISION (EI-6074): a plan item that is directly claimed by one
+ * principal while a LINKED live work-item covering the SAME deliverable is held by
+ * a DIFFERENT principal — two distinct principals both working the same thing
+ * (the "WI-X ≡ P-Y" duplicate). This is the cross-claim-table redundancy the
+ * per-type dedup floor can't see: a work-item claim and the plan-item claim it
+ * implements live in different tables and are never cross-checked, so
+ * orphaned/stalled both read 0 while two live bees run the same work.
+ *
+ * Deliberately NARROW — it fires ONLY when a DIRECT plan-item claim coexists with a
+ * differently-held linked work-item. Legitimate parallel decomposition (several
+ * distinct linked work-items, each held by a different bee, with NO direct plan-item
+ * claim) is NOT a collision: those are different deliverables under one plan item.
+ */
+export interface CoverageCollision {
+  /** '<slug>#<item>'. */
+  ref: string;
+  /** The principal holding the direct plan-item claim on the item. */
+  directHolder: string;
+  /** The DISTINCT principals holding linked live work-item claims on the same
+   *  deliverable (each holder !== directHolder). */
+  workItemHolders: { workItemId: string; holder: string }[];
+  /** All distinct principals in the collision (directHolder + workItemHolders). */
+  principals: string[];
+}
+
+/**
+ * Detect coverage collisions across a coverage map (EI-6074). Pure; no I/O.
+ * Returns, for each plan item that is directly claimed AND has a linked live
+ * work-item held by a DIFFERENT principal, the colliding ref + principals — so a
+ * reader (fleet:assignments) can surface "two distinct principals both resolve to
+ * the same deliverable" as a coordination-collision, alongside orphaned/stalled.
+ *
+ * Note `PlanItemCoverage.links[].holder` is populated ONLY for LIVE (progressing|
+ * alive) work-item claims (see getAllPlanItemCoverage), so a stalled/dead linked
+ * claim — which is reclaimable, not a live duplicate — never counts as a collision.
+ */
+export function coverageCollisions(cov: Iterable<PlanItemCoverage>): CoverageCollision[] {
+  const out: CoverageCollision[] = [];
+  for (const c of cov) {
+    if (!c.directlyClaimed || !c.directHolder) continue;
+    const workItemHolders = c.links
+      .filter((l): l is CoverageWorkLink & { holder: string } => l.holder != null && l.holder !== c.directHolder)
+      .map((l) => ({ workItemId: l.workItemId, holder: l.holder }));
+    if (workItemHolders.length === 0) continue;
+    const principals = [...new Set([c.directHolder, ...workItemHolders.map((w) => w.holder)])];
+    out.push({ ref: c.ref, directHolder: c.directHolder, workItemHolders, principals });
+  }
+  return out;
+}
+
 /** Lean wire shape attached per plan item (omit empty arrays to keep payload small). */
 export interface CompactCoverage {
   level: CoverageLevel;

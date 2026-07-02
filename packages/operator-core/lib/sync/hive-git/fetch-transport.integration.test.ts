@@ -51,7 +51,9 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
  *  is handed to serveUploadPack against `serverRepo`. Returns a connect() that
  *  gives the CLIENT-side duplex. */
 function makeLink(serverRepo: string, sockPath: string): { server: Server; dialClient: () => Promise<Socket> } {
-  const server = createServer((srvConn) => {
+  // allowHalfOpen:true on BOTH ends — the duplex must survive a one-directional
+  // FIN so the in-band-delimited pack flushes fully (see fetch-transport.ts).
+  const server = createServer({ allowHalfOpen: true }, (srvConn) => {
     srvConn.on('error', () => {});
     void serveUploadPack(serverRepo, srvConn);
   });
@@ -59,7 +61,7 @@ function makeLink(serverRepo: string, sockPath: string): { server: Server; dialC
     server,
     dialClient: () =>
       new Promise<Socket>((resolve, reject) => {
-        const s = connect(sockPath);
+        const s = connect({ path: sockPath, allowHalfOpen: true });
         s.once('connect', () => resolve(s));
         s.once('error', reject);
       }),

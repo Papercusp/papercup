@@ -155,7 +155,11 @@ export function fetchOverDuplex(
     let settled = false;
     let timedOut = false;
     let tmpDir: string | null = null;
-    const server = createServer();
+    // allowHalfOpen:true so a FIN on either leg does NOT destroy the socket
+    // before its buffered bytes flush — the git pack is delimited in-band, so a
+    // premature destroy truncates it ("bad pack header"). Default end:true pipes
+    // then propagate each half-close cleanly.
+    const server = createServer({ allowHalfOpen: true });
     const cleanup = async (): Promise<void> => {
       try {
         server.close();

@@ -34,10 +34,13 @@ function workRef(v: unknown, max: number): string | null {
 
 export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown {
   const d = data as
-    | ({ agents?: unknown[]; orphaned?: unknown[]; stalled?: unknown[]; coverage?: unknown[] } & Record<
-        string,
-        unknown
-      >)
+    | ({
+        agents?: unknown[];
+        orphaned?: unknown[];
+        stalled?: unknown[];
+        coverage?: unknown[];
+        coverage_collisions?: unknown[];
+      } & Record<string, unknown>)
     | null
     | undefined;
   if (!d || !Array.isArray(d.agents)) return data;
@@ -85,6 +88,10 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   };
   const orphaned = capList(d.orphaned, c.reclaim);
   const stalled = capList(d.stalled, c.reclaim);
+  // Coverage collisions (EI-6074) are a reclaimable-grade coordination smell —
+  // kept (capped) at every tier like orphaned/stalled, since the whole point is
+  // the Queen sees the cross-table duplicate without a full-payload read.
+  const collisions = capList(d.coverage_collisions, c.reclaim);
 
   const agents = d.agents.slice(0, c.agents).map(projectAgent);
   if (d.agents.length > c.agents) {
@@ -125,6 +132,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(orphaned.note ? { orphaned_note: orphaned.note } : {}),
     stalled: stalled.rows,
     ...(stalled.note ? { stalled_note: stalled.note } : {}),
+    ...(collisions.rows.length ? { coverage_collisions: collisions.rows } : {}),
+    ...(collisions.note ? { coverage_collisions_note: collisions.note } : {}),
     ...coverageOut,
     agents,
   };
