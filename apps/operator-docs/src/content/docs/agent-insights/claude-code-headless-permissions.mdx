@@ -78,8 +78,9 @@ this first.
 --permission-mode dontAsk
 --allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"
 --disallowed-tools CronCreate CronDelete CronList ScheduleWakeup \
-  EnterWorktree ExitWorktree Workflow Task RemoteTrigger PushNotification \
+  EnterWorktree ExitWorktree Workflow Task Agent RemoteTrigger PushNotification \
   Monitor "Bash(sudo:*)" "Bash(git push:*)"
+--disallowedTools=Task,Agent
 ```
 
 Allow-list is one space-joined arg (claude splits it); deny patterns are
@@ -87,6 +88,21 @@ separate argv elements so internal spaces (`Bash(git push:*)`) survive —
 `claudeMcpArgs` is the **tail** of `finalArgv` for claude-code, so the variadic
 `--disallowed-tools` swallows nothing unintended. Defers the whole posture if the
 user set any permission flag in `AGENT_CMD`.
+
+`FLEET_DISALLOWED_TOOLS` (the `--disallowed-tools CronCreate …` list above) no
+longer hardcodes `Task` — it spreads the shared `NO_SUBAGENT_TOOLS_DENY = ['Task',
+'Agent']` from `no-subagent-deny.ts`, so both tool-name generations are always
+covered here too (belt-and-suspenders with the exec-boundary push below).
+
+The trailing `--disallowedTools=Task,Agent` is a **second, independent** deny
+emitted at the exec boundary in `invoke()` itself (`noSubagentToolsDenyFlag()`,
+single comma-joined token, camelCase flag — distinct from the space-separated
+`--disallowed-tools` Layer-A list above), pushed **unconditionally** for every
+claude spawn regardless of `userManagesPermissions` / an explicit
+`AGENT_CMD`-supplied deny list. It survives because claude *unions* repeated
+`--disallowedTools` occurrences rather than the last one winning (verified
+live) — see "Update 2026-07-01" below for why it's split out from the rest of
+the posture, which an operator-supplied deny list CAN still override.
 
 The allow-list is **per-role** (`fleetAllowedToolsForRole(role)`): most roles
 get the kit above, while any role in `FLEET_NO_WRITE_ROLES` drops `Edit`/`Write`

@@ -113,20 +113,22 @@ describe('WorkItemsPanel', () => {
     expect(screen.getByTestId('wi-count').textContent).toContain('2 items');
   });
 
-  it('shows "N of TOTAL" when the read was capped (true total on row[0]._meta)', () => {
+  it('shows the DB store total (row[0]._meta.total), never the loaded length — infinite scroll loads the rest', () => {
     // Resolver stashes the true store total on the first row; the read returned
-    // 2 rows but 57 exist → the title must report both, never the downloaded 2.
+    // 2 rows but 57 exist. The user only cares about the total, so title + badge
+    // show 57 — no "loaded of total" / capped wording (that distinction is gone).
     wiState = {
       loading: false, fetching: false, error: null,
       data: [{ ...ROWS[0], _meta: { total: 57 } }, ROWS[1]],
     };
     renderPanel();
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2 of 57)');
-    // The badge spells out what the "of" means + flags the capped read.
-    expect(screen.getByTestId('wi-count').textContent).toContain('2 loaded of 57 total');
+    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (57)');
+    expect(screen.getByTestId('wi-count').textContent).toContain('57 items');
+    // No stale "loaded" wording.
+    expect(screen.getByTestId('wi-count').textContent).not.toContain('loaded');
   });
 
-  it('reflects the filter in the title + badge (shown of loaded), not the stale loaded count', () => {
+  it('reflects the filter in the title + badge (shown of store total)', () => {
     renderPanel('alpha', '?wq=login'); // matches WI-1 only → 1 of 2 loaded
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2)');
     expect(screen.getByTestId('wi-count').textContent).toContain('1 of 2 match');

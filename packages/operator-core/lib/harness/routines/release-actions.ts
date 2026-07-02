@@ -27,6 +27,13 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { STALE_MS } from '../../liveness';
+import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
+
+// Re-exported for backward compatibility — release-actions.test.ts imports
+// buildIsolatedScopeArgv from THIS module. The pure builder itself now lives in
+// ../../systemd-scope so the orchestrator-runner.ts agent-spawn seam (WI-1499) can
+// reuse it without pulling in this file's module-level registerSystemAction side effect.
+export { buildIsolatedScopeArgv };
 
 /** Markers the release CLIs print their result JSON behind (P-008) — parse ONE delimited
  *  line instead of brace-slicing all of stdout (fragile to any log line with braces). MUST
@@ -67,35 +74,6 @@ interface RunResult {
  *  testcontainers helpers) with headroom — the point is not to squeeze the suite but
  *  to keep its OOM inside its OWN cgroup, away from the bg-host cage. */
 const CHECKPOINT_SCOPE_MEMORY_MAX_G = 16;
-
-/** systemd-run launch failures that mean "the SCOPE could not start" (no bus, no
- *  binary, no permission) — retry the payload DIRECT rather than failing the gate.
- *  A payload failure inside a healthy scope must NOT match (it exits with the
- *  payload's own code/stderr, usually well past the launch window). */
-const SCOPE_LAUNCH_FAILURE_RE =
-  /Failed to connect to bus|Failed to start transient scope|Interactive authentication required|No such file or directory/i;
-
-/** Build the systemd-run argv that runs `base` in a transient user SCOPE with its own
- *  memory cap. `--scope` (NOT `--unit`): the payload stays OUR CHILD — stdio piped
- *  (the result-marker parse needs stdout), process-group kill + full env inheritance
- *  intact (PAPERCUSP_PARTIAL_GREEN_GATE etc.) — but lands in its own cgroup OUTSIDE
- *  papercup-bg-host.service's MemoryMax. Before this, the hourly suite's multi-GB
- *  vitest forks counted against the bg-host cage, and a combined peak OOM-killed the
- *  WHOLE cgroup — queen, bees, and git-sync included (the 2026-07-01 40 G OOM
- *  crash-loop). MemorySwapMax=0 mirrors the bg-host policy (50-cgroup-memory.conf:
- *  swap-thrash IS the event-loop freeze). Exported for tests. */
-export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): string[] {
-  return [
-    'systemd-run',
-    '--user',
-    '--scope',
-    '--quiet',
-    '--collect',
-    `--property=MemoryMax=${memoryMaxG}G`,
-    '--property=MemorySwapMax=0',
-    ...base,
-  ];
-}
 
 function runScript(
   root: string,
