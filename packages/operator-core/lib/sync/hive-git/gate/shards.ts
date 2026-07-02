@@ -358,12 +358,13 @@ async function resolveNearestAncestorOid(
     const r = await runGit(['rev-parse', '-q', '--verify', `${sha}:${probe}`], repoPath);
     const oid = r.stdout.trim();
     if (r.code === 0 && oid) {
-      let isGitlink = false;
-      if (probe !== path) {
-        // Only an ancestor hit can be a gitlink shield; confirm the type.
-        const t = await runGit(['cat-file', '-t', oid], repoPath);
-        isGitlink = t.code === 0 && t.stdout.trim() === 'commit';
-      }
+      // The hit can be the gitlink ITSELF (the workspace dir is the submodule
+      // root) or an ancestor shielding an inner path — check the type either
+      // way. NOTE: `cat-file -t` on a gitlink OID whose commit object is absent
+      // from this ODB (the normal superproject case) fails — that failure IS
+      // the gitlink signal, since a resolvable tree/blob is always present.
+      const t = await runGit(['cat-file', '-t', oid], repoPath);
+      const isGitlink = t.code !== 0 || t.stdout.trim() === 'commit';
       return { path: probe, oid, isGitlink };
     }
     const cut = probe.lastIndexOf('/');
