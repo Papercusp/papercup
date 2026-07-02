@@ -286,7 +286,7 @@ no-restart re-verify (e7698, Brief 6). Until (b) passes live, the base-row
 | Brief | Gate | Current status |
 | --- | --- | --- |
 | **1** | Rig foundation (reusable lib, 3-frame, scenario drivers) | ✅ DONE + live-validated (run35) |
-| **2** | LIVE multi-member (3+) fanout | ⛔ Not live-coverable under the 2-server cap → 2-VM proxy + in-process; **re-scope** to "gated on >2 servers" |
+| **2** | LIVE multi-member (3+) fanout | ✅ **OWNER-RATIFIED option B (2026-07-01, D-006 @ federation-release-hardening-relaunch-2026-07-01)** — min-bar = in-process multimember repro (green) + 2-node live briefs; true 3-machine fanout stays a documented known limitation gated on cap >2 servers + a 3rd distinct gh identity (scenario `deb-hetzner-brief2.sh` stays runnable) |
 | **3** | LIVE revocation + epoch K-cut | 🟡 Driven live by su-ec09e (`deb-hetzner-revocation.sh` + `rig_ban_member`); live run queued behind the quota mutex — **gated on the WI-1378 no-restart fix** (see blocker #9) |
 | **5** | LIVE restart durability | ✅ **DONE** — LIVE PASS over 2 Hetzner VMs (su-8f1ad, WI-1331): member + owner cold-restart both prove no content/roster loss, exactly-1-row, no re-emit; exit 0, servers=0 |
 | **6** | LIVE concurrent writes / LWW convergence | 🟡 In progress — attempt-1 (su-e7698) **surfaced blocker #9** (no-restart owner→joiner roster-empty); re-run with a roster-populated gate, **gated on WI-1378** |
@@ -306,6 +306,13 @@ Brief **8** (NAT/geo), Brief **9** (scale + `forceReFold` cost), Brief **10**
 > proxy + in-process and explicitly document the >2-server gap as a known
 > limitation, or (b) obtain a quota bump first. Do not silently treat the 2-VM
 > proxy as equivalent to true 3-machine live coverage.
+>
+> **RESOLVED 2026-07-01: the owner ratified (a)** — verbatim "accept in-process
+> multimember + 2-node live as the min-bar" (D-006 @
+> federation-release-hardening-relaunch-2026-07-01). The 3-node live gap is a
+> standing known limitation with explicit un-gating conditions (Hetzner cap ≥3
+> **and** a 3rd distinct verified gh identity); it is no longer a release
+> blocker.
 
 **Also gating, outside the federation product code:** Brief **14** — operator-core
 `lint:tsc` — ✅ **DONE** (su-337c2, committed `f42d55681`): the gate is GREEN again

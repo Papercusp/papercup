@@ -48,6 +48,10 @@ vi.mock('nuqs', () => ({
 }));
 
 const TS = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
+/** The moment the fixtures below froze (module import). The day-separator test
+ *  pins Date to THIS so "minutes-old" rows and the component's "today" always
+ *  share a UTC day — see the ⏰ note on that test. */
+const FIXTURE_NOW = Date.now();
 
 // A cross-channel snapshot: one of every salient kind, newest-first, with an ack
 // whose related_msg_id points at the direct message (the thread-grouping case).
@@ -372,12 +376,24 @@ describe('AdvConversationsTab — Create-style shell', () => {
   // U1 (operator-vite-ui-consolidation): the feed is flattened into a single
   // virtualized RichGrid stream where each day contributes a separator row before
   // its events. All snapshot rows are minutes old → one "Today" separator.
+  //
+  // ⏰ Date is PINNED to the fixtures' freeze moment (Date-only fake; real timers
+  // stay live for the virtualizer): the fixtures freeze at module IMPORT while the
+  // component computes UTC day-keys at RENDER — on an EDT box from 20:00 local
+  // (00:00 UTC) the "minutes-old" rows land on the PREVIOUS UTC day, the component
+  // correctly says "Yesterday", and the bare getByText('Today') red-pinned the
+  // whole green gate every evening (12h red, 2026-07-01).
   it('renders a day separator row in the virtualized activity stream', () => {
-    nuqsState.conv = 'feed';
-    render(<AdvConversationsTab />);
-    expect(screen.getByText('Today')).toBeTruthy();
-    // The events still render beneath it (the flatten preserved the items).
-    expect(screen.getByText('fleet-wide: staging is green')).toBeTruthy();
+    vi.useFakeTimers({ now: FIXTURE_NOW, toFake: ['Date'] });
+    try {
+      nuqsState.conv = 'feed';
+      render(<AdvConversationsTab />);
+      expect(screen.getByText('Today')).toBeTruthy();
+      // The events still render beneath it (the flatten preserved the items).
+      expect(screen.getByText('fleet-wide: staging is green')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

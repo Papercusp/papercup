@@ -26,6 +26,9 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { tryConsumeFederatedWake } from '../federated-wake-rate';
+import { resolveAuthorCommsTier } from '../comms-tier-gate';
+import { quarantineCoordMessage } from '../coord-quarantine-store';
+import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../trust/comms-trust';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -79,6 +82,12 @@ export interface CoordMessageProjectionOpts {
   resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
   /** WI-259 P-004 parity: content-before-membership defer buffer. */
   pendingMemberContent?: PendingMembershipContent;
+  /** P-013 test seam: resolve the author DEVICE's effective comms tier.
+   *  Default binds comms-tier-gate (hive_members attestations → comms-trust).
+   *  Only consulted when hiveHomeSlug is set (hive-bound projections). */
+  resolveCommsTier?: (
+    devicePubkey: string | null,
+  ) => Promise<{ tier: CommsTier; githubUserId: number | null }>;
 }
 
 function composeKey(row: CoordMessageRow): string {
@@ -97,6 +106,103 @@ async function writeToPg(
   const sourceLogDevice = provenance?.authorPubkey
     ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
     : null;
+  // ── P-013 (cross-machine-coord-parity-and-trust-2026-07-01): the COMMS-TIER
+  // gate, receiver-side, hive-bound only. Resolve the VERIFIED author device's
+  // effective tier (attestation chain → comms-trust: local override → signed
+  // policy default → conservative fallback). BELOW 'message' ⇒ the row never
+  // applies — QUARANTINED (visible + grantable), not dropped. A handoff below
+  // 'steer' likewise. 'steer' passthrough when the projection isn't hive-bound
+  // or the op is local — today's behavior, byte-identical.
+  let authorTier: CommsTier = 'steer';
+  let authorUserId: number | null = null;
+  if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
+    const resolveTier =
+      opts.resolveCommsTier ??
+      (async (device: string | null) =>
+        device
+          ? resolveAuthorCommsTier({
+              workspaceId: opts.workspaceId,
+              hiveHomeSlug: opts.hiveHomeSlug!,
+              devicePubkey: device,
+            })
+          : { tier: FALLBACK_COMMS_TIER, githubUserId: null });
+    try {
+      const gate = await resolveTier(sourceLogDevice);
+      authorTier = gate.tier;
+      authorUserId = gate.githubUserId;
+    } catch {
+      authorTier = FALLBACK_COMMS_TIER;
+    }
+    const quarantineReason = !commsTierAtLeast(authorTier, 'message')
+      ? ('below-message-tier' as const)
+      : row.surface === 'handoffs' && !commsTierAtLeast(authorTier, 'steer')
+        ? ('handoff-below-steer' as const)
+        : null;
+    if (quarantineReason) {
+      try {
+        await quarantineCoordMessage(
+          {
+            workspaceId: opts.workspaceId,
+            msgId: row.msg_id,
+            harnessSlug: row.harness_slug,
+            surface: row.surface,
+            body: row.body,
+            authorGithubUserId: authorUserId,
+            authorDevicePubkey: sourceLogDevice ?? '',
+            reason: quarantineReason,
+            msgTs: row.ts,
+          },
+          opts.sql,
+        );
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[coord-message] quarantine write failed for ${row.msg_id} (message NOT applied either way):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+      // P-014: a receipt-requesting sender learns the truth — quarantined, not
+      // delivered — via the same fed-event receipt rail.
+      const qb = row.body as { receipt?: unknown };
+      if (qb.receipt === true) {
+        try {
+          const { sendMessage } = await import('../../../agent-tools/coordination/messages');
+          const { machineFingerprint } = await import('../../../identity/device-keychain-id');
+          await sendMessage(
+            {
+              ownerId: 'fed-receipt',
+              ownerLabel: 'fed-receipt',
+              source: 'system',
+              workspaceId: opts.workspaceId,
+              userId: null,
+            } as never,
+            {
+              to: [],
+              summary: `[receipt] ${row.msg_id}`,
+              harnessSlug: row.harness_slug,
+              extra: {
+                fed_event: {
+                  key: `coord:receipt:${row.msg_id}`,
+                  payload: {
+                    msg_id: row.msg_id,
+                    delivered: false,
+                    quarantined: true,
+                    reason: quarantineReason,
+                    machine: machineFingerprint(),
+                  },
+                  source: 'fed-receipt',
+                },
+              },
+            },
+          );
+        } catch {
+          /* best-effort */
+        }
+      }
+      return; // below tier — never applies
+    }
+  }
+
   const memberDecision = await decideMemberContentOp(row.harness_slug, opts, sourceLogDevice);
   if (memberDecision !== 'apply') {
     if (memberDecision === 'defer' && sourceLogDevice && opts.pendingMemberContent) {
@@ -189,7 +295,7 @@ async function writeToPg(
     // spoofable body.from). Over budget ⇒ the wake is suppressed but the message
     // is already applied — delivery is never dropped, only the re-invoke. The
     // addressee fan costs one token per addressee (each is a billable turn).
-    if (b.wake === true && to.length > 0 && tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length)) {
+    if (b.wake === true && to.length > 0 && commsTierAtLeast(authorTier, 'wake') && tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length)) {
       try {
         const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
         const fan = await wakeRecipients(to, {
@@ -217,7 +323,7 @@ async function writeToPg(
     // flag-gated to match the send side (COORD_WAKE_ON_REPLY, fail-safe ON). The
     // lookup uses the projection's OWN sql/workspace binding, not the coord seam —
     // this instance's coord_event_log is where the federated original landed.
-    if (typeof b.related_msg_id === 'string' && b.related_msg_id.length > 0) {
+    if (typeof b.related_msg_id === 'string' && b.related_msg_id.length > 0 && commsTierAtLeast(authorTier, 'wake')) {
       try {
         const { getFlag } = await import('@papercusp/flags/server');
         const { FLAGS } = await import('@papercusp/flags');
@@ -266,7 +372,7 @@ async function writeToPg(
     // watchers = no-op), and the P-003 per-author budget bounds the spend an
     // admitted peer can trigger. Exactly-once via the same fresh-insert gate.
     const fe = b.fed_event as { key?: unknown; payload?: unknown; summary?: unknown; source?: unknown } | undefined;
-    if (fe && typeof fe.key === 'string' && fe.key.length > 0) {
+    if (fe && typeof fe.key === 'string' && fe.key.length > 0 && commsTierAtLeast(authorTier, 'wake')) {
       try {
         if (tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1)) {
           const { emitAwaitedEvent } = await import('../../../events/await/engine');
