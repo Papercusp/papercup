@@ -461,6 +461,20 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'scout-ready-autostart-sweep' },
   );
 
+  // queen-memory-hybrid-2026-07-02 L1b — agent_facts hygiene: hard-delete facts
+  // expired/retracted >30d (bounded audit trail). Fail-soft like every sweep here.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { sweepExpiredFacts } = await import('../agent-facts/store');
+        await sweepExpiredFacts();
+      } catch (e) {
+        console.warn(`[agent-facts] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'agent-facts-expiry-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak

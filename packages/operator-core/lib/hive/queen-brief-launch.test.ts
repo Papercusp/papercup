@@ -6,7 +6,7 @@ import type { DrainSlotInput } from '../agent-tools/coordination/slot-parked-sto
 // renderer is unit-tested in queen-brief.test.ts). Arrow-deref so the hoisted
 // vi.mock factory sees the consts.
 const surveyHive = vi.fn();
-const getHiveCarryNote = vi.fn();
+const getHiveCarryJournal = vi.fn();
 const summarizeOpenPlacements = vi.fn(
   async (..._a: unknown[]) => ({ recovering: 0, cursed: 0, stranded: 0, workingTracked: 0, items: [] as unknown[] }),
 );
@@ -17,7 +17,7 @@ const resolveQueenOwner = vi.fn(async (..._a: unknown[]) => 's-queen-1' as strin
 const readInbox = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 const drainSlotMessages = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
 vi.mock('./survey', () => ({ surveyHive: (...a: unknown[]) => surveyHive(...a) }));
-vi.mock('./wake', () => ({ getHiveCarryNote: (...a: unknown[]) => getHiveCarryNote(...a) }));
+vi.mock('./wake', () => ({ getHiveCarryJournal: (...a: unknown[]) => getHiveCarryJournal(...a) }));
 vi.mock('./placement-watchdog', () => ({
   summarizeOpenPlacements: (...a: unknown[]) => summarizeOpenPlacements(...a),
   resolveQueenOwner: (...a: unknown[]) => resolveQueenOwner(...a),
@@ -55,16 +55,20 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-test('computeQueenWakeBrief — renders the survey floor + carry-note (B-03/B-04 read-side)', async () => {
+test('computeQueenWakeBrief — renders the survey floor + carry-journal (B-03/B-04 read-side, L1a)', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue('revisit the staging deploy at next wake');
+  getHiveCarryJournal.mockResolvedValue([
+    { at: Date.now(), note: 'revisit the staging deploy at next wake' },
+    { at: Date.now() - 60_000, note: 'placed WI-9 on a bee; verify completion' },
+  ]);
   const out = await computeQueenWakeBrief('ws-1', 'papercup', { wokeBy: 'timer' });
   assert.ok(out, 'a brief should be produced');
   assert.match(out!, /Your wake brief/);
   assert.match(out!, /do NOT re-run `hive:survey`/); // P-007 reinforcement
   assert.match(out!, /Woke by:.*timer/);
-  assert.match(out!, /### Your carry-note/);
+  assert.match(out!, /### Your carry-journal/);
   assert.match(out!, /revisit the staging deploy/);
+  assert.match(out!, /placed WI-9 on a bee/);
   // Surveys the Queen's home (workspace + install slug). The third arg is the
   // options object (scopeFilter / extraSurveySlugs — owner model 2026-07-01);
   // empty here: no scope filter and no started placements in this scenario.
@@ -137,7 +141,7 @@ test('computeQueenWakeBrief — eligibleHives scopes the survey via allowedHarne
 
 test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a flaky escalations read is fail-soft', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   listEscalations.mockResolvedValue([
     { msg_id: 'm-new', from: 'bee-2', severity: 'blocker', summary: 'new blocker', ts: '2026-06-14T00:00:03.000Z' },
     { msg_id: 'm-old', from: 'bee-1', severity: 'advisory', summary: 'old advisory', repeatCount: 3, ts: '2026-06-14T00:00:01.000Z' },
@@ -166,7 +170,7 @@ test('computeQueenWakeBrief — fleet escalations flow into the floor (P-007); a
 
 test('computeQueenWakeBrief — change-feed (steering digest) flows into the floor (P-007); fail-soft', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   gatherCompletions.mockResolvedValue([
     { id: 'c1', kind: 'completion', title: 'wi-080 shipped', ref: 'wi:080', ts: '2026-06-14' },
     { id: 'c2', kind: 'plan-run', title: 'plan-x run finished', ref: 'plan:x', ts: '2026-06-14' },
@@ -185,7 +189,7 @@ test('computeQueenWakeBrief — change-feed (steering digest) flows into the flo
 
 test('computeQueenWakeBrief — live bees (load + liveness) flow into the floor (P-007); fail-soft', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   gatherLiveBees.mockResolvedValue([
     { ownerId: 's-1', label: 'bee-alpha', intent: 'on plan-x', load: 2, alive: true },
     { ownerId: 's-2', label: null, currentPlanSlug: 'plan-y', load: 0, alive: false },
@@ -204,7 +208,7 @@ test('computeQueenWakeBrief — live bees (load + liveness) flow into the floor 
 
 test('computeQueenWakeBrief — coord:inbox recent digest flows into the floor (D-020); ambient dropped; fail-soft', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   resolveQueenOwner.mockResolvedValue('s-queen-1');
   // readInbox already excludes own + notify; we additionally drop ambient (category).
   readInbox.mockResolvedValue([
@@ -238,7 +242,7 @@ test('computeQueenWakeBrief — coord:inbox recent digest flows into the floor (
 
 test('computeQueenWakeBrief — drains stable @role:queen parked nudges into the inbox floor', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   resolveQueenOwner.mockResolvedValue('s-queen-1');
   readInbox.mockResolvedValue([
     { kind: 'message', from: 'bee-alpha', summary: 'older direct inbox', ts: '2026-06-14T00:00:01Z', msg_id: 'm1' },
@@ -268,7 +272,7 @@ test('computeQueenWakeBrief — drains stable @role:queen parked nudges into the
 
 test('computeQueenWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getHiveCarryNote.mockResolvedValue(null);
+  getHiveCarryJournal.mockResolvedValue([]);
   const out = await computeQueenWakeBrief('ws-1', 'papercup');
   assert.ok(out);
   assert.match(out!, /_empty — no ready work to place\._/);
@@ -279,7 +283,7 @@ test('computeQueenWakeBrief — fail-soft: a survey error returns null (Queen fa
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   try {
     surveyHive.mockRejectedValue(new Error('pg unavailable'));
-    getHiveCarryNote.mockResolvedValue(null);
+    getHiveCarryJournal.mockResolvedValue([]);
     const out = await computeQueenWakeBrief('ws-1', 'papercup');
     assert.equal(out, null, 'errors must degrade to null, never throw');
   } finally {

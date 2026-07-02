@@ -22,7 +22,7 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { bootHarnessSubstrate, onSchemaVersionAlert } from '../boot';
 import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { _resetCacheForTests } from '../corestore';
-import { openOwnLog } from '../peer-log';
+import { openOwnLog, type RemoteLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
@@ -823,6 +823,10 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
   // pending set so the retry tick re-runs the full admission. Reverting the re-buffer flips
   // this RED: the waitFor times out because the frame is gone from every buffer.
   it('FIX (WI-1544 #3): a drain-time openRemoteLog throw re-buffers the frame; the retry tick admits it', async () => {
+    // The fix is deliberately LOUD on stderr (the boot-history ring is in-memory only) —
+    // capture + assert the line instead of letting fail-on-console treat it as a defect.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => consoleError.mockRestore());
     const joiner = makeAnnounceIdentityOverride('joiner-1544-drain', 9772, 'kc-1544-joiner-drain');
     let ownerDevice: string | null = null;
     const openRemoteLogOverride = vi.fn(async (_store: unknown, logKeyHex: string) => {
@@ -878,6 +882,12 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       { timeout: 4000, interval: 25 },
     );
     expect(openRemoteLogOverride.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // The loss is loud on stderr, not ring-only (the other half of the #3 fix).
+    expect(
+      consoleError.mock.calls.some((args) =>
+        String(args[0]).includes('re-buffered for retry: boom-drain-1544'),
+      ),
+    ).toBe(true);
   });
 
   // WI-1544 ROOT CAUSE #3, retry-tick half — the retry tick used to delete the pending entry
@@ -887,6 +897,10 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
   // Reverting either half (delete-before-admit, or an unconditional delete after) flips this
   // RED: the entry is erased on the first failed tick and the waitFor times out.
   it('FIX (WI-1544 #3): a pending entry survives drain failures across retry ticks until the admit lands', async () => {
+    // Same rationale as above: the drain failure line on stderr is the fix's intended
+    // behavior — capture it so fail-on-console doesn't misread it as a test defect.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => consoleError.mockRestore());
     const joiner = makeAnnounceIdentityOverride('joiner-1544-gate', 9782, 'kc-1544-joiner-gate');
     let ownerDevice: string | null = null;
     const openRemoteLogOverride = vi.fn(async (_store: unknown, logKeyHex: string) => {
