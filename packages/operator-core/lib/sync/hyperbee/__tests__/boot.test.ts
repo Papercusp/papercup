@@ -738,6 +738,69 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(ownerDeviceForTopic).toHaveBeenCalled();
   });
 
+  // WI-1544 ROOT CAUSE #2 (round-1 live, the SECOND stall) — the pending buffer was keyed by
+  // device_pubkey, but ONE device announces MULTIPLE logs on the same topic (A-003: the owner's
+  // member log + the hive-home log share a device). Every buffer site guarded
+  // `if (!pendingPeers.has(device_pubkey))`, so the SECOND log of the pair was silently never
+  // stored (its reclassify still returned 'pending' — misleadingly), the retry tick could only
+  // ever admit ONE log per device, and the content log stayed probe=0 on the rig. The buffer is
+  // now keyed by log_core_key. Reverting flips this RED: the second waitFor times out because
+  // its frame was never buffered.
+  it('FIX (WI-1544 #2): TWO logs announced by ONE device both buffer in the window and both admit on retry', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-two', 9762, 'kc-1544-joiner-two');
+    let ownerDevice: string | null = null;
+    const ownerDeviceForTopic = vi.fn(async () => ownerDevice);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-two',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'd'.repeat(64) },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 20,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // gist gate keeps failing (rig: device never attested)
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: ownerDeviceForTopic,
+      joinerHiveHomeSlugOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    // ONE device keypair, TWO signed announces with distinct log_core_keys (the rig pair: the
+    // owner's member log + the hive-home log, broadcast on the one shared topic).
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const devicePubkey = rawPubkeyBase64(publicKey);
+    const signer = async (bytes: Buffer) => nodeSign(null, bytes, privateKey);
+    const shared = {
+      device_pubkey: devicePubkey,
+      github_user_id: 9761,
+      github_login: 'owner-1544-two',
+      attestation_gist_id: 'gist-1544-two',
+      harness_slug: JOINER_MEMBER_SLUG, // both in-scope once identity resolves (same rationale as the retry test above)
+    };
+    const frameA = await buildAnnounce({ ...shared, log_core_key: 'a6'.repeat(32) }, signer);
+    const frameB = await buildAnnounce({ ...shared, log_core_key: 'b7'.repeat(32) }, signer);
+
+    // Window open, directory unresolved → BOTH frames report pending (pre-fix the second ALSO
+    // said 'pending' but was never actually stored — the misleading half of the bug).
+    expect(await handle.onAnnounce(frameA)).toEqual({ admit: false, reason: 'pending' });
+    expect(await handle.onAnnounce(frameB)).toEqual({ admit: false, reason: 'pending' });
+
+    // The descriptor arrives → the retry tick must admit BOTH logs, not just the first.
+    ownerDevice = devicePubkey;
+    await vi.waitFor(
+      () => {
+        expect(handle.admitted.has(frameA.log_core_key)).toBe(true);
+        expect(handle.admitted.has(frameB.log_core_key)).toBe(true);
+      },
+      { timeout: 4000, interval: 25 },
+    );
+  });
+
   // ADVERSARIAL (WI-797) — a FORGED owner announce (bad sig) is refused at the sig check that
   // PRECEDES the bypass (admitsAsKnownHiveMember line 1: `if (!sigValid …) return false`). A
   // forger cannot produce a valid signature for the owner's pubkey without its private key, so
