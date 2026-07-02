@@ -9,11 +9,12 @@
  * against the local lease store. Idempotent; safe before migration 188 applies (the
  * handlers only touch PG when actually invoked by an inbound RPC).
  *
- * NOT installed here: the production multi-peer ROUTER (a Hive-scoped
- * `SwarmWorkItemClaimAuthority`, mirroring `plan-items/claim-authority-swarm.ts`) and
- * the `work_items:claim_next` → lease wiring. Those are the Track-B-cutover follow-up
- * (gated on the cross-Swarm mesh transport + P-006); until then the store's default
- * `LocalWorkItemClaimAuthority` is correct (single box → authority is always self).
+ * ALSO installed here (fed-reanchor P-060; this header previously said "not installed"
+ * and lied — cross-machine-coord-parity-and-trust-2026-07-01 P-017): the production
+ * multi-peer ROUTER (`installSwarmWorkItemClaimAuthority`), gated on the
+ * WORKITEM_CLAIM_LEASE flag (DEFAULT ON since WI-597) — see the conditional below.
+ * When the flag is off the store's default `LocalWorkItemClaimAuthority` is correct
+ * (single box → authority is always self).
  */
 import { registerWorkItemClaimAuthorityOps } from '../../work-item-claim-authority-ops';
 import { installSwarmWorkItemClaimAuthority } from '../../work-item-claim-authority-swarm';

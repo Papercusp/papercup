@@ -2118,11 +2118,11 @@ test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-ac
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 30_000);
 
-test('[soft-pin] a PINNED request whose account is SLAMMED by concurrent sessions yields to a healthy sibling (pinned-concentration fix)', async () => {
-  // Owner-reported: unpinned 10+ sessions are fine (they spread), but PINNING several sessions to ONE account
-  // breaks after a few — they pile onto that account's per-account RPM/burst limit while the pool sits idle.
-  // The pin is a cache-affinity PREFERENCE: when the pinned account is already slammed (in-flight ≥ threshold),
-  // THIS request yields to a healthy idle sibling instead of erroring on the saturated pin.
+test('[soft-pin] a PINNED request whose account is BUSY-but-serviceable STAYS pinned (dedicated-pin redesign 2026-07-01)', async () => {
+  // Supersedes the 2026-06-23 pinned-concentration yield: load alone must NEVER divert a pin. Diverting a
+  // pinned session off its warm per-credential cache costs a cold-cache first turn (observed live on
+  // su-98731/aviynw7: 97%-cache-hit sessions bounced at inflight=1). Concurrency on a pin queues + paces on
+  // the pin's own governor; only an UNSERVICEABLE pin (paused/exhausted/all-IPs-cooled) yields — see below.
   resetGovernorRegistry();
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
   const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
@@ -2130,18 +2130,39 @@ test('[soft-pin] a PINNED request whose account is SLAMMED by concurrent session
     (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
     { pool, governorFor: undefined, concurrency: 24 },
   );
-  // Simulate N concurrent pinned sessions already forwarding through A: pre-load A's per-account governor's
-  // in-flight to the soft-pin yield threshold (the gateway reads the SAME registry-keyed governor).
+  // Concurrent pinned sessions already forwarding through A (the load that used to trigger the yield).
   getGovernor('anthropic', 'opus', undefined, 'A').state.inFlight = 2;
   const r = await ask('/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
     body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
   });
-  assert.equal(r.status, 200, 'the pinned request still succeeds (served by a healthy sibling)');
+  assert.equal(r.status, 200);
+  await r.text();
+  assert.equal(r.headers.get('x-papercusp-routed-account'), 'A', 'a busy-but-serviceable pin is preserved (cache affinity is a commitment, not a tiebreak)');
+}, 20_000);
+
+test('[soft-pin] a PINNED request whose account is UNSERVICEABLE (governor-paused) yields to a serviceable sibling', async () => {
+  // The one case a soft pin breaks: the pin cannot serve at all (paused/exhausted/all IPs cooled). The
+  // request routes to the least-loaded serviceable sibling instead of erroring on the dead pin; per-request
+  // re-evaluation returns traffic to the pin when the pause lifts.
+  resetGovernorRegistry();
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool([acct('A'), acct('B'), acct('C')]);
+  await boot(
+    (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); },
+    { pool, governorFor: undefined, concurrency: 24 },
+  );
+  getGovernor('anthropic', 'opus', undefined, 'A').penalize({ resetAt: Date.now() + 60_000 });
+  const r = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'A' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(r.status, 200, 'the pinned request still succeeds (served by a serviceable sibling)');
   await r.text();
   const routed = r.headers.get('x-papercusp-routed-account');
-  assert.ok(routed === 'B' || routed === 'C', `slammed pin yielded to a healthy idle sibling, not piled onto A (routed=${routed})`);
+  assert.ok(routed === 'B' || routed === 'C', `unserviceable pin yielded (routed=${routed})`);
 }, 20_000);
 
 test('[soft-pin] a PINNED request to a HEALTHY idle account STAYS on its pin (cache affinity preserved)', async () => {

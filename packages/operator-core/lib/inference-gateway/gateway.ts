@@ -40,7 +40,7 @@ import {
   type TierAdmissionConfig,
   type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
-import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, SOFT_PIN_AFFINITY_CREDIT } from './account-failover';
+import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
 import { withOAuthBeta } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
@@ -151,13 +151,16 @@ const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
  *  analogue of the transport egress circuit. Reset on the next 2xx. Disable with THRESHOLD=0. */
 const BARE429_CIRCUIT_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_BARE429_CIRCUIT_THRESHOLD ?? 4);
 const BARE429_CIRCUIT_MAX_MS = Number(process.env.PAPERCUSP_GATEWAY_BARE429_CIRCUIT_MAX_MS) || 120_000;
-// SOFT-PIN failover is now LOAD-AWARE (load-aware-routing-2026-06-29): rather than a binary in-flight
-// threshold, the shared `accountLoadKey` (account-failover.ts) folds the pin's live in-flight count +
-// utilization into its selection score, and a pin yields to a least-loaded sibling whenever that sibling
-// is better by more than `SOFT_PIN_AFFINITY_CREDIT`. A sequential / single-session pin (in-flight 0-1,
-// no meaningfully-emptier sibling) keeps its warm per-credential cache; a concurrent pile-up or a
-// climbing-utilization pin spreads proactively — well before the account is maxed. Tune via
-// PAPERCUSP_GATEWAY_INFLIGHT_LOAD_WEIGHT / PAPERCUSP_GATEWAY_SOFT_PIN_AFFINITY_CREDIT.
+// SOFT-PIN failover is UNSERVICEABLE-ONLY (dedicated-pin redesign 2026-07-01, gateway-rayobyte-hardening
+// P-004; supersedes the load-aware yield of 2026-06-29): a pin is a cache-affinity COMMITMENT, broken only
+// when `accountLoadKey`-based `keyOf` scores the pin Infinity (governor/egress/rate-hint paused, 5h/7d
+// window exhausted or rejected, every pooled egress IP cooled). Load alone — live in-flight, climbing
+// utilization, some-but-not-all IPs cooled — NEVER diverts a pin: concurrency on a pinned account is the
+// owner's explicit choice, and it queues + paces on the pin's governor. The load-aware yield diverted
+// pinned owners off a 97%-cache-hit account at inflight=1 (su-98731/aviynw7, 2026-07-01) — the cold-cache
+// cost of a diverted first turn dwarfs any queueing it saved. Real saturation still degrades gracefully:
+// 429 → escalating pause → keyOf()=Infinity → yield, and per-request re-evaluation returns traffic to the
+// pin as soon as the pause lifts.
 /** When EVERY pool account is transiently throttled at once, the gateway waits out the soonest
  *  account's short penalty and retries rather than forwarding a retryable (x-should-retry:true) 429.
  *  This caps that wait so a request can never hang on a hard/long reset (a multi-hour usage cap is
@@ -1800,18 +1803,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         gov = bestGov;
       }
     } else if (!hardPin) {
-      // SOFT-PIN FAILOVER (pinned-concentration fix, 2026-06-23; load-aware 2026-06-29): a pin is a
-      // cache-affinity PREFERENCE, not a hard funnel. Pinning N CONCURRENT sessions onto one account
-      // saturates ITS per-account RPM/burst limit while the rest of the pool sits idle, so the pinned
-      // requests 429 even though the pool has capacity (owner-reported "unpinned 10+ sessions fine but
-      // PINNED breaks after a few"). keyOf now folds the pin's LIVE in-flight load + utilization into its
-      // score, so the pinned account's key rises the moment it carries concurrent load OR its window
-      // climbs — WELL before it is maxed. Find the least-loaded healthy sibling and yield to it only when
-      // it is meaningfully (beyond the cache-affinity CREDIT) less loaded than the pin: a sequential /
-      // single-session request (pin in-flight 0-1, sibling no better than the credit) KEEPS its warm
-      // per-credential cache; a concurrent pile-up or a climbing-utilization pin spreads PROACTIVELY.
+      // SOFT-PIN FAILOVER (dedicated-pin redesign 2026-07-01, gateway-rayobyte-hardening P-004): yield the
+      // pin ONLY when it is UNSERVICEABLE — keyOf() === Infinity (governor/egress/rate-hint paused, window
+      // exhausted or rejected, every pooled IP cooled). A merely-busy pin (in-flight load, high-but-open
+      // utilization, some IPs cooled) queues + paces on its own governor and KEEPS its warm per-credential
+      // cache; see the header note above `ALL_THROTTLED_RECOVERY_WAIT_CAP_MS` for why the load-aware yield
+      // was removed. Per-request re-evaluation returns traffic to the pin the moment it recovers.
       const pinKey = keyOf(gov, active);
-      if (pinKey > 0) {
+      if (pinKey === Infinity) {
         let bestCand: ActiveAccount | null = null;
         let bestGov: RateLimitGovernor | null = null;
         let bestKey = Infinity;
@@ -1826,13 +1825,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
             bestGov = cgov;
           }
         }
-        // Cache-affinity is only a TIEBREAK: yield when the best sibling is less loaded by more than the
-        // affinity credit (so the warm-cache pin wins on ties / tiny differences, but a concurrent or
-        // near-cap pin spreads). `bestKey` is Infinity when no healthy sibling exists → never yields.
-        if (bestCand && bestGov && bestKey + SOFT_PIN_AFFINITY_CREDIT < pinKey) {
+        // `bestKey` is Infinity when no serviceable sibling exists → never yields (the reactive
+        // paused-walk + fail-fast shed below handle the all-paused pool exactly as before).
+        if (bestCand && bestGov && bestKey < Infinity) {
           log(
             'warn',
-            `inference-gateway: pinned '${pinned!.accountId}' stressed (inflight=${gov.state.inFlight}, key=${pinKey.toFixed(2)}) → soft-pin failover to least-loaded '${bestCand.accountId}' (key=${bestKey.toFixed(2)}; cache-affinity yields to load/liveness)`,
+            `inference-gateway: pinned '${pinned!.accountId}' UNSERVICEABLE (paused/exhausted/all-IPs-cooled; inflight=${gov.state.inFlight}) → soft-pin failover to least-loaded '${bestCand.accountId}' (key=${bestKey.toFixed(2)}; pin resumes on recovery)`,
           );
           active = bestCand;
           gov = bestGov;

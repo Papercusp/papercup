@@ -345,6 +345,49 @@ const staleClaimSweepCheck: PeriodicCheck = {
       }
     }
 
+    // ── P-017 (cross-machine-coord-parity-and-trust-2026-07-01): the LEASE-table
+    // backstops the WORKITEM_CLAIM_LEASE flag (DEFAULT ON since WI-597) shipped
+    // without. (a) GC: sweep lapsed harness_shared.work_item_claims rows — until
+    // now nothing ever deleted them (steal-on-acquire was the only consumer).
+    // (b) DIVERGENCE DETECTION: a live lease whose holder disagrees with the
+    // work item's denorm `taken_by` is the post-failover double-claim signature —
+    // ANNOTATE loudly, don't auto-mutate (the liveness model's own rule; full
+    // cross-machine reconcile rides the federated claims read model, later).
+    try {
+      const { sweepLapsedClaims } = await import('../work-item-claims');
+      const wsRows = await sql<{ workspace_id: string }[]>`
+        SELECT DISTINCT workspace_id FROM harness_shared.work_item_claims
+        WHERE expires_ts <= clock_timestamp()`;
+      let swept = 0;
+      for (const w of wsRows) swept += await sweepLapsedClaims(w.workspace_id);
+      if (swept > 0) console.warn(`[claim-lease] swept ${swept} lapsed lease row(s) (P-017 GC)`);
+      const diverged = await sql<
+        { workspace_id: string; harness_slug: string; work_item_id: string; owner: string; taken_by: string | null }[]
+      >`
+        SELECT c.workspace_id, c.harness_slug, c.work_item_id, c.owner, f.taken_by
+        FROM harness_shared.work_item_claims c
+        JOIN harness_shared.harness_features_consolidated f
+          ON f.workspace_id = c.workspace_id
+         AND f.harness_slug = c.harness_slug
+         AND f.feature_id = c.work_item_id
+        WHERE c.expires_ts > clock_timestamp()
+          AND COALESCE(f.taken_by, '') <> c.owner
+        LIMIT 20`;
+      if (diverged.length > 0) {
+        console.warn(
+          `[claim-lease] ${diverged.length} lease/denorm DIVERGENCE(s) — post-failover double-claim ` +
+            `signature; lease is the authority-arbitrated fact (annotate-only, P-017): ` +
+            diverged
+              .map((d) => `${d.harness_slug}/${d.work_item_id} lease=${d.owner} taken_by=${d.taken_by ?? '∅'}`)
+              .join(', '),
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `[claim-lease] P-017 backstop tick failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
     // The issue-family reaper — clear dead holders off OPEN bug/change issues
     // (same alias-aware liveness), returning them to the open pool (P-005 / D-009).
     const ir = await reclaimStaleIssueClaims(sql);

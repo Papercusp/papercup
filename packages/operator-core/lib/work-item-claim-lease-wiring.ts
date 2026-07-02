@@ -3,11 +3,11 @@
  * (decentralized-dispatch-scaling-2026-06-08 P-004 / D-002, on D-007's recommended
  * HYBRID — authority-arbitrated exactly-once, fail-open to reconcile).
  *
- * DEFAULT OFF. The `WORKITEM_CLAIM_LEASE` FLAG is the OWNER'S RATIFICATION SWITCH:
- * until the recovery layer is exercised this stays off and `work_items:claim_next` / `:claim`
- * behave EXACTLY as before (a local `SELECT … FOR UPDATE SKIP LOCKED` on one PG). The owner
- * flips it on (runtime, via /admin/features) to activate the cross-Swarm Hive-authority
- * arbitration. Migrated off the ad-hoc `PAPERCUSP_WORKITEM_CLAIM_LEASE` env gate to a FLAG
+ * DEFAULT ON (graduated 2026-06-23, owner-directed verify+flip, WI-597 — the flag registry
+ * libs/flags/src/types.ts is the source of truth; this header previously said OFF and lied,
+ * cross-machine-coord-parity-and-trust-2026-07-01 P-017). The `WORKITEM_CLAIM_LEASE` FLAG
+ * remains the OWNER'S KILL SWITCH: flipping it OFF reverts `work_items:claim_next` / `:claim`
+ * to the plain local `SELECT … FOR UPDATE SKIP LOCKED` on one PG. Migrated off the ad-hoc `PAPERCUSP_WORKITEM_CLAIM_LEASE` env gate to a FLAG
  * (work-queue-stuck-item-recovery P-012 / D-008); because the decision is read SYNC deep in
  * the claim path, the flag is held in a SYNC-cached boolean refreshed on boot + every flag
  * change (the lexicon/issues-engineer pattern). Listed in KNOWN_DARK_FLAGS.
