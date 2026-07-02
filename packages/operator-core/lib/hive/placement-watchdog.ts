@@ -194,6 +194,18 @@ export interface PlacementObservation {
   placementStatus: string | null;
   /** When the last recovery wake fired (debounce), ms epoch, or null. */
   lastRecoveryAtMs: number | null;
+  /** WI-677 round 2 — is there a SERVING BEE at all (a holder or an anchor spawn in the
+   *  bee window)? A recovering item the Queen has not re-placed yet has NONE — that is
+   *  not a failed attempt, so the sweep must re-place-wake WITHOUT counting. Before
+   *  this, every debounce expiry charged fail_count on a bee-less recovering item and
+   *  an un-cursed frontier re-cursed at 3 strikes in ~12 minutes with zero new bees
+   *  (observed live 2026-07-02 00:27). */
+  hasServingBee?: boolean;
+  /** The serving bee's spawn id (when present) — compared against lastLossSpawnId. */
+  servingBeeSpawnId?: string | null;
+  /** The spawn id whose loss was last COUNTED for this placement (mig 440), or null.
+   *  Same id again ⇒ the corpse was already counted: re-place only, counters flat. */
+  lastLossSpawnId?: string | null;
   /** EI-865 / WI-233 — the serving bee is a slow-but-ALIVE false reclaim: the
    *  watchdog reads it `dead` (heartbeat-stale, or P-011 reaper-reclaimed) yet it made
    *  a governed model call within {@link ACTIVE_RECLAIM_WINDOW_MS}, so it was
@@ -352,6 +364,35 @@ export function evaluatePlacement(obs: PlacementObservation, cfg: PlacementConfi
   // still RE-PLACES a fail_count-0 zombie-curse on the Queen's deliberate path — see
   // loadCursedWorkItemIds — so a fixed-infra item is never permanently deadlocked; the
   // bound here only halts the watchdog's autonomous recovery-wake storm.)
+  // WI-677 round 2 — count losses per ATTEMPT, never per sweep. (a) No serving bee at
+  // all: the Queen simply has not re-placed yet (or the corpse aged out of the spawn
+  // window) — there is no attempt to judge, so re-place-wake with BOTH counters flat.
+  // (b) The serving bee's spawn id equals the last COUNTED loss (mig 440): this corpse
+  // was already charged — recounting it every recoveryDebounce expiry is exactly how an
+  // un-cursed frontier re-cursed at fail_count=3 in ~12 minutes with ZERO new bees
+  // (observed live 2026-07-02 00:27; EI-865's latch fixed this recount for `cursed`
+  // but not `recovering`).
+  if (obs.hasServingBee === false) {
+    return {
+      kind: 'recover',
+      nextFailCount: obs.failCount,
+      nextInfraLossCount: obs.infraLossCount,
+      reason: 'no serving-bee attempt since the last loss — re-place only, nothing to count',
+    };
+  }
+  if (
+    obs.servingBeeSpawnId != null &&
+    obs.lastLossSpawnId != null &&
+    obs.servingBeeSpawnId === obs.lastLossSpawnId
+  ) {
+    return {
+      kind: 'recover',
+      nextFailCount: obs.failCount,
+      nextInfraLossCount: obs.infraLossCount,
+      reason: `dead attempt ${obs.servingBeeSpawnId} already counted — re-place only`,
+    };
+  }
+
   if (obs.servingBeeMadeNoToolCalls) {
     const nextInfraLossCount = obs.infraLossCount + 1;
     if (nextInfraLossCount >= cfg.infraBreakerThreshold) {
@@ -527,6 +568,10 @@ interface PlacementRow {
   /** F-FIX-041 — the bounded infra-loss counter (operator dormancy / zombie bees). */
   infra_loss_count: number;
   last_recovery_ms: number | null;
+  /** WI-677 round 2 (mig 440) — the dead attempt (bee spawn id) whose loss was last
+   *  COUNTED, so a sweep never recounts the same corpse (fail_count = attempts, not
+   *  sweeps). */
+  last_loss_spawn_id: string | null;
   escalation_msg_id: string | null;
   /** F-FIX-041 — last sweep time for this row (ms). max() over the hive ≈ the hive's
    *  previous sweep; a large gap to `now` means the operator was dormant in between. */
@@ -811,6 +856,7 @@ export async function reconcileOneHive(
   const placeRows = await sql<PlacementRow[]>`
     SELECT work_item_id, status, fail_count, infra_loss_count,
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
+           last_loss_spawn_id,
            escalation_msg_id,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms
       FROM harness_shared.hive_placements
@@ -864,6 +910,9 @@ export async function reconcileOneHive(
         infraLossCount: existing?.infra_loss_count ?? 0,
         placementStatus: existing?.status ?? null,
         lastRecoveryAtMs: existing?.last_recovery_ms ?? null,
+        hasServingBee: servingBee != null, // WI-677 r2 — no bee ⇒ nothing to count
+        servingBeeSpawnId: servingBee?.spawnId ?? null,
+        lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
         servingBeeReclaimedWhileActive,
         servingBeeMadeNoToolCalls, // F-FIX-041 — zombie (no-fair-attempt) → bounded infra breaker
         postDormancySweep, // F-FIX-041 — operator-dormancy grace (item-independent, per-sweep)
