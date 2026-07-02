@@ -71,6 +71,14 @@ export interface ModelTier {
       verbatim into the queen's launch prompt as her live tier menu — this is
       the owner's instruction channel for per-tier judgment. */
   when?: string;
+  /** Soft compaction limit (tokens) for sessions spawned on this tier — the
+      context size at which the agent should reach a clean stopping point and
+      self-compact (agent-managed-compaction-2026-07-01). Absent = the
+      model-derived default, `defaultCompactionLimitForSpec(spec)`
+      (context-trimming-tiers D-001/D-002). That default is also the CEILING:
+      agents may overshoot the soft limit by ~20%, so `parseTiers` clamps a
+      stored value to keep `limit × 1.2 ≤ window − margin`. */
+  compactionLimit?: number;
 }
 
 /** Default agent command per backend — used when a per-tier backend swap
@@ -106,4 +114,54 @@ export function isValidModelSpec(spec: string): boolean {
   // A colon-bearing id whose suffix is NOT an effort level is treated as a
   // plain model id (same rule applyRoleModel uses when splitting).
   return suffix.length > 0 && spec.slice(0, lastColon).length > 0;
+}
+
+// ── Compaction limits (context-trimming-tiers-2026-07-01) ────────────────────
+
+/** 1M-window models — a spec carrying the `[1m]` marker. */
+export const MODEL_WINDOW_1M = 1_000_000;
+/** The conservative default window: subscription-routed models without the
+    `[1m]` marker (incl. sonnet, which has no subscription 1M path) run 200k. */
+export const MODEL_WINDOW_DEFAULT = 200_000;
+
+/**
+ * Hard context window for a CC-hosted model spec. The `[1m]` marker on the
+ * spec is the practical window signal — Claude Code enables the 1M-context
+ * beta only for `[1m]` specs — so: `[1m]` → 1M; anything else (including an
+ * unknown/null spec) → the conservative 200k. Fail-safe direction matters: a
+ * low limit on a 1M session is just deliberate leanness (agent-managed-
+ * compaction D-006); a high limit on a 200k session is a hard death. OMP/local
+ * models resolve via their own registry (follow-up, context-trimming D-003).
+ */
+export function modelWindowForSpec(spec?: string | null): number {
+  return spec != null && spec.includes('[1m]') ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
+}
+
+/** Output-reservation + startup-attachment headroom subtracted from the hard
+    window before deriving the soft limit. */
+export const COMPACTION_WINDOW_MARGIN_TOKENS = 10_000;
+/** Agents may run ~20% past their SOFT limit before the hard window threatens
+    (owner rule, context-trimming-tiers D-001) — the derived default keeps
+    `limit × OVERSHOOT ≤ window − margin`. */
+export const COMPACTION_OVERSHOOT_FACTOR = 1.2;
+/** Floor for any stored/self-set compaction limit (mirrors
+    config:set-compaction-limit's arg minimum). */
+export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
+
+/**
+ * The model-derived default soft compaction limit for a spec — and the CEILING
+ * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
+ * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
+ * 200k window → 158,000; 1M → 825,000.
+ */
+export function defaultCompactionLimitForSpec(spec?: string | null): number {
+  const window = modelWindowForSpec(spec);
+  const raw = (window - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
+  return Math.floor(raw / 1000) * 1000;
+}
+
+/** Clamp a requested compaction limit into [MIN, defaultCompactionLimitForSpec(spec)]. */
+export function clampCompactionLimit(limit: number, spec?: string | null): number {
+  const cap = defaultCompactionLimitForSpec(spec);
+  return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
 }

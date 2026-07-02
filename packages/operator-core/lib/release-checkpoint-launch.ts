@@ -35,6 +35,20 @@ import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch
  */
 export const CHECKPOINT_UNIT = 'papercup-green-checkpoint-manual';
 
+/** PER-ROOT manual-checkpoint unit name (2026-07-01): the bare CHECKPOINT_UNIT
+ *  made every repo's manual gate serialize on ONE systemd unit name — a peer
+ *  hive's 55-minute run held THIS repo's `release:checkpoint-run` hostage (and
+ *  vice versa), observed live when papercup's manual run blocked papercusp's
+ *  post-fix re-verdict for ~an hour. Suffixing a short root hash keeps the
+ *  same-root duplicate guard ("unit already exists ⇒ a run is in flight")
+ *  while letting DIFFERENT roots run concurrently — they already isolate via
+ *  their own checkouts + MemoryMax'd transient units. Exported for tests. */
+export function checkpointUnitForRoot(root: string): string {
+  let h = 0;
+  for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
+  return `${CHECKPOINT_UNIT}-${h.toString(36)}`;
+}
+
 /** Wall-clock ceiling for the detached suite (systemd kills the unit past this). Mirrors the
  *  routine's in-process GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (55m) so a hung suite self-reaps. */
 export const CHECKPOINT_MAX_RUNTIME_SEC = 55 * 60;
@@ -71,7 +85,7 @@ export function buildCheckpointSystemdArgv(
   return [
     '--user',
     '--collect',
-    `--unit=${CHECKPOINT_UNIT}`,
+    `--unit=${checkpointUnitForRoot(root)}`,
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
@@ -95,7 +109,8 @@ export interface LaunchCheckpointOpts {
  */
 export function launchDetachedCheckpoint(opts: LaunchCheckpointOpts = {}, spawnFn: SpawnLike = spawn): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
-  const logPath = `/tmp/${CHECKPOINT_UNIT}.log`;
+  const unit = checkpointUnitForRoot(root);
+  const logPath = `/tmp/${unit}.log`;
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,
@@ -104,7 +119,7 @@ export function launchDetachedCheckpoint(opts: LaunchCheckpointOpts = {}, spawnF
   );
 
   return new Promise<LaunchCheckpointResult>((resolve) => {
-    const base: LaunchCheckpointResult = { launched: false, unit: CHECKPOINT_UNIT, argv, logPath };
+    const base: LaunchCheckpointResult = { launched: false, unit, argv, logPath };
     let stderr = '';
     const child = spawnFn('systemd-run', argv);
     child.stderr?.on('data', (d: unknown) => (stderr += String(d)));

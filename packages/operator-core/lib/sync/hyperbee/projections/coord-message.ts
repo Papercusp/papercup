@@ -137,11 +137,22 @@ async function writeToPg(
     } catch {
       authorTier = FALLBACK_COMMS_TIER;
     }
-    let quarantineReason: QuarantineReason | null = !commsTierAtLeast(authorTier, 'message')
-      ? 'below-message-tier'
-      : row.surface === 'handoffs' && !commsTierAtLeast(authorTier, 'steer')
-        ? 'handoff-below-steer'
-        : null;
+    // M4 (audit D-013): CONTROL-PLANE rows — a federated event or a delivery
+    // receipt (both ride `body.fed_event`, addressed to no member) — are NOT
+    // member content, so they bypass the content quarantine. Their actual effect
+    // (re-firing an await key) is separately tier-gated at the fed_event re-fire
+    // below (`commsTierAtLeast(authorTier,'wake')`), so exempting the ROW just
+    // lets a no-recipient control row persist — it can wake nothing on its own.
+    // Without this, a receipt/event from a peer trusted below `message` was
+    // quarantined here and the honesty loop silently broke (observe-tier peers).
+    const isControlPlaneRow = (row.body as { fed_event?: unknown }).fed_event != null;
+    let quarantineReason: QuarantineReason | null = isControlPlaneRow
+      ? null
+      : !commsTierAtLeast(authorTier, 'message')
+        ? 'below-message-tier'
+        : row.surface === 'handoffs' && !commsTierAtLeast(authorTier, 'steer')
+          ? 'handoff-below-steer'
+          : null;
     // P-015: the owner-signed policy.rate caps — the ATTENTION surface only
     // (coord messages); over-rate quarantines (never a silent drop). Checked
     // after the tier gate so a below-tier author doesn't also spend rate.
@@ -426,7 +437,14 @@ async function writeToPg(
     // the cross-machine wake-honesty loop closes. The receipt row itself is
     // no-recipient, no-wake, no-receipt: it can trigger nothing further.
     // Exactly-once via the same fresh-insert gate; fully best-effort.
-    if (b.receipt === true && to.length > 0) {
+    // M5a (audit D-013): emit the delivered receipt ONLY from the machine that
+    // actually woke a recipient (fanWoken > 0) — NOT from every peer that merely
+    // applied the row. Before this, all N machines emitted `delivered:true`, so
+    // the sender got 1 true delivery + N-1 FALSE `delivered:true, woken:0`
+    // (the honesty contract returning false positives). A recipient that is
+    // homed-but-asleep everywhere wakes nowhere → no receipt → the sender's
+    // events:await times out to recipient_absent, which is the honest outcome.
+    if (b.receipt === true && to.length > 0 && fanWoken !== null && fanWoken > 0) {
       try {
         const { sendMessage } = await import('../../../agent-tools/coordination/messages');
         const { machineFingerprint } = await import('../../../identity/device-keychain-id');
