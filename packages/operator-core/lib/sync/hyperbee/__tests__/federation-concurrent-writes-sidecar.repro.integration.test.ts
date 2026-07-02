@@ -657,4 +657,109 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
     },
     180_000,
   );
+
+  it(
+    'WI-1672 FORCED EXACT (ms,count) TIE — two peers pinned to the IDENTICAL HLC frontier ' +
+      '(the post-clock-ratchet lockstep amplifier) author the SAME key concurrently: mig-459\'s ' +
+      "node-id segment still resolves ONE deterministic winner on BOTH peers — where a pre-fix " +
+      'fed_hlc STRING would have been a literal tie and the `>=` guard would accept the incoming ' +
+      'remote op on both sides (stable split-brain, the S0 this migration closes)',
+    async () => {
+      const wsId = 'ws-cw-tie';
+      const hiveHome = 'cw-tie-home';
+      const FID = 'F-tied';
+      const { dbA, dbB, peerA, peerB } = await bootTwoDeviceHive(wsId, hiveHome);
+
+      // Pin BOTH peers' INDEPENDENT PG hlc_clock singletons to the IDENTICAL
+      // (last_ms, last_count) frontier — last_ms set far into the future so
+      // hlc_now()'s `now_ms > l_ms` branch is FALSE on both regardless of any wall-
+      // clock jitter between the two author() calls below. This reproduces the
+      // WI-1672 AMPLIFIER deterministically instead of racing a real clock: "one
+      // peer with a briefly-fast clock (or any past skew episode) pins ALL peers'
+      // HLC wall components to that high-water mark ... after which every peer
+      // advances by logical counter only, in near-lockstep."
+      const pinnedMs = Date.now() + 600_000;
+      const pinnedCount = 500;
+      await dbA.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount} WHERE id = 1`;
+      await dbB.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount} WHERE id = 1`;
+
+      // Sanity: each peer's OWN migrated DB self-seeded a DIFFERENT random node_id
+      // (mig 459) at creation — the property the fix relies on to break the tie.
+      const [{ node_id: nodeA }] = await dbA.adminSql<Array<{ node_id: string | null }>>`
+        SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1
+      `;
+      const [{ node_id: nodeB }] = await dbB.adminSql<Array<{ node_id: string | null }>>`
+        SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1
+      `;
+      expect(nodeA, 'peer A never self-seeded a node_id (mig 459 missing/reverted?)').toBeTruthy();
+      expect(nodeB, 'peer B never self-seeded a node_id (mig 459 missing/reverted?)').toBeTruthy();
+      expect(nodeA, 'peers minted the SAME node_id — cannot force a genuine tie with this seed').not.toBe(nodeB);
+
+      // Both peers author the SAME key CONCURRENTLY (no merge in between): each DB's
+      // BEFORE stamp trigger calls its OWN hlc_now(), independently landing on the
+      // SAME pinned (ms, count) — a genuine (ms,count) tie, by construction, not a race.
+      await authorFeature(dbA.adminSql, wsId, hiveHome, FID, 'Contested', 'status-A', 30_001);
+      await authorFeature(dbB.adminSql, wsId, hiveHome, FID, 'Contested', 'status-B', 30_002);
+
+      const localA = await readFeature(dbA.adminSql, hiveHome, FID);
+      const localB = await readFeature(dbB.adminSql, hiveHome, FID);
+      expect(localA?.fed_hlc, 'peer A local row never got a fed_hlc').toBeTruthy();
+      expect(localB?.fed_hlc, 'peer B local row never got a fed_hlc').toBeTruthy();
+
+      // The (ms,count) PREFIX — the pre-WI-1672 ordering key — is IDENTICAL: this
+      // really is the split-brain-triggering tie, not an ordinary timing race.
+      const msCountPrefix = (hlc: string) => hlc.split(':').slice(0, 2).join(':');
+      expect(
+        msCountPrefix(localA!.fed_hlc!),
+        'the (ms,count) prefixes differ — the clock pin failed to force a genuine tie',
+      ).toBe(msCountPrefix(localB!.fed_hlc!));
+      // Yet the FULL fed_hlc (incl. node segment) differs — construction breaks the tie.
+      expect(
+        localA!.fed_hlc,
+        "the node segment did not distinguish the two peers' identical (ms,count) stamps",
+      ).not.toBe(localB!.fed_hlc);
+
+      // The node-aware compareHlc (== the SQL fed_order_key TEXT compare the PG guard
+      // uses) gives ONE deterministic winner — never 'tie' — on an (ms,count)-tied pair.
+      const winnerSide = lwwGreater(localA!, localB!);
+      expect(
+        winnerSide,
+        'compareHlc/fed_order_key reported a TIE on an (ms,count)-identical pair — the WI-1672 bug is back',
+      ).not.toBe('tie');
+      const winnerStatus = winnerSide === 'a' ? 'status-A' : 'status-B';
+
+      expect(await drainOutboxOnce(peerA.handle, dbA.adminSql)).toBeGreaterThanOrEqual(1);
+      expect(await drainOutboxOnce(peerB.handle, dbB.adminSql)).toBeGreaterThanOrEqual(1);
+
+      // Bidirectional merge until BOTH peers land on the SAME winner. Pre-mig-459 this
+      // is exactly where split-brain occurred: the `>=` guard ACCEPTS on a tie, so each
+      // peer's incoming remote op overwrote its own local row on BOTH sides — the two
+      // peers stably SWAPPED winners instead of converging.
+      const converged = await pollUntil(
+        async () => {
+          await Promise.all([peerA.mergeNow(), peerB.mergeNow()]);
+          const a = await readFeature(dbA.adminSql, hiveHome, FID);
+          const b = await readFeature(dbB.adminSql, hiveHome, FID);
+          return a?.status === winnerStatus && b?.status === winnerStatus ? { a, b } : undefined;
+        },
+        { timeoutMs: 40_000, intervalMs: 300 },
+      );
+      expect(
+        converged,
+        'the two peers did NOT converge on an exact (ms,count) tie — split-brain reproduced (WI-1672 regression)',
+      ).toBeTruthy();
+
+      expect(converged!.a.status).toBe(winnerStatus);
+      expect(converged!.b.status).toBe(winnerStatus);
+      expect(
+        converged!.a.fed_hlc,
+        'peers converged on VALUE but their fed_hlc ordering keys still diverge',
+      ).toBe(converged!.b.fed_hlc);
+
+      // No duplicate row survives the tied concurrent insert.
+      expect(await countFeature(dbA.adminSql, hiveHome, FID)).toBe(1);
+      expect(await countFeature(dbB.adminSql, hiveHome, FID)).toBe(1);
+    },
+    180_000,
+  );
 });
