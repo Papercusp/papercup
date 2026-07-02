@@ -303,6 +303,9 @@ import './agent_chats/archive';
 import './dev/harnesses';
 import './dev/telemetry';
 import './dev/code_run_adoption';
+// WI-839 — the other 2 measuring-code-run-adoption.mdx recurring metrics (sibling reads).
+import './dev/limit_failure_rate';
+import './dev/orient_dedup_rate';
 import './dev/audit';
 import './dev/sessions';
 import './dev/activity';
