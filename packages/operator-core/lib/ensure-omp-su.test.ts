@@ -28,9 +28,16 @@ beforeEach(() => {
     execFileSync: () => undefined,
   }));
 
-  vi.doMock('./desktop-install/papercusp-files', () => ({
-    installPapercuspFiles: vi.fn(async () => ({ playbookWritten: true, extensionWritten: true })),
-  }));
+  // Partial mock: stub only the fs-writing installer; keep the REAL pure
+  // resolveInstallPaths so claude-integration.ts (which imports it at module
+  // load) doesn't fail-soft-skip its whole branch on a missing-export throw.
+  vi.doMock('./desktop-install/papercusp-files', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./desktop-install/papercusp-files')>();
+    return {
+      ...actual,
+      installPapercuspFiles: vi.fn(async () => ({ playbookWritten: true, extensionWritten: true })),
+    };
+  });
 
   vi.doMock('./desktop-install/omp-integration', () => ({
     installOmpIntegration: vi.fn(async () => ({ changed: false, actions: [] })),

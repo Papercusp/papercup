@@ -34,7 +34,7 @@ describe('config:tiers-set', () => {
     const out = (await setTool.handler(
       {
         tiers: [
-          { name: 'lean', spec: 'sonnet', compactionLimit: 900_000 }, // clamps to 158k
+          { name: 'lean', spec: 'sonnet', compactionLimit: 900_000 }, // clamps to 500k (sonnet alias → sonnet-5, default-1M cap)
           { name: 'wide', spec: 'opus[1m]:high' }, // derived 500k (opus/fable cap, owner directive 2026-07-02)
           { name: 'lean', spec: 'haiku' }, // duplicate name — dropped
         ],
@@ -44,7 +44,7 @@ describe('config:tiers-set', () => {
     expect(writeMock).toHaveBeenCalledTimes(1);
     const persisted = writeMock.mock.calls[0][0].tiers;
     expect(persisted).toEqual([
-      { name: 'lean', spec: 'sonnet', compactionLimit: 158_000 },
+      { name: 'lean', spec: 'sonnet', compactionLimit: 500_000 },
       { name: 'wide', spec: 'opus[1m]:high' },
     ]);
     expect(out.data.droppedInvalid).toBe(1);
@@ -64,7 +64,7 @@ describe('config:tiers-get', () => {
     const out = (await getTool.handler({}, {} as never)) as ToolOut;
     expect(out.data.stored).toBe(false);
     const std = out.data.tiers.find((t) => t.name === 'standard')!;
-    expect(std.effectiveCompactionLimit).toBe(158_000);
+    expect(std.effectiveCompactionLimit).toBe(500_000); // sonnet alias → sonnet-5 → 500k cap
     expect(std.compactionLimitSource).toBe('model-default');
   });
 

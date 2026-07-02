@@ -157,13 +157,13 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
     ]);
   });
 
-  it('clamps to the spec-derived ceiling: 200k window caps at 158k, [1m] at 825k, opus/fable at 500k', () => {
+  it('clamps to the spec-derived ceiling: 200k window caps at 158k, [1m] at 825k, default-1M families at 500k', () => {
     // (window − 10k margin) ÷ 1.2 — the 20% overshoot allowance (D-001).
-    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 900_000 }])).toEqual([
-      { name: 'std', spec: 'sonnet', compactionLimit: 158_000 },
+    expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 900_000 }])).toEqual([
+      { name: 'std', spec: 'haiku', compactionLimit: 158_000 },
     ]);
-    expect(parseTiers([{ name: 'vast', spec: 'sonnet[1m]', compactionLimit: 900_000 }])).toEqual([
-      { name: 'vast', spec: 'sonnet[1m]', compactionLimit: 825_000 },
+    expect(parseTiers([{ name: 'vast', spec: 'haiku[1m]', compactionLimit: 900_000 }])).toEqual([
+      { name: 'vast', spec: 'haiku[1m]', compactionLimit: 825_000 },
     ]);
     // opus/fable keep the 1M window but cap at 500k so they compact preemptively
     // (owner directive 2026-07-02).
@@ -171,8 +171,8 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
       { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 500_000 },
     ]);
     // floor clamp
-    expect(parseTiers([{ name: 'std', spec: 'sonnet', compactionLimit: 5 }])).toEqual([
-      { name: 'std', spec: 'sonnet', compactionLimit: 20_000 },
+    expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 5 }])).toEqual([
+      { name: 'std', spec: 'haiku', compactionLimit: 20_000 },
     ]);
   });
 });

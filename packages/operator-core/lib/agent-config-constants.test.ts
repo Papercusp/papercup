@@ -28,8 +28,13 @@ describe('isDefault1mModelSpec (opus/fable/sonnet-5 are the default-1M families)
       expect(isDefault1mModelSpec(spec)).toBe(true);
     }
   });
-  it('is false for sonnet ≤4.x, bare "sonnet", other families, and nullish specs', () => {
-    for (const spec of ['sonnet', 'sonnet:high', 'claude-sonnet-4-5', 'claude-sonnet-4-6:high', 'haiku', 'gpt-5.5', 'ornith']) {
+  it('is true for the bare `sonnet` alias — CC resolves it to the latest sonnet, i.e. sonnet-5', () => {
+    for (const spec of ['sonnet', 'sonnet:medium', 'sonnet[1m]', 'sonnet[1m]:high']) {
+      expect(isDefault1mModelSpec(spec)).toBe(true);
+    }
+  });
+  it('is false for versioned sonnet ≤4.x, other families, and nullish specs', () => {
+    for (const spec of ['claude-sonnet-4-5', 'claude-sonnet-4-6:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0', 'haiku', 'gpt-5.5', 'ornith']) {
       expect(isDefault1mModelSpec(spec)).toBe(false);
     }
     expect(isDefault1mModelSpec(null)).toBe(false);
@@ -38,18 +43,19 @@ describe('isDefault1mModelSpec (opus/fable/sonnet-5 are the default-1M families)
 });
 
 describe('modelWindowForSpec', () => {
-  it('opus/fable/sonnet-5 get the 1M window even without the [1m] marker', () => {
+  it('opus/fable/sonnet-5 (incl. the bare alias) get the 1M window even without the [1m] marker', () => {
     expect(modelWindowForSpec('opus')).toBe(MODEL_WINDOW_1M);
     expect(modelWindowForSpec('claude-fable-5:xhigh')).toBe(MODEL_WINDOW_1M);
     expect(modelWindowForSpec('claude-sonnet-5:high')).toBe(MODEL_WINDOW_1M);
+    expect(modelWindowForSpec('sonnet:medium')).toBe(MODEL_WINDOW_1M);
   });
   it('an explicit [1m] marker forces 1M for any family', () => {
-    expect(modelWindowForSpec('sonnet[1m]')).toBe(MODEL_WINDOW_1M);
+    expect(modelWindowForSpec('haiku[1m]')).toBe(MODEL_WINDOW_1M);
     expect(modelWindowForSpec('opus[1m]:xhigh')).toBe(MODEL_WINDOW_1M);
   });
-  it('everything else (incl. null/sonnet/haiku) is the conservative 200k', () => {
-    expect(modelWindowForSpec('sonnet')).toBe(MODEL_WINDOW_DEFAULT);
+  it('everything else (incl. null/haiku/sonnet ≤4.x) is the conservative 200k', () => {
     expect(modelWindowForSpec('haiku')).toBe(MODEL_WINDOW_DEFAULT);
+    expect(modelWindowForSpec('claude-sonnet-4-6:high')).toBe(MODEL_WINDOW_DEFAULT);
     expect(modelWindowForSpec(null)).toBe(MODEL_WINDOW_DEFAULT);
     expect(modelWindowForSpec(undefined)).toBe(MODEL_WINDOW_DEFAULT);
   });
@@ -63,13 +69,14 @@ describe('defaultCompactionLimitForSpec', () => {
     expect(defaultCompactionLimitForSpec('claude-fable-5:xhigh')).toBe(500_000);
     expect(defaultCompactionLimitForSpec('claude-sonnet-5:high')).toBe(500_000);
   });
-  it('a non-opus/fable [1m] spec keeps the window-derived 825k default', () => {
+  it('a [1m] spec OUTSIDE the default-1M families keeps the window-derived 825k default', () => {
     // floor((1_000_000 - 10_000) / 1.2 / 1000) * 1000 = 825_000
-    expect(defaultCompactionLimitForSpec('sonnet[1m]')).toBe(825_000);
+    expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(825_000);
   });
   it('a 200k-window spec derives 158k', () => {
     // floor((200_000 - 10_000) / 1.2 / 1000) * 1000 = 158_000
-    expect(defaultCompactionLimitForSpec('sonnet')).toBe(158_000);
+    expect(defaultCompactionLimitForSpec('haiku')).toBe(158_000);
+    expect(defaultCompactionLimitForSpec('claude-sonnet-4-6')).toBe(158_000);
     expect(defaultCompactionLimitForSpec(null)).toBe(158_000);
   });
 });

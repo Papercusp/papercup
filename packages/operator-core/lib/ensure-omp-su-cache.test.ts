@@ -81,9 +81,15 @@ beforeEach(() => {
     },
     execFileSync: (...args: unknown[]) => execFileSyncSpy(...args),
   }));
-  vi.doMock('./desktop-install/papercusp-files', () => ({
-    installPapercuspFiles: installPapercuspFilesSpy,
-  }));
+  // Partial mock (see ensure-omp-su.test.ts): keep the real pure
+  // resolveInstallPaths; stub only the fs-writing installer.
+  vi.doMock('./desktop-install/papercusp-files', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./desktop-install/papercusp-files')>();
+    return {
+      ...actual,
+      installPapercuspFiles: installPapercuspFilesSpy,
+    };
+  });
   vi.doMock('./desktop-install/omp-integration', () => ({
     installOmpIntegration: installOmpIntegrationSpy,
   }));

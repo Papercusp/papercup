@@ -48,6 +48,7 @@ import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/li
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
+import type { HiveSoakReportSnapshot } from '@papercusp/operator-core/lib/hive/soak-report';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
 import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/hive-eval/bakeoff-trend';
@@ -1286,7 +1287,9 @@ function formatDurationMs(ms: number | null | undefined): string {
  */
 function ThroughputView() {
   const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
+  const soak = useSyncQuery<HiveSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
   const hives = sync.data?.[0]?.hives ?? [];
+  const soakByHive = new Map((soak.data?.[0]?.hives ?? []).map((report) => [report.hiveSlug, report]));
 
   return (
     <section className="pc-learning__section">
@@ -1301,6 +1304,7 @@ function ThroughputView() {
       ) : (
         hives.map((h) => {
           const m = h.latest;
+          const report = soakByHive.get(h.hiveSlug);
           const rungs = m?.questionRungs ?? {};
           const rungTotal = Object.values(rungs).reduce<number>((a, b) => a + (Number(b) || 0), 0);
           const tickMs = m?.tickAt ? Date.parse(m.tickAt) : NaN;
@@ -1318,7 +1322,43 @@ function ThroughputView() {
                   <strong>{m && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'no ticks'}</strong>
                   <em>{h.operatingWell ? 'operating well' : 'needs attention'}</em>
                 </span>
+                {report ? (
+                  <span
+                    className={`pc-learning__flowchip ${report.ready ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
+                    title={
+                      report.ready
+                        ? `Production-readiness gate held green for ${report.windowHours}h`
+                        : `NOT-READY: ${report.reasons.join(' · ')}`
+                    }
+                  >
+                    <ShieldCheck size={11} aria-hidden />
+                    soak gate
+                    <strong>{report.ready ? 'READY' : 'NOT-READY'}</strong>
+                    <em>{report.windowHours}h window</em>
+                  </span>
+                ) : null}
               </div>
+
+              {report ? (
+                <div className="pc-learning__flow" aria-label={`${h.hiveSlug} production readiness`}>
+                  <span className="pc-learning__flowchip" title="Machine-checkable production-readiness verdict over the rolling soak window.">
+                    <ShieldCheck size={11} aria-hidden />
+                    reasons
+                  </span>
+                  {report.reasons.length === 0 ? (
+                    <span className="pc-learning__lens">
+                      <em>all thresholds held</em>
+                      <strong>0</strong>
+                    </span>
+                  ) : (
+                    report.reasons.slice(0, 5).map((reason, i) => (
+                      <span key={`${report.hiveSlug}-reason-${i}`} className="pc-learning__lens" title={reason}>
+                        <em>{reason}</em>
+                      </span>
+                    ))
+                  )}
+                </div>
+              ) : null}
 
               <div className="pc-learning__scoreboard" aria-label={`${h.hiveSlug} throughput`}>
                 <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint="Ready work waiting for placement (todo items) — the queue the Queen pours from." />
@@ -1363,8 +1403,11 @@ function ThroughputView() {
         type="button"
         className="pc-learning__refresh"
         aria-label="Reload hive throughput"
-        disabled={sync.fetching}
-        onClick={() => sync.invalidate()}
+        disabled={sync.fetching || soak.fetching}
+        onClick={() => {
+          sync.invalidate();
+          soak.invalidate();
+        }}
       >
         <RefreshCw size={13} aria-hidden />
       </button>

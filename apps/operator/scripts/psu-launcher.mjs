@@ -1640,10 +1640,11 @@ export function assertLaunchPersona(promptFile) {
  * ships sonnet-5 with the 1M window as its DEFAULT — no beta/marker needed) but
  * deliberately gets NO `[1m]` injection here: the marker exists to flip the 1M
  * beta on for families whose default is 200k, which sonnet-5's isn't.
- * Kept in lockstep with agent-config-constants `isDefault1mModelSpec`
- * (opus|fable|sonnet-5) via DEFAULT_1M_FAMILY_RE.
+ * The bare `sonnet` alias (whole spec) also counts: CC resolves it to the
+ * latest sonnet = sonnet-5 (live-verified 2026-07-02). Kept in lockstep with
+ * agent-config-constants `isDefault1mModelSpec` via DEFAULT_1M_FAMILY_RE.
  */
-export const DEFAULT_1M_FAMILY_RE = /fable|opus|sonnet-?5/i;
+export const DEFAULT_1M_FAMILY_RE = /fable|opus|sonnet-?5|^sonnet(\[1m\])?(:[a-z0-9]+)?$/i;
 
 export function normalizeModelSpec(spec) {
   if (!spec || /\[1m\]/i.test(spec) || !/fable|opus/i.test(spec)) return spec;

@@ -332,13 +332,13 @@ describe('resolveTierSpec compactionLimit', () => {
   it('derives the model default from the resolved spec when the tier sets none', () => {
     const r = resolveTierSpec({ tier: 'standard', role: 'bee' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.compactionLimit).toBe(158_000); // sonnet: (200k − 10k) ÷ 1.2
+    if (r.ok) expect(r.compactionLimit).toBe(500_000); // standard = sonnet alias → sonnet-5, a default-1M family (500k cap)
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
     const tiers = [
       { name: 'lean', spec: 'sonnet', compactionLimit: 90_000 },
-      { name: 'vast', spec: 'sonnet[1m]' },
+      { name: 'vast', spec: 'haiku[1m]' },
       { name: 'wide', spec: 'opus[1m]:high' },
     ];
     const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
@@ -353,6 +353,6 @@ describe('resolveTierSpec compactionLimit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'haiku' }));
     const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
     expect(dg.downgraded).toBe(true);
-    expect(dg.compactionLimit).toBe(158_000); // standard/sonnet target
+    expect(dg.compactionLimit).toBe(500_000); // standard/sonnet target (sonnet alias → sonnet-5 → 500k cap)
   });
 });

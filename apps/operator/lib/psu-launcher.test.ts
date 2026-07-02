@@ -1299,9 +1299,10 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
     expect(normalizeModelSpec('opus[1m]')).toBe('opus[1m]');
     expect(normalizeModelSpec('claude-fable-5[1m]:xhigh')).toBe('claude-fable-5[1m]:xhigh');
   });
-  it('is a no-op for non-1M families and empty specs', () => {
+  it('is a no-op for non-opus/fable specs and empty specs (sonnet-5 is default-1M WITHOUT a marker, so no injection)', () => {
     expect(normalizeModelSpec('sonnet')).toBe('sonnet');
     expect(normalizeModelSpec('sonnet:high')).toBe('sonnet:high');
+    expect(normalizeModelSpec('claude-sonnet-5:high')).toBe('claude-sonnet-5:high');
     expect(normalizeModelSpec('haiku')).toBe('haiku');
     expect(normalizeModelSpec('')).toBe('');
     expect(normalizeModelSpec(undefined)).toBeUndefined();
@@ -1320,8 +1321,8 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
 
 describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
   it('parses the new omp-convergence flags', () => {
-    // sonnet (not a default-1M family) so this passthrough test stays decoupled
-    // from the opus/fable [1m] normalization exercised in its own suite below.
+    // sonnet gets no [1m] injection (only opus/fable do), so this passthrough
+    // test stays decoupled from the normalization exercised in its own suite.
     const a = parseArgs(['--no-picker', '--agent=omp', '--model=sonnet', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
     expect(a.model).toBe('sonnet');
     expect(a.resumeSession).toBe('s-7');
@@ -2172,17 +2173,27 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
 
   it('preflightWindowGuard: warn ≥35%, refuse ≥60%, [1m] widens the window', () => {
     // trimmed baseline 55k + ~13.5k persona ≈ 68.5k of 200k ≈ 34% → ok
-    const ok = preflightWindowGuard({ personaBytes: 50_000, contextSize: 'trimmed', model: 'sonnet' });
+    const ok = preflightWindowGuard({ personaBytes: 50_000, contextSize: 'trimmed', model: 'haiku' });
     expect(ok.level).toBe('ok');
     // full baseline 152k + ~28k persona ≈ 180k of 200k = 90% → refuse
-    const refuse = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'sonnet' });
+    const refuse = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'haiku' });
     expect(refuse.level).toBe('refuse');
     // same on a [1m] window → 18% → ok
-    const wide = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'sonnet[1m]' });
+    const wide = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'haiku[1m]' });
     expect(wide.level).toBe('ok');
     // trimmed + a big persona lands the warn band (55k + 27k ≈ 82k = 41%)
-    const warn = preflightWindowGuard({ personaBytes: 100_000, contextSize: 'trimmed', model: 'sonnet' });
+    const warn = preflightWindowGuard({ personaBytes: 100_000, contextSize: 'trimmed', model: 'haiku' });
     expect(warn.level).toBe('warn');
+  });
+
+  it('preflightWindowGuard: default-1M families (sonnet-5 incl. the bare alias, opus, fable) get the 1M window without [1m]', () => {
+    for (const model of ['claude-sonnet-5:high', 'sonnet:medium', 'sonnet', 'opus:high', 'claude-fable-5:xhigh']) {
+      const g = preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model });
+      expect(g.window).toBe(1_000_000);
+      expect(g.level).toBe('ok');
+    }
+    // versioned sonnet ≤4.x stays on the conservative 200k window
+    expect(preflightWindowGuard({ personaBytes: 105_000, contextSize: 'full', model: 'claude-sonnet-4-6:high' }).window).toBe(200_000);
   });
 
   it('runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning', () => {
@@ -2190,10 +2201,10 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
     const persona = join(dir, 'persona.md');
     writeFileSync(persona, 'x'.repeat(105_000));
     expect(() =>
-      runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'sonnet', force: false }),
+      runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'haiku', force: false }),
     ).toThrow(/--force/);
     const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const g = runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'sonnet', force: true });
+    const g = runLaunchPreflight({ promptFile: persona, contextSize: 'full', model: 'haiku', force: true });
     expect(g.level).toBe('refuse');
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
