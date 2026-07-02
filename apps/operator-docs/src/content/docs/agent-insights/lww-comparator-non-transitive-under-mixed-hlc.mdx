@@ -1,6 +1,6 @@
 ---
 title: The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
-description: lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459).
+description: lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459) and a THIRD hardening, the HlcClock recv ratchet ε-bound (maxDriftMs) that stops one absurd remote stamp from poisoning a node's (and, re-propagated, the hive's) clock.
 discovered: 2026-06-19
 tags: [federation, hlc, lww, merge, projection, fed_hlc, version-skew, re-key, convergence]
 status: active
@@ -11,6 +11,7 @@ documents:
   - libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql
   - libs/papercusp/libs/db/sql/459-hlc-node-id-total-order.sql
   - libs/generic/locks-core/src/hlc.ts
+  - libs/generic/locks-core/src/hlc.test.ts
 ---
 
 ## What
@@ -118,6 +119,35 @@ comparator code changed: `fed_order_key` passes the HLC through verbatim and
 `lwwPick` already does a plain string compare, so a 3-segment stamp just sorts
 correctly through the existing machinery.
 
+## Update 2026-07-02 (later) — a THIRD hardening: bound the recv ratchet (ε drift clamp)
+
+Node-id (previous section) makes an exact tie total-orderable, but a SEPARATE
+risk in the same family is the recv ratchet itself: `HlcClock.recv()` always
+advanced the local clock's `ms` up to `max(local, remote, physical)`. One
+absurd remote stamp (a bad clock, a corrupted/adversarial payload, a
+far-future `ms`) would permanently pin the receiving node's clock years
+ahead — and because every subsequent local `send()` re-stamps at that poisoned
+`ms`, a re-propagated event ratchets every OTHER peer the same way, so a
+single bad stamp can drag the whole hive's clocks forward (the same
+"amplifier" shape as the WI-1672 exact-tie bug, just via the physical
+component instead of the tie-break).
+
+**The fix (`libs/generic/locks-core/src/hlc.ts`, `HlcClock`):** `recv()` now
+clamps the ratchet to an ε bound — `maxDriftMs` (constructor option, default
+`600_000` = 10 minutes, 2× the announce-admission skew window so any
+legitimately-admitted peer still ratchets us normally). A remote `ms` more
+than `maxDriftMs` ahead of the local physical clock is treated as absent for
+ratchet purposes (`remote = { ms: 0, count: 0 }` before the `max()`) — the
+poisoned stamp still applies to the DATA it was attached to, it just doesn't
+advance THIS node's clock. `processHlc()` (the process-wide federation clock)
+uses the default bound; tests cover both the clamp firing and a legitimate
+in-bound skew still ratcheting normally (`hlc.test.ts` → `describe('HlcClock
+recv drift clamp')`).
+
+No comparator or encoding changed here — this is a clock-input guard, not an
+ordering-key change, so it composes with both the transitivity fix (first
+section) and the node-id tie-break (previous section) without touching them.
+
 ## How to test / reproduce
 
 - Comparator + cycle: `fed-hlc-transitivity-fix-proof.test.ts` (PG-free, the proof-of-fix).
@@ -125,6 +155,9 @@ correctly through the existing machinery.
   `version-skew-mixed-hlc-backcompat.test.ts` (Brief Y / AC scenario 6). Note
   MONOTONE-clock mixed universes DO converge (rolling-upgrade back-compat holds in
   the normal case); only SKEW + mixed reaches the cycle.
+- Recv ratchet ε-bound: `libs/generic/locks-core/src/hlc.test.ts` →
+  `describe('HlcClock recv drift clamp')` (an absurd-future remote does not
+  ratchet; an in-bound skew still does; `maxDriftMs` is configurable).
 
 ## Gotcha for new work
 
@@ -134,12 +167,17 @@ non-transitivity. Map a missing HLC into HLC-space (synth from `ts`) instead of
 switching to a `ts`-mode branch. Separately (WI-1672): any new comparator built
 directly on `(ms, count)` without the `node` segment re-introduces the exact-tie
 split-brain — always compare via the full encoded HLC string (or `compareHlc`),
-never hand-roll a `(ms, count)`-only compare.
+never hand-roll a `(ms, count)`-only compare. And any new caller that merges a
+REMOTE HLC into a local clock should go through `HlcClock.recv()` (or its
+`maxDriftMs` bound) rather than a bare `Math.max` — an unbounded ratchet
+re-introduces the same amplifier one absurd stamp can poison the whole hive with.
 
 ## Refs
 
 - EI-1698 (the finding + the proof-of-fix comment) · `shared-hive-release-testing/findings-Y.md`
 - WI-1672 (the follow-up exact-tie/node-id finding, found in P-015 federation
   testing) · mig-459 `hlc-node-id-total-order.sql`.
+- The recv ratchet ε-bound (`maxDriftMs`) hardening in `HlcClock.recv()` — same
+  WI-1672 amplifier family, landed as defense-in-depth after the node-id fix.
 - Adjacent: D-001 `fed_hlc` ordering (`lww-hlc-fedts-divergence.test.ts`), mig-314,
   mig-458 (`fed_order_key()`), `hlc-stamp.ts`, `@papercusp/locks-core/hlc.ts`.

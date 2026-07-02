@@ -74,7 +74,27 @@ export interface FuzzOptions {
   dupProb?: number;
   /** Materialised-store guard ordering: 'fed_ts' (today / bug) | 'lww' (the fix). */
   guardOrder?: GuardOrder;
+  /** Author clocks carry a node identity (migration 459 / WI-1672 — the shipped
+   *  reality). Default TRUE; pass false to model legacy node-LESS stamps. */
+  nodeIds?: boolean;
+  /** WI-1672 amplifier: recv-ratchet EVERY author's clock to one shared hive-wide
+   *  frontier up front, so all stamps advance by counter only, in near-lockstep —
+   *  exact (ms, count) collisions across authors become routine. */
+  lockstep?: boolean;
+  /** Production topology (skipOwnOps): each op's AUTHOR peer applies it via the
+   *  LOCAL write path (trigger-stamped row write, NO LWW guard) and that op is
+   *  SKIPPED in the author's own fold — the PG guard becomes the ONLY
+   *  local-vs-remote arbiter, exactly as shipped. Author i writes on peer i
+   *  (authors beyond the peer count would be unmapped, so authorCount == peers
+   *  in this mode). 'fed_ts'/'fed_hlc' guards only (the 'lww' winners map does
+   *  not see local writes). */
+  localAuthorApply?: boolean;
 }
+
+/** The lockstep regime's shared frontier: far above every author's wall clock
+ *  (authors start at 1000 and advance ≤ ~50ms/op) yet INSIDE the recv ε drift
+ *  bound (600s), so the ratchet is accepted — as it was in the live incident. */
+const LOCKSTEP_FRONTIER_MS = 300_000;
 
 interface GenOp {
   /** Distinct provenance/source-log key — the merge's deterministic tiebreak. */
@@ -96,6 +116,16 @@ export class FedTsGuardedStore {
   constructor(private readonly order: GuardOrder = 'fed_hlc') {}
   private key(op: OpEnvelope): string {
     return `${op.table}::${op.hbKey}`;
+  }
+  /** The LOCAL write path (production `stamp_local_federated_write` trigger +
+   *  `skipOwnOps`): the author's own row write is NOT LWW-guarded — the row
+   *  simply takes the write, stamped with the same hlc its outbox op carries
+   *  (the D-001 invariant `op.hlc == author's fed_hlc`). */
+  applyLocal(op: OpEnvelope): void {
+    if ((op.type !== 'put' && op.type !== 'del') || !op.hbKey) return;
+    const k = this.key(op);
+    if (op.type === 'del') this.rows.delete(k);
+    else this.rows.set(k, { fedTs: op.ts ?? null, hlc: op.hlc, value: op.value });
   }
   apply = async (op: OpEnvelope): Promise<boolean> => {
     if (op.type !== 'put' && op.type !== 'del') return false;
@@ -189,9 +219,15 @@ export function generateOps(opts: FuzzOptions): GenOp[] {
   // wall clock is `authorPhys[author]`, set to the current op's ts before each
   // stamp so `stampOpHlc(op, clock)` seeds the HLC physical from op.ts exactly as
   // the 2026-06-14 fix does in production.
-  const authorCount = Math.max(2, Math.min(opts.peers, 5));
+  const authorCount = opts.localAuthorApply ? opts.peers : Math.max(2, Math.min(opts.peers, 5));
   const authorPhys = new Array<number>(authorCount).fill(1000);
-  const clocks = authorPhys.map((_, i) => new HlcClock({ physical: () => authorPhys[i] }));
+  const useNodes = opts.nodeIds !== false;
+  const clocks = authorPhys.map(
+    (_, i) => new HlcClock({ physical: () => authorPhys[i], node: useNodes ? i.toString(16).padStart(16, '0') : undefined }),
+  );
+  // WI-1672 amplifier: one recv pins every clock's wall component to the same
+  // hive-wide frontier; every later stamp is a counter-only bump in lockstep.
+  if (opts.lockstep) for (const c of clocks) c.recv({ ms: LOCKSTEP_FRONTIER_MS, count: 0 }, 1000);
 
   const gen: GenOp[] = [];
   for (let i = 0; i < opts.ops; i++) {
@@ -248,13 +284,22 @@ export async function runConvergenceFuzz(opts: FuzzOptions): Promise<FuzzResult>
   for (let p = 0; p < opts.peers; p++) {
     const store = new FedTsGuardedStore(opts.guardOrder ?? 'fed_hlc');
     const cursor = createMergeCursor();
+    // Production topology (skipOwnOps): this peer's OWN writes land via the
+    // unguarded LOCAL path, in author order, and are EXCLUDED from its fold —
+    // so the PG guard alone arbitrates local-vs-remote (the WI-1672 surface).
+    let folded = ops;
+    if (opts.localAuthorApply) {
+      const own = ops.filter((g) => (g.op.value as { author: number }).author === p);
+      for (const g of own) store.applyLocal(g.op);
+      folded = ops.filter((g) => (g.op.value as { author: number }).author !== p);
+    }
     // This peer eventually receives EVERY op (the post-heal fixed point) but in
     // its OWN seeded fold order — one stable AdmittedLog per origin op (keyHex =
     // its peer-stable sourceLogKeyHex, the merge's deterministic same-clock
     // tiebreak). Shuffling the log array models arbitrary partition/reorder
     // delivery: the winners-fold is order-independent, but the apply-to-PG (the
     // fed_ts guard) is NOT — that interaction is exactly what D-001 exposes.
-    const logs = shuffle(ops, rng).map((g) => singleOpLog(g.sourceLogKeyHex, g.op));
+    const logs = shuffle(folded, rng).map((g) => singleOpLog(g.sourceLogKeyHex, g.op));
     // Fold in chunks so the cursor advances across multiple passes (exercises
     // the cross-pass winners-fold persistence, not just one monolithic pass).
     const CHUNK = 7;

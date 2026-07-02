@@ -303,7 +303,18 @@ export function resolveHookWorkspace(): string {
 export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
-  env: { mcpUrl?: string; bearer?: string; sessionId?: string; workspace?: string; timeoutMs?: number } = {},
+  env: {
+    mcpUrl?: string;
+    bearer?: string;
+    sessionId?: string;
+    workspace?: string;
+    timeoutMs?: number;
+    /** Optional JSON-RPC `params._meta` (token-efficient-tool-result-formats P-005). Pass
+     *  `{ format: 'json' }` to force a tool whose result is TOON-encoded by default (tabular
+     *  results like tools:find's hits[]) back to JSON so the JSON.parse(content) path below can
+     *  read it. Omitted for every existing caller → default serialization, byte-identical. */
+    meta?: Record<string, unknown>;
+  } = {},
 ): Promise<unknown | null> {
   // Append the per-process coordination owner as `?client=` so the
   // operator attributes every coord/locks call to THIS process, not
@@ -372,7 +383,7 @@ export async function callMcpTool(
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: toolName, arguments: args },
+        params: { name: toolName, arguments: args, ...(env.meta ? { _meta: env.meta } : {}) },
       }),
       signal: ctrl.signal,
     });
@@ -1453,9 +1464,14 @@ export async function buildToolFindRedirect(
 ): Promise<string> {
   const query = extractToolSearchQuery(input);
   if (!query) return formatToolFindRedirect('', []);
-  const res = (await callMcpTool('tools:find', { query, limit: 8 }, { timeoutMs: 5000 }).catch(
-    () => null,
-  )) as { hits?: Array<{ tool?: string; description?: string }> } | null;
+  // Request JSON: tools:find's hits[] array is TOON-encoded by default (P-005), which
+  // callMcpTool's JSON.parse(content) cannot read — without this the redirect silently
+  // degrades to "no matches" even when tools:find found plenty.
+  const res = (await callMcpTool(
+    'tools:find',
+    { query, limit: 8 },
+    { meta: { format: 'json' }, timeoutMs: 5000 },
+  ).catch(() => null)) as { hits?: Array<{ tool?: string; description?: string }> } | null;
   const hits = Array.isArray(res?.hits) ? res!.hits : [];
   return formatToolFindRedirect(query, hits);
 }
