@@ -15,7 +15,12 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
-import { FILE_LOCK_OP_KINDS, type FileLockReleaseParams } from '../../authority/file-lock-authority-ops';
+import {
+  FILE_LOCK_OP_KINDS,
+  emitReleaseLockEvents,
+  type FileLockReleaseParams,
+} from '../../authority/file-lock-authority-ops';
+import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
@@ -122,8 +127,26 @@ export default defineTool({
           },
         );
         noteShaToken(routed.value.released);
+        // WI-1550 (P-015): a LOCALLY-decided release (we are the authority, or
+        // fail-open/no-peers/unmanaged) never appended its own instant-handover
+        // lock-event before this fix — only a release relayed to a REMOTE authority
+        // did (inside buildFileLockAuthorityHandlers). Mirror that capture here.
+        // No-ops when the scope isn't federating (the installed sink degrades to a
+        // no-op) — always safe to call.
+        if (routed.via !== 'remote-authority' && routed.scope && routed.value.released && routed.value.released.length > 0) {
+          emitReleaseLockEvents((event) => void recordLockEvent(event), {
+            scope: routed.scope,
+            owner: ownerId,
+            released: routed.value.released,
+            ts: Date.now(),
+            publishedSha: args.published_sha ?? null,
+          });
+        }
         return routed.value;
       } catch {
+        // Routing-layer fault before a scope was resolved — degrade to the raw
+        // local release (pre-cutover behavior). No lock-event emitted here, same
+        // rationale as the acquire-side fallback in acquire.ts.
         const local = await localRelease();
         noteShaToken(local.released);
         return local;

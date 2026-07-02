@@ -124,6 +124,40 @@ function expiryMs(expiresTs: string | undefined, nowMs: number, ttlSec: number):
 }
 
 /**
+ * Emit one P-015 `acquire` lock-event per held path. Shared by the authority-side
+ * RPC handler below (a remote peer's grant) AND the verb-local acquire path
+ * (`locks:acquire`'s `op.local()`, run when THIS peer is itself the authority or
+ * is fail-opening — WI-1550: that path used to never call `emit` at all, so the
+ * instant-handover stream was missing every locally-granted lock).
+ */
+export function emitAcquireLockEvents(
+  emit: (event: LockEvent) => void,
+  params: { scope: string; owner: string; paths: string[]; expiresAtMs: number; ts: number },
+): void {
+  for (const path of params.paths) {
+    emit({ kind: 'acquire', scope: params.scope, path, owner: params.owner, expiresAtMs: params.expiresAtMs, ts: params.ts });
+  }
+}
+
+/** The release-side twin of {@link emitAcquireLockEvents} — see there for why both
+ *  the authority handler and the verb-local release path share this. */
+export function emitReleaseLockEvents(
+  emit: (event: LockEvent) => void,
+  params: { scope: string; owner: string; released: string[]; ts: number; publishedSha?: string | null },
+): void {
+  for (const path of params.released) {
+    emit({
+      kind: 'release',
+      scope: params.scope,
+      path,
+      owner: params.owner,
+      ts: params.ts,
+      ...(params.publishedSha ? { publishedSha: params.publishedSha } : {}),
+    });
+  }
+}
+
+/**
  * Build the file-lock authority op handlers bound to `coordinator` — the same
  * validation + dispatch {@link registerFileLockAuthorityOps} installs globally,
  * as a plain map. Lets a multi-instance rig (e.g. the cross-machine failover
@@ -177,9 +211,7 @@ export function buildFileLockAuthorityHandlers(
         // (WI-1549).
         const shaToken = shaTokenForGrant(p.coordinationDomain, p.paths, ts, p.owner);
         noteShaTokenGrant(p.coordinationDomain, p.paths, p.owner, expiresAtMs);
-        for (const path of p.paths) {
-          emit({ kind: 'acquire', scope, path, owner: p.owner, expiresAtMs, ts });
-        }
+        emitAcquireLockEvents(emit, { scope, owner: p.owner, paths: p.paths, expiresAtMs, ts });
         return { ...result, shaToken };
       }
       return result;
@@ -205,9 +237,7 @@ export function buildFileLockAuthorityHandlers(
         // rebuild sha-token state from the P-015 stream.
         const publishedSha = typeof p.publishedSha === 'string' ? p.publishedSha : null;
         noteShaTokenRelease(p.coordinationDomain, result.released, publishedSha, ts);
-        for (const path of result.released) {
-          emit({ kind: 'release', scope, path, owner, ts, ...(publishedSha ? { publishedSha } : {}) });
-        }
+        emitReleaseLockEvents(emit, { scope, owner, released: result.released, ts, publishedSha });
       }
       return result;
     },

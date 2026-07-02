@@ -59,9 +59,11 @@ import {
 } from '../../authority/sha-token-registry';
 import {
   FILE_LOCK_OP_KINDS,
+  emitAcquireLockEvents,
   type FileLockAcquireParams,
   type FileLockAcquireResult,
 } from '../../authority/file-lock-authority-ops';
+import { recordLockEvent } from '../../authority/lock-event-stream';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
@@ -176,6 +178,13 @@ export default defineTool({
       );
 
     let first: Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant };
+    // P-015 (WI-1550): when the grant is decided LOCALLY (we are the authority, or
+    // fail-open/no-peers) rather than relayed to a remote authority, this peer must
+    // append the lock-event itself — a remote authority already records its own
+    // grants inside buildFileLockAuthorityHandlers, so only the local/fail-open vias
+    // need it here. `routedScope` is the resolved harness/hive scope key (unset for
+    // an unmanaged domain, where there's no federated stream to append to anyway).
+    let emitScope: string | undefined;
     try {
       const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant }>(
         coordinationDomain,
@@ -196,6 +205,7 @@ export default defineTool({
         },
       );
       first = routed.value;
+      if (routed.via !== 'remote-authority') emitScope = routed.scope;
     } catch (err) {
       // Same-workspace contention timed out the advisory lock (P-015): surface a
       // structured busy result rather than leaking a raw PG error to the agent.
@@ -203,6 +213,8 @@ export default defineTool({
       if (err instanceof WorkspaceContendedError) return await busy([]);
       // Defensive fallback: a fault in the authority-routing layer must never break the
       // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior).
+      // (The routing layer faulted before resolving a scope, so this rare recovery path
+      // doesn't emit a lock-event — best-effort capture, never worth failing the acquire.)
       try {
         first = await localAcquire();
       } catch (err2) {
@@ -240,6 +252,18 @@ export default defineTool({
       // expired-but-unreleased grant isn't misreported as unsynced risk.
       const shaToken = first.sha_token ?? shaTokenForGrant(coordinationDomain, held, Date.now(), ownerId);
       noteShaTokenGrant(coordinationDomain, held, ownerId, first.expires_ts.getTime());
+      // WI-1550 (P-015): append the instant-handover lock-event for a LOCALLY-decided
+      // grant (see the emitScope comment above). No-ops when this scope isn't federating
+      // (the installed sink degrades to a no-op) — always safe to call.
+      if (emitScope) {
+        emitAcquireLockEvents((event) => void recordLockEvent(event), {
+          scope: emitScope,
+          owner: ownerId,
+          paths: held,
+          expiresAtMs: first.expires_ts.getTime(),
+          ts: Date.now(),
+        });
+      }
       return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held, undefined, shaToken);
     }
 

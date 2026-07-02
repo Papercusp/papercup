@@ -295,6 +295,8 @@ import provisionStream from './provision/stream';
 import desktopAgentAuthStatus from './desktop/agent-auth-status';
 import desktopAgentLoginEnvelope from './desktop/agent-login-envelope';
 import desktopGitIdentity from './desktop/git-identity';
+import desktopLocalModelInstall from './desktop/local-model-install';
+import desktopLocalModelStatus from './desktop/local-model-status';
 import desktopPreflight from './desktop/preflight';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
@@ -722,6 +724,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopAgentAuthStatus as AnyRoute),
   ...flatten(desktopAgentLoginEnvelope as AnyRoute),
   ...flatten(desktopGitIdentity as AnyRoute[]),
+  ...flatten(desktopLocalModelStatus as AnyRoute),
+  ...flatten(desktopLocalModelInstall as AnyRoute),
   ...flatten(desktopPreflight as AnyRoute[]),
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),

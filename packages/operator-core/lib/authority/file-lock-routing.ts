@@ -103,6 +103,17 @@ export interface FileLockRoutingDeps extends LockAuthorityDeps, RemotePeersCache
   skipRemotePeersFastPath?: boolean;
 }
 
+/** {@link RouteResult} plus the resolved file-lock scope key (harness or hive
+ *  slug), when `domain` belongs to a federated harness. Undefined for an
+ *  unmanaged/unmanaged-harness domain (there is no scope to record events
+ *  against). Callers that need to emit a P-015 lock-event for a LOCALLY-run op
+ *  (`via !== 'remote-authority'` — the remote authority already recorded its
+ *  own grant/release) use this instead of re-resolving the domain→scope mapping
+ *  themselves (WI-1550). */
+export interface FileLockRouteResult<T> extends RouteResult<T> {
+  scope?: string;
+}
+
 /**
  * Route a FILE-CLAIM lock operation (acquire/release/queue) to the authority for
  * the harness that owns `domain`.
@@ -118,7 +129,7 @@ export async function routeFileLockOp<T>(
   domain: string,
   op: AuthorityOp<T>,
   deps: FileLockRoutingDeps = {},
-): Promise<RouteResult<T>> {
+): Promise<FileLockRouteResult<T>> {
   const resolve = deps.domainToHarnessSlug ?? getDomainToHarnessSlug();
   const harnessSlug = resolve(domain);
   if (!harnessSlug) {
@@ -143,12 +154,14 @@ export async function routeFileLockOp<T>(
   const hasPeers =
     scope.kind === 'hive' ? hasRemoteHivePeers(scope.key, deps) : hasRemotePeers(scope.key, deps);
   if (!deps.skipRemotePeersFastPath && !(await hasPeers)) {
-    return { value: await op.local(), via: 'local-authority' };
+    return { value: await op.local(), via: 'local-authority', scope: scope.key };
   }
 
-  return scope.kind === 'hive'
-    ? routeToAuthorityForHive(scope.key, op, deps)
-    : routeToAuthority(scope.key, op, deps);
+  const result =
+    scope.kind === 'hive'
+      ? await routeToAuthorityForHive(scope.key, op, deps)
+      : await routeToAuthority(scope.key, op, deps);
+  return { ...result, scope: scope.key };
 }
 
 export const _testing = { defaultDomainToHarnessSlug };
