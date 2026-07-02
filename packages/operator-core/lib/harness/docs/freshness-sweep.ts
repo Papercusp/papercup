@@ -21,8 +21,6 @@ import type { GitRunner, FeatureCommitLookup, SubjectRef } from './subject-ref';
 import {
   listDocRecords,
   setDocStatus,
-  markRegenEnqueued,
-  markReverifyFlagged,
   type HarnessDocRecord,
   type DocStatus,
 } from './doc-record';
@@ -132,20 +130,21 @@ export function anchorMatchesChanged(anchorPaths: string[], changedPaths: string
 /**
  * Injectable store seam — defaults to the doc-record module bound to a workspace,
  * overridden in unit tests with in-memory fakes (no PG).
+ *
+ * NOTE (WI-1661): this deliberately does NOT include a markRegen/markReverify —
+ * spending a doc's retry attempt is now the DISPATCHER's job (sweep-after-sync.ts),
+ * gated on `dispatchDocStewardForDrift` actually launching an agent. See the
+ * "attempt spend" comment on `sweepHarnessDocs` below for why.
  */
 export interface DocStore {
   load: () => Promise<HarnessDocRecord[]>;
   setStatus: (docId: string, status: DocStatus, detail: string | null) => Promise<void>;
-  markRegen: (docId: string) => Promise<void>;
-  markReverify: (docId: string) => Promise<void>;
 }
 
 export function pgDocStore(harnessSlug: string, workspaceId: string = DEFAULT_WORKSPACE_ID): DocStore {
   return {
     load: async () => [...(await listDocRecords(harnessSlug, workspaceId)).values()],
     setStatus: (docId, status, detail) => setDocStatus(harnessSlug, docId, status, detail, workspaceId),
-    markRegen: (docId) => markRegenEnqueued(harnessSlug, docId, workspaceId),
-    markReverify: (docId) => markReverifyFlagged(harnessSlug, docId, workspaceId),
   };
 }
 
@@ -176,6 +175,22 @@ export interface SweepOpts extends DriftDeps {
  * Run the freshness sweep for one harness. Best-effort + idempotent: re-running
  * with the same inputs produces the same statuses and does NOT re-enqueue an
  * already-enqueued regeneration / re-flag an already-flagged re-verify.
+ *
+ * WI-1661 (272 docs stuck at 'review' with their retry cap exhausted despite most of
+ * them never actually being looked at by a doc-steward): this function DOES NOT spend
+ * a doc's retry attempt. It only decides WHICH due docs go into the dispatch batch
+ * (`onRegenNeeded`/`onReverifyNeeded` + the `result.*Enqueued`/`*Flagged` arrays) — the
+ * actual `regen_attempts`/`reverify_attempts` counter is bumped by the CALLER
+ * (sweep-after-sync.ts), and ONLY for docs in a batch that `dispatchDocStewardForDrift`
+ * confirms it actually launched an agent for. Before this fix, `markRegen`/`markReverify`
+ * fired unconditionally for every "due" doc in THIS loop — so a doc was charged an
+ * attempt even when `dispatchDocStewardForDrift` skipped the dispatch entirely (flag
+ * off, an exception, or — the dominant case in practice — `activeDocStewardExists`
+ * finding a PRIOR doc-steward still mid-flight, since a run can take up to the full
+ * 900s timeout and sweeps fire on every git-sync tick, ≤3min). Under a busy fleet with
+ * frequent commits, dozens of newly-drifted docs could get "counted" as an attempt in
+ * the SAME sweep a dispatch was skipped for — burning through the 5-attempt cap purely
+ * from scheduling congestion, with zero agent turns ever spent on them.
  */
 export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
   const store = opts.store ?? pgDocStore(opts.harnessSlug, opts.workspaceId);
@@ -234,14 +249,15 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
     if (status === 'stale') {
       result.flippedStale += becameStale ? 1 : 0;
       if (due) {
-        await store.markRegen(doc.docId);
+        // NOTE: does NOT bump regen_attempts here — see the doc-comment above. The
+        // caller spends the attempt only once it confirms a doc-steward actually launched.
         await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.regenEnqueued.push(doc.docId);
       }
     } else if (status === 'review') {
       result.flippedReview += becameReview ? 1 : 0;
       if (due) {
-        await store.markReverify(doc.docId);
+        // NOTE: does NOT bump reverify_attempts here — see the doc-comment above.
         await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail);
         result.reverifyFlagged.push(doc.docId);
       }

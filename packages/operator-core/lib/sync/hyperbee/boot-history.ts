@@ -51,6 +51,16 @@
  *                           is stored for retry within the grace window (D-006).
  *   - 'announce_rejected' — an inbound announce failed the read-admission decision
  *                           (bad_sig / binding_invalid / revoked).
+ *   - 'announce_clock_skew' — WI-1662: an inbound announce failed ONLY the D-007
+ *                           freshness check (`verifyAnnounceDetailed` reason
+ *                           'stale_ts') — the sig itself is valid, but the sender's
+ *                           `ts` is >5min from this machine's clock. Recorded
+ *                           ALONGSIDE (not instead of) the 'announce_rejected' the
+ *                           frame still gets, so a skewed-clock peer is distinguishable
+ *                           from a genuinely bad/forged signature: previously both
+ *                           collapsed into the same indistinguishable `sigValid=false`
+ *                           and the peer's log just silently never admitted, with
+ *                           nothing pointing at "check this machine's clock/NTP".
  *   - 'announce_error'    — an exception while handling an announce (defensive).
  *   - 'merge_error'       — the read-merge driver threw on a pass (defensive).
  *
@@ -81,6 +91,10 @@ export type BootHistoryKind =
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
+  // WI-1662: recorded alongside 'announce_rejected' when the rejection reason is
+  // SPECIFICALLY clock skew (stale_ts) rather than a bad/forged signature — see the
+  // doc comment above.
+  | 'announce_clock_skew'
   | 'announce_error'
   | 'merge_error'
   // WI-280 (part B): the owner's re-key epoch-key grant to a freshly-admitted peer

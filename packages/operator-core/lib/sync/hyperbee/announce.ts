@@ -141,24 +141,39 @@ export async function buildAnnounce(
 /** Default freshness window for announce frames (±5 min, clock-skew tolerant). */
 export const DEFAULT_ANNOUNCE_WINDOW_MS = 5 * 60 * 1000;
 
+/** Discriminated failure reason for {@link verifyAnnounceDetailed} — lets a caller tell
+ *  WI-1662's clock-skew case (`stale_ts`) apart from a genuinely bad/forged signature
+ *  (`bad_sig`), which a plain boolean collapses into one indistinguishable `false`. */
+export type VerifyAnnounceReason = 'malformed' | 'stale_ts' | 'bad_pubkey' | 'bad_sig';
+
+export interface VerifyAnnounceResult {
+  ok: boolean;
+  /** Present only when `ok` is false. */
+  reason?: VerifyAnnounceReason;
+}
+
 /**
  * Verify an announce frame's `sig` against its `device_pubkey` (raw-32-byte
  * base64 → SPKI rebuild → nodeVerify) over `announceSigningBytes(frame)`.
  * Also checks that `frame.ts` is a number within `opts.windowMs` of
  * `opts.nowMs` (defaults: `Date.now()` and `DEFAULT_ANNOUNCE_WINDOW_MS`).
- * Returns false on any tamper, stale/future ts, bad shape, or malformed
- * input — never throws.
+ *
+ * Returns `{ ok: false, reason }` on any tamper, stale/future ts, bad shape,
+ * or malformed input — never throws. `reason` is a discriminant so a caller
+ * can tell WI-1662's clock-skew case (`'stale_ts'`) apart from a genuinely bad
+ * signature (`'bad_sig'`) — the two are otherwise indistinguishable and a
+ * skewed-clock peer gets silently dropped with zero diagnostic signal.
  *
  * D-007: the `ts` (and optional `nonce`) are covered by the signature, so
  * tampering either field breaks sig verification independently of the
  * freshness check.
  */
-export function verifyAnnounce(
+export function verifyAnnounceDetailed(
   frame: SignedAnnounce,
   opts?: { nowMs?: number; windowMs?: number },
-): boolean {
+): VerifyAnnounceResult {
   try {
-    if (!frame || typeof frame !== 'object') return false;
+    if (!frame || typeof frame !== 'object') return { ok: false, reason: 'malformed' };
     if (
       typeof frame.device_pubkey !== 'string' ||
       typeof frame.github_user_id !== 'number' ||
@@ -167,25 +182,38 @@ export function verifyAnnounce(
       typeof frame.log_core_key !== 'string' ||
       typeof frame.sig !== 'string'
     ) {
-      return false;
+      return { ok: false, reason: 'malformed' };
     }
 
     // D-007 freshness check: ts must be present and within the window.
-    if (typeof frame.ts !== 'number') return false;
+    if (typeof frame.ts !== 'number') return { ok: false, reason: 'malformed' };
     const nowMs = opts?.nowMs ?? Date.now();
     const windowMs = opts?.windowMs ?? DEFAULT_ANNOUNCE_WINDOW_MS;
-    if (Math.abs(nowMs - frame.ts) > windowMs) return false;
+    if (Math.abs(nowMs - frame.ts) > windowMs) return { ok: false, reason: 'stale_ts' };
 
     const rawPubkey = Buffer.from(frame.device_pubkey, 'base64');
-    if (rawPubkey.length !== 32) return false;
+    if (rawPubkey.length !== 32) return { ok: false, reason: 'bad_pubkey' };
 
     const spkiDer = Buffer.concat([SPKI_PREFIX, rawPubkey]);
     const publicKey = createPublicKey({ key: spkiDer, format: 'der', type: 'spki' });
 
     const bytes = announceSigningBytes(frame);
     const sig = Buffer.from(frame.sig, 'base64');
-    return nodeVerify(null, bytes, publicKey, sig);
+    const sigOk = nodeVerify(null, bytes, publicKey, sig);
+    return sigOk ? { ok: true } : { ok: false, reason: 'bad_sig' };
   } catch {
-    return false;
+    return { ok: false, reason: 'bad_sig' };
   }
+}
+
+/**
+ * Boolean-only convenience wrapper over {@link verifyAnnounceDetailed} for callers that
+ * don't need the failure reason. Behavior-identical to the pre-WI-1662 implementation —
+ * every existing caller/test keeps working unchanged.
+ */
+export function verifyAnnounce(
+  frame: SignedAnnounce,
+  opts?: { nowMs?: number; windowMs?: number },
+): boolean {
+  return verifyAnnounceDetailed(frame, opts).ok;
 }

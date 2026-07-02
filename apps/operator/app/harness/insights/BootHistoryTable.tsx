@@ -40,6 +40,9 @@ export type BootHistoryKind =
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
+  // WI-1662: recorded alongside 'announce_rejected' when the reason is specifically
+  // clock skew (>5min stale_ts) rather than a bad/forged signature.
+  | 'announce_clock_skew'
   | 'announce_error'
   | 'merge_error'
   | 'rekey_grant_failed'
@@ -82,6 +85,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   announce_admitted: 'var(--good)',
   announce_pending: 'var(--warn)',
   announce_rejected: 'var(--warn)',
+  announce_clock_skew: 'var(--warn)',
   announce_error: 'var(--bad)',
   merge_error: 'var(--bad)',
   rekey_grant_failed: 'var(--bad)',
@@ -111,6 +115,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   announce_admitted: '➕',
   announce_pending: '⏳',
   announce_rejected: '⛔',
+  announce_clock_skew: '🕒',
   announce_error: '✗',
   merge_error: '✗',
   rekey_grant_failed: '✗',
