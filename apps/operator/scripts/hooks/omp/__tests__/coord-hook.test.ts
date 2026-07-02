@@ -24,6 +24,9 @@ import {
   formatInboxDelta,
   formatSymlinkRefusal,
   formatTurnStartReminder,
+  isNativeToolSearch,
+  extractToolSearchQuery,
+  formatToolFindRedirect,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -2062,5 +2065,77 @@ describe('callMcpTool workspace scoping (scoped-superuser clamp fix)', () => {
     delete process.env.PAPERCUSP_WORKSPACE;
     await callMcpTool('coord:inbox', {}, { mcpUrl: 'http://op/api/mcp?superuser=1', bearer: 'x', workspace: '' });
     expect(headers['x-papercusp-workspace']).toBeUndefined();
+  });
+});
+
+// ── search_tool_bm25 off-ramp closure (weak-model-tool-tier-2026-07-01 / ornith) ──────────────
+// The trimmed surface gives a weak/local model tools:find + tools:invoke as its ONLY discovery
+// path; onToolCall blocks OMP's native search_tool_bm25 for agent sessions and redirects to
+// tools:find. These cover the pure pieces (the I/O redirect buildToolFindRedirect is verified at
+// deploy against a live operator, per this file's header).
+
+describe('isNativeToolSearch', () => {
+  it('matches OMP native search_tool_bm25 case-insensitively', () => {
+    expect(isNativeToolSearch('search_tool_bm25')).toBe(true);
+    expect(isNativeToolSearch('SEARCH_TOOL_BM25')).toBe(true);
+  });
+  it('does not match our discovery tools or anything else', () => {
+    expect(isNativeToolSearch('tools:find')).toBe(false);
+    expect(isNativeToolSearch('tools:invoke')).toBe(false);
+    expect(isNativeToolSearch('coord:send')).toBe(false);
+    expect(isNativeToolSearch('bash')).toBe(false);
+    expect(isNativeToolSearch('search')).toBe(false);
+  });
+});
+
+describe('extractToolSearchQuery', () => {
+  it('reads the canonical query field (trimmed)', () => {
+    expect(extractToolSearchQuery({ query: '  feature flags  ' })).toBe('feature flags');
+  });
+  it('tolerates the alternate field names OMP might use', () => {
+    expect(extractToolSearchQuery({ keyword: 'spawn a worker' })).toBe('spawn a worker');
+    expect(extractToolSearchQuery({ q: 'locks' })).toBe('locks');
+  });
+  it('falls back to the first non-empty string value for an unknown field', () => {
+    expect(extractToolSearchQuery({ somethingElse: 'send message' })).toBe('send message');
+  });
+  it('returns empty string when there is no usable query', () => {
+    expect(extractToolSearchQuery({})).toBe('');
+    expect(extractToolSearchQuery(undefined)).toBe('');
+    expect(extractToolSearchQuery({ query: '   ' })).toBe('');
+    expect(extractToolSearchQuery({ limit: 5 })).toBe('');
+  });
+});
+
+describe('formatToolFindRedirect', () => {
+  it('renders the tools:find matches inline as the suggestion (first description line only)', () => {
+    const reason = formatToolFindRedirect('spawn a worker', [
+      { tool: 'fleet:spawn', description: 'Spawn one agent of a role into a harness.\nMore detail.' },
+      { tool: 'work_items:claim_next', description: 'Claim the oldest unclaimed work-item.' },
+    ]);
+    expect(reason).toContain('search_tool_bm25 is disabled');
+    expect(reason).toContain('tools:find');
+    expect(reason).toContain('• fleet:spawn — Spawn one agent of a role into a harness.');
+    expect(reason).toContain('• work_items:claim_next');
+    expect(reason).toContain('tools:invoke');
+    // first line of the description only — never the whole multi-line schema dump
+    expect(reason).not.toContain('More detail.');
+  });
+  it('degrades to a plain instruction when tools:find returned no matches', () => {
+    const reason = formatToolFindRedirect('nonsense zzz', []);
+    expect(reason).toContain('no matches');
+    expect(reason).toContain('tools:find');
+    expect(reason).not.toContain('•');
+  });
+  it('handles a missing query without crashing (still redirects)', () => {
+    const reason = formatToolFindRedirect('', [{ tool: 'x' }]);
+    expect(reason).toContain('search_tool_bm25 is disabled');
+    expect(reason).toContain('tools:find("<what you need>")');
+    expect(reason).not.toContain('• x');
+  });
+  it('skips hits with no tool name', () => {
+    const reason = formatToolFindRedirect('q', [{ description: 'no name' }, { tool: 'coord:send' }]);
+    expect(reason).toContain('• coord:send');
+    expect(reason).not.toContain('no name');
   });
 });

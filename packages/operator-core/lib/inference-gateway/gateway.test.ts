@@ -2293,6 +2293,84 @@ test('[B-GW-1 G1] FLEET-WIDE bare-burst → rotate-retry SUPPRESSED (no cross-ac
   assert.equal(s.inFlight, 0, 'no admission slot leaked');
 }, 30_000);
 
+test('[B-GW-1 G6] fleet-CONCURRENCY bare-burst regression rig: N real concurrent client requests hit a MOCK upstream enforcing a bare-burst limit → cluster-suppress engages, ~1 upstream call/request after absorb, ZERO bee-facing errors (WI-654)', async () => {
+  // WI-654 (BRIEF G6): the [B-GW-1 G1] test above proves the suppression MECHANISM on a single request with
+  // the pool's exhaustion state manually poisoned (pool.onExhausted called by hand). This test is the load-test
+  // REGRESSION RIG G6 asked for: fire a genuine fleet-CONCURRENCY burst (N real, simultaneous client requests,
+  // no manual pool-state poisoning) against a mock upstream that enforces the G2-measured shared/aggregate
+  // bare-burst limit (WI-650 D-001) — every account's FIRST hit during the burst bare-429s (x-should-retry-shaped:
+  // no rate-limit window headers, a bare `rate_limit_error`), capacity returns on the second hit. It measures
+  // exactly the three signals G6 named: upstream429 (internal 429s absorbed), bee-facing forwarded errors (the
+  // client-visible status codes — must be ZERO, the storm must be invisible to the bee), and upstream-calls-per-
+  // client-request (must stay ≈2, i.e. bounded — NOT the ~2.4×+ multi-hop rotation cascade the pre-G1 code
+  // produced under fleet-wide saturation). A future regression that reintroduces rotate-under-fleet-wide-burst
+  // would blow up calls-per-request and/or start forwarding 429s to the bee — this test would go red.
+  resetGovernorRegistry();
+  const ACCOUNTS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+  const pool = createFailoverPool(ACCOUNTS.map(acct));
+  let totalCalls = 0;
+  const callsByAccount = new Map<string, number>();
+  await boot(
+    (req, res) => {
+      totalCalls += 1;
+      const id = String(req.headers['authorization'] ?? '').replace(/^Bearer\s+/, '').replace(/-tok$/, '');
+      const seen = (callsByAccount.get(id) ?? 0) + 1;
+      callsByAccount.set(id, seen);
+      if (seen === 1) {
+        // Every account's FIRST hit during the burst is bare-429'd — WI-650 D-001: the limit is a SHARED
+        // edge throttle bursting most of the pool at once, not a per-account wall (no window headers).
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+      } else {
+        // The shared burst has cleared for this account by the time it's retried.
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, content: 'served' }));
+      }
+    },
+    { pool, governorFor: undefined, concurrency: ACCOUNTS.length * 2, aimd: { floor: 2 } },
+  );
+
+  const N = ACCOUNTS.length;
+  const statuses = await Promise.all(
+    Array.from({ length: N }, () =>
+      post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }).then(async (r) => {
+        await r.text();
+        return r.status;
+      }),
+    ),
+  );
+
+  const s = (await (await ask('/stats')).json()) as {
+    upstream429: number;
+    failovers: number;
+    bareBurstRotateSuppressed: number;
+    inFlight: number;
+  };
+
+  // Bee-facing: the entire fleet-wide burst must be ABSORBED — zero forwarded errors reach the client.
+  const beeFacingErrors = statuses.filter((st) => st !== 200);
+  assert.deepEqual(beeFacingErrors, [], `every one of ${N} concurrent requests recovered to 200 — the burst must be invisible to the bee (got statuses ${JSON.stringify(statuses)})`);
+
+  // upstream429: the mock genuinely bare-429'd (the burst was really exercised, not a no-op scenario).
+  assert.ok(s.upstream429 >= N - 1, `at least ${N - 1} accounts hit their first-round bare-429 (got upstream429=${s.upstream429})`);
+
+  // The suppressor engaged repeatedly — this is a genuine multi-account fleet-wide event, not the
+  // already-covered single-request/manually-poisoned scenario.
+  assert.ok(s.bareBurstRotateSuppressed >= N - 2, `cluster-suppress engaged for most of the burst (got ${s.bareBurstRotateSuppressed}, wanted >= ${N - 2})`);
+
+  // ZERO or at most ONE cross-account rotation (the very first bare-429 processed, before 2 distinct accounts
+  // have clustered — see BAREBURST_CLUSTER_MIN_ACCOUNTS). NOT the cascading multi-hop rotation the pre-G1 code
+  // would do under fleet-wide saturation.
+  assert.ok(s.failovers <= 1, `at most one early cross-account rotation before cluster-suppress engaged (got failovers=${s.failovers})`);
+
+  // upstream-calls-per-client-request stays ≈2 (one bare-429 + one absorbed retry), not a multi-hop blowup.
+  const callsPerRequest = totalCalls / N;
+  assert.ok(callsPerRequest <= 2.5, `upstream-calls-per-client-request stayed bounded (got ${callsPerRequest.toFixed(2)}, wanted <= 2.5 — the pre-G1 code observed ~2.4x+ from cross-account rotation cascades)`);
+
+  assert.equal(s.inFlight, 0, 'no admission slot leaked');
+}, 30_000);
+
 test('[soft-pin] a PINNED request whose account is BUSY-but-serviceable STAYS pinned (dedicated-pin redesign 2026-07-01)', async () => {
   // Supersedes the 2026-06-23 pinned-concentration yield: load alone must NEVER divert a pin. Diverting a
   // pinned session off its warm per-credential cache costs a cold-cache first turn (observed live on

@@ -148,16 +148,73 @@ export async function probeBgHostTicker(now: number = Date.now()): Promise<Probe
   }
 }
 
+/**
+ * WI-899 (A): liveness of the SUBSTRATE_SIDECAR process — a SEPARATE process from
+ * :3070 that owns the federation engine (Corestore + own-log + merge/projection loop
+ * + swarm/admission) when the flag is ON. Before this, `sidecar:healthz` was called
+ * exactly once at boot (substrate-boot-wrapper.ts) and NEVER polled again — a sidecar
+ * that died post-boot kept reading "healthy" everywhere (getInProcessSubstrateStatus
+ * hardcoded `handlePresent: true` over the still-cached boot-time proxies), which is
+ * exactly the class of silent failure this whole federation-observability plan chases.
+ *
+ * Fail-soft + flag-aware: SUBSTRATE_SIDECAR OFF (the default) ⇒ `present: false`
+ * (nothing to probe, never a phantom DOWN — mirrors `probeBgHostTicker`'s unknown-is-
+ * silent contract). ON + the healthz RPC succeeds within `timeoutMs` ⇒ up. ON + the
+ * RPC throws/times out ⇒ DOWN with a note naming the sidecar specifically (so the
+ * reader doesn't restart :3070 instead, the same pitfall `evaluateBgHostTicker`'s note
+ * guards against).
+ */
+export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResult> {
+  const name = 'substrate-sidecar';
+  const start = Date.now();
+  let sidecarOn = false;
+  try {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    sidecarOn = await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system');
+  } catch {
+    // Flag-read failure: liveness unknown, never fabricate a verdict either way.
+    return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'sidecar liveness unknown (flag read failed)' };
+  }
+  if (!sidecarOn) {
+    return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'SUBSTRATE_SIDECAR flag off — no sidecar to probe' };
+  }
+  try {
+    const { getSubstrateIpcClient } = await import('./sync/hyperbee/substrate-ipc-client');
+    const client = getSubstrateIpcClient();
+    await Promise.race([
+      client.call('sidecar:healthz'),
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error('healthz probe timeout')), timeoutMs)),
+    ]);
+    return { name, up: true, status: null, latencyMs: Date.now() - start, note: 'sidecar:healthz OK' };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name,
+      up: false,
+      status: null,
+      latencyMs: Date.now() - start,
+      note: `⚠ substrate sidecar DOWN (healthz: ${msg}) — the SEPARATE process that owns federation ` +
+        `replication (Corestore/merge/swarm) for this install. Boot-time handle proxies stay cached in ` +
+        `the main process regardless, so federation-status/boot-health can still read "booted" for a ` +
+        `dead sidecar — this probe is the actual liveness signal. Respawn the sidecar (or dev:restart if ` +
+        `it won't respawn), not :3070.`,
+    };
+  }
+}
+
 export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
-  // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832).
-  const [http, desktop, bgHostTicker] = await Promise.all([
+  // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832);
+  // the substrate sidecar (WI-899) is a third portless process, probed via its own IPC RPC.
+  const [http, desktop, bgHostTicker, substrateSidecar] = await Promise.all([
     Promise.all(specs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
+    probeSubstrateSidecar(),
   ]);
-  return [...http, desktop, bgHostTicker];
+  return [...http, desktop, bgHostTicker, substrateSidecar];
 }
 
 export interface HealthTransition {
