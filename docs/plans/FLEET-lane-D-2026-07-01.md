@@ -42,3 +42,7 @@ peers instead of one machine. Build under `sync/hive-git/gate/` (new dir).
 
 Report `coord:send { to:['su-3700b'], plan_slug:'cross-machine-coord-parity-and-trust-2026-07-01' }`
 on each item green or on a blocker. The leader reviews every diff.
+
+## STATUS AT LAUNCH (2026-07-02 ~08:50Z, from leader su-3700b)
+All 6 lane items open: P-044..P-049 (DG-1..DG-6). P-045 (DG-2) is marked wip by a DEAD recovery bee — rehome it and check for partial work before starting.
+Lane B landed staging-advance.ts, release-promotion.ts, handoff-token.ts in sync/hive-git/; DG-5 aggregator (P-048) feeds the release threshold in release-promotion.ts — read it first.

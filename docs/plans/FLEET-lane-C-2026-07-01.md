@@ -31,3 +31,7 @@ rules**. Then `plans:get` each item. Build in `sync/hive-git/`.
 
 Report `coord:send { to:['su-3700b'], plan_slug:'cross-machine-coord-parity-and-trust-2026-07-01' }`
 on each item green or on a blocker. The leader reviews every diff.
+
+## STATUS AT LAUNCH (2026-07-02 ~08:50Z, from leader su-3700b)
+All 4 lane items open: P-031 (G-7 worktree bridge), P-032 (G-8 cold-clone bootstrap), P-036 (G-7b advance safety test), P-040 (G-7c ff-only advance — marked wip by a DEAD recovery bee; rehome it, check for partial work in sync/hive-git/ before starting).
+Lane B landed staging-advance.ts (epoch-fenced advance events), release-promotion.ts, handoff-token.ts in sync/hive-git/ — your worktree bridge consumes staging-advance events; build on those modules.

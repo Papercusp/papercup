@@ -37,3 +37,8 @@ Work these items, in order, each with tests + `plans:set-status … done`:
 
 Report `coord:send { to:['su-3700b'], plan_slug:'cross-machine-coord-parity-and-trust-2026-07-01' }`
 on each item green, on a blocker, or before editing a SHARED file. The leader reviews every diff.
+
+## STATUS AT LAUNCH (2026-07-02 ~08:50Z, from leader su-3700b)
+P-041 (G-1b scope) and P-042 (G-9 GC) are ALREADY DONE — landed with tests. Do NOT redo them.
+Your remaining lane: **P-030 (G-6 canonical-ref/crefs rules)** and **P-035 (G-5c integration-requests queue)**.
+Lane B already landed staging-advance.ts, release-promotion.ts, handoff-token.ts in sync/hive-git/ — build on them, don't duplicate.
