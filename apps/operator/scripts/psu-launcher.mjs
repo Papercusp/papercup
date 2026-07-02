@@ -748,6 +748,96 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
 }
 
 /**
+ * Durable native-session-id → coordination-ownerId index — the fix for the
+ * untracked-resume identity split (owner bug 2026-07-02): `psu --resume <uuid>`
+ * on a session with no visible adv row fell through to findUntrackedSession,
+ * which knows no coordOwnerId, so resumeEnvFor MINTED a fresh SID. The resumed
+ * body then registered its pty host, took file locks, and answered presence
+ * under the NEW sid while the fleet/coordination plane still addressed the OLD
+ * one — orphaning fleet leadership and locks, and breaking wake/recolor
+ * injection (findLiveHost looks for `<oldSid>.json`, which no longer exists).
+ *
+ * One file per native session id under `~/.papercusp/psu-session-owners/` so
+ * concurrent launches never contend on a shared file. FIRST WRITE WINS: the
+ * binding records the identity the session was BORN with; a later launch under
+ * a different SID (the pre-fix bug, or any future drift) must not rebind it.
+ * The psu-pty registry can't serve this purpose — its json is removed when the
+ * host ends; these entries persist, and that durability is the point.
+ */
+export function sessionOwnersRoot(home = homedir()) {
+  return join(home, '.papercusp', 'psu-session-owners');
+}
+
+/** Record `nativeSessionId → coordOwnerId` (first write wins; `wx` create keeps
+ *  a concurrent double-launch to one winner). Never throws — an index miss only
+ *  costs the old minted-SID behavior, so no launch is ever blocked on it. */
+export function recordSessionOwner(nativeSessionId, coordOwnerId, { home = homedir(), advSessionId = null } = {}) {
+  if (!nativeSessionId || !coordOwnerId) return false;
+  const file = join(sessionOwnersRoot(home), String(nativeSessionId));
+  try {
+    if (existsSync(file)) return false;
+    mkdirSync(sessionOwnersRoot(home), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ v: 1, ownerId: coordOwnerId, advSessionId, recordedAt: new Date().toISOString() }) + '\n',
+      { flag: 'wx' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The coordOwnerId this native session was born with, or null (no entry /
+ *  unreadable / malformed — all degrade to the caller minting, never throw). */
+export function recoverSessionOwner(nativeSessionId, { home = homedir() } = {}) {
+  if (!nativeSessionId) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(sessionOwnersRoot(home), String(nativeSessionId)), 'utf8'));
+    return typeof parsed?.ownerId === 'string' && parsed.ownerId ? parsed.ownerId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The native session id a launch argv identifies AS THIS SESSION, or null.
+ * Precedence matters because a fork's argv names TWO sessions:
+ *   1. `--session-id <uuid>` wins — it declares the launched session's OWN id
+ *      (fresh launches force it; a tracked claude fork emits
+ *      `--resume <orig> --fork-session --session-id <forkId>`, and binding the
+ *      ORIGINAL's id to the fork's fresh SID would poison the index).
+ *   2. `--fork-session` with no forced id → null: the fork's new native id is
+ *      minted by claude at runtime and unknowable here. Codex forks
+ *      (`codex fork <uuid>`) likewise match nothing.
+ *   3. Else `--resume <uuid>` (claude) / `resume <uuid>` subcommand (codex) —
+ *      a plain resume IS the named session. OMP threads are non-UUID names,
+ *      deliberately skipped.
+ * Pure — exported for tests.
+ */
+export function nativeSessionIdFromLaunchArgs(args = []) {
+  const argStrs = args.map((a) => String(a ?? ''));
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if (a === '--session-id' && UUID_RE.test(argStrs[i + 1] ?? '')) return argStrs[i + 1];
+    if (a.startsWith('--session-id=')) {
+      const v = a.slice('--session-id='.length);
+      if (UUID_RE.test(v)) return v;
+    }
+  }
+  if (argStrs.includes('--fork-session')) return null;
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if ((a === '--resume' || a === 'resume') && UUID_RE.test(argStrs[i + 1] ?? '')) return argStrs[i + 1];
+    if (a.startsWith('--resume=')) {
+      const v = a.slice('--resume='.length);
+      if (UUID_RE.test(v)) return v;
+    }
+  }
+  return null;
+}
+
+/**
  * Does claude's OWN store hold a transcript for this session id? A tracked
  * adv row alone doesn't prove resumability: a launch that died before its
  * first persisted turn leaves the adv row behind with NO
@@ -2221,6 +2311,15 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // it. The discovery key is the coord ownerId (PAPERCUSP_SID); without one the
   // operator can't find the socket, so we keep the plain launch.
   const ownerId = env.PAPERCUSP_SID || null;
+  // identity-split fix (2026-07-02): durably bind this launch's native session
+  // id → coord ownerId so a FUTURE untracked resume recovers the same identity
+  // instead of minting a fresh SID (see recordSessionOwner). First write wins,
+  // so re-recording on every launch/resume is a no-op for a known session.
+  if (ownerId) {
+    recordSessionOwner(nativeSessionIdFromLaunchArgs(args), ownerId, {
+      advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+    });
+  }
   // liveness-hardening P-004: supervisor beat covers BOTH launch paths below.
   startSupervisorBeat(ownerId);
   if (ownerId && usePtyHost({ env })) {
@@ -2672,7 +2771,16 @@ async function resumeFlow(args = {}) {
       process.exit(1);
     }
 
-    // 3. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
+    // 3. Untracked ≠ identity-less: the psu-session-owners index may still hold
+    //    the coord ownerId this session was BORN with (recorded at every psu
+    //    launch). Recover it so resumeEnvFor re-attaches the session's real
+    //    identity — fleet leadership, file locks, presence, pty-host discovery —
+    //    instead of minting a fresh SID and orphaning all four (the 2026-07-02
+    //    identity-split bug). A fork still mints (resumeEnvFor's fork branch).
+    const bornOwnerId = recoverSessionOwner(untracked.sessionId || untracked.ompThreadId);
+    if (bornOwnerId) untracked.coordOwnerId = bornOwnerId;
+
+    // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
     await confirmUntrackedResume(untracked, args);
     // An untracked session has no adv row to seed a tracked fork from — fork it in

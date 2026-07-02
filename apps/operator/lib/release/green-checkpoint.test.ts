@@ -21,6 +21,7 @@ import {
   attemptFlakeAbsorption,
   ISOLATION_MAX_FILES,
   acquireCheckpointRunLock,
+  checkpointRunLockDir,
   isWorkerPoolCrash,
   parseCrashedWorkspaces,
   attemptWorkerCrashAbsorption,
@@ -165,6 +166,36 @@ describe('acquireCheckpointRunLock', () => {
     });
     expect(second).toMatchObject({ acquired: false, owner: { pid: 123 } });
     first.release();
+  });
+
+  describe('checkpointRunLockDir (per-root lock — cross-lineage starvation fix, 2026-07-02)', () => {
+    it('the same root always maps to the same lock dir (cron-vs-manual still single-flights)', () => {
+      const a = checkpointRunLockDir('/home/x/.papercusp/checkpoint-logs', '/home/x/ws/papercusp');
+      const b = checkpointRunLockDir('/home/x/.papercusp/checkpoint-logs', '/home/x/ws/papercusp');
+      expect(a).toBe(b);
+      expect(a.startsWith('/home/x/.papercusp/checkpoint-logs/')).toBe(true);
+      expect(a).toMatch(/\.green-checkpoint-run-[0-9a-z]+\.lock$/);
+    });
+
+    it('different roots sharing one log dir get DIFFERENT locks (the papercup-root lineage cannot starve the papercusp gate)', () => {
+      const logDir = '/home/x/.papercusp/checkpoint-logs';
+      const cusp = checkpointRunLockDir(logDir, '/home/x/ws/papercusp');
+      const cup = checkpointRunLockDir(logDir, '/home/x/ws/papercup');
+      expect(cusp).not.toBe(cup);
+      // Neither collides with the legacy unsuffixed name old-lineage code still writes.
+      expect(cusp).not.toBe(join(logDir, '.green-checkpoint-run.lock'));
+      expect(cup).not.toBe(join(logDir, '.green-checkpoint-run.lock'));
+    });
+
+    it('two roots contend only on their own lock end-to-end (acquire under root A never blocks root B)', () => {
+      const logDir = join(repo, '.checkpoint-logs');
+      const lockA = acquireCheckpointRunLock(checkpointRunLockDir(logDir, '/ws/rootA'), { pid: 123, isPidAlive: () => true });
+      const lockB = acquireCheckpointRunLock(checkpointRunLockDir(logDir, '/ws/rootB'), { pid: 456, isPidAlive: () => true });
+      expect(lockA.acquired).toBe(true);
+      expect(lockB.acquired).toBe(true); // pre-fix this was the hourly 'skipped-locked'
+      lockA.release();
+      lockB.release();
+    });
   });
 });
 

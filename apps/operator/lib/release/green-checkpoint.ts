@@ -161,6 +161,21 @@ function defaultPidAlive(pid: number): boolean {
  *  HEALTHY in-progress run's lock mid-suite. */
 export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
 
+/** PER-ROOT run-lock dir (2026-07-02): the bare `.green-checkpoint-run.lock` made every
+ *  lineage sharing the DEFAULT ~/.papercusp/checkpoint-logs serialize on ONE lock — the stale
+ *  papercup-root lineage's back-to-back ~40-min suites held it across EVERY papercusp hourly
+ *  fire (11+ consecutive 'skipped-locked', `main` frozen ~21h, deploys dead — WI-1508 is
+ *  quiescing that lineage; this makes the gate immune to the contention class regardless).
+ *  Same per-root pattern as checkpointUnitForRoot (release-checkpoint-launch.ts): the SAME
+ *  root still single-flights (cron-vs-manual, the OOM guard the lock exists for), while
+ *  DIFFERENT roots stop contending — they already isolate via their own checkouts +
+ *  MemoryMax'd runs. The old unsuffixed name is left to old-lineage code; no interference. */
+export function checkpointRunLockDir(logDir: string, integrationRoot: string): string {
+  let h = 0;
+  for (let i = 0; i < integrationRoot.length; i++) h = (h * 31 + integrationRoot.charCodeAt(i)) >>> 0;
+  return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
+}
+
 export function acquireCheckpointRunLock(
   lockDir: string,
   opts: {
@@ -1504,7 +1519,7 @@ if (require.main === module) {
   };
 
   const candidateArg = arg('--candidate');
-  const lock = acquireCheckpointRunLock(path.join(cfg.checkpointLogDir, '.green-checkpoint-run.lock'));
+  const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
   if (!lock.acquired) {
     Promise.all([
       revParse(cfg.integrationRoot, candidateArg ?? cfg.integrationBranch).catch(() => candidateArg ?? cfg.integrationBranch),

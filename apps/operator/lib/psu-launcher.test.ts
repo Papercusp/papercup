@@ -38,6 +38,10 @@ import {
   roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
+  sessionOwnersRoot,
+  recordSessionOwner,
+  recoverSessionOwner,
+  nativeSessionIdFromLaunchArgs,
   claudeStoreHasSession,
   sessionHasTranscript,
   reportSessionEnded,
@@ -1394,6 +1398,76 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
 
   it('returns null for an unknown UUID with no matching file', () => {
     expect(findUntrackedSession(UUID, { home })).toBeNull();
+  });
+});
+
+describe('session-owner index (identity-split fix 2026-07-02 — untracked resume keeps its born SID)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  const FORK_UUID = 'ffffabcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-owners-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('record → recover roundtrips the born coordOwnerId', () => {
+    expect(recordSessionOwner(UUID, 'su-born', { home })).toBe(true);
+    expect(recoverSessionOwner(UUID, { home })).toBe('su-born');
+  });
+
+  it('FIRST WRITE WINS — a later launch under a different SID cannot rebind', () => {
+    expect(recordSessionOwner(UUID, 'su-born', { home })).toBe(true);
+    expect(recordSessionOwner(UUID, 'su-imposter', { home })).toBe(false);
+    expect(recoverSessionOwner(UUID, { home })).toBe('su-born');
+  });
+
+  it('never blocks a launch: missing ids are a no-op, misses/corrupt entries recover null', () => {
+    expect(recordSessionOwner(null, 'su-x', { home })).toBe(false);
+    expect(recordSessionOwner(UUID, null, { home })).toBe(false);
+    expect(recoverSessionOwner(UUID, { home })).toBeNull();
+    expect(recoverSessionOwner(null, { home })).toBeNull();
+    mkdirSync(sessionOwnersRoot(home), { recursive: true });
+    writeFileSync(join(sessionOwnersRoot(home), UUID), 'not json\n');
+    expect(recoverSessionOwner(UUID, { home })).toBeNull();
+  });
+
+  it('carries the adv row id when known (debuggability, not identity)', () => {
+    recordSessionOwner(UUID, 'su-born', { home, advSessionId: '42' });
+    const raw = JSON.parse(readFileSync(join(sessionOwnersRoot(home), UUID), 'utf8'));
+    expect(raw).toMatchObject({ v: 1, ownerId: 'su-born', advSessionId: '42' });
+  });
+
+  it('nativeSessionIdFromLaunchArgs: fresh launch (--session-id) and both resume forms', () => {
+    expect(nativeSessionIdFromLaunchArgs(['--session-id', UUID])).toBe(UUID);
+    expect(nativeSessionIdFromLaunchArgs([`--session-id=${UUID}`])).toBe(UUID);
+    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--dangerously-skip-permissions'])).toBe(UUID);
+    expect(nativeSessionIdFromLaunchArgs([`--resume=${UUID}`])).toBe(UUID);
+    expect(nativeSessionIdFromLaunchArgs(['resume', UUID])).toBe(UUID); // codex subcommand
+  });
+
+  it('nativeSessionIdFromLaunchArgs: a tracked fork binds the FORK id, never the original', () => {
+    // launchTrackedFork argv shape: claude --resume <orig> --fork-session --session-id <forkId>
+    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--fork-session', '--session-id', FORK_UUID])).toBe(FORK_UUID);
+  });
+
+  it('nativeSessionIdFromLaunchArgs: a fork with no forced id binds NOTHING (new id unknowable)', () => {
+    expect(nativeSessionIdFromLaunchArgs(['--resume', UUID, '--fork-session'])).toBeNull();
+    expect(nativeSessionIdFromLaunchArgs(['fork', UUID])).toBeNull(); // codex fork
+  });
+
+  it('nativeSessionIdFromLaunchArgs: non-UUID values and empty argv match nothing', () => {
+    expect(nativeSessionIdFromLaunchArgs(['--resume', 'my-omp-thread'])).toBeNull();
+    expect(nativeSessionIdFromLaunchArgs([])).toBeNull();
+    expect(nativeSessionIdFromLaunchArgs()).toBeNull();
+  });
+
+  it('END-TO-END: the untracked-resume path re-attaches the born identity instead of minting', () => {
+    // Launch time (runWrapper): the fresh session recorded its binding.
+    recordSessionOwner(nativeSessionIdFromLaunchArgs(['--session-id', UUID]), 'su-born', { home });
+    // Later, the adv row is gone → findUntrackedSession knows no identity…
+    const untracked = { agent: 'claude', sessionId: UUID, cwd: '/x', untracked: true };
+    // …but resumeFlow recovers the born owner before resumeEnvFor can mint.
+    const born = recoverSessionOwner(untracked.sessionId, { home });
+    if (born) (untracked as { coordOwnerId?: string }).coordOwnerId = born;
+    expect(resumeEnvFor(untracked, { mintSid: () => 'su-freshly-minted' }).PAPERCUSP_SID).toBe('su-born');
   });
 });
 
