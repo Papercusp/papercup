@@ -92,3 +92,17 @@ DRILL LOG (2026-07-02):
   (mcp-call flag) on drill calls. Full loop (peer re-fire) needs an iMac awaiter.
 - Review gate: both Lane C HIGH fixes RE-VERIFIED PASS 10:03Z (su-89b88).
   Release gate: fresh verdict run in flight, su-1c2e7 watching → deploy.
+- D5 RUN 11:05Z (su-3700b, self-serve leg): authored probe spec
+  beeId=live1-d5-probe-su3700b via scheduler:set_claim_spec (revision 1).
+  Capture PASS: outbox id 5929755, table bee_claim_specs, harness_slug
+  papercusp. Mig-439 stamp PASS: fed_hlc 001782989946429:00000 non-null.
+  Drain leg **FAIL → WI-1564 (major)**: row stranded under workspace_id
+  'default' — the tool handler omits workspaceId, the store falls back to
+  DEFAULT_COORD_WORKSPACE, and outbox-drain only serves the booted
+  (papercusp-workspace, papercusp) handle (5,234 drained rows there; ALL
+  137 (default, papercusp) rows undrained, incl. coord_threads/
+  coord_conversations from TODAY and 124 contributor_usage_events — a
+  writer-side workspace-threading bug CLASS, not just claim-specs).
+  Cross-machine claim-spec steering never federates via this tool as-is.
+  Per failure protocol: D6 stays closed until fixed + D5 re-drilled.
+  Fix dispatched to Lane A (su-89b88).
