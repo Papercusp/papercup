@@ -173,6 +173,10 @@ export interface QueenBriefInput {
   /** The Queen's carry-JOURNAL, NEWEST FIRST (queen-memory-hybrid L1a) — her
    *  recent wake notes rendered as the trajectory section. */
   carryJournal?: Array<{ at: number; note: string }> | null;
+  /** STANDING FACTS (queen-memory-hybrid L1c) — pre-rendered deterministic fold
+   *  block (agent-facts renderFactsFold over workspace + role:queen + harness
+   *  scopes). Delivered verbatim every wake until expiry/retraction. */
+  factsFold?: string | null;
   /** Override the default per-section caps. */
   caps?: Partial<QueenBriefCaps>;
   /** Override text-size caps. Intended for tests and emergency tuning only. */
@@ -463,6 +467,16 @@ export function renderQueenBrief(input: QueenBriefInput): string {
         : '- ⚠ OVERWATCH DARK — your supervisor has gone silent. ESCALATE (coord:escalate / owner); ' +
             'do not assume the system is being watched. You cannot relaunch overwatch — that is structural.',
     );
+  }
+
+  // STANDING FACTS (queen-memory-hybrid L1c) — deterministic conclusions folded
+  // VERBATIM every wake (assert via facts:assert, retract when stale). Rendered
+  // BEFORE the carry-journal: objective standing state, then subjective intention.
+  const factsFold = (input.factsFold ?? '').trim();
+  if (factsFold) {
+    out.push('');
+    out.push('---');
+    out.push(factsFold);
   }
 
   // CARRY-JOURNAL (queen-memory-hybrid L1a) — additive second half: the Queen's

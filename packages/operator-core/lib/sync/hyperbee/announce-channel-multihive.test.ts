@@ -156,14 +156,20 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
     expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, null))).toBe(true);
   });
 
-  it('the SAME harness re-registered on one topic is de-duped (one channel, one announce)', () => {
+  it('the SAME harness re-registered on one topic reuses the channel but RE-SENDS its announce (WI-1544)', () => {
     const mux = makeFakeMux();
     const socket = { userData: mux };
     openAnnounceChannel(socket, t1, { ourAnnounce: announce('hive1') });
     openAnnounceChannel(socket, t1, { ourAnnounce: announce('hive1') });
+    // Still ONE channel per (protocol, topic) — the mux-level dedup is untouched.
     expect(mux._channels.size).toBe(1);
-    // sentKeys dedups by log_core_key → exactly one send.
-    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['hive1']);
+    // WI-1544 root cause #3 (announce re-flow): a re-registration is a topic
+    // REJOIN over a surviving connection (leave+join, rekey retry) — the remote
+    // may have dropped/lost the first frame, and announces are never re-delivered
+    // otherwise. sentKeys is cleared for the re-registered entry so the flush
+    // re-sends a fresh signed frame; the receive side is idempotent (admitting
+    // the same announce twice is a no-op). Pre-fix this deduped to one send.
+    expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['hive1', 'hive1']);
   });
 
   it('A-003 (a′): TWO harnesses on the SAME topic both get announced on ONE channel', () => {

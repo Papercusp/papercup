@@ -303,7 +303,23 @@ export async function computeQueenWakeBrief(
       ...(capacity ? { capacity } : {}),
       ...(ownerSteering ? { ownerSteering } : {}),
     });
-    return renderQueenBrief({ floor, carryJournal });
+    // L1c: standing-facts fold — deterministic, fail-soft (a facts outage must
+    // never block the brief). workspace + role:queen + this hive's harness scope.
+    const factsFold = await import('../agent-facts/store')
+      .then(async (m) =>
+        m.renderFactsFold(
+          await m.foldFacts(
+            [
+              { scope: 'workspace' },
+              { scope: 'role', scopeRef: 'queen' },
+              { scope: 'harness', scopeRef: installSlug },
+            ],
+            { workspaceId },
+          ),
+        ),
+      )
+      .catch(() => '');
+    return renderQueenBrief({ floor, carryJournal, factsFold });
   } catch (err) {
     console.warn(
       `[queen-brief] precompute failed for '${installSlug}' — Queen falls back to the survey tools:`,
