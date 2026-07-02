@@ -328,4 +328,33 @@ describe('reconcileDoneStatus (validator omitted the validating→passed write)'
       expect(dbc.state.status).toBe('passed');
     }
   });
+
+  test('WI-1542: the pipeline-finalized flip stamps terminal_owner + terminal_completion_ref (completion-integrity gate)', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    const runCalls: unknown[][] = [];
+    const dbc: ReconcileDbClient = {
+      prepare(sql: string) {
+        return {
+          get: () => ({ status: 'validating' }),
+          run: (...params: unknown[]) => {
+            runCalls.push(params);
+            expect(sql).toMatch(/terminal_owner\s*=\s*\?/);
+            expect(sql).toMatch(/terminal_completion_ref\s*=\s*\?/);
+            return {};
+          },
+        };
+      },
+    };
+    const flipped = await reconcileDoneStatus('h', 'F-001', dbc);
+    expect(flipped).toBe(true);
+    // run(updatedTs, terminalOwner, completionRef, harnessSlug, featureId) — the
+    // owner + completionRef must be non-empty so the row is never left
+    // indistinguishable from an anonymous/dedup terminal flip.
+    const [, terminalOwner, completionRef] = runCalls[0];
+    expect(typeof terminalOwner).toBe('string');
+    expect((terminalOwner as string).length).toBeGreaterThan(0);
+    expect(typeof completionRef).toBe('string');
+    expect((completionRef as string).length).toBeGreaterThan(0);
+    expect(completionRef as string).toMatch(/validating.*passed/);
+  });
 });

@@ -71,9 +71,59 @@ describe('joinCanonicalPapercuspHive', () => {
     const res = await joinCanonicalPapercuspHive(INVITE, {
       ...baseDeps(),
       ensureWired: async () => ({ joinInviteTopic: async () => undefined, confirmInviteAnnounce: async () => ({ found: false }) }),
+      listDiscovered: async () => [],
     });
     expect(res.state).toBe('skipped');
     expect(res.reason).toContain('owner offline');
+  });
+
+  // ── WI-1585 (LIVE-1 Avis-iMac strand) — defect A regressions ──────────────
+  // confirmInviteAnnounce only reports a hive that NEWLY appears in its window;
+  // an announce already in the (PG-hydrated) discovered cache is in its `seen`
+  // snapshot and can never be "found". The join must fall through to the
+  // pubkey-PINNED cache match instead of stranding "owner offline" forever.
+  it('WI-1585: confirm miss + pubkey-pinned CACHED announce → joins from the cache', async () => {
+    let joined: { hivePubkey?: string; memberLinks?: string[] } | undefined;
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      ensureWired: async () => ({
+        joinInviteTopic: async () => undefined,
+        confirmInviteAnnounce: async () => ({ found: false }),
+      }),
+      listDiscovered: async () => [
+        { hiveId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['cached-link'] },
+      ],
+      joinHive: async (o) => {
+        joined = o;
+        return { ok: true, hiveSlug: 'papercusp' };
+      },
+    });
+    expect(res.state).toBe('joined');
+    expect(res.slug).toBe('papercusp');
+    expect(joined?.memberLinks).toEqual(['cached-link']);
+    // The hives-row identity stays PINNED to the baked pubkey (P-003).
+    expect(joined?.hivePubkey).toBe('PUB==');
+  });
+
+  it('WI-1585: confirm miss + cached NON-canonical pubkey → still skips (never joins the wrong hive)', async () => {
+    let joinCalled = false;
+    const res = await joinCanonicalPapercuspHive(INVITE, {
+      ...baseDeps(),
+      ensureWired: async () => ({
+        joinInviteTopic: async () => undefined,
+        confirmInviteAnnounce: async () => ({ found: false }),
+      }),
+      listDiscovered: async () => [
+        { hiveId: 'papercusp', hivePubkey: 'EVIL==', memberLinks: ['hijack-link'] },
+      ],
+      joinHive: async () => {
+        joinCalled = true;
+        return { ok: true, hiveSlug: 'papercusp' };
+      },
+    });
+    expect(res.state).toBe('skipped');
+    expect(res.reason).toContain('owner offline');
+    expect(joinCalled).toBe(false);
   });
 
   it('found + member-links → joins → joined', async () => {

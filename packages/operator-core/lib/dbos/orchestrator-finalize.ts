@@ -235,6 +235,15 @@ export interface ReconcileDbClient {
  * (failing/deprecated) are left untouched so a hallucinated DONE over a recorded
  * failure can never force-pass.
  *
+ * Completion-integrity gate (fleet-backlog-lessons-2026-07-01 P-001, WI-1542):
+ * this is a REAL, legitimate terminal transition (the pipeline's own DONE
+ * verdict), but it wrote raw SQL that bypassed `setWorkItemState`'s
+ * terminal_owner/terminal_completion_ref contract entirely — the row landed in
+ * `passed` with BOTH left null, so it was silently excluded from the
+ * genuine-completions metric (P-003) and indistinguishable from an anonymous
+ * dedup flip. Now stamps both explicitly so a pipeline-finalized completion is
+ * as auditable as an agent-driven one.
+ *
  * Returns true when the flip was applied.
  */
 export async function reconcileDoneStatus(
@@ -251,11 +260,12 @@ export async function reconcileDoneStatus(
   // DONE. Skip terminal states (failing, passed, deprecated) so we never force-pass
   // a recorded failure.
   if (status !== 'validating' && status !== 'in_progress') return false;
+  const completionRef = `dbos-finalize: pipeline DONE-gate reconciled ${status}→passed (validator omitted its PG write or the step was skipped)`;
   await dbc
     .prepare(
-      "UPDATE harness_shared.harness_features_consolidated SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND (status = 'validating' OR status = 'in_progress')",
+      "UPDATE harness_shared.harness_features_consolidated SET status = 'passed', updated_ts = ?, terminal_owner = ?, terminal_completion_ref = ? WHERE harness_slug = ? AND feature_id = ? AND (status = 'validating' OR status = 'in_progress')",
     )
-    .run(Date.now(), harnessSlug, featureId);
+    .run(Date.now(), 'system:dbos-orchestrator-finalize', completionRef, harnessSlug, featureId);
   log(
     `[dbos-finalize] ${harnessSlug}/${featureId} status reconciled ${status}→passed (validator omitted the PG write or skipped entirely)`,
   );

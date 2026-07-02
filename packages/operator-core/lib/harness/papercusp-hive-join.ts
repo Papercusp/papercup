@@ -212,13 +212,21 @@ export async function joinCanonicalPapercuspHive(
     await withTimeout(wiring.joinInviteTopic(invite.inviteSecret), wireTimeoutMs, 'join invite topic').catch(() => {});
 
     // 3. Bounded-wait for the owner's hive to actually announce on the topic.
+    //    NOT a hard gate (WI-1585 VM-half defect A): confirmInviteAnnounce only
+    //    reports a hive that NEWLY appears during its poll window — its `seen`
+    //    snapshot is taken from the live discovered set, which the boot wiring
+    //    HYDRATES from the PG offline cache. So an announce already ingested on a
+    //    PRIOR boot (or earlier this process) can NEVER be "found", and a joiner
+    //    that ever cached the canonical announce without completing the join
+    //    (owner offline / announce late at boot — the Avis-iMac LIVE-1 strand)
+    //    was PERMANENTLY unjoinable: every boot skipped "owner offline" while a
+    //    valid pubkey-pinned announce sat in its own cache. The trust anchor is
+    //    the baked-pubkey PIN below — appearance freshness is only a liveness
+    //    hint — so a missed confirm now FALLS THROUGH to the pubkey-pinned
+    //    discovered-cache match instead of returning.
     const confirm = wiring.confirmInviteAnnounce
       ? await wiring.confirmInviteAnnounce(invite.inviteSecret, { timeoutMs: confirmTimeoutMs }).catch(() => null)
       : null;
-    if (!confirm?.found) {
-      record('clone', 'running', { percent: 10, detail: 'waiting for the Papercusp hive to come online' });
-      return { state: 'skipped', slug: null, reason: 'canonical hive not announcing yet (owner offline)' };
-    }
 
     // 4. PIN to the committed pubkey (P-003 trust anchor). The invite topic is a
     //    DISCOVERY channel — ANYONE with the (committed) invite secret can announce
@@ -233,7 +241,7 @@ export async function joinCanonicalPapercuspHive(
     //    the baked one.
     let memberLinks: string[] = [];
     let hiveId: string = PAPERCUSP_HIVE_SLUG;
-    if (confirm.hive?.hivePubkey === invite.pubkeyBase64) {
+    if (confirm?.found && confirm.hive?.hivePubkey === invite.pubkeyBase64) {
       memberLinks = confirm.hive.memberLinks ?? [];
       hiveId = confirm.hive.hiveId ?? PAPERCUSP_HIVE_SLUG;
     }
@@ -243,6 +251,12 @@ export async function joinCanonicalPapercuspHive(
       if (match) {
         hiveId = match.hiveId;
         memberLinks = match.memberLinks ?? [];
+      } else if (!confirm?.found) {
+        // Neither a live announce NOR a cached pubkey-pinned one — the honest
+        // "owner offline / dead secret" skip (G-002 stays honest: an invite
+        // secret nobody announces on still never reports success).
+        record('clone', 'running', { percent: 10, detail: 'waiting for the Papercusp hive to come online' });
+        return { state: 'skipped', slug: null, reason: 'canonical hive not announcing yet (owner offline)' };
       } else if (confirm.hive && confirm.hive.hivePubkey !== invite.pubkeyBase64) {
         // A NON-canonical hive is announcing on our invite topic (pubkey mismatch).
         // Do NOT join it — wait for the canonical owner's announce (retry next boot).

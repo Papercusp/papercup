@@ -43,7 +43,8 @@ vi.mock('protomux', () => ({
   },
 }));
 
-const { wireHiveDirectoryAtBoot } = await import('./hive-directory-boot');
+const { wireHiveDirectoryAtBoot, maybeTriggerCanonicalJoinOnIngest, __resetCanonicalJoinIngestTrigger } =
+  await import('./hive-directory-boot');
 const { HiveDirectory } = await import('./hive-directory');
 const { buildHiveAnnounce } = await import('./sync/hyperbee/hive-announce');
 import type { HiveDirectoryDeps } from './hive-directory';
@@ -419,5 +420,62 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       expect(res.found).toBe(false);
       await wiring.stop();
     });
+  });
+});
+
+// ── WI-1585 defect B: a late CANONICAL announce re-fires the auto-join ────────
+describe('maybeTriggerCanonicalJoinOnIngest (WI-1585 ingest retrigger)', () => {
+  const BAKED = { pubkeyBase64: 'CANON==', inviteSecret: 'sec' };
+  beforeEach(() => __resetCanonicalJoinIngestTrigger());
+
+  it('canonical pubkey + UNJOINED (no hives row) → fires the bootstrap trigger', async () => {
+    let fired = 0;
+    await maybeTriggerCanonicalJoinOnIngest(
+      { hive_pubkey: 'CANON==' },
+      { baked: () => BAKED, getHiveByPubkey: async () => null, trigger: () => void fired++, nowMs: () => 1_000_000 },
+    );
+    expect(fired).toBe(1);
+  });
+
+  it('non-canonical pubkey → no trigger', async () => {
+    let fired = 0;
+    await maybeTriggerCanonicalJoinOnIngest(
+      { hive_pubkey: 'OTHER==' },
+      { baked: () => BAKED, getHiveByPubkey: async () => null, trigger: () => void fired++, nowMs: () => 1_000_000 },
+    );
+    expect(fired).toBe(0);
+  });
+
+  it('already joined (hives row exists — the P-005 latch) → no trigger', async () => {
+    let fired = 0;
+    await maybeTriggerCanonicalJoinOnIngest(
+      { hive_pubkey: 'CANON==' },
+      { baked: () => BAKED, getHiveByPubkey: async () => ({ homeSlug: 'papercusp' }), trigger: () => void fired++, nowMs: () => 1_000_000 },
+    );
+    expect(fired).toBe(0);
+  });
+
+  it('no baked invite (dark build) → no trigger', async () => {
+    let fired = 0;
+    await maybeTriggerCanonicalJoinOnIngest(
+      { hive_pubkey: 'CANON==' },
+      { baked: () => null, getHiveByPubkey: async () => null, trigger: () => void fired++, nowMs: () => 1_000_000 },
+    );
+    expect(fired).toBe(0);
+  });
+
+  it('debounced: a second canonical ingest within the window does not re-fire; a later one does', async () => {
+    let fired = 0;
+    const deps = (nowMs: number) => ({
+      baked: () => BAKED,
+      getHiveByPubkey: async () => null,
+      trigger: () => void fired++,
+      nowMs: () => nowMs,
+    });
+    await maybeTriggerCanonicalJoinOnIngest({ hive_pubkey: 'CANON==' }, deps(1_000_000));
+    await maybeTriggerCanonicalJoinOnIngest({ hive_pubkey: 'CANON==' }, deps(1_030_000)); // +30s — inside the 60s window
+    expect(fired).toBe(1);
+    await maybeTriggerCanonicalJoinOnIngest({ hive_pubkey: 'CANON==' }, deps(1_070_000)); // +70s — past the window
+    expect(fired).toBe(2);
   });
 });

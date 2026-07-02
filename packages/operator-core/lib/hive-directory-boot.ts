@@ -99,6 +99,59 @@ export interface HiveDirectoryWiring {
   stop(): Promise<void>;
 }
 
+// ── WI-1585 VM-half defect B: retry the canonical auto-join on ingest ─────────
+// The canonical `papercusp` auto-join used to fire ONLY at boot and from the
+// setup wizard. An announce that arrives AFTER those (owner came online late;
+// joiner booted while the owner was quiet — the Avis-iMac LIVE-1 strand) was
+// passively cached by this module's ingest and NOTHING ever re-fired the join:
+// the joiner sat "discovered but never joined" until the next app restart. So:
+// whenever an announce whose pubkey matches the BAKED canonical invite is
+// ACCEPTED and this box has no hives row for it yet (the P-005 fire-once latch
+// misses ⇒ unjoined), re-fire the single-flight bootstrap. Debounced; every
+// failure is a silent no-op — the 5-min re-announce cadence retries.
+const CANONICAL_JOIN_RETRIGGER_MIN_MS = 60_000;
+let _canonicalJoinLastTriggerMs = 0;
+
+/** Test seam — reset the ingest-retrigger debounce between cases. */
+export function __resetCanonicalJoinIngestTrigger(): void {
+  _canonicalJoinLastTriggerMs = 0;
+}
+
+/** Injectable seams for maybeTriggerCanonicalJoinOnIngest (unit tests). */
+export interface CanonicalJoinIngestDeps {
+  baked?: () => { pubkeyBase64: string; inviteSecret: string } | null;
+  /** The P-005 latch read: a hives row keyed by the baked pubkey ⇒ already joined. */
+  getHiveByPubkey?: (workspaceId: string, pubkeyBase64: string) => Promise<unknown>;
+  /** Fire the (single-flight) bootstrap. Default: startBootstrapPapercuspHive. */
+  trigger?: () => void;
+  nowMs?: () => number;
+}
+
+export async function maybeTriggerCanonicalJoinOnIngest(
+  frame: { hive_pubkey?: string },
+  deps: CanonicalJoinIngestDeps = {},
+): Promise<void> {
+  const baked = (deps.baked ?? bakedCanonicalHiveInvite)();
+  if (!baked || frame.hive_pubkey !== baked.pubkeyBase64) return;
+  const now = (deps.nowMs ?? Date.now)();
+  if (now - _canonicalJoinLastTriggerMs < CANONICAL_JOIN_RETRIGGER_MIN_MS) return;
+  _canonicalJoinLastTriggerMs = now;
+  const getHive =
+    deps.getHiveByPubkey ??
+    (async (ws: string, pk: string) => (await import('./hive-store')).getHiveByPubkey(ws, pk));
+  const { PAPERCUSP_WORKSPACE_ID } = await import('./harness/papercusp-workspace');
+  const existing = await getHive(PAPERCUSP_WORKSPACE_ID, baked.pubkeyBase64).catch(() => null);
+  if (existing) return; // already joined — the latch holds
+  const trigger =
+    deps.trigger ??
+    (() => {
+      void import('./harness/bootstrap-papercusp-hive')
+        .then((m) => m.startBootstrapPapercuspHive().done.catch(() => {}))
+        .catch(() => {});
+    });
+  trigger();
+}
+
 export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Promise<HiveDirectoryWiring> {
   const dir = opts.dir ?? getHiveDirectory();
 
@@ -138,9 +191,8 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
     // missing bus is a no-op); only an ACCEPTED ingest is a real change worth a
     // push (a rejected/superseded/muted frame leaves the set untouched).
     onAnnounce: async (frame) => {
-      const res = isHiveUnlistFrame(frame)
-        ? await dir.ingestUnlist(frame)
-        : await dir.ingestAnnounce(frame);
+      const unlist = isHiveUnlistFrame(frame);
+      const res = unlist ? await dir.ingestUnlist(frame) : await dir.ingestAnnounce(frame);
       if (res.accepted) {
         void import('./sync-sse')
           .then((m) => {
@@ -148,6 +200,9 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
             void m.notifySyncInvalidate('network.federationStatus').catch(() => {});
           })
           .catch(() => {});
+        // WI-1585 defect B: a late canonical announce re-fires the auto-join
+        // (no-op when already joined / non-canonical / debounced — see above).
+        if (!unlist) void maybeTriggerCanonicalJoinOnIngest(frame as SignedHiveAnnounce).catch(() => {});
       }
       return res;
     },

@@ -77,14 +77,17 @@ export async function reapStaleSharedPresence(
     ttlMs ??= cfg.sharedPresenceReaperTtlMs ?? COORD_LIVENESS_DEFAULTS.sharedPresenceReaperTtlMs;
     cap ??= cfg.sharedPresenceMaxRowsPerDevice ?? COORD_LIVENESS_DEFAULTS.sharedPresenceMaxRowsPerDevice;
   }
-  const floor = new Date((opts.nowMs ?? Date.now()) - ttlMs);
+  // ISO string + explicit cast, NOT a Date object: the org PG client (`getOrgPg`)
+  // rejects a raw Date bind param ("The string argument must be … Received an
+  // instance of Date") — see the `org-pg-client-rejects-raw-date` memory / EI-2549.
+  const floorIso = new Date((opts.nowMs ?? Date.now()) - ttlMs).toISOString();
 
   // 1. TTL — a row older than the reaper TTL is well past every reader's window.
   const pTtl = await sql`
-    DELETE FROM harness_shared.shared_presence WHERE last_seen_at < ${floor}
+    DELETE FROM harness_shared.shared_presence WHERE last_seen_at < ${floorIso}::timestamptz
   `;
   const sTtl = await sql`
-    DELETE FROM harness_shared.shared_session_presence WHERE last_seen_at < ${floor}
+    DELETE FROM harness_shared.shared_session_presence WHERE last_seen_at < ${floorIso}::timestamptz
   `;
 
   // 2. Per-device cap — keep the `cap` most-recent rows per (workspace, device),
