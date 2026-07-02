@@ -16,6 +16,8 @@
  * unit-testable (no DB, no Date.now()).
  */
 
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+
 /** The reserved host slug the workspace-singleton cadence rows live under. */
 export const SINGLETON_HOST_SLUG = '@singleton';
 
@@ -109,16 +111,15 @@ export function computeLearningLoopHealth(
      * the scheduler claimed a fire that the loop body did not prove. Default 5m.
      */
     activityLagGraceMs?: number;
-    /** Operator-home harness slug the legacy (per-home) learning row lives under. Default
-     *  'papercusp' (post papercup→papercusp migration, 2026-06-20); the live tool passes the
-     *  resolved home (operatorHomeHarnessSlug). */
+    /** Operator-home harness slug the legacy (per-home) learning row lives under. Defaults to
+     *  the resolved operator home harness slug. */
     homeSlug?: string;
   },
 ): LearningLoopHealth[] {
   const staleMs = (opts.staleAfterDays ?? DEFAULT_LOOP_STALE_AFTER_DAYS) * DAY_MS;
   const singletonHost = opts.singletonHostSlug ?? SINGLETON_HOST_SLUG;
   const alwaysOnSet = opts.alwaysOn ?? ALWAYS_ON_LEARNING_LOOPS;
-  const legacyHost = opts.homeSlug ?? 'papercusp';
+  const legacyHost = opts.homeSlug ?? operatorHomeHarnessSlug();
   return loops.map((loop) => {
     const sName = singletonRoutineName(loop.blueprintId);
     const singletonRow = routines.find((r) => r.installSlug === singletonHost && r.name === sName) ?? null;

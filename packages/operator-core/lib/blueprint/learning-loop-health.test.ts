@@ -165,8 +165,8 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
   });
 
   it('matches the legacy per-home row when no @singleton row exists', () => {
-    const legacy: LearningRoutineRow = { installSlug: 'papercusp', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) };
-    const [cal] = computeLearningLoopHealth([LOOPS[0]], [legacy], { nowMs: NOW });
+    const legacy: LearningRoutineRow = { installSlug: 'acme-home', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) };
+    const [cal] = computeLearningLoopHealth([LOOPS[0]], [legacy], { nowMs: NOW, homeSlug: 'acme-home' });
     expect(cal.status).toBe('firing');
     expect(cal.legacyRow).not.toBeNull();
     expect(cal.singletonRow).toBeNull();
@@ -175,9 +175,9 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
   it('flags the @singleton↔legacy double-state as a collision (prefers the @singleton row)', () => {
     const both: LearningRoutineRow[] = [
       sRow('calibration', { active: false }),
-      { installSlug: 'papercusp', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) },
+      { installSlug: 'acme-home', name: 'calibration-resolve', active: true, lastFiredAt: daysAgo(0) },
     ];
-    const [cal] = computeLearningLoopHealth([LOOPS[0]], both, { nowMs: NOW });
+    const [cal] = computeLearningLoopHealth([LOOPS[0]], both, { nowMs: NOW, homeSlug: 'acme-home' });
     expect(cal.collision).toBe(true);
     expect(cal.active).toBe(false); // the @singleton row wins
   });

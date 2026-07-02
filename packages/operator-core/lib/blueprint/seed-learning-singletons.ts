@@ -29,6 +29,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import { FLAGS } from '@papercusp/flags';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { isCliEntry } from '../util/cli-entry';
 import {
@@ -114,9 +115,10 @@ async function readLegacyRow(
   workspaceId: string,
   legacyRoutine: string,
 ): Promise<{ active: boolean } | null> {
+  const homeSlug = operatorHomeHarnessSlug();
   const rows = await sql<{ active: boolean }[]>`
     SELECT active FROM harness_shared.routines
-     WHERE install_slug = 'papercup' AND name = ${legacyRoutine} AND workspace_id = ${workspaceId}
+     WHERE install_slug = ${homeSlug} AND name = ${legacyRoutine} AND workspace_id = ${workspaceId}
   `;
   return rows.length ? { active: rows[0].active } : null;
 }
@@ -144,6 +146,7 @@ export async function materializeLearningSingletons(
   },
 ): Promise<CutoverResult[]> {
   const log = opts.log ?? (() => {});
+  const homeSlug = operatorHomeHarnessSlug();
   const targets = opts.only
     ? LEARNING_SINGLETONS.filter((s) => s.blueprintId === opts.only)
     : LEARNING_SINGLETONS;
@@ -211,7 +214,7 @@ export async function materializeLearningSingletons(
       if (opts.execute) {
         await sql`
           DELETE FROM harness_shared.routines
-           WHERE install_slug = 'papercup' AND name = ${t.legacyRoutine} AND workspace_id = ${workspaceId} AND active = false
+           WHERE install_slug = ${homeSlug} AND name = ${t.legacyRoutine} AND workspace_id = ${workspaceId} AND active = false
         `;
         legacy.deleted = true;
         log(`RETIRED ${t.blueprintId}: deleted dark legacy papercup/${t.legacyRoutine}`);
@@ -261,6 +264,7 @@ export async function cutoverActiveLearningSingleton(
   opts: { execute: boolean; log?: (m: string) => void },
 ): Promise<ActiveCutoverResult> {
   const log = opts.log ?? (() => {});
+  const homeSlug = operatorHomeHarnessSlug();
   const { blueprint } = loadBuiltinBlueprint(entry.blueprintId);
   const singletonName =
     triggerRoutineSpecs(blueprint).find((s) => s.singleton)?.name ?? `bp-singleton-${entry.blueprintId}-0`;
@@ -268,7 +272,7 @@ export async function cutoverActiveLearningSingleton(
 
   const legacy = await sql<{ active: boolean }[]>`
     SELECT active FROM harness_shared.routines
-     WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
+     WHERE install_slug=${homeSlug} AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
   if (legacy.length === 0) {
     log(`SKIP ${entry.blueprintId}: no legacy papercup/${entry.legacyRoutine} row`);
     return { blueprintId: entry.blueprintId, found: false, legacyActive: false, cutOver: false, singletonName, skipped: 'not-found' };
@@ -294,7 +298,7 @@ export async function cutoverActiveLearningSingleton(
              concurrency, catchup, active, last_fired_at, next_fire_at,
              workspace_id, metadata, now(), now()
         FROM harness_shared.routines
-       WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}
+       WHERE install_slug=${homeSlug} AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}
       ON CONFLICT (install_slug, name) DO UPDATE SET
         trigger_config = EXCLUDED.trigger_config, target_role = EXCLUDED.target_role,
         payload_template = EXCLUDED.payload_template, concurrency = EXCLUDED.concurrency,
@@ -302,7 +306,7 @@ export async function cutoverActiveLearningSingleton(
         last_fired_at = EXCLUDED.last_fired_at, next_fire_at = EXCLUDED.next_fire_at, updated_at = now()`;
     await tx`
       DELETE FROM harness_shared.routines
-       WHERE install_slug='papercup' AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
+       WHERE install_slug=${homeSlug} AND name=${entry.legacyRoutine} AND workspace_id=${workspaceId}`;
   });
   log(`CUT OVER ${entry.blueprintId}: ACTIVE papercup/${entry.legacyRoutine} → @singleton/${singletonName} (behavior-neutral copy)`);
   return { blueprintId: entry.blueprintId, found: true, legacyActive: true, cutOver: true, singletonName };

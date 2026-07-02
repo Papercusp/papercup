@@ -102,6 +102,7 @@ export default defineTool({
     const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {
       nowMs: Date.now(),
       staleAfterDays: args.staleAfterDays,
+      homeSlug: operatorHomeHarnessSlug(),
       activityByBlueprintId: {
         scout: {
           lastActivityAt: lastScoutTickAt == null ? null : new Date(lastScoutTickAt).toISOString(),

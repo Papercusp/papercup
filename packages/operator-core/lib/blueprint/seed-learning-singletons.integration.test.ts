@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 
 const WS = 'ws-seed';
+const HOME = 'acme-home';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -43,6 +44,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('@papercusp/flags', () => ({ FLAGS: { PLATFORM_IMPROVEMENT_LOOPS: 'platform_improvement_loops' } }));
+vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => HOME }));
 
 const { cutoverActiveLearningSingleton, materializeLearningSingletons } = await import('./seed-learning-singletons');
 
@@ -106,7 +108,7 @@ async function insertLegacy(active: boolean, over: Record<string, unknown> = {},
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
        concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id, metadata)
-    VALUES (${`rt_papercup_${entry.legacyRoutine}`}, 'papercup', ${entry.legacyRoutine}, 'schedule',
+    VALUES (${`rt_${HOME}_${entry.legacyRoutine}`}, ${HOME}, ${entry.legacyRoutine}, 'schedule',
             ${rootSql.json((over.trigger_config as object) ?? { cron: '0 0 * * *' })}, 'worker',
             ${rootSql.json((over.payload_template as object) ?? { blueprintId: entry.blueprintId, k: 'v' })},
             'queue', 'skip-old', ${active},
@@ -125,8 +127,8 @@ describe('cutoverActiveLearningSingleton (PG, atomic copy)', () => {
     await insertLegacy(false);
     const r = await cutoverActiveLearningSingleton(rootSql, WS, ENTRY, { execute: true });
     expect(r).toMatchObject({ found: true, legacyActive: false, cutOver: false, skipped: 'legacy-dark' });
-    // untouched: papercup row still there, no @singleton row created
-    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup'`).toHaveLength(1);
+    // untouched: legacy row still there, no @singleton row created
+    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME}`).toHaveLength(1);
     expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='@singleton'`).toHaveLength(0);
   });
 
@@ -134,7 +136,7 @@ describe('cutoverActiveLearningSingleton (PG, atomic copy)', () => {
     await insertLegacy(true);
     const r = await cutoverActiveLearningSingleton(rootSql, WS, ENTRY, { execute: false });
     expect(r).toMatchObject({ found: true, legacyActive: true, cutOver: false });
-    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup'`).toHaveLength(1);
+    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME}`).toHaveLength(1);
     expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='@singleton'`).toHaveLength(0);
   });
 
@@ -143,7 +145,7 @@ describe('cutoverActiveLearningSingleton (PG, atomic copy)', () => {
     const r = await cutoverActiveLearningSingleton(rootSql, WS, ENTRY, { execute: true });
     expect(r).toMatchObject({ found: true, legacyActive: true, cutOver: true, singletonName: 'graduation-singleton' });
 
-    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup'`).toHaveLength(0); // legacy gone
+    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME}`).toHaveLength(0); // legacy gone
     const s = (await rootSql<{ active: boolean; payload_template: Record<string, unknown>; next_fire_at: Date; workspace_id: string; name: string }[]>`
       SELECT active, payload_template, next_fire_at, workspace_id, name
         FROM harness_shared.routines WHERE install_slug='@singleton'`)[0]!;
@@ -175,13 +177,13 @@ describe('materializeLearningSingletons (PG, guards)', () => {
     await insertLegacy(true);
     const [res] = await materializeLearningSingletons(rootSql, WS, { only: 'graduation', execute: true, retireLegacy: true });
     expect(res).toMatchObject({ skipped: 'legacy-active', legacy: { active: true, deleted: false, keptActive: true } });
-    expect(await rootSql`SELECT active FROM harness_shared.routines WHERE install_slug='papercup'`).toMatchObject([{ active: true }]); // untouched
+    expect(await rootSql`SELECT active FROM harness_shared.routines WHERE install_slug=${HOME}`).toMatchObject([{ active: true }]); // untouched
   });
 
   it('retire-legacy deletes the DARK legacy row (active=false guard)', async () => {
     await insertLegacy(false);
     const [res] = await materializeLearningSingletons(rootSql, WS, { only: 'graduation', execute: true, retireLegacy: true });
     expect(res.legacy.deleted).toBe(true);
-    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup'`).toHaveLength(0);
+    expect(await rootSql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME}`).toHaveLength(0);
   });
 });

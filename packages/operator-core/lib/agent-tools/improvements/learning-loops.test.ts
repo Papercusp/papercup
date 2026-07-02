@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({})) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
+vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: vi.fn(() => 'acme-home') }));
 vi.mock('../../blueprint/seed-learning-singletons', () => ({
   LEARNING_SINGLETONS: [{ blueprintId: 'calibration', legacyRoutine: 'calib-legacy' }],
 }));
@@ -59,10 +60,11 @@ describe('improvements:learning_loops handler', () => {
       installSlug: '@singleton', name: 'sg:calibration', active: true,
       lastFiredAt: '2026-01-01T00:00:00.000Z', nextFireAt: null,
     });
+    expect(computeM.mock.calls[0]![2]).toMatchObject({ homeSlug: 'acme-home' });
   });
 
   it('coerces a null/absent active and falls back to the active workspace', async () => {
-    h.rows = [{ install_slug: 'papercup', name: 'calib-legacy', active: null, last_fired_at: null, next_fire_at: new Date('2026-02-01T00:00:00Z') }];
+    h.rows = [{ install_slug: 'acme-home', name: 'calib-legacy', active: null, last_fired_at: null, next_fire_at: new Date('2026-02-01T00:00:00Z') }];
     const b = body(await tool.handler({} as never, {} as never) as Out);
     expect(b.workspaceId).toBe('default'); // no ctx workspace → activeWorkspaceId()
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
