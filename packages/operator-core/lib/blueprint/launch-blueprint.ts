@@ -632,20 +632,16 @@ export async function fireLaunchBlueprint(
   const target = await resolveLaunchTarget(blueprintId, input);
   input = withDefaultLaunchTimeout(input, target.role);
 
-  // queen-brief-cache-assembly B-03/B-04 (D-004): precompute the Queen's wake
-  // brief (ranked hive:survey floor + her carry-note) and thread it through the
-  // /invoke body so she opens already-briefed and skips the ~5 survey round-trips.
-  // ALL Queen wake paths converge here (declared time-wake via system:blueprint-run,
-  // inbox/await fresh-wake, urgent-wake, hive:wake, create), so this one seam covers
-  // them. Fail-soft (null → she calls the tools herself). A caller that already
-  // computed the snapshot (the watchdog, P-008) pre-supplies bodyExtra.queenBrief so
-  // we don't re-survey. Gated on the resolved role so non-Queen launches are untouched.
+  // Queen wake brief: computed at the /invoke ROUTE (harness/spawn.ts), NOT here
+  // (WI-682). This launcher used to precompute it (B-03/B-04), but EI-995 moved
+  // the scheduled queen wakes to the buildLaunchSpawnRequest durable seam which
+  // bypassed this function entirely — every scheduled Queen woke briefless and the
+  // @role:queen parked mailbox rotted undelivered. The route is the one chokepoint
+  // EVERY wake path traverses (durable spawn, direct fire, manual /invoke), so the
+  // compute + slot drain live there. A caller that already computed a snapshot may
+  // still pre-supply bodyExtra.queenBrief — it rides the body and the route
+  // respects it verbatim (no recompute).
   let fireInput = input;
-  if (target.role === 'queen' && input.bodyExtra?.queenBrief == null) {
-    const { computeQueenWakeBrief } = await import('../hive/queen-brief-launch');
-    const brief = await computeQueenWakeBrief(input.workspaceId, input.installSlug, { wokeBy: input.kickoff });
-    if (brief) fireInput = { ...input, bodyExtra: { ...input.bodyExtra, queenBrief: brief } };
-  }
 
   // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Pin the BENCH-hive Queen to opus PER-WAKE — threaded
   // as bodyExtra.spawnModel → the /invoke route → her child's PAPERCUSP_SPAWN_MODEL (the highest-precedence

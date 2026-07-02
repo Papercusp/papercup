@@ -10,7 +10,7 @@
  *
  * Clamped against the caller's model window (context-trimming-tiers D-001):
  * `limit × 1.2 ≤ window − margin` — the spec resolves best-effort via
- * resolveModelSpecForOwner (session settings.json → launch argv); unresolvable
+ * resolveModelSpecForOwner (launch argv → session settings.json); unresolvable
  * clamps against the conservative 200k window.
  */
 import { z } from 'zod';

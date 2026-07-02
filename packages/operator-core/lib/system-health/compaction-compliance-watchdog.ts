@@ -147,9 +147,9 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
   const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [], contextDeaths: [] };
   // Seeding step — one server-side place instead of N spawn paths (D-006).
   // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
-  // default) > the fs/argv model resolver (session settings.json → launch
-  // argv) > the conservative 200k-window default (~158k). An agent's own
-  // config:set-compaction-limit overwrites this at any time.
+  // default) > the argv/fs model resolver (launch argv → session
+  // settings.json) > the conservative 200k-window default (~158k). An agent's
+  // own config:set-compaction-limit overwrites this at any time.
   try {
     const unseeded = await sql<{ owner_id: string }[]>`
       SELECT owner_id

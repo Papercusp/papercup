@@ -418,12 +418,23 @@ const invoke = defineTool({
         env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
       }
     }
-    // queen-brief-cache-assembly B-03 (P-006): the Queen's precomputed wake brief
-    // (ranked survey floor + carry-note), assembled by fireLaunchBlueprint when it
-    // resolves role='queen'. invoke.ts hands it to buildPrompt({ queenBrief }), which
-    // renders it as a <system-reminder> in the volatile tail (D-006). Distinct from
-    // QUEEN_BRIEF (the kickoff / Queen→bee overlay).
-    const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
+    // queen-brief-cache-assembly B-03 (P-006) → moved to THIS route (WI-682): the
+    // Queen's wake brief (ranked survey floor + carry-note + the @role:queen
+    // parked-message drain) is computed HERE, the ONE chokepoint every Queen wake
+    // path actually traverses. It used to live in fireLaunchBlueprint, but EI-995
+    // moved scheduled wakes to the buildLaunchSpawnRequest durable seam which
+    // bypassed it — every scheduled Queen woke briefless and the role:queen
+    // mailbox rotted undelivered for a week (the exact two-chokepoints-drift the
+    // D-011 gateway fix warns about). A caller may still pre-supply body.queenBrief
+    // (respected verbatim); absent that, compute fail-soft — a brief failure never
+    // blocks the wake, she falls back to the survey tools. invoke.ts hands it to
+    // buildPrompt({ queenBrief }) → a <system-reminder> in the volatile tail
+    // (D-006). Distinct from QUEEN_BRIEF (the kickoff / Queen→bee overlay).
+    let queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
+    if (role === 'queen' && !queenWakeBrief.trim()) {
+      const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
+      queenWakeBrief = (await computeQueenWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
+    }
     if (queenWakeBrief.trim()) env.QUEEN_WAKE_BRIEF = queenWakeBrief;
     // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). A per-invocation model spec threaded by
     // fireLaunchBlueprint (bodyExtra.spawnModel) for a BENCH-hive Queen wake → PAPERCUSP_SPAWN_MODEL,

@@ -364,23 +364,14 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'queen' });
     expect(fired[0].timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
-    // queen-brief-cache-assembly B-03: the Queen's precomputed wake brief is threaded
-    // into the fire body (bodyExtra.queenBrief), computed with the kickoff as wokeBy.
-    expect(computeQueenWakeBrief).toHaveBeenCalledWith('ws_test', 'papercup', { wokeBy: 'wake' });
-    expect(fired[0].bodyExtra?.queenBrief).toBe('QUEEN-BRIEF::floor+carrynote');
-  });
-
-  it('a non-Queen launch does NOT compute a Queen wake-brief (gated on role)', async () => {
-    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
-    setLaunchBlueprintFire((input) => {
-      fired.push(input);
-    });
-    await fireLaunchBlueprint('deploy', { ...opts, kickoff: 'go' });
+    // WI-682: the Queen wake brief is computed at the /invoke ROUTE (spawn.ts),
+    // NOT by this launcher — EI-995's durable seam bypassed a launcher-side
+    // compute, so the launcher must not own it. No launch path computes here.
     expect(computeQueenWakeBrief).not.toHaveBeenCalled();
     expect(fired[0].bodyExtra?.queenBrief).toBeUndefined();
   });
 
-  it('a pre-supplied bodyExtra.queenBrief (the watchdog snapshot, P-008) is NOT recomputed', async () => {
+  it('a caller-supplied bodyExtra.queenBrief rides the fire body untouched (the route respects it)', async () => {
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => {
       fired.push(input);
