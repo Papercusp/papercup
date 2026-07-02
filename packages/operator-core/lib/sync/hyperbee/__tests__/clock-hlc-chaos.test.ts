@@ -148,14 +148,16 @@ describe('AC.3 recv dominance — merged HLC dominates local, remote, and physic
     await fc.assert(
       fc.asyncProperty(
         fc.integer({ min: 1, max: 1_000_000 }),
-        fc.integer({ min: 0, max: 5_000_000 }),
+        // remote drift vs physical, kept WITHIN the ε recv bound (600s) — beyond
+        // it recv deliberately refuses to ratchet (WI-1672 poisoning guard, below).
+        fc.integer({ min: -5_000_000, max: 600_000 }),
         fc.integer({ min: 0, max: HLC_MAX_COUNT }),
         fc.integer({ min: 0, max: 5_000_000 }),
-        async (seed, remoteMs, remoteCount, physMs) => {
+        async (seed, remoteDrift, remoteCount, physMs) => {
           const clock = new HlcClock({ physical: chaoticPhysical(seed) });
           for (let i = 0; i < 20; i++) clock.send(); // advance to a chaotic local state
           const local = clock.peek();
-          const remote: Hlc = { ms: remoteMs, count: remoteCount };
+          const remote: Hlc = { ms: Math.max(0, physMs + remoteDrift), count: remoteCount };
           const merged = clock.recv(remote, physMs);
           expect(compareHlc(local, merged)).toBeLessThanOrEqual(0);
           expect(compareHlc(remote, merged)).toBeLessThanOrEqual(0);
@@ -272,10 +274,21 @@ describe('AC.5 convergence under clock chaos — distinct delivery orders conver
   it('recv seam: observing a remote HLC advances the local clock past it (cross-machine happens-before)', () => {
     const local = new HlcClock({ physical: () => 1000 });
     local.send();
-    const remoteHlc = encodeHlc({ ms: 8_000_000, count: 3 }); // a peer far ahead
+    const remoteHlc = encodeHlc({ ms: 500_000, count: 3 }); // a peer ahead, within the ε recv bound
     observeRemoteHlc(remoteHlc, local);
     const after = local.send(); // a later local write must causally follow the remote
     expect(compareHlc(decodeHlc(remoteHlc), after)).toBeLessThan(0);
+  });
+
+  it('recv seam: an ABSURD-future remote HLC does NOT ratchet the clock (WI-1672 amplifier guard)', () => {
+    // One poisoned stamp must not pin the clock (and, re-propagated, the whole
+    // hive) hours-to-years ahead: past the ε bound the ratchet is refused —
+    // the op itself still applies, only the clock advance is skipped.
+    const local = new HlcClock({ physical: () => 1000 });
+    local.send();
+    observeRemoteHlc(encodeHlc({ ms: 8_000_000, count: 3 }), local); // ~2.2h ahead of physical
+    expect(local.peek().ms).toBe(1000);
+    expect(local.send().ms).toBe(1000); // later stamps stay on honest time
   });
 });
 
