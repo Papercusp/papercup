@@ -106,16 +106,35 @@ async function readKnownOwnerIds(workspaceId?: string | null): Promise<string[]>
     remoteSessionOwnerIds(workspaceId),
   ]);
   const ids = new Set<string>();
+  // Collect the LOCAL identities first (this machine's own presence + recorded
+  // live sessions). These are authoritative — a locally-homed ownerId belongs to
+  // the local agent, full stop.
+  const localIds = new Set<string>();
   if (presenceRes.status === 'fulfilled') {
-    for (const p of presenceRes.value) ids.add(p.ownerId);
+    for (const p of presenceRes.value) {
+      ids.add(p.ownerId);
+      localIds.add(p.ownerId);
+    }
   }
   if (recordedRes.status === 'fulfilled') {
     for (const s of recordedRes.value) {
-      if (s.coordOwnerId) ids.add(s.coordOwnerId);
+      if (s.coordOwnerId) {
+        ids.add(s.coordOwnerId);
+        localIds.add(s.coordOwnerId);
+      }
     }
   }
   if (remoteRes.status === 'fulfilled') {
-    for (const id of remoteRes.value) ids.add(id);
+    for (const id of remoteRes.value) {
+      // H1 (audit D-013): a REMOTE session-presence row must NEVER shadow a LOCAL
+      // identity. shared_session_presence is device-signed but owner_id is
+      // sender-declared free text, so an admitted-but-hostile member could gossip a
+      // session claiming a local ownerId (e.g. 'queen' or a local su-<uuid>) to make
+      // coord:send resolve/federate that id to THEIR machine (impersonation +
+      // prefix-ambiguity DoS + partial wake-eavesdrop). The local agent is
+      // authoritative for its own id, so a colliding remote claim is dropped here.
+      if (!localIds.has(id)) ids.add(id);
+    }
   }
   return [...ids];
 }

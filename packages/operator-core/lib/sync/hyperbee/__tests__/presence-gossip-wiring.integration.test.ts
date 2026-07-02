@@ -206,18 +206,20 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     // member could plant a presence row under a FOREIGN hive scope (which the per-hive
     // lock authority scopes by). applyPut now pins hive_slug to binding.hiveHomeSlug,
     // exactly as the sessions path already does.
+    // gh 42 = the member's ATTESTED id (H3 requires it); a distinct machine_label
+    // so this is its own row. The spoofed hive_slug must still be pinned to HIVE.
     channel.inbound!(
       await buildPresencePutFrame(
-        row({ github_user_id: 43, machine_label: 'desktop', hive_slug: 'evil-foreign-hive' }),
+        row({ github_user_id: 42, machine_label: 'desktop', hive_slug: 'evil-foreign-hive' }),
         T0,
         member.sign,
       ),
     );
     await settle(async () =>
-      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=43`).length > 0,
+      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='desktop'`).length > 0,
     );
     const [pinned] = await db.sql<{ hive_slug: string }[]>`
-      SELECT hive_slug FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=43`;
+      SELECT hive_slug FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND machine_label='desktop'`;
     expect(pinned.hive_slug).toBe(HIVE); // never 'evil-foreign-hive'
   });
 

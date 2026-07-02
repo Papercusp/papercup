@@ -1343,11 +1343,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           void (async () => {
             try {
               const { admitAnnouncedPeerAsOwner } = await import('../../hive-membership-admission');
-              const res = await admitAnnouncedPeerAsOwner({
-                workspaceId: opts.workspaceId,
-                harnessSlug: opts.harnessSlug,
-                peer: {
-                  githubUserId: frame.github_user_id,
+              const res = await admitAnnouncedPeerAsOwner(
+                {
+                  workspaceId: opts.workspaceId,
+                  harnessSlug: opts.harnessSlug,
+                  peer: {
+                    githubUserId: frame.github_user_id,
                   githubLogin: frame.github_login,
                   devicePubkey: frame.device_pubkey,
                   attestationGistId: frame.attestation_gist_id,

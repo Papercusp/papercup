@@ -128,7 +128,8 @@ describe('presence frame sign/verify', () => {
 describe('handleInboundPresenceFrame — the gating pipeline', () => {
   function pipelineDeps(over?: Partial<Parameters<typeof handleInboundPresenceFrame>[2]>) {
     return {
-      isMemberDevice: vi.fn(async () => true),
+      // Attested github_user_id 42 — matches makeRow / the del / ident below.
+      resolveMemberIdentity: vi.fn(async () => 42 as number | null),
       applyPut: vi.fn(async () => {}),
       applyDel: vi.fn(async () => {}),
       now: () => T0,
@@ -146,13 +147,18 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     expect(deps.applyDel).not.toHaveBeenCalled();
   });
 
-  it('an admitted del applies the tombstone', async () => {
+  it('an admitted del applies the tombstone (with the signer stamped as the del device)', async () => {
     const dev = makeDevice();
     const del = { github_user_id: 42, machine_label: 'laptop', harness_slug: 'hive-home' };
     const frame = await buildPresenceDelFrame(dev.pubB64, del, T0, dev.sign);
     const deps = pipelineDeps();
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
-    expect(deps.applyDel).toHaveBeenCalledExactlyOnceWith(del, T0, 't0');
+    // H2: the applied del carries the signer as device_pubkey (the ownership pin).
+    expect(deps.applyDel).toHaveBeenCalledExactlyOnceWith(
+      { ...del, device_pubkey: dev.pubB64 },
+      T0,
+      't0',
+    );
   });
 
   it('a bad frame is dropped BEFORE the membership gate (no member lookup for garbage)', async () => {
@@ -166,14 +172,14 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
         deps,
       ),
     ).toBe('bad-frame');
-    expect(deps.isMemberDevice).not.toHaveBeenCalled();
+    expect(deps.resolveMemberIdentity).not.toHaveBeenCalled();
     expect(deps.applyPut).not.toHaveBeenCalled();
   });
 
   it('a NON-MEMBER device\'s valid frame is dropped (the WI-259 gate\'s gossip twin)', async () => {
     const dev = makeDevice();
     const frame = await buildPresencePutFrame(makeRow(dev.pubB64), T0, dev.sign);
-    const deps = pipelineDeps({ isMemberDevice: vi.fn(async () => false) });
+    const deps = pipelineDeps({ resolveMemberIdentity: vi.fn(async () => null) });
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('not-member');
     expect(deps.applyPut).not.toHaveBeenCalled();
   });
@@ -182,12 +188,35 @@ describe('handleInboundPresenceFrame — the gating pipeline', () => {
     const dev = makeDevice();
     const frame = await buildPresencePutFrame(makeRow(dev.pubB64), T0, dev.sign);
     const deps = pipelineDeps({
-      isMemberDevice: vi.fn(async () => {
+      resolveMemberIdentity: vi.fn(async () => {
         throw new Error('membership store down');
       }),
     });
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('not-member');
     expect(deps.applyPut).not.toHaveBeenCalled();
+  });
+
+  it('H3: a put whose github_user_id ≠ the signer\'s ATTESTED id is dropped (identity-mismatch)', async () => {
+    const dev = makeDevice();
+    // The signer is attested as gh 42, but the row claims gh 999 (a foreign user).
+    const frame = await buildPresencePutFrame(makeRow(dev.pubB64, { github_user_id: 999 }), T0, dev.sign);
+    const deps = pipelineDeps({ resolveMemberIdentity: vi.fn(async () => 42) });
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('identity-mismatch');
+    expect(deps.applyPut).not.toHaveBeenCalled();
+  });
+
+  it('H2: a del whose github_user_id ≠ the signer\'s ATTESTED id is dropped (identity-mismatch)', async () => {
+    const dev = makeDevice();
+    // A valid self-signed del, but for a foreign user's row (gh 999); the signer is gh 42.
+    const frame = await buildPresenceDelFrame(
+      dev.pubB64,
+      { github_user_id: 999, machine_label: 'victim', harness_slug: 'hive-home' },
+      T0,
+      dev.sign,
+    );
+    const deps = pipelineDeps({ resolveMemberIdentity: vi.fn(async () => 42) });
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('identity-mismatch');
+    expect(deps.applyDel).not.toHaveBeenCalled();
   });
 
   it('an apply failure is contained (apply-failed, never thrown)', async () => {
@@ -267,7 +296,7 @@ describe('sessions frames (P-005 session-grain presence)', () => {
     const frame = await buildSessionsFrame(ident(dev), sessions, T0, dev.sign);
     const applySessions = vi.fn(async () => {});
     const deps = {
-      isMemberDevice: vi.fn(async () => true),
+      resolveMemberIdentity: vi.fn(async () => 42 as number | null),
       applyPut: vi.fn(async () => {}),
       applyDel: vi.fn(async () => {}),
       applySessions,
@@ -292,11 +321,33 @@ describe('sessions frames (P-005 session-grain presence)', () => {
     const dev = makeDevice();
     const frame = await buildSessionsFrame(ident(dev), [entry('su-aaa')], T0, dev.sign);
     const deps = {
-      isMemberDevice: vi.fn(async () => true),
+      resolveMemberIdentity: vi.fn(async () => 42 as number | null),
       applyPut: vi.fn(async () => {}),
       applyDel: vi.fn(async () => {}),
       now: () => T0,
     };
     expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('applied');
+  });
+
+  it('H1: a sessions frame whose github_user_id ≠ the signer\'s ATTESTED id is dropped (no foreign-user announce)', async () => {
+    const dev = makeDevice();
+    // The device signs a sessions frame declaring github_user_id 999 (a foreign
+    // user), trying to announce sessions — incl. a spoofed owner_id — under it.
+    const frame = await buildSessionsFrame(
+      { devicePubkey: dev.pubB64, githubUserId: 999, machineLabel: 'laptop', hiveSlug: 'hive-home' },
+      [entry('queen'), entry('su-victim-uuid')],
+      T0,
+      dev.sign,
+    );
+    const applySessions = vi.fn(async () => {});
+    const deps = {
+      resolveMemberIdentity: vi.fn(async () => 42 as number | null), // signer is attested gh 42
+      applyPut: vi.fn(async () => {}),
+      applyDel: vi.fn(async () => {}),
+      applySessions,
+      now: () => T0,
+    };
+    expect(await handleInboundPresenceFrame(frame, 't0', deps)).toBe('identity-mismatch');
+    expect(applySessions).not.toHaveBeenCalled();
   });
 });
