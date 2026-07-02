@@ -33,7 +33,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -284,5 +284,36 @@ describe('<AgentsRunningPill>', () => {
     // Clicking a run-less agent pins its detail instead (no inspector).
     fireEvent.click(screen.getByTestId('agent-row-su1'));
     expect(screen.getByTestId('agent-detail').textContent).toContain('pinned');
+  });
+});
+
+describe('isLiveByActivity (pure — WI-1488: live = turn in last 10m OR loop armed)', () => {
+  const NOW = Date.parse('2026-07-01T12:00:00Z');
+  const mk = (o: Partial<RosterAgent>): Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'> => ({
+    lastActiveAt: null,
+    loopArmed: false,
+    ...o,
+  });
+
+  it('live when a turn happened within the last 10 minutes', () => {
+    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - 60_000).toISOString() }), NOW)).toBe(true);
+    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS - 1_000)).toISOString() }), NOW)).toBe(true);
+  });
+
+  it('NOT live when the last turn is older than 10 minutes (no loop)', () => {
+    expect(isLiveByActivity(mk({ lastActiveAt: new Date(NOW - (LIVE_TURN_MS + 1_000)).toISOString() }), NOW)).toBe(false);
+  });
+
+  it('live when a loop is armed, regardless of last-turn age', () => {
+    expect(isLiveByActivity(mk({ loopArmed: true }), NOW)).toBe(true);
+    expect(isLiveByActivity(mk({ loopArmed: true, lastActiveAt: new Date(NOW - 3_600_000).toISOString() }), NOW)).toBe(true);
+  });
+
+  it('NOT live with no activity and no loop (does NOT fall back to the keepalive heartbeat)', () => {
+    expect(isLiveByActivity(mk({ lastActiveAt: null }), NOW)).toBe(false);
+  });
+
+  it('NOT live for an unparseable lastActiveAt', () => {
+    expect(isLiveByActivity(mk({ lastActiveAt: 'not-a-date' }), NOW)).toBe(false);
   });
 });

@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
 
 const { setClaimSpec, getClaimSpec, getClaimSpecHeadsForBees } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
+const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -182,5 +183,64 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
       SELECT op FROM harness_shared.substrate_outbox
        WHERE table_name='bee_claim_specs' AND key='su-samescope' ORDER BY id`;
     expect(ops.map((o) => o.op)).toEqual(['put', 'put']); // no 'del' — no re-home
+  });
+});
+
+describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-spec projection)', () => {
+  const HIVE = 'my-hive';
+  type Tier = 'observe' | 'message' | 'wake' | 'steer';
+  const specRow = (beeId: string) =>
+    ({ harness_slug: HIVE, bee_id: beeId, spec: { ...DEFAULT_CLAIM_SPEC }, revision: 0, updated_by: 'queen' }) as never;
+  const proj = (tier: Tier) =>
+    buildBeeClaimSpecProjection({
+      workspaceId: 'default',
+      harnessSlug: HIVE, // hive-home-grained binding (== the federation slug)
+      sql: db.sql,
+      hiveHomeSlug: HIVE, // ⇒ enforcement active
+      resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
+    });
+  const applied = async (beeId: string) =>
+    (await db.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id='default' AND bee_id=${beeId}`).length > 0;
+
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.bee_claim_specs WHERE bee_id LIKE 'm6-%'`;
+  });
+
+  it('a REMOTE spec from a BELOW-steer author (observe/message/wake) is NOT applied', async () => {
+    for (const tier of ['observe', 'message', 'wake'] as Tier[]) {
+      const bee = `m6-below-${tier}`;
+      await proj(tier).writeToPg(specRow(bee), { authorPubkey: 'devA', origin: 'remote' });
+      expect(await applied(bee)).toBe(false);
+    }
+  });
+
+  it('a REMOTE spec from a STEER author IS applied (a claim spec is a steer-class action)', async () => {
+    await proj('steer').writeToPg(specRow('m6-steer'), { authorPubkey: 'devA', origin: 'remote' });
+    expect(await applied('m6-steer')).toBe(true);
+  });
+
+  it('a LOCAL-origin spec applies regardless of tier (the queen on THIS machine, ungated)', async () => {
+    await proj('observe').writeToPg(specRow('m6-local'), { authorPubkey: 'devA', origin: 'local' });
+    expect(await applied('m6-local')).toBe(true);
+  });
+
+  it('a NON-hive-bound projection stays full-passthrough (no gate — today\'s behavior)', async () => {
+    const plain = buildBeeClaimSpecProjection({ workspaceId: 'default', harnessSlug: HIVE, sql: db.sql }); // no hiveHomeSlug
+    await plain.writeToPg(specRow('m6-plain'), { authorPubkey: 'devA', origin: 'remote' });
+    expect(await applied('m6-plain')).toBe(true);
+  });
+
+  it('a tier-resolve ERROR fails CLOSED (a steer-class action must not apply on doubt)', async () => {
+    const errProj = buildBeeClaimSpecProjection({
+      workspaceId: 'default',
+      harnessSlug: HIVE,
+      sql: db.sql,
+      hiveHomeSlug: HIVE,
+      resolveCommsTier: async () => {
+        throw new Error('tier store down');
+      },
+    });
+    await errProj.writeToPg(specRow('m6-err'), { authorPubkey: 'devA', origin: 'remote' });
+    expect(await applied('m6-err')).toBe(false);
   });
 });

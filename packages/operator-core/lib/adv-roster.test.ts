@@ -553,3 +553,32 @@ describe('mergeRosterEntries — nursery liveness join (EI-348)', () => {
     expect(e.pidAlive).toBeNull();
   });
 });
+
+describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
+  it('passes lastActiveAt through and marks loopArmed from the owner set', () => {
+    const [armed, plain] = mergeRosterEntries(
+      [presence({ ownerId: 'a', lastActiveAt: iso(NOW - 1_000) }), presence({ ownerId: 'b' })],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(['a']),
+    );
+    expect(armed.ownerId).toBe('a');
+    expect(armed.loopArmed).toBe(true);
+    expect(armed.lastActiveAt).toBe(iso(NOW - 1_000));
+    expect(plain.ownerId).toBe('b');
+    expect(plain.loopArmed).toBe(false);
+  });
+
+  it('defaults loopArmed=false when no owner set is provided', () => {
+    const [e] = mergeRosterEntries([presence()], new Map(), NOW);
+    expect(e.loopArmed).toBe(false);
+  });
+});
