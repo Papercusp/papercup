@@ -63,7 +63,9 @@ A **read-first DB check before arming** (`harness_admin@localhost:5432/papercusp
 showed there was nothing to arm — all three gates were already open:
 
 - routine `@singleton/bp-singleton-calibration-0`: `active=t`, firing on its 6 h
-  cadence (no legacy `papercup/calibration-resolve` row → no collision);
+  cadence (no legacy `papercup/calibration-resolve` row → no collision — `papercup`
+  was this install's harness slug at the time, pre the 2026-06-19/20 rename to
+  `papercusp`; see the "Current behavior (2026-07-02)" note below);
 - flag `papercusp-calibration-markets`: ON;
 - governor `calibration-markets`: `enabled=t`, `per-cycle`, `budget_usd=0` →
   `checkLoopVerdict` **allows**.
@@ -98,12 +100,27 @@ write-up: `relight-self-learning-edges-2026-06-14` D-009.)
 (`registerLearningLoop`; for a SQL-only loop `budget_usd` 0 already allows) **+**
 flag ON (now default true for all frontier loops since 2026-06-23; verify it
 hasn't been manually killed). Arm the **right** row —
-`@singleton/bp-singleton-<id>-0`, never the legacy `papercup/<name>` row (both
+`@singleton/bp-singleton-<id>-0`, never the legacy bespoke row (both
 active is the D-023 double-state, reported by `improvements:learning_loops` as
 `collision`). This is a **coordinated frontier campaign** (the
 `self-learning-frontier` P-001 gate arms all parked lanes together); prefer it
 over a hand-flip. And **always read the live row first** — that read is what kept
 this exact session from "arming" an already-armed loop.
+
+**Current behavior (2026-07-02):** the legacy row's `install_slug` used to be
+hardcoded to the literal `'papercup'` in `seed-learning-singletons.ts`. That was
+quietly broken by the papercup→papercusp rename (owner-directed, 2026-06-19/20,
+completed across the primary stores) — post-rename, legacy bespoke routines live
+under `install_slug='papercusp'`, so the hardcoded `'papercup'` lookup no longer
+matched anything and the collision guard / `--retire-legacy` pass silently found
+nothing to act on. `seed-learning-singletons.ts` now resolves the slug via
+`operatorHomeHarnessSlug()` (`packages/operator-core/lib/harness/operator-home-harness.ts`)
+instead — the single pointer for "which hive is the workspace's operator home,"
+defaulting to `papercusp` and overridable via `PAPERCUSP_HIVE_HOME_SLUG`. So when
+arming today, read the legacy row under the **current** home-harness slug
+(`papercusp` on this install), not the literal string `papercup` — the 2026-06-14
+case study above predates the rename and used the slug that was correct at the
+time.
 
 **Scout has an additional workspace-level gate (P-051, added 2026-06-14):**
 `checkScoutWorkspaceCeiling` (`learning-governor/core.ts`) sums every
