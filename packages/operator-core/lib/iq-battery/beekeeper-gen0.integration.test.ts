@@ -17,9 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg, readRepoFile } from '@papercusp/test-config';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
 import { seedCorpus } from './corpus';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
@@ -28,14 +26,9 @@ import type { CorpusCase } from './corpus';
 import type { GymJudgeRubric } from '../gym/judge-scoring';
 
 function migrationDdl(name: string): string {
-  for (const p of [
-    join(__dirname, '../../../../libs/papercusp/libs/db/sql/', name),
-    join(__dirname, '../../../libs/papercusp/libs/db/sql/', name),
-    `/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/${name}`,
-  ]) {
-    try { return readFileSync(p, 'utf8'); } catch { /* next */ }
-  }
-  throw new Error(`migration not found: ${name}`);
+  // Depth-/machine-proof (DG-6 P-049): walk up to the checkout root — no
+  // hardcoded dev-box paths; runnable from (stagingSha, shard) on any machine.
+  return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`);
 }
 
 const RUBRIC: GymJudgeRubric = {

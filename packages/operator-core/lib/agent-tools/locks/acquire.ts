@@ -228,7 +228,17 @@ export default defineTool({
       });
       // Notify firehose removed at the source (D-002, fleet-coordination-painpoints):
       // lock_acquired had no push-consumer — an agent learns contention on its own acquire.
-      return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held);
+      //
+      // G-0 (P-033) sha-token stamp: a remote-authority grant carries the
+      // authority's token (sha_token via decodeRemoteAcquire); a local /
+      // fail-open grant computes it from the local registry. Recorded AFTER
+      // computing so this grant doesn't shadow the prior holder's state. The
+      // wait/wake_on_grant queue grants below stay unstamped — that queue is
+      // the documented machine-local residual.
+      const held = first.held ?? paths;
+      const shaToken = first.sha_token ?? shaTokenForGrant(coordinationDomain, held, Date.now());
+      noteShaTokenGrant(coordinationDomain, held, ownerId, first.expires_ts.getTime());
+      return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held, undefined, shaToken);
     }
 
     // ── wake_on_grant: queue + sleep instead of block/poll ──────────────
@@ -569,6 +579,11 @@ function ok(
   expires: Date,
   held: string[],
   waitedSec?: number,
+  // G-0 (P-033): the sha-token stamp — requiredSha = the prior holder's
+  // published head (build on it; check ancestry vs local staging via the
+  // hive-git grade helpers), unsyncedRisk = the prior grant expired without a
+  // release. Present on fast-path grants of hive-scoped file locks.
+  shaToken?: ShaTokenGrant,
 ) {
   return {
     content: [
@@ -584,6 +599,9 @@ function ok(
           expires_ts: expires.toISOString(),
           held,
           ...(waitedSec !== undefined ? { waited_sec: waitedSec } : {}),
+          ...(shaToken
+            ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
+            : {}),
         }),
       },
     ],
@@ -623,7 +641,7 @@ function decodeRemoteAcquire(
   raw: unknown,
   paths: string[],
   ttlSec: number,
-): Awaited<ReturnType<typeof tryAcquire>> {
+): Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant } {
   const r = raw as FileLockAcquireResult;
   if (r.ok) {
     return {
@@ -631,6 +649,8 @@ function decodeRemoteAcquire(
       lock_id: r.lockId ?? '',
       expires_ts: r.expiresTs ? new Date(r.expiresTs) : new Date(Date.now() + ttlSec * 1000),
       held: paths,
+      // G-0 (P-033): the AUTHORITY's sha-token stamp rides the remote grant.
+      ...(r.shaToken ? { sha_token: r.shaToken } : {}),
     };
   }
   const fallbackExpiry = new Date(Date.now() + ttlSec * 1000);

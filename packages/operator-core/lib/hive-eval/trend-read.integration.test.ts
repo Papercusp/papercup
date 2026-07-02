@@ -7,9 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg, readRepoFile } from '@papercusp/test-config';
 import { createPgHiveEvalStore } from './store-pg';
 import { readHiveEvalInstanceSummaries } from './trend-read';
 import type { HiveEvalRunRow, HiveEvalScoreRow, InstanceManifest } from './store';
@@ -17,19 +15,8 @@ import type { HiveEvalRunRow, HiveEvalScoreRow, InstanceManifest } from './store
 const MIGRATIONS = ['264-hive-eval-battery.sql', '268-hive-eval-scores.sql'];
 
 function readMigration(name: string): string {
-  const candidates = [
-    join(__dirname, '../../../../libs/papercusp/libs/db/sql/' + name),
-    join(__dirname, '../../../libs/papercusp/libs/db/sql/' + name),
-    '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/' + name,
-  ];
-  for (const p of candidates) {
-    try {
-      return readFileSync(p, 'utf8');
-    } catch {
-      /* next */
-    }
-  }
-  throw new Error(`could not locate ${name}`);
+  // Depth-/machine-proof walk-up (DG-6 P-049) — no hardcoded checkout paths.
+  return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`);
 }
 
 const WS = 'ws-trend';

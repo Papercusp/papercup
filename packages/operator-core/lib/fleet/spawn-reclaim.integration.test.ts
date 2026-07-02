@@ -503,6 +503,84 @@ describe('reconcileSpawnAdmissionOnBoot (EI-2186 boot reconcile)', () => {
 });
 
 /**
+ * WI-1499 (bg-host-agent-spawn-scope-isolation-2026-07-02): a prior-incarnation
+ * candidate whose recorded pid is CONFIRMED ALIVE survived the bg-host restart
+ * (systemd-run --user --scope keeps the agent's cgroup outside bg-host's own —
+ * see `buildIsolatedScopeArgv` / orchestrator-runner.ts's `runChild`). Such a row
+ * is RE-ATTACHED to the fresh incarnation instead of reclaimed: same row, same
+ * `running` status, no lost work, no reclaim-churn. Only a `spawn`-kind row (an
+ * actual invoke-once bee/queen child) is eligible — a `launch`-kind row (an
+ * in-process firing loop, e.g. the hive-loop driver) is ALWAYS reclaimed at boot
+ * regardless of pid liveness, because ITS firing process is this process's dead
+ * predecessor by construction (it can't have survived a restart of the process
+ * that WAS it). isAlive is injected (STALE_FAKE-style) so alive/dead is
+ * deterministic without touching a real /proc.
+ */
+describe('reconcileSpawnAdmissionOnBoot RE-ATTACH (WI-1499 scope-isolated survivors)', () => {
+  const ME = hostname();
+  let original: string;
+  beforeAll(() => { original = launcherBootId(); });
+  beforeEach(() => { __setLauncherBootIdForTests('boot-current'); });
+  afterAll(() => { __setLauncherBootIdForTests(original); });
+
+  it('RE-ATTACHES a same-host prior-incarnation spawn-kind row whose pid is ALIVE — never reclaimed', async () => {
+    await insertSpawn('survivor', 'running', 1, { pid: 4242, host: ME, bootId: 'boot-prior', runId: 'r-survivor' });
+    alivePids.add(4242);
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(0);
+    expect(r.spawnIds).toEqual([]);
+    expect(r.reattached).toEqual(['survivor']);
+    expect(await statusOf('survivor')).toBe('running'); // untouched status — it never died
+    const [row] = await db.sql<{ launcher_boot_id: string; fresh: boolean }[]>`
+      SELECT launcher_boot_id, heartbeat_at > now() - interval '30 seconds' AS fresh
+        FROM harness_shared.spawned_agents WHERE spawn_id = 'survivor'`;
+    expect(row.launcher_boot_id).toBe('boot-current'); // handed off to THIS incarnation
+    expect(row.fresh).toBe(true); // heartbeat bumped so the periodic sweep also skips it
+  });
+
+  it('RECLAIMS a same-host prior-incarnation spawn-kind row whose pid is DEAD', async () => {
+    await insertSpawn('gone', 'running', 1, { pid: 9999, host: ME, bootId: 'boot-prior', runId: 'r-gone' });
+    // 9999 not added to alivePids → confirmed dead.
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(1);
+    expect(r.reattached).toEqual([]);
+    expect(await statusOf('gone')).toBe('failed');
+  });
+
+  it('a launch-kind row is ALWAYS reclaimed at boot even when its recorded pid reads ALIVE', async () => {
+    await insertSpawn('driver', 'running', 1, { pid: 4242, host: ME, bootId: 'boot-prior', runId: 'launch-driver' });
+    alivePids.add(4242);
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+    expect(r.reclaimed).toBe(1);
+    expect(r.reattached).toEqual([]);
+    expect(await statusOf('driver')).toBe('failed');
+  });
+
+  it('mixed batch: re-attaches the live survivor, reclaims the dead sibling + the launch-kind row', async () => {
+    await insertSpawn('survivor2', 'running', 1, { pid: 111, host: ME, bootId: 'boot-prior', runId: 'r-survivor2' });
+    await insertSpawn('gone2', 'running', 1, { pid: 222, host: ME, bootId: 'boot-prior', runId: 'r-gone2' });
+    await insertSpawn('driver2', 'running', 1, { pid: 111, host: ME, bootId: 'boot-prior', runId: 'launch-driver2' });
+    alivePids.add(111); // shared pid: alive for the spawn-kind row, irrelevant for the launch-kind row (always reclaimed)
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+    expect(r.reattached).toEqual(['survivor2']);
+    expect(new Set(r.spawnIds)).toEqual(new Set(['gone2', 'driver2']));
+    expect(r.reclaimed).toBe(2);
+    expect(await statusOf('survivor2')).toBe('running');
+    expect(await statusOf('gone2')).toBe('failed');
+    expect(await statusOf('driver2')).toBe('failed');
+  });
+
+  it('never frees the concurrency ceiling for a re-attached row (it still holds its slot)', async () => {
+    await insertSpawn('survivor3', 'running', 1, { pid: 333, host: ME, bootId: 'boot-prior', runId: 'r-survivor3' });
+    alivePids.add(333);
+    expect(await runningCount()).toBe(1);
+    const r = await reconcileSpawnAdmissionOnBoot(db.sql, { isAlive: fakeAlive });
+    expect(r.reattached).toEqual(['survivor3']);
+    expect(await runningCount()).toBe(1); // still counted — the agent is still running
+  });
+});
+
+/**
  * EI-85 (restart-kills): reconcileSpawnAdmissionOnBoot RE-LAUNCHES a reclaimed
  * queen/bee whose durable work-item is non-terminal, instead of losing the work.
  * The dead row is still settled `failed` (ceiling debit freed); a fresh row is

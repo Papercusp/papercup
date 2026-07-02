@@ -5,9 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config';
+import { getTestPg, readRepoFile } from '@papercusp/test-config';
 import { seedCorpus, AllCases } from './corpus';
 
 describe('seedCorpus', () => {
@@ -26,25 +24,8 @@ describe('seedCorpus', () => {
     u.pathname = `/${dbName}`;
     sql = postgres(u.toString(), { max: 8, onnotice: () => {} });
 
-    // Apply the migration DDL
-    let ddl = '';
-    const basePath = __dirname.includes('dist') ? '../' : '';
-    const paths = [
-      join(__dirname, basePath + '../../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
-      join(__dirname, basePath + '../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
-      '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql',
-    ];
-    for (const path of paths) {
-      try {
-        ddl = readFileSync(path, 'utf8');
-        break;
-      } catch (e) {
-        // Continue to next path
-      }
-    }
-    if (!ddl) {
-      throw new Error(`Could not find migration file in any of the expected locations: ${paths.join(', ')}`);
-    }
+    // Apply the migration DDL — depth-/machine-proof walk-up (DG-6 P-049).
+    const ddl = readRepoFile(__dirname, 'libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql');
     await sql.unsafe(ddl);
   });
 

@@ -34,7 +34,13 @@ describe('registerFileLockAuthorityOps', () => {
       payload: { owner: 'peer-A', paths: ['apps/x.ts'], intent: 'edit', ttlSec: 600, coordinationDomain: '/repo' },
     });
     expect(res.ok).toBe(true);
-    expect(res.result).toEqual({ ok: true, lockId: 'lk-1', expiresTs: '2026-06-05T00:00:00Z' });
+    expect(res.result).toEqual({
+      ok: true,
+      lockId: 'lk-1',
+      expiresTs: '2026-06-05T00:00:00Z',
+      // G-0 (P-033): every grant carries the sha-token stamp (fresh state here).
+      shaToken: { requiredSha: null, unsyncedRisk: false },
+    });
     expect(coord.acquire).toHaveBeenCalledWith({
       owner: 'peer-A',
       ownerLabel: undefined,
