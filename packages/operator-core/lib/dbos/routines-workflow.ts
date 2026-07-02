@@ -436,6 +436,31 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'scout-draft-review-sweep' },
   );
 
+  // WI-1574 (2026-07-02): the ready-plan AUTOSTART sweep — the missing CONSUMER of
+  // the review loop's `ready` terminal. The Queen ratified scout drafts to 'ready'
+  // and the chain stopped: nothing ran plans:start, so promotePlanItems never ran,
+  // so ZERO work_items ever sourced from a scout plan (the plan rail was a dead
+  // end — all 6 routes pending since 06-11). This sweep auto-starts ratified
+  // (ready, never-started) scout plans in the hive's OWN workspace (plans:start's
+  // UPDATE is pinned to the default workspace and misses scout rows) and promotes
+  // their items into the Queen's surveyable frontier; a ratified-but-ITEMLESS plan
+  // gets a debounced decompose-wake instead. Fail-soft; kill switch:
+  // PAPERCUSP_SCOUT_READY_AUTOSTART=0.
+  await DBOS.runStep(
+    async () => {
+      const { scoutReadyAutostartSweep } = await import('../scout/ready-plan-autostart');
+      const results = await scoutReadyAutostartSweep();
+      for (const res of results) {
+        if (res.outcome !== 'skipped') {
+          console.warn(
+            `[scout-ready-autostart] ${res.outcome}: ${res.installSlug}${res.planSlug ? ` ${res.planSlug}` : ''} — ${res.reason}`,
+          );
+        }
+      }
+    },
+    { name: 'scout-ready-autostart-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak

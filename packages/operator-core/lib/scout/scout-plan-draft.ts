@@ -55,7 +55,7 @@ ${why}
 
 ## Phase 1 — TODO
 
-(Use plans:add-item to populate once greenlit.)
+- [ ] P-001 ${args.title} — first concrete slice of the proposal's mechanism (Queen: refine/split during review — a ratified plan's open items auto-promote to work_items on start, WI-1574)
 
 ## Decisions
 
