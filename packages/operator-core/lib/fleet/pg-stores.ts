@@ -213,26 +213,42 @@ export async function cancelActiveSubtreePg(sql: Sql, opts: { workspaceId: strin
   return sql.begin(async (tx) => {
     const subtree = await getSubtreePg(tx, { workspaceId: opts.workspaceId, rootSpawnId: opts.rootSpawnId });
     const toCancel = subtree.filter((n) => isActiveStatus(n.status));
-    const alreadyTerminal = subtree.filter((n) => !isActiveStatus(n.status)).map((n) => n.spawnId);
+    const alreadyTerminalNodes = subtree.filter((n) => !isActiveStatus(n.status));
+    const alreadyTerminal = alreadyTerminalNodes.map((n) => n.spawnId);
 
-    if (toCancel.length === 0) {
-      return { cancelled: [], alreadyTerminal, resourcesReleased: { claims: 0, planClaims: 0 } };
+    if (toCancel.length > 0) {
+      const ids = toCancel.map((n) => n.spawnId);
+      await tx`
+        UPDATE harness_shared.spawned_agents
+           SET status = 'cancelled',
+               cancel_requested = true,
+               cancelled_at = now(),
+               cancel_reason = ${opts.reason},
+               finished_at = COALESCE(finished_at, now())
+         WHERE workspace_id = ${opts.workspaceId}
+           AND spawn_id = ANY(${ids}::text[])
+           AND status IN ('running', 'restarting')`;
     }
 
-    const ids = toCancel.map((n) => n.spawnId);
-    await tx`
-      UPDATE harness_shared.spawned_agents
-         SET status = 'cancelled',
-             cancel_requested = true,
-             cancelled_at = now(),
-             cancel_reason = ${opts.reason},
-             finished_at = COALESCE(finished_at, now())
-       WHERE workspace_id = ${opts.workspaceId}
-         AND spawn_id = ANY(${ids}::text[])
-         AND status IN ('running', 'restarting')`;
+    // EI-6324: release claims for the WHOLE subtree, not just the freshly-cancelled
+    // nodes. A node that already died on its own (crashed / reaped / failed before
+    // this call — the "alreadyTerminal" set) is EXACTLY the case the caller most
+    // needs `fleet:cancel` to unstick: its status transition never went through THIS
+    // path, so nothing else guaranteed its work-item/plan-item claim was released —
+    // the periodic stale-claims reaper (work-items-stale-claims.ts) only catches it
+    // after a grace window (or immediately, but only for a NARROW confirmed-terminal
+    // status set, and only within its own poll cadence). `fleet:cancel`'s documented
+    // contract is "release its claims + locks NOW" — that must hold for a dead-but-
+    // never-cancelled node too, or the caller is left with an orphaned, unreclaimable
+    // lane (observed live: EI-6324 — "returned ok but released 0 claims", the
+    // work-item then un-claimable by a replacement spawn). We do NOT touch
+    // already-terminal nodes' `status`/`cancelled_at` (they are already at their real
+    // terminal state — only the resource release is new), so this is additive and
+    // safe: no already-terminal node's own history/verdict changes.
+    const claimEligible = [...toCancel, ...alreadyTerminalNodes];
 
     // Release work-item claims this subtree held (feature taken_by = the node's owner).
-    const claimNodes = toCancel.filter((n) => n.featureId && n.harnessSlug && n.sessionOwner);
+    const claimNodes = claimEligible.filter((n) => n.featureId && n.harnessSlug && n.sessionOwner);
     let claimsReleased = 0;
     if (claimNodes.length > 0) {
       const released = await tx<{ feature_id: string }[]>`
@@ -251,8 +267,9 @@ export async function cancelActiveSubtreePg(sql: Sql, opts: { workspaceId: strin
       claimsReleased = released.length;
     }
 
-    // Release plan-item claims (leases) this subtree held.
-    const planNodes = toCancel.filter((n) => n.planSlug && n.itemId && n.harnessSlug && n.sessionOwner);
+    // Release plan-item claims (leases) this subtree held (EI-6324: both freshly-
+    // cancelled AND already-terminal nodes — same rationale as claimNodes above).
+    const planNodes = claimEligible.filter((n) => n.planSlug && n.itemId && n.harnessSlug && n.sessionOwner);
     let planClaimsReleased = 0;
     if (planNodes.length > 0) {
       const released = await tx<{ item_id: string }[]>`

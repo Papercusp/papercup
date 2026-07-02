@@ -113,6 +113,24 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     expect(rows.map((r) => r.feature_id).sort()).toEqual(['WI-A1', 'WI-B1', 'WI-X']);
   });
 
+  it('EI-1525: excludes ephemeral benchmark/instance debris even in the workspace-wide fallback', async () => {
+    await seed(MEMBER_A, 'WI-A1', { createdTs: 1 });
+    // The exact 2026-06-18 pathology: a torn-down benchmark fleet's per-task
+    // instance harnesses leaking into the unscoped survey as "real" frontier.
+    await seed('xbench-su-1234', 'WI-BENCH1', { createdTs: 2 });
+    await seed('xbq1a2b3c-instance_7', 'WI-BENCH2', { createdTs: 3 });
+    await seed('some-harness-DELETEME', 'WI-BENCH3', { createdTs: 4 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', []);
+    expect(rows.map((r) => r.feature_id).sort()).toEqual(['WI-A1']);
+  });
+
+  it('EI-1525: the SAME exclusion still applies when the survey IS explicitly scoped (defense in depth)', async () => {
+    await seed('xbench-su-9999', 'WI-BENCH', { createdTs: 1 });
+    await seed(MEMBER_A, 'WI-A1', { createdTs: 2 });
+    const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A, 'xbench-su-9999']);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-A1']);
+  });
+
   it('excludes assigned + non-todo items and orders oldest-first', async () => {
     await seed(MEMBER_A, 'WI-taken', { takenBy: 'bee-1', createdTs: 0 });
     await seed(MEMBER_A, 'WI-passed', { status: 'passed', createdTs: 1 });

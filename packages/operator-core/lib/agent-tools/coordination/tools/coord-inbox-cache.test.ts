@@ -29,6 +29,17 @@ vi.mock("../messages", () => ({
   drainAndDeliverUserMailbox: vi.fn(async () => {}),
 }));
 vi.mock("../presence", () => ({ heartbeatPresence: M.heartbeatPresence }));
+// This suite pins CACHE behavior — the heartbeat throttle (EI-6797) is a
+// separate concern, so disable it here (always-beat) so "side effects run on a
+// cache hit" is tested independently of coalescing. The throttle itself is
+// covered by presence-beat-throttle.test.ts + inbox-heartbeat-throttle.test.ts.
+vi.mock("../presence-beat-throttle", () => ({
+  createPresenceBeatThrottle: () => ({
+    shouldBeat: () => true,
+    reset: () => {},
+    size: () => 0,
+  }),
+}));
 vi.mock("../watermarks", () => ({
   readWatermark: vi.fn(async () => ({ messages_shown_ts: "" })),
   writeWatermark: vi.fn(async () => {}),

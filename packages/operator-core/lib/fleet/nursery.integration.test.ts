@@ -174,6 +174,40 @@ describe('nursery — transitive cancellation (D-003, real PG)', () => {
     expect(pc).toHaveLength(0);
   });
 
+  it('EI-6324: releases claims held by an ALREADY-TERMINAL node too (a bee that died on its own, never transitioning via cancel)', async () => {
+    // root → A (active) → GA (already dead — 'failed' — but its claims were never
+    // independently released, e.g. it crashed before any reclaim sweep caught it).
+    await spawn('root', { owner: 'own-root', role: 'operator' });
+    await spawn('A', { parent: 'root', owner: 'own-A' });
+    await spawn('GA', { parent: 'A', owner: 'own-GA', feature: 'F-3', plan: 'plan-y', item: 'P-002' });
+    await finishSpawn(db.sql, { spawnId: 'GA', workspaceId: WS, status: 'failed', exitCode: 1 });
+
+    await db.sql`INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, taken_by, taken_at, workspace_id, created_ts, updated_ts)
+      VALUES (${HARNESS}, 'F-3', 'own-GA', now(), ${WS}, 0, 0)`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (workspace_id, harness_slug, plan_slug, item_id, owner, expires_ts)
+      VALUES (${WS}, ${HARNESS}, 'plan-y', 'P-002', 'own-GA', now() + interval '20 min')`;
+
+    const res = await cancelSubtree(db.sql, {
+      workspaceId: WS, rootSpawnId: 'root', reason: 'abort', actor: ACTOR,
+      lockReleaser: spyReleaser, notifier: spyNotifier,
+    });
+
+    // GA itself is NOT in `cancelled` (it was already terminal, status untouched)…
+    expect(res.alreadyTerminal).toContain('GA');
+    expect(res.cancelled.map((c) => c.spawnId)).not.toContain('GA');
+    expect((await getSpawn(db.sql, WS, 'GA'))?.status).toBe('failed'); // unchanged
+    // …but its ORPHANED claims are released anyway — the bug this test guards against
+    // (fleet:cancel previously returned ok with claimsReleased:0 for exactly this case).
+    expect(res.claimsReleased).toBe(1);
+    expect(res.planClaimsReleased).toBe(1);
+    const f = await db.sql<{ taken_by: string | null }[]>`SELECT taken_by FROM harness_shared.harness_features_consolidated WHERE feature_id='F-3'`;
+    expect(f[0].taken_by).toBeNull();
+    const pc = await db.sql`SELECT 1 FROM harness_shared.plan_item_claims WHERE item_id='P-002'`;
+    expect(pc).toHaveLength(0);
+  });
+
   it("does NOT release a feature claimed by someone other than the cancelled node's owner", async () => {
     await spawn('root', { owner: 'own-root', role: 'operator' });
     await spawn('A', { parent: 'root', owner: 'own-A', feature: 'F-2' });

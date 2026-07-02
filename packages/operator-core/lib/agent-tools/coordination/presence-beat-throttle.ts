@@ -69,8 +69,11 @@ export function createPresenceBeatThrottle(
 
   return {
     shouldBeat(ownerId: string, now: number = Date.now()): boolean {
-      const last = lastBeat.get(ownerId) ?? 0;
-      if (now - last < intervalMs) return false;
+      // `has`-based, not a `?? 0` sentinel: the first call for an owner ALWAYS
+      // beats regardless of the clock value (a 0-sentinel would wrongly
+      // suppress an owner first seen at now≈0).
+      const last = lastBeat.get(ownerId);
+      if (last !== undefined && now - last < intervalMs) return false;
       lastBeat.set(ownerId, now);
 
       if (lastBeat.size > GC_SIZE_TRIGGER) {

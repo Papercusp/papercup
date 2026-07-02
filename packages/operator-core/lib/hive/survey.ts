@@ -407,6 +407,7 @@ export async function fetchFrontierRows(
             ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
        ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
+       AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}
      ORDER BY created_ts ASC
      LIMIT ${limit}`;
   return rows;
@@ -456,7 +457,8 @@ export async function countPlaceableFrontier(
             -- home hive's frontier. Unscoped only in the workspace-wide fallback (surveySlugs empty).
             ${surveySlugs.length > 0 ? sql`AND p.install_slug = ANY(${surveySlugs as string[]})` : sql``}
        )
-       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}`;
+       ${surveySlugs.length > 0 ? sql`AND harness_slug = ANY(${surveySlugs as string[]})` : sql``}
+       AND harness_slug !~* ${EPHEMERAL_BENCHMARK_SLUG_SQL_RE}`;
   return Number(rows[0]?.n ?? 0);
 }
 
