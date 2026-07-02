@@ -76,6 +76,42 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   return ref ? estimateContextTokens(ref, ownerId) : null;
 }
 
+/** The context-death signature Claude writes into the transcript when the
+ *  request exceeds the model window — the silent fleet-member killer
+ *  (context-trimming-tiers P-019: 6 members died on it, 2026-07-01). */
+export const CONTEXT_DEATH_MARKER = 'Prompt is too long';
+
+/** How much transcript tail to scan for the death marker. The error lands as
+ *  the final entry, but a hook/summary line can trail it — 8KB is plenty. */
+const DEATH_TAIL_BYTES = 8_192;
+
+/**
+ * P-019 context-death detector: does this owner's transcript TAIL carry the
+ * "Prompt is too long" window-overflow error? Best-effort (null transcript /
+ * read error → false). fs reads only the tail, never the whole file.
+ */
+export async function detectContextDeathForOwner(ownerId: string): Promise<boolean> {
+  try {
+    const ref = await resolveSessionRef(ownerId);
+    if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return false;
+    const { findSessionTranscript } = await import('./claude-sessions');
+    const p = await findSessionTranscript(ref.sessionId, { owner: ownerId });
+    if (!p) return false;
+    const size = fs.statSync(p).size;
+    const start = Math.max(0, size - DEATH_TAIL_BYTES);
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.toString('utf8').includes(CONTEXT_DEATH_MARKER);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Best-effort MODEL SPEC (`<id>[:effort]`, possibly carrying the `[1m]` window
  * marker) for a session owner — the window signal `defaultCompactionLimitForSpec`

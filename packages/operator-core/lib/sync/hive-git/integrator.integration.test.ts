@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { defaultRunGit, ensureHiveGitRepo, deviceNamespaceKey, writeNamespaceRef } from './storage';
-import { WORK_REF, integrateMemberHeads, readStaging, collectMemberHeads, type MemberHead } from './integrator';
+import { WORK_REF, integrateMemberHeads, readStaging, collectMemberHeads } from './integrator';
 
 function dev(): string {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -93,19 +93,26 @@ describe('hive-git integrator (real bare repo)', () => {
   });
 
   it('merges a clean divergence into a real merge commit containing both parents', async () => {
-    const staging = (await readStaging(repo, integ))!;
-    // B forks from an earlier root and edits a DIFFERENT file → clean merge.
-    const bBase = await commit(repo, { 'c.txt': 'c1' });
-    await writeNamespaceRef(repo, devB, WORK_REF, bBase);
-    const r = await integrateMemberHeads(repo, integ, [
-      { deviceHex: deviceNamespaceKey(devA), sha: staging },
-      { deviceHex: deviceNamespaceKey(devB), sha: bBase },
+    // Self-contained on a FRESH integrator: two members fork a common root and
+    // edit DIFFERENT files → a real 3-way merge (not unrelated histories).
+    const integ2 = dev();
+    const devA2 = dev();
+    const devB2 = dev();
+    const rootC = await commit(repo, { 'r.txt': 'r0' });
+    const aHead = await commit(repo, { 'r.txt': 'r0', 'a2.txt': 'a2' }, rootC);
+    const bHead = await commit(repo, { 'r.txt': 'r0', 'b2.txt': 'b2' }, rootC);
+    await writeNamespaceRef(repo, devA2, WORK_REF, aHead);
+    await writeNamespaceRef(repo, devB2, WORK_REF, bHead);
+    const r = await integrateMemberHeads(repo, integ2, [
+      { deviceHex: deviceNamespaceKey(devA2), sha: aHead },
+      { deviceHex: deviceNamespaceKey(devB2), sha: bHead },
     ]);
     expect(r.advanced).toBe(true);
-    expect(r.integrated).toContain(deviceNamespaceKey(devB));
-    // The new staging is a merge commit reachable from both prior staging + B.
-    expect(await contains(repo, r.staging!, staging)).toBe(true);
-    expect(await contains(repo, r.staging!, bBase)).toBe(true);
+    expect(r.integrated).toEqual(expect.arrayContaining([deviceNamespaceKey(devA2), deviceNamespaceKey(devB2)]));
+    expect(r.skippedConflicts).toEqual([]);
+    // The new staging is a merge commit reachable from BOTH forks.
+    expect(await contains(repo, r.staging!, aHead)).toBe(true);
+    expect(await contains(repo, r.staging!, bHead)).toBe(true);
   });
 
   it('skips + reports a conflicting head; other members still integrate', async () => {

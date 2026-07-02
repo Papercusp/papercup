@@ -54,7 +54,7 @@ federation is done.
 | NAT / firewall / cross-region diversity | 🟡 **Partially exercised** | Base proven on easy public-IP same-region topology only (Brief 8 in progress) |
 | Long-running node stability (bg-host listener/handle leak) | 🔴 **Open** | WI-1088/1089 (Brief 10) — degrades multi-day federated nodes |
 | LWW convergence under clock skew | 🔴 **Known S0** | HLC-fold vs fed_ts-guard divergence (Brief D finding) |
-| Revocation **read** cut-off | 🟡 **Re-key K-cut now default-ON; cross-machine LIVE proof pending** | Read-cut rides the epoch re-key (`papercusp-hive-rekey`, now default-ON, no longer dark); a removed member keeps reading only until that re-key or a dissolve (C-001). LIVE K-cut proof = Brief 3; in-process only today |
+| Revocation **read** cut-off | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)** | Post-ban owner content never reached the banned member over real VMs (~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329 |
 
 ---
 
@@ -296,10 +296,10 @@ no-restart re-verify (e7698, Brief 6). Until (b) passes live, the base-row
 | --- | --- | --- |
 | **1** | Rig foundation (reusable lib, 3-frame, scenario drivers) | ✅ DONE + live-validated (run35) |
 | **2** | LIVE multi-member (3+) fanout | ✅ **OWNER-RATIFIED option B (2026-07-01, D-006 @ federation-release-hardening-relaunch-2026-07-01)** — min-bar = in-process multimember repro (green) + 2-node live briefs; true 3-machine fanout stays a documented known limitation gated on cap >2 servers + a 3rd distinct gh identity (scenario `deb-hetzner-brief2.sh` stays runnable) |
-| **3** | LIVE revocation + epoch K-cut | 🟡 Driven live by su-ec09e (`deb-hetzner-revocation.sh` + `rig_ban_member`); live run queued behind the quota mutex — **gated on the WI-1378 no-restart fix** (see blocker #9) |
+| **3** | LIVE revocation + epoch K-cut | ✅ **DONE — LIVE PASS 2026-07-02** (su-f5d28, 2 Hetzner VMs, public DHT): baseline federated → owner ban accepted (revokedPubkeys) → post-ban content CUT OFF (~90s negative assert) → pre-ban content stayed readable (not retroactive). WI-1329 |
 | **5** | LIVE restart durability | ✅ **DONE** — LIVE PASS over 2 Hetzner VMs (su-8f1ad, WI-1331): member + owner cold-restart both prove no content/roster loss, exactly-1-row, no re-emit; exit 0, servers=0 |
-| **6** | LIVE concurrent writes / LWW convergence | 🟡 In progress — attempt-1 (su-e7698) **surfaced blocker #9** (no-restart owner→joiner roster-empty); re-run with a roster-populated gate, **gated on WI-1378** |
-| **7** | LIVE coordination control-plane | 🟡 In progress (su-358bc) — **finding: control plane is local-only by architecture** (limitation #1) |
+| **6** | LIVE concurrent writes / LWW convergence | ✅ **DONE** (P-006 of the relaunch plan; WI-1378 resolved + live-verified 2026-07-01) |
+| **7** | LIVE coordination control-plane | ✅ **DONE — LIVE matrix 2026-07-02** (su-f5d28): 6/7 rows match the architecture — harness-scoped coord **messages + escalations FEDERATE**; raw presence/watermarks/await stay LOCAL by design. One genuine gap filed: the harness-scoped **handoffs surface does not federate** (WI-1510, cross-machine-parity lane). |
 | **11** | `forceReFold` release-grade + CI | ✅ **DONE** — `peer_cap_near` in `BootHistoryKind` + CI-wiring + commit + the snapshot+re-fold integration test all landed (su-43e13, WI-1337) |
 
 **Strongly recommended (durability):** Brief **4** (LIVE reconnect/catch-up),

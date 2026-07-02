@@ -16,7 +16,11 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { estimateContextTokensForOwner, resolveModelSpecForOwner } from '../compaction-usage';
+import {
+  detectContextDeathForOwner,
+  estimateContextTokensForOwner,
+  resolveModelSpecForOwner,
+} from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import { defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
 
@@ -29,6 +33,58 @@ const MAX_SEEDS_PER_PASS = 25;
 
 /** In-memory escalation dedup: warn only on the FIRST crossing; clear on recovery. */
 const overLimitOwners = new Set<string>();
+
+/** P-019 context-death dedup: one coord escalation per dead owner per process. */
+const contextDeathEscalated = new Set<string>();
+
+/** Test seam (P-019). */
+export function resetContextDeathEscalationsForTests(): void {
+  contextDeathEscalated.clear();
+}
+
+/**
+ * P-019 member-death detector: a session whose transcript tail carries the
+ * "Prompt is too long" window-overflow error is DEAD (it cannot take another
+ * turn — a single-exchange overflow cannot be compacted), and it died
+ * SILENTLY: presence keeps beating until the process reaps, so leaders see
+ * "alive" while nothing works (6 fleet members died this way on 2026-07-01).
+ * Raise ONE coord escalation per dead owner so the leader/owner relaunches it
+ * (fleet persona tier / trimmed context / a wider-window model).
+ */
+async function escalateContextDeath(ownerId: string, ownerLabel: string): Promise<void> {
+  if (contextDeathEscalated.has(ownerId)) return;
+  contextDeathEscalated.add(ownerId);
+  console.warn(
+    `[compaction-watchdog] ${ownerLabel} (${ownerId}) DIED on "Prompt is too long" — escalating for relaunch (P-019).`,
+  );
+  try {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    // Synthetic system identity — the steering-lease precedent shape.
+    await openEscalation(
+      {
+        ownerId: 'compaction-watchdog',
+        ownerLabel: 'system · compaction-watchdog',
+        source: 'principal',
+        workspaceId: null,
+        userId: null,
+      },
+      {
+        severity: 'blocker',
+        summary: `fleet member ${ownerLabel} (${ownerId}) died on "Prompt is too long" — context overflowed its model window; it cannot take another turn`,
+        body:
+          `The session's transcript ends in the window-overflow API error, so every subsequent wake fails silently while presence keeps beating. ` +
+          `Relaunch it (fleet:launch-on-plan / psu) with less baseline context: --persona-tier=fleet, --context-size=trimmed, or a wider-window ([1m]) model. ` +
+          `Its claims are reclaimable via the stale-claim lane. (context-trimming-tiers-2026-07-01 P-019)`,
+      },
+    );
+  } catch (e) {
+    // Best-effort — never fail the sweep; un-dedup so the next pass retries.
+    contextDeathEscalated.delete(ownerId);
+    console.warn(
+      `[compaction-watchdog] context-death escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
 
 /**
  * D-006 honor leg (context-trimming-tiers P-009): an EXPLICIT per-tier
@@ -75,6 +131,8 @@ export interface CompactionComplianceResult {
   overLimit: string[];
   /** owners seeded with a model-derived default limit this pass. */
   seeded: string[];
+  /** P-019: owners whose transcript tail carries "Prompt is too long" (dead). */
+  contextDeaths: string[];
 }
 
 /**
@@ -86,7 +144,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [], contextDeaths: [] };
   // Seeding step — one server-side place instead of N spawn paths (D-006).
   // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
   // default) > the fs/argv model resolver (session settings.json → launch
@@ -144,6 +202,19 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
          AND heartbeat_at > now() - interval '10 minutes'
     `;
     for (const r of rows) {
+      // P-019 member-death detector: a "Prompt is too long" transcript tail means
+      // the session is dead-but-still-beating — escalate once for relaunch. Runs
+      // before the estimate gate (a dead session's estimate is exactly the kind
+      // that looks "over limit" or fails to resolve).
+      try {
+        if (await detectContextDeathForOwner(r.owner_id)) {
+          out.contextDeaths.push(r.owner_id);
+          await escalateContextDeath(r.owner_id, r.owner_label);
+          continue; // no point estimating/flagging a dead session
+        }
+      } catch {
+        /* best-effort per owner */
+      }
       const est = await estimateContextTokensForOwner(r.owner_id);
       if (est == null) continue;
       await setContextEstimate(r.owner_id, est).catch(() => {});
