@@ -8,16 +8,21 @@
  *
  *   1. {@link notifyQueenDraftRouted} — STARTS the loop: when Scout routes a NEW
  *      draft plan, ping the Queen so she reviews it (closes the "what prompts the
- *      Queen to review?" gap — D-003 #1). The Queen is fresh-per-wake, so the
- *      recipient is resolved dynamically (her newest session's coord owner, the
- *      same {@link ../hive/placement-watchdog.resolveQueenOwner} the overwatch
- *      nudges); when there is no recent Queen session the draft is still discoverable
- *      via the Planning surface / her draft survey, so the ping is simply skipped.
+ *      Queen to review?" gap — D-003 #1).
  *
  *   2. {@link notifyQueenRevised} — CONTINUES the loop: after a targeted revision
  *      (revise.ts), ping the Queen back per draft so she re-reviews (promote=ready
- *      or another round). The recipient is the EXACT Queen owner that sent the
- *      feedback (`fromOwnerId`), not a re-resolve — it threads back to her.
+ *      or another round).
+ *
+ * WI-963 fix (2026-07-02): BOTH pings address the durable `@role:queen` SLOT
+ * (in addition to a best-effort concrete resolved/threaded-back owner id) — never
+ * the concrete owner ALONE. The Queen is fresh-per-wake (a brand-new coord owner
+ * id every session — queen-brief-launch.ts's `gatherInbox` / WI-682), so a
+ * concrete-owner-only address is a session that has almost always already ended
+ * by the time anyone reads it; `@role:queen` parks durably (slot-parked-store)
+ * and `gatherInbox` already drains it into every future Queen wake regardless of
+ * her current owner id. This is what actually closes the loop; the concrete
+ * owner is just a best-effort immediate-delivery bonus.
  *
  * Pure over an injected {@link QueenNotifyPorts} (the gym:judge / router-deps
  * pattern) so it unit-tests with fakes — no coord, no PG. register-scout-action.ts
@@ -52,15 +57,34 @@ export interface DraftRoutedNotice {
 
 export interface DraftRoutedResult {
   notified: boolean;
+  /** The resolved concrete Queen owner id, when one was found — best-effort direct
+   *  address only; delivery no longer depends on this (see WI-963: the durable
+   *  `@role:queen` slot is always addressed too, so `null` here does NOT mean
+   *  the Queen won't see it). */
   recipient: string | null;
-  reason?: 'no-queen-session';
 }
 
 /**
- * Ping the Queen that Scout routed a NEW draft for review (D-003 #1). Resolves her
- * current owner; on null (no recent Queen session) skips — the draft is still in the
- * Planning surface for her next survey. Never throws (resolve/send errors degrade to
- * not-notified) so it can't break the routing path that called it.
+ * Ping the Queen that Scout routed a NEW draft for review (D-003 #1).
+ *
+ * WI-963 (closing the queen-scout-feedback-loop's broken last link): the Queen
+ * is fresh-per-wake — a BRAND-NEW coord owner id every session (see
+ * queen-brief-launch.ts's `gatherInbox` comment / WI-682) — so addressing ONLY
+ * the resolved `owner` almost always targets a session that has ALREADY ENDED
+ * by the time she next wakes under a different owner id: the durable send
+ * lands in an inbox no future Queen session ever reads again. Confirmed live:
+ * draft `scout-rubric-hive-coordination-health-scorecard-2026-06-26` sat
+ * unreviewed 3+ days despite this notify firing on route (WI-963 root cause).
+ *
+ * The fix: ALWAYS ALSO address the durable `@role:queen` slot selector.
+ * `sendMessage` parks a `@role:...` addressee (slot-parked-store) and
+ * `gatherInbox` already drains it into EVERY future Queen wake's brief
+ * regardless of her current owner id — the exact reliable channel WI-682
+ * proved for other senders. The resolved `owner`, when available, still rides
+ * along as a best-effort direct address (in case that exact session is
+ * somehow still live), but the durable slot is what actually closes the loop.
+ * Never throws (resolve/send errors degrade to not-notified) so it can't
+ * break the routing path that called it.
  */
 export async function notifyQueenDraftRouted(
   ports: QueenNotifyPorts,
@@ -72,10 +96,10 @@ export async function notifyQueenDraftRouted(
   } catch {
     owner = null;
   }
-  if (!owner) return { notified: false, recipient: null, reason: 'no-queen-session' };
+  const to = owner ? [owner, '@role:queen'] : ['@role:queen'];
   try {
     await ports.send({
-      to: [owner],
+      to,
       planSlug: notice.slug,
       summary: `Scout routed a new draft plan for review: ${notice.slug}`,
       body:
@@ -93,9 +117,12 @@ export async function notifyQueenDraftRouted(
 
 /**
  * Ping the Queen back after a revision tick (D-001 step 3) — one message per draft,
- * to the EXACT owner that sent the feedback. Skips items with no recipient. Never
- * throws (per-item send errors are swallowed) so it can't fail the revision cycle.
- * Returns the count actually delivered.
+ * threaded back to the owner that sent the feedback. Skips items with no recipient
+ * (a `fromOwnerId` is required to know WHICH draft's feedback this replies to; the
+ * `@role:queen` slot is addressed alongside it — WI-963 — never instead of it, since
+ * only `fromOwnerId` carries the per-draft thread). Never throws (per-item send
+ * errors are swallowed) so it can't fail the revision cycle. Returns the count
+ * actually delivered.
  */
 export async function notifyQueenRevised(
   ports: Pick<QueenNotifyPorts, 'send'>,
@@ -106,7 +133,12 @@ export async function notifyQueenRevised(
     if (!o.fromOwnerId) continue;
     const { summary, body } = revisedMessage(o);
     try {
-      await ports.send({ to: [o.fromOwnerId], planSlug: o.planSlug, summary, body });
+      // WI-963: by the time a revision cycle completes, the Queen session that
+      // sent the original feedback (`o.fromOwnerId`) has almost always already
+      // ended (fresh-per-wake) — also address the durable `@role:queen` slot so
+      // the ping-back reliably reaches her next wake even when the concrete
+      // owner is already dead.
+      await ports.send({ to: [o.fromOwnerId, '@role:queen'], planSlug: o.planSlug, summary, body });
       delivered += 1;
     } catch {
       /* best-effort per item */

@@ -137,3 +137,52 @@ describe('gitPipelineHiveRows', () => {
     expect(rows.map((r) => r.slug)).toEqual(['ok-hive']);
   });
 });
+
+// ── P-009: the bridge-state projection (github-bridge-hive-egress-2026-07-02) ──
+describe('bridgeStateFromMetadata (P-009)', () => {
+  it('maps a well-formed github_bridge blob', async () => {
+    const { bridgeStateFromMetadata } = await import('./git-pipeline-hives');
+    const s = bridgeStateFromMetadata(
+      {
+        at: 1751000000000,
+        ran: true,
+        skipped: null,
+        egress_target: 'fork',
+        last_admitted: 'a'.repeat(40),
+        divergence: 'escalate',
+        needs_owner: true,
+        errors: ['x', 'y'],
+      },
+      'member-1',
+    );
+    expect(s).toEqual({
+      atMs: 1751000000000,
+      ran: true,
+      skipped: null,
+      egressTarget: 'fork',
+      lastAdmitted: 'a'.repeat(40),
+      divergence: 'escalate',
+      needsOwner: true,
+      errors: 2,
+      memberSlug: 'member-1',
+    });
+  });
+
+  it('is junk-safe: malformed fields degrade to defaults; non-object → null', async () => {
+    const { bridgeStateFromMetadata } = await import('./git-pipeline-hives');
+    expect(bridgeStateFromMetadata(null, 'm')).toBeNull();
+    expect(bridgeStateFromMetadata('garbage', 'm')).toBeNull();
+    const s = bridgeStateFromMetadata({ at: 'NaN', divergence: 'sideways', errors: 3 }, 'm');
+    expect(s).toEqual({
+      atMs: null,
+      ran: false,
+      skipped: null,
+      egressTarget: null,
+      lastAdmitted: null,
+      divergence: null,
+      needsOwner: false,
+      errors: 0,
+      memberSlug: 'm',
+    });
+  });
+});

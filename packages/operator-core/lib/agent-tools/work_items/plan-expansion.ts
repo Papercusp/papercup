@@ -30,6 +30,13 @@ export interface ExpansionInput {
   /** Authoritative caller (steerer) ⇒ children created; a bee ⇒ proposed. */
   authoritative: boolean;
   maxChildren?: number;
+  /**
+   * Lower-cased titles already expanded from this SAME parent in a PRIOR call
+   * (WI-1400 cross-call idempotency). Present only when the caller wants that dedup
+   * enforced — the tool omits it under `force:true` (a deliberate re-decomposition
+   * that legitimately wants the same title again).
+   */
+  existingChildTitles?: ReadonlySet<string>;
 }
 
 export interface PlannedChild {

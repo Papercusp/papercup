@@ -158,7 +158,10 @@ export type WatchdogSource =
   | 'scout-draft-review'
   // WI-1574: the ready-plan autostart sweep's decompose-wake (a ratified scout
   // plan with no open items cannot start — the Queen is woken to add items).
-  | 'scout-ready-decompose';
+  | 'scout-ready-decompose'
+  // GYM-2 (gym-unwedge): the chronic-autoloop-failure escalator's per-(harness,role)
+  // 24h debounce (a cycle red >= threshold consecutive fires files an observation).
+  | 'autoloop-chronic';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

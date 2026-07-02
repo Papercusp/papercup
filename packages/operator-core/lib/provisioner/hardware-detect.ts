@@ -26,6 +26,11 @@ export interface GpuInfo {
   vramGB?: number;
   /** True for Apple Silicon's unified memory — vramGB there is shared with system RAM. */
   unifiedMemory?: boolean;
+  /** NVIDIA-only: CUDA compute capability ("8.6" for an RTX 3090), from
+   *  `nvidia-smi --query-gpu=...,compute_cap`. Feeds `CMAKE_CUDA_ARCHITECTURES` for a
+   *  from-source llama-server build (provisioner/llama-binary.ts's `computeCapToArch`) —
+   *  undefined when the probe's output doesn't include it (older driver/nvidia-smi builds). */
+  computeCap?: string;
 }
 
 export interface DetectedHardware {
@@ -59,21 +64,27 @@ function bytesToGB(bytes: number): number {
   return Math.round((bytes / 1024 ** 3) * 10) / 10;
 }
 
-/** NVIDIA: `nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits`.
+/** NVIDIA: `nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits`.
  *  Reports the FIRST GPU only (multi-GPU boxes are out of scope for P-009 — the wizard
- *  targets the common single-card dev/workstation case). */
+ *  targets the common single-card dev/workstation case). `compute_cap` (added for
+ *  provisioner/llama-binary.ts's from-source build path — WI-1617) is best-effort: an older
+ *  nvidia-smi/driver that doesn't recognize the field just omits it from the CSV rather than
+ *  erroring, so a short (2-field) response degrades to `computeCap: undefined`, not a probe
+ *  failure. */
 async function detectNvidia(exec: ExecFn, notes: string[]): Promise<GpuInfo | null> {
   try {
-    const { stdout } = await exec('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits']);
+    const { stdout } = await exec('nvidia-smi', ['--query-gpu=name,memory.total,compute_cap', '--format=csv,noheader,nounits']);
     const firstLine = stdout.split('\n').map((l) => l.trim()).find(Boolean);
     if (!firstLine) return null;
-    const [namePart, memPart] = firstLine.split(',').map((s) => s.trim());
+    const [namePart, memPart, computeCapPart] = firstLine.split(',').map((s) => s.trim());
     const memMiB = Number.parseFloat(memPart);
     if (!namePart || !Number.isFinite(memMiB)) {
-      notes.push(`nvidia-smi output not in the expected "name, memory.total" shape: '${firstLine}'`);
+      notes.push(`nvidia-smi output not in the expected "name, memory.total[, compute_cap]" shape: '${firstLine}'`);
       return null;
     }
-    return { vendor: 'nvidia', model: namePart, vramGB: bytesToGB(memMiB * 1024 * 1024) };
+    const computeCap = computeCapPart && /^\d+\.\d+$/.test(computeCapPart) ? computeCapPart : undefined;
+    if (!computeCap) notes.push('nvidia-smi did not report a compute_cap — a from-source llama-server build will need it supplied explicitly');
+    return { vendor: 'nvidia', model: namePart, vramGB: bytesToGB(memMiB * 1024 * 1024), computeCap };
   } catch {
     return null; // nvidia-smi absent or errored — not an NVIDIA box (or driver not installed)
   }

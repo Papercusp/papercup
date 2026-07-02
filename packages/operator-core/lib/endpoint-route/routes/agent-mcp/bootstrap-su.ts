@@ -781,7 +781,13 @@ const post = defineTool({
         const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
         const found = await readPlanBySlug(planSlug, { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
         if (found) {
-          planNow = found.parsed.now;
+          // WI-1442 fix (a): decorate any su-* agent-id mention in the launch-
+          // context Now echo with its CURRENT coord:presence session state —
+          // this snapshot is baked into the launch prompt once, so a stale
+          // "actively worked by su-X" claim must self-disclose right here or
+          // it silently misleads the whole session it launches. Best-effort.
+          const { decoratePlanNowBlock } = await import('../../../agent-tools/plans/liveness-decoration');
+          planNow = await decoratePlanNowBlock(found.parsed.now);
           planTitle = found.parsed.frontmatter?.title ?? null;
         }
       } catch {

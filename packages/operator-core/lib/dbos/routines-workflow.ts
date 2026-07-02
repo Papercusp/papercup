@@ -475,6 +475,23 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'agent-facts-expiry-sweep' },
   );
 
+  // GYM-2 (gym-unwedge-scout-novelty-2026-07-02): the chronic-autoloop-failure
+  // escalator — a cycle red >= threshold consecutive fires files ONE observation
+  // per 24h per (harness, role). The fire-gate backoff slows a failing cycle;
+  // this SURFACES it (the gym sat 12 days dead with 72 errors and no witness).
+  await DBOS.runStep(
+    async () => {
+      const { autoloopChronicFailureSweep } = await import('../harness/routines/autoloop-chronic-failure');
+      const results = await autoloopChronicFailureSweep();
+      for (const r of results) {
+        if (r.outcome !== 'debounced') {
+          console.warn(`[autoloop-chronic] ${r.outcome}: ${r.role}@${r.harnessSlug} — ${r.reason.slice(0, 160)}`);
+        }
+      }
+    },
+    { name: 'autoloop-chronic-failure-sweep' },
+  );
+
   // scheduled-recurring-plans-2026-06-16 (Phase 5) — the scheduled-plan RUN completion +
   // governance sweep. A `system:plan-run` fire mints a plan_runs row at status='running' +
   // work_items; nothing settled the run when those finished, and the cost-cap / failure-streak

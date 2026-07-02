@@ -875,6 +875,19 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
 export const ISSUE_FAMILY_STATES: readonly string[] = LIFECYCLE_STATES;
 
 /**
+ * The cross-family TERMINAL/settled state set — feature-family `passed`/`deprecated`
+ * plus issue-family `resolved`/`closed`. The single source of truth for "this work_item
+ * is done, one way or another" (WI-1400); was previously an inline literal array
+ * duplicated at each call site.
+ */
+export const SETTLED_WORK_ITEM_STATES: readonly string[] = ['passed', 'deprecated', 'resolved', 'closed'];
+
+/** Is `state` one of the cross-family settled/terminal states? */
+export function isSettledWorkItemState(state: string | null | undefined): boolean {
+  return !!state && SETTLED_WORK_ITEM_STATES.includes(state);
+}
+
+/**
  * Normalize a requested lifecycle state onto a family's NATIVE vocabulary
  * (EI-24): the families speak different dialects (feature: todo/validating/
  * passed/failing/deprecated; issue: open/resolved/closed) while callers + the
@@ -1042,7 +1055,7 @@ export async function setWorkItemState(
   // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
   // last blocker cleared). Fire-and-forget + lazy import (work-items-events
   // imports this module statically) — an emit failure never breaks the write.
-  if (result && ['passed', 'deprecated', 'resolved', 'closed'].includes(result.state)) {
+  if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
     void import('./work-items-events')
       .then((m) => m.emitWorkItemSettledEvents(settled))

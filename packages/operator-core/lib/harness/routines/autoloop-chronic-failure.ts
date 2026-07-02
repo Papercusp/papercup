@@ -69,7 +69,7 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
     const workspaceId = activeWorkspaceId();
     for (const b of breaches) {
       try {
-        const source = 'autoloop-chronic' as never;
+        const source = 'autoloop-chronic' as const;
         const alreadyFired =
           (await recentWatchdogFires(workspaceId, `${b.harness_slug}::${b.role}`, 24, source)) > 0;
         if (alreadyFired) {

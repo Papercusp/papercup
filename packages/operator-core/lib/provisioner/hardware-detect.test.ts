@@ -13,22 +13,33 @@ function execFrom(table: Record<string, { stdout: string; stderr?: string } | Er
 }
 
 describe('detectHardware', () => {
-  it('reports an NVIDIA GPU from nvidia-smi output (real ornith-box shape)', async () => {
+  it('reports an NVIDIA GPU + compute_cap from nvidia-smi output (real ornith-box shape)', async () => {
     const exec = execFrom({
-      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits': {
-        stdout: 'NVIDIA GeForce RTX 3090, 24576\n',
+      'nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits': {
+        stdout: 'NVIDIA GeForce RTX 3090, 24576, 8.6\n',
       },
     });
     const hw = await detectHardware({ exec, platform: 'linux', arch: 'x64', totalMemBytes: 64 * 1024 ** 3 });
-    expect(hw.gpu).toEqual({ vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3090', vramGB: 24 });
+    expect(hw.gpu).toEqual({ vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3090', vramGB: 24, computeCap: '8.6' });
     expect(hw.platform).toBe('linux');
     expect(hw.ramGB).toBe(64);
     expect(hw.notes).toHaveLength(0);
   });
 
+  it('degrades to computeCap:undefined (+ a note) when nvidia-smi omits the field, not a probe failure', async () => {
+    const exec = execFrom({
+      'nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits': {
+        stdout: 'NVIDIA GeForce RTX 3090, 24576\n',
+      },
+    });
+    const hw = await detectHardware({ exec, platform: 'linux', arch: 'x64', totalMemBytes: 64 * 1024 ** 3 });
+    expect(hw.gpu).toEqual({ vendor: 'nvidia', model: 'NVIDIA GeForce RTX 3090', vramGB: 24, computeCap: undefined });
+    expect(hw.notes.some((n) => n.includes('compute_cap'))).toBe(true);
+  });
+
   it('falls back to AMD when nvidia-smi is absent and rocm-smi answers', async () => {
     const exec = execFrom({
-      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits': new Error('command not found'),
+      'nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits': new Error('command not found'),
       'rocm-smi --showproductname --showmeminfo vram --json': {
         stdout: JSON.stringify({
           card0: { 'Card series': 'Radeon RX 7900 XTX', 'VRAM Total Memory (B)': String(24 * 1024 ** 3) },
@@ -56,7 +67,7 @@ describe('detectHardware', () => {
 
   it('is fail-soft against malformed nvidia-smi output', async () => {
     const exec = execFrom({
-      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits': { stdout: 'not,a,valid,line\n' },
+      'nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits': { stdout: 'not,a,valid,line\n' },
     });
     const hw = await detectHardware({ exec, platform: 'linux', arch: 'x64', totalMemBytes: 16 * 1024 ** 3 });
     expect(hw.gpu).toBeNull();

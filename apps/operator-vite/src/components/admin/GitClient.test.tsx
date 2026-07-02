@@ -146,3 +146,48 @@ describe('GitClient', () => {
     expect(screen.getByText(/🟩 deadbeef0123/)).toBeTruthy(); // last green sha
   });
 });
+
+// ── P-009: the GitHub-bridge pill helpers (github-bridge-hive-egress-2026-07-02) ──
+describe('bridge pill helpers (P-009)', () => {
+  const base = {
+    atMs: 1,
+    ran: true,
+    skipped: null,
+    egressTarget: 'fork',
+    lastAdmitted: null,
+    divergence: 'clear' as const,
+    needsOwner: false,
+    errors: 0,
+    memberSlug: 'm',
+  };
+
+  it('no tick yet → neutral pill naming the mode', async () => {
+    const { bridgeTone, bridgeLabel } = await import('./GitClient');
+    expect(bridgeTone({ hiveGitMode: 'bridged', bridge: null })).toBe('neutral');
+    expect(bridgeLabel({ hiveGitMode: 'bridged', bridge: null })).toBe('bridged · no tick yet');
+  });
+
+  it('clear tick → good, with the egress target', async () => {
+    const { bridgeTone, bridgeLabel } = await import('./GitClient');
+    const r = { hiveGitMode: 'bridged' as const, bridge: base };
+    expect(bridgeTone(r)).toBe('good');
+    expect(bridgeLabel(r)).toBe('bridged · in sync → fork');
+  });
+
+  it('escalated divergence → warn; owner-lever → bad', async () => {
+    const { bridgeTone, bridgeLabel } = await import('./GitClient');
+    const diverged = { ...base, divergence: 'escalate' as const };
+    expect(bridgeTone({ hiveGitMode: 'bridged', bridge: diverged })).toBe('warn');
+    expect(bridgeLabel({ hiveGitMode: 'bridged', bridge: diverged })).toBe('bridged · diverged → fork');
+    const owner = { ...diverged, needsOwner: true };
+    expect(bridgeTone({ hiveGitMode: 'p2p-only', bridge: owner })).toBe('bad');
+    expect(bridgeLabel({ hiveGitMode: 'p2p-only', bridge: owner })).toBe('p2p-only · diverged · owner → fork');
+  });
+
+  it('tick errors without divergence → warn with the count; skipped egress drops the target', async () => {
+    const { bridgeTone, bridgeLabel } = await import('./GitClient');
+    const errs = { ...base, errors: 3, egressTarget: 'skipped' };
+    expect(bridgeTone({ hiveGitMode: 'bridged', bridge: errs })).toBe('warn');
+    expect(bridgeLabel({ hiveGitMode: 'bridged', bridge: errs })).toBe('bridged · 3 err');
+  });
+});

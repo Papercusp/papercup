@@ -16,17 +16,32 @@
  *                                                                        # / coord:ask) — this is the ONLY
  *                                                                        # flag in this tool that touches
  *                                                                        # the GPU.
+ *   npx tsx packages/operator-core/lib/provisioner/cli.ts --provision-binary
+ *                                                                        # resolve a llama-server BINARY
+ *                                                                        # first (llama-binary.ts): a
+ *                                                                        # cached/prebuilt-asset hit is
+ *                                                                        # fast, a from-source build takes
+ *                                                                        # real minutes of CPU + touches
+ *                                                                        # the network — opt-in, and safe
+ *                                                                        # to combine with --install (never
+ *                                                                        # with plain dry-run only, since
+ *                                                                        # the resolved binPath would just
+ *                                                                        # be discarded).
  *   npx tsx packages/operator-core/lib/provisioner/cli.ts --json        # machine-readable output
  *
  * Exit code: 0 on a successful detect/plan (and, with --install, a successful apply); 1 if the
- * plan is blocked (no combo fits / weights missing) or --install's apply fails.
+ * plan is blocked (no combo fits / weights missing / binary provisioning failed) or --install's
+ * apply fails.
  */
 import { planProvision, applyProvision } from './provision';
+import { detectHardware } from './hardware-detect';
+import { resolveLlamaBinary, computeCapToArch } from './llama-binary';
 
 interface CliArgs {
   install: boolean;
   start: boolean;
   json: boolean;
+  provisionBinary: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -34,12 +49,32 @@ function parseArgs(argv: string[]): CliArgs {
     install: argv.includes('--install'),
     start: argv.includes('--start'),
     json: argv.includes('--json'),
+    provisionBinary: argv.includes('--provision-binary'),
   };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const plan = await planProvision();
+
+  let binPath: string | undefined;
+  if (args.provisionBinary) {
+    const hw = await detectHardware();
+    const result = await resolveLlamaBinary(hw, {
+      cudaArch: hw.gpu?.vendor === 'nvidia' && hw.gpu.computeCap ? computeCapToArch(hw.gpu.computeCap) : undefined,
+      cudaHostCompiler: hw.gpu?.vendor === 'nvidia' ? process.env.PAPERCUSP_CUDA_HOST_COMPILER : undefined,
+    });
+    if (!args.json) {
+      console.log(result.ok ? `Binary: ${result.binPath} (${result.fromCache ? 'cached' : result.manifest?.source})` : `Binary provisioning BLOCKED: ${result.blocked}`);
+    }
+    if (!result.ok) {
+      if (args.json) console.log(JSON.stringify({ binaryResult: result }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    binPath = result.binPath;
+  }
+
+  const plan = await planProvision({ binPath });
 
   if (!args.json) {
     const hw = plan.hardware;

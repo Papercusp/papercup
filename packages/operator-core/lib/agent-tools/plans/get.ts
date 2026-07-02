@@ -33,6 +33,7 @@ import { boundRowField } from "../_bound-output";
 import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { shapePlansGet } from "./get-shape";
+import { decoratePlanNowBlock } from "./liveness-decoration";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -379,6 +380,12 @@ export default defineTool({
             }
 
             const sections = splitSections(parsed.prose);
+            // WI-1442 fix (a): read-time liveness decoration — annotate any
+            // su-* agent-id mention in the ## Now prose with its CURRENT
+            // coord:presence session state, so a stale "actively worked by
+            // su-X" claim self-discloses instead of silently outliving the
+            // agent it names. Best-effort; never mutates the stored plan.
+            const decoratedNow = await decoratePlanNowBlock(parsed.now);
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
               slug: parsed.frontmatter.slug ?? parsed.slug,
@@ -386,7 +393,7 @@ export default defineTool({
               archived,
               legacy: false as const,
               frontmatter: parsed.frontmatter,
-              now: parsed.now,
+              now: decoratedNow,
               contentHash: hashPlanContent(parsed.raw),
               version: row.version,
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —

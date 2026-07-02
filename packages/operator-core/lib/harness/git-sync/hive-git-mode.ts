@@ -26,6 +26,13 @@
  * Pure coercion + a thin read/write accessor pair over `hive-settings-store`;
  * junk-safe like `coerceHivePolicyInput` — an unknown/malformed value reads as
  * `legacy` (fail-open to today's behavior, never to a silent push-stop).
+ *
+ * ACCEPTED RISK (review 2026-07-02): fail-open means a PG blip on a BRIDGED
+ * hive briefly re-enables member push → a possible double-push window against
+ * the bridge writer. Safe by construction: both pushers are FF-only + CAS, so
+ * one wins and the other rejects noisily — divergence surfaces, refs never
+ * corrupt. Do not "fix" this by failing closed; a blip silencing a healthy
+ * legacy hive's pushes is the worse failure.
  */
 import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';

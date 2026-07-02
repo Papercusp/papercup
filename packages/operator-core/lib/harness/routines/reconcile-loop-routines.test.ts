@@ -13,6 +13,13 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
+/** Never-breach terminal-guard stub for tests that only care about the pre-existing
+ *  stuck-backstop re-arm behavior (WI-1399 added a guard check ahead of every stuck-backstop
+ *  re-arm — these tests pin it to "no breach" so the original re-arm assertions still hold). */
+const NEVER_BREACH_GUARD = vi.fn(async () => ({ breach: false }) as { breach: boolean; reason?: string });
+/** No prior error streak, by default, for tests that don't care about the stuck-fire count. */
+const NO_PRIOR_ERRORS = vi.fn(async () => null);
+
 /** A minimal tagged-template stub mimicking postgres-js: the SELECT returns the seeded loop
  *  rows; any UPDATE records its params + reports one matched row. */
 function fakeSql(rows: Record<string, unknown>[], updates: unknown[][]): Sql {
@@ -111,8 +118,15 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
       updates,
     );
     // nowMs is well past max(30min, 4×interval) since the fire → the stuck-park backstop fires.
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 31 * 60_000, recordFire });
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
     expect(res.rearmed).toBe(1);
+    expect(res.terminated).toEqual([]);
     expect(res.loops[0].via).toBe('stuck-backstop');
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-dead', expect.stringContaining('stuck-backstop'), 'error');
   });
@@ -140,5 +154,123 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
     const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 5_000, recordFire });
     expect(res.rearmed).toBe(0);
     expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  function stuckRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rt-dead',
+      target_owner_id: 'su-permanently-gone',
+      interval_sec: 120,
+      parked: true,
+      install_slug: 'papercusp',
+      name: 'loop-su-gone',
+      routine_workspace_id: 'ws-papercusp',
+      last_fired_at: pgString(T0),
+      lifecycle_completed_at: null,
+      presence_last_active_at: null,
+      ...overrides,
+    };
+  }
+
+  it('a stuck-backstop fire whose terminal guard BREACHES is TERMINATED, not re-armed', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([stuckRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 2 }));
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({ breach: true, reason: 'dead-owner: unreachable, WI-1399' }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(res.terminated).toEqual([
+      { id: 'rt-dead', targetOwnerId: 'su-permanently-gone', reason: 'dead-owner: unreachable, WI-1399' },
+    ]);
+    expect(updates).toHaveLength(0); // no re-arm UPDATE fired — the guard's own autoPause already deactivated it
+    // stuckFireCount passed to the guard is (prior consecutiveErrors=2) + 1 = 3 for THIS fire.
+    expect(checkUnreachableTerminalGuard).toHaveBeenCalledWith(
+      expect.objectContaining({ routineId: 'rt-dead', targetOwnerId: 'su-permanently-gone', stuckFireCount: 3 }),
+    );
+    // Still recorded to the fire history (autoloop_state), per the terminal-guard contract.
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-gone', 'loop-terminal-unreachable', 'error');
+  });
+
+  it('a stuck-backstop fire whose terminal guard does NOT breach re-arms exactly as before (backward-compat)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([stuckRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => null); // no prior errors → stuckFireCount = 1
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({ breach: false }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard,
+    });
+
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-dead', via: 'stuck-backstop' });
+    expect(checkUnreachableTerminalGuard).toHaveBeenCalledWith(expect.objectContaining({ stuckFireCount: 1 }));
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-gone', expect.stringContaining('stuck-backstop'), 'error');
+  });
+
+  it('a terminal-guard check failure is fail-soft — falls back to the normal stuck-backstop re-arm', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([stuckRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => null);
+    const checkUnreachableTerminalGuard = vi.fn(async () => {
+      throw new Error('probe read failed');
+    });
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard,
+    });
+
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(1); // never blocked / never threw — the row was still re-armed to retry
+  });
+
+  it('a readFireState failure is fail-soft — treated as zero prior errors, guard still consulted', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([stuckRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => {
+      throw new Error('pg read failed');
+    });
+    const checkUnreachableTerminalGuard = vi.fn(async () => ({ breach: false }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(checkUnreachableTerminalGuard).toHaveBeenCalledWith(expect.objectContaining({ stuckFireCount: 1 }));
   });
 });

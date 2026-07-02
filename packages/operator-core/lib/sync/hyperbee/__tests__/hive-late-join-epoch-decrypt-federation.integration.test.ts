@@ -158,6 +158,7 @@ const CONTENT_AND_KEY_DDL = `
     archived       boolean DEFAULT false,
     is_legacy      boolean DEFAULT false,
     author_pubkey  text,
+    owner_author_pubkey text,
     origin         text DEFAULT 'local',
     fed_ts         bigint,
     fed_hlc        text,

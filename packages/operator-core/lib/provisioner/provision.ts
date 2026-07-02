@@ -50,6 +50,12 @@ export interface PlanProvisionOptions {
   home?: string;
   unitFilePath?: string;
   logPath?: string;
+  /** Absolute path to an ALREADY-provisioned `llama-server` binary (from
+   *  `llama-binary.ts`'s `resolveLlamaBinary` — a separate, opt-in, network/build-capable
+   *  step; deliberately NOT called from inside this function, which stays fast/read-only per
+   *  its own contract below). Omitted -> `renderLlamaServerUnit`'s default of relying on a
+   *  bare `llama-server` already being on PATH, unchanged from before WI-1617. */
+  binPath?: string;
 }
 
 function defaultHome(): string {
@@ -100,6 +106,7 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
           kvCacheType: entry.serve.kvCacheType,
           flashAttn: entry.serve.flashAttn,
           logPath,
+          binPath: opts.binPath,
         })
       : null;
 

@@ -12,11 +12,16 @@ vi.mock('../hive/started', () => ({ listStartedHives: vi.fn() }));
 vi.mock('../hive/placement-watchdog', () => ({ resolveQueenOwner: vi.fn() }));
 vi.mock('../hive/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn() }));
+const sendMessage = vi.fn().mockResolvedValue(undefined);
+vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: (...args: unknown[]) => sendMessage(...args) }));
+vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import {
   selectStaleDrafts,
   shouldNudgeHive,
   scoutDraftReviewStaleSec,
+  fireReviewWake,
   type ScoutDraftCandidate,
 } from './draft-review-watchdog';
 
@@ -69,6 +74,47 @@ describe('shouldNudgeHive', () => {
   });
   it('skips when already fired within the window (debounce)', () => {
     expect(shouldNudgeHive({ staleCount: 5, alreadyFiredRecently: true })).toBe(false);
+  });
+});
+
+describe('fireReviewWake (WI-963 — the durable @role:queen half)', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('ALSO durably parks an @role:queen-addressed message, not just the event-key wake', async () => {
+    await fireReviewWake('ws-1', 'queen-owner-stale-123', [draft('scout-x-2026-06-26', 24)], 43_200);
+
+    // The legacy event-key wake still fires (best-effort — harmless if nobody is
+    // listening on that exact, likely-already-ended, owner id's key).
+    expect(wakeRecipients).toHaveBeenCalledWith(
+      ['queen-owner-stale-123'],
+      expect.objectContaining({ source: 'scout-draft-review', workspaceId: 'ws-1' }),
+    );
+
+    // The FIX: a durable coord message addressed to the `@role:queen` slot, sent
+    // inside the target workspace — this is what `gatherInbox` (queen-brief-launch.ts,
+    // WI-682) drains into the Queen's VERY NEXT wake brief regardless of which fresh
+    // owner id she boots under, closing the gap the event-key wake alone could not.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const [identity, opts] = sendMessage.mock.calls[0] as [
+      { ownerId: string; source: string; workspaceId: string },
+      { to: string[]; summary: string },
+    ];
+    expect(identity.workspaceId).toBe('ws-1');
+    expect(opts.to).toEqual(['@role:queen']);
+    expect(opts.summary).toContain('scout-x-2026-06-26');
+  });
+
+  it('a park failure never throws out of fireReviewWake (best-effort)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendMessage.mockRejectedValueOnce(new Error('coord down'));
+    await expect(
+      fireReviewWake('ws-1', 'queen-owner-1', [draft('scout-y', 24)], 43_200),
+    ).resolves.toBeUndefined();
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('@role:queen park failed'));
+    warn.mockRestore();
   });
 });
 

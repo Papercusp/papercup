@@ -40,6 +40,14 @@ import { softText, clampText } from '../limits';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
+/** Cosmetic short form for an overridden owner id (display only, never keyed
+ *  on) — mirrors resolveAgentIdentity's own `shortId` formatting so an
+ *  ownerId-override loop's label reads the same as a self-armed one. */
+function shortOwnerLabel(id: string): string {
+  if (id.startsWith('pus-')) return id.slice(0, 12);
+  return id.length > 8 ? id.slice(0, 8) : id;
+}
+
 export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
@@ -129,7 +137,16 @@ export default defineTool({
     }
 
     const identity = resolveAgentIdentity(ctx);
-    const ownerId = identity.ownerId;
+    // WI-1471: honor an explicit owner override (mirrors loop:end/loop:status,
+    // which already accept `ownerId` with no extra gate beyond this tool's own
+    // `capability:'routines:write'`). Without this, a caller with no per-session
+    // uiClientId (e.g. a client-less ptool/curl bridge over the superuser
+    // transport) silently binds the loop to resolveAgentIdentity's SUPERUSER_
+    // FALLBACK_CLIENT_ID ('su-loopback') — a fixed id that is never a live,
+    // wake-reachable session, so the loop is armed but can never actually fire
+    // into a running turn.
+    const ownerId = args.ownerId ?? identity.ownerId;
+    const ownerLabel = args.ownerId ? `su · ${shortOwnerLabel(args.ownerId)}` : identity.ownerLabel;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     // No `?? ''` collapse — keep the unresolved case nullish so the guard below catches
     // it and fails loud (a routine with an empty harness namespace would collide across
@@ -213,7 +230,7 @@ export default defineTool({
             loop: {
               name: loop.name,
               ownerId,
-              ownerLabel: identity.ownerLabel,
+              ownerLabel,
               harness,
               intervalSec: args.intervalSec,
               goal,

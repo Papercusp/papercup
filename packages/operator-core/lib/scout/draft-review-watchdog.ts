@@ -135,11 +135,30 @@ export interface ScoutDraftReviewResult {
   reason: string;
 }
 
-/** Fire ONE review wake to the live Queen so she reviews the stale drafts on the FRICTION
- *  path (not the idle-only path). Best-effort: a woken:0 (Queen has no armed wake) degrades
- *  to "she sees these on her next natural turn"; the liveness watchdog keeps her armed.
- *  Crucially it NEVER touches the draft status — the Queen still ratifies / deprecates. */
-async function fireReviewWake(
+/**
+ * Fire ONE review wake to the live Queen so she reviews the stale drafts on the FRICTION
+ * path (not the idle-only path). Crucially it NEVER touches the draft status — the Queen
+ * still ratifies / deprecates.
+ *
+ * WI-963 (closing the queen-scout-feedback-loop's broken last link — confirmed live: 19+
+ * hourly fires recorded in `hive_watchdog_fires` against a draft that stayed unreviewed 3+
+ * days). The ONLY delivery this used to attempt was `wakeRecipients([queenOwner], ...)` — an
+ * event-key WAKE that only does anything if some session is CURRENTLY watching
+ * `inboxWakeKey(queenOwner)`. But the Queen is fresh-per-wake (each wake is a NEW launch
+ * under a BRAND-NEW coord owner id, not a long-lived parked process — her adv_sessions rows
+ * show short, fully-ENDED sessions, not parked ones), so `queenOwner` (the newest session AT
+ * SWEEP TIME) is almost always already a dead session nobody is watching by the time this
+ * sweep fires: the wake event fires into the void, `hive_watchdog_fires` still records
+ * "nudged" (it only ever recorded that the SWEEP ran, never that delivery landed), and no
+ * durable trace of the notification exists anywhere — the backstop was silently a no-op.
+ *
+ * The fix: ALSO durably park an `@role:queen`-addressed coord message (the same channel
+ * WI-682 wired `gatherInbox`/queen-brief-launch.ts to drain into EVERY future Queen wake's
+ * brief, regardless of her owner id at drain time). This is now the RELIABLE half of the
+ * notification; the event-wake above is kept as a best-effort bonus for the rare case a live
+ * session happens to be watching that exact key.
+ */
+export async function fireReviewWake(
   workspaceId: string,
   queenOwner: string,
   stale: readonly ScoutDraftCandidate[],
@@ -149,17 +168,41 @@ async function fireReviewWake(
   const shown = stale.slice(0, 5);
   const list = shown.map((s) => `• ${s.planSlug}${s.title ? ` — ${s.title}` : ''}`).join('\n');
   const more = stale.length > shown.length ? `\n…and ${stale.length - shown.length} more.` : '';
+  const summary =
+    `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h (the ` +
+    `plan-review idle activity never ran — the hive has been saturated, so the Queen was never idle). ` +
+    `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
+    `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
+    `or progressing them stops this wake.\n\n${list}${more}`;
   await wakeRecipients([queenOwner], {
-    summary:
-      `Scout-draft review backstop: ${stale.length} scout-routed draft(s) unreviewed > ${hours}h (the ` +
-      `plan-review idle activity never ran — the hive has been saturated, so the Queen was never idle). ` +
-      `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
-      `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
-      `or progressing them stops this wake.\n\n${list}${more}`,
+    summary,
     payload: { kind: 'scout-draft-review', slugs: stale.map((s) => s.planSlug), staleHours: hours },
     source: 'scout-draft-review',
     workspaceId,
   });
+  // WI-963 durable half — see the function doc above. Best-effort: a park failure must
+  // never break the sweep (the caller's try/catch also guards this, but degrade locally
+  // too so a park hiccup doesn't mask the wake attempt above having already happened).
+  try {
+    const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
+      import('../agent-tools/coordination/messages'),
+      import('../workspace-als'),
+    ]);
+    await runWithWorkspace(workspaceId, () =>
+      sendMessage(
+        {
+          ownerId: 'scout-draft-review-watchdog',
+          ownerLabel: 'scout-draft-review-watchdog',
+          source: 'static-client',
+          workspaceId,
+          userId: null,
+        },
+        { to: ['@role:queen'], summary, body: `${list}${more}` },
+      ),
+    );
+  } catch (e) {
+    console.warn(`[scout-draft-review] @role:queen park failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /**

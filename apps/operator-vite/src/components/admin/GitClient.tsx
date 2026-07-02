@@ -318,6 +318,18 @@ function PerHiveSection() {
                 >
                   <span className="pc-git__hive-slug">{r.slug}</span>
                   <StatusPill tone={gateTone(r.gateStatus)} label={gateLabel(r)} />
+                  {(r.hiveGitMode === 'bridged' || r.hiveGitMode === 'p2p-only') && (
+                    <Tooltip
+                      label={
+                        r.bridge
+                          ? `GitHub bridge · tick ${fmtRel(r.bridge.atMs)} via ${r.bridge.memberSlug}` +
+                            (r.bridge.lastAdmitted ? ` · watermark ${r.bridge.lastAdmitted.slice(0, 10)}` : '')
+                          : 'GitHub bridge enabled — no tick reported yet'
+                      }
+                    >
+                      <StatusPill tone={bridgeTone(r)} label={bridgeLabel(r)} />
+                    </Tooltip>
+                  )}
                   <code className="pc-git__hive-cmd">
                     {r.greenCmd}
                     {r.greenCmdOverridden && <span className="pc-git__hive-badge">override</span>}
