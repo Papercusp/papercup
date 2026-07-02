@@ -13,7 +13,7 @@
  * at the boundary is kept (conservative — never over-prune).
  */
 import { describe, expect, it } from 'vitest';
-import { resolveTtlMs, selectStaleChunks } from './dev-dist-prune';
+import { resolveTtlMs, selectStaleChunks, shouldRetainDistChunks } from './dev-dist-prune';
 
 const NOW = 1_000_000_000_000; // fixed clock so the tests are deterministic
 const MIN = 60_000;
@@ -62,5 +62,22 @@ describe('resolveTtlMs', () => {
     expect(resolveTtlMs({ PAPERCUSP_DIST_CHUNK_TTL_MIN: 'nonsense' })).toBe(60 * MIN);
     expect(resolveTtlMs({ PAPERCUSP_DIST_CHUNK_TTL_MIN: '0' })).toBe(60 * MIN);
     expect(resolveTtlMs({ PAPERCUSP_DIST_CHUNK_TTL_MIN: '-5' })).toBe(60 * MIN);
+  });
+});
+
+describe('shouldRetainDistChunks', () => {
+  it('retains for a `vite build --watch`', () => {
+    expect(shouldRetainDistChunks(['node', 'vite', 'build', '--watch'], {})).toBe(true);
+  });
+
+  it('retains for a one-shot build that opts in via PAPERCUSP_RETAIN_DIST_CHUNKS=1', () => {
+    expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: '1' })).toBe(true);
+  });
+
+  it('empties (no retain) for a plain release/CI build — clean bundle + wipe guard', () => {
+    expect(shouldRetainDistChunks(['node', 'vite', 'build'], {})).toBe(false);
+    // Any value other than the exact opt-in string is treated as off.
+    expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: '0' })).toBe(false);
+    expect(shouldRetainDistChunks(['node', 'vite', 'build'], { PAPERCUSP_RETAIN_DIST_CHUNKS: 'true' })).toBe(false);
   });
 });

@@ -426,9 +426,9 @@ export async function handleInboundPresenceFrame(
     } else if (frame.kind === 'sessions' && frame.sessions && opts.applySessions) {
       // H1 (audit D-013): a device may only announce sessions under its OWN user —
       // the frame's github_user_id must be the signer's attested id, so it cannot
-      // announce a victim's / the queen's user. (Per-session owner_id shadowing of
-      // a LOCAL identity is additionally blocked receiver-side in recipient-resolve
-      // + the session store's device-owned upsert guard.)
+      // announce a victim's / the queen's user. (A remote session additionally can
+      // NEVER shadow a LOCAL owner_id — the local agent is authoritative for its own
+      // id — enforced receiver-side in recipient-resolve.readKnownOwnerIds.)
       if (frame.github_user_id !== attestedUserId) return 'identity-mismatch';
       await Promise.resolve(
         opts.applySessions(

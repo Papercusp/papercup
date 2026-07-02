@@ -115,6 +115,7 @@ async function deleteFromPg(
   key: string,
   delTs?: number,
   delHlc?: string,
+  provenance?: ProvenanceContext,
 ): Promise<void> {
   // key shape: `<github_user_id>/<machine_label>`
   const sepIdx = key.indexOf('/');
@@ -126,12 +127,19 @@ async function deleteFromPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
+  // H2 (audit D-013): when the caller author-scopes the tombstone (the gossip del
+  // path passes the SIGNER device as provenance.authorPubkey), restrict the delete
+  // to rows OWNED by that device — a member can only tombstone its own presence
+  // rows, never evict a peer's (the de-presence DoS that breaks lock-authority
+  // election). Absent provenance ⇒ no device filter (today's behavior).
+  const authorDevice = provenance?.authorPubkey ?? null;
   await sql`
     DELETE FROM harness_shared.shared_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND machine_label = ${machineLabel}
+      AND (${authorDevice}::text IS NULL OR device_pubkey = ${authorDevice}::text)
       -- EI-79 step 2 + D-001: guard the delete by the SAME HLC-then-fed_ts order
       -- as the put guard; fall back to the ts-guard when either side lacks an HLC.
       AND (
@@ -148,7 +156,7 @@ export function buildPresenceProjection(opts: PresenceProjectionOpts): TableProj
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
+    deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
   };
 }
 

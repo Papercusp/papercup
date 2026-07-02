@@ -183,12 +183,12 @@ export default defineConfig({
       autoCodeSplitting: true,
     }),
     react(),
-    // Watch build retains+prunes old chunks (emptyOutDir:false); a one-shot
-    // `vite build` empties dist/ — guard it so it can't wipe a LIVE watcher's
-    // :3170 dist out from under open webviews (the 2026-06-29 blank-page
-    // incident). The guard only fires on a confirmed same-dist live watcher
-    // and fails open otherwise, so it never wedges the deploy pipeline. See
-    // dist-wipe-guard.ts.
-    ...(isWatchBuild ? [devDistPrunePlugin()] : [distWipeGuardPlugin()]),
+    // Retain-regime builds retain+prune old chunks (emptyOutDir:false); a
+    // clean-empty build (release/CI) instead gets the dist-wipe guard so it
+    // can't wipe a LIVE watcher's :3170 dist out from under open webviews (the
+    // 2026-06-29 blank-page incident). The guard only fires on a confirmed
+    // same-dist live watcher and fails open otherwise, so it never wedges the
+    // deploy pipeline. See dist-wipe-guard.ts.
+    ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin()]),
   ],
 });

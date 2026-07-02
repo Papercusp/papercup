@@ -170,14 +170,16 @@ async function ensureState(): Promise<WiringState> {
           harnessSlug: del.harness_slug,
           ...(deps.sql ? { sql: deps.sql } : {}),
         });
-        // H2 (audit D-013): scope the delete to the SIGNER's own row —
+        // H2 (audit D-013): scope the delete to the SIGNER's own row via the
+        // deleteFromPg author-provenance seam (D-012 author-scoped tombstone):
         // del.device_pubkey is the verified signer (pinned in verifyPresenceFrame),
-        // so a member can only tombstone rows it owns, never evict a peer's.
+        // so passing it as the provenance authorPubkey makes the delete match only
+        // rows this device owns — a member can never evict a peer's presence row.
         await proj.deleteFromPg(
           `${del.github_user_id}/${del.machine_label}`,
           frameTs,
           undefined,
-          del.device_pubkey,
+          { authorPubkey: del.device_pubkey, origin: 'remote' },
         );
       },
       applySessions: async (input, frameTs, topicHex) => {
