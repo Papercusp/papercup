@@ -56,6 +56,21 @@ W1: the trust gate is optional by construction — the live driver MUST make it
 W2: null crefs rule = REFUSE for release-class refs — when resolveCanonicalRule
     returns no rule for a release ref, promotion must fail closed, never
     default-allow.
+W3: every bootstrapFromPeer call MUST pass selfDevicePubkey (the machine's own
+    device key) — bootstrapFromPeer opts (bootstrap.ts:127, refusal at :156).
+    Why: without it a squatting peer can pre-plant refs under the joiner's OWN
+    namespace on a truly-fresh joiner, masquerading as the device's work/
+    sigrefs before its first publish (WI-1559). The param is optional only for
+    API compat; the guard is inert unless the driver passes it.
+W4: a bridge/receiver accept-gate using allowedDevices MUST also set
+    maxGrantedEpoch = the last verified G-0 grant (adoptHandoffToken(...)
+    .nextEpoch / lease epoch) — AcceptStagingAdvanceOpts
+    (staging-advance.ts:208, reject at :233). Why: the member-SET gate passes
+    ANY admitted key, so an insider could self-sign epoch:1e9 and poison the
+    (epoch,seq) watermark unrecoverably; the cap rejects it 'ungranted-epoch',
+    bounding insider damage to within-epoch seq burn, which the next epoch
+    grant recovers ((e+1,0) > (e,1e9)) (WI-1560). expectedDevice-pinned
+    configs may omit it.
 
 FAILURE PROTOCOL: any drill fail → file work item with the drill id, the
 msg_id/event key used, and both machines' timestamps; do NOT flip D6.
