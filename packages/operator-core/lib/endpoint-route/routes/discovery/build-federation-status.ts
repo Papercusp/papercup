@@ -28,6 +28,7 @@ import {
   loadSubstrateDrainStats,
   type SubstrateDrainStat,
 } from '../../../sync/hyperbee/load-drain-stats';
+import { probeSubstrateSidecar } from '../../../service-health';
 
 /**
  * Oldest-undrained age (ms) past which a harness's outbox counts as STALLED in
@@ -61,6 +62,16 @@ export interface FederationStatus {
       worstUndrainedCount: number;
       worstOldestUndrainedAgeMs: number | null;
     };
+    /**
+     * WI-899 (A): SUBSTRATE_SIDECAR process liveness, install-wide (one sidecar owns
+     * every booted harness's engine when the flag is ON). `true`/`false` = measured
+     * (healthz answered / didn't); `null` = sidecar mode is off (nothing to probe —
+     * every harness boots in-process, this field just doesn't apply). A `false` here
+     * already forced every harness's verdict to `unhealthy` (see health.ts's
+     * `sidecarLive` input) — this field is what lets the UI/caller explain WHY in one
+     * glance instead of inferring it from a wall of individual harness reasons.
+     */
+    sidecarLive: boolean | null;
   };
   hives: OwnedHiveStatusRow[];
 }
@@ -112,6 +123,19 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
     /* PG-less → zero drain, honest */
   }
 
+  // WI-899 (A): prefetch SUBSTRATE_SIDECAR liveness so the (sync) resolveSidecarLive
+  // below can flip EVERY booted harness's verdict to 'unhealthy' when the sidecar
+  // that actually owns their replication is dead. `present === false` = sidecar mode
+  // is off (nothing to probe) → null, never a fabricated verdict for the in-process
+  // boot path. Best-effort: a probe failure degrades to "unknown" (null), never throws.
+  let sidecarLive: boolean | null = null;
+  try {
+    const probe = await probeSubstrateSidecar();
+    sidecarLive = probe.present === false ? null : probe.up;
+  } catch {
+    /* liveness unknown → null, honest */
+  }
+
   // Install-wide substrate health (local boot state). substrateActive is constant
   // true at runtime; bootedCount + per-harness verdicts are the real signal. The
   // `drain` rollup is the honest install-wide SYNC-health signal: how many booted
@@ -124,6 +148,7 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
     booting: 0,
     degraded: 0,
     drain: { stalledHarnesses: 0, worstUndrainedCount: 0, worstOldestUndrainedAgeMs: null },
+    sidecarLive,
   };
   try {
     const status = getInProcessSubstrateStatus({
@@ -131,6 +156,8 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
       // drain rollup below.
       resolveDrainStats: (ws, slug) =>
         drainByKey.get(`${ws}::${slug}`) ?? { undrainedCount: 0, oldestUndrainedAgeMs: null },
+      // WI-899 (A): a dead sidecar forces every harness's verdict to 'unhealthy'.
+      resolveSidecarLive: () => sidecarLive,
     });
     let healthy = 0;
     let booting = 0;
@@ -166,6 +193,7 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
       booting,
       degraded,
       drain: { stalledHarnesses, worstUndrainedCount, worstOldestUndrainedAgeMs },
+      sidecarLive,
     };
   } catch {
     /* keep the conservative default */

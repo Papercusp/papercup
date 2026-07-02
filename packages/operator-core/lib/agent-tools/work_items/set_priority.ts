@@ -11,6 +11,22 @@
  *   - bump      { workItem, position: 'top'|'bottom' } — move to head (most urgent) / tail of the backlog.
  *   - read      { workItem }                          — report the current backlog priority, no write.
  *
+ * ⚠ EI-6835 GOTCHA — `NULLS LAST` means ANY explicit `feature_order` (however large)
+ * sorts BEFORE every unprioritized (`feature_order IS NULL`) item, no exceptions. So
+ * setting a "large" priority number to try to DEPRIORITIZE an item you can't make
+ * progress on right now (e.g. before releasing it) does the OPPOSITE: it PROMOTES the
+ * item ahead of the entire unprioritized pool (typically the vast majority of the
+ * backlog) — guaranteeing claim_next hands it right back out, worse than before.
+ * `position: 'bottom'` has the SAME gotcha: it computes MAX(existing explicit
+ * feature_order)+1, i.e. "last among the currently-EXPLICITLY-prioritized items," NOT
+ * "last in the whole backlog" — it still lands well ahead of every unprioritized item.
+ * There is currently NO way to place an item behind the unprioritized pool (NULLS LAST
+ * is structurally the lowest position; no finite number can rank below it). If an item
+ * is genuinely unresolvable right now, do NOT try to "deprioritize" it via this tool —
+ * for a feature-family item, flip its state to `blocked` (excluded from claim_next's
+ * readiness floor) instead; issue-family items (bug/change/task) have no such
+ * transient-hold state today (see the WI-1671-sibling follow-up filed for EI-6835).
+ *
  * DISTINCT from `work_items:reorder`, which ranks ONE bee's already-CLAIMED work-list
  * (a per-assignee queue, post-claim). This sets the GLOBAL backlog order (pre-claim).
  * Feature-family only — issue-family items (bugs/changes) aren't the dispatched backlog,
@@ -44,7 +60,7 @@ const itemSpec = z.object({
     .int()
     .nullable()
     .optional()
-    .describe('Explicit backlog order (feature_order) — LOWER = claimed sooner; null clears. Overrides position.'),
+    .describe('Explicit backlog order (feature_order) — LOWER = claimed sooner; null clears. Overrides position. EI-6835: any explicit value (even a huge one) sorts BEFORE the unprioritized pool — this can only PROMOTE, never deprioritize below unset items.'),
   position: z.enum(['top', 'bottom']).optional().describe("Bump to head ('top') / tail ('bottom') of the backlog."),
   // P-114: an AUTONOMOUS agent declares the action's risk/authority so the auto-revert
   // tripwire arms faithfully. Absent ⇒ fail-safe `critical`. Ignored for human callers.
@@ -57,11 +73,11 @@ export default defineTool({
   name: 'work_items:set_priority',
   profile: 'engineer',
   description:
-    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts:{ ok, failed, written, proposed } }. NB: gate on `written` per item — or the `counts.written`/`counts.proposed` rollup — NOT `ok`/`counts.ok`: a non-lease-holder proposal or an issue-family item returns ok:true but writes nothing (counts.proposed>0 or written<attempts means the miss is real).",
+    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[{ ok, workItem, mode, written, … | error }], counts:{ ok, failed, written, proposed } }. NB: gate on `written` per item — or the `counts.written`/`counts.proposed` rollup — NOT `ok`/`counts.ok`: a non-lease-holder proposal or an issue-family item returns ok:true but writes nothing (counts.proposed>0 or written<attempts means the miss is real). ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
   guidance: {
     when: "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
     notWhen:
-      "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
+      "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only. Do NOT reach for this to DEPRIORITIZE a stuck/unresolvable item (e.g. before releasing it) — see the EI-6835 warning above; it will backfire.",
     chaining:
       "work_items:list (the backlog) → set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
     seeAlso: [
@@ -82,7 +98,7 @@ export default defineTool({
         .int()
         .nullable()
         .optional()
-        .describe('single shorthand: explicit backlog order (feature_order) — LOWER = claimed sooner; null clears. Overrides position.'),
+        .describe('single shorthand: explicit backlog order (feature_order) — LOWER = claimed sooner; null clears. Overrides position. EI-6835: any explicit value sorts BEFORE the unprioritized pool — cannot be used to deprioritize below unset items.'),
       position: z
         .enum(['top', 'bottom'])
         .optional()

@@ -152,10 +152,17 @@ export class HlcClock {
   /** This clock's identity segment, stamped onto every value it returns
    *  (normalized; '' ⇒ node-less legacy stamps). */
   readonly node: string;
+  /** ε bound on the recv ratchet (Kulkarni et al. §4): a remote `ms` more than
+   *  this far ahead of our physical clock does NOT advance us — one absurd
+   *  future stamp would otherwise pin the clock (and, re-propagated, the whole
+   *  hive) years ahead (WI-1672 amplifier). 10min = 2× the announce-admission
+   *  skew window, so every legitimately-admitted peer still ratchets us. */
+  private readonly maxDriftMs: number;
 
-  constructor(opts: { physical?: () => number; seed?: Hlc; node?: string } = {}) {
+  constructor(opts: { physical?: () => number; seed?: Hlc; node?: string; maxDriftMs?: number } = {}) {
     this.physical = opts.physical ?? (() => Date.now());
     this.node = normalizeHlcNode(opts.node);
+    this.maxDriftMs = opts.maxDriftMs ?? 600_000;
     this.last = opts.seed ? { ...opts.seed } : { ...HLC_ZERO };
   }
 
@@ -192,13 +199,17 @@ export class HlcClock {
 
   /**
    * Merge a remote HLC observed on RECEIVE and advance the local clock past it.
-   * Returns the new local HLC (≥ local, ≥ remote, ≥ physical) — this is what
-   * carries happens-before across machines: any event stamped after recv()
-   * causally follows the received one.
+   * Returns the new local HLC (≥ local, ≥ physical, and ≥ remote unless the
+   * remote is past the ε drift bound) — this is what carries happens-before
+   * across machines: any event stamped after recv() causally follows the
+   * received one. A remote more than `maxDriftMs` ahead of the physical clock
+   * is treated as absent (its stamp still applies to the DATA; it just doesn't
+   * ratchet OUR clock — see maxDriftMs).
    */
   recv(remote: Hlc, physicalNow?: number): Hlc {
     const pt = physicalNow ?? this.physical();
     const l = this.last;
+    if (remote.ms - pt > this.maxDriftMs) remote = { ms: 0, count: 0 };
     const ms = Math.max(l.ms, remote.ms, pt);
     let next: Hlc;
     if (ms === l.ms && ms === remote.ms) next = bumpCount(ms, Math.max(l.count, remote.count));

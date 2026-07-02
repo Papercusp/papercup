@@ -64,6 +64,17 @@ export interface SubstrateHealthInputs {
   drainStalledThresholdMs?: number;
   /** oldest-undrained age ≥ this → `unhealthy`. Default 5m. */
   drainUnhealthyThresholdMs?: number;
+  /**
+   * WI-899 (A): SUBSTRATE_SIDECAR process liveness (from `probeSubstrateSidecar` in
+   * service-health.ts), process-wide (NOT per-harness — one sidecar owns every
+   * booted harness's engine). `true` = healthz answered; `false` = the sidecar is
+   * DOWN — every harness's `handlePresent: true` (still the cached boot-time proxy)
+   * is a LIE, so this forces `unhealthy` regardless of any other signal (worst-wins,
+   * and the strongest possible override — a dead sidecar means NOTHING downstream of
+   * it can be trusted). `undefined`/`null` = not measured / sidecar mode off — no
+   * effect (never fabricates a verdict for a harness that boots in-process).
+   */
+  sidecarLive?: boolean | null;
   /** Override for tests; defaults to Date.now(). */
   nowMs?: number;
   /** mergedOps lagging highestSeen for this long → unhealthy. Default 5m. */
@@ -154,6 +165,15 @@ export function assessHarnessSubstrateHealth(
       if (verdict === 'healthy') verdict = 'degraded';
       reasons.push(`outbox lagging: ${n} row(s) undrained for ${ageS}s`);
     }
+  }
+
+  // WI-899 (A): a confirmed-dead sidecar overrides every other signal — nothing
+  // computed above (claim stats, bootstrap progress, drain) is trustworthy once the
+  // process that actually owns replication is gone; the boot map still holding a
+  // proxy handle for it is exactly the "reads healthy while dead" bug this closes.
+  if (inputs.sidecarLive === false) {
+    verdict = 'unhealthy';
+    reasons.push('substrate sidecar is DOWN (healthz unreachable) — boot-time handle is stale');
   }
 
   if (verdict === 'healthy' && reasons.length === 0) {

@@ -99,6 +99,16 @@ export interface GetInProcessStatusOpts {
     workspaceId: string,
     harnessSlug: string,
   ) => { undrainedCount: number; oldestUndrainedAgeMs: number | null };
+  /**
+   * WI-899 (A): resolve SUBSTRATE_SIDECAR process liveness — `true`/`false` when
+   * measured (sidecar mode is on), `null`/`undefined` when not applicable (sidecar
+   * mode off, or the caller hasn't wired a resolver). Defaulted to a no-op (`null`)
+   * because this module is pure (no IPC); production callers (e.g. the
+   * dogfood-substrate-status/-health routes) pass a resolver backed by
+   * `probeSubstrateSidecar` (service-health.ts) — see the route wiring for the
+   * "handlePresent hardcoded true even for a dead sidecar" bug this closes.
+   */
+  resolveSidecarLive?: () => boolean | null;
 }
 
 const ZERO_STATS = { total: 0, won: 0, lost: 0, error: 0 } as const;
@@ -122,6 +132,10 @@ export function getInProcessSubstrateStatus(
   }
   const resolveStats = opts.resolveClaimStats ?? (() => ZERO_STATS);
   const resolveDrain = opts.resolveDrainStats ?? (() => ZERO_DRAIN);
+  const resolveSidecarLive = opts.resolveSidecarLive ?? (() => null);
+  // WI-899 (A): resolved ONCE per call (process-wide, not per-harness — see the
+  // opt's doc comment) rather than re-probing per booted harness.
+  const sidecarLive = resolveSidecarLive();
 
   const harnesses: InProcessHarnessHealth[] = booted.map((h) => {
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
@@ -131,11 +145,16 @@ export function getInProcessSubstrateStatus(
       // health.ts's `flagEnabled` is its real "is the substrate active" input
       // (drives the 'disabled' verdict); feed it `substrateActive`.
       flagEnabled: substrateActive,
+      // WI-899 (A): this is a KNOWN LIE when the sidecar is dead — `listBootedHandles()`
+      // still returns the boot-time proxy regardless. `sidecarLive: false` below is what
+      // actually catches that case (forces `unhealthy` overriding this `true`).
       handlePresent: true,
       claimStats: stats,
       bootstrapProgress: bp ?? null,
       // EI-1618: a stalled outbox flips the verdict off 'healthy'.
       drainStats: drain,
+      // WI-899 (A): a confirmed-dead sidecar overrides everything above.
+      sidecarLive,
     });
     return {
       workspaceId: h.workspaceId,
