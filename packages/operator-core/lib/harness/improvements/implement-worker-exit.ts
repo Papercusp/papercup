@@ -146,11 +146,20 @@ export interface ImplementWorkerExitInput extends WorkerExitInfo {
 export interface ImplementWorkerExitDeps {
   markOrphaned: (dispatchId: string, by: string, detail?: string) => Promise<boolean>;
   mergePayload: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
+  /** WI-716: read the item's current payload, to find the PRIOR contextOverflowDeaths
+   *  count before deciding whether this death trips the escalation cap. Only called
+   *  on the (rare) context-overflow path — every other exit path is unchanged.
+   *  Best-effort: a read failure is treated as "0 prior deaths" (never throws). */
+  getPayload: (id: string) => Promise<Record<string, unknown> | null>;
 }
 
 const defaultDeps: ImplementWorkerExitDeps = {
   markOrphaned: markDispatchOrphaned,
   mergePayload: mergeIssuePayload,
+  getPayload: async (id) => {
+    const issue = await getIssue(id);
+    return (issue?.payload as Record<string, unknown> | null | undefined) ?? null;
+  },
 };
 
 export interface ImplementWorkerExitResult {
@@ -160,6 +169,10 @@ export interface ImplementWorkerExitResult {
   charged: boolean;
   /** Why it was treated as an env failure, when it was. */
   envReason?: string;
+  /** WI-716: set when this was a context-overflow death — the running count of
+   *  such deaths for this item (including this one) and whether the escalation
+   *  cap tripped (routed to needs-human instead of rolled back). */
+  contextOverflow?: { deaths: number; escalated: boolean };
 }
 
 /**
@@ -175,20 +188,73 @@ export async function recordImplementWorkerExit(
 ): Promise<ImplementWorkerExitResult> {
   const env = isEnvFailureExit(input);
   const tail = boundedTail(input);
+
+  // WI-716: a context-overflow death needs the item's PRIOR contextOverflowDeaths
+  // count (persisted independently of implementAttempts, since the whole point of
+  // rolling attempts back is that they must NOT track this) before we know whether
+  // THIS death trips the bounded escalation cap. Best-effort: a read failure is
+  // treated as "0 prior deaths" — never blocks the back-edge from recording.
+  let overflow: { deaths: number; escalated: boolean } | undefined;
+  if (env.class === 'context-overflow') {
+    let prior = 0;
+    try {
+      const payload = await deps.getPayload(input.itemId);
+      const raw = payload?.contextOverflowDeaths;
+      prior = typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : 0;
+    } catch (e) {
+      console.warn(`[implement-worker-exit] getPayload failed for ${input.itemId} (treating prior deaths as 0):`, e);
+    }
+    const deaths = prior + 1;
+    overflow = { deaths, escalated: deaths >= CONTEXT_OVERFLOW_ESCALATE_CAP };
+  }
+
   const detail =
     `worker exit ${input.exitCode} after ${Math.round(input.runtimeMs / 1000)}s` +
-    (env.env ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]` : ' [no resolve recorded; attempt charged]') +
+    (overflow
+      ? overflow.escalated
+        ? ` [context-overflow death ${overflow.deaths}/${CONTEXT_OVERFLOW_ESCALATE_CAP} — escalation cap tripped, routed to needs-human, attempt ${input.attempt} not charged]`
+        : ` [context-overflow death ${overflow.deaths}/${CONTEXT_OVERFLOW_ESCALATE_CAP}; attempt ${input.attempt} not charged]`
+      : env.env
+        ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]`
+        : ' [no resolve recorded; attempt charged]') +
     (tail ? `: ${tail}` : '');
 
-  // Tag an ENV-failure death distinctly in resolved_by so the orphaned-dispatch
-  // watchdog can EXCLUDE it from the "lane is broken" signal (a rate-limit/auth
-  // outage is transient + self-resolving — NOT lane breakage; signaling it files a
-  // major EI that itself DOAs on the same outage → a self-amplifying noise loop).
-  const by = env.env ? 'worker-exit-backedge-env' : 'worker-exit-backedge';
+  // Tag an ENV-failure (or context-overflow) death distinctly in resolved_by so the
+  // orphaned-dispatch watchdog can EXCLUDE it from the "lane is broken" signal (a
+  // rate-limit/auth outage — or a single oversized item overflowing — is not lane
+  // breakage; signaling it files a major EI that itself DOAs on the same condition
+  // → a self-amplifying noise loop).
+  const by = overflow ? 'worker-exit-backedge-context-overflow' : env.env ? 'worker-exit-backedge-env' : 'worker-exit-backedge';
   const marked = await deps.markOrphaned(input.dispatchId, by, detail);
   if (!marked) {
     // Already terminal — the worker called improvements:resolve. Nothing to undo.
     return { marked: false, charged: true };
+  }
+
+  if (overflow) {
+    if (overflow.escalated) {
+      // WI-716 bounded escalation: repeated overflow on the SAME item means a bare
+      // retry won't help (the item needs to be smaller-scoped / decomposed / given a
+      // bigger-context worker) — stop the rollback-retry cycle (which would otherwise
+      // thrash forever, per the ticket's "naive fix is unsafe" caveat) and route to a
+      // human. needsHuman drops it from the auto-eligible pool regardless of attempts
+      // (policy.ts), so leaving implementAttempts untouched here is fine.
+      await deps.mergePayload(input.itemId, {
+        contextOverflowDeaths: overflow.deaths,
+        needsHuman: true,
+      });
+    } else {
+      // Below the cap: not a real attempt (the item was never actually reproduced
+      // against — the session just ran out of room) — roll the attempt back like a
+      // generic env failure, but persist the death count so it keeps accumulating
+      // across rollbacks (implementAttempts alone can't detect repeat overflow, since
+      // rolling it back is what keeps it from ever exceeding where it started).
+      await deps.mergePayload(input.itemId, {
+        contextOverflowDeaths: overflow.deaths,
+        implementAttempts: Math.max(0, input.attempt - 1),
+      });
+    }
+    return { marked: true, charged: false, envReason: env.reason, contextOverflow: overflow };
   }
 
   if (env.env) {

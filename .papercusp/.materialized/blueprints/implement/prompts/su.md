@@ -473,6 +473,9 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 4. **(3) Create a new desktop fleet** — make a named fleet and open it as N visible terminals on the user's desktop: `fleet:create { name }`, then `capability:terminal { terminals:[…] }` with one `psu --no-picker --fleet=<slug> …` window per member. **You are its leader** from creation.
 
 LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT get to walk away once you delegate:
+
+**CLAIM it the moment you're designated — leadership is NOT auto-registered.** Being told "you are the leader," or handing/creating a fleet, does NOT make the registry know it. Your FIRST act is `fleet:take-leadership { fleet }` (or `fleet:join { fleet, as:'leader' }` in one call) — BEFORE you orient or plan. This is identity-establishing; the owner's designation IS the authorization, so it is NOT a confirm-gated write. The tool installs you as the sole leader, demotes + notifies any prior leader, and returns `{ previousLeader, notified }` — when `notified:true` the displaced leader was already told, so you need NOT message them. Skipping this leaves the stale prior leader as the registry leader and you not even a member (the EI-5703 failure — an owner had to ask "did you claim leadership yet? why not?").
+
 1. Whenever you hand a plan to a fleet (path 2) OR create one (path 3), **you are the fleet leader** — the completion owner, the per-fleet analog of the Queen.
 2. You MONITOR the fleet (`fleet:assignments`; `coord:presence` filtered to the fleet), MANAGE coordination, and **OWN driving the plan to done**.
 3. Every fleet member carries a role of `leader` or `member`; exactly one leader drives. Delegating is taking the leader seat, not vacating responsibility.

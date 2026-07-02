@@ -20,6 +20,8 @@ let ensureCalls: Array<[string, string]>;
 let deleteHiveCalls: Array<[string, string]>;
 let provisionCalls: Array<{ workspaceId: string; hiveSlug: string }>;
 let queenHomeCalls: Array<{ workspaceId: string; hiveSlug: string; devicePubkey: string }>;
+// WI-280: owner self-registration in hive_members at create — see the mock block below.
+let upsertHiveMemberCalls: unknown[];
 // per-hive-git-and-release-gate-2026-06-29: the mock blueprint's knobs + output sink are
 // per-test configurable so we can exercise BOTH the repo-less non-coding path (default)
 // and the coding-hive repo-enforcement path (the D-002 guard + fresh-repo self_repo).
@@ -163,6 +165,22 @@ beforeEach(() => {
   vi.doMock('../../harness/usage-actor', () => ({
     resolveUsageActor: async () => ({ githubUserId: 1, devicePubkey: 'pk-creator' }),
   }));
+  // WI-280: the owner self-registration step (createHiveHarness § "self-register the
+  // OWNER in hive_members at create") ALSO resolves the local gh identity + calls
+  // upsertHiveMember — both real (env-dependent: real gh CLI / OS keychain, real PG)
+  // in production, so both are mocked here too (mirroring the queen-home-pubkey /
+  // usage-actor mock immediately above) instead of relying on them silently no-op'ing
+  // in a PG-free sandbox, which would leave this fix completely untested.
+  upsertHiveMemberCalls = [];
+  vi.doMock('../../identity/resolve-local-github-identity', () => ({
+    resolveLocalGithubIdentity: async () => ({ kind: 'ok', token: 't', githubUserId: 1, githubLogin: 'owner-login' }),
+  }));
+  vi.doMock('../../hive-membership-store', () => ({
+    upsertHiveMember: async (input: unknown) => {
+      upsertHiveMemberCalls.push(input as never);
+      return {};
+    },
+  }));
 });
 
 afterEach(() => {
@@ -181,6 +199,8 @@ afterEach(() => {
   vi.doUnmock('../../harness/hive-repo-init');
   vi.doUnmock('../../harness/git-sync/git-sync-routine');
   vi.doUnmock('../../harness/routines/seed-hive-release-routines');
+  vi.doUnmock('../../identity/resolve-local-github-identity');
+  vi.doUnmock('../../hive-membership-store');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -210,6 +230,29 @@ describe('createHiveHarness', () => {
     // device pubkey is recorded as the hive's queen-home-pubkey (the split-brain guard).
     expect(queenHomeCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'test-hive', devicePubkey: 'pk-creator' }]);
     expect(res.provisionedLoop).toEqual({ gymAutoloop: true, scoutRoutine: true, scoutMaxCostUsd: 0.5 });
+  });
+
+  // WI-280: "C-001 re-key mints 0 epoch keys on the owner in the live from-repo flow"
+  // — root cause #1 was that NOTHING registered the owner in `hive_members` at create,
+  // so a subsequent member-remove/go-private boundary's remaining-member wrap-set was
+  // empty and the re-key couldn't advance (CUR_EPOCH stuck at -1). The fix (this file,
+  // the "self-register the OWNER in hive_members at create" block) already landed and
+  // was live-witnessed once by a prior agent, but had NO regression test — a refactor
+  // could silently drop it with nothing to catch it. This pins it.
+  it('WI-280: self-registers the OWNER in hive_members at create (upsertHiveMember called with the creator device pubkey)', async () => {
+    const { createHiveHarness } = await import('./_create');
+    const res = await createHiveHarness({ slug: 'wi280-hive', workspaceId: 'default', parentDir: tmpParent });
+    expect(res.ok).toBe(true);
+    expect(upsertHiveMemberCalls).toEqual([
+      expect.objectContaining({
+        workspaceId: 'default',
+        hiveHomeSlug: 'wi280-hive',
+        githubUserId: 1,
+        githubUsername: 'owner-login',
+        bindingStatus: 'verified',
+        deviceAttestations: [expect.objectContaining({ device_pubkey: 'pk-creator' })],
+      }),
+    ]);
   });
 
   it('provisionLearningLoop:false skips the per-hive loop entirely', async () => {

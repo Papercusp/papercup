@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   isEnvFailureExit,
   recordImplementWorkerExit,
   ENV_FAILURE_RUNTIME_FLOOR_MS,
+  CONTEXT_OVERFLOW_ESCALATE_CAP,
   type ImplementWorkerExitDeps,
 } from './implement-worker-exit';
 
@@ -55,6 +56,26 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     });
     expect(v.env).toBe(false);
   });
+
+  it('WI-716: "Prompt is too long" is classed env + tagged context-overflow (not a generic env signature)', () => {
+    const v = isEnvFailureExit({
+      exitCode: 1,
+      runtimeMs: 400_000, // a real long reproduce+fix run, not a DOA
+      stdout: 'reproducing the bug...\n'.repeat(200) + 'worker exit 1 ... Prompt is too long',
+    });
+    expect(v.env).toBe(true);
+    expect(v.class).toBe('context-overflow');
+    expect(v.reason).toMatch(/context overflow/);
+  });
+
+  it('WI-716: an underlying "exceeds the context window" API message also classifies as context-overflow', () => {
+    const v = isEnvFailureExit({
+      exitCode: 1,
+      runtimeMs: 200_000,
+      stdout: 'x'.repeat(300) + '\nrequest exceeds the model context window',
+    });
+    expect(v.class).toBe('context-overflow');
+  });
 });
 
 function fakeDeps(overrides: Partial<ImplementWorkerExitDeps> = {}): {
@@ -74,6 +95,7 @@ function fakeDeps(overrides: Partial<ImplementWorkerExitDeps> = {}): {
       calls.mergePayload.push([id, patch]);
       return null;
     },
+    getPayload: async () => null, // no prior contextOverflowDeaths unless a test overrides it
     ...overrides,
   };
   return { deps, calls };
@@ -141,5 +163,62 @@ describe('recordImplementWorkerExit (EI-404 back-edge + EI-406 rollback)', () =>
     );
     expect(res.marked).toBe(false);
     expect(calls.mergePayload).toHaveLength(0);
+  });
+});
+
+describe('recordImplementWorkerExit — WI-716 context-overflow bounded escalation', () => {
+  const overflowInput = (over: Partial<Parameters<typeof recordImplementWorkerExit>[0]> = {}) => ({
+    dispatchId: 'd-of',
+    itemId: 'EI-716',
+    attempt: 3,
+    exitCode: 1,
+    runtimeMs: 600_000,
+    stdout: 'reproducing...\n'.repeat(100) + 'worker exit 1 ... Prompt is too long',
+    ...over,
+  });
+
+  it('a FIRST context-overflow death (no prior) rolls the attempt back and persists deaths=1 — not escalated', async () => {
+    const { deps, calls } = fakeDeps({ getPayload: async () => null });
+    const res = await recordImplementWorkerExit(overflowInput(), deps);
+    expect(res.charged).toBe(false);
+    expect(res.contextOverflow).toEqual({ deaths: 1, escalated: false });
+    expect(calls.mergePayload).toEqual([['EI-716', { contextOverflowDeaths: 1, implementAttempts: 2 }]]);
+    expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-context-overflow');
+    expect(calls.markOrphaned[0][2]).toMatch(/context-overflow death 1\/2/);
+  });
+
+  it(`a ${CONTEXT_OVERFLOW_ESCALATE_CAP}th context-overflow death trips the cap: needsHuman, attempt NOT rolled back`, async () => {
+    const { deps, calls } = fakeDeps({ getPayload: async () => ({ contextOverflowDeaths: CONTEXT_OVERFLOW_ESCALATE_CAP - 1 }) });
+    const res = await recordImplementWorkerExit(overflowInput({ attempt: 5 }), deps);
+    expect(res.contextOverflow).toEqual({ deaths: CONTEXT_OVERFLOW_ESCALATE_CAP, escalated: true });
+    expect(calls.mergePayload).toEqual([
+      ['EI-716', { contextOverflowDeaths: CONTEXT_OVERFLOW_ESCALATE_CAP, needsHuman: true }],
+    ]);
+    // NOT an implementAttempts rollback this time — needsHuman removes it from the
+    // auto pool regardless of attempts, so no infinite rollback/re-dispatch loop.
+    expect(calls.mergePayload[0][1]).not.toHaveProperty('implementAttempts');
+    expect(calls.markOrphaned[0][2]).toMatch(/escalation cap tripped/);
+  });
+
+  it('a getPayload failure is treated as 0 prior deaths (best-effort — never throws)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps, calls } = fakeDeps({ getPayload: async () => { throw new Error('pg down'); } });
+    const res = await recordImplementWorkerExit(overflowInput(), deps);
+    expect(res.contextOverflow).toEqual({ deaths: 1, escalated: false });
+    expect(calls.mergePayload).toEqual([['EI-716', { contextOverflowDeaths: 1, implementAttempts: 2 }]]);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('a generic env failure (weekly limit) never touches getPayload / contextOverflowDeaths', async () => {
+    let getPayloadCalls = 0;
+    const { deps, calls } = fakeDeps({ getPayload: async () => { getPayloadCalls++; return null; } });
+    const res = await recordImplementWorkerExit(
+      { dispatchId: 'd-env', itemId: 'EI-9', attempt: 2, exitCode: 1, runtimeMs: 3_000, stdout: "You've hit your weekly limit · resets Jun 18, 7am" },
+      deps,
+    );
+    expect(res.contextOverflow).toBeUndefined();
+    expect(getPayloadCalls).toBe(0);
+    expect(calls.mergePayload).toEqual([['EI-9', { implementAttempts: 1 }]]);
   });
 });
