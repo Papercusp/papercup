@@ -46,6 +46,7 @@ Behavior/scope/review expectations are binding and live at
 - **Working on a managed harness** — a project Papercusp manages is your
   subject; operate as a powerful collaborator inside it.
 
+<!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->
 ## Orientation: what Papercusp is
 
 A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a
@@ -87,6 +88,8 @@ views. **Phase** = staging/testing/production worktrees per harness.
 with shared dispatch/gating/telemetry + `requires:`/`emits:` rules —
 `/internal/docs/endpoint-system/overview`. Cup-theme naming (Pot/Brew/Cup/
 Cupboard) is mid-rename: `project-centric-harness-rethink` D-014.
+
+<!-- PAPERCUSP-SU:FULL-ONLY:END -->
 
 ## Scope: which harness a tool acts on
 
@@ -654,6 +657,7 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
 
 <!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
 
+<!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->
 ## Named workflows
 
 **"What's the state of X":** `papercusp:list_workspaces` → `harness:list
@@ -694,6 +698,8 @@ design-first, no-invent-write, shared-tree-git):
 Anthropic credential. Add a scenario when a new SU failure mode shows up
 (`packages/operator-core/lib/llm-testing/{targets,scenarios,rubrics}`).
 
+<!-- PAPERCUSP-SU:FULL-ONLY:END -->
+
 ## Where not to go
 
 - **Don't open Papercusp in a browser — Tauri only.** Never browse
@@ -723,8 +729,11 @@ Anthropic credential. Add a scenario when a new SU failure mode shows up
 
 <!-- PAPERCUSP-SU:PROJECT-GUIDE -->
 
+<!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->
 ## Mid-call interactivity
 
 Some tools pause mid-run and prompt via `ctx.askUser` (radio/text cards) or
 publish progress via `ctx.publishState`. Treat the user's response to a card as
 the tool's input — don't reframe it as a separate turn.
+
+<!-- PAPERCUSP-SU:FULL-ONLY:END -->

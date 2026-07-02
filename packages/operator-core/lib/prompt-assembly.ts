@@ -416,13 +416,21 @@ export function renderToolsCatalog(
  * read serializer and the write shim, the legend can't desync from the wire (the
  * anti-desync test asserts it). Returns '' when no registry tool has derivable
  * columns, so the marker collapses to nothing.
+ *
+ * `entryFilter` (context-trimming-tiers P-017): restrict the legend to a
+ * subset of tools by name — the FLEET persona tier keeps the coordination/
+ * work-item/plan/lock spine and drops every other entry. Omitted = all
+ * entries (byte-identical to today).
  */
-export function renderWireSchemasSection(): string {
+export function renderWireSchemasSection(entryFilter?: (name: string) => boolean): string {
   const byMcpName = new Map<string, ProjectedTool>();
   for (const t of listAllProjectedTools()) {
     if (t.expose.mcp) byMcpName.set(t.expose.mcp.name, t);
   }
-  return renderWireSchemas(listPrePromptEntries(), (entry) => {
+  const entries = entryFilter
+    ? listPrePromptEntries().filter((e) => entryFilter(e.name))
+    : listPrePromptEntries();
+  return renderWireSchemas(entries, (entry) => {
     const tool = byMcpName.get(entry.name);
     if (!tool) return {};
     const read =
