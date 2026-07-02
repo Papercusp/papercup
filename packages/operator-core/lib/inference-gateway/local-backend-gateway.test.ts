@@ -8,7 +8,7 @@
 import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createInferenceGateway } from './gateway';
+import { createInferenceGateway, OWNER_HEADER, type GatewayDeps } from './gateway';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 
 interface FakeBackend {

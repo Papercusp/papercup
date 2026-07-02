@@ -1,0 +1,205 @@
+/**
+ * windows-desktop-windows.ts — Windows-side window enumeration + focus helpers
+ * (windows-desktop-feature-parity-2026-07-02, shared contract for Lane 1/2/5).
+ *
+ * THE ONE INSIGHT: on Windows the agent/session runs INSIDE the `papercup-runtime`
+ * WSL2 distro while its terminal window (`wt.exe` / WindowsTerminal.exe) is a
+ * Windows process — there is NO Windows window-ancestor for a WSL pid, so the
+ * Linux approach (desktop-window-liveness.ts's wmctrl pid/ancestry matching) is
+ * structurally impossible here. Every session→window link on Windows is instead
+ * by window TITLE: each session's terminal is titled `Papercup — <sessionId>`
+ * (em dash U+2014) — see native_console.rs / console-launcher.ts (Lane 1) for
+ * where the title is set, and desktop-window-liveness.ts (Lane 2) /
+ * adv-sessions.ts focusWindowId (Lane 1/5) for the consumers.
+ *
+ * Implementation: shells out to `powershell.exe` from inside WSL (WSL→Windows
+ * interop) to enumerate top-level windows via the classic EnumWindows/
+ * GetWindowText/GetWindowThreadProcessId P/Invoke trio, and to focus one via
+ * FindWindow + ShowWindow(SW_RESTORE) + SetForegroundWindow.
+ *
+ * ⚠ OPEN RISK (flagged for the fleet lead / VM verification): it is UNVERIFIED
+ * whether a `powershell.exe` spawned from inside WSL sees the INTERACTIVE
+ * session's `wt.exe` windows (a Session-0 / window-station boundary could hide
+ * them). If VM verification shows an empty result despite windows being open,
+ * pivot this module to a Tauri Rust command invoked over the existing
+ * operator↔Tauri IPC bridge instead of shelling to powershell.exe — the
+ * exported function SIGNATURES here are the contract every caller codes
+ * against, so that pivot is a drop-in swap of the implementation only.
+ *
+ * Fail-soft throughout, mirroring desktop-window-liveness.ts's wmctrl contract:
+ * ANY failure (not win32, no powershell, WSL interop unavailable, spawn
+ * timeout, parse miss) yields `[]` / `false` — never throws. Platform-guarded
+ * with `process.platform === 'win32'` so these are unreachable on Linux/macOS.
+ */
+
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+/** One enumerated top-level Windows window. */
+export interface WindowsDesktopWindow {
+  /** Window title, e.g. `Papercup — <sessionId>`. */
+  title: string;
+  /** Owning process id (Windows pid — NOT the WSL-side session host pid). */
+  pid: number;
+  /** Window handle, hex-formatted (e.g. `0x1a2b3c`). */
+  hwnd: string;
+}
+
+/** The exact title prefix Lane 1 stamps on every session's terminal window. */
+export const WINDOW_TITLE_PREFIX = 'Papercup — ';
+
+/** A hung/absent powershell must never wedge the caller (presence read / reaper sweep). */
+const PS_TIMEOUT_MS = 2000;
+
+/** PowerShell script: enumerate visible top-level windows as `hwnd|pid|title` lines. */
+const LIST_WINDOWS_SCRIPT = `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class PapercuspWin32 {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+}
+"@
+$results = New-Object System.Collections.Generic.List[string]
+$callback = {
+  param($hWnd, $lParam)
+  if ([PapercuspWin32]::IsWindowVisible($hWnd)) {
+    $len = [PapercuspWin32]::GetWindowTextLength($hWnd)
+    if ($len -gt 0) {
+      $sb = New-Object System.Text.StringBuilder ($len + 1)
+      [PapercuspWin32]::GetWindowText($hWnd, $sb, $sb.Capacity) | Out-Null
+      $title = $sb.ToString()
+      $procId = 0
+      [PapercuspWin32]::GetWindowThreadProcessId($hWnd, [ref]$procId) | Out-Null
+      $results.Add("$hWnd|$procId|$title")
+    }
+  }
+  return $true
+}
+[PapercuspWin32]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
+$results | ForEach-Object { Write-Output $_ }
+`.trim();
+
+async function runPowershell(script: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { timeout: PS_TIMEOUT_MS, encoding: 'utf8', windowsHide: true },
+    );
+    return typeof stdout === 'string' ? stdout : null;
+  } catch {
+    return null; // no powershell.exe on PATH (WSL interop off) / timeout / spawn error
+  }
+}
+
+/**
+ * PURE: parse the `hwnd|pid|title` lines emitted by LIST_WINDOWS_SCRIPT. A line
+ * missing either separator, or with a non-numeric pid, is skipped. The title is
+ * everything after the SECOND `|` (rejoined, so a title containing `|` survives).
+ */
+export function parseWindowListOutput(stdout: string): WindowsDesktopWindow[] {
+  const out: WindowsDesktopWindow[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx1 = trimmed.indexOf('|');
+    if (idx1 < 0) continue;
+    const idx2 = trimmed.indexOf('|', idx1 + 1);
+    if (idx2 < 0) continue;
+    const hwnd = trimmed.slice(0, idx1).trim();
+    const pid = Number(trimmed.slice(idx1 + 1, idx2).trim());
+    const title = trimmed.slice(idx2 + 1);
+    if (!hwnd || !Number.isFinite(pid) || pid <= 0) continue;
+    out.push({ hwnd, pid, title });
+  }
+  return out;
+}
+
+/**
+ * Enumerate top-level Windows windows, optionally filtered to titles starting
+ * with `prefix` (pass WINDOW_TITLE_PREFIX to get only Papercup session
+ * terminals). Best-effort: non-win32, no powershell.exe, or a parse miss all
+ * yield `[]` — mirrors listOpenWindows' wmctrl fail-soft contract so a caller
+ * (desktop-window-liveness.ts) never has to special-case this platform.
+ */
+export async function listWindowsByTitle(prefix?: string): Promise<WindowsDesktopWindow[]> {
+  if (process.platform !== 'win32') return [];
+  try {
+    const stdout = await runPowershell(LIST_WINDOWS_SCRIPT);
+    const windows = stdout ? parseWindowListOutput(stdout) : [];
+    return prefix ? windows.filter((w) => w.title.startsWith(prefix)) : windows;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * PURE: extract the sessionId from a `Papercup — <sessionId>` window title, or
+ * null if the title doesn't carry the tag. Exported so title-format changes are
+ * unit-covered in one place (desktop-window-liveness.ts's matcher imports this).
+ */
+export function parseSessionIdFromWindowTitle(title: string): string | null {
+  if (!title.startsWith(WINDOW_TITLE_PREFIX)) return null;
+  const sessionId = title.slice(WINDOW_TITLE_PREFIX.length).trim();
+  return sessionId.length > 0 ? sessionId : null;
+}
+
+function escapeForPowershellSingleQuoted(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+/**
+ * Bring a Windows window to the foreground by exact title match (FindWindow +
+ * ShowWindow(SW_RESTORE) + SetForegroundWindow, with the AttachThreadInput
+ * focus-steal workaround Windows requires from a background process).
+ * USER-INITIATED ONLY — mirrors adv-sessions.ts focusWindowId's memory
+ * (feedback_e2e_no_focus_steal): never call this from an automated driver.
+ * Best-effort: returns false on any failure (no match / no powershell / timeout).
+ */
+export async function focusWindowByTitle(title: string): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+  const escaped = escapeForPowershellSingleQuoted(title);
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class PapercuspFocus {
+  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+  [DllImport("user32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+}
+"@
+$hwnd = [PapercuspFocus]::FindWindow($null, '${escaped}')
+if ($hwnd -eq [IntPtr]::Zero) { exit 1 }
+[PapercuspFocus]::ShowWindow($hwnd, 9) | Out-Null
+$targetTid = 0
+[PapercuspFocus]::GetWindowThreadProcessId($hwnd, [ref]$targetTid) | Out-Null
+$curTid = [PapercuspFocus]::GetCurrentThreadId()
+[PapercuspFocus]::AttachThreadInput($curTid, $targetTid, $true) | Out-Null
+$ok = [PapercuspFocus]::SetForegroundWindow($hwnd)
+[PapercuspFocus]::AttachThreadInput($curTid, $targetTid, $false) | Out-Null
+if ($ok) { exit 0 } else { exit 1 }
+`.trim();
+  try {
+    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      timeout: PS_TIMEOUT_MS,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false; // no match (exit 1) / no powershell / timeout
+  }
+}

@@ -30,6 +30,11 @@
  *                           its own tail, not the whole merge).
  *   - 'peer_revoked'      — an admitted peer was revoked (D-004): its log was
  *                           dropped from the admitted set + its pubkey blocklisted.
+ *   - 'peer_unrevoked'    — WI-193 (G8): a REFRESH-SOURCED revocation (the pubkey
+ *                           was never named in a live handle.revoke() call) is no
+ *                           longer present in the published revoked-pubkeys list —
+ *                           applyRevocationRefresh reconciled it out of `revoked`,
+ *                           so the peer is admissible again on its next announce.
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
  *   - 'announce_pending'  — an inbound announce returned a 'pending' binding result

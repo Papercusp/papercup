@@ -63,6 +63,13 @@ function expectAllow(out: { stdout: string; status: number | null }) {
   expect(out.stdout.trim()).toBe(''); // silence = allow
 }
 
+function expectGitDeny(out: { stdout: string; status: number | null }) {
+  expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+  const decision = JSON.parse(out.stdout);
+  expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+  expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('shared-tree guard');
+}
+
 const AGENT = { PAPERCUSP_AGENT_SESSION: '1' };
 const bashCmd = (command: string, tool = 'Bash') => ({
   tool_name: tool,
@@ -102,6 +109,57 @@ describe('native-scheduler lockout (agent sessions)', () => {
 
   it('ignores non-shell tools even in agent sessions', () => {
     expectAllow(runGate({ tool_name: 'Edit', tool_input: { file_path: '/x' } }, AGENT));
+  });
+});
+
+describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, agent sessions) — EI-2376 recurrence guard', () => {
+  it.each([
+    ['bare reset --hard', 'git reset --hard'],
+    ['reset --hard HEAD', 'git reset --hard HEAD'],
+    ['reset --hard a remote ref', 'git reset --hard origin/staging'],
+    ['clean -f', 'git clean -f'],
+    ['clean -fd', 'git clean -fd'],
+    ['clean -fdx', 'git clean -fdx'],
+    ['checkout .', 'git checkout .'],
+    ['checkout -- .', 'git checkout -- .'],
+    ['checkout :/ (repo-root pathspec)', 'git checkout :/'],
+    ['restore .', 'git restore .'],
+    ['bare stash', 'git stash'],
+    ['stash save', 'git stash save "wip"'],
+    ['stash push (no explicit path)', 'git stash push'],
+    ['sudo-prefixed reset --hard', 'sudo git reset --hard'],
+    ['compound && reset --hard', 'cd /tmp && git reset --hard'],
+    ['compound ; clean -f', 'git status ; git clean -f'],
+    ['newline-separated stash', 'git status\ngit stash'],
+    ['git -C <dir> reset --hard', 'git -C /some/repo reset --hard'],
+  ])('denies %s', (_label, command) => {
+    expectGitDeny(runGate(bashCmd(command), AGENT));
+  });
+
+  it.each([
+    ['checkout of an explicit single file', 'git checkout -- path/to/file.ts'],
+    ['restore of an explicit single file', 'git restore path/to/file.ts'],
+    ['stash pop', 'git stash pop'],
+    ['stash apply', 'git stash apply'],
+    ['stash list', 'git stash list'],
+    ['stash show', 'git stash show'],
+    ['stash drop', 'git stash drop'],
+    ['stash branch', 'git stash branch wip-x'],
+    ['stash clear', 'git stash clear'],
+    ['stash push with an explicit `--` path', 'git stash push -- path/to/file.ts'],
+    ['clean dry-run (no f flag)', 'git clean -n'],
+    ['reset (no --hard)', 'git reset HEAD~1'],
+    ['reset --soft', 'git reset --soft HEAD~1'],
+    ['ordinary status', 'git status'],
+    ['ordinary diff', 'git diff --stat'],
+    ['"reset --hard" only in a commit message, not command position', 'git commit -m "docs: explain git reset --hard"'],
+    ['"git reset --hard" inside a string arg, not command position', 'echo "git reset --hard"'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), AGENT));
+  });
+
+  it("never fires without the agent marker — the owner's own tree-cleaning is their business (D-003 exemption mirrors the scheduler lockout)", () => {
+    expectAllow(runGate(bashCmd('git reset --hard')));
   });
 });
 

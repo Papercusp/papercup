@@ -28,7 +28,7 @@ import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { captureResolvedAnswer } from './answer-capture';
 import { PgConversationStore, reparentThread } from './conversations-store';
 import { createIssue } from '../../issues-engineer';
-import { currentRequestWorkspaceId } from '../../workspace-als';
+import { currentRequestWorkspaceId, runWithWorkspaceIfConcrete } from '../../workspace-als';
 
 /**
  * EI-1534: scope conversations (and their thread/tags/subs) to the request's
@@ -41,12 +41,82 @@ import { currentRequestWorkspaceId } from '../../workspace-als';
  * issues per-workspace flip (su-bdc3a, EI-1460). Request-scoped reads isolate
  * correctly; unscoped/background reads stay on the stable 'default' home.
  */
-function conversationsScopeWorkspace(): string {
+export function conversationsScopeWorkspace(): string {
   const req = currentRequestWorkspaceId();
   if (req && req.trim()) return req.trim();
   const env = process.env.PAPERCUSP_WORKSPACE_ID;
   if (env && env.trim()) return env.trim();
   return DEFAULT_COORD_WORKSPACE;
+}
+
+/**
+ * WI-1571 (workspace-threading class, sibling of WI-1564): resolve the
+ * workspace partition a conversation write/read should use from the CALLER's
+ * `identity.workspaceId` — mirrors `resolveClaimSpecWorkspace`
+ * (scheduler/claim-spec-store.ts, WI-1564) exactly.
+ *
+ * THE BUG: `conversationsScopeWorkspace()` above (EI-1534) only ever consults
+ * request-ALS → env → 'default'. A HARNESS-scoped conversation opened from a
+ * context with no request ALS (a background/system caller — e.g. a queen
+ * principal acting for a shared hive) therefore lands under the literal
+ * 'default' workspace partition, even when the hive's real home is a
+ * DIFFERENT, concrete workspace. The federation outbox-drain only serves the
+ * booted (workspace, harness) handle for that hive's REAL home — a row
+ * captured under (default, <hive>) is never drained (live evidence: 4
+ * coord_conversations + 4 coord_threads rows undrained under
+ * (default, papercusp), newest 2026-07-02 06:56).
+ *
+ * THE FIX: every identity-bearing entry point below (open/reply/answer/
+ * resolve/join/leave/promote) already receives `identity.workspaceId` — the
+ * caller's OWN resolved workspace (for a harness-scoped principal this is
+ * `principal.workspaceId`, the hive's registered home; identity.ts). Running
+ * the call through `runWithWorkspaceIfConcrete(identityWs, fn)` (workspace-als)
+ * pins that value onto `currentRequestWorkspaceId()` for the call's async
+ * extent, so `conversationsScopeWorkspace()` picks it up as its TOP-priority
+ * read — the SAME resolver every downstream store op (write AND read) uses.
+ * Two independent callers scoped to the SAME hive therefore agree on the
+ * partition (the WI-1564 "resolver shared by writer+reader" invariant),
+ * instead of both silently falling through to 'default'. An identity with no
+ * concrete workspaceId (unscoped SU/power-user session) is UNCHANGED —
+ * `runWithWorkspaceIfConcrete` is a no-op and the existing request→env→
+ * default chain still applies (STRAND-SAFE, EI-1460 — never pins the
+ * volatile `reg.current`).
+ *
+ * NOT threaded: `getConversation` / `listConversations` /
+ * `listConversationsWithTopics` take no `identity` (pure reads by id / filter
+ * opts) and stay on the existing request-ALS resolution — they are read
+ * exclusively from request-scoped UI/TUI contexts (the module header's own
+ * "one shared operator sidecar doesn't leak every window's conversations"
+ * rationale), which already carry a concrete request workspace.
+ */
+export function resolveConversationsIdentityWorkspace(
+  identityWorkspaceId: string | null | undefined,
+): string | undefined {
+  const ws = identityWorkspaceId?.trim();
+  return ws && ws !== '*' ? ws : undefined;
+}
+
+/** Run `fn` with the identity's workspace pinned (see resolver doc above). A
+ *  harness-scoped open with NO resolvable workspace (neither the caller's
+ *  identity nor an ambient request scope) is the exact strand condition — warn
+ *  loudly so it's visible instead of silently mis-partitioning (mirrors
+ *  claim-spec-store's `warning` field, surfaced here via a log since
+ *  OpenConversationResult's shape is owned by conversations-core.ts). */
+export function withConversationsIdentityScope<T>(
+  identity: AgentIdentity,
+  harnessSlugIfOpening: string | undefined,
+  fn: () => T,
+): T {
+  const identityWs = resolveConversationsIdentityWorkspace(identity.workspaceId);
+  if (!identityWs && harnessSlugIfOpening && !currentRequestWorkspaceId() && !process.env.PAPERCUSP_WORKSPACE_ID) {
+    console.warn(
+      `[conversations] opening a harness-scoped conversation (harness_slug='${harnessSlugIfOpening}') ` +
+        `with no resolvable workspace (identity.workspaceId and the request scope are both unset) — ` +
+        `it will land under the '${DEFAULT_COORD_WORKSPACE}' partition, which the federation outbox-drain ` +
+        `likely does not serve for this harness (WI-1571). Thread a workspace-scoped identity.`,
+    );
+  }
+  return runWithWorkspaceIfConcrete(identityWs, fn);
 }
 import {
   getConversationCore,
@@ -135,28 +205,32 @@ export type {
 } from './conversations-core';
 
 export function openConversation(identity: AgentIdentity, input: OpenConversationInput): Promise<OpenConversationResult> {
-  return openConversationCore(deps, identity, input);
+  return withConversationsIdentityScope(identity, input.harness_slug, () =>
+    openConversationCore(deps, identity, input),
+  );
 }
 
 export function postReply(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
 ): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
-  return postReplyCore(deps, identity, input);
+  return withConversationsIdentityScope(identity, undefined, () => postReplyCore(deps, identity, input));
 }
 
 export function answerQuestion(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
 ): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
-  return answerQuestionCore(deps, identity, input);
+  return withConversationsIdentityScope(identity, undefined, () => answerQuestionCore(deps, identity, input));
 }
 
 export async function resolveConversation(
   identity: AgentIdentity,
   input: ResolveInput,
 ): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' } | { error: 'already_resolved' }> {
-  const result = await resolveConversationCore(deps, identity, input);
+  const result = await withConversationsIdentityScope(identity, undefined, () =>
+    resolveConversationCore(deps, identity, input),
+  );
   // await-event-primitive-2026-06-05 P-011 (D-006 #3): ask-answered is an
   // awaitable event — a SLEEPING asker is woken when its question resolves
   // (`events:await { event: 'conversation:answered:<id>' }`). The asker is on
@@ -183,11 +257,13 @@ export function joinConversation(
   identity: AgentIdentity,
   input: { conversation_id: string; mode?: DeliveryMode; ttl_sec?: number },
 ): Promise<{ ok: true; mode: DeliveryMode } | { error: 'not_found' }> {
-  return joinConversationCore(deps, identity, input);
+  return withConversationsIdentityScope(identity, undefined, () => joinConversationCore(deps, identity, input));
 }
 
 export function leaveConversation(identity: AgentIdentity, conversationId: string): Promise<void> {
-  return leaveConversationCore(deps, identity, conversationId);
+  return withConversationsIdentityScope(identity, undefined, () =>
+    leaveConversationCore(deps, identity, conversationId),
+  );
 }
 
 export function listConversations(input: ListConversationsOpts = {}): Promise<ConversationRow[]> {
@@ -206,5 +282,5 @@ export function promoteConversation(
   identity: AgentIdentity,
   input: PromoteConversationInput,
 ): Promise<PromoteConversationResult | { error: 'not_found' } | { error: 'already_promoted' } | { error: 'promote_unavailable' }> {
-  return promoteConversationCore(deps, identity, input);
+  return withConversationsIdentityScope(identity, undefined, () => promoteConversationCore(deps, identity, input));
 }

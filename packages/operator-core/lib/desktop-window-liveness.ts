@@ -38,6 +38,20 @@
  * without an X server; the IO seams (`listOpenWindows`, `gatherOnDesktopSessions`)
  * wrap them with the wmctrl spawn + the adv_sessions read, both short-TTL-cached
  * so a burst of presence reads forks wmctrl at most once per window.
+ *
+ * WINDOWS (P-019, windows-desktop-feature-parity-2026-07-02): wmctrl/pid/proc-
+ * ancestry are all Linux-only concepts — a Windows terminal (`wt.exe`) has no
+ * pid a WSL-hosted agent can see (its own pid lives in the `papercup-runtime`
+ * WSL2 distro; the window belongs to a Windows process). So on `win32`,
+ * `listOpenWindows` enumerates via `listWindowsByTitle()` (windows-desktop-
+ * windows.ts, the Lane 1 shared helper) instead of shelling to wmctrl, and
+ * `selectOnDesktopSessions` gains a THIRD match leg keyed by the window title's
+ * `Papercup — <sessionId>` tag (parseSessionIdFromWindowTitle) against the
+ * candidate's `sessionId` — the one launch-independent signal that survives the
+ * WSL boundary. Fail-soft mirrors the Linux path exactly: any Windows-side
+ * failure (no powershell.exe / WSL interop unavailable / parse miss) yields `[]`,
+ * so this can only ever under-protect toward the pre-Windows-support behavior,
+ * never over-kill.
  */
 
 import { execFile } from 'node:child_process';
@@ -45,6 +59,7 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { listLiveHosts } from './events/await/psu-pty-discovery';
+import { listWindowsByTitle, parseSessionIdFromWindowTitle, WINDOW_TITLE_PREFIX } from './windows-desktop-windows';
 
 const execFileAsync = promisify(execFile);
 
@@ -115,17 +130,41 @@ async function defaultRunWmctrl(): Promise<string | null> {
   }
 }
 
+/** Windows leg (P-019): enumerate via the Lane 1 shared helper instead of
+ *  wmctrl. Best-effort → [] (mirrors defaultRunWmctrl's fail-soft contract) —
+ *  listWindowsByTitle itself never throws, but this stays defensive in case a
+ *  future implementation (e.g. the Tauri-IPC pivot noted in
+ *  windows-desktop-windows.ts) does. */
+async function defaultListWindowsWindows(): Promise<OpenWindow[]> {
+  try {
+    const windows = await listWindowsByTitle();
+    return windows.map((w) => ({ wid: w.hwnd, pid: w.pid ?? null, title: w.title }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The currently-open windows on this box (short-TTL cached). Best-effort → []:
  * no wmctrl, no DISPLAY (headless), a spawn timeout, or a parse miss all yield an
- * empty list, which downstream reads as "nobody is on the desktop".
+ * empty list, which downstream reads as "nobody is on the desktop". On `win32`
+ * (and only when `deps.run` isn't explicitly injected — the test seam always
+ * wins) this enumerates via the Windows title-based helper instead of wmctrl.
  */
 export async function listOpenWindows(deps: ListOpenWindowsDeps = {}): Promise<OpenWindow[]> {
   const ttl = deps.ttlMs ?? OPEN_WINDOWS_TTL_MS;
   const now = deps.nowMs ?? Date.now();
   if (openWindowsCache && now - openWindowsCache.at < ttl) return openWindowsCache.windows;
-  const stdout = await (deps.run ?? defaultRunWmctrl)();
-  const windows = stdout ? parseWmctrlList(stdout) : [];
+  let windows: OpenWindow[];
+  if (deps.run) {
+    const stdout = await deps.run();
+    windows = stdout ? parseWmctrlList(stdout) : [];
+  } else if (process.platform === 'win32') {
+    windows = await defaultListWindowsWindows();
+  } else {
+    const stdout = await defaultRunWmctrl();
+    windows = stdout ? parseWmctrlList(stdout) : [];
+  }
   openWindowsCache = { at: now, windows };
   return windows;
 }
