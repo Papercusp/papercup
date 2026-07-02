@@ -24,11 +24,20 @@ function dev(): string {
   return spki.subarray(spki.length - 32).toString('base64');
 }
 
+let commitCounter = 0;
+
 async function commit(repo: string, files: Record<string, string>, parent?: string): Promise<string> {
   const { execFileSync } = await import('node:child_process');
   const dir = await mkdtemp(join(tmpdir(), 'gc-commit-'));
   try {
-    const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index') };
+    commitCounter += 1;
+    const ts = String(1_700_000_000 + commitCounter);
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_DATE: ts,
+      GIT_COMMITTER_DATE: ts,
+      GIT_INDEX_FILE: join(dir, 'index'),
+    };
     for (const [name, content] of Object.entries(files)) {
       const f = join(dir, 'blob');
       await writeFile(f, content, 'utf8');
@@ -38,9 +47,7 @@ async function commit(repo: string, files: Record<string, string>, parent?: stri
     const tree = execFileSync('git', ['write-tree'], { cwd: repo, env, encoding: 'utf8' }).trim();
     const args = ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree, '-m', 'gc'];
     if (parent) args.push('-p', parent);
-    const out = await defaultRunGit(args, repo);
-    expect(out.code, out.stderr).toBe(0);
-    return out.stdout.trim();
+    return execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' }).trim();
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -75,12 +82,12 @@ describe('hive-git gc (real bare repo)', () => {
   });
 
   it('keeps work + sigrefs + newest published refs while pruning old refs safely', async () => {
+    const orphan = await commit(repo, { 'orphan.txt': 'x' });
     const base = await commit(repo, { 'f.txt': '0' });
     const c1 = await commit(repo, { 'f.txt': '1' }, base);
     const c2 = await commit(repo, { 'f.txt': '2' }, c1);
     const c3 = await commit(repo, { 'f.txt': '3' }, c2);
     const work = await commit(repo, { 'f.txt': '4' }, c3);
-    const orphan = await commit(repo, { 'orphan.txt': 'x' });
     await writeNamespaceRef(repo, memberA, 'refs/heads/publish-1', c1);
     await writeNamespaceRef(repo, memberA, 'refs/heads/publish-2', c2);
     await writeNamespaceRef(repo, memberA, 'refs/heads/publish-3', c3);
