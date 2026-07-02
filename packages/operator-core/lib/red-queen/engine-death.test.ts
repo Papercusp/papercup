@@ -130,7 +130,7 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
   };
 
   function deps(over: Partial<EngineDeathSentinelDeps> = {}) {
-    const capture = vi.fn(async () => captured);
+    const capture = vi.fn(async (..._args: unknown[]) => captured);
     const readRows = vi.fn(async () => [row('a', minsAgo(80)), row('b', minsAgo(70)), row('c', minsAgo(60))]);
     const d: EngineDeathSentinelDeps = {
       isArmed: async () => true,

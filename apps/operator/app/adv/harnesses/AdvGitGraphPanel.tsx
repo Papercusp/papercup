@@ -24,6 +24,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { parseAsString, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { RefreshCw, Star } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
@@ -108,7 +109,10 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<GitFilter>('all');
   const [reloadTick, setReloadTick] = useState(0);
-  const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  // URL-backed (not useState) so the diff is deep-linkable + agent/narrator
+  // driveable via `ui:dispatch { set_url: { tab:'git', commit:'<sha>' } }`
+  // (EI-1595) — the nuqs-everywhere rule for selection state.
+  const [selectedSha, setSelectedSha] = useQueryState('commit', parseAsString);
   const [hoveredSha, setHoveredSha] = useState<string | null>(null);
   // Worktree filter (ported from the lib): scopes the log to one worktree's
   // branch/head. null = all worktrees.
@@ -439,7 +443,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
             }}
             columns={columns}
             getRowId={(r) => r.sha}
-            onRowClick={(r) => setSelectedSha(r.sha)}
+            onRowClick={(r) => void setSelectedSha(r.sha)}
             onRowHover={(r) => setHoveredSha(r?.sha ?? null)}
             getRowBg={richGetRowBg}
             headerHeight={28}
@@ -462,7 +466,7 @@ export default function AdvGitGraphPanel({ params }: PanelComponentProps) {
           <CommitDetail
             sha={selectedSha}
             showCommitUrl={(sha: string) => crossOriginUrl(`/api/harness/${slug}/git/show/${sha}`)}
-            onClose={() => setSelectedSha(null)}
+            onClose={() => void setSelectedSha(null)}
             inline
           />
         </div>

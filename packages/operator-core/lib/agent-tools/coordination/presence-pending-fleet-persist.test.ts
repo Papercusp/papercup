@@ -57,7 +57,7 @@ vi.mock('./identity', async (importOriginal) => {
   };
 });
 
-const appendFleetMembershipEventMock = vi.fn(async () => {});
+const appendFleetMembershipEventMock = vi.fn(async (..._args: unknown[]) => {});
 const appendFleetMembershipIfAbsentMock = vi.fn(async () => {});
 vi.mock('../../fleet-membership-store', () => ({
   appendFleetMembershipEvent: (...a: unknown[]) => appendFleetMembershipEventMock(...a),

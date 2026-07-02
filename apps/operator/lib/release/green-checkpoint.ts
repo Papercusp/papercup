@@ -197,6 +197,51 @@ export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
  *  (and frees its lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 58 * 60_000;
 
+/** WI-1319 root fix (c) — the watchdog described above, ACTUALLY ARMED. (The
+ *  constant above shipped 2026-07-02 with the full design in its comment, but
+ *  nothing ever called `setTimeout` — this closes that gap.) Call once, right
+ *  after `acquireCheckpointRunLock` succeeds, and `cancel()` it on every normal
+ *  exit path (success or handled failure) so a healthy run never lets the timer
+ *  fire. `unref()`'d so an already-scheduled watchdog can never itself keep the
+ *  process alive past a clean exit — it only matters if the process is STILL
+ *  running (i.e. actually wedged) when it goes off.
+ *
+ *  `kill`/`pid`/`log`/`ms` are injected for tests — a unit test must never let
+ *  this construct a real multi-minute timer or call the real `process.kill`. */
+export function armSelfWatchdog(
+  lock: { release: () => void },
+  opts: {
+    ms?: number;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    pid?: number;
+    log?: (msg: string) => void;
+  } = {},
+): { cancel: () => void } {
+  const ms = opts.ms ?? SELF_WATCHDOG_MS;
+  const pid = opts.pid ?? process.pid;
+  const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+  const log = opts.log ?? ((m: string) => console.error(m));
+  const timer = setTimeout(() => {
+    log(
+      `[green-checkpoint] self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
+        `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
+        `releasing the run-lock and killing this process's OWN group (pid ${pid}) so no orphan can outlive it`,
+    );
+    try {
+      lock.release();
+    } catch {
+      /* best-effort — a missing/already-gone lock must not stop the kill below */
+    }
+    try {
+      kill(-pid, 'SIGKILL'); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
+    } catch {
+      /* group already gone */
+    }
+  }, ms);
+  timer.unref();
+  return { cancel: () => clearTimeout(timer) };
+}
+
 /** PER-ROOT run-lock dir (2026-07-02): the bare `.green-checkpoint-run.lock` made every
  *  lineage sharing the DEFAULT ~/.papercusp/checkpoint-logs serialize on ONE lock — the stale
  *  papercup-root lineage's back-to-back ~40-min suites held it across EVERY papercusp hourly
@@ -1584,7 +1629,12 @@ if (require.main === module) {
         process.exit(1);
       });
   } else {
+    // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
+    // canceled on every normal exit path below, so it only ever fires on a genuine
+    // wedge (see armSelfWatchdog's doc comment).
+    const watchdog = armSelfWatchdog(lock);
     const releaseAndExit = (code: number): never => {
+      watchdog.cancel();
       lock.release();
       process.exit(code);
     };
@@ -1597,6 +1647,7 @@ if (require.main === module) {
         releaseAndExit(0);
       })
       .catch((e) => {
+        watchdog.cancel();
         lock.release();
         console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
         process.exit(1);

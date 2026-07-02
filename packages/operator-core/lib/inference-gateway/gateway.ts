@@ -59,6 +59,7 @@ import {
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey } from './egress-dispatcher';
+import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -385,6 +386,9 @@ const DEFAULT_SELFHEAL_FREEZE_MS = Number(process.env.PAPERCUSP_GATEWAY_SELFHEAL
 /** Sweeper tick interval — also the spacing between successive reclaims while a wedge persists, so a
  *  multi-slot wedge drains a slot every poll (several reclaims land before the watchdog's 120s). */
 const DEFAULT_SELFHEAL_POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_SELFHEAL_POLL_MS) || 10_000;
+/** Per-attempt timeout for a local-backend (llama-server/vllm/ollama) proxy request. Local inference
+ *  can be slow on a loaded box, but a request that never resolves must still fail over. */
+const DEFAULT_LOCAL_BACKEND_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_TIMEOUT_MS) || 5 * 60 * 1000;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** Header a spawn sets to pin its requests to one pool account for cache affinity
@@ -668,6 +672,19 @@ export interface GatewayDeps {
   /** Consecutive org-disallowed 403s that trigger `onOrgDisallowed` deactivation. Default
    *  `DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD` (1 — fire on the first definitive hit). ≤0 disables. */
   orgDisallowedDeactivateThreshold?: number;
+  /** LOCAL inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): when present,
+   *  a POST to `/v1/chat/completions` or `/v1/completions` whose `model` matches a registered local
+   *  backend (llama-server | vllm | ollama) is proxied DIRECTLY to that backend — least-loaded routing,
+   *  no account/credential/governor involvement (local backends need none). Absent ⇒ those two routes
+   *  fall through to the normal 404 (byte-identical to today). */
+  localBackends?: LocalBackendPool;
+  /** Per-attempt timeout for a local-backend proxy request. Default DEFAULT_LOCAL_BACKEND_TIMEOUT_MS (5m). */
+  localBackendTimeoutMs?: number;
+  /** HOT-RELOAD the local-backend registry from the DB source of truth (parity with `onAdminReload` for
+   *  the account pool) — folded into the SAME `POST /admin/reload` response when present. Absent ⇒
+   *  `/admin/reload` simply omits the `localBackends` field (no error — this is an independent axis from
+   *  the account pool's hot-reload). */
+  onAdminReloadLocalBackends?: () => Promise<{ changed: boolean; count: number }>;
 }
 
 export interface GatewayStats {
@@ -1756,6 +1773,80 @@ export function createInferenceGateway(deps: GatewayDeps) {
   function sendJson(res: http.ServerResponse, status: number, body: unknown, extra?: Record<string, string>) {
     res.writeHead(status, { 'content-type': 'application/json', ...extra });
     res.end(JSON.stringify(body));
+  }
+
+  /** Max distinct local backends to try for one incoming request before giving up (in-request
+   *  failover — a dead backend is skipped immediately rather than waiting for the health-check
+   *  tick or HEALTH_FAIL_THRESHOLD live failures to demote it out of `select()`). */
+  const LOCAL_BACKEND_MAX_ATTEMPTS = 3;
+
+  /**
+   * Proxy an OpenAI-compatible `/v1/chat/completions` or `/v1/completions` request to the LOCAL
+   * backend pool (local-concurrent-inference-2026-07-02 P-004, D-002). No account/credential/
+   * governor involvement — local backends are unauthenticated localhost/LAN processes. Least-loaded
+   * routing via `deps.localBackends.select()`; on a connect/transport failure, retries against a
+   * DIFFERENT backend (up to LOCAL_BACKEND_MAX_ATTEMPTS) before giving up with a 502. Streams the
+   * upstream response body through untouched (SSE `stream:true` included).
+   */
+  async function proxyLocal(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const pool = deps.localBackends;
+    if (!pool) {
+      sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway: no local-backend pool configured' }, gateway: true });
+      return;
+    }
+    const bodyBuf = await readBody(req);
+    let model: string | undefined;
+    try {
+      const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string };
+      if (typeof j.model === 'string') model = j.model;
+    } catch {
+      /* non-JSON body — fall through to the "no model" 400 below */
+    }
+    if (!model) {
+      sendJson(res, 400, { error: { message: 'request body must be JSON with a "model" field', type: 'invalid_request_error' } });
+      return;
+    }
+
+    const tried = new Set<string>();
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
+      const backend: LocalBackend | null = pool.select(model, tried);
+      if (!backend) break;
+      tried.add(backend.id);
+      pool.recordStart(backend.id);
+      let settled = false;
+      try {
+        const upstream = await doFetch(`${backend.baseUrl}${url}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: bodyBuf,
+          signal: AbortSignal.timeout(deps.localBackendTimeoutMs ?? DEFAULT_LOCAL_BACKEND_TIMEOUT_MS),
+        });
+        settled = true;
+        pool.recordEnd(backend.id);
+        pool.recordOutcome(backend.id, upstream.ok || (upstream.status >= 400 && upstream.status < 500));
+        const headers: Record<string, string> = { 'content-type': upstream.headers.get('content-type') ?? 'application/json' };
+        res.writeHead(upstream.status, headers);
+        if (upstream.body) {
+          Readable.fromWeb(upstream.body as import('stream/web').ReadableStream<Uint8Array>).pipe(res);
+        } else {
+          res.end(await upstream.text().catch(() => ''));
+        }
+        return;
+      } catch (e) {
+        if (!settled) {
+          pool.recordEnd(backend.id);
+          pool.recordOutcome(backend.id, false, (e as Error).message);
+        }
+        lastError = (e as Error).message ?? String(e);
+        log('warn', `inference-gateway: local backend '${backend.id}' (${backend.baseUrl}) failed for model '${model}': ${lastError} — trying another candidate`);
+      }
+    }
+    sendJson(res, 502, {
+      type: 'error',
+      error: { type: 'api_error', message: `inference-gateway: no reachable local backend for model '${model}'${lastError ? ` (last error: ${lastError})` : ' (none registered / all saturated / all unhealthy)'}` },
+      gateway: true,
+    });
   }
 
   function codexModelsResponse() {
@@ -3504,10 +3595,37 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
       req.resume(); // drain any request body so the socket releases cleanly
-      void deps
-        .onAdminReload()
-        .then((r) => sendJson(res, 200, { ok: true, ...r }))
+      void Promise.all([
+        deps.onAdminReload(),
+        // Local-backend registry hot-reload rides the SAME endpoint (parity with the account pool) —
+        // an independent axis, so its absence/failure never blocks the account-pool reload above.
+        deps.onAdminReloadLocalBackends
+          ? deps.onAdminReloadLocalBackends().catch((e) => ({ changed: false, count: 0, error: (e as Error).message }))
+          : Promise.resolve(undefined),
+      ])
+        .then(([r, localBackends]) => sendJson(res, 200, { ok: true, ...r, ...(localBackends ? { localBackends } : {}) }))
         .catch((e) => sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: `inference-gateway: reload failed: ${(e as Error).message}` }, gateway: true }));
+      return;
+    }
+    if (req.method === 'GET' && url === '/admin/local-backends') {
+      // Admin visibility (D-002): the live local-backend registry + health + in-flight, so
+      // gateway:status / an operator can see what's registered and whether it's actually healthy.
+      if (!deps.localBackends) {
+        sendJson(res, 200, { ok: true, configured: false, backends: [] });
+        return;
+      }
+      const pool = deps.localBackends;
+      const health = pool.health();
+      sendJson(res, 200, {
+        ok: true,
+        configured: true,
+        now: Date.now(),
+        backends: pool.entries().map((b) => ({
+          ...b,
+          inFlight: pool.inFlight(b.id),
+          health: health.get(b.id) ?? null,
+        })),
+      });
       return;
     }
     if ((req.method === 'POST' || req.method === 'GET') && url.startsWith('/admin/egress-mode')) {
@@ -3564,6 +3682,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (!url.startsWith('/v1/')) {
       sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway only proxies /v1/*' }, gateway: true });
+      return;
+    }
+    // LOCAL backend pool (D-002): llama-server/vllm/ollama's OpenAI-compatible surface is
+    // `/v1/chat/completions` + `/v1/completions` — DISTINCT from `/v1/messages` (Anthropic) and
+    // `/v1/responses` (Codex), so this never shadows the existing routes. Only intercepted when a
+    // local-backend pool is actually wired; otherwise falls through unchanged (byte-identical to today).
+    if (req.method === 'POST' && deps.localBackends && (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/completions'))) {
+      void proxyLocal(req, res, url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions').catch((e) => {
+        log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
+        if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway local-backend error' }, gateway: true });
+        else res.destroy();
+      });
       return;
     }
     // Codex CLI probes `/v1/models` before its first turn. The Codex response is

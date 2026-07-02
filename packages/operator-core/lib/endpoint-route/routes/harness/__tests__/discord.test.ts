@@ -21,7 +21,7 @@ const H = vi.hoisted(() => {
     existsSync: vi.fn(() => state.shared),
     loadHarnessRegistry: vi.fn(async () => ({ projects: state.projects })),
     loadProjectFiles: vi.fn(async () => ({ config: state.config })),
-    saveProjectFiles: vi.fn(async () => {}),
+    saveProjectFiles: vi.fn(async (..._args: unknown[]) => {}),
     fetchMock: vi.fn(),
   };
 });

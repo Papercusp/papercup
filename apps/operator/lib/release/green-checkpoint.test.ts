@@ -3,7 +3,7 @@
  * are what keep `ready` a trustworthy deployable pin. Real temp repo for the ref
  * logic; stub deps for the (heavy) suite run.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import {
   ISOLATION_MAX_FILES,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
+  armSelfWatchdog,
   isWorkerPoolCrash,
   parseCrashedWorkspaces,
   attemptWorkerCrashAbsorption,
@@ -196,6 +197,59 @@ describe('acquireCheckpointRunLock', () => {
       lockA.release();
       lockB.release();
     });
+  });
+});
+
+describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBOS cancellation)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('does nothing before the deadline', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
+    vi.advanceTimersByTime(999);
+    expect(release).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock and SIGKILLs its own process GROUP (negative pid) once the deadline elapses', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
+    vi.advanceTimersByTime(1000);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  it('cancel() prevents the watchdog from ever firing (the normal-exit path)', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const watchdog = armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
+    watchdog.cancel();
+    vi.advanceTimersByTime(10_000);
+    expect(release).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('a kill failure (group already gone) does not throw', () => {
+    const release = vi.fn();
+    const kill = vi.fn(() => {
+      throw new Error('ESRCH');
+    });
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lock-release failure does not stop the kill from firing', () => {
+    const release = vi.fn(() => {
+      throw new Error('lock already gone');
+    });
+    const kill = vi.fn();
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {} });
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
   });
 });
 

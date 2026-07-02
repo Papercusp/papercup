@@ -149,7 +149,7 @@ describe('flags:list', () => {
   });
 
   it('resolveDistinctId is called with a Request', async () => {
-    const resolveDistinctId = vi.fn(() => 'id-123');
+    const resolveDistinctId = vi.fn((_req: Request) => 'id-123');
     vi.doMock('@papercusp/flags/server', () => ({ getAllFlags: vi.fn(async () => ({})) }));
     vi.doMock('../../flag-distinct-id', () => ({ resolveDistinctId }));
     vi.doMock('../flags/_register-backend', () => ({}));

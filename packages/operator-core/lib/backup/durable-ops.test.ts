@@ -22,7 +22,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const restoreInPlace = vi.fn(async () => ({ via: 'lib-restore' }));
+const restoreInPlace = vi.fn(async (..._args: unknown[]) => ({ via: 'lib-restore' }));
 const promoteRestore = vi.fn(async () => ({ via: 'lib-promote' }));
 const rollbackPromote = vi.fn(async () => ({ via: 'lib-rollback' }));
 

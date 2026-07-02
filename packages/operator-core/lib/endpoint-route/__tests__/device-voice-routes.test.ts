@@ -215,7 +215,7 @@ describe('voice-session-init — mint success + error mapping', () => {
     );
 
   it('mints a token, records the cooldown, and returns the session payload', async () => {
-    const fetchMock = vi.fn(async () => elResponse({ token: 'el-token-123' }));
+    const fetchMock = vi.fn(async (..._args: unknown[]) => elResponse({ token: 'el-token-123' }));
     vi.stubGlobal('fetch', fetchMock);
     const res = await init();
     expect(res.status).toBe(200);

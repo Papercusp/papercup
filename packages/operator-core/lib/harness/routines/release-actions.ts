@@ -341,6 +341,39 @@ export function gateStallEscalationBody(opts: {
   });
 }
 
+/** Pure classification of a green-checkpoint tick's outcome for gate_health tracking.
+ *  Exported for unit testing (EI-2615). */
+export type GateStallClass = 'reset' | 'noop' | 'red';
+
+/**
+ * Classify a tick's `status` (+ whether the release pin moved since the last
+ * observation) into how `trackGateStall` should treat `gate_health`:
+ *   - 'reset': a real green verdict (or hard evidence `main` is advancing via
+ *     `pinMoved`) — clear the red streak.
+ *   - 'noop': `status === 'skipped-locked'` (EI-2615). Contention with an ACTIVE
+ *     peer run is not evidence of a red build — it only proves another tick
+ *     currently holds the lock, which is EXPECTED whenever ticks legitimately
+ *     overlap (an hourly cron firing while a ~55min detached run is still in
+ *     flight, or a manual `release:checkpoint-run` started mid-cycle).
+ *     Counting it as a red produced exactly the EI-2615 symptom: a genuinely
+ *     green FF (the OTHER, still-finishing tick) briefly shadowed by a
+ *     colliding tick's false-red increment landing its own gate_health write
+ *     afterward, leaving `gate.green=false` / a stale `consecutiveReds` for
+ *     the gap between the two ticks' writes. The genuine "wedged, not firing"
+ *     case `skipped-locked` was ALSO trying to catch is already covered by the
+ *     separate `fireStale` signal (last-fire / last-green age,
+ *     green-stall-watchdog.ts) — so leave `gate_health` untouched here rather
+ *     than double-count healthy contention as a red.
+ *   - 'red': every other non-green verdict (not-green / error / create-failed /
+ *     not-fast-forward / …) still counts toward the stall streak.
+ */
+export function classifyGateStallStatus(status: string, pinMoved: boolean): GateStallClass {
+  const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
+  if (isGreen || pinMoved) return 'reset';
+  if (status === 'skipped-locked') return 'noop';
+  return 'red';
+}
+
 /**
  * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
  * and fire ONE urgent stall alert when the red streak / age crosses the threshold
@@ -358,13 +391,15 @@ async function trackGateStall(
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
   const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
-  // P-006: every non-green verdict counts toward the stall streak — INCLUDING 'error'
-  // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON) AND
-  // 'skipped-locked' (a stale run-lock the CLI couldn't acquire — green-checkpoint-stale-lock-
-  // 2026-06-26). Both are deliberately ABSENT from `isGreen` above, so a persistent crash /
-  // hang / wedged-lock increments the streak and fires the held-gate alarm instead of
-  // freezing `main` SILENTLY (the 21h fleet-deploy freeze this detector exists to catch).
-  // Only a real green verdict resets the streak.
+  // P-006: every non-green verdict OTHER than 'skipped-locked' counts toward the stall
+  // streak — INCLUDING 'error' (a green-checkpoint script crash, the 25-min timeout, or
+  // unparseable JSON). 'skipped-locked' (a run-lock collision — green-checkpoint-stale-
+  // lock-2026-06-26) is handled separately below (EI-2615: `classifyGateStallStatus`
+  // treats it as a no-op, not a red — see that function's doc for why). A persistent
+  // crash/hang/wedged-lock still increments the streak (via 'error' + the separate
+  // `fireStale` signal) and fires the held-gate alarm instead of freezing `main`
+  // SILENTLY (the 21h fleet-deploy freeze this detector exists to catch). Only a real
+  // green verdict resets the streak.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(
@@ -384,8 +419,19 @@ async function trackGateStall(
   // hard evidence the pipeline is flowing, so it resets the streak like a green does.
   const fromPin = from ? from.slice(0, 12) : null;
   const pinMoved = fromPin != null && gh.lastFrom != null && fromPin !== gh.lastFrom;
+  const gateClass = classifyGateStallStatus(status, pinMoved);
+  if (gateClass === 'noop') {
+    // EI-2615: a lock collision with an ACTIVE peer run proves nothing about the
+    // gate's health — leave gate_health completely untouched (don't even seed
+    // lastFrom) so a slower, still-in-flight green tick's eventual reset write
+    // can never be shadowed by this tick's false-red read-modify-write.
+    console.log(
+      `[green-checkpoint] '${status}' — an active peer run holds the lock; leaving gate_health untouched (not a red, see classifyGateStallStatus)`,
+    );
+    return;
+  }
   let next: Record<string, unknown>;
-  if (isGreen || pinMoved) {
+  if (gateClass === 'reset') {
     if (!isGreen) {
       console.log(
         `[green-checkpoint] release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,

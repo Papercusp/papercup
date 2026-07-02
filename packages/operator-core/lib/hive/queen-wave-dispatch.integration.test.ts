@@ -31,7 +31,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 
 const mocks = vi.hoisted(() => ({
-  wakeRecipients: vi.fn(async () => ({ woken: 1 })),
+  wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
   openEscalation: vi.fn(async () => ({ msg_id: 'esc-test', ts: new Date(0).toISOString() })),
   sql: undefined as unknown as Sql,
 }));

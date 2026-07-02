@@ -44,6 +44,7 @@ import {
   shouldBackOff,
   gateStallEscalationBody,
   decideReleaseFixerDispatch,
+  classifyGateStallStatus,
   RELEASE_FIXER_DEDUP_MS,
   type AutoServePlan,
   type DeployEventRow,
@@ -84,6 +85,34 @@ describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
     expect(body.failingTests).toEqual([]);
     expect(body.detail).not.toContain('since the last green');
     expect(body.detail).not.toContain('Failing:');
+  });
+});
+
+describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red streak)', () => {
+  it('a real green verdict resets', () => {
+    expect(classifyGateStallStatus('advanced', false)).toBe('reset');
+    expect(classifyGateStallStatus('up-to-date', false)).toBe('reset');
+    expect(classifyGateStallStatus('advanced-prefix', false)).toBe('reset');
+  });
+
+  it('a moved pin resets even on a non-green status (green-checkpoint-lock-starvation-2026-07-02)', () => {
+    expect(classifyGateStallStatus('skipped-locked', true)).toBe('reset');
+    expect(classifyGateStallStatus('not-green', true)).toBe('reset');
+  });
+
+  it('skipped-locked with NO pin movement is a no-op, not a red — the EI-2615 fix', () => {
+    // Before the fix this counted as a red, so a healthy tick colliding with a
+    // still-in-flight green run could clobber the eventual green reset with a
+    // stale/incremented consecutiveReds — exactly the "gate shows RED ~25h after
+    // main just went green" symptom EI-2615 reported. The wedge case this was also
+    // trying to catch is covered separately by `fireStale` (last-fire/last-green age).
+    expect(classifyGateStallStatus('skipped-locked', false)).toBe('noop');
+  });
+
+  it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
+    for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
+      expect(classifyGateStallStatus(status, false)).toBe('red');
+    }
   });
 });
 

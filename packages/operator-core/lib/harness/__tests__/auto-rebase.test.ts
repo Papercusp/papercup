@@ -16,7 +16,7 @@ interface GitCfg {
 }
 
 let gitCalls: string[][] = [];
-const sqlUnsafe = vi.fn(async () => [] as unknown[]);
+const sqlUnsafe = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
 
 function makeExecFile(cfg: GitCfg) {
   return (_cmd: string, args: string[], _opts: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {

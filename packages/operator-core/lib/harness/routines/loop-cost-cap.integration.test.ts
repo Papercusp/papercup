@@ -56,7 +56,7 @@ async function readRoutine(id: string) {
 describe('checkLoopCostCap — real-DB auto-pause (B-LOOP-3)', () => {
   it('spend OVER cap → breach, routine flipped active=FALSE with a stamped reason', async () => {
     const id = await seedLoopRoutine({ costCapCents: 100 });
-    const readSpend = vi.fn(async () => 250); // injected: the flagged best-effort seam
+    const readSpend = vi.fn(async (..._args: unknown[]) => 250); // injected: the flagged best-effort seam
 
     const out = await checkLoopCostCap({ sql, routineId: id, targetOwnerId: OWNER, capCents: 100 }, { readSpend });
 
