@@ -2506,13 +2506,13 @@ test('egress-ip-pool: a bare-burst 429 on one egress IP rotates to a SIBLING IP 
   resetGovernorRegistry();
 });
 
-test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs is down-ranked so soft-pin overflow steers to a FRESH sibling account (P-005, gateway-per-account-egress-ip-pool-2026-06-30)', async () => {
+test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs is down-ranked so UNPINNED traffic steers to a FRESH sibling account (P-005; pinned steering removed by the 2026-07-01 dedicated-pin redesign)', async () => {
   // Account A has a 3-IP pool; B is a fresh 1-IP account. Request 1 (pinned to A) bare-429s on A's
   // first two IPs (each cools + rotates to the next), then 200 on the third — so A ends with 2/3 IPs
-  // cooled but is NOT account-paused (the per-IP rotation skips the account circuit). Request 2 (pinned
-  // to A) must yield to the fresh account B: keyOf adds +1 per cooled IP, so A scores ~2 vs B's 0 — well
-  // past the 0.5 cache-affinity credit. WITHOUT the de-concentration penalty, request 2 would re-pile
-  // onto A (pin honored, A unpaused) — the exact amplifier that throttled aviynw8.
+  // cooled but is NOT account-paused (the per-IP rotation skips the account circuit). Request 2 is
+  // UNPINNED: the proactive health pick must prefer fresh B over down-ranked A (keyOf adds +1 per cooled
+  // IP, so A scores ~2 vs B's 0). A PINNED request no longer steers on partial cooling — it keeps its pin
+  // and rides A's remaining fresh IP (request 3); only ALL-cooled (keyOf=Infinity) yields a pin.
   resetGovernorRegistry();
   const aCalls = { n: 0 };
   const fetchImpl = (async (_url: string, init: { headers: Record<string, string> }) => {
@@ -2552,16 +2552,31 @@ test('egress-ip-pool de-concentration: an account with partly-cooled egress IPs 
       body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
     });
 
+  const unpinned = () =>
+    ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+
   const r1 = await pinA();
   assert.equal(r1.status, 200, "request 1 rode A's IP pool to a 200 (rotated past the two throttled IPs)");
   assert.ok(aCalls.n >= 3, 'A took ≥3 attempts: IP-1 (429) → IP-2 (429) → IP-3 (200) — per-IP rotation within the account');
 
-  const r2 = await pinA();
+  const r2 = await unpinned();
   assert.equal(r2.status, 200, 'request 2 served a 200');
   assert.equal(
     r2.headers.get('x-papercusp-routed-account'),
     'B',
-    'request 2 steered to the FRESH account B — A was down-ranked because 2/3 of its egress IPs are cooled (de-concentration)',
+    'unpinned request 2 steered to the FRESH account B — A was down-ranked because 2/3 of its egress IPs are cooled (de-concentration)',
+  );
+
+  const r3 = await pinA();
+  assert.equal(r3.status, 200, 'request 3 served a 200');
+  assert.equal(
+    r3.headers.get('x-papercusp-routed-account'),
+    'A',
+    'a PINNED request stays on its partly-cooled pin (still serviceable via its fresh IP) — dedicated-pin redesign',
   );
   resetGovernorRegistry();
 });

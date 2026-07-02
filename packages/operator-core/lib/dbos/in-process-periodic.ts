@@ -602,7 +602,7 @@ export function armInProcessPeriodicChecks(
   const checks = opts.checks ?? buildDefaultChecks();
   armed = checks.map((check) => ({
     name: check.name,
-    handle: managedSetInterval(check.name, check.intervalMs, () => runPeriodicCheck(check, opts.deps), {
+    handle: managedSetInterval(check.name, check.intervalMs, () => void runPeriodicCheck(check, opts.deps), {
       category: 'global-sweep',
       shed: check.shed,
       fireOnArm: check.fireOnArm,
