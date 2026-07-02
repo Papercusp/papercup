@@ -25,17 +25,18 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
+import { classifyOwnerDriveMode } from '../coordination/agent-drive-mode';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 export default defineTool({
   name: 'fleet:drain',
   description:
-    'Signal one OR many running bees to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure never fails the rest.',
+    'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su / sentinel / planner — driveMode responsive) are auto-REFUSED per target: they are not bees, hold no reclaimable slot, and do not count against maxBees — only their owner ends them. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
   guidance: {
     when: 'You (the Queen) want to reclaim bee slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each bee a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
-      'The bee is actively running a high-priority task (let it finish naturally). Or if immediate slot reclaim is critical (use fleet:cancel). Or if the bee is unresponsive (use fleet:cancel after a timeout).',
-    chaining: 'fleet:drain { bee_id } | { bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure never fails the rest.',
+      'The bee is actively running a high-priority task (let it finish naturally). Or if immediate slot reclaim is critical (use fleet:cancel). Or if the bee is unresponsive (use fleet:cancel after a timeout). NEVER to reclaim an owner-directed session (an su-… engineer, a sentinel/operator, or a planner): they are not part of the maxBees loop population — the tool refuses them, but do not target them in the first place (pausing the Hive Queen does NOT mean drain your fleet-leader peers).',
+    chaining: 'fleet:drain { bee_id } | { bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure (or a responsive-session refusal) never fails the rest.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -57,6 +58,19 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const beeIds = mergeIds(args.bee_id, args.bee_ids);
+    // P-001 / D-001 (queen-fleet-authority-boundary): exclude OWNER-DIRECTED
+    // (responsive) sessions from the drain population ENTIRELY. su / sentinel /
+    // planner are not bees — they hold no reclaimable slot and are not part of the
+    // maxBees loop, so a "release your slot" cue is a category error however they
+    // were enumerated (a paused-hive zero-claim sweep once passed SU fleet leaders
+    // as bee_ids). Resolved from the same drive-mode axis the roster classifies by;
+    // resolved once, in parallel, before the send loop.
+    const driveModeById = new Map<string, Awaited<ReturnType<typeof classifyOwnerDriveMode>>>();
+    await Promise.all(
+      beeIds.map(async (id) => {
+        driveModeById.set(id, await classifyOwnerDriveMode(id));
+      }),
+    );
     const summary = `Graceful drain cue: release your slot`;
     const body =
       `You are being asked to gracefully wind down and release your slot so the Queen can place higher-priority work.\n\n` +
@@ -72,6 +86,22 @@ export default defineTool({
     const env = await runBulk(
       beeIds,
       async (bee_id) => {
+        // Refuse an owner-directed (responsive) target LOUDLY — a per-item error, not
+        // a silent skip — so the caller sees it is not a drainable bee (P-001/D-001).
+        const cls = driveModeById.get(bee_id);
+        if (cls && cls.driveMode === 'responsive') {
+          return {
+            ok: false as const,
+            bee_id,
+            refused: true as const,
+            kind: cls.kind,
+            driveMode: cls.driveMode,
+            error:
+              `refused: ${bee_id} is an owner-directed ${cls.kind} session (driveMode=responsive), not a bee — ` +
+              `it holds no reclaimable slot and is not part of the maxBees population, so it cannot be drained. ` +
+              `Only its owner ends it. To reclaim bee slots, target queen/overwatch/bee sessions only.`,
+          };
+        }
         // One drain cue PER bee — never a single broadcast: each bee must be the
         // sole recipient so its handler reacts to its own slot.
         const sent = await sendMessage(identity, { to: [bee_id], summary, body });

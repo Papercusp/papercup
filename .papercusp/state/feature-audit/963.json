@@ -1,0 +1,9 @@
+{
+  "actor": "hive-bee-exit",
+  "feature_id": "WI-1598",
+  "field": "status",
+  "id": 963,
+  "new_value": "\"passed\"",
+  "old_value": "\"in_progress\"",
+  "ts": 1783026227705
+}

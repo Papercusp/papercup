@@ -17,8 +17,16 @@ vi.mock('../coordination/messages', () => ({ sendMessage: (...a: unknown[]) => s
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 's-queen', ownerLabel: 'queen' }),
 }));
+// P-001 / D-001: the drain refuses OWNER-DIRECTED (responsive) targets. Drive-mode
+// resolves from presence.agentRole via the real classifyOwnerDriveMode + the pure
+// classifyAgentPane taxonomy — mock only the presence read so the REAL wiring runs
+// (a roleless su- id short-circuits before this is even consulted).
+vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null) }));
 
 import drainTool from './drain';
+import { getPresence } from '../coordination/presence';
+
+const getPresenceM = vi.mocked(getPresence);
 
 const ctx = { workspaceId: 'ws-1', isSuperuser: true } as never;
 interface DrainBulkResult {
@@ -30,6 +38,9 @@ interface DrainBulkResult {
     timeout_sec?: number;
     next?: string;
     error?: string;
+    refused?: boolean;
+    kind?: string;
+    driveMode?: string;
   }>;
 }
 const env = async (x: unknown) => {
@@ -40,6 +51,7 @@ const env = async (x: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getPresenceM.mockResolvedValue(null); // default: no presence row → bee/auto for non-su ids
   sendMessage.mockImplementation(async (_id: unknown, msg: { to: string[] }) => ({
     msg_id: `m-${msg.to[0]}`,
     ts: 'now',
@@ -101,5 +113,45 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
       ['s-bee-2', true],
     ]);
     expect(b.results[1].error).toContain('send failed');
+  });
+
+  // ── P-001 / D-001: owner-directed (responsive) targets are REFUSED, never drained ──
+  it("refuses an su- fleet-leader target (never sends it a 'release your slot' cue)", async () => {
+    const b = await env({ bee_id: 'su-173cbb09-c016-4d62-8806-70487830c24f' });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, refused: true, kind: 'su', driveMode: 'responsive' });
+    expect(b.results[0].error).toMatch(/owner-directed/);
+    expect(b.results[0].error).toMatch(/cannot be drained/);
+    // The cue was never sent — an su session holds no slot to release.
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses sentinel/planner targets (resolved from presence agentRole)', async () => {
+    // Only `agentRole` is read; a partial presence row cast is enough for the guard.
+    getPresenceM.mockImplementation((async (id: string) =>
+      id === 's-op' ? { ownerId: id, agentRole: 'operator' } : { ownerId: id, agentRole: 'planner' }) as typeof getPresence);
+    const b = await env({ bee_ids: ['s-op', 's-pl'] });
+    expect(b.counts).toEqual({ ok: 0, failed: 2 });
+    expect(b.results.map((r) => [r.kind, r.driveMode])).toEqual([
+      ['sentinel', 'responsive'],
+      ['planner', 'responsive'],
+    ]);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('a mixed batch drains the bees and refuses ONLY the responsive session', async () => {
+    const b = await env({ bee_ids: ['s-bee-1', 'su-leader', 's-bee-2'] });
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 2, failed: 1 });
+    expect(b.results.map((r) => [r.bee_id, r.ok])).toEqual([
+      ['s-bee-1', true],
+      ['su-leader', false],
+      ['s-bee-2', true],
+    ]);
+    expect(b.results[1]).toMatchObject({ refused: true, kind: 'su' });
+    // Exactly the two bees got a cue — never the leader.
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    const targets = sendMessage.mock.calls.map((c) => (c[1] as { to: string[] }).to[0]);
+    expect(targets).toEqual(['s-bee-1', 's-bee-2']);
   });
 });

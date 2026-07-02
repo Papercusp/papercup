@@ -35,6 +35,7 @@
  */
 
 import { readdir, readFile } from 'node:fs/promises';
+import { classifyAgentPane } from '@papercusp/agent-mcp';
 import { STALE_MS } from './liveness';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -268,16 +269,35 @@ export interface LiveIdleCandidate {
   heartbeatAtMs: number;
   /** Genuine-activity clock (mig 277); null = never recorded activity. */
   lastActiveAtMs: number | null;
+  /** The session's coord_presence agentRole (mig 407 / deriveAgentRole) — the
+   *  signal classifyAgentPane uses to resolve driveMode. Lets the live-idle filter
+   *  EXCLUDE owner-directed (responsive) sessions from termination (P-001 / D-001).
+   *  Optional (defaults null → id-only classification) so existing callers/tests
+   *  that don't supply it still compile; a roleless su-… id still reads responsive. */
+  role?: string | null;
 }
 
 /**
  * PURE: a session is LIVE-but-IDLE when its process is alive (heartbeat within
  * `livenessMs`) AND it has done no genuine activity for `idleMs` AND it is NOT
- * busy (holds no claim / has no registered wake / is not a running bee). NOTE the
- * asymmetry vs the dead-ghost reaper: presence-alive is the PRECONDITION here, so
- * the "busy" set must EXCLUDE presence (else every alive session looks protected
- * and nothing is ever idle). A null lastActiveAt = never active → idle. Injected
- * clock so the boundary unit-tests deterministically.
+ * busy (holds no claim / has no registered wake / is not a running bee) AND it is
+ * NOT an OWNER-DIRECTED (responsive) session. NOTE the asymmetry vs the dead-ghost
+ * reaper: presence-alive is the PRECONDITION here, so the "busy" set must EXCLUDE
+ * presence (else every alive session looks protected and nothing is ever idle). A
+ * null lastActiveAt = never active → idle. Injected clock so the boundary
+ * unit-tests deterministically.
+ *
+ * P-001 / D-001 (queen-fleet-authority-boundary): su / sentinel / planner are
+ * OWNER-DIRECTED (driveMode responsive) — the owner drives them; they hold no
+ * reclaimable "slot". This live-idle sweep Ctrl-C's then SIGKILLs its targets
+ * (terminateIdleLiveSessions), so an idle-but-alive owner session (e.g. a human
+ * who stepped away, a parked planner) must NEVER enter the population — killing an
+ * owner's own session out from under them is the exact authority violation this
+ * plan fixes. This SUPERSEDES the original D-007 framing ("terminate idle SU
+ * sessions to free the event loop"): loop-saturation from a live owner session is
+ * addressed by reducing its footprint, not by system-killing it. The dead-ghost /
+ * zombie / dangling-await slices (1/3/4) still reap already-dead responsive
+ * sessions — only the LIVE-termination population is narrowed here.
  */
 export function classifyLiveIdle(opts: {
   candidates: LiveIdleCandidate[];
@@ -291,6 +311,8 @@ export function classifyLiveIdle(opts: {
   return opts.candidates.filter((c) => {
     if (opts.nowMs - c.heartbeatAtMs >= livenessMs) return false; // dead process → dead-ghost reaper's job
     if (opts.busyOwners.has(c.coordOwnerId)) return false; // holds a claim / wake / running bee
+    // Owner-directed (responsive) sessions are never live-idle-terminated (P-001).
+    if (classifyAgentPane({ role: c.role ?? null, ownerId: c.coordOwnerId }).driveMode === 'responsive') return false;
     return opts.nowMs - (c.lastActiveAtMs ?? 0) >= idleMs; // no genuine activity for idleMs
   });
 }
@@ -369,9 +391,9 @@ export async function findIdleLiveSessions(
     // spares fewer, never terminates a viewed session it would otherwise spare.
     for (const o of viewerOwners) busyOwners.add(o);
     const rows = await sql<
-      Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null }>
+      Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null; agent_role: string | null }>
     >`
-      SELECT s.id, p.owner_id AS coord_owner_id, p.heartbeat_at, p.last_active_at
+      SELECT s.id, p.owner_id AS coord_owner_id, p.heartbeat_at, p.last_active_at, p.agent_role
         FROM harness_shared.coord_presence p
         JOIN harness_shared.adv_sessions s ON s.coord_owner_id = p.owner_id AND s.ended_at IS NULL
        WHERE p.heartbeat_at IS NOT NULL`;
@@ -381,6 +403,8 @@ export async function findIdleLiveSessions(
       coordOwnerId: r.coord_owner_id,
       heartbeatAtMs: new Date(r.heartbeat_at).getTime(),
       lastActiveAtMs: r.last_active_at ? new Date(r.last_active_at).getTime() : null,
+      // agentRole feeds the P-001 responsive-session exclusion in classifyLiveIdle.
+      role: r.agent_role,
     }));
     const idle = classifyLiveIdle({ candidates, busyOwners, nowMs, livenessMs: opts.livenessMs, idleMs: opts.idleMs });
     const idleKeys = new Set(idle.map((c) => c.coordOwnerId));

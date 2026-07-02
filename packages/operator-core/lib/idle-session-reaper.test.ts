@@ -101,53 +101,74 @@ describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-proce
 });
 
 describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007 cohort)', () => {
+  // NB: the live-idle TERMINATION cohort is AUTO-kind (bee) sessions only — P-001/
+  // D-001 excludes owner-directed (responsive) su/sentinel/planner from this sweep
+  // (it Ctrl-C's + SIGKILLs its targets), so these generic cases use roleless
+  // `s-…` ids (→ bee/auto). The responsive exclusion has its own cases below.
   const cand = (
     coordOwnerId: string,
     heartbeatAgoMs: number,
     lastActiveAgoMs: number | null,
+    role: string | null = null,
   ): LiveIdleCandidate => ({
     coordOwnerId,
     heartbeatAtMs: NOW - heartbeatAgoMs,
     lastActiveAtMs: lastActiveAgoMs == null ? null : NOW - lastActiveAgoMs,
+    role,
   });
 
   it('flags a session that is alive (fresh heartbeat) but idle (stale activity) and not busy', () => {
-    const c = cand('su-idle', 30_000 /* alive */, 5 * 60 * 60 * 1000 /* 5h idle */);
+    const c = cand('s-idle', 30_000 /* alive */, 5 * 60 * 60 * 1000 /* 5h idle */);
     const out = classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW });
     expect(out).toEqual([c]);
   });
 
   it('does NOT flag a recently-active session', () => {
-    const c = cand('su-active', 30_000, 60_000 /* active 1 min ago */);
+    const c = cand('s-active', 30_000, 60_000 /* active 1 min ago */);
     expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
   });
 
   it('does NOT flag a DEAD-process session (stale heartbeat) — that is the dead-ghost reaper job', () => {
-    const c = cand('su-dead', 5 * IDLE_SESSION_GRACE_MS /* heartbeat stale → dead */, 5 * 60 * 60 * 1000);
+    const c = cand('s-dead', 5 * IDLE_SESSION_GRACE_MS /* heartbeat stale → dead */, 5 * 60 * 60 * 1000);
     expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
   });
 
   it('does NOT flag an idle session whose owner is BUSY (holds a claim / wake / running bee)', () => {
-    const c = cand('su-busy', 30_000, 5 * 60 * 60 * 1000);
+    const c = cand('s-busy', 30_000, 5 * 60 * 60 * 1000);
     expect(
-      classifyLiveIdle({ candidates: [c], busyOwners: new Set(['su-busy']), nowMs: NOW }),
+      classifyLiveIdle({ candidates: [c], busyOwners: new Set(['s-busy']), nowMs: NOW }),
     ).toHaveLength(0);
   });
 
   it('treats a null last_active_at as never-active → idle (when alive + not busy)', () => {
-    const c = cand('su-never', 30_000, null);
+    const c = cand('s-never', 30_000, null);
     expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toEqual([c]);
   });
 
   it('idle boundary: just under the threshold is not idle; at/over it is', () => {
-    const justUnder = cand('su-u', 30_000, IDLE_ACTIVITY_THRESHOLD_MS - 1);
-    const atThreshold = cand('su-a', 30_000, IDLE_ACTIVITY_THRESHOLD_MS);
+    const justUnder = cand('s-u', 30_000, IDLE_ACTIVITY_THRESHOLD_MS - 1);
+    const atThreshold = cand('s-a', 30_000, IDLE_ACTIVITY_THRESHOLD_MS);
     const out = classifyLiveIdle({
       candidates: [justUnder, atThreshold],
       busyOwners: new Set(),
       nowMs: NOW,
     });
     expect(out).toEqual([atThreshold]);
+  });
+
+  // ── P-001 / D-001: owner-directed (responsive) sessions are NEVER live-terminated ──
+  it('does NOT flag an owner-directed su session (roleless su-… id) even when idle + alive + not busy', () => {
+    const c = cand('su-173cbb09-c016-4d62-8806-70487830c24f', 30_000, 5 * 60 * 60 * 1000);
+    expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('does NOT flag sentinel (operator) / planner sessions by presence agentRole', () => {
+    const op = cand('s-op', 30_000, 5 * 60 * 60 * 1000, 'operator');
+    const pl = cand('s-pl', 30_000, 5 * 60 * 60 * 1000, 'planner');
+    const bee = cand('s-bee', 30_000, 5 * 60 * 60 * 1000, 'worker');
+    const out = classifyLiveIdle({ candidates: [op, pl, bee], busyOwners: new Set(), nowMs: NOW });
+    // Only the auto-kind bee remains terminable; the two responsive sessions are excluded.
+    expect(out).toEqual([bee]);
   });
 });
 
