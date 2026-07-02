@@ -173,7 +173,14 @@ describe('integration — read real insights dir', () => {
     for (const e of entries) {
       expect(typeof e.slug).toBe('string');
       expect(typeof e.title).toBe('string');
-      expect(LIVE_STATUSES.includes(e.status)).toBe(true);
+      // EI-6844: name the offending slug/status in the failure message — a bare
+      // `expected false to be true` gave no lead on WHICH of ~380 insight docs
+      // had a typo'd status (found: `partially-fixed` on one doc, not in the
+      // recognized vocabulary). Fix the doc's frontmatter, not this allowlist.
+      expect(
+        LIVE_STATUSES.includes(e.status),
+        `insight "${e.slug}" has status "${e.status}", not one of [${LIVE_STATUSES.join(', ')}] — fix its frontmatter (or, if the vocabulary should grow, add it to LIVE_STATUSES here deliberately)`,
+      ).toBe(true);
     }
 
     const prelude = renderInsightsPrelude(entries);

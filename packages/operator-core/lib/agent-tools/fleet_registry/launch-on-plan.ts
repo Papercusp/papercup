@@ -135,7 +135,7 @@ export default defineTool({
     notWhen:
       'You only need worker windows with no fleet/plan → capability:terminal. You only need to register a fleet (no terminals) → fleet:create. Authoring or starting the plan → plans:apply-plan-block / plans:start (do that FIRST; this tool does not create or start plans).',
     chaining:
-      'plans:apply-plan-block (or plans:new + plans:add-item) → plans:start (optional, for Queen visibility) → fleet:launch-on-plan { name, plan, count }. As leader you then monitor via fleet:assignments + coord:presence.',
+      'plans:apply-plan-block (or plans:new + plans:add-item) → plans:start (optional, for Queen visibility) → fleet:launch-on-plan { name, plan, count }. As leader you then loop:arm a LEAN monitor — a per-wake dev:pg_query burn-down + coord:inbox to catch and ack messages addressed to you (members flag blockers/findings with wakeOnReply). Do NOT poll fleet:assignments coverage[] or full coord:presence every wake — that blows leader context (the tool response spells out the full leader job).',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -352,7 +352,22 @@ export default defineTool({
     }
     if (opened.length) {
       lines.push(
-        'Members auto-start working the plan on boot (no manual kickoff needed). As leader, monitor with fleet:assignments + coord:presence, and drive the plan to done through the fleet.',
+        `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Until the plan is drained, your standing job each cycle:`,
+      );
+      lines.push(
+        '  1. WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
+      );
+      lines.push(
+        '  2. STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
+      );
+      lines.push(
+        '  3. Keep each wake LEAN: one dev:pg_query for burn-down + active-worker count. Do NOT dump fleet:assignments coverage[] or a full coord:presence every wake — that blows your OWN context within a few cycles and is the #1 leader self-inflicted failure.',
+      );
+      lines.push(
+        '  4. AUDIT completions: spot-check a few terminalCompletionRefs (work_items:get) for real evidence — files touched, the exact test run + its result — not just a status flip.',
+      );
+      lines.push(
+        '  5. Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Queen issues graceful-drain cues, loop:end and report the outcome to the owner. Do not spin empty wakes.',
       );
     }
 

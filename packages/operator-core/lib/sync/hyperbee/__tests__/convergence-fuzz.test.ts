@@ -109,3 +109,46 @@ describe('D-001 fix VALIDATION — an LWW-ordered guard converges even under ske
     expect(divergedUnderLww).toBe(0); // …and the lwwPick-ordered guard fixes every one
   });
 });
+
+describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnOps + lockstep counters)', () => {
+  // The live split-brain (wi1544 rig, 2026-07-02): after any recv-ratchet
+  // episode every peer's clock advances by counter only, in lockstep, so two
+  // concurrent writers mint IDENTICAL (ms, count) stamps. The fold's lwwPick
+  // never arbitrates local-vs-remote for CDC tables (skipOwnOps) — the PG
+  // guard's tie-ACCEPTING `>=` is the only arbiter, and it accepts the remote
+  // op on BOTH peers: they stably SWAP winners. `localAuthorApply` models
+  // exactly that topology; `lockstep` makes the ties routine, as observed live.
+  const base = { peers: 4, ops: 40, keys: 6, regime: 'monotone' as const, lockstep: true, localAuthorApply: true };
+
+  it('TEETH (the bug): node-LESS stamps split-brain on exact hlc ties — divergent seeds exist', async () => {
+    let diverged = 0;
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      if (!(await runConvergenceFuzz({ ...base, seed, nodeIds: false })).converged) diverged++;
+    }
+    expect(diverged).toBeGreaterThan(0);
+  });
+
+  it(`FIXED (migration 459): node-carrying stamps make the order total — all ${SWEEP} seeds converge`, async () => {
+    const failures: Array<{ seed: number; distinct: string[] }> = [];
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      const r = await runConvergenceFuzz({ ...base, seed, nodeIds: true });
+      if (!r.converged) failures.push({ seed, distinct: r.distinct });
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('FIXED under skew as well: production topology + recv-advance inversions + node stamps converge', async () => {
+    const failures: number[] = [];
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      const r = await runConvergenceFuzz({
+        ...base,
+        seed,
+        regime: 'skew',
+        skewProb: 0.6,
+        nodeIds: true,
+      });
+      if (!r.converged) failures.push(seed);
+    }
+    expect(failures).toEqual([]);
+  });
+});
