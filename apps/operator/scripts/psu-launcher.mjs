@@ -2963,12 +2963,18 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // Only --context-size=full opts OUT (unset PAPERCUSP_TOOLS → full catalog + ToolSearch).
       ...(res.agent === 'claude' && args.contextSize !== 'full'
         ? { PAPERCUSP_TOOLS: OMP_CORE_MCP_TOOL_NAMES.join(',') } : {}),
-      // context-trimming-tiers D-004: the session PAYLOAD tier. The claude MCP url
+      // context-trimming-tiers D-004/P-009: the session PAYLOAD tier. The claude MCP url
       // env-expands ${PAPERCUSP_CONTEXT_TIER} (buildClaudeMcpEntry `ctx_tier=`) so the
-      // server shapes tool payloads (defineTool `shape` projections) per tier —
-      // trimmed by default, matching the tool-surface default; --context-size=full
-      // opts out (unshaped payloads, byte-identical to pre-tier behavior).
-      PAPERCUSP_CONTEXT_TIER: args.contextSize === 'full' ? 'full' : 'trimmed',
+      // server shapes tool payloads (defineTool `shape` projections) per tier.
+      // --context-size=full opts out (unshaped payloads, byte-identical to pre-tier
+      // behavior); an explicit trimmed pick shapes; UNSET derives from the model
+      // WINDOW (P-009: ≤200k → trimmed, a [1m] spec → full) — payload shaping only
+      // matters where the window is small, unlike the tool-surface spine (D-010)
+      // which stays trimmed for everyone.
+      PAPERCUSP_CONTEXT_TIER:
+        args.contextSize === 'full' ? 'full'
+        : args.contextSize ? 'trimmed'
+        : /\[1m\]/i.test(String(args.model ?? '')) ? 'full' : 'trimmed',
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
       // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).

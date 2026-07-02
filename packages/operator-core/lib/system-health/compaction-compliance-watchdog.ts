@@ -18,7 +18,7 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { estimateContextTokensForOwner, resolveModelSpecForOwner } from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
-import { defaultCompactionLimitForSpec } from '../agent-config-constants';
+import { defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -29,6 +29,44 @@ const MAX_SEEDS_PER_PASS = 25;
 
 /** In-memory escalation dedup: warn only on the FIRST crossing; clear on recovery. */
 const overLimitOwners = new Set<string>();
+
+/**
+ * D-006 honor leg (context-trimming-tiers P-009): an EXPLICIT per-tier
+ * compactionLimit rides the SPAWN RECORD and takes precedence over the
+ * model-derived default — spawned_agents.model_tier resolved against the
+ * workspace tier menu; a recorded model_spec still beats the fs/argv resolver
+ * (a fleet bee's session settings.json rarely names the model). The child's
+ * coord ownerId IS its spawnId (sessionOwner: spawnId in operator-spawn), so
+ * the lookup keys on either column. Best-effort: null ⇒ resolver fallback.
+ */
+async function resolveSpawnRecordLimit(
+  sql: Sql,
+  ownerId: string,
+  tierMenu: () => Promise<readonly ModelTier[] | undefined>,
+): Promise<number | null> {
+  try {
+    const rows = await sql<{ model_spec: string | null; model_tier: string | null }[]>`
+      SELECT model_spec, model_tier
+        FROM harness_shared.spawned_agents
+       WHERE spawn_id = ${ownerId} OR session_owner = ${ownerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    if (row.model_tier) {
+      const tiers = await tierMenu();
+      const tier = tiers?.find((t) => t.name === row.model_tier);
+      // parseTiers already clamped a stored explicit limit to the spec's window.
+      if (tier?.compactionLimit != null) return tier.compactionLimit;
+      if (tier?.spec) return defaultCompactionLimitForSpec(tier.spec);
+    }
+    if (row.model_spec) return defaultCompactionLimitForSpec(row.model_spec);
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export interface CompactionComplianceResult {
   /** owners whose estimate was refreshed this pass. */

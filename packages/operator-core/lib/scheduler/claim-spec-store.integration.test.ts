@@ -9,7 +9,7 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *   lib/scheduler/claim-spec-store.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
