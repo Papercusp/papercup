@@ -45,6 +45,7 @@ import { withOAuthBeta } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
 import {
   codexCliResponsesBody,
@@ -734,6 +735,17 @@ export interface GatewayStats {
   /** Count of rate-limit STALL candidates recorded (P-002): all-throttled sheds to an identified bee. The
    *  full {ownerId, accountId, soonestResetAt} events are on GET /admin/stalls (for the stall-waker). */
   stallsRecorded: number;
+  /** PROACTIVE egress prober health (gateway-rayobyte-hardening P-002): idle proxy routes are probed on a
+   *  cadence and cooled BEFORE live traffic burns on a dead squid. `circuitOpens` counts circuits the
+   *  prober (vs live requests) opened; a non-empty `failStreakByAccount` = a route failing but not yet at
+   *  the open threshold. */
+  proactiveEgressProbe: {
+    enabled: boolean;
+    intervalMs: number;
+    lastTickAt: number;
+    circuitOpens: number;
+    failStreakByAccount: Record<string, number>;
+  };
   /** Per-backend Codex/OpenAI counters (2026-06-22 audit) — kept SEPARATE from the Claude counters above so
    *  /stats distinguishes Codex health from Claude health. All zero until Codex accounts are configured. */
   codex: { requests: number; upstream429: number; failovers: number; errors: number };
@@ -1653,6 +1665,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       ),
       selfHealReclaims,
       stallsRecorded,
+      proactiveEgressProbe: {
+        enabled: proactiveProbeHandle !== null,
+        intervalMs: proactiveEgressProbeMs,
+        lastTickAt: proactiveProbeLastTickAt,
+        circuitOpens: proactiveProbeOpens,
+        failStreakByAccount: Object.fromEntries(proactiveProbeFailStreak),
+      },
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       unified: snap.unified,
@@ -3550,6 +3569,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     close(): Promise<void> {
       if (selfHealTimer) clearInterval(selfHealTimer);
       if (serviceableClampTimer) clearInterval(serviceableClampTimer);
+      proactiveProbeHandle?.stop();
       // Tear down any per-account egress dispatchers (best-effort; they hold sockets).
       for (const d of dispatcherCache.values()) void (d as { close?: () => Promise<void> }).close?.();
       dispatcherCache.clear();
