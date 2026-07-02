@@ -32,6 +32,7 @@ import { Select } from '../../harness/Select';
 import {
   AGENT_BACKENDS,
   DEFAULT_MODEL_TIERS,
+  defaultCompactionLimitForSpec,
   type AgentBackend,
   type ModelTier,
   type SurfaceKey,
@@ -535,7 +536,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the queen — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. Leave as-is to track the built-in menu."
+          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the queen — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu."
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
@@ -543,6 +544,7 @@ export default function AgentSettingsPage() {
               <span style={{ width: 110 }}>Tier</span>
               <span style={{ width: 170 }}>Model spec</span>
               <span style={{ width: 130 }}>Backend</span>
+              <span style={{ width: 100 }}>Compact @</span>
               <span>When to use (the queen&apos;s rubric)</span>
             </div>
             {tierRows.map((row, i) => (
@@ -597,6 +599,18 @@ export default function AgentSettingsPage() {
                 />
                 <DraftInput
                   className="pc-input"
+                  wrapperStyle={{ width: 100 }}
+                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
+                  placeholder={String(defaultCompactionLimitForSpec(row.spec.trim() || null))}
+                  aria-label={`Tier ${i + 1} soft compaction limit (tokens)`}
+                  value={row.compactionLimit}
+                  onCommit={(compactionLimit) => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, compactionLimit } : r)));
+                  }}
+                />
+                <DraftInput
+                  className="pc-input"
                   wrapperStyle={{ flex: 1, minWidth: 180 }}
                   style={{ fontSize: 13, padding: '2px 6px' }}
                   placeholder="when the queen should pick this tier"
@@ -636,7 +650,7 @@ export default function AgentSettingsPage() {
                 style={{ fontSize: 11, padding: '2px 8px' }}
                 onClick={() => {
                   setTiersCustomized(true);
-                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '', when: '' }]);
+                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '', when: '', compactionLimit: '' }]);
                 }}
               >
                 + add tier

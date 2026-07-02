@@ -17,7 +17,9 @@
 import {
   DEFAULT_MODEL_TIERS,
   MODEL_EFFORT_LEVELS,
+  MIN_COMPACTION_LIMIT_TOKENS,
   SURFACE_KEYS,
+  defaultCompactionLimitForSpec,
   isValidModelSpec,
   type AgentBackend,
   type ModelTier,
@@ -31,6 +33,9 @@ export interface TierRow {
   backend: '' | AgentBackend;
   /** When the queen should pick this tier — injected into her launch prompt. */
   when: string;
+  /** Soft compaction limit (tokens) as edited text; '' = model-derived default
+      (context-trimming-tiers D-002). */
+  compactionLimit: string;
 }
 
 export const tierToRow = (t: ModelTier): TierRow => ({
@@ -38,6 +43,7 @@ export const tierToRow = (t: ModelTier): TierRow => ({
   spec: t.spec,
   backend: t.backend ?? '',
   when: t.when ?? '',
+  compactionLimit: t.compactionLimit != null ? String(t.compactionLimit) : '',
 });
 
 /** The claude CLI's bare model aliases (verified against the installed CLI
@@ -213,12 +219,35 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
       tiersValid = false;
       continue;
     }
+    // Optional per-tier soft compaction limit (context-trimming-tiers D-001/D-002):
+    // '' = model-derived default; a number must sit in [20k, the spec's derived
+    // ceiling] — the ceiling keeps limit × 1.2 under the hard window.
+    let compactionLimit: number | undefined;
+    const limitText = row.compactionLimit.trim();
+    if (limitText) {
+      const n = Number(limitText);
+      const cap = defaultCompactionLimitForSpec(spec);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        problems.push(`tier "${name}": compaction limit must be a whole number of tokens (or blank for the model default)`);
+        tiersValid = false;
+        continue;
+      }
+      if (n < MIN_COMPACTION_LIMIT_TOKENS || n > cap) {
+        problems.push(
+          `tier "${name}": compaction limit must be ${MIN_COMPACTION_LIMIT_TOKENS.toLocaleString()}–${cap.toLocaleString()} for spec "${spec}" (the cap keeps limit × 1.2 under the model window)`,
+        );
+        tiersValid = false;
+        continue;
+      }
+      compactionLimit = n;
+    }
     seenNames.add(name.toLowerCase());
     cleanedTiers.push({
       name,
       spec,
       ...(row.backend ? { backend: row.backend } : {}),
       ...(row.when.trim() ? { when: row.when.trim() } : {}),
+      ...(compactionLimit !== undefined ? { compactionLimit } : {}),
     });
   }
   // Store [] when the rows still equal the committed defaults — an untouched
