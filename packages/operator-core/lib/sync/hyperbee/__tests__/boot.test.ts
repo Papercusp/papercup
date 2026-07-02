@@ -628,6 +628,116 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
     expect(ownerDeviceForTopic).toHaveBeenCalled();
   });
 
+  // WI-1544 (round-1 live REJECT) — an identity-stage `binding_invalid` inside the join-
+  // bootstrap window (a hive/topic-bound JOINER whose hive-home has not resolved yet) must
+  // BUFFER, not conclusively reject. Live-pinned on the WI-1544 Docker-frames rig: the owner's
+  // log announces raced the hive-directory descriptor by milliseconds → ownerDeviceForTopic
+  // resolved <null> → gist gate 'fail' → binding_invalid → PERMANENT drop (announces are never
+  // re-delivered); the rekey resolved the home two log-lines later with nothing left to replay.
+  // Reverting the onAnnounce reclassify branch flips this RED (reason binding_invalid, no
+  // binding_unverified_window buffer event).
+  it('FIX (WI-1544): binding_invalid during the join-bootstrap window BUFFERS (pending), never conclusive', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-buf', 9742, 'kc-1544-joiner-buf');
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-buf',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'b'.repeat(64) }, // invite/link joiner mid-bootstrap
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0, // assert the BUFFER decision in isolation
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // gist gate conclusively rejects (rig: unattested device)
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: async () => null, // directory descriptor NOT yet arrived (the race)
+      joinerHiveHomeSlugOverride: async () => null, // hive-home UNRESOLVED — the pre-rekey window
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: 9741,
+      github_login: 'owner-1544',
+      attestation_gist_id: 'gist-1544',
+      harness_slug: OWNER_MEMBER_SLUG, // the owner's hive-home-candidate log
+      log_core_key: 'e4'.repeat(32),
+    });
+
+    const decision = await handle.onAnnounce(frame);
+
+    // THE FIX: retryable, buffered — pre-fix this was { admit:false, reason:'binding_invalid' }.
+    expect(decision).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+
+    const pending = listBootHistory({
+      workspaceId: 'ws-wi1544-buf',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      kinds: ['announce_pending'],
+    });
+    expect(pending.some((e) => (e.message ?? '').includes('binding_unverified_window'))).toBe(true);
+    const rejected = listBootHistory({
+      workspaceId: 'ws-wi1544-buf',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      kinds: ['announce_rejected'],
+    });
+    expect(rejected.filter((e) => (e.message ?? '').includes('binding_invalid'))).toEqual([]);
+  });
+
+  // WI-1544 recovery half — the buffered frame is ADMITTED by the retry tick once the verified
+  // directory owner-device binding resolves (the descriptor that lost the race arrives moments
+  // later), while the window is still open. Uses a same-slug frame (the owner's log for the
+  // SHARED harness — the content log that was probe=0 on the rig) so scope resolves without the
+  // rekey; the buffer→rekey-replay leg for a hive-home-slug frame is exercised live by the
+  // WI-1544 matrix (same scoping rationale as a003-scope-buffer-replay.test.ts).
+  it('FIX (WI-1544): a window-buffered frame is admitted by the retry tick once the owner-device binding resolves', async () => {
+    const joiner = makeAnnounceIdentityOverride('joiner-1544-retry', 9752, 'kc-1544-joiner-retry');
+    let ownerDevice: string | null = null;
+    const ownerDeviceForTopic = vi.fn(async () => ownerDevice);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi1544-retry',
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'topic', topic_hex: 'c'.repeat(64) },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 20, // fast retry — the recovery path under test
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // gist gate keeps failing (rig: device never attested)
+      loadHiveMembersOverride: async () => [],
+      ownerDeviceForTopicOverride: ownerDeviceForTopic,
+      joinerHiveHomeSlugOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({
+      github_user_id: 9751,
+      github_login: 'owner-1544-r',
+      attestation_gist_id: 'gist-1544-r',
+      harness_slug: JOINER_MEMBER_SLUG, // the owner's log for the SHARED harness (in-scope once identity passes)
+      log_core_key: 'f5'.repeat(32),
+    });
+
+    // Directory not yet populated → buffered, not rejected.
+    expect(await handle.onAnnounce(frame)).toEqual({ admit: false, reason: 'pending' });
+    expect(handle.admitted.has(frame.log_core_key)).toBe(false);
+
+    // The descriptor arrives (the verified directory binding now resolves the owner device) —
+    // the next retry tick owner-bootstraps the buffered frame despite the failing gist gate.
+    ownerDevice = frame.device_pubkey;
+    await vi.waitFor(
+      () => { expect(handle.admitted.has(frame.log_core_key)).toBe(true); },
+      { timeout: 4000, interval: 25 },
+    );
+    expect(ownerDeviceForTopic).toHaveBeenCalled();
+  });
+
   // ADVERSARIAL (WI-797) — a FORGED owner announce (bad sig) is refused at the sig check that
   // PRECEDES the bypass (admitsAsKnownHiveMember line 1: `if (!sigValid …) return false`). A
   // forger cannot produce a valid signature for the owner's pubkey without its private key, so
