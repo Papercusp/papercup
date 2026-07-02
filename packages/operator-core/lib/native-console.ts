@@ -49,6 +49,9 @@ interface ConsoleEnvelope {
   mcpJsonContents: string;
   greetingCmd: string;
   needsSuperuserBootstrap: boolean;
+  /** windows-desktop-feature-parity-2026-07-02 P-010: per-launch window
+   *  identity — see console-launcher.ts's ConsoleEnvelope.sessionId doc. */
+  sessionId: string;
 }
 
 /**
@@ -177,26 +180,42 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
   // never touches adv_sessions (only console-spawn.ts's Linux/macOS path does
   // that, right after it forks). Without this, a plain (non-psu) console
   // opened via this fallback is completely untracked — invisible to /adv,
-  // unparkable, unresumable. A `runPsu` console self-registers anyway (psu's
-  // own bootstrap-su call, made from inside WSL to the WSL-hosted operator)
-  // so this is best-effort and non-fatal either way — never let a recording
-  // hiccup fail an already-successful terminal launch. Deliberately does NOT
-  // forward the Rust-returned pid (see console-record.ts header: it's a
-  // Windows-namespace pid, meaningless — and actively misleading — to the
-  // WSL-hosted operator's liveness checks).
-  try {
-    await fetch('/api/agent-mcp/console/record', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        cwd: envelope.cwd,
-        terminalBin: 'wt.exe',
-        label: opts.label ?? null,
-        planSlug: opts.planSlug ?? null,
-        launchArgv: [envelope.greetingCmd].filter(Boolean),
-      }),
-    });
-  } catch (e: any) {
-    console.warn('[console-launcher] console/record failed (non-fatal)', e?.message);
+  // unparkable, unresumable.
+  //
+  // Scoped to `!opts.runPsu` ON PURPOSE: a `runPsu` console self-registers
+  // its OWN row independently the moment `psu` boots (bootstrap-su.ts's
+  // `recordAdvSession` call, made from inside WSL to the WSL-hosted operator
+  // — already works cross-platform, no Windows-specific code needed). Also
+  // recording HERE for that case would leave a SECOND, permanently-orphaned
+  // row behind: this route deliberately records with `coordOwnerId: null`
+  // (see console-record.ts header — no safe pid to key liveness off either),
+  // and idle-session-reaper.ts's "no coord_owner_id → can't liveness-check →
+  // never reap" rule means a coordOwnerId-less row never self-closes. One
+  // untracked-lifetime row per plain-shell console is an accepted, documented
+  // gap (no Rust-side "console exited" callback exists yet — see
+  // native_console.rs's sentinel-file exit trap for the mechanism a future
+  // fix could hook); TWO such rows per psu launch would be a regression.
+  //
+  // Best-effort + non-fatal: never let a recording hiccup fail an
+  // already-successful terminal launch. Deliberately does NOT forward the
+  // Rust-returned pid (see console-record.ts header: it's a Windows-namespace
+  // pid, meaningless — and actively misleading — to the WSL-hosted operator's
+  // liveness checks).
+  if (!opts.runPsu) {
+    try {
+      await fetch('/api/agent-mcp/console/record', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          cwd: envelope.cwd,
+          terminalBin: 'wt.exe',
+          label: opts.label ?? null,
+          planSlug: opts.planSlug ?? null,
+          launchArgv: [envelope.greetingCmd].filter(Boolean),
+        }),
+      });
+    } catch (e: any) {
+      console.warn('[console-launcher] console/record failed (non-fatal)', e?.message);
+    }
   }
 }

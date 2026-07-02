@@ -185,11 +185,17 @@ describe('attestGreen → promoteRelease proof chain', () => {
     const green = aggregateGate(input(await fullPass()));
     const att = await attestGreen(green, { devicePubkeyBase64: greenBot.pubkeyBase64, sign: greenBot.sign }, 2_000);
     expect(att).not.toBeNull();
+    // WI-1554: attestGreen must thread the aggregation's OWN repoKey into the
+    // signed attestation — it was previously dropped at this exact call site.
+    expect(att!.repo_key).toBe(REPO);
     // The exact proof promoteRelease verifies (Lane B's satisfiesCrefsRule).
     const rule = { allow: [greenBot.pubkeyBase64], threshold: 1 };
-    expect(satisfiesCrefsRule(SHA_NEW, [att!], rule).ok).toBe(true);
+    expect(satisfiesCrefsRule(SHA_NEW, REPO, [att!], rule).ok).toBe(true);
     // Wrong sha never satisfied by this attestation.
-    expect(satisfiesCrefsRule(SHA_OLD, [att!], rule).ok).toBe(false);
+    expect(satisfiesCrefsRule(SHA_OLD, REPO, [att!], rule).ok).toBe(false);
+    // WI-1554: wrong repo_key never satisfied either, even at the RIGHT sha —
+    // the cross-repo replay this fix closes.
+    expect(satisfiesCrefsRule(SHA_NEW, 'repo-2-a-different-repo', [att!], rule).ok).toBe(false);
 
     const red = aggregateGate(input([]));
     expect(await attestGreen(red, { devicePubkeyBase64: greenBot.pubkeyBase64, sign: greenBot.sign }, 2_000)).toBeNull();

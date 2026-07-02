@@ -59,6 +59,22 @@ export async function setWorkItemCheckpoint(
     VALUES (${ws}, ${ref.harness}, ${ref.workItemId}, ${trimmed}, ${Date.now()})
     ON CONFLICT (workspace_id, harness_slug, work_item_id)
     DO UPDATE SET checkpoint = EXCLUDED.checkpoint, updated_ts = EXCLUDED.updated_ts`;
+  // P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress —
+  // bump the work item's progress anchor so the stale-claims STALLED leg
+  // (holder alive, last_progress_at > window) never frees a claim from a bee
+  // that is checkpointing. This is what killed the first WI-1576 bee (11 min of
+  // real work, claim freed at the 10-min stalled window, then reaped) — the
+  // checkpoint discipline (bee.base.md, shipped today) only protects if the
+  // checkpoint moves this anchor. Best-effort: the checkpoint write must not
+  // fail on a progress-bump hiccup.
+  try {
+    await sql`
+      UPDATE harness_shared.work_items
+         SET last_progress_at = now()
+       WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+  } catch {
+    /* best-effort */
+  }
   return trimmed;
 }
 

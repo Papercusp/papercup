@@ -84,7 +84,7 @@ describe('hive-git release promotion (G-5b, real bare repo)', () => {
   });
 
   it('refuses promotion below the threshold (1 of 2) and leaves release unset', async () => {
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaA, await proof(shaA, [greenBot]), rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaA, await proof(shaA, [greenBot]), rule);
     expect(r).toMatchObject({ promoted: false, reason: 'threshold-not-met' });
     expect(await readRelease(repo, integ.pubkeyBase64)).toBeNull();
   });
@@ -97,49 +97,85 @@ describe('hive-git release promotion (G-5b, real bare repo)', () => {
       ...(await proof(shaA, [owner]))[0],
       sig: Buffer.alloc(64).toString('base64'),
     };
-    const verdict = satisfiesCrefsRule(shaA, [dupe, dupe, offSha, offList, forged], rule);
+    const verdict = satisfiesCrefsRule(shaA, REPO_KEY, [dupe, dupe, offSha, offList, forged], rule);
     expect(verdict.ok).toBe(false);
     expect(verdict.validSigners).toEqual([greenBot.pubkeyBase64].sort());
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaA, [dupe, dupe, offSha, offList, forged], rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaA, [dupe, dupe, offSha, offList, forged], rule);
     expect(r).toMatchObject({ promoted: false, reason: 'threshold-not-met' });
   });
 
   it('promotes with a satisfying proof (2 distinct allow-listed signers)', async () => {
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaA, await proof(shaA, [greenBot, owner]), rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaA, await proof(shaA, [greenBot, owner]), rule);
     expect(r).toMatchObject({ promoted: true, release: shaA });
     expect((r as { validSigners: string[] }).validSigners).toHaveLength(2);
     expect(await readRelease(repo, integ.pubkeyBase64)).toBe(shaA);
   });
 
   it('fast-forwards to a proven descendant', async () => {
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaB, await proof(shaB, [greenBot, owner]), rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaB, await proof(shaB, [greenBot, owner]), rule);
     expect(r).toMatchObject({ promoted: true, release: shaB });
     expect(await readRelease(repo, integ.pubkeyBase64)).toBe(shaB);
   });
 
   it('NEVER rewinds: a valid proof for an ancestor sha is refused (ff-only)', async () => {
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaA, await proof(shaA, [greenBot, owner]), rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaA, await proof(shaA, [greenBot, owner]), rule);
     expect(r).toMatchObject({ promoted: false, reason: 'non-fast-forward', release: shaB });
     expect(await readRelease(repo, integ.pubkeyBase64)).toBe(shaB);
   });
 
   it('re-promoting the current sha is a reported no-op', async () => {
-    const r = await promoteRelease(repo, integ.pubkeyBase64, shaB, await proof(shaB, [greenBot, owner]), rule);
+    const r = await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaB, await proof(shaB, [greenBot, owner]), rule);
     expect(r).toMatchObject({ promoted: false, reason: 'already-current', release: shaB });
   });
 
   it('fails CLOSED on a malformed rule and on an unknown sha', async () => {
     const p = await proof(shaB, [greenBot, owner]);
-    expect(await promoteRelease(repo, integ.pubkeyBase64, shaB, p, { allow: [], threshold: 1 })).toMatchObject({
+    expect(await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaB, p, { allow: [], threshold: 1 })).toMatchObject({
       promoted: false,
       reason: 'malformed-rule',
     });
     expect(
-      await promoteRelease(repo, integ.pubkeyBase64, shaB, p, { allow: rule.allow, threshold: 0 }),
+      await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, shaB, p, { allow: rule.allow, threshold: 0 }),
     ).toMatchObject({ promoted: false, reason: 'malformed-rule' });
     const ghost = 'f'.repeat(40);
     expect(
-      await promoteRelease(repo, integ.pubkeyBase64, ghost, await proof(ghost, [greenBot, owner]), rule),
+      await promoteRelease(repo, integ.pubkeyBase64, REPO_KEY, ghost, await proof(ghost, [greenBot, owner]), rule),
     ).toMatchObject({ promoted: false, reason: 'unknown-sha' });
+  });
+
+  // WI-1554: with fork/mirror topologies sharing commit history and one
+  // green-bot key allow-listed in multiple repos' crefs rules, a green(S)
+  // attestation minted for repo A must NEVER satisfy repo B's rule at the
+  // same sha — B's own gate (a DG-6 repo-relative suite) never ran. Uses a
+  // SECOND real bare repo sharing shaC's exact commit content/history (a real
+  // fork scenario, not a synthetic same-sha stand-in) to prove the replay is
+  // refused end-to-end through promoteRelease, not just the pure predicate.
+  describe('cross-repo replay guard (WI-1554)', () => {
+    let repoB: string;
+    let shaC: string;
+
+    beforeAll(async () => {
+      repoB = await ensureHiveGitRepo('hive-r', 'repo-2');
+      shaC = await commit(repoB, { 'a.txt': 'a1' }); // same tree as shaA, different repo
+    });
+
+    it('satisfiesCrefsRule refuses an attestation proof minted for a DIFFERENT repo_key at the same sha', async () => {
+      const proofForRepoA = await proof(shaC, [greenBot, owner], REPO_KEY); // repo-1, not repo-2
+      const verdict = satisfiesCrefsRule(shaC, 'repo-2', proofForRepoA, rule);
+      expect(verdict).toMatchObject({ ok: false, reason: 'threshold-not-met', validSigners: [] });
+    });
+
+    it('promoteRelease refuses to promote repo B using a green proof minted for repo A (same sha)', async () => {
+      const proofForRepoA = await proof(shaC, [greenBot, owner], REPO_KEY);
+      const r = await promoteRelease(repoB, integ.pubkeyBase64, 'repo-2', shaC, proofForRepoA, rule);
+      expect(r).toMatchObject({ promoted: false, reason: 'threshold-not-met' });
+      expect(await readRelease(repoB, integ.pubkeyBase64)).toBeNull();
+    });
+
+    it('the SAME attestation correctly promotes when the repo_key matches (sanity: not just always-refuse)', async () => {
+      const proofForRepoB = await proof(shaC, [greenBot, owner], 'repo-2');
+      const r = await promoteRelease(repoB, integ.pubkeyBase64, 'repo-2', shaC, proofForRepoB, rule);
+      expect(r).toMatchObject({ promoted: true, release: shaC });
+    });
   });
 });

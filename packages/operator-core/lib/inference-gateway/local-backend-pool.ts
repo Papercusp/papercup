@@ -75,6 +75,26 @@ export function pickLeastLoaded(
   return eligible[0].backend;
 }
 
+/**
+ * Pure saturation check — the exact complement of `pickLeastLoaded` returning null. True when
+ * `model` IS served by ≥1 enabled + healthy (non-excluded) backend but EVERY such backend is
+ * already at its `maxConcurrent` ceiling: retryable BACKPRESSURE the caller should answer with a
+ * 429 + Retry-After. False when NO enabled+healthy backend serves the model (unmatched /
+ * all-unhealthy — a genuine dead end the caller should 502), or when a slot is free (select() would
+ * have returned a backend). `exclude` matches `pickLeastLoaded` (ids already tried this request).
+ */
+export function isSaturatedFor(
+  candidates: readonly LocalBackendCandidate[],
+  model: string,
+  exclude?: ReadonlySet<string>,
+): boolean {
+  const serving = candidates.filter(
+    (c) => c.backend.enabled && c.healthy && c.backend.models.includes(model) && !exclude?.has(c.backend.id),
+  );
+  if (serving.length === 0) return false;
+  return serving.every((c) => c.inFlight >= c.backend.maxConcurrent);
+}
+
 /** Pure health-state transition given one probe/request outcome (testable without a clock/network). */
 export function nextHealthState(
   prev: LocalBackendHealth | undefined,
@@ -106,6 +126,10 @@ export interface LocalBackendPool {
    *  `exclude` skips ids already tried THIS request (single-attempt in-request failover — the caller
    *  need not wait for HEALTH_FAIL_THRESHOLD failures before trying a sibling backend). */
   select(model: string, exclude?: ReadonlySet<string>): LocalBackend | null;
+  /** True when `model` is served by ≥1 enabled+healthy backend but ALL are at `maxConcurrent` — i.e.
+   *  select() returned null from SATURATION (retryable backpressure → 429), not from the model being
+   *  unmatched / all-unhealthy (a genuine dead end → 502). `exclude` matches select()'s. */
+  saturatedFor(model: string, exclude?: ReadonlySet<string>): boolean;
   recordStart(id: string): void;
   recordEnd(id: string): void;
   inFlight(id: string): number;
@@ -144,6 +168,9 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
     },
     select(model, exclude) {
       return pickLeastLoaded(candidatesFor(), model, exclude);
+    },
+    saturatedFor(model, exclude) {
+      return isSaturatedFor(candidatesFor(), model, exclude);
     },
     recordStart(id) {
       inFlightCounts.set(id, (inFlightCounts.get(id) ?? 0) + 1);

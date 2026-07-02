@@ -397,18 +397,35 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();
   `);
 
-  // The 181-shape UPDATE capture guards: mask fed_ts so an own-log merge-back
-  // settling pass cannot re-enqueue forever (the Stage-6 convergence guard).
+  // The 181-shape UPDATE capture guard for harness_issues_consolidated (the
+  // rig's OWN separate legacy table — untouched by the 374/375 cutover, so it
+  // keeps riding the generic capture_substrate_outbox() unmodified).
   await sql.unsafe(`
-    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.work_items
-      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
-      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
       AFTER UPDATE ON harness_shared.harness_issues_consolidated
       FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
       EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
   `);
+
+  // WI-1644 (part 2): the rename above leaves the archive/102 GENERIC capture
+  // triggers (capture_substrate_outbox_trg / _upd_trg, verbatim-loaded above
+  // while the table was still named harness_features_consolidated) attached to
+  // the renamed work_items table — same defect migration 375 documents: they
+  // stamp table_name=TG_TABLE_NAME='work_items' for EVERY row regardless of
+  // item_kind, but the read-side projections demux by the LOGICAL table_name
+  // ('harness_features_consolidated' / 'engineer_issues' — see
+  // TABLE_NAME_TO_TABLE_TAG in feature-issue-op-keys.ts), so every captured
+  // row became unmappable ("[outbox-drain] skipping outbox rows for unmapped
+  // table 'work_items'"). Load migration 375 verbatim: it DROPs those stale
+  // generic triggers and installs the real kind-branching capture
+  // (capture_work_items_outbox) that stamps the correct logical table_name —
+  // exactly the fix production itself needed post-374.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
 }
 
 /** Per-peer projection apply bound to THIS cell's sql (the Stage-6 seam). */

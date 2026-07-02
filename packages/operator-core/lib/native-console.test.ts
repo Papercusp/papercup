@@ -105,7 +105,24 @@ describe('launchNativeConsole — Tauri fallback (non-Linux operator, 501)', () 
       .mockRejectedValueOnce(new Error('record endpoint unreachable'));
     consoleLaunchMock.mockResolvedValueOnce({ status: 'ok', pid: 4242, displaced_mcp_json: false, bootstrapped: false });
 
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(launchNativeConsole({ slug: 'papercup' })).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('console/record failed'),
+      'record endpoint unreachable',
+    );
+  });
+
+  it('does NOT call console/record for a runPsu launch — psu self-registers, avoiding an orphaned duplicate row', async () => {
+    installTauriWindow();
+    fetchMock
+      .mockResolvedValueOnce(res({ status: 501, body: { status: 'error', error: 'not linux' } })) // console/launch
+      .mockResolvedValueOnce(res({ body: ENVELOPE })); // console/resolve
+    consoleLaunchMock.mockResolvedValueOnce({ status: 'ok', pid: 4242, displaced_mcp_json: false, bootstrapped: false });
+
+    await launchNativeConsole({ slug: 'papercup', runPsu: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2); // launch (501) + resolve only — no record call
   });
 
   it('throws and never calls console/record when console_launch itself errors', async () => {

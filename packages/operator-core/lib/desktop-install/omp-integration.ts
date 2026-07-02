@@ -22,6 +22,14 @@
  * platform-aware wrapper-install logic (P-008) is the natural
  * extension point when Windows comes later.
  *
+ * NOTE (windows-desktop-feature-parity-2026-07-02 P-025 audit): this module
+ * runs inside the operator sidecar, which on a Windows desktop install is
+ * always launched via `wsl.exe --exec node ...` — so `process.platform`
+ * reports 'linux' there too, and the `supported: false` guard below is DEAD
+ * CODE on Windows (it only actually fires for a genuinely non-WSL host).
+ * The Linux path runs instead. Static analysis only — not yet VM-verified
+ * live; see WI-1646 for the sibling endpoint-ipc finding from the same audit.
+ *
  * Reads token + agent_id from ~/.papercusp/ (Phase 1 must have run
  * first). Returns an `installed: false, reason: 'phase1_not_run'` if
  * either is missing — caller surfaces that in the UI.

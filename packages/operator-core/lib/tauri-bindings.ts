@@ -103,7 +103,7 @@ export type Value = "Null" | ({ Bool: boolean }) & { Array?: never; Number?: nev
 
 /**
  *  Mirror of the TS-side `ConsoleEnvelope` from
- *  apps/operator/lib/console-launcher.ts.
+ *  packages/operator-core/lib/console-launcher.ts.
  */
 export type ConsoleEnvelope = {
 	cwd: string,
@@ -111,6 +111,13 @@ export type ConsoleEnvelope = {
 	mcpJsonContents: string,
 	greetingCmd: string,
 	needsSuperuserBootstrap: boolean,
+	/**
+	 *  windows-desktop-feature-parity-2026-07-02 P-010: a fresh UUID minted
+	 *  per launch (console-launcher.ts `buildConsoleEnvelope`) — the WINDOW's
+	 *  own identity, used to title the OS window `Papercup — <sessionId>` so
+	 *  it can be found + focused by TITLE (see windows-desktop-windows.ts).
+	 */
+	sessionId: string,
 };
 
 export type ConsoleLaunchResult = { status: "ok"; pid: number | null; displaced_mcp_json: boolean; bootstrapped: boolean } | { status: "err"; error: string };

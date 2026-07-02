@@ -1472,44 +1472,47 @@ defineTestDomain({
 
 // First-party Rust crates — Cargo is one of the four canonical frameworks
 // (testing/index.mdx §1.0a) but these crates were never surfaced in the Tests
-// tab. The repo has NO root Cargo workspace, so the `cargo` runner kind
-// (`cargo test -p <crate>`, which resolves a crate from the workspace root)
-// cannot find any crate from the repo root — each section therefore cd's into
-// the crate dir via a `shell` runner. (Improvement filed to add a
-// `--manifest-path` form to the `cargo` runner kind so these can be typed
-// `kind:'cargo'` natively.) Tests live in `#[cfg(test)]` modules under each
-// crate's src/. Files are .rs, so they are never canonical-test orphans — the
-// gap was purely that no domain RAN them; this domain closes it.
+// tab. The repo has NO root Cargo workspace, so the `cargo` runner kind's
+// classic `-p <crate>` form (which resolves a crate from a workspace root)
+// cannot find any of these crates from the repo root. EI-1610's proper fix:
+// each section now targets its crate via `kind:'cargo'` + `manifestPath`
+// (`cargo test --manifest-path <dir>/Cargo.toml`, verified against all four
+// crates) instead of a `shell` cd-and-run workaround — proper framework
+// categorization (Tests tab counts these as Cargo, not Shell) + the JSON
+// reporter path testing-run.ts's cargo case already parses. Tests live in
+// `#[cfg(test)]` modules under each crate's src/. Files are .rs, so they are
+// never canonical-test orphans — the gap was purely that no domain RAN them;
+// this domain closes it.
 defineTestDomain({
   id: 'rust',
   label: 'Rust (Cargo)',
   description:
-    'First-party Rust crates: the pui/TUI workbench, the pui companion proto + zellij plugin, and the papercusp-desktop Tauri shell. Run via `cargo test` (shell runners — the repo has no root Cargo workspace). The desktop crate needs the Tauri system deps (webkit2gtk/gtk) installed to build.',
+    'First-party Rust crates: the pui/TUI workbench, the pui companion proto + zellij plugin, and the papercusp-desktop Tauri shell. Run via `cargo test --manifest-path` (the repo has no root Cargo workspace, so each crate is targeted by its own manifest). The desktop crate needs the Tauri system deps (webkit2gtk/gtk) installed to build.',
   tier: 'surface',
   sections: [
     {
       id: 'pui',
       label: 'pui (apps/tui)',
       description: 'The Rust TUI / pui workbench (cargo pkg `pui`) — 35 files carry #[cfg(test)] modules.',
-      runners: [{ kind: 'shell', cmd: 'bash', args: ['-c', 'cd apps/tui && cargo test'], label: 'cargo test (pui)' }],
+      runners: [{ kind: 'cargo', crate: 'pui', manifestPath: 'apps/tui/Cargo.toml' }],
     },
     {
       id: 'pui-companion-proto',
       label: 'pui-companion-proto',
       description: 'The pui companion wire-protocol crate.',
-      runners: [{ kind: 'shell', cmd: 'bash', args: ['-c', 'cd apps/pui-companion-proto && cargo test'], label: 'cargo test (pui-companion-proto)' }],
+      runners: [{ kind: 'cargo', crate: 'pui-companion-proto', manifestPath: 'apps/pui-companion-proto/Cargo.toml' }],
     },
     {
       id: 'pui-companion',
       label: 'pui-companion (zellij plugin)',
       description: 'The zellij companion plugin crate (cargo pkg `pui-companion`, dir apps/pui-zellij-plugin).',
-      runners: [{ kind: 'shell', cmd: 'bash', args: ['-c', 'cd apps/pui-zellij-plugin && cargo test'], label: 'cargo test (pui-companion)' }],
+      runners: [{ kind: 'cargo', crate: 'pui-companion', manifestPath: 'apps/pui-zellij-plugin/Cargo.toml' }],
     },
     {
       id: 'desktop',
       label: 'papercusp-desktop (Tauri shell)',
       description: 'The Tauri desktop shell (papercusp-desktop/src-tauri) — 11 files carry #[cfg(test)] modules. Needs the Tauri system deps to build.',
-      runners: [{ kind: 'shell', cmd: 'bash', args: ['-c', 'cd papercusp-desktop/src-tauri && cargo test'], label: 'cargo test (papercusp-desktop)' }],
+      runners: [{ kind: 'cargo', crate: 'papercusp-desktop', manifestPath: 'papercusp-desktop/src-tauri/Cargo.toml' }],
     },
   ],
 });
@@ -1521,7 +1524,7 @@ const PAPERCUSP_IDS = [
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
   'gym', 'inference-gateway', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
-  // First-party Rust crates (Cargo) surfaced via per-crate shell runners — the repo has no root Cargo workspace.
+  // First-party Rust crates (Cargo) surfaced via per-crate manifestPath cargo runners (EI-1610) — the repo has no root Cargo workspace.
   'rust',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
   'hive',

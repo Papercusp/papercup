@@ -1810,6 +1810,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  failover — a dead backend is skipped immediately rather than waiting for the health-check
    *  tick or HEALTH_FAIL_THRESHOLD live failures to demote it out of `select()`). */
   const LOCAL_BACKEND_MAX_ATTEMPTS = 3;
+  /** Retry-After (seconds) hint on a SATURATION 429 — a small local batch frees a slot fast, so a
+   *  concurrent agent should back off briefly and retry, not treat capacity as a hard failure. */
+  const LOCAL_BACKEND_SATURATION_RETRY_AFTER_SEC = 1;
 
   // PER-CLIENT local-backend circuit (P-015/D-010, local-backend-client-circuit.ts): keyed by the
   // `x-papercusp-owner` header, bounded like ownerLedger/lastRouteByOwner (delete-oldest over the
@@ -1931,9 +1934,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
           log('warn', `inference-gateway: local backend '${backend.id}' (${backend.baseUrl}) failed for model '${model}': ${lastError} — trying another candidate`);
         }
       }
+      // Fell through the attempt loop with nothing forwarded. Distinguish RETRYABLE SATURATION (the
+      // model IS served by a healthy backend, but every slot is busy — select() returned null purely
+      // from being at capacity) from a genuine DEAD END (unmatched model / all-unhealthy / the
+      // backends we tried errored). D-010/D-012: saturation → 429 + Retry-After (backpressure a
+      // concurrent agent should wait-and-retry on, not a 502 it may treat as a hard failure / storm
+      // on); dead end → 502. Only saturation when we never got a backend to even try (tried.size ===
+      // 0, no transport error) — once a real backend error occurred, that's a 502.
+      if (tried.size === 0 && lastError === null && pool.saturatedFor(model)) {
+        // NOT the owner's fault — the pool is merely busy (often from OTHER owners). Don't count it
+        // against this owner's failure-streak circuit: a genuine wedge surfaces as 502 exhaustion, and
+        // a fan-out storm is already stopped by the in-flight cap. requestOk=true → the finally
+        // releases the admitted in-flight slot and leaves the owner's streak reset, not advanced.
+        requestOk = true;
+        if (ownerId) recordOwnerOutcome(ownerId, 'shed', { detail: `local-backend saturated for '${model}'` });
+        sendJson(
+          res,
+          429,
+          {
+            type: 'error',
+            error: { type: 'rate_limit_error', message: `inference-gateway: local backend for model '${model}' is at capacity — retry shortly` },
+            gateway: true,
+          },
+          { 'retry-after': String(LOCAL_BACKEND_SATURATION_RETRY_AFTER_SEC) },
+        );
+        return;
+      }
       sendJson(res, 502, {
         type: 'error',
-        error: { type: 'api_error', message: `inference-gateway: no reachable local backend for model '${model}'${lastError ? ` (last error: ${lastError})` : ' (none registered / all saturated / all unhealthy)'}` },
+        error: { type: 'api_error', message: `inference-gateway: no reachable local backend for model '${model}'${lastError ? ` (last error: ${lastError})` : ' (none registered / all unhealthy)'}` },
         gateway: true,
       });
       // requestOk stays false — every backend attempt was exhausted with none reachable.

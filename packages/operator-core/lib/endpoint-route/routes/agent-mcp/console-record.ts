@@ -34,12 +34,21 @@
  * no-pid) sessions already use — a known-correct, already-tested channel,
  * not a new one.
  *
- * No exit-watcher: `console-launch.ts`'s Linux/macOS path can attach one
- * because it holds the Node `ChildProcess`; here the child lives in the Rust
- * process and this route only fires once, at spawn time. The row is closed
- * out on the periodic reconcile path instead (matches the documented
- * "operator-restart is the recovery boundary" limitation next to
- * `attachExitWatcher`).
+ * No exit-watcher, and the caller (native-console.ts) knows it: `console-
+ * launch.ts`'s Linux/macOS path can attach one because it holds the Node
+ * `ChildProcess`; here the child lives in the Rust process and this route
+ * only fires once, at spawn time. The row is NOT automatically closed —
+ * idle-session-reaper.ts's documented rule is "no coord_owner_id → can't
+ * liveness-check → never reap (kept)", and this route always records with
+ * `coordOwnerId: null`. That is why the caller only invokes this route for a
+ * PLAIN console (`!opts.runPsu`): a psu console gets its own, properly
+ * liveness-tracked row from bootstrap-su instead, so calling this route for
+ * it too would leave a second, permanently-orphaned row behind rather than
+ * one. A permanently-open plain-console row is an accepted, visible gap
+ * (visibility beats the prior total invisibility) pending a Rust-side
+ * "console exited" callback — native_console.rs already tracks the spawned
+ * shell's exit via its sentinel-file trap for other purposes (MCP json
+ * restore); a future fix can reuse that signal to end this row too.
  */
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { recordAdvSession } from '../../../adv-sessions';

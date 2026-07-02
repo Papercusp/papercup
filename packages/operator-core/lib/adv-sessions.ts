@@ -15,6 +15,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
+import { focusWindowByTitle, listWindowsByTitle } from './windows-desktop-windows';
 
 export interface AdvSessionRow {
   id: number;
@@ -774,6 +775,25 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
 export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
   const wanted = fragment.trim();
   if (!wanted) return null;
+  if (process.platform === 'win32') {
+    // windows-desktop-feature-parity-2026-07-02 P-010: there is no
+    // pid→window mapping across the WSL↔Windows boundary (see
+    // windows-desktop-windows.ts header), so the "window id" we persist for
+    // a Windows session IS its exact window TITLE — durable + effectively
+    // unique because native_console.rs mints it as `Papercup — <uuid>`. A
+    // Windows hwnd would be cheaper to compare but isn't safe to persist:
+    // this helper's contract is "give me something focusWindowId can use
+    // LATER", and re-resolving by title at focus time (rather than trusting
+    // a cached hwnd) is the only approach that survives the window being
+    // re-created (e.g. after a WSL restart).
+    try {
+      const windows = await listWindowsByTitle();
+      const match = windows.find((w) => w.title.includes(wanted));
+      return match ? match.title : null;
+    } catch {
+      return null;
+    }
+  }
   const { spawnSync } = await import('node:child_process');
   try {
     const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
@@ -790,12 +810,22 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
 }
 
 /**
- * Bring an X11 window to the foreground via `wmctrl -ia <wid>`.
- * User-initiated only — see memory feedback_e2e_no_focus_steal: this
- * pattern is forbidden for automated drivers but fine for an explicit
- * focus-button click.
+ * Bring a window to the foreground. Linux: `wmctrl -ia <wid>` (X11 window
+ * id). Windows: `windowId` is actually a TITLE (per
+ * `resolveWindowIdForTitleFragment`'s win32 branch above — hwnds aren't
+ * stable enough to persist across the WSL boundary), so refocus BY TITLE via
+ * windows-desktop-windows.ts. User-initiated only — see memory
+ * feedback_e2e_no_focus_steal: this pattern is forbidden for automated
+ * drivers but fine for an explicit focus-button click.
  */
 export async function focusWindowId(windowId: string): Promise<boolean> {
+  if (process.platform === 'win32') {
+    try {
+      return await focusWindowByTitle(windowId);
+    } catch {
+      return false;
+    }
+  }
   const { spawnSync } = await import('node:child_process');
   try {
     const r = spawnSync('wmctrl', ['-ia', windowId], { encoding: 'utf8' });
