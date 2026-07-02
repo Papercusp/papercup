@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildCheckpointSystemdArgv,
   launchDetachedCheckpoint,
+  checkActiveCheckpointRun,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
@@ -79,6 +80,99 @@ describe('launchDetachedCheckpoint', () => {
     const r = await p;
     expect(r.launched).toBe(false);
     expect(r.reason).toMatch(/not found/);
+  });
+});
+
+// WI-1562: a second manual fire while one was already active used to only find out via
+// systemd-run's own exit-1 (a bare string) — these assert the PROACTIVE structured check, and
+// that launchDetachedCheckpoint refuses WITHOUT even attempting the spawn when it's active.
+describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () => {
+  function fakeSystemctlShow(props: Record<string, string>) {
+    const stdout = Object.entries(props)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    return vi.fn(() => ({ status: 0, stdout, stderr: '' }));
+  }
+
+  it('reports active:false when the unit is not active', () => {
+    const execFn = fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' });
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+    expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n...');
+    const r = checkActiveCheckpointRun('/tree', execFn, readLogHead);
+
+    expect(r.active).toBe(true);
+    expect(r.unit).toBe(checkpointUnitForRoot('/tree'));
+    expect(r.candidate).toBe('98817077');
+    expect(r.started_at).toBe(startedAt);
+    expect(r.eta_sec).toBeGreaterThan(0);
+    expect(r.eta_sec).toBeLessThanOrEqual(CHECKPOINT_MAX_RUNTIME_SEC);
+    expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
+  });
+
+  it('treats activating/reloading as active too, and tolerates an unreadable log (candidate:null)', () => {
+    const execFn = fakeSystemctlShow({ ActiveState: 'activating', ExecMainStartTimestamp: '' });
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+    expect(r.active).toBe(true);
+    expect(r.candidate).toBeNull();
+    expect(r.started_at).toBeNull();
+    expect(r.eta_sec).toBeNull();
+  });
+});
+
+describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
+  it('refuses with a structured alreadyRunning detail and never calls spawnFn when a run is active', async () => {
+    const spawnFn = vi.fn();
+    const execFn = vi.fn(() => ({
+      status: 0,
+      stdout: 'ActiveState=active\nExecMainStartTimestamp=2026-07-02T10:44:43Z',
+      stderr: '',
+    }));
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate abc12345 (base def)\n');
+
+    const r = await launchDetachedCheckpoint({ root: '/tree' }, spawnFn as never, execFn, readLogHead);
+
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r.launched).toBe(false);
+    expect(r.reason).toBe('already_running');
+    expect(r.alreadyRunning).toMatchObject({
+      active: true,
+      unit: checkpointUnitForRoot('/tree'),
+      candidate: 'abc12345',
+      started_at: '2026-07-02T10:44:43Z',
+    });
+  });
+
+  it('skips the active check and spawns anyway when force:true', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const execFn = vi.fn();
+
+    const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn, execFn);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(execFn).not.toHaveBeenCalled();
+    expect(spawnFn).toHaveBeenCalled();
+    expect(r.launched).toBe(true);
+  });
+
+  it('proceeds to spawn when the active check reports inactive', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const execFn = vi.fn(() => ({ status: 0, stdout: 'ActiveState=inactive', stderr: '' }));
+
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn, () => null);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(spawnFn).toHaveBeenCalled();
+    expect(r.launched).toBe(true);
   });
 });
 

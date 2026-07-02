@@ -57,4 +57,53 @@ describe('release:checkpoint-run', () => {
     await expect(tool.handler({}, MAKE_CTX('bee'))).rejects.toThrow(/operator, architect, or queen/);
     expect(launchSpy).not.toHaveBeenCalled();
   });
+
+  // WI-1562: the refuse-when-active path returns a STRUCTURED already_running reply instead of
+  // a bare reason string, so a concurrent caller can tell "wait for it" from "try again".
+  it('reports a structured already_running reply when a run is already active (WI-1562)', async () => {
+    const launchSpy = vi.fn(async (opts: { force?: boolean }) => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva',
+        candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+        started_at: '2026-07-02T10:44:43Z',
+        eta_sec: 2100,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).toHaveBeenCalledWith({ force: undefined });
+    expect(b).toMatchObject({
+      ok: false,
+      already_running: true,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      candidate: '98817077fd79af9dfee00076a1c6e90445d268af',
+      started_at: '2026-07-02T10:44:43Z',
+      eta_sec: 2100,
+    });
+    expect(String(b.note)).toMatch(/already in flight|force:true/i);
+  });
+
+  it('passes force:true through to the launch primitive', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+    }));
+    vi.doMock('../../release-checkpoint-launch', () => ({ launchDetachedCheckpoint: launchSpy }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    await tool.handler({ force: true }, MAKE_CTX());
+
+    expect(launchSpy).toHaveBeenCalledWith({ force: true });
+  });
 });

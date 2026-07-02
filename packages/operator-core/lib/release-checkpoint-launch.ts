@@ -62,6 +62,97 @@ export interface LaunchCheckpointResult {
   logPath: string;
   /** Present on a launch failure (e.g. the unit already exists ⇒ a manual checkpoint is running). */
   reason?: string;
+  /** Present when `reason === 'already_running'` — the structured detail of the live run
+   *  (WI-1562: a bare `reason` string left concurrent callers with no clean way to tell
+   *  "this refused because one is already in flight, don't retry" from a transient spawn
+   *  failure — they'd retry / manually kill what they assumed was stuck). */
+  alreadyRunning?: ActiveCheckpointCheck;
+}
+
+/** Detail of a live (already-active) manual checkpoint run for THIS root, or its absence. */
+export interface ActiveCheckpointCheck {
+  active: boolean;
+  unit: string;
+  /** Best-effort candidate sha the live run is judging (parsed from its log's first
+   *  "checkpointing candidate <sha>" line) — null if the log isn't readable yet/at all. */
+  candidate?: string | null;
+  /** ISO timestamp the unit actually started running (systemd ExecMainStartTimestamp). */
+  started_at?: string | null;
+  /** Seconds remaining before the suite's own runtime ceiling (CHECKPOINT_MAX_RUNTIME_SEC)
+   *  would kill it — a rough "how much longer" estimate, not a promise. */
+  eta_sec?: number | null;
+}
+
+/** Minimal shape of a `child_process.spawnSync` result — injectable so
+ *  `checkActiveCheckpointRun` is unit-testable without a real systemctl call. */
+export type ExecSyncLike = (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
+
+function defaultExecSync(cmd: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(cmd, args, { encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+function defaultReadLogHead(logPath: string): string | null {
+  try {
+    // The candidate line is emitted first (`[green-checkpoint] checkpointing candidate …`);
+    // a small head-read is enough and stays cheap even for a large/rotating log.
+    return readFileSync(logPath, { encoding: 'utf8' }).slice(0, 4096);
+  } catch {
+    return null;
+  }
+}
+
+function parseSystemctlShow(stdout: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of stdout.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    out[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  return out;
+}
+
+/**
+ * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
+ * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
+ * `systemd-run` and parsing its refusal — so the caller gets a STRUCTURED answer (unit,
+ * candidate, started_at, eta_sec) proactively instead of a bare "exited 1" string, and so
+ * `launchDetachedCheckpoint` never has to attempt (and fail) the spawn just to find out.
+ */
+export function checkActiveCheckpointRun(
+  root: string,
+  execFn: ExecSyncLike = defaultExecSync,
+  readLogHead: (logPath: string) => string | null = defaultReadLogHead,
+): ActiveCheckpointCheck {
+  const unit = checkpointUnitForRoot(root);
+  const r = execFn('systemctl', [
+    '--user',
+    'show',
+    `${unit}.service`,
+    '--property=ActiveState',
+    '--property=ExecMainStartTimestamp',
+  ]);
+  const props = parseSystemctlShow(r.stdout);
+  const activeState = props.ActiveState ?? '';
+  // 'active' = running; 'activating'/'reloading' = transient states of the same live unit.
+  // A NEVER-STARTED or GC'd unit shows 'inactive' (or systemctl exits non-zero with empty
+  // output for a truly unknown unit) — either way activeState won't be in this set.
+  if (activeState !== 'active' && activeState !== 'activating' && activeState !== 'reloading') {
+    return { active: false, unit };
+  }
+  const startedAt = props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;
+  const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+  const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
+  const etaSec = elapsedSec != null ? Math.max(0, CHECKPOINT_MAX_RUNTIME_SEC - elapsedSec) : null;
+  const logHead = readLogHead(`/tmp/${unit}.log`);
+  const candidateMatch = logHead?.match(/checkpointing candidate (\S+)/);
+  return {
+    active: true,
+    unit,
+    candidate: candidateMatch ? candidateMatch[1] : null,
+    started_at: startedAt,
+    eta_sec: etaSec,
+  };
 }
 
 /** Pure: the full `systemd-run` argv for the detached green-checkpoint suite. Mirrors
@@ -99,6 +190,10 @@ export function buildCheckpointSystemdArgv(
 export interface LaunchCheckpointOpts {
   /** Integration tree root (default integrationRoot()). */
   root?: string;
+  /** Skip the pre-launch active-run check (WI-1562) and attempt the launch regardless.
+   *  systemd's own same-unit collision guard is still the final backstop — force does NOT
+   *  stop/replace a genuinely active run, it only bypasses OUR proactive refusal. */
+  force?: boolean;
 }
 
 /**
@@ -106,12 +201,40 @@ export interface LaunchCheckpointOpts {
  * has accepted/refused the unit — the suite's VERDICT is reported on /admin/git (the pipeline
  * event green-checkpoint.ts emits), NOT by this caller.
  *
- * `spawnFn` is injectable so the tool handler is unit-testable without launching anything.
+ * WI-1562: BEFORE spawning, check whether a run for this root is already active and, unless
+ * `force:true`, refuse with a STRUCTURED `alreadyRunning` detail (unit/candidate/started_at/
+ * eta_sec) instead of letting the caller find out only via systemd-run's bare exit-1 string.
+ * Two sus firing this ~8 minutes apart with no clear "don't retry" signal is exactly the
+ * starvation this closes — the newest tip is auto-judged by the in-flight run's quiet-cut
+ * anyway, so a re-fire is usually unnecessary (see the tool's guidance).
+ *
+ * `spawnFn`/`execFn`/`readLogHead` are injectable so the tool handler is unit-testable without
+ * launching anything or shelling out to systemctl.
  */
-export function launchDetachedCheckpoint(opts: LaunchCheckpointOpts = {}, spawnFn: SpawnLike = spawn): Promise<LaunchCheckpointResult> {
+export function launchDetachedCheckpoint(
+  opts: LaunchCheckpointOpts = {},
+  spawnFn: SpawnLike = spawn,
+  execFn: ExecSyncLike = defaultExecSync,
+  readLogHead: (logPath: string) => string | null = defaultReadLogHead,
+): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const unit = checkpointUnitForRoot(root);
   const logPath = `/tmp/${unit}.log`;
+
+  if (!opts.force) {
+    const active = checkActiveCheckpointRun(root, execFn, readLogHead);
+    if (active.active) {
+      return Promise.resolve({
+        launched: false,
+        unit,
+        argv: [],
+        logPath,
+        reason: 'already_running',
+        alreadyRunning: active,
+      });
+    }
+  }
+
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,

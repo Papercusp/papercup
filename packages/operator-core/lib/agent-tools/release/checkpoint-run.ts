@@ -15,6 +15,13 @@
  * Detached (the suite runs up to ~55 min, bounded by RuntimeMaxSec) + OOM-safe: green-checkpoint.ts
  * self-locks, so firing this while a cron tick is mid-run no-ops rather than spawning a second
  * concurrent suite. Verdict lands on /admin/git, not this reply.
+ *
+ * WI-1562: a second manual fire while one was already in flight used to come back with only a
+ * bare "may already be running" string — unclear enough that a concurrent caller could read it
+ * as a transient failure and retry (or manually intervene), which starved the gate of a verdict.
+ * Now the pre-launch check returns a STRUCTURED `already_running` reply (unit/candidate/
+ * started_at/eta_sec) so a caller can tell "wait for it" from "try again" — pass `force:true` to
+ * launch anyway.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -41,12 +48,39 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 5 } },
-  args: z.object({}),
-  async handler(_args, ctx) {
+  args: z.object({
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        'Skip the already-running refusal (WI-1562) and attempt the launch anyway. systemd itself still refuses a truly concurrent same-unit run — force only bypasses OUR proactive check.',
+      ),
+  }),
+  async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
       throw new Error('release:checkpoint-run requires operator, architect, or queen role');
     }
-    const result = await launchDetachedCheckpoint();
+    const result = await launchDetachedCheckpoint({ force: args.force });
+    if (!result.launched && result.reason === 'already_running' && result.alreadyRunning) {
+      const a = result.alreadyRunning;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              already_running: true,
+              unit: a.unit,
+              candidate: a.candidate ?? null,
+              started_at: a.started_at ?? null,
+              eta_sec: a.eta_sec ?? null,
+              note:
+                'A checkpoint run for this root is already in flight; its quiet-cut auto-judges the newest tip anyway once it finishes, so a re-fire is usually unnecessary — wait for it, or pass force:true to launch a second one anyway.',
+            }),
+          },
+        ],
+      };
+    }
     return {
       content: [
         {
