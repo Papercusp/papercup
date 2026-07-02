@@ -25,6 +25,44 @@
  * byte-for-byte.
  */
 
+/** JSON-Schema keywords that ANNOTATE but do not CONSTRAIN. A sub-schema whose
+ *  every key is in this set is semantically "matches anything" — exactly the
+ *  shape OMP's outbound serialization collapses back to the bare boolean `true`
+ *  (both collapse passes: literal `{}` and the type-less description-only form).
+ *  Verified live 2026-07-02 (context-trimming-tiers P-031): the server emitted
+ *  `detail: {}` for operator:voice_debug (z.unknown() under Zod 4 can serialize
+ *  to `{}`, not only `true`), OMP's cache held it verbatim, and the request OMP
+ *  built for Ollama carried `detail: true` → the Go parser 400-killed the turn. */
+const ANNOTATION_ONLY_KEYS = new Set([
+  'description',
+  'title',
+  'default',
+  'examples',
+  'deprecated',
+  'readOnly',
+  'writeOnly',
+  '$comment',
+]);
+
+/** True for a sub-schema that accepts anything (no `type`, no structural or
+ *  combinator keyword) — the object-form twins of the boolean schema `true`. */
+function isUnconstrainedSchema(v: unknown): v is Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  return Object.keys(v).every((k) => ANNOTATION_ONLY_KEYS.has(k));
+}
+
+/** Rewrite an unconstrained object schema to the same OMP-collapse-proof shape
+ *  as `boolToSchema(true)`, preserving its annotations (description wins over
+ *  the generic placeholder). */
+function unconstrainedToSchema(s: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...boolToSchema(true),
+    ...s, // keep the original description/default/etc.
+    type: 'object',
+    additionalProperties: true,
+  };
+}
+
 function boolToSchema(b: boolean): Record<string, unknown> {
   // `{}` (the literal empty-object spelling of "matches anything") gets a NON-EMPTY
   // representation here. Root-caused 2026-06-30 (omp-ollama-tool-schema-investigation):
@@ -68,11 +106,20 @@ export function sanitizeToolSchema<T>(node: T): T {
       const props: Record<string, unknown> = {};
       for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
         props[propName] =
-          typeof propSchema === 'boolean' ? boolToSchema(propSchema) : sanitizeToolSchema(propSchema);
+          typeof propSchema === 'boolean'
+            ? boolToSchema(propSchema)
+            : isUnconstrainedSchema(propSchema)
+              ? unconstrainedToSchema(propSchema)
+              : sanitizeToolSchema(propSchema);
       }
       out[key] = props;
     } else if (key === 'items') {
-      out[key] = typeof value === 'boolean' ? boolToSchema(value) : sanitizeToolSchema(value);
+      out[key] =
+        typeof value === 'boolean'
+          ? boolToSchema(value)
+          : isUnconstrainedSchema(value)
+            ? unconstrainedToSchema(value)
+            : sanitizeToolSchema(value);
     } else {
       // Recurse (so nested properties/items are reached) but do NOT
       // objectify booleans elsewhere — notably additionalProperties.
