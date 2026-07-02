@@ -659,6 +659,14 @@ export const FLAGS = {
   // escalation, no fixer dispatch) — the instant off-switch if the guard ever
   // mis-quarantines real work on the shared commit path, without waiting for a deploy.
   GIT_SYNC_CONTENT_GUARD: "papercusp-git-sync-content-guard",
+  // github-bridge-hive-egress-2026-07-02 P-008: the hive P2P git <-> GitHub bridge —
+  // on a BRIDGED hive's git-sync tick, ingress origin branches into the synthetic
+  // github-origin namespace (admission-gated) + egress canonical refs FF-only to the
+  // resolved remote (fork wins — D-007b), divergence reported-not-applied (P-006).
+  // Default ON (derived FLAG_DEFAULTS): inert fleet-wide until a hive's federated
+  // `hiveGit.mode` setting is flipped to 'bridged' (the owner-set per-hive activation);
+  // this flag is the fleet-wide kill-switch, not the activation surface.
+  GITHUB_BRIDGE: "papercusp-github-bridge",
   // git-sync-dx-hardening-2026-06-17 P-004: DERIVED commit attribution — when ON, git-sync
   // groups dirty files by the agent who declared them (coord:declare-intent / lock holder)
   // and makes per-agent commits with the intent message + a Co-Authored-By trailer (catch-all

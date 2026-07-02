@@ -45,14 +45,24 @@ vi.mock('../../events/await/store', () => ({ registerAwait: vi.fn(async () => ({
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ workspaceId: 'ws-1' })) }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
-vi.mock('../../authority/file-lock-authority-ops', () => ({ FILE_LOCK_OP_KINDS: { acquire: 'acquire' } }));
+vi.mock('../../authority/file-lock-authority-ops', () => ({
+  FILE_LOCK_OP_KINDS: { acquire: 'acquire' },
+  // Real (not stubbed) fan-out so WI-1550 coverage below can assert on the
+  // resulting recordLockEvent calls, not just that some mock fired.
+  emitAcquireLockEvents: vi.fn((emit: (e: unknown) => void, p: { scope: string; owner: string; paths: string[]; expiresAtMs: number; ts: number }) => {
+    for (const path of p.paths) emit({ kind: 'acquire', scope: p.scope, path, owner: p.owner, expiresAtMs: p.expiresAtMs, ts: p.ts });
+  }),
+}));
+vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
 
 import { normalizePaths, tryInsertWaiter } from './su-lock-store';
 import { WorkspaceContendedError } from './in-workspace-txn';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
+import { recordLockEvent } from '../../authority/lock-event-stream';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const routeM = vi.mocked(routeFileLockOp);
+const recordEventM = vi.mocked(recordLockEvent);
 const tool = (await import('./acquire')).default;
 
 type Out = { content: { text: string }[] };
@@ -122,5 +132,63 @@ describe('locks:acquire — outcome branches', () => {
     insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' } as never);
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, reason: 'waiter_cap_exceeded' });
+  });
+});
+
+describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decided grant', () => {
+  it('emits a lock-event when the grant was decided local-authority with a resolved scope', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
+      via: 'local-authority',
+      scope: 'harness-x',
+    } as never);
+    const b = body(await call({}));
+    expect(b).toMatchObject({ ok: true, lock_id: 'L1' });
+    expect(recordEventM).toHaveBeenCalledTimes(1);
+    expect(recordEventM).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'acquire', scope: 'harness-x', path: 'a.ts', owner: 'me', expiresAtMs: Date.parse('2026-02-01T00:00:00Z') }),
+    );
+  });
+
+  it('emits on a fail-open grant too (a remote authority was unreachable)', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
+      via: 'fail-open',
+      scope: 'harness-x',
+      warning: 'authority unreachable',
+    } as never);
+    await call({});
+    expect(recordEventM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT emit locally when the grant was relayed to a remote authority (it already recorded its own)', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
+      via: 'remote-authority',
+      scope: 'harness-x',
+    } as never);
+    await call({});
+    expect(recordEventM).not.toHaveBeenCalled();
+  });
+
+  it('does NOT emit when the domain is unmanaged (no federated scope to record against)', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
+      via: 'local-authority',
+      // scope omitted — unmanaged/unfederated domain
+    } as never);
+    await call({});
+    expect(recordEventM).not.toHaveBeenCalled();
+  });
+
+  it('emits one event per held path on a multi-path grant', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts', 'b.ts'] },
+      via: 'local-authority',
+      scope: 'harness-x',
+    } as never);
+    await call({ paths: ['a.ts', 'b.ts'] });
+    expect(recordEventM).toHaveBeenCalledTimes(2);
+    expect(recordEventM.mock.calls.map((c) => (c[0] as { path: string }).path).sort()).toEqual(['a.ts', 'b.ts']);
   });
 });

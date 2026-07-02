@@ -11,6 +11,7 @@ import { StepBackups } from './StepBackups';
 import { StepEmbeddedPg } from './StepEmbeddedPg';
 import { StepGit } from './StepGit';
 import { StepKeys } from './StepKeys';
+import { StepLocalModel } from './StepLocalModel';
 import { StepLogins } from './StepLogins';
 import { StepMobilePairing } from './StepMobilePairing';
 import { StepOsPermissions } from './StepOsPermissions';
@@ -353,6 +354,8 @@ function renderStep(id: string) {
       return <StepWorkspace />;
     case 'agents':
       return <StepAgents />;
+    case 'local-model':
+      return <StepLocalModel />;
     case 'logins':
       return <StepLogins />;
     case 'keys':
