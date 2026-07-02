@@ -28,7 +28,7 @@ no-op:
   (`POST /api/harness/:slug/agent-chats`, lines 39–63) and mounts
   `<ChatPanel slug chatId mode="discuss" />` **inline** (line 84) — exactly the
   host the original Gotcha 2 said was missing (inbox-cards-unification D-006).
-- It is wired into the Plans UI: `PlanItemPreview.tsx:188`
+- It is wired into the Plans UI: `PlanItemPreview.tsx:192`
   (`{chatOpen ? <PlanChat harnessSlug={harnessSlug} label={…} /> : null}`) and
   `DiscussPanel.tsx:75` (`<PlanChat harnessSlug={item.harnessSlug} label={chatLabel} />`).
 - The no-harness case is handled with a clear message

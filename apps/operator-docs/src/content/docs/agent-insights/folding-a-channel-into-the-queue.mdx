@@ -44,3 +44,12 @@ If a channel has **no pending-decision store** (e.g. `gym:judge` is a pure scori
 - Adapters (pure): `lib/attention/adapters.ts`. Source fetches (best-effort, one try/catch each): `lib/agent-tools/plans/attention.ts`.
 - The dedup guard: `dropConvertedPlanItems` in `lib/attention/sources.ts` + `listConvertedPlanItemRefs` in `lib/plan-items/convert.ts`.
 - Tests: `lib/attention/{adapters,sources,triage}.test.ts`.
+
+**Source fetches run concurrently, not sequentially** (infra-perf-robustness-audit-2026-06-18
+P-005, `attention.ts`): source 1 (plan items) still runs first to populate the `planHarness` map,
+then sources 2–10 — including every folded disposition channel above — fire together via
+`Promise.all`, each still in its own best-effort `try/catch`. This is a latency fix only (the
+handler was p50 ~2s sequential); output order is irrelevant because `buildAttentionGroups`
+re-groups and deterministically re-sorts by importance, so it changes nothing about *what* to
+surface — a new channel's adapter/predicate still slots into that `Promise.all` array the same
+way, just wrapped in its own `(async () => { try { … } catch { /* best-effort */ } })()`.
