@@ -576,7 +576,8 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
     expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
       bin: 'claude',
-      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'],
+      // Subagent deny is re-armed by DEFAULT on every claude resume (owner mandate 2026-07-02).
+      args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
     expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' })).toEqual({
@@ -597,7 +598,7 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor uses precise resume-by-id when a native sessionId is known', () => {
     // Store-found (untracked) sessions carry the agent's native id → resume EXACTLY it.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG,
     ]);
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }).args).toEqual([
       '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', 'uuid-2',
@@ -606,11 +607,11 @@ describe('psu-launcher arg parsing', () => {
 
   it('resumeArgsFor appends --fork-session for a claude fork (branch, leave the original)', () => {
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { fork: true }).args).toEqual([
-      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session',
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session',
     ]);
     // Fork also composes with the most-recent (--continue) resume.
     expect(resumeArgsFor({ agent: 'claude' }, { fork: true }).args).toEqual([
-      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session',
+      '--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session',
     ]);
   });
 
@@ -633,11 +634,11 @@ describe('psu-launcher arg parsing', () => {
     // The plain --session-id/--resume conflict is lifted by --fork-session, so the
     // trio is valid — this is how launchTrackedFork pins the fork to a psu-minted id.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session', '--session-id', 'forked',
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session', '--session-id', 'forked',
     ]);
     // forkSessionId WITHOUT fork is ignored (no --fork-session ⇒ --session-id would conflict with --resume).
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { forkSessionId: 'forked' }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG,
     ]);
   });
 
@@ -652,11 +653,11 @@ describe('psu-launcher arg parsing', () => {
   it('resumeArgsFor threads --add-dir into each backend at the right position', () => {
     // claude: appended after the resume/permission flags.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([
-      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--add-dir=/d',
+      '--resume', 'u', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--add-dir=/d',
     ]);
     // claude fork: --add-dir comes after the fork flags.
     expect(resumeArgsFor({ agent: 'claude', sessionId: 'orig' }, { fork: true, forkSessionId: 'f', addDir: ['/d'] }).args).toEqual([
-      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--fork-session', '--session-id', 'f', '--add-dir=/d',
+      '--resume', 'orig', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--fork-session', '--session-id', 'f', '--add-dir=/d',
     ]);
     // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'u' }, { addDir: ['/d'] }).args).toEqual([

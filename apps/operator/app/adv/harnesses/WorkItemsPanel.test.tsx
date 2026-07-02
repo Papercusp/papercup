@@ -159,26 +159,17 @@ describe('WorkItemsPanel', () => {
   });
 });
 
-describe('workItemCountLabel (pure — the shown/loaded/total disambiguation)', () => {
-  it('unfiltered, not capped → just the total', () => {
-    expect(workItemCountLabel(12, 12, 12, false)).toEqual({ title: '12', summary: '12 items', capped: false });
+describe('workItemCountLabel (pure — always the DB store total, never "loaded")', () => {
+  it('unfiltered → just the store total (loaded length is irrelevant; infinite scroll loads the rest)', () => {
+    expect(workItemCountLabel(12, 12, false)).toEqual({ title: '12', summary: '12 items' });
+    // Even when far fewer rows are loaded than exist, the badge shows the TRUE total.
+    expect(workItemCountLabel(500, 1821, false)).toEqual({ title: '1821', summary: '1821 items' });
   });
-  it('unfiltered, capped → loaded of total, flagged capped', () => {
-    expect(workItemCountLabel(905, 905, 1674, false)).toEqual({
-      title: '905 of 1674', summary: '905 loaded of 1674 total', capped: true,
-    });
-  });
-  it('filtered, not capped → shown of total match', () => {
-    expect(workItemCountLabel(42, 905, 905, true)).toEqual({
-      title: '42 of 905', summary: '42 of 905 match', capped: false,
-    });
-  });
-  it('filtered AND capped → shown match of loaded, with total called out', () => {
-    expect(workItemCountLabel(42, 905, 1674, true)).toEqual({
-      title: '42 of 905', summary: '42 match · 905 loaded of 1674 total', capped: true,
-    });
+  it('filtered → shown of total match', () => {
+    expect(workItemCountLabel(42, 905, true)).toEqual({ title: '42 of 905', summary: '42 of 905 match' });
+    expect(workItemCountLabel(42, 1674, true)).toEqual({ title: '42 of 1674', summary: '42 of 1674 match' });
   });
   it('singular item reads "1 item"', () => {
-    expect(workItemCountLabel(1, 1, 1, false).summary).toBe('1 item');
+    expect(workItemCountLabel(1, 1, false).summary).toBe('1 item');
   });
 });

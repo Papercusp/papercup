@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
@@ -62,37 +62,25 @@ const CELL_TRUNCATE: CSSProperties = {
 };
 
 /**
- * Count label for the work-items pane — disambiguates the THREE numbers the old
- * bare "N of M" conflated (the "905 of 1674 — of what?" confusion):
- *   • shown  = rows after the column filters + quick-search
- *   • loaded = rows actually downloaded (a CAPPED read shows fewer than exist)
- *   • total  = the true store count for this harness (row[0]._meta.total)
- * Returns a short `title` (for the cramped panel tab) + an explicit, worded
- * `summary` (for the in-pane badge), and whether the read was `capped` (⇒ the
- * filters only searched the `loaded` subset, not the full `total`). Pure —
- * exported for tests.
+ * Count label for the work-items pane. Users care about the STORE total, not how
+ * many rows happen to be in memory right now — infinite scroll loads the rest on
+ * demand — so the label always reports the true `total` (row[0]._meta.total, the
+ * DB count), never the downloaded length. There is no "loaded of total" / capped
+ * distinction: unfiltered shows "1821 items"; a filter/search shows "N of total
+ * match".
+ *   • shown = rows after the column filters + quick-search
+ *   • total = the true store count for this harness
+ * Pure — exported for tests.
  */
 export function workItemCountLabel(
   shown: number,
-  loaded: number,
   total: number,
   filtered: boolean,
-): { title: string; summary: string; capped: boolean } {
-  const capped = total > loaded;
+): { title: string; summary: string } {
   if (filtered) {
-    return {
-      title: `${shown} of ${loaded}`,
-      summary: capped
-        ? `${shown} match · ${loaded} loaded of ${total} total`
-        : `${shown} of ${total} match`,
-      capped,
-    };
+    return { title: `${shown} of ${total}`, summary: `${shown} of ${total} match` };
   }
-  return {
-    title: capped ? `${loaded} of ${total}` : `${total}`,
-    summary: capped ? `${loaded} loaded of ${total} total` : `${total} item${total === 1 ? '' : 's'}`,
-    capped,
-  };
+  return { title: `${total}`, summary: `${total} item${total === 1 ? '' : 's'}` };
 }
 
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
@@ -110,15 +98,22 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // preference, not user-meaningful URL state → localStorage, not nuqs.
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:work-items');
 
-  // Deliberately DON'T pass an explicit `limit` — the resolver defaults to its
-  // full cap (loads all of a harness's work items on a local desktop app), and
-  // omitting it means a newer client can't send a value an OLDER deployed
-  // resolver would reject during a rollout skew (the cause of the "Too big
-  // limit" panel error). The grid is virtualized, so render cost is bounded
-  // regardless, and the true total is carried via row[0]._meta.
+  // Infinite scroll: start with a generous desktop page and grow the fetch
+  // window as the user reaches the end (see the VirtualGrid `onEndReached`
+  // wiring below). We DO pass an explicit `limit` now — the resolver argsSchema
+  // CLAMPS (it no longer rejects), so there's no rollout-skew "Too big" risk.
+  // The grid is virtualized so render cost stays bounded regardless, and the
+  // true store total rides row[0]._meta (readListTotal), so the count shows the
+  // DB total no matter how much is currently loaded.
+  const PAGE = 500;
+  const [limit, setLimit] = useState(PAGE);
+  // Reset the window when the harness changes (a different store).
+  useEffect(() => {
+    setLimit(PAGE);
+  }, [slug]);
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug },
+    args: { harnessSlug: slug, limit },
     enabled: Boolean(slug),
   });
   const items = query.loading ? null : query.data;
@@ -137,9 +132,14 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId);
 
   // True total in the store (carried on row[0]._meta by the resolver), falling
-  // back to the downloaded length. listCountLabel shows "N of TOTAL" only when the
-  // read was actually capped, so the count is never a downloaded-length lie.
+  // back to the downloaded length. This is what the count label reports — the DB
+  // total, not the loaded length.
   const total = readListTotal(items);
+
+  // Infinite scroll: if the store holds more rows than are loaded, grow the
+  // window. When the loaded length reaches `total`, everything is fetched.
+  const hasMore = items != null && items.length < total;
+  const loadMore = useCallback(() => setLimit((n) => n + PAGE), []);
 
   const columns: ColumnDef<WorkItemRow>[] = [
     {
@@ -308,10 +308,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   }, [cf.rows, search]);
 
   // The counts drive BOTH the tab title and the in-pane badge — filter-aware, so
-  // narrowing the list now shows how many rows matched (shown of loaded), not the
-  // stale unfiltered loaded count.
+  // narrowing the list shows how many rows matched out of the store total; when
+  // unfiltered it's just the store total.
   const isFiltered = cf.hasActive || search.trim() !== '';
-  const counts = items ? workItemCountLabel(filtered.length, items.length, total, isFiltered) : null;
+  const counts = items ? workItemCountLabel(filtered.length, total, isFiltered) : null;
   const titleCount = counts?.title;
   useEffect(() => {
     if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);
@@ -339,11 +339,9 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
         {counts ? (
           <Tooltip
             label={
-              counts.capped
-                ? 'Read is capped: the filter + search only see the loaded rows, not the full store total.'
-                : isFiltered
-                  ? 'Rows matching the current filter / search, out of the store total.'
-                  : 'Total work items for this harness.'
+              isFiltered
+                ? 'Rows matching the current filter / search, out of the store total.'
+                : 'Total work items for this harness.'
             }
           >
             <span
@@ -358,7 +356,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
                 fontVariantNumeric: 'tabular-nums',
               }}
             >
-              {counts.summary}{counts.capped ? ' ⚠' : ''}
+              {counts.summary}
             </span>
           </Tooltip>
         ) : null}
@@ -396,6 +394,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           }
           rowMinHeight={30}
           headerHeight={30}
+          onEndReached={hasMore ? loadMore : undefined}
         />
       )}
     </div>
