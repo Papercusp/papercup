@@ -34,8 +34,17 @@
  *     registration lands on the first boot AFTER claude has been run once.
  *
  * Idempotent · best-effort · preserves every other key + mcpServer · mode 0600.
- * Mac + Linux (Windows deferred, like omp). Reads token + agent_id from
- * `~/.papercusp/` (installPapercuspFiles must have run first).
+ * Mac + Linux (Windows deferred, like omp) — HOWEVER (windows-desktop-feature-
+ * parity-2026-07-02 P-025 audit): this module runs inside the operator
+ * sidecar, which on a Windows desktop install is always launched via
+ * `wsl.exe --exec node ...`, so `process.platform` reports 'linux' there
+ * too. The `windows_not_supported_in_v1` guard below is therefore DEAD CODE
+ * on Windows — the Linux path runs instead, writing into the WSL-side
+ * `~/.claude.json` (the config a `claude` launched INSIDE that same distro
+ * reads, per the Phase 2 title-based-terminal architecture). Static analysis
+ * only — not yet VM-verified live; see WI-1646 for the sibling endpoint-ipc
+ * finding from the same audit. Reads token + agent_id from `~/.papercusp/`
+ * (installPapercuspFiles must have run first).
  */
 
 import * as fs from 'node:fs/promises';

@@ -122,7 +122,7 @@ export const commands = {
 /* Types */
 /**
  *  Mirror of the TS-side `ConsoleEnvelope` from
- *  apps/operator/lib/console-launcher.ts.
+ *  packages/operator-core/lib/console-launcher.ts.
  */
 export type ConsoleEnvelope = {
 	cwd: string,
@@ -130,6 +130,18 @@ export type ConsoleEnvelope = {
 	mcpJsonContents: string,
 	greetingCmd: string,
 	needsSuperuserBootstrap: boolean,
+	/**
+	 *  windows-desktop-feature-parity-2026-07-02 P-010: a fresh UUID minted
+	 *  per launch (console-launcher.ts `buildConsoleEnvelope`) — the WINDOW's
+	 *  own identity. Every spawner titles the OS window
+	 *  `Papercup — <session_id>` (see `window_title_for` below) so a
+	 *  launched terminal can be found + focused by TITLE, which matters most
+	 *  on Windows: the agent runs inside the `papercup-runtime` WSL2 distro
+	 *  while the terminal window is a native Win32 process, so there is no
+	 *  Windows window-ancestor for a WSL pid and pid->window mapping is
+	 *  structurally impossible — title is the only durable link.
+	 */
+	sessionId: string,
 };
 
 export type ConsoleLaunchResult = { status: "ok"; pid: number | null; displaced_mcp_json: boolean; bootstrapped: boolean } | { status: "err"; error: string };

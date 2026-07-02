@@ -172,4 +172,31 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
     const err = (result as any).error ?? (result as any).Err?.error ?? 'console_launch failed';
     throw new Error(err);
   }
+
+  // windows-desktop-feature-parity-2026-07-02 P-014: the Rust-side spawn above
+  // never touches adv_sessions (only console-spawn.ts's Linux/macOS path does
+  // that, right after it forks). Without this, a plain (non-psu) console
+  // opened via this fallback is completely untracked — invisible to /adv,
+  // unparkable, unresumable. A `runPsu` console self-registers anyway (psu's
+  // own bootstrap-su call, made from inside WSL to the WSL-hosted operator)
+  // so this is best-effort and non-fatal either way — never let a recording
+  // hiccup fail an already-successful terminal launch. Deliberately does NOT
+  // forward the Rust-returned pid (see console-record.ts header: it's a
+  // Windows-namespace pid, meaningless — and actively misleading — to the
+  // WSL-hosted operator's liveness checks).
+  try {
+    await fetch('/api/agent-mcp/console/record', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        cwd: envelope.cwd,
+        terminalBin: 'wt.exe',
+        label: opts.label ?? null,
+        planSlug: opts.planSlug ?? null,
+        launchArgv: [envelope.greetingCmd].filter(Boolean),
+      }),
+    });
+  } catch (e: any) {
+    console.warn('[console-launcher] console/record failed (non-fatal)', e?.message);
+  }
 }

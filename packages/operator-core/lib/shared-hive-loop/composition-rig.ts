@@ -355,6 +355,32 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
   `);
 
+  // WI-1644: mirror migration 374's structural cutover (P-010 work-item
+  // unification) — production RENAMEs harness_features_consolidated to the
+  // TRUE base table `work_items`, then re-creates harness_features_consolidated
+  // as a simple (auto-updatable) compat view filtered to the feature-family
+  // kinds. The rig built the pre-374 shape only (a real
+  // harness_features_consolidated table, no work_items relation at all), while
+  // application code it drives (composition-rig's own seedBacklog below, and
+  // every real work_items:* / claimNextWorkItem code path) targets the
+  // POST-374 name — so `INSERT INTO harness_shared.work_items` failed
+  // "relation does not exist". Run the rename AFTER the verbatim migrations
+  // above (188/195 ALTER the table by its pre-cutover name) and BEFORE the
+  // trigger attachments below (a view can't carry BEFORE/AFTER triggers, so
+  // those move to the new base table). Plain SELECT/UPDATE/INSERT against
+  // harness_features_consolidated elsewhere in this file (stamp() at
+  // runFakePipeline, readBacklog) keep working unmodified — Postgres
+  // transparently rewrites simple-view DML onto the base relation.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated RENAME TO work_items;
+    ALTER TABLE harness_shared.work_items
+      RENAME CONSTRAINT harness_features_consolidated_pkey TO work_items_pkey;
+    CREATE VIEW harness_shared.harness_features_consolidated AS
+      SELECT * FROM harness_shared.work_items
+      WHERE item_kind NOT IN ('bug', 'change', 'task')
+      WITH CASCADED CHECK OPTION;
+  `);
+
   // Migration 214's stamp_local_federated_write function VERBATIM (sliced
   // before its 11-table attach loop — this schema has two of the eleven), then
   // attached to the two tables present here.
@@ -364,7 +390,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   await sql.unsafe(mig214.slice(0, fnEnd));
   await sql.unsafe(`
     CREATE TRIGGER stamp_local_federated_write_trg
-      BEFORE INSERT OR UPDATE ON harness_shared.harness_features_consolidated
+      BEFORE INSERT OR UPDATE ON harness_shared.work_items
       FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();
     CREATE TRIGGER stamp_local_federated_write_trg
       BEFORE INSERT OR UPDATE ON harness_shared.harness_issues_consolidated
@@ -375,7 +401,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   // settling pass cannot re-enqueue forever (the Stage-6 convergence guard).
   await sql.unsafe(`
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
-      AFTER UPDATE ON harness_shared.harness_features_consolidated
+      AFTER UPDATE ON harness_shared.work_items
       FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
       EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
     CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg

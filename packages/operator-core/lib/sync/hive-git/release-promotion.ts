@@ -42,8 +42,16 @@ import { type RunGit, defaultRunGit, readNamespaceRef, writeNamespaceRef } from 
 /** The within-namespace ref the integrator publishes the green-gated release at. */
 export const RELEASE_REF = 'refs/heads/release';
 
-/** Wire schema version for green attestations. */
-export const GREEN_ATTESTATION_SCHEMA_VERSION = 1;
+/**
+ * Wire schema version for green attestations.
+ *
+ * WI-1554: bumped 1 → 2 to add `repo_key` binding (see {@link GreenAttestation}).
+ * A v1 attestation (no `repo_key`) now fails {@link isGreenAttestation} — a
+ * deliberate FAIL-CLOSED break, not a silent reinterpretation: this module has
+ * no live callers yet (the DG-5 aggregator → green-bot signing wire is not
+ * built), so there is no v1 wire data anywhere to migrate.
+ */
+export const GREEN_ATTESTATION_SCHEMA_VERSION = 2;
 
 /** Domain-separation tag for green-attestation signatures (hive-policy idiom). */
 export const GREEN_ATTESTATION_SIG_DOMAIN = 'papercusp-hive-git-green-attestation-v1';
@@ -56,6 +64,19 @@ export const GREEN_ATTESTATION_SIG_DOMAIN = 'papercusp-hive-git-green-attestatio
 export interface GreenAttestation {
   /** Wire schema version. */
   v: number;
+  /**
+   * WI-1554: the managed repo key the attestation covers (G-1b "one gate per
+   * (hive, repo)" — the same `repo_key` a DG-1 {@link GateVerdict} binds, and
+   * the `repoKey` `hiveGitRepoPath`/`ensureHiveGitRepo` resolve a repo's
+   * on-disk path from). WITHOUT this, a green(S) attestation carries no
+   * repo binding at all: with fork/mirror topologies sharing commit history
+   * and one green-bot key in multiple repos' crefs allow lists, an
+   * attestation signed for repo A's sha S would satisfy `satisfiesCrefsRule`
+   * for repo B's release ref at the same sha, even though B's OWN gate
+   * (DG-6 makes suites repo-relative) never ran. `satisfiesCrefsRule` /
+   * `promoteRelease` now require this to match the caller's expected repo.
+   */
+  repo_key: string;
   /** The exact staging sha the attestation covers. */
   staging_sha: string;
   /** The attesting identity's raw-32 Ed25519 pubkey (base64) — must be in `allow`. */
@@ -85,6 +106,8 @@ function isGreenAttestation(x: unknown): x is GreenAttestation {
   const a = x as Record<string, unknown>;
   return (
     typeof a.v === 'number' &&
+    typeof a.repo_key === 'string' &&
+    a.repo_key.length > 0 &&
     typeof a.staging_sha === 'string' &&
     SHA_RE.test(a.staging_sha) &&
     typeof a.signer_pubkey === 'string' &&
@@ -97,6 +120,7 @@ function isGreenAttestation(x: unknown): x is GreenAttestation {
 export function greenAttestationSigningBytes(payload: Omit<GreenAttestation, 'sig'>): Buffer {
   const ordered = {
     v: payload.v,
+    repo_key: payload.repo_key,
     staging_sha: payload.staging_sha,
     signer_pubkey: payload.signer_pubkey,
     ts: payload.ts,
@@ -106,11 +130,12 @@ export function greenAttestationSigningBytes(payload: Omit<GreenAttestation, 'si
 
 /** Build + sign a green attestation (the DG-5 aggregator / owner side). */
 export async function signGreenAttestation(
-  fields: { stagingSha: string; signerPubkeyBase64: string; nowMs: number },
+  fields: { repoKey: string; stagingSha: string; signerPubkeyBase64: string; nowMs: number },
   sign: (bytes: Buffer) => Promise<Buffer>,
 ): Promise<GreenAttestation> {
   const payload = {
     v: GREEN_ATTESTATION_SCHEMA_VERSION,
+    repo_key: fields.repoKey,
     staging_sha: fields.stagingSha,
     signer_pubkey: fields.signerPubkeyBase64,
     ts: fields.nowMs,
@@ -138,14 +163,18 @@ export interface CrefsRuleVerdict {
 }
 
 /**
- * Does `proof` satisfy `rule` for `stagingSha`? Counts DISTINCT signers that
- * are (a) in the rule's allow list and (b) have a VALID signature over exactly
- * this sha. Duplicate attestations by one signer count once; attestations for
- * other shas, unknown signers, or with bad signatures are ignored. FAIL-CLOSED
- * on a malformed rule.
+ * Does `proof` satisfy `rule` for `stagingSha` at `repoKey`? Counts DISTINCT
+ * signers that are (a) in the rule's allow list and (b) have a VALID
+ * signature over exactly this sha AND this repo_key. Duplicate attestations
+ * by one signer count once; attestations for other shas, OTHER REPOS
+ * (WI-1554 — a green(S) attestation minted for a DIFFERENT repo sharing
+ * commit history and the same allow-listed signer must never satisfy this
+ * repo's rule), unknown signers, or with bad signatures are ignored.
+ * FAIL-CLOSED on a malformed rule.
  */
 export function satisfiesCrefsRule(
   stagingSha: string,
+  repoKey: string,
   proof: readonly GreenAttestation[],
   rule: ReleaseRule,
 ): CrefsRuleVerdict {
@@ -163,6 +192,7 @@ export function satisfiesCrefsRule(
   for (const att of proof) {
     if (!isGreenAttestation(att)) continue;
     if (att.staging_sha !== stagingSha) continue;
+    if (att.repo_key !== repoKey) continue; // WI-1554: cross-repo replay guard
     if (!allow.has(att.signer_pubkey)) continue;
     if (valid.has(att.signer_pubkey)) continue; // distinct signers only
     if (!verifyGreenAttestation(att)) continue;
@@ -190,13 +220,17 @@ const ZERO_SHA = '0'.repeat(40);
 /**
  * Promote `stagingSha` to the integrator's release ref
  * (`refs/namespaces/<integratorHex>/refs/heads/release`) IFF the green proof
- * satisfies the crefs rule — the G-5b slow gate. FF-only: the current release
- * (when one exists) must be an ancestor of the promoted sha; the write is
- * CAS-guarded against the read. Never advances on a defective rule/proof.
+ * satisfies the crefs rule for `repoKey` — the G-5b slow gate. FF-only: the
+ * current release (when one exists) must be an ancestor of the promoted sha;
+ * the write is CAS-guarded against the read. Never advances on a defective
+ * rule/proof. `repoKey` (WI-1554) is the caller's OWN repo identity (the same
+ * `repoKey` used to resolve `repoPath` via `hiveGitRepoPath`) — an attestation
+ * minted for a different repo can never promote this one, even at the same sha.
  */
 export async function promoteRelease(
   repoPath: string,
   integratorDevicePubkeyBase64: string,
+  repoKey: string,
   stagingSha: string,
   greenProof: readonly GreenAttestation[],
   rule: ReleaseRule,
@@ -205,7 +239,7 @@ export async function promoteRelease(
   const runGit = opts.runGit ?? defaultRunGit;
   const current = await readNamespaceRef(repoPath, integratorDevicePubkeyBase64, RELEASE_REF, runGit);
 
-  const verdict = satisfiesCrefsRule(stagingSha, greenProof, rule);
+  const verdict = satisfiesCrefsRule(stagingSha, repoKey, greenProof, rule);
   if (!verdict.ok) {
     return { promoted: false, release: current, reason: verdict.reason!, validSigners: verdict.validSigners };
   }

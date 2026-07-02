@@ -202,6 +202,13 @@ export async function ensureOmpSuInstalled(): Promise<void> {
   completed = (async () => {
     // Only meaningful on Linux right now — omp-su wrapper is bash; the
     // server-side spawn path in console-launch.ts is Linux-only too.
+    // NOTE (windows-desktop-feature-parity-2026-07-02 P-025 audit): on a
+    // Windows desktop install the operator sidecar is ALWAYS launched via
+    // `wsl.exe --exec node ...` (papercusp-desktop/src-tauri/src/main.rs
+    // make_sidecar_command), so this process's `process.platform` reports
+    // 'linux' there too — this guard does NOT skip Windows; the bootstrap
+    // below already runs (and, per static analysis, is expected to work)
+    // on Windows via WSL. It's macOS ('darwin') this guard actually skips.
     if (process.platform !== 'linux') return;
 
     await ensurePapercuspBootstrap();

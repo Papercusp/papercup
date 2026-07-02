@@ -60,16 +60,20 @@ describe('hive-git release promotion (G-5b, real bare repo)', () => {
   let shaA: string;
   let shaB: string;
 
-  async function proof(sha: string, signers: ReturnType<typeof identity>[]): Promise<GreenAttestation[]> {
+  const REPO_KEY = 'repo-1';
+
+  async function proof(sha: string, signers: ReturnType<typeof identity>[], repoKey = REPO_KEY): Promise<GreenAttestation[]> {
     return Promise.all(
-      signers.map((s) => signGreenAttestation({ stagingSha: sha, signerPubkeyBase64: s.pubkeyBase64, nowMs: 1_000 }, s.sign)),
+      signers.map((s) =>
+        signGreenAttestation({ repoKey, stagingSha: sha, signerPubkeyBase64: s.pubkeyBase64, nowMs: 1_000 }, s.sign),
+      ),
     );
   }
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'release-it-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
-    repo = await ensureHiveGitRepo('hive-r', 'repo-1');
+    repo = await ensureHiveGitRepo('hive-r', REPO_KEY);
     shaA = await commit(repo, { 'a.txt': 'a1' });
     shaB = await commit(repo, { 'a.txt': 'a1', 'b.txt': 'b1' }, shaA);
     rule = { allow: [greenBot.pubkeyBase64, owner.pubkeyBase64], threshold: 2 };

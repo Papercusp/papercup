@@ -26,6 +26,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { uiCrossWorkspaceBlock } from './_workspace-guard';
 import { hardText, LIMITS } from '../limits';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -82,8 +83,8 @@ export default defineTool({
     const argsJson = JSON.stringify(intentArgs);
 
     const inserted = await sql<Array<{ id: number }>>`
-      INSERT INTO harness_shared.ui_intents (client_id, intent, args, requested_by)
-      VALUES (${clientId}, ${args.intent}, ${argsJson}::text::jsonb, ${principalSlug})
+      INSERT INTO harness_shared.ui_intents (client_id, intent, args, requested_by, workspace_id)
+      VALUES (${clientId}, ${args.intent}, ${argsJson}::text::jsonb, ${principalSlug}, ${activeWorkspaceId()})
       RETURNING id
     `;
     const id = Number(inserted[0]!.id);

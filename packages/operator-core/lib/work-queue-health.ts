@@ -28,6 +28,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
 import { STALE_PLAN_ASSIGNMENT_GRACE_MS } from './plan-items/stale-claims';
 import { FEATURE_NON_REQUEUE_STATES } from './work-item-dispatch-states';
+import { activeWorkspaceId } from './workspace-registry';
 
 type Db = Sql | TransactionSql;
 
@@ -45,8 +46,8 @@ export const SWEEP_STALENESS_MS = (() => {
 /** Record (upsert) a periodic sweep's last successful run + how many rows it freed. */
 export async function recordSweepRun(sql: Db, sweepName: string, released: number): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.periodic_sweep_runs (sweep_name, last_run_at, last_released, updated_at)
-    VALUES (${sweepName}, now(), ${released}, now())
+    INSERT INTO harness_shared.periodic_sweep_runs (sweep_name, last_run_at, last_released, updated_at, workspace_id)
+    VALUES (${sweepName}, now(), ${released}, now(), ${activeWorkspaceId()})
     ON CONFLICT (sweep_name)
       DO UPDATE SET last_run_at = now(), last_released = ${released}, updated_at = now()`;
 }

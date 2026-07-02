@@ -95,12 +95,13 @@ export async function setHivePlacementStarted(
 ): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
-    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at)
+    INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     VALUES (
       ${key(workspaceId, installSlug)},
       ${started ? 'true' : 'false'},
       ${'Per-hive Start/Stop placement bit (per-hive start-stop 2026-06-30). true = this hive\'s work is placed by the workspace Queen.'},
-      ${Date.now()}
+      ${Date.now()},
+      ${workspaceId}
     )
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
   `;

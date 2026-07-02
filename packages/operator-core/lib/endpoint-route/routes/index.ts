@@ -200,6 +200,7 @@ import pluginsCatchall from './plugins/catchall';
 import agentMcp_agents from './agent-mcp/agents';
 import agentMcp_consoleLaunch from './agent-mcp/console-launch';
 import agentMcp_consoleResolve from './agent-mcp/console-resolve';
+import agentMcp_consoleRecord from './agent-mcp/console-record';
 import agentMcp_bootstrapSu from './agent-mcp/bootstrap-su';
 import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_decisions from './agent-mcp/decisions';
@@ -456,6 +457,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),
+  ...flatten(agentMcp_consoleRecord as AnyRoute),
   ...flatten(agentMcp_bootstrapSu as AnyRoute[]),
   ...flatten(agentMcp_bootstrapRole as AnyRoute[]),
   ...flatten(agentMcp_decisions as AnyRoute),
