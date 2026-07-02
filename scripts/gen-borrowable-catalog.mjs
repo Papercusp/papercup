@@ -47,6 +47,7 @@ const BORROWABLE = [
   ['libs/generic/papergrid/kv-persist-indexeddb', 'Pure utilities & infra'],
   ['libs/papercusp/packages/file-claim',  'Pure utilities & infra'],
   ['libs/generic/token-kit',                      'Pure utilities & infra'],
+  ['libs/generic/resumable-download',             'Pure utilities & infra'],
   ['libs/generic/search',                     'Search & retrieval'],
   ['libs/generic/search-core',                    'Search & retrieval'],
   ['libs/generic/rerank',                         'Search & retrieval'],

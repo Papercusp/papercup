@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -127,5 +127,40 @@ describe('signWithHiveKey + loadHivePubkey', () => {
     expect(await loadHivePubkey('ws1', 'ghost')).toBeNull();
     const kp = await loadOrGenerateHiveKeypair('ws1', 'ghost');
     expect(await loadHivePubkey('ws1', 'ghost')).toBe(kp.pubkeyBase64);
+  });
+});
+
+// WI-762: loadHiveKeyStatus is the tri-state sibling of loadHivePubkey — it
+// must NOT collapse "no key held" (not_found — the normal state for a
+// non-owner member device) and "a key IS held but unreadable/corrupted"
+// (error) into the same value, since papercusp-hive-share.ts's gist-adopt
+// ownership guard relies on telling them apart (a read/decrypt failure must
+// fail closed, not be silently treated as "no competing identity").
+describe('loadHiveKeyStatus', () => {
+  it('returns not_found when this Swarm holds no key for the hive', async () => {
+    const { loadHiveKeyStatus } = await load();
+    expect(await loadHiveKeyStatus('ws1', 'ghost')).toEqual({ kind: 'not_found' });
+  });
+
+  it('returns ok + the pubkey once a key is minted', async () => {
+    const { loadOrGenerateHiveKeypair, loadHiveKeyStatus } = await load();
+    const kp = await loadOrGenerateHiveKeypair('ws1', 'alpha');
+    expect(await loadHiveKeyStatus('ws1', 'alpha')).toEqual({ kind: 'ok', pubkeyBase64: kp.pubkeyBase64 });
+  });
+
+  it('returns error (not not_found) when a key file IS present but corrupted/undecryptable', async () => {
+    const { loadHiveKeyStatus, hiveKeychainId } = await load();
+    const keychainId = hiveKeychainId('ws1', 'broken');
+    // Write a too-short garbage file at the exact path the encrypted-file
+    // fallback reads from — this hits fileLoad's "file too short" decryption_failed
+    // branch (see keychain.ts), simulating a corrupted/partially-written key file.
+    const dir = join(TMP_HOME, '.papercusp', 'identity');
+    mkdirSync(dir, { recursive: true });
+    const safe = keychainId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    writeFileSync(join(dir, `keypair-${safe}.enc`), Buffer.from('too-short'));
+
+    const status = await loadHiveKeyStatus('ws1', 'broken');
+    expect(status.kind).toBe('error');
+    if (status.kind === 'error') expect(status.reason).toMatch(/short/);
   });
 });

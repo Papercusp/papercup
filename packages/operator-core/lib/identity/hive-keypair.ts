@@ -80,6 +80,14 @@ export async function loadOrGenerateHiveKeypair(
  * this Swarm does not hold the hive's private key (e.g. a hive owned by a
  * different Swarm). Use loadOrGenerateHiveKeypair on the owning Swarm to mint
  * it; use the pubkey off the Hive entity for a peer-held hive.
+ *
+ * NOTE: this collapses "genuinely no local key" (a normal non-owning Swarm —
+ * expected, safe to treat as "no identity to compare") and "a key IS present
+ * but failed to load/decrypt" (a real error — should NOT be silently treated
+ * the same as "no identity", see WI-762) into one `null`. A caller that needs
+ * to tell those apart for a security-relevant ownership check (e.g.
+ * papercusp-hive-share.ts's gist-adopt guard) should use
+ * `loadHiveKeyStatus` instead.
  */
 export async function loadHivePubkey(
   workspaceId: string,
@@ -87,6 +95,36 @@ export async function loadHivePubkey(
 ): Promise<string | null> {
   const loaded = await keychainLoad(hiveKeychainId(workspaceId, slug), HIVE_KEYPAIR_SERVICE);
   return loaded.kind === 'ok' ? pubkeyBase64FromDer(loaded.value) : null;
+}
+
+/** The tri-state result of `loadHiveKeyStatus` — distinguishes "no local key"
+ *  (safe: no competing identity to compare against) from "a key IS present but
+ *  couldn't be read" (unsafe: proceeding would silently drop a verification
+ *  check the caller thinks it's making). See `loadHiveKeyStatus`. */
+export type HiveKeyStatus =
+  | { kind: 'ok'; pubkeyBase64: string }
+  | { kind: 'not_found' }
+  | { kind: 'error'; reason: string };
+
+/**
+ * Load the hive's pubkey, preserving WHY it's absent when it is (WI-762).
+ * `loadHivePubkey` flattens "no key held" and "a key is held but couldn't be
+ * loaded/decrypted" into the same `null` — fine for callers that only ever
+ * want "do I hold it or not", but wrong for a security-relevant ownership
+ * guard: a device that HAS a competing local identity but hit a transient
+ * keychain read/decrypt error must NOT be treated the same as a device that
+ * genuinely has no local identity (a normal non-owning member) — the former
+ * should fail closed (bail, don't proceed under an unverified state); the
+ * latter is the expected, safe-to-proceed case.
+ */
+export async function loadHiveKeyStatus(
+  workspaceId: string,
+  slug: string,
+): Promise<HiveKeyStatus> {
+  const loaded = await keychainLoad(hiveKeychainId(workspaceId, slug), HIVE_KEYPAIR_SERVICE);
+  if (loaded.kind === 'ok') return { kind: 'ok', pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
+  if (loaded.error.kind === 'not_found') return { kind: 'not_found' };
+  return { kind: 'error', reason: loaded.error.kind === 'io_error' || loaded.error.kind === 'decryption_failed' ? loaded.error.reason : loaded.error.kind };
 }
 
 /**

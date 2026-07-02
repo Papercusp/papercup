@@ -310,7 +310,7 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
       isEnabled: async () => true,
       resolveGithub: okId,
       fetchIdentity: async () => gist,
-      loadPubkey: async () => 'match-pub',
+      loadPubkey: async () => ({ kind: 'ok' as const, pubkeyBase64: 'match-pub' }),
       setListing: async (i) => {
         listing = i;
         return {} as unknown as never;
@@ -326,7 +326,45 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
       isEnabled: async () => true,
       resolveGithub: okId,
       fetchIdentity: async () => ({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
-      loadPubkey: async () => 'different-local-pub',
+      loadPubkey: async () => ({ kind: 'ok' as const, pubkeyBase64: 'different-local-pub' }),
+      setListing,
+    });
+    expect(setListing).not.toHaveBeenCalled();
+  });
+
+  // WI-762: a non-owner member device legitimately holds NO local hive key at
+  // all — `loadHiveKeyStatus` returns `not_found`, not a mismatched pubkey.
+  // There is no competing local identity to check, so this must proceed
+  // (this is the normal, expected path for every member device — the ORIGINAL
+  // bug report worried a naive fix would instead make this incorrectly bail).
+  it('no local key held (normal member device, not_found) → proceeds + announces with the gist secret', async () => {
+    let listing: { inviteSecret?: string } | undefined;
+    const gist: OwnerHiveIdentity = { ...EXISTING, pubkeyBase64: 'owner-only-pub' };
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: okId,
+      fetchIdentity: async () => gist,
+      loadPubkey: async () => ({ kind: 'not_found' as const }),
+      setListing: async (i) => {
+        listing = i;
+        return {} as unknown as never;
+      },
+      authorPolicy: async () => ({ ok: true }) as unknown as never,
+    });
+    expect(listing).toMatchObject({ inviteSecret: gist.inviteSecret });
+  });
+
+  // WI-762 (the actual bug fixed here): a local key IS present but the keychain
+  // read/decrypt failed — this must NOT be treated as "no local identity" (the
+  // original `localPubkey && …` short-circuit did exactly that, silently
+  // proceeding to adopt an unverified gist identity). Fail closed instead.
+  it('local key present but unreadable (error) → does NOT adopt an unverified identity', async () => {
+    const setListing = vi.fn(setOk);
+    await shareExistingHive({
+      isEnabled: async () => true,
+      resolveGithub: okId,
+      fetchIdentity: async () => ({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      loadPubkey: async () => ({ kind: 'error' as const, reason: 'decryption_failed' }),
       setListing,
     });
     expect(setListing).not.toHaveBeenCalled();

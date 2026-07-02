@@ -106,3 +106,6 @@
 [submodule "libs/generic/tauri-release-kit"]
 	path = libs/generic/tauri-release-kit
 	url = https://github.com/Papercusp/tauri-release-kit.git
+[submodule "libs/generic/resumable-download"]
+	path = libs/generic/resumable-download
+	url = https://github.com/Papercusp/resumable-download.git

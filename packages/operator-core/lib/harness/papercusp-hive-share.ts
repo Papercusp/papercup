@@ -32,7 +32,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveLocalGithubIdentity } from '../identity/resolve-local-github-identity';
 import { keychainStore, keychainLoad } from '../identity/keychain';
-import { hiveKeychainId, HIVE_KEYPAIR_SERVICE, loadHivePubkey } from '../identity/hive-keypair';
+import { hiveKeychainId, HIVE_KEYPAIR_SERVICE, loadHiveKeyStatus, type HiveKeyStatus } from '../identity/hive-keypair';
 import { pubkeyBase64FromDer } from '../identity/ed25519';
 import { setHiveListing } from '../hive-set-listing';
 import { authorHivePolicy } from '../hive-policy-author';
@@ -72,8 +72,13 @@ export interface HiveShareDeps {
   canonicalSecret?: () => string | null;
   /** Derive the raw-32 pubkey (base64) from the private DER. Default: pubkeyBase64FromDer. */
   derivePubkey?: (der: Buffer) => string;
-  /** This hive's actual pubkey (null if not the owner box). Default: loadHivePubkey. */
-  loadPubkey?: (workspaceId: string, slug: string) => Promise<string | null>;
+  /** This hive's actual local key status — 'not_found' on a non-owner box (no
+   *  competing local identity, safe to proceed), 'ok' with the pubkey to compare
+   *  against the gist on the owner box, or 'error' when a key IS present but
+   *  couldn't be read/decrypted (must NOT be treated as 'not_found' — WI-762: a
+   *  read/decrypt failure is not proof of "no competing identity", so the guard
+   *  fails closed on 'error' instead of silently proceeding). Default: loadHiveKeyStatus. */
+  loadPubkey?: (workspaceId: string, slug: string) => Promise<HiveKeyStatus>;
   /** Extra GitHub logins admitted beyond the owner — the team allowlist that makes the
    *  dogfood a real SHARED hive (P-007). Default: CANONICAL_HIVE_TEAM_ALLOWLIST. */
   teamAllowlist?: readonly string[];
@@ -225,7 +230,12 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
  * actual pubkey, the local hive was created independently and can't retroactively
  * adopt the shared identity — SKIP (announcing a mismatched identity would put this
  * device on a different topic). To converge, that device must be re-created with the
- * flag on so the create path adopts the gist first.
+ * flag on so the create path adopts the gist first. This guard is meaningful ONLY on
+ * the owner box (only it ever holds the hive's private key to compare); a non-owner
+ * member device legitimately has no local key at all (`loadHiveKeyStatus` returns
+ * `not_found`) and always proceeds — there is no competing identity for it to check.
+ * A genuine key-read/decrypt ERROR is distinct from "no key" and fails closed (WI-762)
+ * rather than being silently treated as the safe not_found case.
  *
  * Idempotent + best-effort + flag-gated; a no-op when the flag is off.
  */
@@ -235,16 +245,25 @@ export async function shareExistingHive(deps: HiveShareDeps = {}): Promise<void>
 
   const resolveGithub = deps.resolveGithub ?? resolveLocalGithubIdentity;
   const fetchIdentity = deps.fetchIdentity ?? fetchOwnerHiveIdentity;
-  const loadPubkey = deps.loadPubkey ?? loadHivePubkey;
+  const loadPubkey = deps.loadPubkey ?? loadHiveKeyStatus;
 
   try {
     const id = await resolveGithub();
     if (id.kind !== 'ok') return;
     const existing = await fetchIdentity(id.token);
     if (existing) {
-      const localPubkey = await loadPubkey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
-      // Only announce a gist identity that matches this hive's real pubkey.
-      if (localPubkey && localPubkey !== existing.pubkeyBase64) return;
+      const status = await loadPubkey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
+      // WI-762: the original guard was `if (localPubkey && localPubkey !== existing.pubkeyBase64) return`
+      // — a plain `string | null` collapses "no local key held" (a normal non-owner
+      // device; nothing to compare, safe to proceed) and "a local key IS held but
+      // failed to load/decrypt" (a real error) into the same falsy `null`, so a
+      // read/decrypt failure fell through the `localPubkey &&` short-circuit and
+      // silently proceeded to adopt an UNVERIFIED gist identity. Handle the three
+      // cases explicitly:
+      if (status.kind === 'error') return; // can't verify — fail closed, don't adopt an unverified identity
+      if (status.kind === 'ok' && status.pubkeyBase64 !== existing.pubkeyBase64) return; // mismatched local identity — skip
+      // status.kind === 'not_found': no local identity to compare (the expected,
+      // legitimate state for every non-owner member device) — proceed.
     }
     await goSharedHive({ githubLogin: id.githubLogin, token: id.token, existing }, deps);
   } catch {
