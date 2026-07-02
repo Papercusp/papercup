@@ -60,47 +60,64 @@ export async function buildHiveRekeyBootDeps(opts: {
 }): Promise<HiveRekeyBootDeps | null> {
   // 1. Flag FIRST — the cheapest off-path (cached read). Default-off ⇒ null ⇒ unchanged.
   if (!(await getFlag(FLAGS.HIVE_REKEY, 'system'))) return null;
-  // 2. The re-key applies only to a hive harness.
-  const hiveHomeSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-  if (!hiveHomeSlug) return null;
-  // 3. This device's identity — the FIRST real LocalDevice (same keypair the announce uses).
-  //    No local GitHub identity ⇒ cannot build a device ⇒ no re-key on this box.
-  const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
-  const ident = await resolveLocalGithubIdentity();
-  if (ident.kind !== 'ok') return null;
-  const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
-  // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
-  const crypto = await resolveHiveEpochCrypto(true);
-  const provider = createEpochKeyProvider(
-    crypto,
-    createPgWrappedKeyLoader(opts.workspaceId, hiveHomeSlug),
-    localDevice,
-  );
-  const resolveKey = buildEpochKeyResolver({
-    crypto,
-    provider,
-    isOwner: () => loadHivePubkey(opts.workspaceId, hiveHomeSlug).then((pk) => pk !== null),
-  });
-  const pending = new PendingEpochContent();
-  const epochGate = buildEpochDecryptGate({
-    crypto,
-    resolveKey,
-    hiveId: hiveHomeSlug,
-    pending,
-    // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
-    // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
-    onTrace: (phase, detail) =>
-      recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
-  });
-  const epochEncrypt = buildEpochEncryptCapability({
-    crypto,
-    resolveKey,
-    hiveId: hiveHomeSlug,
-    getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, hiveHomeSlug),
-  });
-  // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
-  // resolved hiveHomeSlug — which is the AAD `hiveId`, so a decrypt-fail's hive=… can be
-  // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
-  recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
-  return { hiveHomeSlug, epochGate, epochEncrypt, pending };
+  // Steps 2-4 are wrapped fail-open (WI-755): this whole composition is BEST-EFFORT by
+  // contract (see the docstring above — null always means "callers do today's plaintext
+  // path, byte-for-byte"), so any resolution hiccup along the way — a transient PG error,
+  // a harness-composition-rig test scope that doesn't wire a cell around this boot-time
+  // call the way it does per-op cell-scoped calls, a missing local device identity —
+  // degrades to null rather than failing the whole harness boot. This mirrors the
+  // `ownHiveHomeSlug` resolution immediately above this function's boot.ts call site,
+  // which wraps the SAME `hiveHomeSlugForHarness` call in an identical fail-open try/catch
+  // for the identical reason.
+  try {
+    // 2. The re-key applies only to a hive harness.
+    const hiveHomeSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+    if (!hiveHomeSlug) return null;
+    // 3. This device's identity — the FIRST real LocalDevice (same keypair the announce uses).
+    //    No local GitHub identity ⇒ cannot build a device ⇒ no re-key on this box.
+    const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
+    const ident = await resolveLocalGithubIdentity();
+    if (ident.kind !== 'ok') return null;
+    const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
+    // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
+    const crypto = await resolveHiveEpochCrypto(true);
+    const provider = createEpochKeyProvider(
+      crypto,
+      createPgWrappedKeyLoader(opts.workspaceId, hiveHomeSlug),
+      localDevice,
+    );
+    const resolveKey = buildEpochKeyResolver({
+      crypto,
+      provider,
+      isOwner: () => loadHivePubkey(opts.workspaceId, hiveHomeSlug).then((pk) => pk !== null),
+    });
+    const pending = new PendingEpochContent();
+    const epochGate = buildEpochDecryptGate({
+      crypto,
+      resolveKey,
+      hiveId: hiveHomeSlug,
+      pending,
+      // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
+      // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
+      onTrace: (phase, detail) =>
+        recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
+    });
+    const epochEncrypt = buildEpochEncryptCapability({
+      crypto,
+      resolveKey,
+      hiveId: hiveHomeSlug,
+      getCurrentEpoch: () => getHiveEpoch(opts.workspaceId, hiveHomeSlug),
+    });
+    // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
+    // resolved hiveHomeSlug — which is the AAD `hiveId`, so a decrypt-fail's hive=… can be
+    // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
+    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
+    return { hiveHomeSlug, epochGate, epochEncrypt, pending };
+  } catch {
+    // Fail-open: today's behavior (plaintext path, byte-for-byte) — same silent-catch
+    // pattern as `ownHiveHomeSlug`'s `hiveHomeSlugForHarness` call at this function's
+    // boot.ts call site (no console.error: a caught, expected-degradation path here
+    // must not trip a fail-on-console test harness — WI-755).
+    return null;
+  }
 }

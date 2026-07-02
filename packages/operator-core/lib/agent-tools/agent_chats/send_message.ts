@@ -45,9 +45,21 @@ export default defineTool({
     // Fire-and-forget POST — the messages endpoint starts an SSE
     // stream that drives the assistant reply. We don't consume it
     // here; the operator dock / mobile / chat UI handle that.
-    // Using a 1s timeout so a hung endpoint can't tie up this tool
-    // call; the message is either accepted in milliseconds (insert
-    // + stream start) or it's a real failure worth surfacing.
+    //
+    // EI-1593 root cause (fixed): fetch() resolves once RESPONSE HEADERS
+    // arrive, but the route only calls sseResponse() (which flushes headers)
+    // AFTER prompt assembly finishes — and assembly's own memory-context
+    // fetch alone is budgeted up to MEMORY_INJECT_TIMEOUT_MS=5s (memory/
+    // op-deadline.ts), with an additional ~3s plan-context fetch for
+    // worker/validator/reviewer roles. A 2s client-side abort routinely fired
+    // BEFORE headers were sent, tearing down the underlying connection; the
+    // server's sseResponse({ signal: req.signal }) treats that exactly like a
+    // user-cancel and kills the freshly-spawned claude-code child with
+    // SIGTERM (repro: chat turn errors "claude-code exited 143" within ~2s,
+    // every time). Raised well past the ~8s worst-case assembly budget (with
+    // slack for DB/network jitter under fleet load) so the common case
+    // resolves on headers long before this fires; it remains a true upper
+    // bound so a genuinely hung endpoint still can't wedge this tool call.
     const url = `${base}/api/harness/${encodeURIComponent(args.slug)}/agent-chats/${encodeURIComponent(args.chatId)}/messages`;
     let initialStatus: number;
     try {
@@ -55,7 +67,7 @@ export default defineTool({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ content: args.content }),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(15000),
       });
       initialStatus = r.status;
       // 4xx are real errors (chat archived, cost cap, in-flight reply

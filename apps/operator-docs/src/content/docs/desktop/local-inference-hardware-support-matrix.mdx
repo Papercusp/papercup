@@ -34,7 +34,7 @@ doc-drift fix.
 
 | Hardware tier | Recommendation | Notes |
 |---|---|---|
-| **NVIDIA, ≥24GB VRAM** | `vLLM` + AWQ/GPTQ (managed container) preferred for max concurrency; `llama-server` GGUF as the no-container fallback | Both lanes certified against the same underlying model once the P-006/P-007 certification battery runs |
+| **NVIDIA, ≥24GB VRAM** | `vLLM` + AWQ/GPTQ (managed container) preferred for max concurrency; `llama-server` GGUF as the no-container fallback | The pipeline (`recommend.ts`/`provision.ts`/`vllm-container.ts`) is fully wired for the vLLM lane — including downgrading to `llama-server` when no working Docker/Podman runtime is found (D-009 #3) — but as of this writing `CERTIFIED_CATALOG` (catalog.ts) has only ONE entry for this tier, `llama-server`-backed and `status: 'provisional'`. So today's actual recommendation at this tier is still `llama-server`; the vLLM lane activates automatically the moment a `backend: 'vllm'` entry is added to the catalog — no wizard/recommend code changes needed |
 | **NVIDIA, \<24GB VRAM** (the `nvidia-mid` / `nvidia-low` tiers) | `llama-server` GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable `num_ctx` | No vLLM lane at this tier (concurrency isn't the point; fitting in VRAM is) |
 | **Apple Silicon (Metal)** | `llama-server` built with the Metal backend, single/low-stream concurrency | No vLLM lane — vLLM is CUDA-only (D-004) |
 | **CPU-only (no GPU)** | `llama-server` CPU build, smallest certified quant | The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning |
@@ -61,21 +61,33 @@ there is **no separate hardcoded copy of the matrix in the UI**:
    (this is where the `>=24GB` / `>=12GB` thresholds actually live); `recommendCombo()` matches
    the tier against the catalog and returns a `Recommendation` (entry + human-readable reason),
    or an honest "nothing fits, route to cloud" answer when the tier is `cpu-only` or no catalog
-   entry targets it yet.
+   entry targets it yet. Its `RecommendOptions.containerRuntimeAvailable` (D-009 #3) lets a
+   caller pass `false` to skip every `backend: 'vllm'` candidate and fall through to the
+   next-best (typically `llama-server`) entry for the same tier — the "downgrade when no
+   working Docker/Podman runtime" behavior; the default (`undefined`, used by every pre-P-013
+   call site) applies no filter.
 4. **`provisioner/catalog.ts`** — `CERTIFIED_CATALOG`: the actual list of hardware-tier →
    backend/model combos (this is the table's *cell contents* — model ref, quant, VRAM
    requirement, serve config). Each entry carries a `status` (`provisional` until it clears the
    P-006/P-007 certification battery, then `certified`) and a `sourceRef` back to the decision
    that produced it. **Add a new matrix row by adding a catalog entry here — never by hardcoding
-   a second table elsewhere.**
-5. **`provisioner/provision.ts`** — `planProvision(opts?: { binPath?: string })` composes 1–4 into a
-   `ProvisionPlan` (plus the weights-download plan and backend unit-file path). This is the
-   single function the headless CLI (`provisioner/cli.ts`), the Desktop status route, and the
-   Desktop install route all call. `planProvision()`'s optional `binPath` (an *already-resolved*
-   `llama-server` binary path) threads straight through to `renderLlamaServerUnit` —
-   `planProvision()` itself deliberately does NOT resolve the binary (that would make this
-   "fast, read-only" function do a network fetch / from-source build); the *caller* resolves it
-   first and passes it in.
+   a second table elsewhere.** As of this writing the catalog holds exactly one entry
+   (`ornith-35b-iq3m-llama-server`, `backend: 'llama-server'`, tier `nvidia-24gb-plus`,
+   `status: 'provisional'`) — no `backend: 'vllm'` entry exists yet, even though the rest of the
+   pipeline (below) already supports one.
+5. **`provisioner/provision.ts`** — `planProvision(opts?: { binPath?, vllmDeps?, vllmImage?,
+   hfCacheDir? })` composes 1–4 into a `ProvisionPlan` (plus the weights/image-download plan and
+   backend unit-file path). This is the single function the headless CLI (`provisioner/cli.ts`),
+   the Desktop status route, and the Desktop install route all call. For NVIDIA hardware it also
+   probes for a working container runtime (`vllm-container.ts`'s `detectContainerRuntime` — only
+   NVIDIA is probed, since vLLM is CUDA-only per D-004) and feeds that into `recommendCombo`'s
+   `containerRuntimeAvailable` gate; when the matched entry's `backend` is `'vllm'` it resolves
+   the pinned container image via `resolveVllmImage` and renders the unit with
+   `renderVllmContainerUnit` instead of `renderLlamaServerUnit`. `planProvision()`'s optional
+   `binPath` (an *already-resolved* `llama-server` binary path) threads straight through to
+   `renderLlamaServerUnit` — `planProvision()` itself deliberately does NOT resolve the binary or
+   pull the vLLM image (that would make this "fast, read-only" function do a network fetch /
+   from-source build); the *caller* resolves/pulls first and passes the result in.
 6. **`endpoint-route/routes/desktop/local-model-status.ts`** — `GET
    /api/desktop/local-model-status`, a thin read-only `defineTool` wrapper over
    `planProvision()` with **no** `binPath` (it's a status/display read, not an install — the
@@ -84,14 +96,19 @@ there is **no separate hardcoded copy of the matrix in the UI**:
 7. **`endpoint-route/routes/desktop/local-model-install.ts`** — `POST
    /api/desktop/local-model-install`, the write side: writes the backend's systemd unit and
    registers it in the gateway's local-backend pool (`applyProvision()`), optionally
-   enable+starts it (`start`). Takes `{ start?, provisionBinary? }`. `provisionBinary:true`
-   (WI-1617/D-009 #2 — mirrors the CLI's opt-in `--provision-binary` flag, default **false**)
-   calls `llama-binary.ts`'s `resolveLlamaBinary()` FIRST (cache-hit fast; a cache-miss
-   downloads a matching GitHub-release prebuilt or builds from source — genuinely slow) and
-   passes the resolved path into `planProvision({ binPath })` before applying, so the rendered
-   unit points at that real binary instead of assuming one is already on `PATH`. A resolve
-   failure returns `{ ok:false, error }` — no silent bare-PATH fallback for a caller that
-   explicitly opted into binary provisioning.
+   enable+starts it (`start`). Takes `{ start?, provisionBinary?, pullVllmImage? }`.
+   `provisionBinary:true` (WI-1617/D-009 #2 — mirrors the CLI's opt-in `--provision-binary`
+   flag, default **false**) calls `llama-binary.ts`'s `resolveLlamaBinary()` FIRST (cache-hit
+   fast; a cache-miss downloads a matching GitHub-release prebuilt or builds from source —
+   genuinely slow) and passes the resolved path into `planProvision({ binPath })` before
+   applying, so the rendered unit points at that real binary instead of assuming one is already
+   on `PATH`. `pullVllmImage:true` (WI-1618/D-009 #3 — mirrors the CLI's opt-in
+   `--provision-vllm-image` flag, default **false**) pulls the pinned vLLM container image
+   (`vllm-container.ts`'s `pullVllmImage`) FIRST when it isn't already cached locally — a real
+   multi-GB network fetch on a cache miss, same slow-request contract as `provisionBinary`; only
+   meaningful when a working Docker/Podman runtime is present and the recommended combo is a
+   `vllm` entry. Both resolve failures return `{ ok:false, error }` — no silent fallback for a
+   caller that explicitly opted into binary/image provisioning.
 8. **`apps/operator/app/_components/SetupWizard/StepLocalModel.tsx`** — the wizard step
    (rendered by both the legacy Next tree and, via the `@/app/_components/...` alias, the active
    `operator-vite` `/setup` route). It fetches `local-model-status` for display, renders
@@ -100,6 +117,8 @@ there is **no separate hardcoded copy of the matrix in the UI**:
    Install and Start actions POST to `local-model-install` with `provisionBinary: true` — so
    the wizard's own install path DOES resolve a real `llama-server` binary today (the item-5
    "assumes PATH" caveat applies only to the read-only status display, not the actual install).
+   It does **not** yet pass `pullVllmImage: true` — moot today since the catalog has no
+   `backend: 'vllm'` entry (item 4), but worth revisiting once one is added.
 
 So "wire the wizard to the matrix as source of truth instead of a hardcoded duplicate" was, at
 the time this doc was written, **already true by construction** — the wizard has never had its
@@ -133,6 +152,9 @@ the provisioner doesn't have to reverse-engineer it from `tierOf()`'s if/else ch
 - Decision **D-009** on plan `local-concurrent-inference-2026-07-02` — the full packaging
   rationale (OMP bundling, llama-server on-demand fetch, vLLM managed-container, resumable
   checksummed downloads) this matrix is one part of.
-- Plan items **P-012** (llama-server on-demand binary provisioning), **P-013** (vLLM
-  container provisioning), **P-011** (resumable/checksummed downloader) — the still-open
-  follow-ups this decision spawned.
+- Plan items this decision spawned: **P-012** (llama-server on-demand binary provisioning,
+  WI-1617) and **P-013** (vLLM container provisioning, WI-1618) have **landed**
+  (`llama-binary.ts` / `vllm-container.ts`, wired into `provision.ts` and both opt-in via
+  `local-model-install.ts`'s `provisionBinary` / `pullVllmImage`) — see items 5 and 7 above.
+  **P-011** (a resumable/checksummed downloader) is still open: `weights.ts` only resolves
+  already-present ollama blobs + returns a `pullHint`; it performs no download itself.

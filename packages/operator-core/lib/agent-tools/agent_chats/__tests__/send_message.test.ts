@@ -2,8 +2,12 @@
  * agent_chats:send_message — fire-and-forget message append with INVERTED
  * timeout logic.
  *
- * The tool POSTs to the harness messages endpoint with a 2s AbortSignal.timeout
- * and reads the *initial* response only — it never consumes the SSE body. Its
+ * The tool POSTs to the harness messages endpoint with an AbortSignal.timeout
+ * (EI-1593: raised from 2s to 15s — the route doesn't flush response headers
+ * until AFTER prompt assembly, whose memory-context fetch alone is budgeted up
+ * to 5s, so a 2s client abort routinely fired before headers ever arrived and
+ * killed the freshly-spawned agent) and reads the *initial* response only — it
+ * never consumes the SSE body. Its
  * branches are counterintuitive:
  *   • 2xx initial status      → { ok: true } (accepted; no `mode`)
  *   • ≥400 initial status     → { isError: true } with `HTTP <code>` + truncated body
