@@ -171,8 +171,11 @@ export function buildFileLockAuthorityHandlers(
         const ts = now();
         const expiresAtMs = expiryMs(result.expiresTs, ts, ttlSec);
         // G-0 (P-033): stamp the grant with the prior holder's published sha /
-        // the expiry-reclaim warning, THEN record this grant.
-        const shaToken = shaTokenForGrant(p.coordinationDomain, p.paths, ts);
+        // the expiry-reclaim warning, THEN record this grant. `p.owner` is
+        // passed as the acquiring identity so a holder re-acquiring its OWN
+        // expired-but-unreleased grant isn't misreported as unsynced risk
+        // (WI-1549).
+        const shaToken = shaTokenForGrant(p.coordinationDomain, p.paths, ts, p.owner);
         noteShaTokenGrant(p.coordinationDomain, p.paths, p.owner, expiresAtMs);
         for (const path of p.paths) {
           emit({ kind: 'acquire', scope, path, owner: p.owner, expiresAtMs, ts });

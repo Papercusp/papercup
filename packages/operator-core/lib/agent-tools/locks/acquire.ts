@@ -236,7 +236,9 @@ export default defineTool({
       // wait/wake_on_grant queue grants below stay unstamped — that queue is
       // the documented machine-local residual.
       const held = first.held ?? paths;
-      const shaToken = first.sha_token ?? shaTokenForGrant(coordinationDomain, held, Date.now());
+      // WI-1549: pass `ownerId` so a holder re-acquiring its OWN
+      // expired-but-unreleased grant isn't misreported as unsynced risk.
+      const shaToken = first.sha_token ?? shaTokenForGrant(coordinationDomain, held, Date.now(), ownerId);
       noteShaTokenGrant(coordinationDomain, held, ownerId, first.expires_ts.getTime());
       return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held, undefined, shaToken);
     }

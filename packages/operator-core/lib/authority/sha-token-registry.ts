@@ -27,8 +27,9 @@
  * that reconstruction is a follow-up, not wired here.
  *
  * Pure + injectable-clock (callers pass `nowMs`), module-singleton like the
- * other authority registries, bounded (FIFO eviction) so a pathological
- * path-cardinality can't grow it unbounded.
+ * other authority registries, bounded (LRU eviction — WI-1548) so a
+ * pathological path-cardinality can't grow it unbounded without silently
+ * dropping still-hot entries.
  */
 
 /** The sha-token stamp attached to a file-lock grant (G-0). */
@@ -47,7 +48,7 @@ interface PathTokenState {
   active?: { owner: string; expiresAtMs: number };
 }
 
-/** Bound on tracked (domain, path) entries — FIFO-evicted beyond this. */
+/** Bound on tracked (domain, path) entries — LRU-evicted beyond this (WI-1548). */
 const MAX_ENTRIES = 8192;
 
 const state = new Map<string, PathTokenState>();
@@ -57,17 +58,38 @@ function key(domain: string, path: string): string {
   return `${domain}\0${path}`;
 }
 
+/**
+ * Bump `k` to the most-recently-used position. A JS `Map` iterates in
+ * insertion order, so delete+re-set moves the key to the END without
+ * touching any other entry's relative order — the standard Map-as-LRU trick.
+ * Called on every touch (grant, release, AND lookup via
+ * {@link shaTokenForGrant}) so a path that's merely read stays protected from
+ * eviction, not just one that's written.
+ */
+function touch(k: string, e: PathTokenState): void {
+  state.delete(k);
+  state.set(k, e);
+}
+
 function entry(domain: string, path: string): PathTokenState {
   const k = key(domain, path);
-  let e = state.get(k);
-  if (!e) {
-    e = {};
-    if (state.size >= MAX_ENTRIES) {
-      const oldest = state.keys().next().value;
-      if (oldest !== undefined) state.delete(oldest);
-    }
-    state.set(k, e);
+  const existing = state.get(k);
+  if (existing) {
+    touch(k, existing);
+    return existing;
   }
+  const e: PathTokenState = {};
+  if (state.size >= MAX_ENTRIES) {
+    // Was: `state.keys().next().value` — the oldest-BY-INSERTION key, which
+    // is exactly WI-1548: a hot path inserted early but still actively
+    // granted/released kept getting evicted ahead of genuinely-cold, newer
+    // entries. `touch()` on every access keeps the map ordered
+    // least-recently-used-first, so the true head is the right thing to
+    // evict here.
+    const lru = state.keys().next().value;
+    if (lru !== undefined) state.delete(lru);
+  }
+  state.set(k, e);
   return e;
 }
 
@@ -76,16 +98,33 @@ function entry(domain: string, path: string): PathTokenState {
  * {@link noteShaTokenGrant} for the same grant. `requiredSha` is the most
  * recently published sha across the paths (one repo domain ⇒ one lineage);
  * `unsyncedRisk` is true when ANY path's outstanding grant expired without a
- * release.
+ * release AND the new acquirer (`newOwner`) differs from the expired grant's
+ * owner.
+ *
+ * `newOwner` (WI-1549): pass the identity that is ABOUT to receive this
+ * grant, when known. Without it, an expired-without-release grant always
+ * reads as unsynced risk — the original, conservative behavior. WITH it, a
+ * holder re-acquiring its OWN expired-but-unreleased path (its session
+ * merely stalled past the ttl and reconnected before anyone else touched the
+ * path) is correctly NOT flagged: the work never left that holder's machine,
+ * so there is nothing that could be unsynced. A different owner picking up
+ * the same expired grant still sees the risk.
  */
-export function shaTokenForGrant(domain: string, paths: readonly string[], nowMs: number): ShaTokenGrant {
+export function shaTokenForGrant(
+  domain: string,
+  paths: readonly string[],
+  nowMs: number,
+  newOwner?: string,
+): ShaTokenGrant {
   let latest: { sha: string; ts: number } | null = null;
   let unsyncedRisk = false;
   for (const p of paths) {
-    const e = state.get(key(domain, p));
+    const k = key(domain, p);
+    const e = state.get(k);
     if (!e) continue;
+    touch(k, e); // a lookup counts as "hot" too — not just writes (WI-1548).
     if (e.lastPublished && (!latest || e.lastPublished.ts > latest.ts)) latest = e.lastPublished;
-    if (e.active && nowMs > e.active.expiresAtMs) unsyncedRisk = true;
+    if (e.active && nowMs > e.active.expiresAtMs && e.active.owner !== newOwner) unsyncedRisk = true;
   }
   return { requiredSha: latest?.sha ?? null, unsyncedRisk };
 }
