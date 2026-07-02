@@ -774,7 +774,11 @@ export interface CheckpointOpts {
  * gate and D-010 calls for an OWNER-ATTENDED live cutover ("build attended not blind").
  */
 export function partialGreenGateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_PARTIAL_GREEN_GATE === '1';
+  // Default ON (2026-07-01, owner directive): the salvage is confirm-gated — a wrong
+  // prefix guess just fails the confirm run and holds — so there is no unproven-code
+  // risk in arming it everywhere. `PAPERCUSP_PARTIAL_GREEN_GATE=0` is the opt-out
+  // (launch-time config, e.g. to force strict tip-only gating while debugging).
+  return env.PAPERCUSP_PARTIAL_GREEN_GATE !== '0';
 }
 
 /**
@@ -959,8 +963,9 @@ export async function runGreenCheckpoint(
     // holds the clean PREFIX behind it hostage — `main` FFs to the longest prefix that
     // ITSELF runs green (confirm-gated, so the "always tested-green" invariant holds).
     // Runs AFTER the red escalate/broadcast/emit above, so the red tip is still fully
-    // surfaced + the release-fixer still dispatched on it. Default-OFF (env-armed); a
-    // failure here just falls through to the normal hold. (release-pipeline-resilience P-016)
+    // surfaced + the release-fixer still dispatched on it. Default-ON (opt-out via
+    // PAPERCUSP_PARTIAL_GREEN_GATE=0); a failure here just falls through to the normal
+    // hold. (release-pipeline-resilience P-016)
     if (lastReady && partialGreenGateEnabledFromEnv()) {
       const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
         (e) => {

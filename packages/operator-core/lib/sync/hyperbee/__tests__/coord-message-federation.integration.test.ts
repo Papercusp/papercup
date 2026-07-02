@@ -133,8 +133,9 @@ describe('coord_event_log federation (real PG)', () => {
     // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
     await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
-    // P-013: the quarantine table (mig 436 verbatim).
+    // P-013: the quarantine table (mig 436 verbatim) + P-015 rate reason (437).
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '436-coord-quarantine.sql'), 'utf8')));
+    await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '437-coord-quarantine-rate-reason.sql'), 'utf8')));
   }, 60_000);
 
   afterAll(async () => {
@@ -722,6 +723,76 @@ describe('coord_event_log federation (real PG)', () => {
       await plain.writeToPg(wakeRow('q-7'), { authorPubkey: 'peerPubA', origin: 'remote' });
       expect(await applied('q-7')).toBe(true);
       expect(resolver).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('P-015 — policy.rate enforcement (attention surface, quarantine on excess)', () => {
+    beforeEach(() => {
+      resetFederatedWakeRate();
+      vi.mocked(wakeRecipients).mockClear();
+      vi.mocked(sendMessage).mockClear();
+    });
+    const rateProj = (allowFirstN: number) => {
+      let n = 0;
+      return buildCoordMessageProjection({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        sql: db.sql,
+        hiveHomeSlug: HARNESS,
+        resolveCommsTier: async () => ({ tier: 'steer' as const, githubUserId: 4242 }),
+        consumeMessageRate: async () => ++n <= allowFirstN,
+      });
+    };
+    const msg = (msgId: string, extra: Record<string, unknown> = {}): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, { summary: 'hi', to: ['su-B'], ...extra }),
+      ts: 1_700_000_000_000,
+    });
+
+    it('within rate: applies; over rate: quarantined rate-exceeded (never silently dropped)', async () => {
+      const p = rateProj(2);
+      await p.writeToPg(msg('r-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      await p.writeToPg(msg('r-2'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      await p.writeToPg(msg('r-3'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      const applied = await db.sql`SELECT msg_id FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id IN ('r-1','r-2','r-3') ORDER BY msg_id`;
+      expect(applied.map((r: { msg_id: string }) => r.msg_id)).toEqual(['r-1', 'r-2']);
+      const q = await db.sql<{ reason: string }[]>`SELECT reason FROM harness_shared.coord_quarantine WHERE workspace_id=${WS} AND msg_id='r-3'`;
+      expect(q[0]?.reason).toBe('rate-exceeded');
+    });
+
+    it('a rate-gate ERROR fails OPEN (rate is throttling, not the allow-list)', async () => {
+      const p = buildCoordMessageProjection({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        sql: db.sql,
+        hiveHomeSlug: HARNESS,
+        resolveCommsTier: async () => ({ tier: 'steer' as const, githubUserId: 4242 }),
+        consumeMessageRate: async () => {
+          throw new Error('rate store down');
+        },
+      });
+      await p.writeToPg(msg('r-4'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(
+        await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='r-4'`,
+      ).toHaveLength(1);
+    });
+
+    it('an over-rate receipt-requesting message acks quarantined + rate-exceeded (P-014 interplay)', async () => {
+      const p = rateProj(0);
+      await p.writeToPg(msg('r-5', { receipt: true, wake: true }), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const optsx = vi.mocked(sendMessage).mock.calls[0][1] as {
+        extra?: { fed_event?: { payload: Record<string, unknown> } };
+      };
+      expect(optsx.extra?.fed_event?.payload).toMatchObject({
+        delivered: false,
+        quarantined: true,
+        reason: 'rate-exceeded',
+      });
+      expect(wakeRecipients).not.toHaveBeenCalled();
     });
   });
 

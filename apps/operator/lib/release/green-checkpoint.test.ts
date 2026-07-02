@@ -896,8 +896,21 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     expect(calls).not.toContain('runGreen:confirm');
   });
 
-  it('is OFF by default — without PAPERCUSP_PARTIAL_GREEN_GATE a red candidate holds exactly as before', async () => {
-    delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; // override the beforeEach arm
+  it('is ON by default — without PAPERCUSP_PARTIAL_GREEN_GATE set, a red tip still salvages the green prefix', async () => {
+    delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; // no arming needed (default-on, 2026-07-01)
+    const { c3, c2, c4 } = await chain();
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/other'], [c3]: ['@ws/other'], [c4]: ['@ws/failing'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r).toMatchObject({ advanced: true, reason: 'advanced-prefix', advancedTo: c3 });
+  });
+
+  it('opt-out: PAPERCUSP_PARTIAL_GREEN_GATE=0 holds a red candidate exactly as before (strict tip-only gating)', async () => {
+    process.env.PAPERCUSP_PARTIAL_GREEN_GATE = '0';
     const { c1, c2, c3, c4 } = await chain();
     const { deps, calls } = partialDeps({
       candidateFailingTests: ['@ws/failing'],
@@ -906,7 +919,7 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
       confirmGreen: true,
     });
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-    expect(r.reason).toBe('not-green'); // gate OFF ⇒ no salvage attempt
+    expect(r.reason).toBe('not-green'); // gate opted out ⇒ no salvage attempt
     expect(await revParse(repo, 'ready')).toBe(c1);
     expect(calls).not.toContain('commitsInRange'); // the salvage path never ran
   });
