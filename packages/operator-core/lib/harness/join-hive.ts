@@ -207,14 +207,15 @@ export async function joinHiveAsView(
   const getLocalHive =
     deps.getLocalHive ??
     (async (ws: string, slug: string) => (await import('../hive-store')).getHiveBySlug(ws, slug));
+  const resolveOwnerDevicePubkey = deps.resolveOwnerDevicePubkey ?? defaultResolveOwnerDevicePubkey;
+  const announcedPubkey =
+    (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim()
+      ? opts.hivePubkey.trim()
+      : null) ?? (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
   const localOwnedHives = reg.projects.filter(
     (p) => p.harness_kind === 'hive' && p.remote_hive !== true,
   );
   if (localOwnedHives.length > 0) {
-    const announcedPubkey =
-      (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim()
-        ? opts.hivePubkey.trim()
-        : null) ?? (await resolveHivePubkey(opts.workspaceId, opts.hiveId).catch(() => null));
     for (const local of localOwnedHives) {
       if (announcedPubkey) {
         const rec = await getLocalHive(opts.workspaceId, local.slug).catch(() => null);

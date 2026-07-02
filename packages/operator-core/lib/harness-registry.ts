@@ -50,6 +50,17 @@ export interface ProjectEntry {
    * federation gate already returns null for it (no hives row/identity).
    */
   remote_hive?: boolean;
+  // ── Verified hive identity coords on a `remote_hive` VIEW (2026-07-01 Brief-3
+  // live finding). Stamped at JOIN time from the VERIFIED discovery descriptor
+  // (verifyHiveAnnounce-gated), so the substrate's owner-bootstrap admit can
+  // resolve (hivePubkey → ownerDevicePubkey) from the REGISTRY — the one store
+  // that demonstrably resolves in EVERY process — instead of depending on the
+  // joiner's directory instance having (re-)heard the owner's announce (a
+  // multi-minute race that live-blocked owner→joiner federation).
+  /** The joined Hive's raw-32 base64 Ed25519 pubkey (the federation topic key). */
+  hive_pubkey?: string;
+  /** The joined Hive's OWNER device pubkey (base64) from the verified announce. */
+  owner_device_pubkey?: string;
   /**
    * Set when this checkout was registered by the bare invite-LINK join path
    * (`join-link.ts`), which clones someone else's shared repo WITHOUT a local

@@ -1349,11 +1349,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                   harnessSlug: opts.harnessSlug,
                   peer: {
                     githubUserId: frame.github_user_id,
-                  githubLogin: frame.github_login,
-                  devicePubkey: frame.device_pubkey,
-                  attestationGistId: frame.attestation_gist_id,
+                    githubLogin: frame.github_login,
+                    devicePubkey: frame.device_pubkey,
+                    attestationGistId: frame.attestation_gist_id,
+                  },
                 },
-              });
+                {
+                  // The boot ALREADY resolved this harness's hive-home (and keeps it
+                  // current across rekey rebinds) — hand it over instead of letting the
+                  // default re-resolve via registry+PG reads per announce. In the
+                  // substrate SIDECAR (and in-process test harnesses) those default
+                  // reads can be unconfigured and threw per announce (WI-1460: the
+                  // cross-peer suite died on the console.error; live, the admit
+                  // silently skipped). Deterministic + free.
+                  hiveHomeSlugForHarness: async () => hiveHomeProjectionSlug ?? ownHiveHomeSlug ?? null,
+                },
+              );
               if (res.action === 'pending') {
                 recordBootEvent(
                   opts.workspaceId,

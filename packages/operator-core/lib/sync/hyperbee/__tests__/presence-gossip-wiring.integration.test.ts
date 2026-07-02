@@ -104,6 +104,7 @@ function makeDevice() {
   };
 }
 const member = makeDevice();
+const member2 = makeDevice(); // a SECOND device of the same user (gh 42) — for the H2 cross-device del test
 const stranger = makeDevice();
 
 const row = (over?: Partial<SharedPresenceRow>): SharedPresenceRow => ({
@@ -169,7 +170,11 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
       getSwarm: async () => swarm as never,
       sql: db.sql,
       listHiveMembers: (async () => [
-        { githubUserId: 42, deviceAttestations: [{ device_pubkey: member.pubB64 }], revokedPubkeys: [] },
+        {
+          githubUserId: 42,
+          deviceAttestations: [{ device_pubkey: member.pubB64 }, { device_pubkey: member2.pubB64 }],
+          revokedPubkeys: [],
+        },
       ]) as never,
       loadRevokedHivePubkeys: (async () => []) as never,
     });
@@ -258,6 +263,30 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
     expect(rows.every((r) => r.hive_slug === HIVE)).toBe(true); // never 'evil-foreign-hive'
   });
 
+  it('H2: a member device CANNOT evict another device\'s presence row (cross-device del is device-scoped)', async () => {
+    // Device A (member) owns a row; device B (member2, same user gh 42, also
+    // admitted) signs a del targeting A's (gh 42, laptop) row. Even though B is a
+    // valid member and the del is validly self-signed + user-matched, the delete is
+    // scoped to B's OWN device_pubkey — so A's row (owned by device A) SURVIVES.
+    channel.inbound!(await buildPresencePutFrame(row({ machine_label: 'laptop' }), T0 + 100, member.sign));
+    await settle(async () =>
+      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42 AND machine_label='laptop'`).length > 0,
+    );
+    channel.inbound!(
+      await buildPresenceDelFrame(
+        member2.pubB64, // device B signs a del for device A's row
+        { github_user_id: 42, machine_label: 'laptop', harness_slug: HIVE },
+        T0 + 200,
+        member2.sign,
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    // A's row is untouched — B's del could not reach a row it does not own.
+    expect(
+      await db.sql`SELECT device_pubkey FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42 AND machine_label='laptop'`,
+    ).toHaveLength(1);
+  });
+
   it('a del frame removes the presence row (leave tombstone)', async () => {
     channel.inbound!(
       await buildPresenceDelFrame(
@@ -267,11 +296,14 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         member.sign,
       ),
     );
+    // Scoped to the 'laptop' row: the L9-pin test above left a distinct (gh 42,
+    // 'desktop') row that this del does not target — so the del removing ONLY
+    // (gh 42, laptop) is itself the correct, machine-scoped behavior.
     await settle(async () =>
-      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42`).length === 0,
+      (await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42 AND machine_label='laptop'`).length === 0,
     );
     expect(
-      await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42`,
+      await db.sql`SELECT 1 FROM harness_shared.shared_presence WHERE workspace_id=${WS} AND github_user_id=42 AND machine_label='laptop'`,
     ).toHaveLength(0);
   });
 
