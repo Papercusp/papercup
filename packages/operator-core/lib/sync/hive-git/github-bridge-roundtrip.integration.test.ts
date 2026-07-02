@@ -152,8 +152,10 @@ describe('github-bridge round trip (P-007: legacy ⇄ P2P convergence + fork-PR 
     const l3 = await commitAs(legacyWork, LEGACY_EMAIL, 'legacy.txt', 'v3\n', 'L3');
     await git(legacyWork, 'push', '-q', origin, 'refs/heads/main:refs/heads/main');
 
+    // The namespace advances from its LAST INGRESSED head (l2) — egress moved
+    // origin, not the synthetic namespace; l2 → staging → l3 is one FF line.
     const ing = await ingressOriginBranches({ repoPath: store, remoteUrl: origin, branches: ['main'] });
-    expect(ing.updated).toEqual([{ branch: 'main', from: staging, to: l3, forced: false }]);
+    expect(ing.updated).toEqual([{ branch: 'main', from: ghHead, to: l3, forced: false }]);
     const adm = await admitGithubOriginHead({
       repoPath: store,
       lastAdmitted: ghHead,

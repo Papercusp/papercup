@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { SETUP_STEPS, findStep } from './steps';
 
 describe('Setup Wizard steps', () => {
-  it('exactly 11 steps in fixed order', () => {
-    expect(SETUP_STEPS).toHaveLength(11);
+  it('exactly 12 steps in fixed order', () => {
+    expect(SETUP_STEPS).toHaveLength(12);
     expect(SETUP_STEPS.map((s) => s.id)).toEqual([
       'os-permissions',
       'embedded-pg',
       'workspace',
       'agents',
+      'local-model',
       'logins',
       'keys',
       'git',

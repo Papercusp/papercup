@@ -26,6 +26,12 @@ export const SETUP_STEPS: readonly StepDef[] = [
     required: true,
   },
   {
+    id: 'local-model',
+    title: 'Local inference (optional)',
+    summary: 'Detect your GPU and provision a certified local model/backend combo.',
+    required: false,
+  },
+  {
     id: 'logins',
     title: 'Sign in to your accounts',
     summary:

@@ -68,6 +68,14 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     DATABASE_URL: cfg.gymDatabaseUrl,
     HARNESS_ADMIN_DATABASE_URL: cfg.gymDatabaseUrl,
     PAPERCUSP_DATABASE_URL: cfg.gymDatabaseUrl,
+    // GYM-1 layer-2 fix (gym-unwedge-scout-novelty-2026-07-02): the org-pg APP
+    // resolver (libs/db connection.ts resolveAppUrl) consults HARNESS_DATABASE_URL
+    // FIRST and NEVER falls back to DATABASE_URL — unpinned, the gym-operator fell
+    // through to the hardcoded harness_app:harness_app_pwd@localhost:5432 default
+    // against the LIVE native PG → "password authentication failed" on EVERY
+    // getOrgPg() consumer at boot. This was the REAL error behind the 12-day
+    // gym-cycle:error streak (masked by the detail-dropping recorder, also fixed).
+    HARNESS_DATABASE_URL: cfg.gymDatabaseUrl,
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

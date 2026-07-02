@@ -137,7 +137,7 @@ Fixed earlier in P-070: `packages/operator-core/lib/harness/usage-events.ts`.
   *fresh* `postgres()` pool (`db()` = `postgres(getHarnessAdminUrl(), {prepare:false})`),
   NOT getOrgPg. On that client `sql.json()` is CORRECT and `${JSON.stringify}::jsonb`
   double-encodes — the inverse of the getOrgPg rule. Leave their `sql.json()` as-is.
-- `packages/operator-core/lib/operator-rate-limit.ts` binds jsonb (`live-verified
+- `packages/operator-core/lib/operator-rate-limit.ts` binds jsonb (live-verified
   `jsonb_typeof=object`, with accumulated rate-limit state) and — as of the
   2026-06-04 sweep — via the universal `${JSON.stringify}::text::jsonb` form like
   everything else, not the older bare `::jsonb` this note originally described. A

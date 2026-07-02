@@ -93,3 +93,14 @@ grep -rn 'JSON.stringify.*}::jsonb' packages/operator-core/lib
 Any hit is a double-encode. `revoked_pubkeys` (a native PG `text[]`, bound
 directly without `JSON.stringify`) is fine — this only affects `jsonb` columns
 fed a `JSON.stringify` result.
+
+The real guard is the ESLint rule **`papercusp/no-bare-jsonb-cast`** (wired
+`error` for `packages/operator-core/lib`, `packages/coordination/src`,
+`libs/papercusp/libs/db/src` — it also catches a bare `${someVar}::jsonb`
+where the `JSON.stringify` happened on an earlier line, which the grep above
+misses). Don't assume it's actually clean, though: as of 2026-07-02,
+`npx eslint packages/operator-core/lib` still reports 50+ live violations
+re-introduced after the original sweep — see
+**[postgres-js-jsonb-binding](/internal/docs/agent-insights/postgres-js-jsonb-binding)**
+and **EI-6682**. Run eslint on the file you're touching; don't take "the rule
+exists" as proof the codebase is currently compliant.
