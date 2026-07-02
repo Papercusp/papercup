@@ -80,17 +80,23 @@ async function listPublishedRefsNewestFirst(
   runGit: RunGit,
 ): Promise<string[]> {
   const prefix = namespacePrefix(namespaceHex);
-  const r = await runGit(['for-each-ref', '--sort=-committerdate', '--format=%(refname)', prefix], repoPath);
+  const r = await runGit(['for-each-ref', '--format=%(committerdate:unix) %(refname)', prefix], repoPath);
   if (r.code !== 0) return [];
-  const out: string[] = [];
+  const out: { ref: string; ts: number }[] = [];
   for (const line of r.stdout.split('\n')) {
-    const full = line.trim();
+    const t = line.trim();
+    if (!t) continue;
+    const sp = t.indexOf(' ');
+    if (sp < 0) continue;
+    const ts = Number(t.slice(0, sp)) || 0;
+    const full = t.slice(sp + 1);
     if (!full.startsWith(prefix)) continue;
     const ref = full.slice(prefix.length);
     if (isAlwaysKeptRef(ref)) continue;
-    out.push(ref);
+    out.push({ ref, ts });
   }
-  return out;
+  out.sort((a, b) => b.ts - a.ts || b.ref.localeCompare(a.ref));
+  return out.map((entry) => entry.ref);
 }
 
 async function deleteRef(repoPath: string, fullRef: string, runGit: RunGit): Promise<string | null> {
