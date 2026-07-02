@@ -1,0 +1,59 @@
+---
+title: "A \"routine is failing\" EI is usually a reaper self-heal phantom"
+description: "Triage runbook: a routine-failure watchdog EI whose last_error_source is dbos-executor-reaper is a self-heal breadcrumb, not a genuine failure — check source + active before treating it as real."
+discovered: 2026-07-02
+tags: ["watchdog", "routines", "dbos", "self-improvement", "triage"]
+status: active
+documents:
+  - "packages/operator-core/lib/dbos/dbos-executor-reaper.ts"
+  - "packages/operator-core/lib/harness/improvements/watchdog.ts"
+---
+
+The self-improvement watchdog files a `bug` EI titled **"Background routine `\<name>` is failing"**
+whenever a routine carries a non-empty `metadata.last_error` (`collectRoutineFailureSignals`,
+`watchdog.ts`). Most of these are **phantoms**, and multiple auto-implement workers have each
+independently re-diagnosed the same class (EI-5950, EI-6061, EI-6081, EI-6083, … 25+). Read this
+before touching one.
+
+## The trap
+`dbos-executor-reaper.ts` recovers a stuck `routineFire` and, as a **self-heal breadcrumb**,
+stamps the routine with:
+
+```
+metadata.last_error        = "DBOS routineFire produced no DBOS operation output;
+                              executor reaper cancelled the stuck fire and requeued the routine"
+metadata.last_error_source = "dbos-executor-reaper"
+```
+
+This marker means *"I recovered this routine"* — **NOT** that the routine failed. But
+`collectRoutineFailureSignals` alarms on **any** non-empty `last_error` regardless of source, so
+the self-heal note is misread as a failure and an EI is minted. `clearStaleReaperLastError` only
+wipes the marker on the routine's **next successful fire**, so a low-cadence or **deactivated**
+routine carries it (and the phantom) indefinitely.
+
+## Triage in one query
+```sql
+select active, metadata->>'last_error_source' as src, last_fired_at,
+       metadata->>'last_error_at' as err_at
+  from harness_shared.routines where name = '<routine-name>';
+```
+It is a **phantom** (resolve `fixed`, evidence-it's-gone) when any of:
+- `src = 'dbos-executor-reaper'` (a self-heal marker, not an action failure), **and**
+- `active = false` — `collectRoutineFailureSignals` filters `WHERE active = true`, so an inactive
+  routine can never re-file; the EI is structurally dead, **or**
+- `last_fired_at > last_error_at` — the routine already fired successfully after the marker.
+
+`loop-su-*` routines are per-session self-wake loops (`loop:arm`); when the session ends the loop
+goes `active=false, next_fire_at=infinity` — a normal lifecycle, not a wedge.
+
+## When it is NOT a phantom
+- `last_error_source` is absent (git-sync `recordOutcome`) or `'runner'` (a system action that
+  **threw**) → a genuine failure; treat it as real.
+- `metadata.reaped_count` is high (≥3 consecutive reaps, never self-heals) → a genuinely wedged
+  routine the reaper keeps cancelling; the `git-sync-stall-watchdog` alarms on this on purpose.
+
+## The durable class fix is a STOP surface
+Making the collector source-aware (skip `dbos-executor-reaper` markers unless `reaped_count >= N`)
+lives in `watchdog.ts` / `dbos-executor-reaper.ts` — both auto-implement **protected surfaces**.
+Route that to a human (tracked via EI-6061); resolve the individual phantom instances `fixed` with
+the query evidence above.
