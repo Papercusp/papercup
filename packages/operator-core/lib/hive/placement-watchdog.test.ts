@@ -14,6 +14,7 @@ import {
   isReaperReclaim,
   isUnitTerminal,
   isStuckBlockerState,
+  isUnitParked,
   placementConfig,
   reconcileHivePlacements,
   resolveQueenOwners,
@@ -124,6 +125,44 @@ describe('evaluatePlacement — P-020 completion tracking', () => {
   it('terminal beats a dead holder — a bee that completed then died still counts done', () => {
     // The unit reached terminal; the serving bee being dead is irrelevant.
     expect(evaluatePlacement(obs({ hasLiveHolder: false, unitTerminal: true }), CFG).kind).toBe('completed');
+  });
+});
+
+describe('isUnitParked', () => {
+  it('flags only the deliberate-park band (mirrors FEATURE_NON_REQUEUE_STATES\' blocked)', () => {
+    expect(isUnitParked('blocked')).toBe(true);
+    for (const s of ['todo', 'passed', 'in_progress', 'failing', null, undefined]) {
+      expect(isUnitParked(s)).toBe(false);
+    }
+  });
+});
+
+describe('evaluatePlacement — WI-1439 a deliberately PARKED unit is never recovered', () => {
+  it('parked + no live holder → parked (NOT recover — no wake, no counter bump)', () => {
+    const d = evaluatePlacement(obs({ unitParked: true, hasLiveHolder: false }), CFG);
+    expect(d.kind).toBe('parked');
+  });
+  it('live holder still wins over parked (a bee CAN be actively working a blocked item)', () => {
+    const d = evaluatePlacement(obs({ unitParked: true, hasLiveHolder: true }), CFG);
+    expect(d.kind).toBe('healthy');
+  });
+  it('terminal still wins over parked (reached done despite a stale blocked stamp)', () => {
+    const d = evaluatePlacement(obs({ unitParked: true, unitTerminal: true }), CFG);
+    expect(d.kind).toBe('completed');
+  });
+  it('parked short-circuits BEFORE the cursed latch — no breaker/escalation even with a prior curse', () => {
+    const d = evaluatePlacement(
+      obs({ unitParked: true, hasLiveHolder: false, placementStatus: 'cursed', failCount: 5 }),
+      CFG,
+    );
+    expect(d.kind).toBe('parked');
+  });
+  it('parked short-circuits BEFORE the recovery debounce — never re-fires a wake on a timer', () => {
+    const d = evaluatePlacement(
+      obs({ unitParked: true, hasLiveHolder: false, placementStatus: 'recovering', failCount: 1, lastRecoveryAtMs: NOW - (CFG.recoveryDebounceMs + 1) }),
+      CFG,
+    );
+    expect(d.kind).toBe('parked');
   });
 });
 

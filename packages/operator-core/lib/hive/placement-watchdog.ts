@@ -1012,6 +1012,27 @@ export async function reconcileOneHive(
             }
           }
           break;
+        case 'parked':
+          // WI-1439 recovery-churn fix — the unit's OWN status is a deliberate park
+          // (isUnitParked, e.g. `blocked` for an owner/human-gated step). No live
+          // holder is EXPECTED here, so this is NOT pathology: never bump fail/infra
+          // counters, never stamp a loss lineage, and suppress any pre-existing cursed
+          // escalation (mirrors the 'completed' case) since a park supersedes any prior
+          // curse — the item has its own delegator-notify signal path, not the watchdog's.
+          if (existing?.status !== 'blocked') {
+            if (existing?.escalation_msg_id) {
+              await suppressCursedEscalation(existing.escalation_msg_id, unitId);
+            }
+            await upsertPlacement(sql, {
+              ...base,
+              status: 'blocked',
+              failCount: obs.failCount,
+              infraLossCount: obs.infraLossCount,
+              lastLossSpawnId: null,
+              disposition: 'parked',
+            });
+          }
+          break;
         case 'recover':
           await upsertPlacement(sql, {
             ...base,
