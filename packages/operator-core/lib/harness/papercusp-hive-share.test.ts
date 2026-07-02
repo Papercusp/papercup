@@ -108,7 +108,7 @@ describe('goSharedHive', () => {
 
     expect(publishIdentity).not.toHaveBeenCalled();
     expect(listing).toMatchObject({ visibility: 'invite', inviteSecret: 'sec-existing' });
-    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi'] });
+    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi'], comms: { defaultTier: 'steer' } });
   });
 
   it('P-019: an `open` public hive authors membership:open + contentWriteAuthority:author-scoped', async () => {
@@ -213,7 +213,7 @@ describe('goSharedHive', () => {
         },
       },
     );
-    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi', 'teammate-1', 'teammate-2'] });
+    expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi', 'teammate-1', 'teammate-2'], comms: { defaultTier: 'steer' } });
   });
 
   it('later device: a baked canonical secret OVERRIDES a drifted gist secret on announce', async () => {
