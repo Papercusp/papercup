@@ -94,6 +94,63 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
     expect(members[0].githubUsername).toBe('octo-renamed');
   });
 
+  describe('WI-1585 (LIVE-1) — upsert MERGES the device/revocation sets, never replaces', () => {
+    it('REGRESSION: a SECOND DEVICE of the same GitHub user keeps BOTH attested (the announce path passes only the announcing device)', async () => {
+      await seedHive();
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-tower')], bindingStatus: 'verified' },
+        db.sql,
+      );
+      // The iMac announces: ownerAdmitOrPend upserts with ONLY the iMac device.
+      // Old REPLACE semantics clobbered dev-tower here (and the tower's next
+      // attestation clobbered dev-imac back) — content federation dead.
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-imac')], bindingStatus: 'verified' },
+        db.sql,
+      );
+      const read = await getHiveMember(WS, HIVE, 7, db.sql);
+      expect(read?.deviceAttestations.map((d) => d.device_pubkey).sort()).toEqual(['dev-imac', 'dev-tower']);
+    });
+
+    it('re-attesting the SAME device replaces just that entry (supplied wins), no duplicates', async () => {
+      await seedHive();
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-b')] },
+        db.sql,
+      );
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [{ ...dev('dev-a'), created_at: 999, device_label: 'fresh' }] },
+        db.sql,
+      );
+      const read = await getHiveMember(WS, HIVE, 7, db.sql);
+      expect(read?.deviceAttestations).toHaveLength(2);
+      const a = read?.deviceAttestations.find((d) => d.device_pubkey === 'dev-a');
+      expect(a?.created_at).toBe(999); // the supplied entry won for that device
+      expect(a?.device_label).toBe('fresh');
+      expect(read?.deviceAttestations.some((d) => d.device_pubkey === 'dev-b')).toBe(true);
+    });
+
+    it('revocation is STICKY: an announce-driven upsert (revokedPubkeys defaulting to []) cannot wipe it, and a revoked device cannot re-enter via merge', async () => {
+      await seedHive();
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-a'), dev('dev-evil')] },
+        db.sql,
+      );
+      await addRevokedHivePubkeys(WS, HIVE, 7, ['dev-evil'], db.sql);
+      // A later plain announce upsert (defaults: no revokedPubkeys) used to
+      // REPLACE revoked_pubkeys with [] — resurrecting the revoked device.
+      await upsertHiveMember(
+        { workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 7, githubUsername: 'avi', deviceAttestations: [dev('dev-evil')] },
+        db.sql,
+      );
+      const read = await getHiveMember(WS, HIVE, 7, db.sql);
+      expect(read?.revokedPubkeys).toEqual(['dev-evil']); // sticky
+      // …and the revoked device's attestation is dropped by the merge filter.
+      expect(read?.deviceAttestations.map((d) => d.device_pubkey)).toEqual(['dev-a']);
+      expect([...(await loadRevokedHivePubkeys(WS, HIVE, db.sql))]).toEqual(['dev-evil']);
+    });
+  });
+
   it('loadRevokedHivePubkeys UNIONS + dedupes revoked_pubkeys across all members (the blocklist)', async () => {
     await seedHive();
     await upsertHiveMember({ workspaceId: WS, hiveHomeSlug: HIVE, githubUserId: 1, githubUsername: 'a', revokedPubkeys: ['x', 'y'] }, db.sql);

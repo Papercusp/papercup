@@ -141,7 +141,13 @@ describe('/login auth surface', () => {
     renderLogin();
     await screen.findByRole('heading', { name: /Sign in/i });
     fireEvent.submit(screen.getByRole('button', { name: 'Sign in' }).closest('form')!);
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Wrong password.'));
+    // The impl passes a description second arg with the raw error code —
+    // the invariant here is the headline message + the code surfacing.
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        'Wrong password.',
+        expect.objectContaining({ description: expect.stringContaining('bad_password') }),
+      ));
     expect(navigateMock).not.toHaveBeenCalled();
   });
 

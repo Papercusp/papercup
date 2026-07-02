@@ -90,11 +90,12 @@ export function roleDefaultSpec(role: string): string {
   return roleModelDefault(role) ?? '';
 }
 
-/** Rank of the first tier whose model id matches `spec`'s, or -1. */
+/** Rank of the first tier whose model FAMILY matches `spec`'s ([1m]-marker
+    insensitive — see `specFamilyKey`), or -1. */
 function tierRankOfSpec(tiers: readonly ModelTier[], spec: string): number {
   if (!spec) return -1;
-  const id = specModelId(spec);
-  return tiers.findIndex((t) => specModelId(t.spec) === id);
+  const key = specFamilyKey(spec);
+  return tiers.findIndex((t) => specFamilyKey(t.spec) === key);
 }
 
 /**
@@ -250,8 +251,8 @@ export function effectiveTierConfig(
 export function roleHomeTier(role: string): string | undefined {
   const def = roleModelDefault(role);
   if (!def) return undefined;
-  const id = specModelId(def);
-  return DEFAULT_MODEL_TIERS.find((t) => specModelId(t.spec) === id)?.name;
+  const key = specFamilyKey(def);
+  return DEFAULT_MODEL_TIERS.find((t) => specFamilyKey(t.spec) === key)?.name;
 }
 
 /**

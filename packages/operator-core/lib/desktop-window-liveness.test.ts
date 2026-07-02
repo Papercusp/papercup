@@ -6,6 +6,9 @@ import {
   __resetDesktopLivenessCache,
   parseActiveWindowId,
   ownerOwnsWindow,
+  parsePpidFromStat,
+  pidHasWindowAncestor,
+  windowOwningPids,
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';

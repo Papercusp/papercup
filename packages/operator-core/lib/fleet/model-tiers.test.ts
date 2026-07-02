@@ -46,13 +46,13 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
   it('resolves a tier for a role at/below it (no clamp)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const r = resolveTierSpec({ tier: 'deep', role: 'worker' });
-    expect(r).toMatchObject({ ok: true, spec: 'opus:high', tier: 'deep' });
+    expect(r).toMatchObject({ ok: true, spec: 'opus[1m]:high', tier: 'deep' });
     expect((r as { clamped?: string }).clamped).toBeUndefined();
   });
 
   it('tier names are case-insensitive', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'MAX', role: 'bee' })).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'max' });
+    expect(resolveTierSpec({ tier: 'MAX', role: 'bee' })).toMatchObject({ ok: true, spec: 'opus[1m]:xhigh', tier: 'max' });
   });
 
   it('unknown tier fails LOUD, listing the valid menu', () => {
@@ -64,13 +64,13 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
   it('FLOOR: a pick below the role default clamps UP (worker default sonnet, pick quick → standard)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const r = resolveTierSpec({ tier: 'quick', role: 'worker' });
-    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'floor' });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'floor' });
   });
 
   it('FLOOR follows an AGENT_MODELS escalation (bee pinned to opus → quick clamps to deep)', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'opus' }));
     const r = resolveTierSpec({ tier: 'quick', role: 'bee' });
-    expect(r).toMatchObject({ ok: true, spec: 'opus:high', tier: 'deep', clamped: 'floor' });
+    expect(r).toMatchObject({ ok: true, spec: 'opus[1m]:high', tier: 'deep', clamped: 'floor' });
   });
 
   it('a role with no resolvable default (no floor) takes any tier unclamped', () => {
@@ -84,20 +84,20 @@ describe('resolveTierSpec — default menu (quick < standard < deep < max)', () 
   it('CEILING: a pick above the role ceiling clamps DOWN', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'standard' } });
-    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'ceiling' });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'ceiling' });
   });
 
   it('FLOOR outranks a ceiling configured BELOW the role default (never a downgrade)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // worker default = sonnet (standard); ceiling says quick; pick max.
     const r = resolveTierSpec({ tier: 'max', role: 'worker', tierCeilings: { worker: 'quick' } });
-    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'floor' });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet[1m]', tier: 'standard', clamped: 'floor' });
   });
 
   it('an unknown ceiling name is ignored (config bug ≠ runtime failure)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'nope' } });
-    expect(r).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'max' });
+    expect(r).toMatchObject({ ok: true, spec: 'opus[1m]:xhigh', tier: 'max' });
   });
 });
 
@@ -132,7 +132,7 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('an empty tiers array falls back to the default menu', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet' });
+    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet[1m]' });
   });
 
   it('per-tier backend rides the resolution — including through a clamp', () => {
@@ -176,7 +176,7 @@ describe('tierMenuLines — the queen-facing live menu (runtime context)', () =>
   it('falls back to the default menu (with its default rubric) when no user menu exists', () => {
     const joined = tierMenuLines([]).join('\n');
     expect(joined).toContain('- quick (haiku)');
-    expect(joined).toContain('- max (opus:xhigh)');
+    expect(joined).toContain('- max (opus[1m]:xhigh)');
     expect(joined).toContain('trivial / mechanical');
     expect(joined).not.toContain('TIER CEILINGS');
   });
@@ -217,9 +217,9 @@ describe('roleHomeTier — the default-menu tier a role runs at', () => {
 });
 
 describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-steering-panel)', () => {
-  it('returns null on the default menu (queen home=standard=sonnet=committed default) — byte-identical to today', () => {
+  it("moves a default-menu role onto the marked spec (queen home=standard → sonnet[1m] ≠ bare committed default) — the 1M window rides the menu's [1m] markers (owner directive 2026-07-02)", () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('queen', {})).toBeNull();
+    expect(resolveRoleOwnModelSpec('queen', {})).toBe('sonnet[1m]');
   });
 
   it('an owner menu override that raises the standard tier MOVES the queen', () => {
@@ -242,13 +242,13 @@ describe('resolveRoleOwnModelSpec — the GAP-2 queen own-model lever (queen-ste
 
   it('a queen CEILING is her TARGET (a decider has no self-picker) — ceiling=max → opus:xhigh', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus:xhigh');
+    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'max' } })).toBe('opus[1m]:xhigh');
   });
 
-  it('a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) → null (stays default)', () => {
+  it("a too-low ceiling NEVER downgrades the queen below her floor (EI-7/EI-286) — clamps UP to standard (same model, [1m]-marked)", () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // queen floor = standard (sonnet); ceiling 'quick' (haiku) clamps UP to standard → equals committed default → null.
-    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBeNull();
+    // queen floor = standard (sonnet family); ceiling 'quick' (haiku) clamps UP to standard → sonnet[1m].
+    expect(resolveRoleOwnModelSpec('queen', { tierCeilings: { queen: 'quick' } })).toBe('sonnet[1m]');
   });
 
   it('null for a role with no home tier (no committed default)', () => {
@@ -332,7 +332,7 @@ describe('resolveTierSpec compactionLimit', () => {
   it('derives the model default from the resolved spec when the tier sets none', () => {
     const r = resolveTierSpec({ tier: 'standard', role: 'bee' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.compactionLimit).toBe(500_000); // standard = sonnet alias → sonnet-5, a default-1M family (500k cap)
+    if (r.ok) expect(r.compactionLimit).toBe(500_000); // standard = sonnet[1m] → the [1m] 500k cap
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
@@ -344,15 +344,15 @@ describe('resolveTierSpec compactionLimit', () => {
     const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
     const vast = resolveTierSpec({ tier: 'vast', role: 'bee', tiers });
-    expect(vast.ok && vast.compactionLimit).toBe(825_000); // (1M − 10k) ÷ 1.2
+    expect(vast.ok && vast.compactionLimit).toBe(500_000); // [1m] ⇒ the uniform 500k spend cap (marker-keyed, 2026-07-02)
     const wide = resolveTierSpec({ tier: 'wide', role: 'bee', tiers });
-    expect(wide.ok && wide.compactionLimit).toBe(500_000); // opus/fable 500k cap (owner directive 2026-07-02)
+    expect(wide.ok && wide.compactionLimit).toBe(500_000); // [1m] ⇒ 500k cap (owner directive 2026-07-02)
   });
 
   it('a budget downgrade adopts the downgraded-to tier limit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'haiku' }));
     const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
     expect(dg.downgraded).toBe(true);
-    expect(dg.compactionLimit).toBe(500_000); // standard/sonnet target (sonnet alias → sonnet-5 → 500k cap)
+    expect(dg.compactionLimit).toBe(500_000); // standard target = sonnet[1m] → the [1m] 500k cap
   });
 });
