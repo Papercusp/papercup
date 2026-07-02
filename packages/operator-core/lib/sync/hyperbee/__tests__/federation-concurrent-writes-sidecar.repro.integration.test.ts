@@ -683,11 +683,11 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       // self-seed to differ): two `createOrgTestDb()` migrations run back-to-back
       // against the SAME throwaway testcontainer Postgres were OBSERVED to self-seed
       // the IDENTICAL node_id from plain SQL `random()` — see the follow-up hardening
-      // mig 464 (hlc-node-id-strong-entropy), which moves the self-seed to pgcrypto's
+      // mig 466 (hlc-node-id-strong-entropy), which moves the self-seed to pgcrypto's
       // gen_random_bytes(). This test's OWN job is narrower: prove the ORDERING
       // mechanism (fed_order_key / compareHlc) resolves a tie correctly whenever the
       // two nodes genuinely differ — which every real pair of devices' independently
-      // (and, after mig 464, strongly) seeded node_id will.
+      // (and, after mig 466, strongly) seeded node_id will.
       const pinnedMs = Date.now() + 600_000;
       const pinnedCount = 500;
       const nodeA = 'aaaa1111aaaa1111';
