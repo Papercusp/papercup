@@ -12,19 +12,26 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { estimateMock, specMock, setEstimateMock, setLimitMock } = vi.hoisted(() => ({
-  estimateMock: vi.fn(),
-  specMock: vi.fn(),
-  setEstimateMock: vi.fn(async () => {}),
-  setLimitMock: vi.fn(async () => {}),
-}));
+const { estimateMock, specMock, setEstimateMock, setLimitMock, deathMock, openEscalationMock } =
+  vi.hoisted(() => ({
+    estimateMock: vi.fn(),
+    specMock: vi.fn(),
+    setEstimateMock: vi.fn(async () => {}),
+    setLimitMock: vi.fn(async () => {}),
+    deathMock: vi.fn(async () => false),
+    openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
+  }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
   resolveModelSpecForOwner: specMock,
+  detectContextDeathForOwner: deathMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
   setCompactionLimit: setLimitMock,
+}));
+vi.mock('../agent-tools/coordination/escalations', () => ({
+  openEscalation: openEscalationMock,
 }));
 // The spawn-record honor leg lazily imports the tier menu — pin a small one so
 // the test never reads the real workspace agent-config.
@@ -37,7 +44,10 @@ vi.mock('../fleet/model-tiers', () => ({
   effectiveTierConfig: (cfg: { tiers?: unknown } | null) => ({ tiers: cfg?.tiers }),
 }));
 
-import { checkCompactionCompliance } from './compaction-compliance-watchdog';
+import {
+  checkCompactionCompliance,
+  resetContextDeathEscalationsForTests,
+} from './compaction-compliance-watchdog';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
@@ -128,5 +138,33 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     expect(out.estimated).toEqual(['hot', 'cool']);
     expect(out.overLimit).toEqual(['hot']);
     expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000);
+  });
+});
+
+describe('context-death detector (context-trimming-tiers P-019)', () => {
+  it('a "Prompt is too long" transcript raises ONE blocker escalation, deduped across passes', async () => {
+    resetContextDeathEscalationsForTests();
+    estimateMock.mockResolvedValue(40_000);
+    deathMock.mockImplementation(async (owner: string) => owner === 'dead');
+    const seeded = [
+      { owner_id: 'dead', owner_label: 'bee · dead', compaction_limit: 158_000 },
+      { owner_id: 'fine', owner_label: 'bee · fine', compaction_limit: 158_000 },
+    ];
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.contextDeaths).toEqual(['dead']);
+    expect(out.estimated).toEqual(['fine']); // the dead session is not estimated
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [identity, input] = openEscalationMock.mock.calls[0] as unknown as [
+      { ownerId: string },
+      { severity: string; summary: string },
+    ];
+    expect(identity.ownerId).toBe('compaction-watchdog');
+    expect(input.severity).toBe('blocker');
+    expect(input.summary).toContain('Prompt is too long');
+    expect(input.summary).toContain('dead');
+    // Second pass: still dead, but already escalated — no duplicate.
+    const again = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(again.contextDeaths).toEqual(['dead']);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
   });
 });

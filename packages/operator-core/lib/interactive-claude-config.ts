@@ -109,6 +109,16 @@ const ISOLATED_ENTRY = 'projects';
  */
 const PERSONAL_MEMORY_ENTRIES = new Set(['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md']);
 
+/**
+ * context-trimming-tiers P-020: plugins whose tool schemas a FLEET member never
+ * needs (github ~40 tools, cloudflare docs, firecrawl — ~10k+ tokens of schemas
+ * per session). Matched on the plugin NAME half of `name@marketplace`. context7
+ * + verdict + the LSP/review plugins stay. The playwright mcpServer (in
+ * `.claude.json`) is pruned alongside.
+ */
+const FLEET_PRUNED_PLUGIN_NAMES = new Set(['github', 'cloudflare', 'firecrawl']);
+const FLEET_PRUNED_MCP_SERVERS = new Set(['playwright']);
+
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
  *  symlink — `existsSync` returns false for a dangling link, but on resume we
  *  must still treat an existing link as "leave it". */
@@ -146,6 +156,16 @@ export function writeInteractiveClaudeConfig(opts: {
   sid: string;
   /** Source HOME (testability); defaults to the process home. */
   home?: string;
+  /**
+   * context-trimming-tiers P-020: prune the heavy plugin/MCP surface for a
+   * FLEET-tier member — `plugins/installed_plugins.json` is materialized as a
+   * FILTERED real file (github/cloudflare/firecrawl dropped; context7 etc.
+   * kept) and `.claude.json` as a filtered real copy (the playwright
+   * mcpServer dropped; papercusp-su kept). Costs those two files their
+   * write-passthrough — fine for a spawned member; default off (symlinks,
+   * byte-identical to today).
+   */
+  prunePlugins?: boolean;
 }): InteractiveClaudeConfig {
   const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);
