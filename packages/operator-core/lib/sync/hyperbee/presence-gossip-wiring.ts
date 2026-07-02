@@ -68,8 +68,10 @@ interface TopicBinding {
   hiveHomeSlug: string;
   /** Writer half (flag-gated by the caller; null = reader-only registration). */
   writer: PresenceGossipWriter | null;
-  /** Cached admitted-device set. */
-  members?: { at: number; admitted: Set<string> };
+  /** Cached admitted-device → attested-github_user_id map (audit D-013 root fix:
+   *  the binding, not a bare Set, so the pipeline can validate sender-declared
+   *  identity fields against the signer's attestation). */
+  members?: { at: number; admitted: Map<string, number> };
 }
 
 interface WiringState {
@@ -95,7 +97,7 @@ let deps: PresenceGossipWiringDeps = {
   getSwarm: () => getSharedSwarm(),
 };
 
-async function admittedDeviceSet(binding: TopicBinding): Promise<Set<string>> {
+async function admittedDeviceMap(binding: TopicBinding): Promise<Map<string, number>> {
   const now = Date.now();
   if (binding.members && now - binding.members.at < MEMBER_CACHE_TTL_MS) {
     return binding.members.admitted;
@@ -105,10 +107,15 @@ async function admittedDeviceSet(binding: TopicBinding): Promise<Set<string>> {
     deps.loadRevokedHivePubkeys(binding.workspaceId, binding.hiveHomeSlug),
   ]);
   const revokedSet = new Set(revoked);
-  const admitted = new Set<string>();
+  // Root fix (audit D-013): keep the device_pubkey → attested github_user_id
+  // binding (not a bare Set), so the pipeline can validate every sender-declared
+  // identity field against the signer's attestation (H1/H3).
+  const admitted = new Map<string, number>();
   for (const m of members) {
     for (const a of m.deviceAttestations ?? []) {
-      if (a?.device_pubkey && !revokedSet.has(a.device_pubkey)) admitted.add(a.device_pubkey);
+      if (a?.device_pubkey && !revokedSet.has(a.device_pubkey)) {
+        admitted.set(a.device_pubkey, m.githubUserId);
+      }
     }
   }
   binding.members = { at: now, admitted };
@@ -126,11 +133,11 @@ async function ensureState(): Promise<WiringState> {
       // Riding already-joined substrate topics: the substrate's own discovery
       // drives connections; no extra DHT refresh loop from this instance.
       refreshMs: 0,
-      isMemberDevice: async (devicePubkey, topicHex) => {
+      resolveMemberIdentity: async (devicePubkey, topicHex) => {
         const binding = bindings.get(topicHex);
-        if (!binding) return false; // unregistered topic → fail closed
-        const admitted = await admittedDeviceSet(binding);
-        return admitted.has(devicePubkey);
+        if (!binding) return null; // unregistered topic → fail closed
+        const admitted = await admittedDeviceMap(binding);
+        return admitted.get(devicePubkey) ?? null; // non-member ⇒ null ⇒ dropped
       },
       applyPut: async (row, frameTs, topicHex) => {
         const binding = bindings.get(topicHex);
@@ -163,7 +170,15 @@ async function ensureState(): Promise<WiringState> {
           harnessSlug: del.harness_slug,
           ...(deps.sql ? { sql: deps.sql } : {}),
         });
-        await proj.deleteFromPg(`${del.github_user_id}/${del.machine_label}`, frameTs);
+        // H2 (audit D-013): scope the delete to the SIGNER's own row —
+        // del.device_pubkey is the verified signer (pinned in verifyPresenceFrame),
+        // so a member can only tombstone rows it owns, never evict a peer's.
+        await proj.deleteFromPg(
+          `${del.github_user_id}/${del.machine_label}`,
+          frameTs,
+          undefined,
+          del.device_pubkey,
+        );
       },
       applySessions: async (input, frameTs, topicHex) => {
         const binding = bindings.get(topicHex);
@@ -296,7 +311,7 @@ export async function broadcastSessions(
  *  peers drop the row at once; the TTL is the backstop). */
 export async function broadcastPresenceDel(
   topicHex: string,
-  del: PresenceDelKey,
+  del: Omit<PresenceDelKey, 'device_pubkey'>,
 ): Promise<boolean> {
   try {
     const s = await ensureState();

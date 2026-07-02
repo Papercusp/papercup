@@ -59,6 +59,26 @@ export function resolveTtlMs(env: Record<string, string | undefined>): number {
 }
 
 /**
+ * Should this build RETAIN old hashed chunks (emptyOutDir:false + age-prune)
+ * instead of emptying `dist/`? True for a `vite build --watch`, AND for a
+ * ONE-SHOT build that opts in via `PAPERCUSP_RETAIN_DIST_CHUNKS=1`.
+ *
+ * Why the opt-in (WI-1484): the desktop dev bundle (:3270) is refreshed by a
+ * one-shot `npm run build` on a ~2-min timer, NOT by a `--watch` singleton — so
+ * the original `--watch`-only gate never fired for it, and each tick emptied
+ * `dist/` and 404'd the lazy chunks an open webview was pinned to. The timer
+ * sets this env so its rebuilds retain+prune like a watch build. A release/CI
+ * build sets neither → stays clean-empty (and keeps the dist-wipe guard).
+ * Pure; exported for tests + reuse by vite.config.
+ */
+export function shouldRetainDistChunks(
+  argv: readonly string[],
+  env: Record<string, string | undefined>,
+): boolean {
+  return argv.includes('--watch') || env.PAPERCUSP_RETAIN_DIST_CHUNKS === '1';
+}
+
+/**
  * Vite plugin: after each watch rebuild, prune stale chunks from `dist/assets/`.
  * Active only when building in watch mode — a no-op for one-shot/production
  * builds (which empty the dir anyway). Register it from `vite.config.ts` only
@@ -71,7 +91,11 @@ export function devDistPrunePlugin(opts: { ttlMs?: number } = {}): Plugin {
     name: 'papercusp-dev-dist-prune',
     apply: 'build',
     configResolved(config) {
-      active = Boolean(config.build.watch);
+      // Prune whenever we're in a retain regime — a real `--watch`, OR a
+      // one-shot build that opted into retention (PAPERCUSP_RETAIN_DIST_CHUNKS);
+      // without this the env-gated one-shot retain path would keep old chunks
+      // forever (emptyOutDir:false) with nothing to bound the growth.
+      active = Boolean(config.build.watch) || shouldRetainDistChunks(process.argv, process.env);
       assetsDir = resolve(config.root, config.build.outDir, config.build.assetsDir || 'assets');
     },
     async writeBundle() {

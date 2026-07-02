@@ -60,6 +60,12 @@ export interface PresenceDelKey {
   github_user_id: number;
   machine_label: string;
   harness_slug: string;
+  /** H2 (audit D-013): the SIGNING device. A del may only remove rows THIS device
+   *  owns — stamped by buildPresenceDelFrame (= the signer) and pinned in verify
+   *  (=== frame.device_pubkey), and carried into the delete WHERE, so an admitted
+   *  member cannot evict another member's presence row (the de-presence DoS that
+   *  breaks lock-authority election). */
+  device_pubkey: string;
 }
 
 /** One live session on the announcing device (P-005 session-grain presence —
@@ -137,6 +143,7 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
       github_user_id: body.del.github_user_id,
       machine_label: body.del.machine_label,
       harness_slug: body.del.harness_slug,
+      device_pubkey: body.del.device_pubkey,
     };
   }
   if (body.sessions) {
@@ -200,10 +207,12 @@ export async function buildSessionsFrame(
   return { ...body, sig: sig.toString('base64') };
 }
 
-/** Build a signed presence DEL (leave-tombstone) frame. */
+/** Build a signed presence DEL (leave-tombstone) frame. The del key's
+ *  `device_pubkey` is STAMPED from the signer (H2) — a device may only tombstone
+ *  its own rows — so callers pass just the (user, machine, harness) target. */
 export async function buildPresenceDelFrame(
   devicePubkey: string,
-  del: PresenceDelKey,
+  del: Omit<PresenceDelKey, 'device_pubkey'>,
   nowMs: number,
   sign: (bytes: Buffer) => Promise<Buffer>,
 ): Promise<SignedPresenceFrame> {
@@ -212,7 +221,7 @@ export async function buildPresenceDelFrame(
     kind: 'del',
     device_pubkey: devicePubkey,
     ts: nowMs,
-    del,
+    del: { ...del, device_pubkey: devicePubkey },
   };
   const sig = await sign(presenceFrameSigningBytes(body));
   return { ...body, sig: sig.toString('base64') };
@@ -277,10 +286,16 @@ export function verifyPresenceFrame(
       if (
         typeof d.github_user_id !== 'number' ||
         typeof d.machine_label !== 'string' ||
-        typeof d.harness_slug !== 'string'
+        typeof d.harness_slug !== 'string' ||
+        typeof d.device_pubkey !== 'string'
       ) {
         return false;
       }
+      // H2 (audit D-013): a del may only remove the SIGNER's own rows — pin the
+      // del's device to the signing device (the dual of the put self-announce pin
+      // at the `put` branch above), so an admitted member can't evict another
+      // member's presence row.
+      if (d.device_pubkey !== frame.device_pubkey) return false;
     }
 
     const nowMs = opts?.nowMs ?? Date.now();
@@ -303,11 +318,19 @@ export function verifyPresenceFrame(
 export interface CreatePresenceGossipOpts {
   /** The shared process swarm (getSharedSwarm()); a fake in tests. */
   swarm: HyperswarmLike;
-  /** Membership admission (the WI-259 gate's gossip twin): is this device a
-   *  CURRENT member of the hive whose TOPIC the frame arrived on? Injected —
-   *  production binds hive_members (attested device pubkeys minus the revoked
-   *  union) keyed by the topic's registered hive; false/throw ⇒ frame dropped. */
-  isMemberDevice: (devicePubkey: string, topicHex: string) => boolean | Promise<boolean>;
+  /** Membership admission + ATTESTED-IDENTITY resolution (the WI-259 gate's
+   *  gossip twin, hardened for multi-owner — audit D-013 root fix for H1/H3):
+   *  resolve the github_user_id ATTESTED to this signing device in the hive whose
+   *  TOPIC the frame arrived on. A non-null id ⇒ a current member (admitted); null
+   *  ⇒ not a member / revoked / read error ⇒ the frame is dropped. Production binds
+   *  hive_members (device_pubkey → githubUserId, minus the revoked union) keyed by
+   *  the topic's registered hive. The returned id is the TRUST ANCHOR every
+   *  sender-declared identity field (row/del github_user_id, sessions frame user)
+   *  is validated against — never the spoofable body fields. */
+  resolveMemberIdentity: (
+    devicePubkey: string,
+    topicHex: string,
+  ) => (number | null) | Promise<number | null>;
   /** Apply an admitted put (bind to the shared_presence projection's writeToPg —
    *  same LWW/ts guards as the log path). `topicHex` = the carrying topic (the
    *  receiver's workspace/hive binding key). */
@@ -344,8 +367,17 @@ export interface CreatePresenceGossipOpts {
 
 export type PresenceGossipHandle = TopicGossipHandle<SignedPresenceFrame>;
 
-/** The inbound pipeline's disposition — surfaced for tests/diagnostics. */
-export type PresenceFrameDisposition = 'applied' | 'bad-frame' | 'not-member' | 'apply-failed';
+/** The inbound pipeline's disposition — surfaced for tests/diagnostics.
+ *  'identity-mismatch' (audit D-013 H1/H3): the frame verified + the signer is an
+ *  admitted member, but a sender-declared identity field (row/del github_user_id,
+ *  sessions frame user) did NOT match the signer's ATTESTED github_user_id — the
+ *  spoof is dropped. */
+export type PresenceFrameDisposition =
+  | 'applied'
+  | 'bad-frame'
+  | 'not-member'
+  | 'identity-mismatch'
+  | 'apply-failed';
 
 /**
  * The inbound presence pipeline (pure over injected gates/appliers): verify
@@ -359,7 +391,7 @@ export async function handleInboundPresenceFrame(
   topicHex: string,
   opts: Pick<
     CreatePresenceGossipOpts,
-    'isMemberDevice' | 'applyPut' | 'applyDel' | 'applySessions' | 'frameWindowMs' | 'now'
+    'resolveMemberIdentity' | 'applyPut' | 'applyDel' | 'applySessions' | 'frameWindowMs' | 'now'
   >,
 ): Promise<PresenceFrameDisposition> {
   try {
@@ -371,15 +403,33 @@ export async function handleInboundPresenceFrame(
     ) {
       return 'bad-frame';
     }
-    const admitted = await Promise.resolve(
-      opts.isMemberDevice(frame.device_pubkey, topicHex),
-    ).catch(() => false);
-    if (!admitted) return 'not-member';
+    // Root fix (audit D-013): resolve the signer's ATTESTED github_user_id from
+    // membership (null ⇒ not a member ⇒ drop). Every sender-declared identity
+    // field below is validated against THIS attested id, never the body fields.
+    const attestedUserId = await Promise.resolve(
+      opts.resolveMemberIdentity(frame.device_pubkey, topicHex),
+    ).catch(() => null);
+    if (attestedUserId == null) return 'not-member';
     if (frame.kind === 'put' && frame.row) {
+      // H3 (audit D-013): the row's github_user_id must be the SIGNER's attested
+      // id — else an admitted device forges another (user, machine)'s presence.
+      // (verify already pinned row.device_pubkey === the signer.)
+      if (frame.row.github_user_id !== attestedUserId) return 'identity-mismatch';
       await Promise.resolve(opts.applyPut(frame.row, frame.ts, topicHex));
     } else if (frame.kind === 'del' && frame.del) {
+      // H2 (audit D-013): the del's declared user must be the signer's attested id
+      // (verify already pinned del.device_pubkey === the signer, so a device can
+      // only tombstone its own rows — this rejects a signer whose OWN attested id
+      // doesn't even match the del it signed).
+      if (frame.del.github_user_id !== attestedUserId) return 'identity-mismatch';
       await Promise.resolve(opts.applyDel(frame.del, frame.ts, topicHex));
     } else if (frame.kind === 'sessions' && frame.sessions && opts.applySessions) {
+      // H1 (audit D-013): a device may only announce sessions under its OWN user —
+      // the frame's github_user_id must be the signer's attested id, so it cannot
+      // announce a victim's / the queen's user. (Per-session owner_id shadowing of
+      // a LOCAL identity is additionally blocked receiver-side in recipient-resolve
+      // + the session store's device-owned upsert guard.)
+      if (frame.github_user_id !== attestedUserId) return 'identity-mismatch';
       await Promise.resolve(
         opts.applySessions(
           {

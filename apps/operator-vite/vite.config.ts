@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
 import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
-import { devDistPrunePlugin } from './dev-dist-prune';
+import { devDistPrunePlugin, shouldRetainDistChunks } from './dev-dist-prune';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
@@ -16,14 +16,19 @@ const operatorRoot = resolve(import.meta.dirname, '../operator');
 
 const enableHmr = isDesktopHmrEnabled(process.env);
 
-// `dev:nohmr` = `vite build --watch`: every fleet edit rebuilds `dist/`. With
-// Vite's default emptyOutDir each rebuild DELETES the prior hashed chunks, so a
-// long-open Tauri webview 404s its lazy imports (vditor etc. blank). In watch
-// builds we therefore RETAIN old chunks (emptyOutDir:false) and prune them by
-// age instead (devDistPrunePlugin). The production `build` (no --watch) keeps
-// emptying for a clean desktop bundle. See plan
-// `adv-build-churn-retain-chunks-2026-06-03`.
-const isWatchBuild = process.argv.includes('--watch');
+// Every fleet edit rebuilds `dist/`. With Vite's default emptyOutDir each
+// rebuild DELETES the prior hashed chunks, so a long-open Tauri webview 404s its
+// lazy imports ("Importing a module script failed" → dead error screen). We
+// therefore RETAIN old chunks (emptyOutDir:false) and prune them by age instead
+// (devDistPrunePlugin) whenever we're in a retain regime:
+//   - a `vite build --watch` (the classic dev shell), OR
+//   - a ONE-SHOT build that opts in via PAPERCUSP_RETAIN_DIST_CHUNKS=1 — the
+//     desktop dev bundle (:3270) is refreshed by a one-shot `npm run build`
+//     timer, NOT a watcher, so the old --watch-only gate never fired for it and
+//     each tick stranded the open webview (WI-1484). The timer now sets the env.
+// A release/CI build sets neither → clean-empty + the dist-wipe guard. See plan
+// `adv-build-churn-retain-chunks-2026-06-03` + WI-1484.
+const retainDistChunks = shouldRetainDistChunks(process.argv, process.env);
 
 // Operator API host the dev server proxies to. Overridable so an e2e rig can
 // target the staging operator (:3170) — see the proxy block below.
@@ -126,10 +131,10 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   build: {
-    // Retain old hashed chunks across watch rebuilds so an open webview never
-    // 404s a lazy import; a one-shot/production `build` still empties for a
-    // clean bundle. The prune plugin (below) caps the resulting dist growth.
-    emptyOutDir: !isWatchBuild,
+    // Retain old hashed chunks across a retain-regime rebuild so an open webview
+    // never 404s a lazy import; a release/CI `build` (no --watch, no retain env)
+    // still empties for a clean bundle. The prune plugin (below) caps growth.
+    emptyOutDir: !retainDistChunks,
   },
   server: {
     port: 3055,
