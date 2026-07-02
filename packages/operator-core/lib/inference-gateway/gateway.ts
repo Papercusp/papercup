@@ -2920,6 +2920,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (opusDowngraded) outHeaders[MODEL_DOWNGRADED_HEADER] = 'opus->sonnet';
         recordRoute(wantOwner, active.accountId, model); // per-owner last-routed → GET /admin/route (statusline)
         res.writeHead(up.status, outHeaders);
+        // P-005 (structured mid-stream failure): when the upstream body stalls/errors mid-relay, a bare
+        // res.destroy() surfaces to the bee as a raw connection reset — an opaque "API Error" it may not
+        // retry. For an SSE stream we can do better: append a final Anthropic-shaped `error` event (the
+        // SDK parses it as overloaded_error and auto-retries) then end cleanly. Non-SSE bodies keep the
+        // destroy (no in-band channel). Best-effort — any write failure falls back to destroy.
+        const isSse = (outHeaders['content-type'] ?? '').includes('text/event-stream');
+        const endStreamWithError = (reason: string): void => {
+          if (res.writableEnded || res.destroyed) return;
+          if (!isSse) {
+            try { res.destroy(); } catch { /* already torn down */ }
+            return;
+          }
+          try {
+            res.write(
+              `\nevent: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: upstream stream ${reason} on '${active.accountId}' — retry` }, gateway: true })}\n\n`,
+            );
+            res.end();
+          } catch {
+            try { res.destroy(); } catch { /* already torn down */ }
+          }
+        };
         if (peekedHead !== null) {
           // We already consumed this body via peekBody — write the peeked head, then stream any remainder.
           if (peekedHead.length) res.write(peekedHead);
@@ -2930,12 +2951,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
               res.on('finish', () => resolve());
               res.on('close', () => resolve());
               res.on('error', () => resolve());
-              peekedRest!.on('error', () => { res.destroy(); resolve(); });
+              peekedRest!.on('error', () => { endStreamWithError('errored'); resolve(); });
               // Wedge-prevention (the stuck-stream slot leak): also force-resolve on the ceiling/self-heal
               // abort so a half-open-client + hung-body stream can't pin its admission slot forever.
               const onAbort = () => {
                 try { peekedRest!.destroy(); } catch { /* already torn down */ }
-                try { res.destroy(); } catch { /* already torn down */ }
+                endStreamWithError('stalled (aborted)');
                 resolve();
               };
               if (ac.signal.aborted) onAbort();
@@ -2960,7 +2981,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             res.on('close', () => resolve());
             res.on('error', () => resolve());
             nodeStream.on('error', () => {
-              res.destroy();
+              endStreamWithError('errored');
               resolve();
             });
             // Wedge-prevention — the 80-min stuck-stream slot leak (2026-06-21). This await previously
@@ -2971,7 +2992,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // Make the abort ALSO force-tear-down both streams + resolve, so a reclaim/ceiling actually frees it.
             const onAbort = () => {
               try { nodeStream.destroy(); } catch { /* already torn down */ }
-              try { res.destroy(); } catch { /* already torn down */ }
+              endStreamWithError('stalled (aborted)');
               resolve();
             };
             if (ac.signal.aborted) onAbort();
@@ -3496,7 +3517,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // caller read as a gateway fault in the journal (8-at-a-time bursts during the 2026-07-01 tier-5
       // starvation were exactly this). Keep the loud error for REAL handler faults.
       const msg = (e as Error).message ?? '';
-      const clientAbort = /\baborted\b|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET/i.test(msg) && (res.destroyed || res.writableEnded || ac?.signal?.aborted !== true);
+      const clientAbort = /\baborted\b|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET/i.test(msg) && (res.destroyed || res.writableEnded);
       if (clientAbort && res.headersSent) {
         log('info', `proxy request ended early (client abort / stream torn down): ${msg}`);
         res.destroy();

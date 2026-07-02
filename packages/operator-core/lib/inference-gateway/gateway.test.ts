@@ -2845,3 +2845,27 @@ test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before
   await r.text();
   assert.equal(r.headers.get('x-papercusp-routed-account'), 'B', 'pinned-to-A request yielded around the proactively-cooled proxy');
 }, 20_000);
+
+/* ── structured SSE error on mid-stream stall (gateway-rayobyte-hardening P-005) ── */
+
+test('[P-005] a mid-stream SSE body stall ends the stream with an Anthropic-shaped error event, not a socket reset', async () => {
+  // Upstream sends SSE headers + one event, then hangs forever. The body-idle guard aborts the relay;
+  // the client must receive a parseable final `event: error` (overloaded_error, gateway:true) and a clean
+  // stream end — the SDK retries that; a raw destroy surfaces as an opaque "API Error".
+  resetGovernorRegistry();
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+      // ... then never send another byte (mid-stream stall).
+    },
+    { upstreamBodyIdleTimeoutMs: 150 },
+  );
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(r.status, 200, 'headers had already been relayed');
+  const text = await r.text(); // resolves because the gateway ENDS the stream instead of destroying it
+  assert.match(text, /event: message_start/, 'the relayed prefix arrived');
+  assert.match(text, /event: error/, 'a final structured error event was appended');
+  assert.match(text, /"type":"overloaded_error"/, 'Anthropic-shaped overloaded_error (the SDK auto-retries this)');
+  assert.match(text, /"gateway":true/, 'marked as gateway-synthesized');
+}, 20_000);
