@@ -44,6 +44,21 @@ describe('getHarnessAdminUrlWithSource', () => {
     expect(resolvePgUrl).toHaveBeenCalledTimes(2);
   });
 
+  it('never PINS the fallback — an import-time resolve before serve injects the env URL heals on the next call (WI-1544 rig: invalidator wedged on dead :5432)', () => {
+    // 1st call: nothing set yet (module-scope caller at import time) → fallback.
+    resolvePgUrl.mockReturnValue({ url: 'postgres://localhost:5432/papercusp', source: 'fallback' });
+    expect(getHarnessAdminUrlWithSource().source).toBe('native-fallback');
+    // serve.ts has since booted embedded PG + injected HARNESS_ADMIN_DATABASE_URL.
+    resolvePgUrl.mockReturnValue({ url: 'postgres://localhost:39532/papercusp', source: 'env' });
+    expect(getHarnessAdminUrlWithSource()).toEqual({
+      url: 'postgres://localhost:39532/papercusp',
+      source: 'env',
+    });
+    // …and the non-fallback result IS pinned from here on.
+    getHarnessAdminUrl();
+    expect(resolvePgUrl).toHaveBeenCalledTimes(2);
+  });
+
   it('forwards the env-var precedence list + discovery file config', () => {
     resolvePgUrl.mockReturnValue({ url: 'u', source: 'env' });
     getHarnessAdminUrl();

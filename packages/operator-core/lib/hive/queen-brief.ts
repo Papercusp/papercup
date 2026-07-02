@@ -268,6 +268,46 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push(`**Woke by:** ${f.wokeBy.trim()}`);
   }
 
+  // ── MEMORY SECTIONS FIRST (queen-memory-hybrid L1, position fix 2026-07-02) ──
+  // These are SMALL and orientation-critical, so they render BEFORE the floor's
+  // bulky lists: capRenderedBrief truncates the TAIL when over budget, and when
+  // they were appended last a floor-heavy brief silently dropped exactly them
+  // (caught by the L1 live-verify). Order: objective standing facts → own
+  // trajectory → fuzzy background; the floor's long sections are the right
+  // truncation victims.
+  const factsFold = (input.factsFold ?? '').trim();
+  if (factsFold) {
+    out.push('');
+    out.push(factsFold);
+  }
+  const journal = (input.carryJournal ?? []).filter((e) => (e.note ?? '').trim().length > 0);
+  if (journal.length > 0) {
+    out.push('');
+    out.push(
+      '### Your carry-journal (your own notes from recent wakes, newest first — in-flight intention, not world-state; leave the next one via declare-wake { remember })',
+    );
+    const journalBudget = Math.max(600, Math.floor(textCaps.carryNoteChars) * 3);
+    let journalUsed = 0;
+    for (const e of journal) {
+      const line = `- ${e.at > 0 ? `[${new Date(e.at).toISOString().slice(5, 16)}Z] ` : ''}${e.note}`;
+      if (journalUsed + line.length > journalBudget) break;
+      out.push(line);
+      journalUsed += line.length;
+    }
+  } else {
+    const legacyNote = (input.carryNote ?? '').trim();
+    if (legacyNote) {
+      out.push('');
+      out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
+      out.push(truncateText(legacyNote, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
+    }
+  }
+  const memoryFold = (input.memoryFold ?? '').trim();
+  if (memoryFold) {
+    out.push('');
+    out.push(memoryFold);
+  }
+
   // Legacy interactive-brain wake teaching (queen-interactive-brain-fresh-context
   // P-004). `psu --brain` is retired, but old wake metadata may still carry this
   // marker; keep the fresh-session teaching here for historical rows.
@@ -473,52 +513,8 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     );
   }
 
-  // STANDING FACTS (queen-memory-hybrid L1c) — deterministic conclusions folded
-  // VERBATIM every wake (assert via facts:assert, retract when stale). Rendered
-  // BEFORE the carry-journal: objective standing state, then subjective intention.
-  const factsFold = (input.factsFold ?? '').trim();
-  if (factsFold) {
-    out.push('');
-    out.push('---');
-    out.push(factsFold);
-  }
-
-  // mem0 BACKGROUND RECALL (L1d) — the fuzzy sibling, explicitly subordinate to
-  // the deterministic facts above.
-  const memoryFold = (input.memoryFold ?? '').trim();
-  if (memoryFold) {
-    out.push('');
-    out.push(memoryFold);
-  }
-
-  // CARRY-JOURNAL (queen-memory-hybrid L1a) — additive second half: the Queen's
-  // recent wake notes, NEWEST FIRST, so she sees her reasoning TRAJECTORY rather
-  // than only her last thought. Falls back to the legacy single carry-note.
-  const journal = (input.carryJournal ?? []).filter((e) => (e.note ?? '').trim().length > 0);
-  if (journal.length > 0) {
-    out.push('');
-    out.push('---');
-    out.push(
-      '### Your carry-journal (your own notes from recent wakes, newest first — in-flight intention, not world-state; leave the next one via declare-wake { remember })',
-    );
-    const budget = Math.max(600, Math.floor(textCaps.carryNoteChars) * 3);
-    let used = 0;
-    for (const e of journal) {
-      const line = `- ${e.at > 0 ? `[${new Date(e.at).toISOString().slice(5, 16)}Z] ` : ''}${e.note}`;
-      if (used + line.length > budget) break;
-      out.push(line);
-      used += line.length;
-    }
-  } else {
-    // Legacy fallback — a pre-journal single note (P-015 shape).
-    const note = (input.carryNote ?? '').trim();
-    if (note) {
-      out.push('');
-      out.push('---');
-      out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
-      out.push(truncateText(note, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
-    }
-  }
+  // (queen-memory-hybrid L1 sections render EARLY, right after Woke-by — see the
+  // position-fix comment there. Nothing memory-related renders in the tail.)
 
   return capRenderedBrief(out, textCaps);
 }

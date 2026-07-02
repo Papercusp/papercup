@@ -26,7 +26,15 @@ export function getHarnessAdminUrl(): string {
 }
 
 export function getHarnessAdminUrlWithSource(): { url: string; source: string } {
-  if (cached) return cached;
+  // The FALLBACK is never pinned: a module-scope caller (e.g. sync-sse's
+  // invalidation bus) can resolve at IMPORT time — before serve.ts boots
+  // embedded PG and injects HARNESS_ADMIN_DATABASE_URL — and a cached fallback
+  // would then wedge every later consumer onto dead :5432 for the process
+  // lifetime (live-found on the WI-1544 rig: append-heavy-invalidator
+  // ECONNREFUSED 127.0.0.1:5432 every tick while embedded PG served :39532).
+  // Re-resolving until a real source appears self-heals post-injection calls;
+  // on a genuine native-:5432 dev box the re-resolve returns the same fallback.
+  if (cached && cached.source !== 'native-fallback') return cached;
 
   const { url, source } = resolvePgUrl({
     envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],
