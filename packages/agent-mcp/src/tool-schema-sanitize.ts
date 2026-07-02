@@ -16,7 +16,10 @@
  * turn). This rewrites those booleans to the SEMANTICALLY IDENTICAL object
  * form — `true` → `{}` (accept anything), `false` → `{ not: {} }` (accept
  * nothing) — so strict parsers accept them while permissive ones are
- * unaffected.
+ * unaffected. It ALSO rewrites the OBJECT spellings of "accept anything"
+ * (`{}` / annotation-only schemas) to the same typed form, because OMP's
+ * outbound serialization collapses those BACK to bare `true` client-side
+ * (see boolToSchema notes; live-verified 2026-07-02, P-031).
  *
  * Deliberately scoped to `properties[*]` and `items` (the positions Ollama
  * types as an object). `additionalProperties` is left UNTOUCHED: Ollama's

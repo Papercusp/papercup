@@ -3271,7 +3271,19 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
       // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).
-      ...(ompPiConfigDir ? { PI_CONFIG_DIR: ompPiConfigDir } : {}),
+      // PI_CODING_AGENT_DIR must be PINNED alongside it (context-trimming-tiers P-031, 2026-07-02):
+      // OMP treats that var as an agent-dir OVERRIDE that BEATS PI_CONFIG_DIR, and adv-console /
+      // pty spawns export it (<stateDir>/pi-sessions — spawn-config.resolveContextEnv), so a psu
+      // launched from such a shell silently ignored the per-session mcp.json + config.yml: the
+      // 04:53 ornith session got the FULL 592-tool catalog (inherited pi-sessions agent dir, no
+      // tools= filter, no discovery flip) instead of the 20-tool spine. Pinning to the session's
+      // own agent dir makes the relocation deterministic regardless of inherited env.
+      ...(ompPiConfigDir
+        ? {
+            PI_CONFIG_DIR: ompPiConfigDir,
+            PI_CODING_AGENT_DIR: join(homedir(), ompPiConfigDir, 'agent'),
+          }
+        : {}),
     },
   });
 }

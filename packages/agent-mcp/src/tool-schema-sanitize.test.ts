@@ -95,6 +95,46 @@ describe('sanitizeToolSchema', () => {
     expect(sanitizeToolSchema(schema)).toEqual(schema);
   });
 
+  it('rewrites an EMPTY-OBJECT property schema (z.unknown() → {}) to a typed form ' +
+     '(P-031 2026-07-02: OMP collapses a cached `detail: {}` back to bare `true` → Ollama 400)', () => {
+    const out = sanitizeToolSchema({
+      type: 'object',
+      properties: { detail: {}, op: { type: 'string' } },
+    });
+    const detail = (out as { properties: { detail: Record<string, unknown> } }).properties.detail;
+    expect(detail.type).toBe('object');
+    expect(detail.additionalProperties).toBe(true);
+    expect(Object.keys(detail).length).toBeGreaterThan(0);
+    expect((out as { properties: { op: unknown } }).properties.op).toEqual({ type: 'string' });
+  });
+
+  it('rewrites an annotation-only (type-less) property schema, preserving its description', () => {
+    const out = sanitizeToolSchema({
+      type: 'object',
+      properties: { payload: { description: 'event payload', default: {} } },
+    });
+    const payload = (out as { properties: { payload: Record<string, unknown> } }).properties.payload;
+    expect(payload.type).toBe('object');
+    expect(payload.additionalProperties).toBe(true);
+    expect(payload.description).toBe('event payload');
+    expect(payload.default).toEqual({});
+  });
+
+  it('rewrites an empty items schema but leaves constrained type-less schemas (anyOf/enum) alone', () => {
+    const out = sanitizeToolSchema({
+      type: 'object',
+      properties: {
+        list: { type: 'array', items: {} },
+        choice: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+        mode: { enum: ['a', 'b'] },
+      },
+    });
+    const props = (out as { properties: Record<string, Record<string, unknown>> }).properties;
+    expect((props.list.items as Record<string, unknown>).type).toBe('object');
+    expect(props.choice).toEqual({ anyOf: [{ type: 'string' }, { type: 'number' }] });
+    expect(props.mode).toEqual({ enum: ['a', 'b'] });
+  });
+
   it('does not mutate the input', () => {
     const schema = { properties: { x: true } };
     const copy = JSON.parse(JSON.stringify(schema));
