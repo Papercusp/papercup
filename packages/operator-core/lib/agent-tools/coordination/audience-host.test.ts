@@ -19,6 +19,15 @@ vi.mock('./presence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./presence')>()),
   listPresence: vi.fn(),
 }));
+vi.mock('../../fleet/fleet-roster', () => ({ liveFleetMemberIds: vi.fn(async () => []) }));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleet: vi.fn(async () => null),
+}));
+vi.mock('./fleet-delivery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet-delivery')>()),
+  getFleetDeliveryOverrides: vi.fn(async () => new Map()),
+}));
 
 import {
   audienceMode,
@@ -27,6 +36,9 @@ import {
   hostAudienceResolvers,
 } from './audience-host';
 import { listPresence } from './presence';
+import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { getFleet } from '../../agent-fleets-store';
+import { getFleetDeliveryOverrides } from './fleet-delivery';
 
 const mockListPresence = listPresence as unknown as ReturnType<typeof vi.fn>;
 
@@ -136,5 +148,32 @@ describe('hostAudienceResolvers.listActivePresence — drops stale/revoked, maps
   it('returns an empty list when every record is stale or revoked', async () => {
     mockListPresence.mockResolvedValue([rec({ stale: true }), rec({ revoked: true })]);
     expect(await hostAudienceResolvers.listActivePresence()).toEqual([]);
+  });
+});
+
+describe('hostAudienceResolvers.listFleetMembers — multi-fleet leader union (mig-407 single-label gap)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('unions the registry leader into the member audience when their presence label points at another fleet', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['lane-a', 'lane-d']);
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'su-multi-leader' } as never);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual([
+      'lane-a',
+      'lane-d',
+      'su-multi-leader',
+    ]);
+  });
+
+  it('does not duplicate a leader already present via the presence label', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['su-multi-leader', 'lane-a']);
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'su-multi-leader' } as never);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['su-multi-leader', 'lane-a']);
+  });
+
+  it('still applies delivery overrides to the unioned leader (a muted leader stays muted)', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['lane-a']);
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'su-multi-leader' } as never);
+    vi.mocked(getFleetDeliveryOverrides).mockResolvedValue(new Map([['su-multi-leader', 'muted']]) as never);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['lane-a']);
   });
 });

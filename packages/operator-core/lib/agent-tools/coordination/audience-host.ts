@@ -61,6 +61,19 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // checks membership directly (fetchPresenceFleet) so a muted member still reads history.
     const slug = fleetSlugFromName(fleetSlug);
     const members = await liveFleetMemberIds(slug, coordWorkspaceId());
+    // A session leading SEVERAL fleets carries only its newest fleet's label on
+    // coord_presence.fleet_slug (the column is singular, mig 407), so the
+    // presence fold silently drops the leader from every OTHER fleet's member
+    // audience. The leader is definitionally a member: union in the durable
+    // registry leader so `@fleet:<slug>` always reaches them. Overrides still
+    // apply below — a leader who muted their own fleet stays muted.
+    try {
+      const fleet = await getFleet(coordWorkspaceId(), slug);
+      const lead = fleet?.leaderOwnerId;
+      if (lead && !members.includes(lead)) members.push(lead);
+    } catch {
+      /* registry unavailable — presence members alone */
+    }
     const overrides = await getFleetDeliveryOverrides(slug);
     if (overrides.size === 0) return members;
     return members.filter((id) => {

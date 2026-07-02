@@ -141,7 +141,13 @@ async function callerBelongsTo(audience: string, ownerId: string): Promise<boole
     if (audience.startsWith(prefix)) {
       const slug = audience.slice(prefix.length);
       const membership = await fetchPresenceFleet([ownerId]);
-      return membership.get(ownerId)?.fleetSlug === slug;
+      if (membership.get(ownerId)?.fleetSlug === slug) return true;
+      // Multi-fleet leadership: the presence label holds only ONE fleet slug
+      // (mig 407), so the leader of a second fleet fails the label check for
+      // their older fleet. The durable registry is the authority on
+      // leadership — a fleet's registry leader always belongs to it.
+      const leaders = await hostAudienceResolvers.listFleetLeader(slug);
+      return leaders.includes(ownerId);
     }
   }
   const members = await expandAudience([audience], hostAudienceResolvers, 'scoped');
