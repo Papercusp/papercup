@@ -35,6 +35,7 @@ import {
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
+import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, killPty, spawnPty, writePty } from '../../pty-bridge';
@@ -259,6 +260,11 @@ export function resumeCommandFor(handle: {
         // the deny. MUST stay the single `=` token — the space form is
         // variadic and would eat the positional wakeText below (D-002).
         nativeSchedulerDenyFlag(),
+        // Subagent-fanout deny (owner mandate 2026-07-02): SAME persistence gap —
+        // a spawn-time `--disallowedTools=Task,Agent` does NOT survive into a
+        // resume, so a woken bee would silently regain its subagent-launch tool.
+        // Re-arm it every wake. Also a single `=` token (same greed-guard).
+        noSubagentToolsDenyFlag(),
         ...mcpArgs,
         wakeText,
       ],

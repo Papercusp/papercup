@@ -2173,7 +2173,7 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents } = {}) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -2188,7 +2188,7 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
-  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir });
+  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir, allowSubagents });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
   // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
   if (passthrough.length) args.push(...passthrough);
@@ -2441,6 +2441,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     passthrough: args.passthrough,
     addDir: args.addDir,
     accountEnv: { env: acct?.env ?? {}, notice: acct?.notice ?? null },
+    allowSubagents: args.allowSubagents,
   };
   const forkable = session.agent === 'claude' && session.sessionId && session.coordOwnerId && session.id != null;
   if (!forkable) {
@@ -2479,7 +2480,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     console.error(`psu: could not seed the fork transcript (${e?.message ?? e}) — continuing; claude --resume may not find the original.`);
   }
   // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook re-inject.
-  const { bin, args: forkArgs } = resumeArgsFor(session, { fork: true, forkSessionId: forkId, addDir: args.addDir });
+  const { bin, args: forkArgs } = resumeArgsFor(session, { fork: true, forkSessionId: forkId, addDir: args.addDir, allowSubagents: args.allowSubagents });
   if (args.passthrough?.length) forkArgs.push(...args.passthrough);
   console.error(
     `psu: forking claude ${session.sessionId} → tracked session #${res.sessionId ?? '?'} (${forkId}) in ${session.cwd}  (${bin} ${forkArgs.join(' ')})`,
@@ -2553,7 +2554,7 @@ async function resumeFlow(args = {}) {
       // the pin is spawn-env only, so a resume otherwise drops it (option 1).
       const acct = await chooseResumeAccount(tracked, args);
       if (args.fork) { await launchTrackedFork(tracked, args, acct); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
       return;
     }
 
@@ -2576,7 +2577,7 @@ async function resumeFlow(args = {}) {
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
     // Account re-pin applies here too (a raw resume can be routed through the gateway).
     const acct = await chooseResumeAccount(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
     return;
   }
 
@@ -2610,7 +2611,7 @@ async function resumeFlow(args = {}) {
   // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
   const acct = await chooseResumeAccount(picked, args);
   if (args.fork) { await launchTrackedFork(picked, args, acct); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct });
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old
