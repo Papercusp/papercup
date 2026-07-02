@@ -1999,6 +1999,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     });
   }
 
+  // WI-1544 (round-1 live REJECT) — is this boot still inside its hive-JOIN bootstrap window?
+  // True for a JOINER boot (a `hive`/`topic` swarm binding — an invite/link joiner) whose
+  // hive-home has NOT yet resolved (home resolves at the 2c rekey's rebind). Inside this
+  // window an identity-stage `binding_invalid` is NOT conclusive: the owner's log announce
+  // races the hive-directory descriptor + the rekey by milliseconds, so the gist gate can
+  // conclusively 'fail' BEFORE the verified owner-device binding (resolveJoinedHiveOwnerDevice)
+  // or the federated roster can vouch for the frame — and announces are never re-delivered,
+  // so a conclusive reject here is a PERMANENT A→B stall. Live-pinned on the WI-1544
+  // Docker-frames rig: recv → owner-resolve=<null> (directory not yet populated) →
+  // binding_invalid → dropped; the rekey resolved moments later with nothing left to replay.
+  // Buffering instead admits NOTHING by itself: the frame still has to pass
+  // admitsAsKnownHiveMember / admit() on a retry tick (revocation re-checked every tick),
+  // and BOOT_PENDING_GRACE_MS caps the buffer. bad_sig / revoked stay conclusive always.
+  // A standalone (non-joiner) boot never enters this window, keeping conclusive-reject
+  // observability for genuinely foreign frames.
+  const inJoinBootstrapWindow = (): boolean =>
+    hiveHomeProjectionSlug == null &&
+    (opts.swarmBinding?.kind === 'hive' || opts.swarmBinding?.kind === 'topic');
+
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     try {
@@ -2023,6 +2042,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       return { admit: false, reason: 'binding_invalid' };
     }
     if (!decision.admit) {
+      // WI-1544: inside the join-bootstrap window a conclusive `binding_invalid` is
+      // reclassified as RETRYABLE — buffered for the rekey replay / retry tick (see
+      // inJoinBootstrapWindow above). Distinct label so a live grep can tell this buffer
+      // from the D-006 gist-propagation 'pending'.
+      if (decision.reason === 'binding_invalid' && inJoinBootstrapWindow()) {
+        if (!pendingPeers.has(frame.device_pubkey)) {
+          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        }
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_pending',
+          `binding_unverified_window ${peerLabel(frame.log_core_key)}`,
+        );
+        if (process.env.PAPERCUSP_A003_TRACE === '1') {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[A-003] reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
+          );
+        }
+        return { admit: false, reason: 'pending' };
+      }
       if (decision.reason === 'pending') {
         // D-006: channel-2 file not yet visible on GitHub. Store this peer for
         // retry within the boot grace window; do NOT permanently reject.
@@ -2265,7 +2306,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             }
             // else: home still unresolved → leave pending for the next retry tick.
           }
-        } else if (decision.reason !== 'pending') {
+        } else if (
+          decision.reason !== 'pending' &&
+          // WI-1544: a `binding_invalid` re-check inside the join-bootstrap window is NOT
+          // conclusive (same rule as onAnnounce) — leave it pending for the rekey replay.
+          !(decision.reason === 'binding_invalid' && inJoinBootstrapWindow())
+        ) {
           // Conclusive failure (binding_invalid / bad_sig / revoked) —
           // stop retrying.
           pendingPeers.delete(devicePubkey);
