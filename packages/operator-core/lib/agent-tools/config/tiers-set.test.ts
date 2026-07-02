@@ -35,7 +35,7 @@ describe('config:tiers-set', () => {
       {
         tiers: [
           { name: 'lean', spec: 'sonnet', compactionLimit: 900_000 }, // clamps to 158k
-          { name: 'wide', spec: 'opus[1m]:high' }, // derived 825k
+          { name: 'wide', spec: 'opus[1m]:high' }, // derived 500k (opus/fable cap, owner directive 2026-07-02)
           { name: 'lean', spec: 'haiku' }, // duplicate name — dropped
         ],
       },
@@ -48,7 +48,7 @@ describe('config:tiers-set', () => {
       { name: 'wide', spec: 'opus[1m]:high' },
     ]);
     expect(out.data.droppedInvalid).toBe(1);
-    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(825_000);
+    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(500_000);
     expect(out.data.tiers[1].modelWindow).toBe(1_000_000);
   });
 
