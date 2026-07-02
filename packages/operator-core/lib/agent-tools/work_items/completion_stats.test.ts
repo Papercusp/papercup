@@ -33,7 +33,7 @@ describe('work_items:completion_stats tool', () => {
     });
     const res = await callTool({ harness: 'papercusp' });
     expect(mockStats).toHaveBeenCalledWith('papercusp');
-    expect(JSON.parse(res.content[0].text)).toEqual({
+    expect(res.data).toEqual({
       ok: true,
       harness: 'papercusp',
       terminalTotal: 10,

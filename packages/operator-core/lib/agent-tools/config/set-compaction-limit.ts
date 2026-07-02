@@ -50,20 +50,14 @@ export default defineTool({
     await setCompactionLimit(identity.ownerId, args.limit);
     const presence = await getPresence(identity.ownerId);
     const persisted = presence?.compactionLimit ?? null;
+    // { data } shape (tool-data-shape ratchet P-003): the framework owns wire encoding.
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: persisted != null,
-            ownerId: identity.ownerId,
-            compactionLimit: persisted,
-            ...(persisted == null
-              ? { note: 'no live presence row for this session — limit not persisted' }
-              : {}),
-          }),
-        },
-      ],
+      data: {
+        ok: persisted != null,
+        ownerId: identity.ownerId,
+        compactionLimit: persisted,
+        ...(persisted == null ? { note: 'no live presence row for this session — limit not persisted' } : {}),
+      },
     };
   },
 });

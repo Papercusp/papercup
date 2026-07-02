@@ -15,6 +15,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setClaimSpec } from '../../scheduler/claim-spec-store';
+import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 
 /**
  * The roles that actually self-pull via scheduler:get_next, so a claim-spec STEERS them.
@@ -76,7 +77,27 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const res = await setClaimSpec({ beeId: args.beeId, spec: args.spec, updatedBy: ident.ownerId });
+    // P-016 (cross-machine-coord-parity): federate the spec when the queen is in a
+    // single shared-hive workspace, so a bee pulling on ANOTHER machine sees it.
+    // ctx harness wins (a harness-scoped queen); else the workspace's one shared
+    // hive; else null (operator-scope / local-only — today's behavior). Best-effort:
+    // a scope-resolve failure degrades to local (never blocks the spec write).
+    let hiveSlug: string | null = null;
+    try {
+      const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+      const ctxHarness =
+        typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*'
+          ? ctxHarnessRaw
+          : undefined;
+      if (ctxHarness) hiveSlug = ctxHarness;
+      else if (ident.workspaceId && ident.workspaceId !== '*') {
+        const scope = await resolveWorkspaceHiveScope(ident.workspaceId);
+        if (scope.kind === 'one') hiveSlug = scope.homeSlug;
+      }
+    } catch {
+      hiveSlug = null;
+    }
+    const res = await setClaimSpec({ beeId: args.beeId, spec: args.spec, updatedBy: ident.ownerId, hiveSlug });
 
     // Best-effort bee-vs-scoper guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
     // spec only STEERS a self-pulling role (role="bee", or the queen) that calls scheduler:get_next.

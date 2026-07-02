@@ -25,9 +25,9 @@ export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
 }
 
 /**
- * Phase D voice-OUT: drain the buffered Sentinel spoken lines. The webview polls
- * this while voice is active and speaks each line (TTS). The buffer is filled by
- * the Sentinel calling the `voice:say` MCP tool (in-process push).
+ * Phase D voice-OUT: drain the Sentinel spoken-line FIFO in local mode. The
+ * webview polls this while voice is active and no full-agent session owns the
+ * shared voice path. The buffer is filled by the Sentinel calling `voice:say`.
  */
 export async function drainSentinelOutput(): Promise<string[]> {
   try {

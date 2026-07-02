@@ -5,9 +5,10 @@ import { pushSentinelSay } from '../../sentinel-output-buffer';
 /**
  * voice:say — the Sentinel's voice-OUT (sentinel-as-claude-tui-2026-06-22,
  * Phase D). The voice-first Sentinel (a psu/Claude-Code session) calls this to
- * speak a line ALOUD to the local app user: the text is buffered, and the
- * webview voice runtime drains it (GET /api/operator/sentinel-output) and runs
- * it through the desktop TTS.
+ * speak a line ALOUD to the local app user: the text lands in the shared
+ * `sentinel_says` FIFO, then either the server-side full-agent pump speaks it
+ * onto the voice bus or the local webview drains it via
+ * `GET /api/operator/sentinel-output`.
  *
  * LOCAL APP USER ONLY (owner constraint): this is the local TTS channel, NOT the
  * P2P voice-channel system (voice:join/etc.). Capability `operator:read` matches

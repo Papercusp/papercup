@@ -1,8 +1,10 @@
 /**
  * sentinel-output-buffer — Phase D voice-OUT relay for the Sentinel-as-Claude-TUI
  * (sentinel-as-claude-tui-2026-06-22). The Sentinel calls the `voice:say` MCP
- * tool → `pushSentinelSay`; the webview voice runtime drains via
- * `drainSentinelSays` (GET /api/operator/sentinel-output poll) → `speak()`/TTS.
+ * tool → `pushSentinelSay`; consumers drain via `drainSentinelSays`. In the
+ * shipped one-brain pipeline there are two mutually-exclusive consumers:
+ * the server-side full-agent says-pump while a voice session is live, or the
+ * local webview's `GET /api/operator/sentinel-output` poll when it is not.
  *
  * CROSS-PROCESS via PG (migration 390). `voice:say` executes inside the
  * agent-mcp process the psu Sentinel's role-scoped MCP connects to (observed:
@@ -15,7 +17,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 
-/** Keep the queue bounded — a slow/absent webview drain must not grow it without limit. */
+/** Keep the queue bounded — a stalled consumer must not grow it without limit. */
 const MAX = 32;
 
 /**
@@ -44,8 +46,9 @@ export async function pushSentinelSay(text: string): Promise<void> {
 }
 
 /**
- * Return + clear all buffered spoken lines (the webview drains on poll). Never
- * throws: on any PG error the poll just sees an empty batch this tick.
+ * Return + clear all buffered spoken lines. The caller is whichever live
+ * consumer currently owns the FIFO drain. Never throws: on any PG error the
+ * drain just sees an empty batch this tick.
  */
 export async function drainSentinelSays(): Promise<string[]> {
   try {

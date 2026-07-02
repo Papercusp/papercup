@@ -262,8 +262,7 @@ export function VoiceAppBridge(): null {
   }, []);
 
   // Phase D voice-OUT (sentinel-as-claude-tui-2026-06-22): while voice mode is
-  // on, poll the Sentinel's spoken-output buffer (filled by its Claude-session
-  // Stop hook → /api/operator/sentinel-output) and speak each <say> line via
+  // on, poll the shared Sentinel spoken-output FIFO and speak each line via
   // local TTS. Local app user only.
   useEffect(() => {
     let stopped = false;

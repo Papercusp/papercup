@@ -278,16 +278,34 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
     };
   }
   const evaluated: Partial<Record<FlagKey, boolean>> = {};
-  await Promise.all(
-    ALL_FLAG_KEYS.map(async (key) => {
-      try {
-        const v = await client!.isFeatureEnabled(key, distinctId);
+  // posthog-node v5: ONE evaluateFlags snapshot for all keys (isFeatureEnabled is deprecated and its
+  // console.warn trips vitest-fail-on-console — host-spa gate-red 2026-07-01). v4 fallback keeps the
+  // declared ">=4 <6" range honest.
+  const c5 = client as typeof client & {
+    evaluateFlags?: (distinctId: string, opts?: { flagKeys?: string[] }) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
+  };
+  if (typeof c5.evaluateFlags === "function") {
+    try {
+      const snap = await c5.evaluateFlags(distinctId, { flagKeys: [...ALL_FLAG_KEYS] });
+      for (const key of ALL_FLAG_KEYS) {
+        const v = snap.isEnabled(key);
         if (typeof v === "boolean") evaluated[key] = v;
-      } catch {
-        // leave undefined; resolveWithDefaults fills with FLAG_DEFAULTS[key]
       }
-    }),
-  );
+    } catch {
+      // leave undefined; resolveWithDefaults fills with FLAG_DEFAULTS[key]
+    }
+  } else {
+    await Promise.all(
+      ALL_FLAG_KEYS.map(async (key) => {
+        try {
+          const v = await client!.isFeatureEnabled(key, distinctId);
+          if (typeof v === "boolean") evaluated[key] = v;
+        } catch {
+          // leave undefined; resolveWithDefaults fills with FLAG_DEFAULTS[key]
+        }
+      }),
+    );
+  }
   // stored beats evaluated; resolveWithDefaults drops retired/unknown keys.
   const flags: FlagValues = applyEnvOverrides(
     resolveWithDefaults({ ...evaluated, ...stored }),

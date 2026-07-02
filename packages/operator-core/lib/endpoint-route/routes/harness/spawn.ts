@@ -313,7 +313,16 @@ const invoke = defineTool({
             `but ${trackedInteractiveBackend} does not support forced-native-session-id: ${trackedGuard.reason}`,
         }, { status: 400 });
       }
-      nativeSessionId = trackedGuard.supported ? randomUUID() : null;
+      // Claude: the uuid is FORCED onto the CLI (`--session-id`) so `claude
+      // --resume` works. Codex: the CLI accepts no forced id, but the uuid is
+      // still minted as the TRANSCRIPT/ROSTER key — invoke.ts tees the codex
+      // turn into `~/.papercusp/codex-transcripts/<uuid>.jsonl` and the hive-tabs
+      // mirror pane locates it by this id. Without it every codex queen/overwatch
+      // row carried session_id NULL and the owner's TUI panes sat on "no
+      // transcript found — waiting for the next wake…" forever while both agents
+      // ran (2026-07-01, the gpt-5.4 switch).
+      nativeSessionId =
+        trackedGuard.supported || trackedInteractiveBackend === 'codex' ? randomUUID() : null;
       hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       // overwatch-role-2026-06-15 B-04: the overwatch is a tracked/resumable loop
       // like the Queen, but on its OWN label prefix — `overwatch · <slug>/<role>`,

@@ -39,6 +39,7 @@ export default defineTool({
   }),
   async handler(args) {
     const stats = await getCompletionIntegrityStats(args.harness);
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...stats }) }] };
+    // { data } shape (tool-data-shape ratchet P-003): the framework owns wire encoding.
+    return { data: { ok: true, ...stats } };
   },
 });

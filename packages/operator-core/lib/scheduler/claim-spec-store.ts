@@ -26,25 +26,38 @@ export interface SetClaimSpecResult {
 
 /** Queen: validate + store a bee's claim spec (upsert; revision bumps unless the spec carries a higher one). */
 export async function setClaimSpec(
-  args: { beeId: string; workspaceId?: string; spec: unknown; updatedBy?: string },
+  args: {
+    beeId: string;
+    workspaceId?: string;
+    spec: unknown;
+    updatedBy?: string;
+    /** P-016 (cross-machine-coord-parity): the hive HOME slug this spec federates
+     *  under. Set ⇒ the spec rides that hive's peer-log (mig-438 WHEN gate) so a
+     *  remote bee's get_next sees it; null/omitted ⇒ operator-scope, local-only
+     *  (today's behavior). Resolved by the caller via the same shared-hive scope
+     *  rule coord:send uses. */
+    hiveSlug?: string | null;
+  },
   sqlOverride?: OrgSql,
 ): Promise<SetClaimSpecResult> {
   const v = validateClaimSpec(args.spec);
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
+  const hiveSlug = args.hiveSlug ?? null;
   // The id-pin tripwire (mig 389): record whether this spec selects on `id` ALONE — a static
   // pin (a fixed wave), as opposed to a property-filtered standing lane. Denormalized so
   // over-reliance is a one-line COUNT, keeping the describe-by-property discipline visible.
   const idOnly = isIdOnlySelector(v.spec);
   const rows = (await sql`
-    INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, updated_at)
-    VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, now())
+    INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+    VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
       spec = EXCLUDED.spec,
       revision = GREATEST(harness_shared.bee_claim_specs.revision + 1, EXCLUDED.revision),
       id_only = EXCLUDED.id_only,
       updated_by = EXCLUDED.updated_by,
+      harness_slug = EXCLUDED.harness_slug,
       updated_at = now()
     RETURNING revision`) as { revision: number }[];
   return { ok: true, errors: [], revision: rows[0]?.revision };
