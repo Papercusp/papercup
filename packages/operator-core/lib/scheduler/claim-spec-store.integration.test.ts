@@ -23,7 +23,8 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { setClaimSpec, getClaimSpec, getClaimSpecHeadsForBees } = await import('./claim-spec-store');
+const { setClaimSpec, getClaimSpec, getClaimSpecHeadsForBees, resolveClaimSpecWorkspace } =
+  await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
 
@@ -183,6 +184,65 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
       SELECT op FROM harness_shared.substrate_outbox
        WHERE table_name='bee_claim_specs' AND key='su-samescope' ORDER BY id`;
     expect(ops.map((o) => o.op)).toEqual(['put', 'put']); // no 'del' — no re-home
+  });
+});
+
+describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace partition', () => {
+  const WS = 'papercusp-workspace';
+  const HIVE = 'papercusp';
+
+  it('resolveClaimSpecWorkspace: concrete ident passes through; null/"*"/empty fall to undefined (legacy default)', () => {
+    expect(resolveClaimSpecWorkspace(WS)).toBe(WS);
+    expect(resolveClaimSpecWorkspace(` ${WS} `)).toBe(WS);
+    expect(resolveClaimSpecWorkspace('*')).toBeUndefined();
+    expect(resolveClaimSpecWorkspace(null)).toBeUndefined();
+    expect(resolveClaimSpecWorkspace(undefined)).toBeUndefined();
+    expect(resolveClaimSpecWorkspace('  ')).toBeUndefined();
+  });
+
+  it('REGRESSION: a workspace-threaded hive-scoped write lands the ROW, the READ, and the OUTBOX capture all under that workspace', async () => {
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    const r = await setClaimSpec(
+      { beeId: 'wi1564-fed', workspaceId: WS, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: HIVE },
+      db.sql,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warning).toBeUndefined(); // threaded correctly — nothing to warn about
+
+    // ROW under the workspace partition (not 'default').
+    const rows = await db.sql<{ workspace_id: string; harness_slug: string }[]>`
+      SELECT workspace_id, harness_slug FROM harness_shared.bee_claim_specs WHERE bee_id = 'wi1564-fed'`;
+    expect(rows).toEqual([{ workspace_id: WS, harness_slug: HIVE }]);
+
+    // READ agrees: the same workspace sees the spec; the 'default' partition
+    // does NOT (this asymmetry is exactly why BOTH handlers must thread it).
+    expect(await getClaimSpec({ beeId: 'wi1564-fed', workspaceId: WS }, db.sql)).toMatchObject({
+      specId: DEFAULT_CLAIM_SPEC.specId,
+    });
+    expect(await getClaimSpec({ beeId: 'wi1564-fed' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+
+    // CAPTURE agrees: the outbox row rides (WS, HIVE) — the handle the booted
+    // drain actually serves. Under ('default', HIVE) it stranded forever (D5).
+    const outbox = await db.sql<{ workspace_id: string; harness_slug: string; op: string }[]>`
+      SELECT workspace_id, harness_slug, op FROM harness_shared.substrate_outbox
+       WHERE table_name = 'bee_claim_specs' AND key = 'wi1564-fed'`;
+    expect(outbox).toEqual([{ workspace_id: WS, harness_slug: HIVE, op: 'put' }]);
+  });
+
+  it('the strand combo (hive-scoped + default partition) still writes but returns the LOUD WI-1564 warning', async () => {
+    const r = await setClaimSpec(
+      { beeId: 'wi1564-strand', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen', hiveSlug: HIVE },
+      db.sql,
+    );
+    expect(r.ok).toBe(true); // fail-soft: local get_next on 'default' still works
+    expect(r.warning).toMatch(/NOT federate/);
+    expect(r.warning).toMatch(/WI-1564/);
+  });
+
+  it('no warning for operator-scope (hiveSlug null) on the default partition — local-only is the intent there', async () => {
+    const r = await setClaimSpec({ beeId: 'wi1564-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'queen' }, db.sql);
+    expect(r.ok).toBe(true);
+    expect(r.warning).toBeUndefined();
   });
 });
 

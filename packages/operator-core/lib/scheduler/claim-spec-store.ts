@@ -22,6 +22,32 @@ export interface SetClaimSpecResult {
   ok: boolean;
   errors: string[];
   revision?: number;
+  /** WI-1564: set when the write is suspicious but not invalid — e.g. a
+   *  hive-scoped spec landing under the legacy 'default' workspace partition,
+   *  which the federation outbox-drain does not serve (the row strands). */
+  warning?: string;
+}
+
+/**
+ * WI-1564 (LIVE-1 D5 failure): resolve the workspace partition a claim-spec
+ * write/read should use from the caller's identity. The bug class: a tool
+ * handler that omits `workspaceId` falls back to DEFAULT_COORD_WORKSPACE
+ * ('default') — but the federation outbox-drain only serves the BOOTED
+ * (workspace, hive) handles, so a hive-scoped row under 'default' NEVER
+ * drains/federates (137 rows stranded as of 2026-07-02). Both the writer
+ * (scheduler:set_claim_spec) and the reader (scheduler:get_next) MUST resolve
+ * through this one helper so write+read+capture always agree on the partition.
+ *
+ * Returns the ident workspace when concrete; `undefined` (⇒ the store's
+ * legacy 'default') for a null/'*'/empty ident — un-scoped callers keep
+ * today's local-only behavior rather than guessing a volatile registry
+ * default (the EI-1460 strand class).
+ */
+export function resolveClaimSpecWorkspace(
+  identWorkspaceId: string | null | undefined,
+): string | undefined {
+  const ws = identWorkspaceId?.trim();
+  return ws && ws !== '*' ? ws : undefined;
 }
 
 /** Queen: validate + store a bee's claim spec (upsert; revision bumps unless the spec carries a higher one). */
@@ -45,6 +71,16 @@ export async function setClaimSpec(
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const hiveSlug = args.hiveSlug ?? null;
+  // WI-1564: hive-scoped + 'default' partition = the strand combo. The write
+  // still proceeds (fail-soft; local get_next reads under the same default),
+  // but LOUDLY — the outbox capture rides ('default', hive), which no booted
+  // drain handle serves, so the spec never federates.
+  const strandWarning =
+    hiveSlug !== null && ws === DEFAULT_COORD_WORKSPACE
+      ? `hive-scoped claim spec stored under the '${DEFAULT_COORD_WORKSPACE}' workspace partition — ` +
+        `the federation outbox-drain only serves booted (workspace, hive) handles, so this spec will ` +
+        `NOT federate to peers (WI-1564). Thread the caller's workspaceId (resolveClaimSpecWorkspace).`
+      : undefined;
   // The id-pin tripwire (mig 389): record whether this spec selects on `id` ALONE — a static
   // pin (a fixed wave), as opposed to a property-filtered standing lane. Denormalized so
   // over-reliance is a one-line COUNT, keeping the describe-by-property discipline visible.
@@ -87,7 +123,7 @@ export async function setClaimSpec(
         VALUES (${ws}, ${args.beeId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${hiveSlug}, now())
         RETURNING revision`) as { revision: number }[];
     })) as unknown as { revision: number }[];
-    return { ok: true, errors: [], revision: rows[0]?.revision };
+    return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
   }
 
   const rows = (await sql`
@@ -101,7 +137,7 @@ export async function setClaimSpec(
       harness_slug = EXCLUDED.harness_slug,
       updated_at = now()
     RETURNING revision`) as { revision: number }[];
-  return { ok: true, errors: [], revision: rows[0]?.revision };
+  return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
 }
 
 /** Load a bee's claim spec, or DEFAULT_CLAIM_SPEC when none is set / a stored spec is invalid. */

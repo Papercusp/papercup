@@ -17,7 +17,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getNextForBee } from '../../scheduler/claim-spec-store';
+import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
 
 export default defineTool({
   name: 'scheduler:get_next',
@@ -55,6 +55,12 @@ export default defineTool({
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
     const res = await getNextForBee({
       beeId: ident.ownerId,
+      // WI-1564: MUST match the partition scheduler:set_claim_spec writes
+      // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
+      // while the queen writes the workspace partition (or a federated spec
+      // arrives under the booted workspace) silently falls back to
+      // DEFAULT_CLAIM_SPEC and the steer never lands.
+      workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
       harness: args.harness,
       heldPaths: args.heldPaths,
       states: args.states,

@@ -14,7 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setClaimSpec } from '../../scheduler/claim-spec-store';
+import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 
 /**
@@ -97,7 +97,17 @@ export default defineTool({
     } catch {
       hiveSlug = null;
     }
-    const res = await setClaimSpec({ beeId: args.beeId, spec: args.spec, updatedBy: ident.ownerId, hiveSlug });
+    // WI-1564 (LIVE-1 D5): thread the caller's workspace — omitting it landed
+    // the row under DEFAULT_COORD_WORKSPACE 'default', whose (workspace, hive)
+    // outbox handle no drain serves, so a hive-scoped spec NEVER federated.
+    // The reader (scheduler:get_next) resolves through the SAME helper.
+    const res = await setClaimSpec({
+      beeId: args.beeId,
+      workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+      spec: args.spec,
+      updatedBy: ident.ownerId,
+      hiveSlug,
+    });
 
     // Best-effort bee-vs-scoper guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
     // spec only STEERS a self-pulling role (role="bee", or the queen) that calls scheduler:get_next.
@@ -108,11 +118,13 @@ export default defineTool({
     const spawnedRole = await lookupSpawnedRole(args.beeId);
     const out: Record<string, unknown> = { ...res };
     if (spawnedRole && !SELF_PULLING_ROLES.has(spawnedRole)) {
-      out.warning =
+      const roleWarning =
         `beeId "${args.beeId}" was spawned as role="${spawnedRole}", which is NOT a self-pulling ` +
         'coding-hive role. Claim-specs steer self-pulling BEES (role="bee") that call scheduler:get_next; ' +
         `a "${spawnedRole}" never calls get_next, so this spec is INERT (it will never select any work). ` +
         'Did you mean to spawn a bee? — fleet:spawn { role:"bee", … }, then set this claim-spec on it.';
+      // Append — never clobber the store's WI-1564 strand warning.
+      out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;
     }
     return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
   },
