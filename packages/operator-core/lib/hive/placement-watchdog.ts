@@ -1024,6 +1024,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'cursed',
             failCount: decision.nextFailCount,
+            lastLossSpawnId: servingBee?.spawnId ?? existing?.last_loss_spawn_id ?? null,
             infraLossCount: decision.nextInfraLossCount,
             disposition: 'breaker',
             escalationMsgId: msgId,
@@ -1046,6 +1047,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'cursed',
             failCount: obs.failCount,
+            lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
             infraLossCount: obs.infraLossCount,
             disposition: 'breaker',
           });
@@ -1062,6 +1064,7 @@ export async function reconcileOneHive(
             ...base,
             status: 'recovering',
             failCount: obs.failCount,
+            lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
             infraLossCount: obs.infraLossCount,
             disposition: 'recover',
           });
@@ -1073,6 +1076,7 @@ export async function reconcileOneHive(
               status: 'abandoned',
               failCount: obs.failCount,
               infraLossCount: obs.infraLossCount,
+              lastLossSpawnId: null,
               disposition: 'abandoned',
             });
           }
@@ -1305,6 +1309,7 @@ async function reconcileTerminalPlacements(
       workItemId: r.work_item_id,
       harnessSlug: r.harness_slug,
       queenOwnerId: null,
+      lastLossSpawnId: null, // converged out of the open set → lineage over
       beeSpawnId: null,
       beeOwnerId: null,
       status: terminal ? 'completed' : 'abandoned',
@@ -1391,6 +1396,7 @@ async function reconcileStrandedWork(
       workItemId: blk.blocker_id,
       harnessSlug: blk.blocker_harness,
       queenOwnerId: queenOwner,
+      lastLossSpawnId: null, // stranded-escalation marker row, not a loss event
       beeSpawnId: null,
       beeOwnerId: null,
       status: 'stranded',

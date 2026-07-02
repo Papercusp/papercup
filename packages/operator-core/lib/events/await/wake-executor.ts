@@ -729,6 +729,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // or under-load bee -> the MCP session is scoped_superuser_workspace_unresolved
       // -> EVERY coord:* tool 404s ("Tool coord:orient not found"). The coord hook
       // still works (it resolves the workspace itself), which masked this break.
+      // (Since mcp-outage-triage-2026-07-02 the clamp falls back to the box's
+      // ACTIVE workspace instead of rejecting — a net, not a replacement: this
+      // explicit export stays the correct primary carrier.)
       // Mirrors bootstrap-su's envelopeEnv + console-launcher (the fresh-launch
       // legs that already set this). d.workspaceId is the delivery's workspace.
       PAPERCUSP_WORKSPACE: d.workspaceId,

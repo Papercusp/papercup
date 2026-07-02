@@ -86,8 +86,14 @@ function forwardOnce(
     );
     upstream.on('socket', (s) => {
       // Once the TCP handshake completes, the request is (or may be) in flight at :3070.
-      if (s.connecting === false) connected = true;
-      s.on('connect', () => {
+      // A reused keep-alive socket is ALREADY connected — return without adding a
+      // 'connect' listener (one per proxied request accumulated on the shared socket:
+      // the MaxListenersExceededWarning in the unit journal, mcp-outage-triage-2026-07-02).
+      if (s.connecting === false) {
+        connected = true;
+        return;
+      }
+      s.once('connect', () => {
         connected = true;
       });
     });

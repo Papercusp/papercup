@@ -45,9 +45,12 @@ set -euo pipefail
 # `isMain` guard fails → psu/ptool exit 0 doing nothing. Canonicalize here.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # WI-1457 hardening (mcp-host-availability-resilience P-005/P-006): when the
-# resilient MCP proxy is verifiably alive (systemd unit active AND /api/health
-# 200 THROUGH it), mint configs against the proxy — a :3070 deploy restart is
-# then invisible to sessions (retry-on-refused; never double-applies a write).
+# resilient MCP proxy's systemd unit is ACTIVE, mint configs against the proxy —
+# a :3070 deploy restart is then invisible to sessions (retry-on-refused; never
+# double-applies a write). The /api/health check through the proxy is ADVISORY
+# only (mcp-outage-triage-2026-07-02): a transient health blip at mint time used
+# to bake a direct-:3070 default into durable config — the exact regression this
+# block exists to prevent — so health failure now warns instead of rerouting.
 # An explicit PAPERCUSP_OPERATOR_URL still wins; PAPERCUSP_MCP_PROXY=0 opts out.
 # This is precisely the re-mint path that silently REGRESSED the P-006 cutover
 # (configs re-baked to direct :3070 while the proxy sat active-but-unrouted).
@@ -62,10 +65,13 @@ case "${PAPERCUSP_OPERATOR_URL:-}" in
   *) MINT_ENV_AUTHORITATIVE=1 ;;
 esac
 if [ "$MINT_ENV_AUTHORITATIVE" = "0" ] && [ "${PAPERCUSP_MCP_PROXY:-1}" != "0" ] \
-  && systemctl --user is-active --quiet papercup-mcp-proxy 2>/dev/null \
-  && [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:${MCP_PROXY_PORT}/api/health" 2>/dev/null)" = "200" ]; then
+  && systemctl --user is-active --quiet papercup-mcp-proxy 2>/dev/null; then
   OPERATOR_URL="http://127.0.0.1:${MCP_PROXY_PORT}"
   echo "→ Resilient MCP proxy ACTIVE on :${MCP_PROXY_PORT} — minting configs against the proxy (WI-1457)"
+  if [ "$(curl -s -o /dev/null -m 6 -w '%{http_code}' "http://127.0.0.1:${MCP_PROXY_PORT}/api/health" 2>/dev/null)" != "200" ]; then
+    echo "  ⚠ /api/health through the proxy did not return 200 right now — minting against it anyway" >&2
+    echo "    (the proxy bridges operator restarts; a direct :3070 default would be the permanent regression)." >&2
+  fi
   if [ -n "${PAPERCUSP_OPERATOR_URL:-}" ]; then
     echo "  (inherited PAPERCUSP_OPERATOR_URL=${PAPERCUSP_OPERATOR_URL} is the plain direct default — not baked into durable config)"
   fi

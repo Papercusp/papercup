@@ -727,3 +727,53 @@ describe('evaluateTerminalPlacementReconcile — EI-6109 completion-reconcile GC
     }
   });
 });
+
+describe('evaluatePlacement — attempt-once loss counting (WI-677 round 2, mig 440)', () => {
+  // Observed live 2026-07-02 00:27: recovering items with ZERO new bees accrued
+  // fail_count 3 across three debounce expiries and re-cursed in ~12 minutes —
+  // the counter measured SWEEPS, not attempts. These pin the per-attempt contract.
+
+  it('NO serving bee at all → re-place only, BOTH counters flat (nothing to count)', () => {
+    const d = evaluatePlacement(
+      obs({ hasServingBee: false, failCount: 2, infraLossCount: 5 }),
+      config(),
+    );
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') {
+      expect(d.nextFailCount).toBe(2);
+      expect(d.nextInfraLossCount).toBe(5);
+    }
+  });
+
+  it('the SAME dead attempt (spawn id == lastLossSpawnId) is never recounted', () => {
+    const d = evaluatePlacement(
+      obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-1', lastLossSpawnId: 's-corpse-1', failCount: 1 }),
+      config(),
+    );
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(1); // flat — already charged
+  });
+
+  it('a NEW dead attempt (different spawn id) still counts toward the pathology breaker', () => {
+    const d = evaluatePlacement(
+      obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-2', lastLossSpawnId: 's-corpse-1', failCount: 1 }),
+      config(),
+    );
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(2); // genuine fresh failure
+  });
+
+  it('three DISTINCT dead attempts still trip the breaker (the bound holds)', () => {
+    const d = evaluatePlacement(
+      obs({ hasServingBee: true, servingBeeSpawnId: 's-corpse-3', lastLossSpawnId: 's-corpse-2', failCount: 2 }),
+      config(),
+    );
+    expect(d.kind).toBe('breaker');
+  });
+
+  it('legacy observation (hasServingBee undefined) keeps pre-mig-440 behavior', () => {
+    const d = evaluatePlacement(obs({ failCount: 0 }), config());
+    expect(d.kind).toBe('recover');
+    if (d.kind === 'recover') expect(d.nextFailCount).toBe(1);
+  });
+});

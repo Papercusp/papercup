@@ -35,12 +35,18 @@ export const NO_PLAN = '<no-plan>';
 /**
  * Is the resilient MCP proxy (mcp-host-availability-resilience-2026-06-22 P-005,
  * systemd user unit `papercup-mcp-proxy`, default :9071 → :3070) alive on this
- * box? STRICT two-factor probe so a stale role MCP host squatting the port can
- * never false-positive (role hosts have historically used e.g. :9071):
- *   (a) the systemd unit is `active` (the unit is the sole legitimate port owner
- *       per the P-006 cutover), AND
- *   (b) an HTTP GET /api/health THROUGH the proxy returns 200 (proxy is
- *       listening AND the chain to the operator works end-to-end).
+ * box? The ROUTE decision is the systemd unit being `active` — the unit is the
+ * sole legitimate port owner per the P-006 cutover, so a stale role MCP host
+ * squatting the port (role hosts have historically used e.g. :9071) still can't
+ * false-positive: it has no active unit. The /api/health check THROUGH the proxy
+ * is ADVISORY ONLY (warn, never reroute). It used to be a hard second factor,
+ * but a transient health blip at launch (busy box, or :3070 mid-deploy-restart —
+ * the very window the proxy exists to bridge) then minted a LIFETIME direct
+ * :3070 pin into the child session's env, which is the exact availability
+ * failure the proxy was built to prevent (observed live on two sessions,
+ * mcp-outage-triage-2026-07-02). A genuinely wedged proxy fails loudly on first
+ * use and gets fixed; a silent direct pin severs the session's tools on every
+ * subsequent deploy.
  * Sync (resolveOperatorUrl runs at module top level); each check is loopback +
  * bounded, so the added launch latency is ~10–50ms. Exported for tests.
  */
@@ -53,12 +59,19 @@ export function defaultMcpProxyProbe(port) {
     if ((unit.stdout ?? '').trim() !== 'active') return false;
     const health = spawnSync(
       'curl',
-      ['-s', '-o', '/dev/null', '-m', '2', '-w', '%{http_code}', `http://127.0.0.1:${port}/api/health`],
-      { encoding: 'utf8', timeout: 4_000 },
+      ['-s', '-o', '/dev/null', '-m', '6', '-w', '%{http_code}', `http://127.0.0.1:${port}/api/health`],
+      { encoding: 'utf8', timeout: 8_000 },
     );
-    return (health.stdout ?? '').trim() === '200';
+    if ((health.stdout ?? '').trim() !== '200') {
+      console.warn(
+        `psu: MCP proxy unit is active on :${port} but /api/health through it did not return 200 — ` +
+          `routing via the proxy anyway (it bridges operator restarts; a direct pin would be permanent). ` +
+          `If tools fail, check papercup-mcp-proxy.service and :3070.`,
+      );
+    }
+    return true;
   } catch {
-    return false; // no systemctl / no curl / any error ⇒ treat as no proxy (safe fallback)
+    return false; // no systemctl / any error ⇒ treat as no proxy (safe fallback)
   }
 }
 

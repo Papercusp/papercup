@@ -435,13 +435,16 @@ describe('scoped-superuser-workspace-clamp', () => {
     // the no-silent-'*' guarantee is intact while the session stays usable.
     h.scopedClampFlag.value = true;
     process.env.PAPERCUSP_WORKSPACE_ID = 'ws-active-pin'; // activeWorkspaceId() precedence #2
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {}); // the fallback warns by design
     try {
       const res = await callTool('gatingtest:scoped', {}, superuserExtra()); // no ?workspace=, no header
       expect(res.isError).not.toBe(true);
       expect(seen.at(-1)?.ctx.workspaceId).toBe('ws-active-pin');
       expect(h.withWorkspaceCalls).toEqual(['ws-active-pin']);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scoping to the active workspace'));
     } finally {
       delete process.env.PAPERCUSP_WORKSPACE_ID;
+      warnSpy.mockRestore();
     }
   });
 

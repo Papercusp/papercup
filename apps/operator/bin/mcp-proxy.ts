@@ -8,7 +8,11 @@
  *   PAPERCUSP_MCP_PROXY_PORT          listen port (default 9071; :3071-3079 are taken on the dev box)
  *   PAPERCUSP_MCP_PROXY_TARGET_HOST   upstream host (default 127.0.0.1)
  *   PAPERCUSP_MCP_PROXY_TARGET_PORT   upstream port (default PAPERCUSP_HONO_PORT or 3070)
- *   PAPERCUSP_MCP_PROXY_RETRY_MS      retry-on-refused window (default 45000)
+ *   PAPERCUSP_MCP_PROXY_RETRY_MS      retry-on-refused window (default 90000 —
+ *                                     a :3070 deploy restart measured ~45s wall
+ *                                     on 2026-07-01, with recoveries landing at
+ *                                     45.6s = past the old 45s window; 90s gives
+ *                                     2× headroom so a slow restart can't 503)
  */
 import { startMcpProxy } from '../lib/mcp-proxy/proxy';
 
@@ -16,5 +20,5 @@ startMcpProxy({
   listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
   targetHost: process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1',
   targetPort: Number(process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? process.env.PAPERCUSP_HONO_PORT ?? 3070),
-  retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS ?? 45_000),
+  retryWindowMs: Number(process.env.PAPERCUSP_MCP_PROXY_RETRY_MS ?? 90_000),
 });
