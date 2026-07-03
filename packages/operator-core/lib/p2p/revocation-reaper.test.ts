@@ -125,9 +125,16 @@ describe('reapForeignSessionsForRevocation (orchestration)', () => {
     expect(res.receiptsEmitted).toBe(2);
     expect(res.receiptFailures).toBe(0);
 
-    // fail-close: transitioned to 'reaped' with a revocation park_reason
+    // fail-close: transitioned to 'reaped' with a revocation park_reason,
+    // guarded so a raced-to-terminal row is never re-touched (fromStates).
     expect(setState).toHaveBeenCalledTimes(2);
-    expect(setState).toHaveBeenCalledWith('ws1', 'A', 'reaped', { parkReason: 'revocation:grant-revoked' }, sqlStub);
+    expect(setState).toHaveBeenCalledWith(
+      'ws1',
+      'A',
+      'reaped',
+      { parkReason: 'revocation:grant-revoked', fromStates: REAPABLE_STATES },
+      sqlStub,
+    );
 
     // receipt shape: refusal / code grant-revoked / action work-offer:reap / threaded offer + origin
     expect(emit).toHaveBeenCalledTimes(2);
