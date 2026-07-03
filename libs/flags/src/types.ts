@@ -1099,9 +1099,9 @@ export const FLAGS = {
   SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
   // work-item-deps-and-readiness-2026-06-22 P-005: the scheduler claim reads the maintained
   // readiness sidecar (work_item_blocked — an indexed anti-join) instead of the inline per-claim
-  // NOT EXISTS subquery. Behavior-identical; a performance cutover. DEFAULT OFF: the sidecar is built +
-  // live + verified, but default-ON makes work_item_blocked a HARD claim dependency (any env without
-  // mig 379 errors), so the flip is a coordinated cutover. KNOWN_DARK_FLAGS 'cutover'.
+  // NOT EXISTS subquery. Behavior-identical; a performance cutover. DEFAULT ON (derived
+  // FLAG_DEFAULTS — graduated out of DARK_FLAGS 2026-06-22 after a sustained live drift=0 verify;
+  // requires mig 379). OFF is the reversible kill-switch back to the inline predicate.
   SCHEDULER_MAINTAINED_READY: "papercusp-scheduler-maintained-ready",
   // gateway-priority-tiers-2026-06-22: gates the inference-gateway priority-tier
   // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
