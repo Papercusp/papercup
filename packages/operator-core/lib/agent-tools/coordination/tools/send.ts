@@ -18,7 +18,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
-import { getPresence } from '../presence';
+import { fetchPresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
@@ -635,7 +635,14 @@ export default defineTool({
     let senderCueAuthority: CueAuthorityStamp | null = null;
     if (anyWildcard) {
       try {
-        senderFleet = (await getPresence(identity.ownerId))?.fleetSlug ?? null;
+        // P-004 FIX: fleetSlug lives on the fleet-membership JOIN (coord_presence
+        // via fetchPresenceFleet), NOT on PresenceRecord — the old
+        // `getPresence(...).fleetSlug` read `undefined` every time, so a fleeted
+        // sender's `['*']` was NEVER down-scoped and the whole scope-broadcast
+        // default was a production no-op (a leader could broadcast a drain/pause
+        // cue to every agent, incl. peer leaders outside its fleet). Resolve it
+        // from the correct source so the down-scope to @fleet:<slug> actually fires.
+        senderFleet = (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId)?.fleetSlug ?? null;
       } catch {
         senderFleet = null;
       }
