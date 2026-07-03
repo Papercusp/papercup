@@ -303,3 +303,43 @@ describe('CODE_RUN_CAPABLE_ROLES', () => {
     expect(CODE_RUN_CAPABLE_ROLES.has('reviewer')).toBe(true);
   });
 });
+
+// ── code-run-self-state-adoption-2026-07-03 P-004: surface-aware nudging ──────────────
+
+import { canRoleActOnCodeRun } from './code-run-batch-nudge';
+
+describe('canRoleActOnCodeRun — envelope-aware capability check (P-004)', () => {
+  it('allows default-allow fleet roles (bee, queen, worker)', () => {
+    for (const role of ['bee', 'queen', 'worker']) {
+      expect(canRoleActOnCodeRun(role), role).toBe(true);
+    }
+  });
+
+  it('refuses envelope-denied roles (overwatch/sentinel deny capability:bash) and unknown roles', () => {
+    expect(canRoleActOnCodeRun('overwatch')).toBe(false);
+    expect(canRoleActOnCodeRun('sentinel')).toBe(false);
+    expect(canRoleActOnCodeRun('totally-unknown-role')).toBe(false);
+  });
+});
+
+describe('maybeBatchNudge — codeRunInSurface teaches the activate path (P-004)', () => {
+  it('appends the tools:find/tools:invoke path when the surface lacks code:run', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      hit = maybeBatchNudge({ ...cap, codeRunInSurface: false, now: i * 1000 });
+    }
+    expect(hit).not.toBeNull();
+    expect(hit!.text).toContain('not in your loaded tool list');
+    expect(hit!.text).toContain('tools:find("code:run")');
+    expect(hit!.text).toContain('tools:invoke');
+  });
+
+  it('does NOT append the activate path when the surface has code:run (default)', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      hit = maybeBatchNudge({ ...cap, now: i * 1000 });
+    }
+    expect(hit).not.toBeNull();
+    expect(hit!.text).not.toContain('not in your loaded tool list');
+  });
+});

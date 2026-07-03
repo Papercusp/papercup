@@ -104,6 +104,19 @@ export function resolveFederationWorkspace(ws: string | null | undefined): strin
   return w && w !== '*' && w !== DEFAULT_COORD_WORKSPACE ? w : undefined;
 }
 
+/** TRUNCATE an over-cap body, don't reject it (code-run-self-state-adoption-2026-07-03
+ *  P-007): the old hard throw cost 7 lost facts in 14d — an agent that wrote a slightly-long
+ *  conclusion lost the WHOLE write, the worst outcome for a durable-memory surface (the
+ *  limit-failure-rate precedent: content fields truncate). The 500-char discipline
+ *  ("conclusions, not documents") stays as the stored shape, not an all-or-nothing gate;
+ *  the '…' suffix makes a truncation visible in the fold, and the DB CHECK (mig 444,
+ *  char_length ≤ 500) remains the backstop. PURE — unit-tested without PG. */
+export function clampFactBody(raw: string): string {
+  const body = raw.trim();
+  if (body.length <= FACT_BODY_MAX_CHARS) return body;
+  return `${body.slice(0, FACT_BODY_MAX_CHARS - 1)}…`;
+}
+
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
  *  the per-scope cap by evicting the oldest-updated live facts past the cap. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AgentFact> {
@@ -111,11 +124,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   if (err) throw new Error(`facts:assert — ${err}`);
   const key = input.key.trim();
   if (!key) throw new Error('facts:assert — key required (stable slug)');
-  const body = input.body.trim();
+  const body = clampFactBody(input.body);
   if (!body) throw new Error('facts:assert — body required');
-  if (body.length > FACT_BODY_MAX_CHARS) {
-    throw new Error(`facts:assert — body over ${FACT_BODY_MAX_CHARS} chars (facts are conclusions, not documents)`);
-  }
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
   // F1-4 / WI-1564: a SHAREABLE fact MUST land in a real federating partition.

@@ -115,3 +115,24 @@ describe('renderFactsFold', () => {
     expect(renderFactsFold([])).toBe('');
   });
 });
+
+// ── code-run-self-state-adoption-2026-07-03 P-007: truncate-not-reject ────────────────
+
+import { clampFactBody, FACT_BODY_MAX_CHARS } from './store';
+
+describe('clampFactBody — over-cap bodies truncate instead of rejecting (P-007)', () => {
+  it('keeps an in-cap body verbatim (trimmed)', () => {
+    expect(clampFactBody('  a tight conclusion  ')).toBe('a tight conclusion');
+  });
+
+  it('truncates an over-cap body to exactly the cap with a visible ellipsis', () => {
+    const out = clampFactBody('x'.repeat(FACT_BODY_MAX_CHARS + 100));
+    expect(out.length).toBe(FACT_BODY_MAX_CHARS);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('at-cap body passes untouched (boundary)', () => {
+    const exact = 'y'.repeat(FACT_BODY_MAX_CHARS);
+    expect(clampFactBody(exact)).toBe(exact);
+  });
+});

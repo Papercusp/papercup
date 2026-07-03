@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readCodeRunAdoption, rollupAdoption, gradeToolUtilization, type RunQuery } from '../../code-run-adoption';
+import { NUDGE_CONVERSION_SQL } from '../../code-run-nudge-telemetry';
 
 export default defineTool({
   name: 'dev:code_run_adoption',
@@ -50,9 +51,27 @@ export default defineTool({
     const byRoleDay = await readCodeRunAdoption(runQuery, { sinceDays });
     const fleet = rollupAdoption(byRoleDay);
     const grade = gradeToolUtilization(fleet);
+    // Nudge→conversion funnel (P-005): of sessions that received a batch-hint in the window,
+    // how many then called code:run/recipes:run. Best-effort — the fires table (mig 482) may
+    // not exist yet on an un-migrated host; the adoption read must not fail for it.
+    let nudge: { nudgedSessions: number; convertedSessions: number } | null = null;
+    try {
+      const rows = await runQuery<{ nudged_sessions: number | string; converted_sessions: number | string }>(
+        NUDGE_CONVERSION_SQL,
+        [sinceDays],
+      );
+      if (rows[0]) {
+        nudge = {
+          nudgedSessions: Number(rows[0].nudged_sessions) || 0,
+          convertedSessions: Number(rows[0].converted_sessions) || 0,
+        };
+      }
+    } catch {
+      /* fires table absent / query failed — omit the funnel rather than fail the read */
+    }
     return {
       content: [
-        { type: 'text', text: JSON.stringify({ ok: true, sinceDays, fleet, grade, byRoleDay }) },
+        { type: 'text', text: JSON.stringify({ ok: true, sinceDays, fleet, grade, nudge, byRoleDay }) },
       ],
     };
   },

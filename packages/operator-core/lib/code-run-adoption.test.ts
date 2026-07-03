@@ -273,3 +273,26 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
     expect(out[0]).toMatchObject({ spawns: 1 });
   });
 });
+
+// ── code-run-self-state-adoption-2026-07-03 P-006: poller exclusion ───────────────────
+
+describe('spawnRowsFromCalls — excludes poller tools from the work counts (P-006)', () => {
+  it('an activity:recent 2×-per-spawn poller is NOT a batchable opportunity', () => {
+    const rows = spawnRowsFromCalls([
+      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent' },
+      { spawnId: 'p1', role: 'operator', day: '2026-07-03', toolName: 'activity:recent' },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].maxSameTool).toBe(0);
+    expect(rows[0].distinctTools).toBe(0);
+    expect(isBatchableSpawn(rows[0])).toBe(false);
+  });
+
+  it('a real same-tool burst on a non-poller tool still counts', () => {
+    const rows = spawnRowsFromCalls([
+      { spawnId: 'r1', role: 'bee', day: '2026-07-03', toolName: 'work_items:get' },
+      { spawnId: 'r1', role: 'bee', day: '2026-07-03', toolName: 'work_items:get' },
+    ]);
+    expect(isBatchableSpawn(rows[0])).toBe(true);
+  });
+});

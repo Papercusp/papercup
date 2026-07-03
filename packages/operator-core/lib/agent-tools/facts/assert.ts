@@ -36,7 +36,10 @@ export default defineTool({
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
     key: z.string().min(1).max(120).describe('Stable slug — upsert + retract target (e.g. "wi-1439-owner-residue").'),
-    body: z.string().min(1).max(FACT_BODY_MAX_CHARS).describe(`The conclusion, ≤${FACT_BODY_MAX_CHARS} chars — folded verbatim.`),
+    // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
+    // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
+    // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
+    body: z.string().min(1).max(4000).describe(`The conclusion — stored truncated to ${FACT_BODY_MAX_CHARS} chars (write tight conclusions, not documents).`),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it (WI-/EI- id, plan slug) so readers can verify.'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the hive over the substrate. Default false — facts are hive-private.'),

@@ -21,12 +21,15 @@ growing transcript." **This is wrong.** Verify before designing on it.
 
 The Queen's **declared, event, watchdog, and manual wakes are ALL already
 fresh-per-wake** — each spawns a brand-new claude session with a fresh session
-id and **no carried transcript**. The ONLY path that `--resume`s the Queen is
-the *generic* wake-executor inbox/await delivery channel (a `coord:send` with
-`wake:true` to her owner id, or an `events:await` she registered — which her
-persona tells her not to use).
+id and **no carried transcript**. Historically the only path that `--resume`d
+the Queen was the *generic* wake-executor inbox/await delivery channel (a
+`coord:send` with `wake:true` to her owner id, or an `events:await` she
+registered — which her persona tells her not to use) — **that exception is now
+closed** (queen-brief-cache-assembly B-01/P-012, see Consequence below):
+`wake-executor.ts` detects a hive-operator session and routes even that path
+through the same fresh hive launch.
 
-## The wake paths (all FRESH except one)
+## The wake paths (ALL fresh — the last exception closed by P-012)
 
 | Path | Trigger | Mechanism | Session |
 |---|---|---|---|
@@ -34,7 +37,7 @@ persona tells her not to use).
 | Event wake | `hive:declare-wake {events}` | reaction rule → `hive:wake` tool → `fireLaunchBlueprint('hive')` → same invoke route | **FRESH** |
 | Watchdog recovery | turn-end / boot / 30s tick (`watchdog.ts armFallbackHiveWake`) | `declareHiveTimeWake` → same routine | **FRESH** |
 | Manual / user | `hive:wake` | `fireLaunchBlueprint('hive')` → same invoke route | **FRESH** |
-| Inbox / await | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → `resumeCommandFor` | `--resume` (the one exception) |
+| Inbox / await | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `hive ·` label → `defaultFireHiveWake` → `fireLaunchBlueprint('hive')` | **FRESH** (closed exception — was `--resume` before P-012 landed) |
 
 ### Where "fresh" is decided
 
@@ -65,14 +68,19 @@ scheduled-wake path.
   durable artifacts (work-item claims, `blocked_by` edges, priorities, the
   `hive:declare-wake` routine, presence, the decision ledger), not the
   transcript.
-- To make the Queen **uniformly** fresh (close the one `--resume` path), the
-  cutover is in `wake-executor.ts executeWake`: detect a hive-operator session
-  by its `adv_sessions` label (`hive · <slug>/<role>`,
-  `hiveInstallSlugFromLabel()`) and route its ended-session wake through the
-  SAME fresh hive launch (`fireLaunchBlueprint('hive')`, the wake text as
-  kickoff) instead of `resumeCommandFor`. On fire-failure: PARK, never resume
-  (the always-armed time/watchdog wake re-surveys). All other agents resume as
-  before. (queen-brief-cache-assembly B-01 / P-012, channel `hive-fresh-wake`.)
+- **The cutover has now landed** — the Queen is **uniformly** fresh-per-wake;
+  the "one exception" row in the table above is closed. `wake-executor.ts
+  executeWake` detects a hive-operator session by its `adv_sessions` label
+  (`hive · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its
+  ended-session wake through the SAME fresh hive launch (`defaultFireHiveWake`
+  → `fireLaunchBlueprint(HIVE_BLUEPRINT_ID, ...)`, the wake text as kickoff)
+  instead of `resumeCommandFor` — so an inbox-wake or an `events:await` firing
+  on an ended Queen session no longer resumes a stale transcript. A
+  wake-floor debounce (`withinWakeFloor`/`effectiveHiveWakeFloorSec`) collapses
+  a burst of bee-wakes within the floor window to one fresh launch. On
+  fire-failure: PARK, never resume (the always-armed time/watchdog wake
+  re-surveys). All other (non-Queen) agents still resume as before.
+  (queen-brief-cache-assembly B-01 / P-012, channel `hive-fresh-wake`.)
 
 ## How to verify
 
