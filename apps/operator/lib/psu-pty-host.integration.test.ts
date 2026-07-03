@@ -193,6 +193,79 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
   );
 });
 
+describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-1980 seam)', () => {
+  it(
+    'feeds the child the mintRecycleArgs-rewritten argv, fires onRespawn once with the fresh native id, and keeps the coord identity env unchanged',
+    async () => {
+      const ownerId = `su-recycle-args-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      // Child prints, once on boot, its LAST argv marker + the PAPERCUSP_SID env:
+      // the ARGV marker proves WHICH argv the respawn used (rewritten vs original),
+      // the SID marker proves the coord identity env survived the recycle unchanged.
+      // Exits on QUIT (15s safety net).
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+' ARGV:'+process.argv[process.argv.length-1]+' SID:'+(process.env.PAPERCUSP_SID||'')+'\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      const FRESH_NATIVE = 'ffffabcd-1234-5678-9abc-def012345678';
+      const mintCalls: string[][] = [];
+      const respawns: string[] = [];
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        // WI-1980 seam: rewrite the respawn argv (swap the trailing marker so we can
+        // prove the FRESH args are what the respawned child ran) and hand back a fresh
+        // native id so the host re-anchors it via onRespawn.
+        mintRecycleArgs: (a: string[]) => {
+          mintCalls.push(a);
+          return { args: a.slice(0, -1).concat('RECYCLED'), nativeId: FRESH_NATIVE };
+        },
+        onRespawn: (nativeId: string) => { respawns.push(nativeId); },
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(600);
+      expect(captured()).toContain('ARGV:ORIGINAL'); // first boot used the launch argv verbatim
+
+      // RECYCLE (no carry — we're testing the respawn argv/identity, not carry inject).
+      await controlInject(sock, 'recycle', '');
+      await sleep(2500); // kill + respawn + boot
+
+      // The respawn ran the REWRITTEN argv (proves spawnChild(recycleArgs) wiring)…
+      expect(captured()).toContain('ARGV:RECYCLED');
+      // …mintRecycleArgs was handed the ORIGINAL launch args, exactly once…
+      expect(mintCalls).toHaveLength(1);
+      expect(mintCalls[0]).toEqual(['-e', childCode, 'ORIGINAL']);
+      // …onRespawn fired exactly once with the fresh native id (the re-anchor hook)…
+      expect(respawns).toEqual([FRESH_NATIVE]);
+      // …and PAPERCUSP_SID (coord identity, D-003) was IDENTICAL across both boots.
+      const sids = [...captured().matchAll(/SID:(\S+)/g)].map((m) => m[1]);
+      expect(sids).toEqual([ownerId, ownerId]);
+
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
+  );
+});
+
 describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg)', () => {
   it(
     'lands a real SIGINT mid-run through the control socket; the shell survives',
