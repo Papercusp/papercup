@@ -44,6 +44,7 @@ import {
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
+import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import type { ColorScheme } from '../../console-color-schemes';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';

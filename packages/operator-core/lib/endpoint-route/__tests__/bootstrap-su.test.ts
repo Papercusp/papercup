@@ -904,3 +904,32 @@ describe('resolveFleet — nonexistent-slug rejection (WI-1408)', () => {
     expect(json.fleetRole).toBeNull();
   });
 });
+
+describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickoff matrix)', () => {
+  it('a bare interactive launch seeds nothing', async () => {
+    const { deriveKickoffPrompt } = await import('../routes/agent-mcp/bootstrap-su');
+    expect(deriveKickoffPrompt({ planSlug: null, autoMode: false, launchContextPath: null })).toBeNull();
+  });
+
+  it('WI-1962: a mission-brief (--launch-context) launch gets the brief kickoff — it must not park', async () => {
+    const { deriveKickoffPrompt, LAUNCH_CONTEXT_KICKOFF } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({ planSlug: null, autoMode: false, launchContextPath: '/tmp/brief.md' });
+    expect(k).toBe(LAUNCH_CONTEXT_KICKOFF);
+  });
+
+  it('a plan-bound launch keeps the canonical plan kickoff (plan wins over a brief)', async () => {
+    const { deriveKickoffPrompt } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({ planSlug: 'p1', autoMode: false, launchContextPath: '/tmp/brief.md' });
+    expect(k).toContain('plans:get');
+  });
+
+  it('AUTO prepends the activation to whichever base applies (brief / bare)', async () => {
+    const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, LAUNCH_CONTEXT_KICKOFF } = await import('../routes/agent-mcp/bootstrap-su');
+    const withBrief = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: '/b.md' });
+    expect(withBrief).toContain(AUTO_MODE_DIRECTIVE);
+    expect(withBrief).toContain(LAUNCH_CONTEXT_KICKOFF);
+    const bare = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: null });
+    expect(bare).toContain(AUTO_MODE_DIRECTIVE);
+    expect(bare).not.toContain(LAUNCH_CONTEXT_KICKOFF);
+  });
+});

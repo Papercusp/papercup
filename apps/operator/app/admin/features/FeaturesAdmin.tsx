@@ -36,6 +36,7 @@ function flagLabels(t: BoundLexicon): Partial<Record<FlagKey, string>> {
     [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
     [FLAGS.OPEN_SIGNUP]: 'Open signup',
     [FLAGS.ENDPOINT_AUTH_TIERS]: 'Endpoint auth tiers',
+    [FLAGS.ACCEPT_DELEGATED_SEATS]: 'Accept delegated seats',
   };
 }
 
@@ -60,6 +61,8 @@ function flagBlurbs(t: BoundLexicon): Partial<Record<FlagKey, string>> {
       'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
     [FLAGS.ENDPOINT_AUTH_TIERS]:
       'Enforce loopback-tier routes at the dispatch chokepoint (auth-tier Wave 1: mutating routes reject non-loopback hosts). Off = emergency revert to pre-rollout behavior.',
+    [FLAGS.ACCEPT_DELEGATED_SEATS]:
+      'Let a REMOTE fleet owner spawn agents on THIS host (delegated agent seats — agent-allocation P-008). Off (default): this host honors no delegated-seat spawn requests. On: opt in to run agents delegated by fleets you belong to, bounded by this host’s capability envelope + the seat count/account/budget caps. A trust decision — enable only for owners you intend to contribute capacity to.',
   };
 }
 

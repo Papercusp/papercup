@@ -2366,3 +2366,29 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
     expect(parseArgs(['--force']).force).toBe(true);
   });
 });
+
+describe('--launched-by (solo-launch-provenance)', () => {
+  it('parseArgs captures --launched-by=<ownerId>', async () => {
+    const { parseArgs } = await import('../scripts/psu-launcher.mjs');
+    const a = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-94b69875-x']);
+    expect(a.launchedBy).toBe('su-94b69875-x');
+    expect(parseArgs([]).launchedBy).toBeNull();
+  });
+
+  it('freshSuBootstrapBody forwards launched_by so bootstrap-su can bake provenance', async () => {
+    const { parseArgs, freshSuBootstrapBody } = await import('../scripts/psu-launcher.mjs');
+    const args = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-abc']);
+    const body = freshSuBootstrapBody({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, args);
+    expect(body.launched_by).toBe('su-abc');
+    // and omitted entirely when absent (server treats absent as null)
+    const bare = freshSuBootstrapBody({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, parseArgs(['--no-picker', '--agent=claude']));
+    expect('launched_by' in bare).toBe(false);
+  });
+
+  it('psuLaunchArgvRecord round-trips --launched-by (WI-1343 reconstruction)', async () => {
+    const { parseArgs, psuLaunchArgvRecord } = await import('../scripts/psu-launcher.mjs');
+    const args = parseArgs(['--no-picker', '--agent=claude', '--launched-by=su-abc']);
+    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: 'w', harness: 'h', plan: null }, args);
+    expect(argv).toContain('--launched-by=su-abc');
+  });
+});

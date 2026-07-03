@@ -33,6 +33,7 @@ import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
+import { defaultFetchShareMeta, type HiveShareVisibility } from '@/app/harness/ShareHiveDialog';
 import AdvNowRunning from './AdvNowRunning';
 import HivesRunningPill from './HivesRunningPill';
 import AgentsRunningPill from './AgentsRunningPill';
@@ -334,6 +335,33 @@ export default function AdvShell({
   const activeIsHive = activeProject?.harness_kind === 'hive';
   const activeIsShared = !!activeProject?.is_shared;
 
+  // The active HIVE's directory share-state (comb-hive-native-sharing-2026-06-11):
+  // a hive is "shared" once its owned directory listing is `public` or `invite`
+  // (`private` = withdrawn, null = never published). This rides the discovery
+  // registry meta, NOT `is_shared` (which only tracks the legacy per-harness
+  // `.papercusp/shared.json`), so we read it the same way HiveHeaderStrip does —
+  // a one-shot owner-meta fetch scoped to just the active hive (cheap; only when
+  // a hive is selected). Re-run on `shareOpen` toggles so a just-completed share
+  // flips the header's Share button to a Shared badge without a manual reload.
+  const [hiveShareViz, setHiveShareViz] = useState<HiveShareVisibility | null>(null);
+  useEffect(() => {
+    if (!activeIsHive || !singleSlug) {
+      setHiveShareViz(null);
+      return;
+    }
+    let alive = true;
+    void defaultFetchShareMeta(singleSlug)
+      .then((meta) => {
+        if (!alive) return;
+        setHiveShareViz(meta?.found ? (meta.visibility ?? 'private') : null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [activeIsHive, singleSlug, shareOpen]);
+  const activeHiveShared = hiveShareViz === 'public' || hiveShareViz === 'invite';
+
   // Tab visibility follows scope: under "All Pots" only the workspace-level
   // tabs (Overview/Create/Harnesses/Conversations) make sense, so the per-pot
   // tabs (Docs/Config/Insights/…) are hidden rather than rendering a
@@ -482,15 +510,26 @@ export default function AdvShell({
               </button>
             </Tooltip>
             {!allMode && activeSlug && activeIsHive && (
-              <Tooltip label={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}>
-                <button
-                  type="button"
-                  className="pc-advshell__action pc-advshell__action--share"
-                  onClick={() => void setShareOpen(true)}
-                >
-                  <Share2 size={13} aria-hidden /> Share
-                </button>
-              </Tooltip>
+              activeHiveShared ? (
+                // Already shared to the directory → a passive Shared badge in
+                // place of the Share button (manage/change visibility from the
+                // Working tab's hive header).
+                <Tooltip label={`${activeSlug} is shared to the directory (${hiveShareViz}) — manage sharing from the Working tab`}>
+                  <span className="pc-advshell__action pc-advshell__action--shared">
+                    <Check size={13} aria-hidden /> Shared
+                  </span>
+                </Tooltip>
+              ) : (
+                <Tooltip label={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}>
+                  <button
+                    type="button"
+                    className="pc-advshell__action pc-advshell__action--share"
+                    onClick={() => void setShareOpen(true)}
+                  >
+                    <Share2 size={13} aria-hidden /> Share
+                  </button>
+                </Tooltip>
+              )
             )}
             {!allMode && activeSlug && !activeIsHive && activeIsShared && (
               <span

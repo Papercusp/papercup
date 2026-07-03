@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import remember, { runbookShapeHint } from './remember';
+import { coerceMemoryKind, normalizeMemoryKind } from './remember-coerce';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
@@ -588,5 +589,80 @@ describe('memory:remember — scope isolation (GAP 8)', () => {
       expect.objectContaining({ scope: 'user-1' }),
     );
     delete process.env.PAPERCUSP_MEMORY_DEDUP;
+  });
+});
+
+/**
+ * WI-… — memory:remember rejected ~21% of calls (34/161 in 24h); ~12 were a valid fact
+ * (content present) LOST purely because `kind` was a legacy value (identity/preference/
+ * correction), a free-form label (fact/note/technical/…), or missing. We coerce `kind`
+ * to the closest valid enum member BEFORE validation so durable knowledge is never
+ * dropped on the enum. `content` is deliberately untouched (a genuinely-missing fact
+ * still fails — the double-encoded-args class is a separate dispatch-layer fix).
+ */
+describe('memory:remember kind coercion (WI-…)', () => {
+  const parse = (x: unknown) => (remember.args as { parse: (v: unknown) => Record<string, unknown> }).parse(x);
+
+  describe('normalizeMemoryKind / coerceMemoryKind (unit)', () => {
+    it('keeps a valid unified kind', () => {
+      expect(normalizeMemoryKind('project')).toBe('project');
+      expect(coerceMemoryKind({ content: 'c', kind: 'feedback' })).toEqual({ content: 'c', kind: 'feedback' });
+    });
+
+    it('maps legacy kinds (identity→user, preference/correction→feedback)', () => {
+      expect(normalizeMemoryKind('identity')).toBe('user');
+      expect(normalizeMemoryKind('preference')).toBe('feedback');
+      expect(normalizeMemoryKind('correction')).toBe('feedback');
+    });
+
+    it('maps free-form technical labels → reference', () => {
+      for (const label of ['fact', 'note', 'technical', 'insight', 'gotcha', 'pointer']) {
+        expect(normalizeMemoryKind(label)).toBe('reference');
+      }
+    });
+
+    it('defaults an unknown / missing / non-string kind to reference (never rejects)', () => {
+      expect(normalizeMemoryKind('wibble')).toBe('reference');
+      expect(normalizeMemoryKind(undefined)).toBe('reference');
+      expect(normalizeMemoryKind(null)).toBe('reference');
+      expect((coerceMemoryKind({ content: 'c' }) as { kind: string }).kind).toBe('reference');
+    });
+
+    it('is case-insensitive on a valid kind (USER → user)', () => {
+      expect(normalizeMemoryKind('USER')).toBe('user');
+    });
+
+    it('passes a non-object through untouched', () => {
+      expect(coerceMemoryKind('x')).toBe('x');
+    });
+  });
+
+  describe('through the real args schema (the ~12 kind-rejections that now parse)', () => {
+    it("a legacy kind:'identity' now parses to 'user' (was: kind Invalid option)", () => {
+      expect(parse({ content: 'Avi is the owner', kind: 'identity' }).kind).toBe('user');
+    });
+
+    it("a free-form kind:'fact' parses to 'reference'", () => {
+      expect(parse({ content: 'clampFactBody truncates at 500', kind: 'fact' }).kind).toBe('reference');
+    });
+
+    it('a missing kind defaults to reference instead of rejecting', () => {
+      expect(parse({ content: 'a standalone fact' }).kind).toBe('reference');
+    });
+
+    it('a valid kind is unaffected', () => {
+      expect(parse({ content: 'ongoing work note', kind: 'project' }).kind).toBe('project');
+    });
+
+    it('content is STILL required — a missing fact is not fabricated (kind coercion only)', () => {
+      expect(() => parse({ kind: 'reference' })).toThrow();
+    });
+  });
+
+  it('the published tools/list JSON schema still advertises the {user,feedback,project,reference} kind enum', () => {
+    const json = z.toJSONSchema(remember.args as never) as {
+      properties?: { kind?: { enum?: string[] } };
+    };
+    expect(json.properties?.kind?.enum).toEqual(['user', 'feedback', 'project', 'reference']);
   });
 });
