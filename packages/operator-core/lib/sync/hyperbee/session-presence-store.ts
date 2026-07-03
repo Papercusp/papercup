@@ -42,12 +42,14 @@ export async function applySessionPresenceSet(
     await sql`
       INSERT INTO harness_shared.shared_session_presence
         (workspace_id, hive_slug, harness_slug, owner_id, kind, intent, plan_slug,
-         github_user_id, machine_label, device_pubkey, last_seen_at, schema_version)
+         github_user_id, machine_label, device_pubkey, last_seen_at, schema_version,
+         fleet_slug, fleet_role)
       VALUES
         (${input.workspaceId}, ${input.hiveSlug}, ${s.harness_slug}, ${s.owner_id},
          ${s.kind}, ${s.intent}, ${s.plan_slug}, ${input.githubUserId},
          ${input.machineLabel}, ${input.devicePubkey},
-         to_timestamp(${input.frameTs} / 1000.0), 1)
+         to_timestamp(${input.frameTs} / 1000.0), 1,
+         ${s.fleet_slug ?? null}, ${s.fleet_role ?? null})
       ON CONFLICT (workspace_id, owner_id, machine_label) DO UPDATE SET
         hive_slug = EXCLUDED.hive_slug,
         harness_slug = EXCLUDED.harness_slug,
@@ -56,7 +58,9 @@ export async function applySessionPresenceSet(
         plan_slug = EXCLUDED.plan_slug,
         github_user_id = EXCLUDED.github_user_id,
         device_pubkey = EXCLUDED.device_pubkey,
-        last_seen_at = EXCLUDED.last_seen_at
+        last_seen_at = EXCLUDED.last_seen_at,
+        fleet_slug = EXCLUDED.fleet_slug,
+        fleet_role = EXCLUDED.fleet_role
       -- Never regress a newer beat with an out-of-order stale frame.
       WHERE shared_session_presence.last_seen_at <= EXCLUDED.last_seen_at
     `;
@@ -97,6 +101,10 @@ export interface SessionPresenceRowOut {
   device_pubkey: string;
   /** epoch ms */
   last_seen_ms: number;
+  /** The remote session's named-fleet membership (mig 479, P-301). Null for a
+   *  session in no fleet / a pre-mig-479 frame. */
+  fleet_slug?: string | null;
+  fleet_role?: string | null;
 }
 
 /** Live (within staleMs) session-presence rows, optionally hive-scoped —

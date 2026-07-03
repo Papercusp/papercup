@@ -40,7 +40,9 @@
 
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import {
   mkdirSync,
   readdirSync,
@@ -53,6 +55,10 @@ import {
 import net from 'node:net';
 
 const require = createRequire(import.meta.url);
+
+/** This script's own directory — used to locate sibling scripts (the session-compacted
+ *  emit CLI) and the checkout root. */
+const HOST_SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
  *  (operator-core psu-pty-discovery.ts). */
@@ -481,6 +487,52 @@ export function compactStartMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_START_MS, COMPACT_START_MS);
 }
 
+/** Absolute path to the session-compacted emit CLI (a sibling script, built by the
+ *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
+ *  the same path works from the staging AND release checkouts. */
+export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-compacted.ts');
+
+/**
+ * Fire the server-side `session:compacted:<owner>` event (event-await-discoverability
+ * P-103) after a server-requested compaction COMPLETES, so a peer can
+ * `events:await { event: "session:compacted:<owner>" }` instead of polling.
+ *
+ * THE BRIDGE: this host is a deliberately-minimal standalone process — it has NO PG pool
+ * and NO operator HTTP client (see the imports: node fs/net/pty only), so it CANNOT emit
+ * the event in-process. Instead it spawns a short-lived DETACHED `tsx` CLI
+ * (SESSION_COMPACTED_EMIT_ENTRY) that DOES reach org-PG — the connection resolves via
+ * ~/.papercusp/embedded-pg.json (or the native :5432 fallback), independent of this host's
+ * env, so the CLI needs no DATABASE_URL handed to it. Compaction is rare, so the tsx
+ * cold-start cost is acceptable.
+ *
+ * FAIL-SOFT + fire-and-forget: if the entry does not exist yet (CLI not landed), or tsx /
+ * PG fail, nothing touches the live session. Only the CALLER's real-completion path invokes
+ * this (never the done.deferred drop). Pure side-effect; returns the spawned child or null.
+ */
+export function fireSessionCompactedEvent(ownerId, focus, opts = {}) {
+  const entry = opts.entry ?? SESSION_COMPACTED_EMIT_ENTRY;
+  const spawnFn = opts.spawnFn ?? spawn;
+  const exists = opts.existsFn ?? existsSync;
+  if (!ownerId) return null;
+  // Don't spawn a doomed process before the CLI has landed — a missing entry is the
+  // expected state until the event-await plan's P-103 CLI ships.
+  if (!exists(entry)) return null;
+  try {
+    const child = spawnFn('npx', ['tsx', entry, String(ownerId), String(focus ?? '')], {
+      cwd: join(HOST_SCRIPT_DIR, '..', '..', '..'), // checkout root — where npx finds tsx
+      env: process.env,
+      detached: true,
+      stdio: 'ignore',
+    });
+    // A spawn error (npx/tsx missing) must never surface into the session.
+    child.on?.('error', () => {});
+    child.unref?.();
+    return child;
+  } catch {
+    return null; // best-effort — the awaiter falls back to its own timeout / next signal
+  }
+}
+
 /** The ordered write STEPS for a RESET-CONTEXT (su-cold-auto-mode P-004a): submit
  *  the backend's context-clear command, wait `clearSettleMs` for the TUI to
  *  repaint a fresh prompt, then type + submit the carry-note as the opening turn
@@ -773,6 +825,12 @@ export function hostThroughPty(o) {
             }
             return;
           }
+          // (3.5) The compaction has REALLY completed (not the done.deferred drop above),
+          // and — crucially — the carry-note is durably in place. Fire session:compacted so
+          // any peer awaiting this member's compaction wakes now (event-await P-103). Emitted
+          // ONLY here: the host observes completion only on the continuation path, and only a
+          // settled, non-deferred compaction is a true "member compacted" signal.
+          fireSessionCompactedEvent(ownerId, msg.focus);
           // (4) open the compacted context on the continuation turn
           await submit(msg.data);
           return;

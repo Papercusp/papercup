@@ -66,7 +66,7 @@ describe('property: membership + liveness invariant', () => {
   it('an elected leader is always a LIVE roster-member device (or null)', () => {
     const mixedArb = fc.array(
       fc.record({
-        device_pubkey: fc.hexaString({ minLength: 6, maxLength: 14 }),
+        id: fc.integer({ min: 0, max: 60 }),
         github_user_id: fc.constantFrom(OWNER, 99, 100), // OWNER is the only member
         stale: fc.boolean(),
       }),
@@ -74,12 +74,20 @@ describe('property: membership + liveness invariant', () => {
     );
     fc.assert(
       fc.property(mixedArb, (rows) => {
-        const presence: FleetMemberDevice[] = rows.map((r) => ({
-          device_pubkey: r.device_pubkey,
-          github_user_id: r.github_user_id,
-          machine_label: r.device_pubkey,
-          last_seen_ms: r.stale ? NOW - STALE - 1 : NOW - 1_000,
-        }));
+        // Dedup by id so every device_pubkey is distinct (the store dedups by
+        // pubkey; distinct pubkeys keep the invariant lookup unambiguous).
+        const seen = new Set<number>();
+        const presence: FleetMemberDevice[] = [];
+        for (const r of rows) {
+          if (seen.has(r.id)) continue;
+          seen.add(r.id);
+          presence.push({
+            device_pubkey: `dev-${r.id.toString(16)}-pub`,
+            github_user_id: r.github_user_id,
+            machine_label: `dev-${r.id}`,
+            last_seen_ms: r.stale ? NOW - STALE - 1 : NOW - 1_000,
+          });
+        }
         const d = electFleetLeader(input({ presence, rosterMemberUids: new Set([OWNER]) }));
         if (d.leaderDevicePubkey == null) return; // vacated is always legal
         const winner = presence.find((p) => p.device_pubkey === d.leaderDevicePubkey);

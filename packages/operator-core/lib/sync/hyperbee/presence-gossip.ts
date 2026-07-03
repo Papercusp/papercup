@@ -81,6 +81,14 @@ export interface SessionPresenceEntry {
   harness_slug: string;
   /** The session's own liveness beat (epoch ms, sender-declared). */
   last_active_ms: number;
+  /** The named-fleet MEMBERSHIP label this session carries WHILE ALIVE (mig 417/479,
+   *  P-301) — so `@fleet:<slug>` resolves cross-machine members. Optional +
+   *  advisory: absent/null for a session in no named fleet (and on frames from
+   *  pre-mig-479 senders). Stamped by the announcer from coord_presence. */
+  fleet_slug?: string | null;
+  /** 'leader' | 'member' (advisory, free text — mirrors coord_presence.fleet_role);
+   *  a cross-machine leader is derived from a member advertising 'leader'. */
+  fleet_role?: string | null;
 }
 
 /** Defensive bound on one device's announced session set (10 agents/machine is
@@ -150,14 +158,24 @@ export function presenceFrameSigningBytes(body: PresenceFrameBody): Buffer {
     ordered.github_user_id = body.github_user_id;
     ordered.machine_label = body.machine_label;
     ordered.hive_slug = body.hive_slug ?? null;
-    ordered.sessions = body.sessions.map((s) => ({
-      owner_id: s.owner_id,
-      kind: s.kind,
-      intent: s.intent,
-      plan_slug: s.plan_slug,
-      harness_slug: s.harness_slug,
-      last_active_ms: s.last_active_ms,
-    }));
+    ordered.sessions = body.sessions.map((s) => {
+      const entry: Record<string, unknown> = {
+        owner_id: s.owner_id,
+        kind: s.kind,
+        intent: s.intent,
+        plan_slug: s.plan_slug,
+        harness_slug: s.harness_slug,
+        last_active_ms: s.last_active_ms,
+      };
+      // P-301: the fleet-membership label rides the signed frame, but is included
+      // in the signing bytes ONLY when present — so a session in NO named fleet
+      // produces a byte-identical frame to the pre-mig-479 wire form, keeping frame
+      // verification stable across a mixed-version deploy window (an upgraded sender
+      // only changes the bytes for sessions that ARE fleet-attributed — the new path).
+      if (s.fleet_slug != null) entry.fleet_slug = s.fleet_slug;
+      if (s.fleet_role != null) entry.fleet_role = s.fleet_role;
+      return entry;
+    });
   }
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
