@@ -77,7 +77,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     params: [{ name: 'sha', required: false, describe: 'the target sha; omit to wake on the NEXT deploy of any sha (global key)' }],
     describe: 'A staging sha reached the live GREEN :3070 operator (the deploy landed).',
     emitter: 'release-gate (apps/operator/lib/release/deploy.ts)',
-    exists: false, // per-sha ADDED in Phase 2 (P-102); the global `release:deployed` (sha omitted) already fires
+    exists: true, // P-102: deploy.ts now fires `release:deployed:<sha>` alongside the global `release:deployed`
     replacesPoll: 'dev:pipeline_position (polling "is my sha live on :3070")',
     sugar: 'deploy:await',
   },
@@ -178,8 +178,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'git-sync:committed:<sha>',
     params: [{ name: 'sha', required: false, describe: 'the commit sha to wait for; omit to wake on the next git-sync commit' }],
     describe: 'git-sync committed the tree (your left-in-tree edit is now a commit on origin/staging).',
-    emitter: 'git-sync routine (Phase 2)',
-    exists: false, // P-102
+    emitter: 'git-sync action (packages/operator-core/lib/harness/git-sync/git-sync-events.ts)',
+    exists: true, // P-102: git-sync-action fires `git-sync:committed[:<sha>]` on a synced tick
     replacesPoll: 'dev:pipeline_position (polling "is my edit committed yet")',
     sugar: 'git-sync:await',
     payloadFiltered: true,

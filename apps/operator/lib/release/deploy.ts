@@ -328,14 +328,15 @@ export async function executeDeploy(
       // caller `events:await`-ing `release:deployed` timed out despite the deploy
       // succeeding.
       await import('@papercusp/operator-core/lib/events/await/engine')
-        .then(({ emitAwaitedEvent }) =>
-          emitAwaitedEvent({
-            key: 'release:deployed',
-            summary: `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`,
-            payload: { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations },
-            source: 'release-gate',
-          }),
-        )
+        .then(async ({ emitAwaitedEvent }) => {
+          const summary = `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`;
+          const payload = { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations };
+          // GLOBAL key — wake on the NEXT deploy of any sha (the payload.sha says which).
+          await emitAwaitedEvent({ key: 'release:deployed', summary, payload, source: 'release-gate' });
+          // PER-SHA key (event-await-… P-102) — "did MY sha land?" without payload-
+          // filtering the global. An agent that knows its target sha awaits exactly it.
+          await emitAwaitedEvent({ key: `release:deployed:${plan.targetSha}`, summary, payload, source: 'release-gate' });
+        })
         .catch(() => {});
       // AWAITED (not void): deploy-cli process.exit()s right after main()
       // resolves — a dangling append would be killed before the row lands.

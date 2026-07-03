@@ -96,8 +96,9 @@ describe('renderCatalog', () => {
     expect(byFamily['deploy-failed'].awaitable_now).toBe(true); // release:deploy-failed
     expect(byFamily['work-item-done'].awaitable_now).toBe(true); // work-item:done
     expect(byFamily['work-item'].awaitable_now).toBe(true); // work-item:status — P-101 LANDED (setWorkItemState emit)
+    expect(byFamily['deploy'].awaitable_now).toBe(true); // release:deployed:<sha> — P-102 LANDED (deploy.ts dual-emit)
+    expect(byFamily['git-sync'].awaitable_now).toBe(true); // git-sync:committed — P-102 LANDED (git-sync-action emit)
     // Phase-2 additions still not-yet-wired:
-    expect(byFamily['git-sync'].awaitable_now).toBe(false); // git-sync:committed (P-102)
     expect(byFamily['fleet-drained'].awaitable_now).toBe(false); // P-105
   });
 });

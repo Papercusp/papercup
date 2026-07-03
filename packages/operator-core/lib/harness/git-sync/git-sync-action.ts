@@ -45,6 +45,7 @@ import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized, type ScopedContentError } from './run-git-sync';
+import { emitGitSyncCommittedEvent } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
@@ -1067,6 +1068,12 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       prevHeadSha,
       attributionOn,
     }));
+
+  // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
+  // edit committed to origin/staging yet" instead of polling dev:pipeline_position.
+  // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
+  // fire-and-forget, never gates the tick, benign to replay past the record step.
+  if (outcome.status === 'synced') emitGitSyncCommittedEvent(outcome.headSha);
 
   // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
   // one bridge pass per tick — ingress origin → admission → egress canonical →

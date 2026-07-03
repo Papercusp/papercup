@@ -145,6 +145,16 @@ describe('executeDeploy — happy path', () => {
     await executeDeploy(cfg, plan, deps);
     expect(emittedKeys).toContain('release:deployed');
   });
+
+  it('P-102: also fires the per-sha key release:deployed:<sha> alongside the global', async () => {
+    emittedKeys.length = 0;
+    const { deps } = makeDeps();
+    await executeDeploy(cfg, plan, deps);
+    // Both keys fire — the global (wake on ANY deploy) and the precise per-sha
+    // (wake only on MY target) — so a caller can await either without payload-filtering.
+    expect(emittedKeys).toContain('release:deployed');
+    expect(emittedKeys).toContain(`release:deployed:${plan.targetSha}`);
+  });
 });
 
 describe('executeDeploy — rollback on failure', () => {
