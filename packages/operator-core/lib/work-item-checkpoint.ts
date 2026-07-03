@@ -1,28 +1,29 @@
 /**
- * work-item-checkpoint — the bee's work-item-scoped in-flight CHECKPOINT store
- * (bee-context-efficiency-2026-06-14 Phase 3 / P-010; D-002, D-003). The bee
- * translation of the Queen's self-authored carry-note
- * ({@link ./hive/wake}.setHiveCarryNote, queen-brief-cache P-015): a bee writes a
- * compressed snapshot of its in-flight state at a task boundary / on graceful
- * eviction; the next invocation on the SAME work-item re-injects it (P-011) so a
- * re-woken bee — OR a SUCCESSOR bee after the prior one is evicted/dies —
- * resumes from the checkpoint instead of a cold start (a cheap handoff). This is
- * what lets the Phase-1 fresh-context warm-inject (D-001) drop the grown
- * transcript without losing continuity.
+ * work-item-checkpoint — the bee's work-item-scoped in-flight CHECKPOINT
+ * (bee-context-efficiency-2026-06-14 Phase 3 / P-010; D-002, D-003).
  *
- * Semantics mirror `setHiveCarryNote` EXACTLY (D-003): any length (no cap),
- * replace-on-write, omitted/blank ⇒ CLEARED (the row is deleted; the next
- * invocation re-derives from the dossier alone — graceful degradation).
+ * As of su-cold-auto-mode-2026-07-03 P-001 this is a thin ADAPTER over the ONE
+ * shared carry-note substrate ({@link ./carry-note}, mig 472): the bee checkpoint,
+ * the Queen carry-journal, and the su loop carry-note are now the SAME store +
+ * shape, keyed by scope. The bee's scope is {@link workItemScope} — WORK-ITEM
+ * scoped (D-002), so an evicted bee's successor inherits the checkpoint. The
+ * public signatures are UNCHANGED, so the spawn-hydration + bee-wake-dossier
+ * re-injection seams and the work_items:checkpoint tool need no change.
  *
- * WORK-ITEM-scoped (D-002), keyed by (workspaceId, harness, workItemId) — so an
- * evicted bee's successor inherits the checkpoint (it lives on the work-item, not
- * the bee). LOCAL working state — never federated (migration 281: no
- * author_pubkey/origin/fed_ts, no sync/hyperbee projection). Backs the bee write
- * path + the P-011 re-injection seam (the read/write shape is coordinated with
- * the directed-wake P-021 one spawn/wake-hydration seam — D-009).
+ * A bee writes a compressed snapshot of its in-flight state at a task boundary /
+ * on graceful eviction; the next invocation on the SAME work-item re-injects it
+ * (P-011) so a re-woken bee — OR a successor after eviction/death — resumes from
+ * the checkpoint instead of a cold start. This is what lets the Phase-1
+ * fresh-context warm-inject (D-001) drop the grown transcript without losing
+ * continuity.
+ *
+ * Semantics are the shared carry-note contract (setCarryNote): any length,
+ * replace-on-write, blank/omitted/null ⇒ cleared. LOCAL working state, never
+ * federated.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { setCarryNote, getCarryNote, workItemScope } from './carry-note';
 
 export interface WorkItemCheckpointRef {
   harness: string;
@@ -32,9 +33,8 @@ export interface WorkItemCheckpointRef {
 }
 
 /**
- * Write (or clear) a work-item's checkpoint. `setHiveCarryNote` semantics: a
- * non-empty string (trimmed) REPLACES the stored checkpoint; `null` / `undefined`
- * / blank CLEARS it (deletes the row). Returns the stored checkpoint (trimmed) or
+ * Write (or clear) a work-item's checkpoint. Delegates to the shared carry-note
+ * store under {@link workItemScope}. Returns the stored checkpoint (trimmed) or
  * `null` when cleared. Workspace-scoped.
  */
 export async function setWorkItemCheckpoint(
@@ -45,37 +45,30 @@ export async function setWorkItemCheckpoint(
   if (!ws || !ref.harness || !ref.workItemId) {
     throw new Error('setWorkItemCheckpoint — workspaceId, harness, and workItemId are required');
   }
-  const { sql } = getOrgPg();
-  const trimmed = (checkpoint ?? '').trim();
-  if (trimmed.length === 0) {
-    // Blank / omitted ⇒ clear (delete the row; next invocation re-derives from the dossier).
-    await sql`
-      DELETE FROM harness_shared.work_item_checkpoints
-       WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND work_item_id = ${ref.workItemId}`;
-    return null;
+  // journal:false — the bee checkpoint is a pure note (no trajectory ring): a
+  // clear DELETES the row (the next invocation re-derives from the dossier —
+  // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
+  const stored = await setCarryNote(
+    { scope: workItemScope(ref.harness, ref.workItemId), workspaceId: ws },
+    checkpoint,
+    { journal: false },
+  );
+  // P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress — bump
+  // the work item's progress anchor so the stale-claims STALLED leg (holder alive,
+  // last_progress_at > window) never frees a claim from a bee that is checkpointing.
+  // Best-effort: the checkpoint write must not fail on a progress-bump hiccup.
+  if (stored !== null) {
+    try {
+      const { sql } = getOrgPg();
+      await sql`
+        UPDATE harness_shared.work_items
+           SET last_progress_at = now()
+         WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+    } catch {
+      /* best-effort */
+    }
   }
-  await sql`
-    INSERT INTO harness_shared.work_item_checkpoints (workspace_id, harness_slug, work_item_id, checkpoint, updated_ts)
-    VALUES (${ws}, ${ref.harness}, ${ref.workItemId}, ${trimmed}, ${Date.now()})
-    ON CONFLICT (workspace_id, harness_slug, work_item_id)
-    DO UPDATE SET checkpoint = EXCLUDED.checkpoint, updated_ts = EXCLUDED.updated_ts`;
-  // P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress —
-  // bump the work item's progress anchor so the stale-claims STALLED leg
-  // (holder alive, last_progress_at > window) never frees a claim from a bee
-  // that is checkpointing. This is what killed the first WI-1576 bee (11 min of
-  // real work, claim freed at the 10-min stalled window, then reaped) — the
-  // checkpoint discipline (bee.base.md, shipped today) only protects if the
-  // checkpoint moves this anchor. Best-effort: the checkpoint write must not
-  // fail on a progress-bump hiccup.
-  try {
-    await sql`
-      UPDATE harness_shared.work_items
-         SET last_progress_at = now()
-       WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
-  } catch {
-    /* best-effort */
-  }
-  return trimmed;
+  return stored;
 }
 
 /**
@@ -86,11 +79,5 @@ export async function setWorkItemCheckpoint(
 export async function getWorkItemCheckpoint(ref: WorkItemCheckpointRef): Promise<string | null> {
   const ws = ref.workspaceId ?? activeWorkspaceId();
   if (!ws || !ref.harness || !ref.workItemId) return null;
-  const { sql } = getOrgPg();
-  const rows = await sql<{ checkpoint: string | null }[]>`
-    SELECT checkpoint FROM harness_shared.work_item_checkpoints
-     WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND work_item_id = ${ref.workItemId}
-     LIMIT 1`;
-  const cp = (rows[0]?.checkpoint ?? '').trim();
-  return cp.length > 0 ? cp : null;
+  return getCarryNote({ scope: workItemScope(ref.harness, ref.workItemId), workspaceId: ws });
 }

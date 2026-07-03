@@ -8,7 +8,7 @@ import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { reconcileActiveTheme } from '@/lib/theme';
 import { reconcileShortcutOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
-import { BrainMark } from './ChromeNavMarks';
+import { BrainMark, ResMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -88,7 +88,9 @@ export default function ChromeShell() {
   // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
   // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
+  const onRes = isChromeShellNavActive(pathname, '/res');
   const testingFlag = useFlag(FLAGS.TESTING);
+  const resFlag = useFlag(FLAGS.RES_ALLOCATION);
   const t = useLexicon();
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
@@ -188,6 +190,30 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
+          {/* RES — the workspace-scoped Resources section: hand account pools +
+              local GPUs to the fleets in the hive tree. Sits next to OPS.
+              Gated by FLAGS.RES_ALLOCATION (default on). */}
+          {resFlag ? (
+            onRes ? (
+              <span
+                className="pc-header-cta pc-header-cta--mission is-current"
+                aria-label="Resources (current page)"
+                aria-current="page"
+              >
+                <span className="pc-header-cta-orb" aria-hidden="true">
+                  <ResMark className="pc-header-cta-logo" />
+                </span>
+                <span className="pc-header-cta-label">RES</span>
+              </span>
+            ) : (
+              <RouteLink href="/res" className="pc-header-cta pc-header-cta--mission" aria-label="Resources" {...mainNavJumpGateProps}>
+                <span className="pc-header-cta-orb" aria-hidden="true">
+                  <ResMark className="pc-header-cta-logo" />
+                </span>
+                <span className="pc-header-cta-label">RES</span>
+              </RouteLink>
+            )
+          ) : null}
           {/* Terminal-launch CTA: opens the pui workbench (apps/tui) in an OS
               terminal via a server-side spawn. Sits next to OPS. (Brief 26) */}
           <PuiLauncherButton />

@@ -108,6 +108,42 @@ export function OpsTargetMark({ className, ...props }: IconProps) {
   );
 }
 
+export function ResMark({ className, ...props }: IconProps) {
+  // Layered stack — resources (accounts + GPUs) handed down into the hive tree.
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      focusable="false"
+      {...props}
+    >
+      <path
+        d="M12 3.2 3.4 7.6 12 12l8.6-4.4L12 3.2Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.4 12 12 16.4 20.6 12"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeOpacity="0.78"
+      />
+      <path
+        d="M3.4 16.4 12 20.8 20.6 16.4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeOpacity="0.55"
+      />
+    </svg>
+  );
+}
+
 export function TerminalMark({ className, ...props }: IconProps) {
   return (
     <svg

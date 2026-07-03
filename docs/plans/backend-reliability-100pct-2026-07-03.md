@@ -132,6 +132,69 @@ fails if the class returns); (4) verified under real fleet load. Watchdogs
 4. **W3 / W4 / W6 / W7** — root-cause the wedge/freeze/contention classes in parallel
    (disjoint files → safe to fan out).
 
+## 5. Session log + REVISED root-cause synthesis (2026-07-03, su-5587d, AUTO mode, route A)
+
+### LANDED + VERIFIED this session
+- **W1.3 — mcp-proxy stale-keep-alive-socket bug (NEW find, likely THE biggest single cause): DONE, TESTED, LIVE-VERIFIED.**
+  The proxy forwarded via Node's global agent (`keepAlive:true`) and **reused pooled sockets** to the
+  `:3070` `SO_REUSEPORT` cluster. A socket the server/worker was concurrently closing (61s keepalive +
+  worker recycle) made a forward land on a half-closed socket → `:3070` returned a spurious
+  `400 Bad Request` (empty body, `connection:close`) that the proxy passed to the agent as a tool error.
+  **Measured ~13% failure** on reuse-prone (sequential) traffic while direct `:3070` was clean — and
+  **completely invisible** (unlogged, absent from `tool_invocations`). Since every agent routes through
+  this proxy, this was a dominant source of "transient tool errors under load."
+  - Fix: dedicated `UPSTREAM_AGENT` (`keepAlive:false`, fresh socket per forward) in
+    `apps/operator/lib/mcp-proxy/proxy.ts` + a no-reuse regression test (7 proxy tests green).
+  - Activated (restarted `papercup-mcp-proxy.service`) and **live-verified: 160/160 probes → 200**
+    (pre-fix ~13% 400). Follow-up for thousands-of-agents throughput: bounded keep-alive +
+    `keepAliveMsecs` < 61s + retry-once-on-reset (tracked).
+- **W2 — gateway crash-proofing: DONE, TESTED, LIVE.**
+  - `inference-gateway/bin.ts`: added process-level `uncaughtException` + `unhandledRejection`
+    backstop (log durably, KEEP SERVING) — registered post-boot so startup failures still exit→restart.
+  - `gateway.ts:1926`: guarded the last unguarded local-backend pipe (`.on('error')` + teardown,
+    parity with the hardened Anthropic paths at ~3258/3636).
+  - `local-backend-gateway.test.ts`: crash-injection regression test (backend RSTs mid-stream →
+    gateway must survive + serve a later request). **All 18 tests green.**
+  - Activated: restarted `papercup-inference-gateway.service` → back up healthy (`/stats` 200), no crash.
+- **W1.2 — universal proxy (partial): DONE for the residual gap.** Spawned bees already ride `:9071`
+  (dev-api/bg-host carry `PAPERCUSP_MCP_PROXY_BASE`). Fixed the stale **`:3070` default** in
+  `~/.claude.json`'s `papercusp-su` server → `:9071`, so bare interactive Claude sessions no longer
+  bypass the proxy. (`install-standalone-mcp.sh` already mints against the proxy; the live file was
+  pre-WI-1457 stale config.)
+
+### Findings REVISED by reading the running system (supersede §0 where noted)
+- **`:3070` is ALREADY a `node:cluster` + `SO_REUSEPORT` fleet** (~10+ per-worker sockets + 1 background
+  primary; `cluster-fork.ts`, plan `operator-scalability-event-loop-2026-06-16`), *with* a per-worker
+  lag self-restart that recycles one worker while siblings serve. So **class E is NOT "add clustering"**
+  — clustering exists. The two real gaps: (i) the deploy does a **blunt `systemctl restart`** (kills
+  primary + every worker at once → the ~46s full outage) instead of a rolling/overlap recycle; (ii)
+  per-worker event-loop saturation under load still needs live profiling.
+- **W1.1 refined:** zero-downtime = **overlap two `SO_REUSEPORT` cluster generations** (boot the new
+  gen on the same port, health+MCP probe it, then drain the old) OR a rolling worker recycle through
+  the primary. This is a **high-stakes deploy-path change** (a bug breaks EVERY fleet deploy) → build
+  behind a flag, verify on `:3170`/staging, then flip. **Deliberately NOT rushed this session** — the
+  anti-footgun rule outranks speed here.
+- **The proxy is not the main lever.** I was already on `:9071` and still saw transient failures. The
+  residual class is a **post-connect mid-stream reset** during the 46s full-restart window: the proxy
+  correctly refuses to retry a non-idempotent write, so the client sees a hard error. The durable cure
+  is W1.1 (never drop a request mid-stream), not more proxy routing.
+- **W6 is DOWNSTREAM of W5.** `dispatch-stack.ts:598-620` already surfaces completed-but-aborted
+  **low-tier reads**, but records every **mutation** (incl. `plans:set-status`) as a hard `timeout`
+  even though the write committed. Its own comment names the cause: *"under load, wall-clock exceeds the
+  timeout even for a CHEAP handler."* So the **280 `set-status` false-timeouts are event-loop
+  saturation (W5) surfacing as write-timeouts** — the deadline fires because the handler is queued
+  behind a saturated loop, not because the write is slow. Fix = (a) an **idempotent-write** completion
+  path in dispatch-stack (surface a committed idempotent mutation like `set-status` instead of a
+  spurious timeout — needs per-tool idempotency review, so done carefully not rushed) + (b) cut the
+  PG lock contention on plan/work-item status writes.
+
+### THE synthesis (drives sequencing)
+**W5 — per-worker event-loop saturation under fleet load — is the common upstream cause** of both the
+MCP slowness/timeouts (class E) AND the `set-status` false-timeouts (class F). It is the highest-leverage
+structural item for "thousands of agents." W1.1 (rolling/overlap deploy) removes the discrete-deploy
+outage (class A). W2 (done) removed the mass-drop crash (class B). Remaining: W1.1, W5, W3, W4, W6, W7,
+W8 — tracked as work-items with the refined designs above.
+
 ## 4. Definition of done
 - A deploy under load → 0 client-visible MCP errors.
 - No gateway/bg-host **whole-process** death from a single request; watchdogs go idle.

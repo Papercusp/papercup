@@ -11,6 +11,12 @@ export const FLAGS = {
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
+  // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
+  // + the /res allocation board): hand account pools + local GPUs to the fleets
+  // inside the workspace hive tree, each with a share %. Default ON (derived
+  // FLAG_DEFAULTS — additive new surface, nothing else changes behavior when the
+  // tab is hidden); flip OFF via /admin/features to pull the nav item + route.
+  RES_ALLOCATION: "papercusp-res-allocation",
   // Testing-only surfaces (pi tab, add-plugin button) AND the Oracle assistant
   // (dock + Tutorial menubar button + /settings/oracle + /api/oracle/*) — the
   // separate `papercusp-oracle` key was folded into this one by owner ask

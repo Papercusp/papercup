@@ -37,12 +37,23 @@ Proven (2026-06-22): 6–9 live `console/queen`/`overwatch` sessions with valid
 - **`listRecordedLiveSessions`** (`adv-sessions.ts`) — live recorded sessions
   (`ended_at IS NULL`, `coord_owner_id IS NOT NULL`, **12h recency-bound** to age
   out unreaped zombies, workspace-scoped, `DISTINCT ON (coord_owner_id)`).
-- **`synthesizeRecordedRosterRows`** (`recorded-sessions.ts`, pure) — projects
-  each recorded session **not already in coord_presence** into a
-  `UnifiedPresenceRecord` (`source: 'session-log'`, `stale: false` — the
-  `ended_at IS NULL` is a better liveness signal than heartbeat age). The
-  already-self-registered session keeps its richer coord_presence row (dedup by
-  owner id); it is never shadowed.
+- **`reconcileRosterSources`** (`recorded-sessions.ts`, pure — the merge entry
+  point `presence-snapshot.ts` calls) — reconciles the coord_presence rows against
+  the recorded-live rows under a 3-rule precedence (P-001/P-002):
+  1. A **fresh** (non-stale) `coord_presence` row always wins — it carries the
+     richest live enrichment (intent, files, wakeability), so a session-log
+     record never shadows it.
+  2. A live session-log record **supersedes a STALE `coord_presence` row** — a
+     dead heartbeat must not hide a session that is actually still running. This
+     is the **resume case**: an exited session's `coord_presence` row lingers
+     stale (heartbeat > 10 min) while `psu --resume` revives the process and
+     reactivates its `adv_sessions` row; the live record wins and the stale
+     heartbeat row is dropped (no double-listing).
+  3. An owner with **only** a live session-log record (never self-registered)
+     gets a synthesized `'recorded'` row — via `synthesizeRecordedRosterRows`,
+     which projects each such session into a `UnifiedPresenceRecord`
+     (`source: 'session-log'` / `RECORDED_SESSION_SOURCE`, `stale: false` — the
+     `ended_at IS NULL` is a better liveness signal than heartbeat age).
 
 ### The `'recorded'` session-state
 

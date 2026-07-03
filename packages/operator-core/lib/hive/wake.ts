@@ -39,6 +39,17 @@ import {
   workspaceBrainScopeKey,
   workspaceBrainReadKeys,
 } from '../workspace-brain-scope';
+import { setCarryNote, getCarryNote, getCarryJournal, hiveScope } from '../carry-note';
+// The Queen carry-journal converged onto the ONE shared carry-note substrate
+// (su-cold-auto-mode-2026-07-03 P-001 / D-004). The journal ring primitives moved
+// there; re-exported here for back-compat importers (hive/carry-journal.test.ts).
+export {
+  appendCarryJournal,
+  CARRY_JOURNAL_MAX_ENTRIES,
+  CARRY_JOURNAL_NOTE_MAX_CHARS,
+  CARRY_JOURNAL_TOTAL_MAX_CHARS,
+  type CarryJournalEntry,
+} from '../carry-note';
 
 /** The hive launch blueprint id (blueprints/coding/blueprint.yaml — renamed from `hive`). */
 export const HIVE_BLUEPRINT_ID = 'coding';
@@ -84,33 +95,9 @@ export interface HiveWakeState {
 
 const EMPTY_STATE: HiveWakeState = { subscriptions: [] };
 
-/** Carry-journal ring bounds (L1a): entries kept, per-note chars, total chars. */
-export const CARRY_JOURNAL_MAX_ENTRIES = 15;
-export const CARRY_JOURNAL_NOTE_MAX_CHARS = 600;
-export const CARRY_JOURNAL_TOTAL_MAX_CHARS = 6_000;
-
-/**
- * PURE (L1a): append a note to a carry-journal ring, enforcing all three bounds
- * (entry count, per-note chars, total chars — oldest dropped first). Exported
- * for unit tests. A blank note appends nothing (returns the input unchanged).
- */
-export function appendCarryJournal(
-  journal: ReadonlyArray<{ at: number; note: string }> | undefined,
-  note: string,
-  at: number,
-): Array<{ at: number; note: string }> {
-  const trimmed = note.trim();
-  const cur = [...(journal ?? [])];
-  if (!trimmed) return cur;
-  cur.push({ at, note: trimmed.slice(0, CARRY_JOURNAL_NOTE_MAX_CHARS) });
-  while (cur.length > CARRY_JOURNAL_MAX_ENTRIES) cur.shift();
-  let total = cur.reduce((n, e) => n + e.note.length, 0);
-  while (total > CARRY_JOURNAL_TOTAL_MAX_CHARS && cur.length > 1) {
-    const dropped = cur.shift();
-    total -= dropped ? dropped.note.length : 0;
-  }
-  return cur;
-}
+// The carry-journal ring bounds (CARRY_JOURNAL_*) + appendCarryJournal moved to
+// the shared carry-note substrate (su-cold-auto-mode P-001) and are re-exported
+// from the import block above.
 
 /** The self-wake floor in seconds (D-002's clamp). Env-tunable, hard min 5s. */
 export function hiveWakeFloorSec(): number {
@@ -369,42 +356,29 @@ export async function setHiveEventSubscriptions(
 
 /**
  * Set (or clear) the Queen's self-authored carry-note for her next wake
- * (P-015 / B-04). REPLACE-semantics, like the wake declaration itself: a
- * non-empty string replaces the stored note; `null`/`undefined`/blank clears it
- * (she chose not to carry anything — the next wake re-derives from the floor).
- * Stored in the same `hive_wake` operator-state row, so it rides the existing
- * PG-backed store (no migration). Returns the stored note (trimmed) or null.
+ * (P-015 / B-04). REPLACE-semantics: a non-empty string replaces the stored note
+ * and appends to her carry-JOURNAL ring; `null`/`undefined`/blank clears the note
+ * (the journal — her recent-reasoning trajectory — persists; the next wake
+ * re-derives the floor). As of su-cold-auto-mode-2026-07-03 P-001 this delegates
+ * to the ONE shared carry-note substrate under {@link hiveScope} (the Queen
+ * carry-journal, the bee checkpoint and the su loop carry-note are now the same
+ * store + shape). Returns the stored note (trimmed) or null.
  */
 export async function setHiveCarryNote(
   workspaceId: string,
   note: string | null | undefined,
 ): Promise<string | null> {
-  const trimmed = (note ?? '').trim();
-  const carryNote = trimmed.length > 0 ? trimmed : undefined;
-  await updateOperatorState<HiveWakeState>('hive_wake', EMPTY_STATE, (cur) => {
-    // L1a: APPEND to the journal ring (folding a pre-journal legacy note in as
-    // the first entry so history survives the migration). A blank note keeps
-    // the journal (trajectory persists) and clears only the legacy mirror.
-    const seeded =
-      cur.carryJournal ?? (cur.carryNote ? [{ at: 0, note: cur.carryNote }] : []);
-    const carryJournal = appendCarryJournal(seeded, trimmed, Date.now());
-    return { ...cur, carryNote, carryJournal };
-  }, workspaceId);
-  return carryNote ?? null;
+  return setCarryNote({ scope: hiveScope(), workspaceId }, note);
 }
 
 /**
  * Read the Queen's carry-journal, NEWEST FIRST (L1a) — the brief renderer's
- * input. Folds a pre-journal legacy carryNote in as a single entry so older
- * state renders during the transition.
+ * input. Reads the shared carry-note substrate under {@link hiveScope}.
  */
 export async function getHiveCarryJournal(
   workspaceId?: string,
 ): Promise<Array<{ at: number; note: string }>> {
-  const state = await readHiveWakeState(workspaceId);
-  const journal =
-    state.carryJournal ?? (state.carryNote ? [{ at: 0, note: state.carryNote }] : []);
-  return [...journal].reverse();
+  return getCarryJournal({ scope: hiveScope(), workspaceId });
 }
 
 /**
@@ -414,9 +388,7 @@ export async function getHiveCarryJournal(
  * `renderQueenBrief({ carryNote })`.
  */
 export async function getHiveCarryNote(workspaceId?: string): Promise<string | null> {
-  const state = await readHiveWakeState(workspaceId);
-  const note = (state.carryNote ?? '').trim();
-  return note.length > 0 ? note : null;
+  return getCarryNote({ scope: hiveScope(), workspaceId });
 }
 
 /**

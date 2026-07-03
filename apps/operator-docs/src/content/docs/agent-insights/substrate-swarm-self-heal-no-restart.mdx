@@ -58,8 +58,9 @@ tests; production uses the proven defaults.
 1. **Re-peer loop** (`joinHarnessSwarm`, `swarm.ts`) — a two-speed
    `discovery.refresh({ client: true, server: true })` loop:
    - **FAST** (`DEFAULT_SUBSTRATE_REFRESH_MS` = 2.5s) inside the post-join window
-     (`DEFAULT_SUBSTRATE_FAST_WINDOW_MS` = 30s), **re-armed** whenever a peer
-     socket `close`s (snappy reconnect — a fresh node needs several rounds);
+     (`DEFAULT_SUBSTRATE_FAST_WINDOW_MS` = **120s**, widened from the original 30s —
+     see "Update" below), **re-armed** whenever a peer socket `close`s (snappy
+     reconnect — a fresh node needs several rounds);
    - **SLOW** keepalive (`DEFAULT_SUBSTRATE_SLOW_REFRESH_MS` = 60s) otherwise, so
      the topic stays announced (a *future* drop can always re-pair) without
      hammering the public DHT.
@@ -92,6 +93,18 @@ re-exchanges (a fresh per-connection announce, WI-559 issue-2) → the next
   and a post-drop write still crosses once the production loop reconnects (~1s).
 - `__tests__/swarm-join-retry.test.ts` — a transient identity failure at boot →
   the retry loop joins on its own (no restart); `swarmJoinRetryMs: 0` disables.
+
+## Update (D-045, shared-hive-member-content-federation): fast window widened 30s → 120s
+
+The original 30s fast window (above) turned out too short: a **freshly-spawned
+sidecar process** joining over the public DHT reliably misses the first several
+announce/lookup rounds (cold start), so the next re-announce after 30s fell
+straight to the 60s SLOW cadence — a ~90s dead zone where two genuinely-separate
+machines never `peer_connected` (seen live: run-12 "no peer in ~90s"; invisible
+to tests because local-testnet peers instantly). `DEFAULT_SUBSTRATE_FAST_WINDOW_MS`
+is now **120s** — 2.5s re-announces keep a cold node aggressively discoverable
+until it pairs, then it drops to the bounded SLOW keepalive. Still re-armed on
+last-peer-loss; still bounded (no forever-hammering).
 
 ## Gotcha
 

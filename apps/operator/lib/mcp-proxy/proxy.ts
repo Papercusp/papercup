@@ -23,6 +23,27 @@
  */
 import http from 'node:http';
 
+/**
+ * Dedicated upstream agent with keep-alive DISABLED — backend-reliability-100pct-2026-07-03 W1.3.
+ *
+ * ROOT CAUSE (measured 2026-07-03): forwarding through Node's GLOBAL agent (keepAlive:true,
+ * maxSockets:Infinity on Node ≥19) POOLS + REUSES sockets to the :3070 cluster. A pooled socket
+ * races the server/worker closing it (the :3070 http server advertises `keep-alive: timeout=61`,
+ * AND SO_REUSEPORT workers recycle on lag) — so a forward can land on a half-closed socket, :3070's
+ * parser sees a malformed request and returns its default `400 Bad Request` (connection:close, empty
+ * body). The proxy treats that as a normal upstream RESPONSE (statusCode 400) and forwards it to the
+ * agent as a spurious tool error — NOT covered by the refused-only retry. Reproduced at ~13% on
+ * reuse-prone (sequential) traffic while direct :3070 was 15/15 clean. Every agent routes through
+ * this proxy, so this was a prime source of the "transient tool errors under load".
+ *
+ * FIX: a fresh socket per forward eliminates the reuse race entirely. This proxy fronts a localhost
+ * upstream, so the extra connect is microseconds. (A future scale refinement for thousands of
+ * agents: a BOUNDED keep-alive agent with keepAliveMsecs well under the server's 61s timeout +
+ * an explicit retry-once on a stale-socket reset — tracked in the plan. keepAlive:false is the
+ * correct, safe fix now.)
+ */
+const UPSTREAM_AGENT = new http.Agent({ keepAlive: false, maxSockets: Infinity });
+
 export interface McpProxyOptions {
   listenPort: number;
   listenHost?: string;
@@ -81,6 +102,9 @@ function forwardOnce(
         method,
         path: reqUrl,
         headers: { ...headers, host: `${opts.targetHost}:${opts.targetPort}` },
+        // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
+        // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
+        agent: UPSTREAM_AGENT,
       },
       (ures) => done({ ures, connected: true }),
     );

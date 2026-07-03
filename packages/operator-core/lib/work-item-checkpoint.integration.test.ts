@@ -25,33 +25,38 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const { setWorkItemCheckpoint, getWorkItemCheckpoint } = await import('./work-item-checkpoint');
+const { workItemScope } = await import('./carry-note');
 
 const HARNESS = 'h1';
 
-const CHECKPOINTS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.work_item_checkpoints (
+// As of su-cold-auto-mode P-001 the bee checkpoint IS a scope on the shared
+// carry-note store (mig 472). The bee uses journal:false, so a clear DELETES the
+// row exactly as the pre-P-001 work_item_checkpoints table did — this suite's
+// row-existence semantics are unchanged; only the table + scope key move.
+const CARRY_NOTES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
     workspace_id text NOT NULL,
-    harness_slug text NOT NULL,
-    work_item_id text NOT NULL,
-    checkpoint text NOT NULL,
+    scope text NOT NULL,
+    note text,
+    journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
-    PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
+    PRIMARY KEY (workspace_id, scope))`;
 
 let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('work-item-checkpoint');
   h.sql = db.sql;
-  await db.sql.unsafe(CHECKPOINTS_DDL);
+  await db.sql.unsafe(CARRY_NOTES_DDL);
 }, 60_000);
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.work_item_checkpoints`;
+  await db.sql`DELETE FROM harness_shared.carry_notes`;
 });
 
 async function rowCount(): Promise<number> {
-  const r = await db.sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM harness_shared.work_item_checkpoints`;
+  const r = await db.sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM harness_shared.carry_notes`;
   return Number(r[0]?.n ?? 0);
 }
 
@@ -137,9 +142,10 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
 // in another — the multi-workspace install isolation (operator_multi_workspace) rides on this.
 describe('work-item checkpoint store (C6) — concurrent writes + cross-workspace PK isolation', () => {
   async function rowsFor(workItemId: string): Promise<{ workspace_id: string; checkpoint: string }[]> {
+    // The bee's row is keyed by scope 'workitem:<harness>:<id>' across every workspace.
     return db.sql<{ workspace_id: string; checkpoint: string }[]>`
-      SELECT workspace_id, checkpoint FROM harness_shared.work_item_checkpoints
-       WHERE harness_slug = ${HARNESS} AND work_item_id = ${workItemId} ORDER BY workspace_id`;
+      SELECT workspace_id, note AS checkpoint FROM harness_shared.carry_notes
+       WHERE scope = ${workItemScope(HARNESS, workItemId)} ORDER BY workspace_id`;
   }
 
   it('two CONCURRENT writes to the same checkpoint → exactly ONE row, value is ONE writer (never corrupted/interleaved)', async () => {

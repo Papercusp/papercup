@@ -104,4 +104,31 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     expect(r.status).toBe(503);
     expect(r.body).toContain('mcp_proxy_upstream_unavailable');
   });
+
+  it('does NOT reuse upstream sockets — a FRESH connection per forward (W1.3 stale-socket-400 guard)', async () => {
+    // backend-reliability-100pct-2026-07-03 W1.3: reusing a pooled keep-alive socket to the :3070
+    // cluster races the server/worker closing it → a forwarded request lands on a half-closed
+    // socket → :3070 returns a spurious `400 Bad Request` the proxy forwards as a tool error
+    // (~13% measured). The fix (UPSTREAM_AGENT keepAlive:false) opens a fresh socket per forward.
+    // GUARD: sequential requests (where a pooled socket WOULD be reused) must each open a NEW
+    // upstream connection — connections === requests. Pre-fix (global keepAlive agent) this is < N.
+    let connections = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    upstream.on('connection', () => { connections++; });
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 50, log: () => {} }));
+    await listen(proxy);
+
+    const N = 4;
+    for (let i = 0; i < N; i++) {
+      const r = await request(port(proxy)); // sequential — a pooled keep-alive socket would be reused here
+      expect(r.status).toBe(200);
+    }
+    expect(connections).toBe(N);
+  });
 });

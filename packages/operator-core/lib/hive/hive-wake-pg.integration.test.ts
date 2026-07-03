@@ -56,6 +56,7 @@ const {
   setHiveEventSubscriptions,
   setHiveCarryNote,
   getHiveCarryNote,
+  getHiveCarryJournal,
   recordHiveWake,
   HIVE_WAKE_ROUTINE_NAME,
 } = await import('./wake');
@@ -114,6 +115,11 @@ beforeAll(async () => {
   // matches head, where readHiveWakeState('hive_wake') reads the renamed table.
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
+  // 472 — the Queen carry-note converged onto the shared carry-note substrate
+  // (su-cold-auto-mode P-001): setHiveCarryNote now writes carry_notes, not the
+  // hive_wake payload. The data-fold's work_item_checkpoints branch is IF-EXISTS
+  // guarded (absent here) and the hive_wake branch is a no-op (empty at migrate).
+  await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
   h.sql = rootSql;
 }, 90_000);
 
@@ -287,24 +293,29 @@ describe('hive_wake state (migration 158)', () => {
     // Fresh: no carry-note.
     expect(await getHiveCarryNote(WS)).toBeNull();
 
-    // Set one — round-trips via getHiveCarryNote and the raw state field.
+    // Set one — round-trips via getHiveCarryNote and lands in the carry-JOURNAL
+    // (the note converged onto the shared carry-note substrate, P-001).
     const stored = await setHiveCarryNote(WS, '  Mid-wave on plan-x; revisit when wi-101 lands.  ');
     expect(stored).toBe('Mid-wave on plan-x; revisit when wi-101 lands.'); // trimmed
     expect(await getHiveCarryNote(WS)).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
-    expect((await readHiveWakeState(WS)).carryNote).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
+    const j1 = await getHiveCarryJournal(WS);
+    expect(j1[0]?.note).toBe('Mid-wave on plan-x; revisit when wi-101 lands.'); // newest-first
 
-    // Coexists with subscriptions — neither clobbers the other (merge).
+    // Coexists with subscriptions — they live in different tables now, so neither
+    // can clobber the other (the carry-note is NOT in the hive_wake payload).
     await setHiveEventSubscriptions(WS, [{ on: 'coord:escalate', note: 'x' }]);
     expect(await getHiveCarryNote(WS)).toBe('Mid-wave on plan-x; revisit when wi-101 lands.');
     expect((await readHiveWakeState(WS)).subscriptions).toHaveLength(1);
 
-    // Replace-semantics: a new note replaces the old.
+    // Replace-semantics: a new note replaces the old (and appends to the journal).
     await setHiveCarryNote(WS, 'New intention.');
     expect(await getHiveCarryNote(WS)).toBe('New intention.');
 
-    // Empty / whitespace / undefined clears it (she carried nothing this wake).
+    // Empty / whitespace / undefined clears the note (she carried nothing this
+    // wake); the carry-JOURNAL trajectory persists through the clear (L1a).
     expect(await setHiveCarryNote(WS, '   ')).toBeNull();
     expect(await getHiveCarryNote(WS)).toBeNull();
+    expect((await getHiveCarryJournal(WS)).length).toBeGreaterThanOrEqual(2); // journal survived the clear
     await setHiveCarryNote(WS, 'again');
     expect(await setHiveCarryNote(WS, undefined)).toBeNull();
     expect(await getHiveCarryNote(WS)).toBeNull();
