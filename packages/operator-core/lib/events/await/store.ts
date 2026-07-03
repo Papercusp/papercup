@@ -18,6 +18,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { keyMatchesPattern } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import type {
   AwaitPolicy,
@@ -295,7 +296,38 @@ export async function fireAwaitsForKey(input: {
        AND once = false AND cancelled_at IS NULL
        AND (expires_ts IS NULL OR expires_ts > now())
   `;
-  return [...onceRows, ...standingRows].map(mapAwait);
+
+  // Pattern awaits (P-201): a stored event_key containing a literal `*` is a glob
+  // (`work-item:done:*`, `fleet:*:<slug>`). Fetch the ACTIVE pattern rows — a tiny
+  // set, index-backed by event_awaits_pattern_active (migration 480) — and fire the
+  // ones whose pattern matches THIS exact fired key, reusing @papercusp/rules' mingo
+  // matcher (keyMatchesPattern). One-shots keep the atomic exactly-once claim; standing
+  // pattern watches match without consuming. `*` is a literal in SQL LIKE (% and _ are
+  // the wildcards), so `LIKE '%*%'` = "event_key contains an asterisk".
+  const patternCandidates = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND event_key LIKE '%*%'
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND (once = true OR expires_ts IS NULL OR expires_ts > now())
+  `;
+  const matched = patternCandidates.filter((r: any) => keyMatchesPattern(r.event_key, input.eventKey));
+  const matchedOnceIds = matched.filter((r: any) => (r.once ?? true) === true).map((r: any) => Number(r.id));
+  const matchedStanding = matched.filter((r: any) => (r.once ?? true) === false);
+  // Atomic exactly-once claim of the matched one-shot patterns (mirrors onceRows: a
+  // concurrent emit of a different key that also matches can never double-fire one row).
+  const claimedPatternRows =
+    matchedOnceIds.length > 0
+      ? await sql`
+          UPDATE harness_shared.event_awaits
+             SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
+           WHERE id = ANY(${matchedOnceIds})
+             AND fired_at IS NULL AND cancelled_at IS NULL
+          RETURNING *
+        `
+      : [];
+
+  return [...onceRows, ...standingRows, ...claimedPatternRows, ...matchedStanding].map(mapAwait);
 }
 
 /** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the

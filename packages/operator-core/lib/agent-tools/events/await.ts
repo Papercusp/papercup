@@ -15,6 +15,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
+import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
 const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h
@@ -23,9 +24,9 @@ const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
 export default defineTool({
   name: 'events:await',
   description:
-    'Register a one-shot WAKE on an exact event key. When it fires you are re-invoked, so end your turn instead of polling.',
+    'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N.',
   guidance: {
-    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. Before polling, check events:catalog for an awaitable key, register it, then end your turn.',
+    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. To wait on a WHOLE family at once (any work item done, any item in a plan) pass a glob `work-item:done:*` or a macro `@plan:<slug>` / `@fleet:<slug>` instead of one exact key. Before polling, check events:catalog for an awaitable key, register it, then end your turn.',
     notWhen:
       'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'events:catalog → events:await { event } (or a sugar verb) → end your turn. Use events:cancel to retract and events:status to inspect active awaits.',
@@ -42,7 +43,9 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     event: hardText(LIMITS.IDENT)
-      .describe('Exact event key to wait on (string match — no globs).'),
+      .describe(
+        'Event key to wait on. An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
+      ),
     note: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('Why you are waiting — echoed into the wake turn so resumed-you has the thread. Auto-truncated to 2000 chars if longer.'),
@@ -70,6 +73,12 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();
 
+    // ── Resolve the key: a PATTERN (glob / @macro) normalizes to a stored glob (P-201);
+    //    an exact key passes through. A bad macro / too-broad glob throws a clear message. ──
+    const patternAwait = isPattern(args.event);
+    const eventKey = patternAwait ? expandPatternMacro(args.event) : args.event;
+    if (patternAwait) assertUsablePattern(eventKey);
+
     // ── Capture the wake handle NOW (D-003) ────────────────────────────
     const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
       planRunId: args.plan_run_id,
@@ -77,7 +86,7 @@ export default defineTool({
 
     const row = await registerAwait({
       subscriberId: identity.ownerId,
-      eventKey: args.event,
+      eventKey,
       policy: 'wake',
       note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
@@ -94,11 +103,13 @@ export default defineTool({
             ok: true,
             await_id: row.id,
             event: row.eventKey,
+            ...(patternAwait ? { pattern: true } : {}),
             expires_ts: row.expiresTs,
             on_timeout: row.timeoutBehavior,
             wake_handle: handleNote,
-            advice:
-              'Registered. End your turn now — you will be re-invoked when the event fires (or at the deadline). Do not poll.',
+            advice: patternAwait
+              ? `Registered a PATTERN await on "${row.eventKey}". End your turn now — you will be re-invoked when the FIRST matching key fires (or at the deadline). It is one-shot: re-register if you need to wake on the next match too. Do not poll.`
+              : 'Registered. End your turn now — you will be re-invoked when the event fires (or at the deadline). Do not poll.',
           }),
         },
       ],

@@ -76,4 +76,33 @@ describe('events:await wrapper defaults', () => {
       wake_handle: 'resumable',
     });
   });
+
+  // ── P-201: pattern / macro awaits ────────────────────────────────────────
+  it('a raw glob is stored as-is and flagged pattern:true in the response', async () => {
+    const out = await call({ event: 'work-item:done:*' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('work-item:done:*');
+    expect(out).toMatchObject({ ok: true, event: 'work-item:done:*', pattern: true });
+    expect(out.advice).toContain('PATTERN');
+  });
+
+  it('@plan:<slug> expands to the plan-item glob before registering', async () => {
+    await call({ event: '@plan:my-plan-2026' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('plan-item:done:my-plan-2026:*');
+  });
+
+  it('@fleet:<slug> expands to the fleet glob before registering', async () => {
+    await call({ event: '@fleet:red-team' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('fleet:*:red-team');
+  });
+
+  it('an exact key is NOT flagged as a pattern', async () => {
+    const out = await call({ event: 'lock:grant:t1' });
+    expect(out.pattern).toBeUndefined();
+  });
+
+  it('rejects an unknown macro and a too-broad pattern (never registers)', async () => {
+    await expect(call({ event: '@bogus:x' })).rejects.toThrow(/unknown pattern macro/);
+    await expect(call({ event: '*' })).rejects.toThrow(/too broad/);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
 });
