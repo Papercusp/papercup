@@ -23,6 +23,7 @@ import { scopeBroadcastAudience } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
 import { sendMessage, getMessageById } from '../messages';
+import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -240,6 +241,56 @@ async function sendOne(
     ...(harnessSlug ? { harnessSlug } : {}),
     ...(Object.keys(extra).length ? { extra } : {}),
   });
+
+  // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent
+  // ok): a LIVE-audience selector (@fleet:/@fleet-leader:/@topic:/@plan:/@object:/
+  // @file:) resolves to a set of live recipients at send time; sendMessage's
+  // `env.to` IS that expanded set (empty ⇒ nobody). A SLOT selector
+  // (@role:/@wave:/@feature:/@user:) legitimately parks for a future agent, so a
+  // zero there is expected and NOT a miss — those are excluded here.
+  //
+  // The incident: fleet p2p-dist's leader sent a drain order to @fleet:p2p-dist,
+  // but all 4 members were launched without fleet registration (fleetSlug:null),
+  // so the audience resolved to ZERO live members and coord:send returned a SILENT
+  // ok:true — the leader then sat ~3h "awaiting compliance acks" nobody could send.
+  // We now report recipients_resolved for every audience-selector send and surface
+  // a LOUD zero_recipients warning when it reached nobody. An EXPLICIT audience
+  // selector reaching nobody is a hard refusal (ok:false); an AUTO-scoped
+  // '*'→@fleet broadcast (bcast.scoped — e.g. a solo/quiet fleet) is a soft warning
+  // that keeps ok:true. The row still persisted above (audience history /
+  // coord:catch-up), so env.msg_id is returned either way.
+  const audienceSelectors = msg.to.filter(
+    (t) => t.startsWith('@') && parseSlotSelector(t) === null,
+  );
+  let zeroRecipients: { selectors: string[]; note: string } | undefined;
+  if (audienceSelectors.length > 0 && env.to.length === 0) {
+    const isFleet = audienceSelectors.some(
+      (s) => s.startsWith('@fleet:') || s.startsWith('@fleet-leader:'),
+    );
+    const hint = isFleet
+      ? ' A fleet selector with no live members usually means the members were launched WITHOUT fleet registration (the EI-5835 --fleet trap: fleetSlug:null) — verify via coord:roster that each member row carries the fleetSlug, or address the members by ownerId directly.'
+      : ' Nobody currently subscribes to / is present on this audience; the row persisted to audience history, so a later joiner can still catch up via coord:catch-up.';
+    const note =
+      `coord:send audience ${audienceSelectors.join(', ')} resolved to ZERO live recipients — ` +
+      `the message reached NOBODY live.` +
+      hint;
+    // Hard refusal for an EXPLICIT audience selector; an auto-scoped '*'→@fleet
+    // broadcast to an empty/solo fleet is a soft warning (the sender intended a
+    // broadcast, not a targeted directive), so keep ok:true and fall through.
+    if (!bcast?.scoped) {
+      return {
+        ok: false,
+        to: env.to,
+        msg_id: env.msg_id,
+        ts: env.ts,
+        error: 'zero_recipients',
+        recipients_resolved: 0,
+        zero_recipients: { selectors: audienceSelectors, note },
+        message: note,
+      };
+    }
+    zeroRecipients = { selectors: audienceSelectors, note };
+  }
 
   // Reply-wake (coord-wake-on-reply): if THIS send is a REPLY (it carries a
   // related_msg_id), look the ORIGINAL message up by that id and — when the
@@ -493,6 +544,12 @@ async function sendOne(
     ...(wake ? { wake } : {}),
     ...(replyWake ? { replyWake } : {}),
     ...(notWoken ? { notWoken } : {}),
+    // EI-6874: report how many live recipients an audience-selector send resolved
+    // to (for EVERY audience send, not just the zero case), plus the loud
+    // zero_recipients warning when an auto-scoped '*'→@fleet broadcast reached
+    // nobody (an explicit selector reaching nobody already returned above).
+    ...(audienceSelectors.length > 0 ? { recipients_resolved: env.to.length } : {}),
+    ...(zeroRecipients ? { zero_recipients: zeroRecipients } : {}),
   };
 }
 

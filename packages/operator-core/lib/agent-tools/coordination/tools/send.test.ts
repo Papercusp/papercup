@@ -20,7 +20,12 @@ vi.mock('../inbox-wake', () => ({
   reportIdleRecipients: vi.fn(async () => ({ idle: [] })),
 }));
 vi.mock('../recipient-resolve', () => ({
-  isSelectorOrWildcard: vi.fn((id: string) => id === '*' || id === 'human'),
+  // Match production: '*'/'human'/''/@-prefixed all bypass concrete-recipient
+  // resolution (EI-6874 — audience selectors like @fleet:/@topic: must NOT be
+  // treated as concrete ids to resolve against the roster).
+  isSelectorOrWildcard: vi.fn(
+    (id: string) => id === '*' || id === 'human' || id === '' || id.startsWith('@'),
+  ),
   resolveRecipients: vi.fn(),
   // P-007: remote session ids empty by default (single-box behavior unchanged)
   remoteSessionOwnerIds: vi.fn(async () => new Set<string>()),
@@ -258,6 +263,69 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
+  });
+});
+
+describe('coord:send zero-recipient audience (EI-6874)', () => {
+  it("an EXPLICIT @fleet: selector resolving to ZERO live members → ok:false zero_recipients, NOT a silent ok:true", async () => {
+    // The incident: a leader's drain order to @fleet:p2p-dist resolved to 0 members
+    // (all launched with fleetSlug:null) and returned a silent ok:true, so the leader
+    // sat ~3h awaiting acks nobody could send. sendMessage expands the selector to the
+    // empty set → env.to === [].
+    sendM.mockImplementationOnce(async () => ({ to: [], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({ to: ['@fleet:p2p-dist'], summary: 'DRAIN: wind down + ack' });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'zero_recipients',
+      recipients_resolved: 0,
+      msg_id: 'm1', // the row still persisted (audience history / coord:catch-up)
+    });
+    expect(b.results[0].zero_recipients.selectors).toEqual(['@fleet:p2p-dist']);
+    expect(b.results[0].message).toMatch(/ZERO live recipients|fleetSlug|reached NOBODY/i);
+  });
+
+  it('a @fleet: selector that DOES resolve to members → ok:true + recipients_resolved count', async () => {
+    sendM.mockImplementationOnce(async () => ({ to: ['su-a', 'su-b'], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({ to: ['@fleet:p2p-dist'], summary: 'status' });
+    expect(b.results[0]).toMatchObject({ ok: true, recipients_resolved: 2 });
+    expect(b.results[0].zero_recipients).toBeUndefined();
+  });
+
+  it('a @topic: selector resolving to zero → ok:false zero_recipients with a catch-up hint (non-fleet)', async () => {
+    sendM.mockImplementationOnce(async () => ({ to: [], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({ to: ['@topic:federation'], summary: 'anyone on this?' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'zero_recipients', recipients_resolved: 0 });
+    expect(b.results[0].message).toMatch(/catch up|coord:catch-up/i);
+  });
+
+  it("an AUTO-scoped '*'→@fleet broadcast to an empty/solo fleet → soft warning, keeps ok:true", async () => {
+    // A fleeted sender's bare '*' is down-scoped to @fleet:<slug>. If that fleet has no
+    // other live members the broadcast reaches nobody — but a broadcast intent is not a
+    // failed directive, so it stays ok:true with a loud zero_recipients warning.
+    fetchPresenceFleetM.mockResolvedValue(new Map([['me', { fleetSlug: 'solo' }]]) as never);
+    sendM.mockImplementationOnce(async () => ({ to: [], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({ to: ['*'], summary: 'per-wake status' });
+    expect(b.results[0]).toMatchObject({ ok: true, recipients_resolved: 0 });
+    expect(b.results[0].zero_recipients.selectors).toEqual(['@fleet:solo']);
+    expect(b.results[0].scopedBroadcast).toMatchObject({ from: '*', to: '@fleet:solo' });
+  });
+
+  it('a SLOT selector (@role:) that parks for a future agent is NOT flagged zero_recipients', async () => {
+    // Slot selectors legitimately resolve to nobody now (they park) → env.to === [] is
+    // expected, not a miss.
+    sendM.mockImplementationOnce(async () => ({ to: [], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({ to: ['@role:worker'], summary: 'the next worker picks this up' });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].zero_recipients).toBeUndefined();
+    expect(b.results[0].recipients_resolved).toBeUndefined();
+  });
+
+  it('a concrete-recipient send is unaffected — no recipients_resolved / zero_recipients', async () => {
+    const b = await body({ to: ['bee-1'], summary: 'hi' });
+    expect(b.results[0]).toMatchObject({ ok: true, to: ['bee-1'] });
+    expect(b.results[0].recipients_resolved).toBeUndefined();
+    expect(b.results[0].zero_recipients).toBeUndefined();
   });
 });
 
