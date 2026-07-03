@@ -72,6 +72,19 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   /service unavailable/i, // 503
   /bad gateway/i, // 502
   /gateway time-?out/i, // 504
+  // EI-6890: the INFERENCE-GATEWAY's own transient-upstream wrapper reports the NUMERIC
+  // status + "upstream error: fetch failed" / "This is a server-side issue", NOT the
+  // English "bad gateway"/"service unavailable" phrasings the EI-6876 patterns above
+  // matched — so the live EI-6476 death ("API Error: 502 inference-gateway upstream
+  // error: fetch failed. This is a server-side issue…", exit 1 after 249s) slipped
+  // through, was charged, and tagged plain 'worker-exit-backedge', so the
+  // orphaned-dispatch watchdog read it as "the lane is broken" and filed a false major
+  // EI (EI-6890) — the SAME self-amplifying noise loop EI-6876 fixed for the English
+  // shapes. Catch the numeric 5xx code + the gateway/undici transient signatures too.
+  /\bfetch failed\b/i, // undici transient connectivity failure (DNS / socket / connection reset)
+  /\bupstream error\b/i, // the inference-gateway wrapper for a failing upstream
+  /server-?side issue/i, // the gateway's "This is a server-side issue, usually temporary" phrasing
+  /\b5(?:0[0-9]|29)\b/, // a bare HTTP 5xx status code (500-509 / 529 overloaded), e.g. "API Error: 502 …"
 ];
 
 /**
