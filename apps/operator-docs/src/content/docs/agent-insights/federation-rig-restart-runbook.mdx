@@ -260,6 +260,23 @@ actively investigating. The durable fix (persist/restore auth across restart + a
 loud no-identity health signal) is tracked in WI-757.
 </Aside>
 
+### 6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)
+
+A different silently-local-only cause, specific to `fed_local_launch` /
+`fed_local_launch_sidecar` (`bin/lib/federation-asserts.sh`) launches on a
+**fleet shell**: fleet desktop sessions carry ambient
+`PAPERCUSP_DHT_HOST=<bridge-ip>` / `PAPERCUSP_DHT_BOOTSTRAP=<bridge-ip:port>`
+for the tower↔VM rig, and a loopback smoke that inherits either one
+swarm-binds/bootstraps on the bridge instead of the loopback DHT the smoke
+actually spun up — so peers never dial each other (0 `peer_connected`
+fleet-wide, found 2026-07-03). Both launch primitives now **force-empty**
+`PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` before `"$@"` — a caller that
+*wants* either passes it explicitly in the trailing `VAR=val` args, which win
+over the forced-empty default. If you're troubleshooting a hand-rolled smoke
+that calls these primitives directly and it can't see its peer, check the
+calling shell's environment for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP`
+before suspecting the substrate.
+
 ## 7. Driving the live fed VMs — `fed.sh` (port self-discovery, WI-754)
 
 `papercusp-desktop/scripts/linux-test-vm/fed.sh` is the **versioned** driver for
@@ -312,4 +329,5 @@ tools whose schema rejects an unknown `workspace` key). The durable fix
 | wedged Mac VM | QMP recovery, never pkill (§4) |
 | re-run the scheduled gate | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5) |
 | peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757) |
+| loopback smoke gets 0 peer dials, only on a fleet shell | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
 | **anything** | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739) |
