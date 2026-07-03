@@ -1541,6 +1541,18 @@ export async function schedulerIssuesClaimableEnabled(): Promise<boolean> {
 export const ISSUE_FAMILY_CLAIMABLE_STATES: readonly string[] = ['open'];
 
 /**
+ * The FULL set of statuses a pull-tool caller may request via its `states` arg
+ * (scheduler:get_next / work_items:claim_next). Feature family: `todo` (fresh) +
+ * `failing` (re-drive); issue family: `open`. Everything else is either a resolver
+ * FLOOR (`blocked` — leader-triage-only; `cursed`) or terminal — and a caller-supplied
+ * `states` must NOT be able to widen past a floor. The claim-spec validator already
+ * rejects a `blocked` filter TERM for exactly this reason (D-002); this allowlist
+ * closes the identical hole on the sibling `states` arg (WI-1912: a fleet member
+ * passed states:['todo','open','blocked'] and pulled a leader-triage-only item).
+ */
+export const CLAIM_STATES_ALLOWLIST = ['todo', 'open', 'failing'] as const;
+
+/**
  * fleet-backlog-lessons-2026-07-01 P-005 (WI-1407): the claim-next FALLBACK LADDER. A
  * member's claim loop used to EXIT the moment its first tier read empty — most visibly
  * when a caller NARROWED to one feature-family `kind` (e.g. `kind:'feature'`): the

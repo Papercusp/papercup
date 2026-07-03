@@ -24,6 +24,7 @@ import {
   type ProbeVerdict,
   type InvariantSnapshot,
 } from './coord-invariant-actions';
+import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
 import { getSystemAction } from './system-actions';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 
@@ -186,13 +187,16 @@ describe('evaluateInvariants', () => {
   const NOW = Date.parse('2026-06-10T12:00:00Z');
   const cleanSnap: InvariantSnapshot = {
     openHandoffTs: [],
-    openEscalationTs: [],
+    openEscalations: [],
     longExpiredLocks: 0,
     presenceGhosts: 0,
     wakeQueueDepth: 0,
     wakeQueueOldestMs: null,
   };
   const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
+  const TTL_H = OPERATIONAL_ESCALATION_TTL_MS / 3_600_000;
+  /** An OPERATIONAL escalation (system/infra-emitter, option-less) opened `h` hours ago. */
+  const opEsc = (h: number, from = 'system') => ({ ts: hoursAgo(h), from, hasOptions: false });
 
   it('a clean snapshot yields no violations', () => {
     expect(evaluateInvariants(cleanSnap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
@@ -201,7 +205,7 @@ describe('evaluateInvariants', () => {
   it('each check fires past its threshold with a STABLE dedup title', () => {
     const snap: InvariantSnapshot = {
       openHandoffTs: [hoursAgo(13), hoursAgo(1)], // 1 stuck, 1 fresh
-      openEscalationTs: [hoursAgo(7)],
+      openEscalations: [opEsc(TTL_H + 1)], // operational, past the reconcile TTL
       longExpiredLocks: 2,
       presenceGhosts: 3,
       wakeQueueDepth: 51,
@@ -210,7 +214,7 @@ describe('evaluateInvariants', () => {
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations.map((v) => v.title)).toEqual([
       'coord invariant: handoffs stuck pending past 12h',
-      'coord invariant: escalations unacked past 6h',
+      'coord invariant: operational escalations undrained past reconcile TTL',
       'coord invariant: file locks held past TTL without sweep',
       'coord invariant: presence ghosts lingering past 72h',
       'coord invariant: wake-queue depth/age growth',
@@ -221,9 +225,51 @@ describe('evaluateInvariants', () => {
     );
   });
 
-  it('fresh handoffs/escalations under the window do not fire', () => {
-    const snap = { ...cleanSnap, openHandoffTs: [hoursAgo(11)], openEscalationTs: [hoursAgo(5)] };
+  it('fresh handoffs + operational escalations under their windows do not fire', () => {
+    const snap = {
+      ...cleanSnap,
+      openHandoffTs: [hoursAgo(11)], // under the 12h stuck-handoff window
+      openEscalations: [opEsc(TTL_H - 1)], // operational, still within the reconcile TTL
+    };
     expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+  });
+
+  it('EI-6910: the escalation invariant measures substrate DRAIN failure, not the human backlog', () => {
+    // GENUINE human-decision escalations (real sender, and/or options) are the human's
+    // attention queue — NEVER a substrate leak, however old: no violation.
+    expect(
+      evaluateInvariants(
+        {
+          ...cleanSnap,
+          openEscalations: [
+            { ts: hoursAgo(1000), from: 'operator', hasOptions: true }, // ancient blocker decision
+            { ts: hoursAgo(500), from: 's-dead-agent-42', hasOptions: false }, // orphaned agent escalation
+          ],
+        },
+        DEFAULT_THRESHOLDS,
+        NOW,
+      ),
+    ).toEqual([]);
+
+    // OPERATIONAL escalations within the reconcile TTL are being drained on cadence: no violation.
+    expect(
+      evaluateInvariants(
+        { ...cleanSnap, openEscalations: [opEsc(TTL_H - 1, 'system:hive-placement-watchdog'), opEsc(6, 'steering-lease')] },
+        DEFAULT_THRESHOLDS,
+        NOW,
+      ),
+    ).toEqual([]);
+
+    // OPERATIONAL escalations PAST the reconcile TTL = the reconcile sweep is failing: ONE violation.
+    const v = evaluateInvariants(
+      { ...cleanSnap, openEscalations: [opEsc(TTL_H + 1, 'steering-lease'), opEsc(TTL_H + 5, 'system')] },
+      DEFAULT_THRESHOLDS,
+      NOW,
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].title).toBe('coord invariant: operational escalations undrained past reconcile TTL');
+    expect(v[0].detail).toContain('2 operational escalation(s)');
+    expect(v[0].severity).toBe('minor');
   });
 
   it('wake-queue fires on AGE even when depth is small', () => {

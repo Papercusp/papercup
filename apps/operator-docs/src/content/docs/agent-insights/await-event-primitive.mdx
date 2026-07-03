@@ -116,6 +116,13 @@ Delivery is durable (PG queue, at-least-once + idempotent wake): a host
 restart re-claims stuck deliveries; a missed lock-grant NOTIFY is re-derived
 from waiter-table truth each 30s sweep.
 
+A **cold-loop** wake (a `loop:arm` session PG-parked with its context already reset to a
+carry-note, not a live/resumable process) is injected via `injectPsuHost` with the note run
+through `renderColdWakeInjection` (`packages/operator-core/lib/su-cold-loop.ts`) — the
+injected text frames the carry-note as the agent's entire working state AND tells it to
+refresh the note with `loop:checkpoint` before ending the turn (or call `loop:end` if
+done/blocked), so a cold wake can't silently go stale after one cycle.
+
 ## Finding the key — `events:catalog` + sugar verbs (2026-07-03)
 
 The primitive's remaining friction was **discoverability**, not mechanics: agents kept
@@ -127,8 +134,13 @@ is a second subscription system:
 - **`events:catalog`** renders the awaitable-key registry
   (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each
   row names the family, the key template + a ready `events:await` example, who emits it,
-  whether it fires **today** (`awaitable_now` — some Phase-2 keys are catalogued but not yet
-  wired), the poll it replaces, and its sugar verb. Check it *before* you poll.
+  whether it fires **today** (`awaitable_now`), the poll it replaces, and its sugar verb. Check
+  it *before* you poll. As of this doc's last verify every catalogued key is landed
+  (`exists: true` / `awaitable_now: true` for the whole table — the Phase-2 keys that were
+  still "catalogued but not wired" (`plan-item:done:<id>`, `claim:released:<id>`,
+  `fleet:drained:<slug>`, `service:up|down:<name>`, `session:compacted:<owner>`) all fired their
+  emitters since); `awaitable_now` stays the field to check for any *future* addition still
+  being wired, not a currently-true caveat.
 - **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) —
   `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`,
   `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers
@@ -140,6 +152,28 @@ is a second subscription system:
 Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your
 turn. This does not change the delivery ladder or cost discipline below — it's purely a
 findability layer over the same primitive.
+
+## Pattern awaits — wake on a FAMILY, not one key (P-201, 2026-07-03)
+
+`events:await { event }` also accepts a **pattern**, not just an exact key
+(`packages/operator-core/lib/events/await/pattern.ts`): a raw glob (`work-item:done:*`,
+`service:up:*` — `*` matches any run of characters) or a friendly macro — `@plan:<slug>`
+expands to `plan-item:done:<slug>:*` (any item in that plan finished), `@fleet:<slug>` expands
+to `fleet:*:<slug>` (any fleet event for that slug). `isPattern`/`expandPatternMacro` classify
+and expand at registration (`events:await.ts`); `assertUsablePattern` rejects a too-broad glob
+(fewer than 3 literal, non-`*`/`:` characters) so nobody accidentally wakes on nearly every
+emit. One await now covers "any lane item finished" instead of N one-per-item awaits.
+
+Matching reuses `@papercusp/rules`' mingo-backed `matches` operator — the same leaf evaluator
+the ECA reaction engine's `when` uses — so pattern semantics stay consistent with rule
+conditions rather than a second hand-rolled matcher (`keyMatchesPattern` in `pattern.ts`).
+`store.fireAwaitsForKey` fetches the small set of ACTIVE pattern rows (`event_key LIKE
+'%*%'`, partial-indexed by `event_awaits_pattern_active`, migration 480) on every emit and
+matches them against the fired key in JS; a matching one-shot pattern claims atomically
+(mirrors the exact-key once-row claim — a race between two matching emits can never
+double-fire the same registration), a matching standing pattern fires without consuming. A
+pattern await is itself one-shot by default: it wakes on the FIRST matching key, then you
+re-register if you want the next match too.
 
 ## The patterns
 
@@ -197,10 +231,15 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
   workspace regardless of your identity's scoping — an early build registered
   '*'-scoped awaits that never matched system emits. Event keys embed
   globally-unique ids, so one namespace is collision-free by construction.
-- **Exact-key match, no globs.** `events:await` matches the literal string.
+- **Exact key by default; glob/macro only if you opt in (P-201).** A plain key
+  (`work-item:done:WI-12`) matches only the literal string, same as before. `*` or a
+  leading `@` makes it a **pattern** (see "Pattern awaits" above) — don't put a literal `*`
+  in an exact key, it will be parsed as a wildcard.
 - The store + engine live at
   `packages/operator-core/lib/events/await/` (migration 163:
-  `event_awaits` + `event_wake_deliveries`); the awaitable-key registry is
+  `event_awaits` + `event_wake_deliveries`; migration 480: the partial index backing pattern
+  candidate lookups); the awaitable-key registry is
   `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
-  every sugar verb read from); the lock bridge at
+  every sugar verb read from); pattern matching is
+  `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at
   `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.

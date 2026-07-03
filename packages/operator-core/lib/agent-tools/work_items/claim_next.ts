@@ -12,7 +12,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimNextWorkItem, releaseWorkItem, diagnoseClaimNextMiss } from '../../work-items';
+import {
+  CLAIM_STATES_ALLOWLIST,
+  claimNextWorkItem,
+  releaseWorkItem,
+  diagnoseClaimNextMiss,
+} from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
@@ -43,7 +48,15 @@ export default defineTool({
     harness: z.string().min(1),
     kind: z.enum(['feature', 'research-task', 'chunk']).optional(),
     assignee: z.string().max(120).optional().describe('default: you'),
-    states: z.array(z.string()).max(20).optional().describe('claimable states (default ["todo"])'),
+    // WI-1912: clamped to the claimable allowlist — same wall as scheduler:get_next; a
+    // free-string `states` let a caller widen past the resolver-owned blocked/cursed floors.
+    states: z
+      .array(z.enum(CLAIM_STATES_ALLOWLIST as unknown as [string, ...string[]]))
+      .max(20)
+      .optional()
+      .describe(
+        "claimable states — subset of ['todo','open','failing'] (default ['todo']). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
+      ),
     count: z
       .number()
       .int()

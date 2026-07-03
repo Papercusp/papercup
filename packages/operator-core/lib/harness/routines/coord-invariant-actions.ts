@@ -62,6 +62,13 @@ import {
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from '../../agent-tools/coordination/messages';
 import { listHandoffs, acceptHandoff } from '../../agent-tools/coordination/handoffs';
 import { listEscalations } from '../../agent-tools/coordination/escalations';
+// EI-6910: the escalation invariant measures coordination-SUBSTRATE drain-health, so it
+// must know (a) which escalations the substrate is responsible for draining
+// (isOperationalEscalation — the same queue-pending-accuracy D-005 classifier the
+// reader + reconcile sweep already agree on) and (b) the reconcile drain deadline
+// (OPERATIONAL_ESCALATION_TTL_MS — the single source of truth in reconcile-escalations.ts).
+import { isOperationalEscalation } from '../../attention/adapters';
+import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
 import { sweepDeadOwnerPendingWakes } from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
@@ -432,7 +439,11 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
 
 export interface InvariantThresholds {
   stuckHandoffHours: number;
-  staleEscalationHours: number;
+  // NOTE (EI-6910): the old `staleEscalationHours` (6h) was removed. It measured the
+  // human's normal decision backlog (any open escalation past 6h), which is NEVER a
+  // substrate leak, so it fired a perpetual, un-closeable bug. The escalation check now
+  // follows the reconcile drain deadline (OPERATIONAL_ESCALATION_TTL_MS) instead — the
+  // substrate is only responsible for draining OPERATIONAL escalations.
   expiredLockGraceMin: number;
   presenceGhostHours: number;
   wakeQueueDepthMax: number;
@@ -441,16 +452,24 @@ export interface InvariantThresholds {
 
 export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   stuckHandoffHours: 12,
-  staleEscalationHours: 6,
   expiredLockGraceMin: 60,
   presenceGhostHours: 72,
   wakeQueueDepthMax: 50,
   wakeQueueAgeHours: 6,
 };
 
+/** One open escalation, reduced to what the substrate-drain invariant needs to tell a
+ *  genuine human decision (the human's attention queue — never a substrate leak) from an
+ *  OPERATIONAL escalation the substrate auto-drains. */
+export interface OpenEscalationLite {
+  ts: string;
+  from: string | null;
+  hasOptions: boolean;
+}
+
 export interface InvariantSnapshot {
   openHandoffTs: string[];
-  openEscalationTs: string[];
+  openEscalations: OpenEscalationLite[];
   /** Locks whose expiry is older than the grace window and still present. */
   longExpiredLocks: number;
   /** Presence rows whose heartbeat is stale past the ghost window. */
@@ -484,12 +503,30 @@ export function evaluateInvariants(
       severity: 'minor',
     });
   }
-  const staleEsc = olderThanH(snap.openEscalationTs, t.staleEscalationHours);
-  if (staleEsc > 0) {
+  // EI-6910: This check measures coordination-SUBSTRATE drain-health, NOT the human's
+  // decision backlog. The substrate auto-drains only OPERATIONAL escalations
+  // (system/infra-emitter, option-less) — via the hourly attention-reconcile sweep on the
+  // OPERATIONAL_ESCALATION_TTL_MS (48h) deadline (reconcile-escalations.ts). GENUINE
+  // human-decision escalations are surfaced + tiered in the attention queue and are, by
+  // design, NEVER substrate-drained (a human clears them). The old "open escalation past
+  // 6h" count included those, so it fired on the normal steady-state human backlog (554+
+  // open) and minted an un-closeable bug that re-filed every hour. So the invariant now
+  // fires only on a genuine substrate DRAIN FAILURE: an operational escalation still open
+  // past the reconcile TTL, i.e. the reconcile sweep is not keeping up. Mirrors the sibling
+  // handoff invariant (auto-accept stale before measure, F-FIX-037) and the wake-queue
+  // invariant (sweep dead-owner wakes before measure, EI-314): measure genuine stalls, not
+  // expected/human-owned state.
+  const undrainedOperationalEsc = snap.openEscalations.filter((e) => {
+    if (!isOperationalEscalation(e.from, e.hasOptions)) return false;
+    const openedMs = Date.parse(e.ts);
+    return Number.isFinite(openedMs) && nowMs - openedMs > OPERATIONAL_ESCALATION_TTL_MS;
+  }).length;
+  if (undrainedOperationalEsc > 0) {
+    const ttlHours = Math.round(OPERATIONAL_ESCALATION_TTL_MS / 3_600_000);
     out.push({
-      title: `coord invariant: escalations unacked past ${t.staleEscalationHours}h`,
-      detail: `${staleEsc} open escalation(s) older than ${t.staleEscalationHours}h.`,
-      severity: 'major',
+      title: 'coord invariant: operational escalations undrained past reconcile TTL',
+      detail: `${undrainedOperationalEsc} operational escalation(s) still open past the ${ttlHours}h attention-reconcile TTL — the reconcile sweep (reconcile-escalations.ts) is not draining them.`,
+      severity: 'minor',
     });
   }
   if (snap.longExpiredLocks > 0) {
@@ -577,7 +614,7 @@ async function autoAcceptStaleHandoffs(thresholdHours: number): Promise<number> 
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
   const snap: InvariantSnapshot = {
     openHandoffTs: [],
-    openEscalationTs: [],
+    openEscalations: [],
     longExpiredLocks: 0,
     presenceGhosts: 0,
     wakeQueueDepth: 0,
@@ -589,7 +626,11 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
     /* check degraded */
   }
   try {
-    snap.openEscalationTs = (await listEscalations({ status: 'open' })).map((e) => e.ts);
+    snap.openEscalations = (await listEscalations({ status: 'open' })).map((e) => ({
+      ts: e.ts,
+      from: e.from ?? null,
+      hasOptions: Array.isArray(e.options) && e.options.length > 0,
+    }));
   } catch {
     /* check degraded */
   }

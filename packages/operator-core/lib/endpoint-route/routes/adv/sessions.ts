@@ -31,6 +31,7 @@ import {
   pendingLaunchesToRosterEntries,
 } from '../../../adv-roster';
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
+import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
 import {
   findOmpSessionNear,
@@ -470,4 +471,48 @@ const agentDetail = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, resumable, roster, markLaunched, agentDetail];
+/**
+ * POST /api/adv/on-desktop-windows — the Session-1 Tauri renderer pushes the
+ * native desktop window list here (WI-1675, D-002 part 2). On Windows the
+ * operator runs inside the WSL2 distro (Session 0) and CANNOT enumerate the
+ * interactive desktop, so the renderer invokes the `list_windows_by_title` Rust
+ * command on a timer and POSTs the result; this seeds the in-process cache that
+ * windows-desktop-windows.ts's listWindowsByTitle — and thus the reaper's
+ * on-desktop exemption (gatherOnDesktopSessions) — reads. Body:
+ * `{ windows: { title: string; pid: number; hwnd: string }[] }`. Coerces
+ * defensively (never trust a POST body) and is a no-op-safe [] push.
+ */
+const onDesktopWindows = defineTool({
+  method: 'POST',
+  path: '/adv/on-desktop-windows',
+  auth: 'loopback',
+  async handler(req) {
+    let body: { windows?: unknown } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* ignore — validated below */ }
+    const raw = Array.isArray(body.windows) ? body.windows : null;
+    if (!raw) {
+      return new Response(JSON.stringify({ status: 'error', error: 'windows[] required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const windows: WindowsDesktopWindow[] = [];
+    for (const w of raw) {
+      if (!w || typeof w !== 'object') continue;
+      const { title, pid, hwnd } = w as { title?: unknown; pid?: unknown; hwnd?: unknown };
+      if (typeof title === 'string' && typeof pid === 'number' && typeof hwnd === 'string') {
+        windows.push({ title, pid, hwnd });
+      }
+    }
+    setOnDesktopWindowsCache(windows);
+    return new Response(JSON.stringify({ status: 'ok', count: windows.length }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+export default [list, focus, alive, state, search, resumable, roster, markLaunched, agentDetail, onDesktopWindows];

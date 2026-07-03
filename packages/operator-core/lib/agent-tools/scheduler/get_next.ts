@@ -18,6 +18,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
+import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 
 export default defineTool({
   name: 'scheduler:get_next',
@@ -46,7 +47,17 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('paths you already hold open — the affinity rank-term input (default: none)'),
-    states: z.array(z.string()).max(20).optional().describe('claimable states (default ["todo"])'),
+    // WI-1912: clamped to the claimable allowlist — a free-string `states` let a caller
+    // widen past the resolver-owned floors (a member passed ['todo','open','blocked'] and
+    // pulled a leader-triage-only blocked item). The claim-spec validator rejects a
+    // `blocked` filter TERM for exactly this reason (D-002); the arg gets the same wall.
+    states: z
+      .array(z.enum(CLAIM_STATES_ALLOWLIST as unknown as [string, ...string[]]))
+      .max(20)
+      .optional()
+      .describe(
+        "claimable states — subset of ['todo','open','failing'] (default ['todo']). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);

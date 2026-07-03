@@ -435,6 +435,50 @@ export default function AdvSessionsClient() {
     };
   }, [activePanel, historyQuery, selectedRow]);
 
+  // WI-1675 (D-002 part 2): push the Session-1 desktop window list to the
+  // operator so its Windows liveness reaper can exempt on-desktop sessions. The
+  // operator runs inside the WSL2 distro (Session 0) and CANNOT enumerate the
+  // interactive desktop; this renderer runs IN the Tauri shell (Session 1) and
+  // can, via the native `list_windows_by_title` Rust command. No-op off the
+  // Tauri desktop shell; off Windows the command returns [] (a harmless empty
+  // push). We filter to the `Papercup — ` prefix client-side so the operator
+  // only ever sees Papercup session terminals, never the user's other windows.
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    ) {
+      return;
+    }
+    const PAPERCUP_WINDOW_PREFIX = 'Papercup — '; // 'Papercup — ' (em dash)
+    let cancelled = false;
+    const push = async () => {
+      try {
+        const windows = await invoke<{ title: string; pid: number; hwnd: string }[]>(
+          'list_windows_by_title',
+          { prefix: PAPERCUP_WINDOW_PREFIX },
+        );
+        if (cancelled) return;
+        await fetch('/api/adv/on-desktop-windows', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ windows }),
+        }).catch(() => {});
+      } catch {
+        // command absent (older shell / non-Windows) / invoke unavailable → skip.
+      }
+    };
+    void push(); // seed immediately so the reaper isn't blind for the first interval
+    const timer = setInterval(() => void push(), 20_000);
+    const onFocus = () => void push();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
   const isActive = useCallback(
     (row: SessionRow): boolean => {
       if (row.endedAt != null) return false;
