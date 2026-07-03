@@ -21,7 +21,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const REPO = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
@@ -34,12 +34,19 @@ const FLOOR = new Set([
   'apps/operator/app/api/[[...route]]/route.ts', // the Hono catch-all
 ]);
 
-const raw = execSync(`find "${API}" -name route.ts -not -path "*/.next*"`, { encoding: 'utf8' })
-  .trim()
-  .split('\n')
-  .filter(Boolean)
-  .map((p) => p.replace(REPO + '/', ''))
-  .filter((p) => !FLOOR.has(p));
+// A clean git checkout omits app/api entirely once no per-endpoint route.ts files
+// remain (git doesn't materialize a directory with no tracked files) — the migration's
+// SUCCESS end-state. Treat a missing dir as zero remaining, never a hard `find` crash
+// (a non-zero `find` exit throws out of execSync and reds the release gate in the
+// isolated green-checkpoint checkout — EI/gate regression).
+const raw = !existsSync(API)
+  ? []
+  : execSync(`find "${API}" -name route.ts -not -path "*/.next*"`, { encoding: 'utf8' })
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((p) => p.replace(REPO + '/', ''))
+      .filter((p) => !FLOOR.has(p));
 
 // Migrated endpoints = entries in the defineRoute registry barrel.
 // The barrel lives in packages/operator-core (it moved there from

@@ -30,6 +30,7 @@
  * workspace isolation.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from './workspace-registry';
 
 // ── Scope keys (the convergence axis) ────────────────────────────────────────
@@ -280,25 +281,76 @@ export interface LoopCarryNoteRef {
   harness: string;
   /** The coord ownerId the loop wakes (loop:arm target_owner_id). */
   ownerId: string;
-  /** Defaults to the active workspace. */
+  /** IGNORED for the loop scope since 2026-07-03 (kept for call-site compat): the
+   *  loop carry-note is PINNED to the coord workspace — see loopCarryWs(). */
   workspaceId?: string;
 }
 
+/**
+ * The ONE workspace the loop carry-note lives in — pinned to the coord workspace,
+ * because the loop's whole lifecycle (arm → routine fire → wake delivery → cold
+ * decision) rides the coord/events subsystem, which is itself pinned to
+ * DEFAULT_COORD_WORKSPACE (events/await/store.ts `eventsWs`). Before this pin the
+ * PRODUCER (loop:checkpoint, keyed by the MCP caller's ctx.workspaceId, e.g.
+ * 'papercusp-workspace') and the CONSUMER (the wake executor, keyed by the
+ * delivery row's ws = 'default') addressed DIFFERENT rows for the same scope —
+ * the anchor was never found and every cold wake fail-safed to WARM (the
+ * 2026-07-03 live-test bug, round 2). The scope string (loop:<harness>:<ownerId>)
+ * is globally unique (ownerId is a session uuid), so a single pinned namespace
+ * cannot collide across workspaces.
+ */
+function loopCarryWs(): string {
+  return DEFAULT_COORD_WORKSPACE;
+}
+
 /** Write (or clear) an su AUTO loop's carry-note. Delegates to the shared
- *  substrate under {@link loopScope}. Returns the stored note or null when cleared. */
+ *  substrate under {@link loopScope}, PINNED to the coord workspace (see
+ *  {@link loopCarryWs}) so the producer and the wake-executor consumer address
+ *  the same row no matter which host/ctx they run under. */
 export async function setLoopCarryNote(
   ref: LoopCarryNoteRef,
   note: string | null | undefined,
 ): Promise<string | null> {
-  return setCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: ref.workspaceId }, note);
+  return setCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() }, note);
 }
 
-/** Read an su AUTO loop's current carry-note (the full note), or null when none. */
+/** Read an su AUTO loop's current carry-note (the full note), or null when none.
+ *  Reads the pinned coord workspace first; on a miss, FALLS BACK to the newest
+ *  row for the scope in ANY workspace — a note written by a not-yet-redeployed
+ *  host still running the old ctx-workspace keying (host-version skew is real:
+ *  the :3070 release, the bg-host and psu sessions restart at different times,
+ *  and this exact skew is what broke cold-auto twice on 2026-07-03). */
 export async function getLoopCarryNote(ref: LoopCarryNoteRef): Promise<string | null> {
-  return getCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: ref.workspaceId });
+  const scope = loopScope(ref.harness, ref.ownerId);
+  const pinned = await getCarryNote({ scope, workspaceId: loopCarryWs() });
+  if (pinned != null) return pinned;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ note: string | null }[]>`
+      SELECT note FROM harness_shared.carry_notes
+       WHERE scope = ${scope} AND note IS NOT NULL
+       ORDER BY updated_ts DESC LIMIT 1`;
+    const note = (rows[0]?.note ?? '').trim();
+    return note.length > 0 ? note : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Read an su AUTO loop's carry-JOURNAL (newest first) — its recent trajectory. */
+/** Read an su AUTO loop's carry-JOURNAL (newest first) — its recent trajectory.
+ *  Same pinned-then-any-workspace resolution as {@link getLoopCarryNote}. */
 export async function getLoopCarryJournal(ref: LoopCarryNoteRef): Promise<CarryJournalEntry[]> {
-  return getCarryJournal({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: ref.workspaceId });
+  const scope = loopScope(ref.harness, ref.ownerId);
+  const pinned = await getCarryJournal({ scope, workspaceId: loopCarryWs() });
+  if (pinned.length > 0) return pinned;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ journal: unknown }[]>`
+      SELECT journal FROM harness_shared.carry_notes
+       WHERE scope = ${scope}
+       ORDER BY updated_ts DESC LIMIT 1`;
+    return [...normalizeJournal(rows[0]?.journal)].reverse();
+  } catch {
+    return [];
+  }
 }
