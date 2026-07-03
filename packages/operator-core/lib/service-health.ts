@@ -11,6 +11,7 @@
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
+import { emitServiceHealthTransitionEvent } from './service-health-events';
 
 export interface EndpointSpec {
   name: string;
@@ -305,6 +306,10 @@ export async function runServiceHealthTick(): Promise<{ checked: number; transit
         ? `⚠ service "${t.name}" is DOWN${downDetail}`
         : `✅ service "${t.name}" recovered`;
     await sendMessage(HEALTH_IDENTITY, { to: ['*'], summary, category: 'service-health' }).catch(() => {});
+    // P-104: also fire the awaitable key so "block until recovered" (events:await
+    // service:up:<name>) replaces re-polling dev:service_health. Fire-and-forget;
+    // transition-only by construction (diffHealth already returns only changes).
+    emitServiceHealthTransitionEvent(t.name, t.to, r?.note);
   }
   return { checked: results.length, transitions };
 }

@@ -392,3 +392,16 @@ MY NEXT LANE: P-108 results channel (WI-1739, design-decision-required, ratified
 referenced in task list) — claim via coord:orient { planItems:['P-108'] } on wake, or sweep P-104/P-105
 if still open. Claim-discipline nudge outstanding: I hold NO claim right now (P-101 released) — re-claim
 before building.
+
+### ✅ P-108 ALSO CLOSED — 2026-07-03 ~14:35Z (plan rev 94; WI-1739 passed). Ledger above was STALE.
+P-108 was already substantively built by prior lane-C holders (scope-repo/results-receipt/disclosure/
+serve-gate/scope-federation all in tree); its one open remainder — "needs a roster source: P-101
+directory seam" — was closed BY my P-101 work (PgFleetDirectory → getScopeRoster + boot participation
+driver + sidecar RPC). Verified before closing: 113 tests green across all 8 P-108 suites. I briefly
+flipped P-108 done→wip on the stale ledger, then verified + restored done WITH the missing WI-1739
+completion record (it had none — that inconsistency is why the wip flip was right to make).
+NEXT LANE on wake (orient first, claims:0 now): p2p Phase 1 sweep P-104/P-105/P-109 status (unknown),
+P-106/P-107 offered to 6e3f9 (msg mr4x8j76); Phase 2 open: P-202 host-gateway claim authority, P-204
+billing matrix, P-206 fleet capacity view; P-201 with 35c3b (STILL no signal — nudge or reclaim).
+Also standing: task #2 close per-hive-git plan; P-059 LIVE-1 still walled on tower-VM federation
+(su-f5d28/su-26de47). Deferred pair now shared by P-101+P-108: one live 2-machine co-verify covers both.

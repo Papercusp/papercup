@@ -197,8 +197,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'service:up:<name>',
     params: [{ name: 'name', required: true, describe: 'the service name, e.g. inference-gateway / substrate-sidecar / git-sync' }],
     describe: 'A monitored service transitioned to HEALTHY (block-until-recovered instead of re-polling).',
-    emitter: 'coord:conditions bridge (Phase 2)',
-    exists: false, // P-104
+    emitter: 'service-health tick (packages/operator-core/lib/service-health-events.ts)',
+    exists: true, // P-104: runServiceHealthTick fires `service:up:<name>` on a diffHealth up-transition
     replacesPoll: 'dev:service_health re-polling for recovery',
     sugar: 'service:await-up',
   },
@@ -207,8 +207,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'service:down:<name>',
     params: [{ name: 'name', required: true, describe: 'the service name' }],
     describe: 'A monitored service transitioned to UNHEALTHY.',
-    emitter: 'coord:conditions bridge (Phase 2)',
-    exists: false, // P-104
+    emitter: 'service-health tick (packages/operator-core/lib/service-health-events.ts)',
+    exists: true, // P-104: runServiceHealthTick fires `service:down:<name>` on a diffHealth down-transition
   },
   // ── Coordination / fleet (Phase 2 additions) ──────────────────────────────
   {

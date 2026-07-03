@@ -98,6 +98,8 @@ describe('renderCatalog', () => {
     expect(byFamily['work-item'].awaitable_now).toBe(true); // work-item:status — P-101 LANDED (setWorkItemState emit)
     expect(byFamily['deploy'].awaitable_now).toBe(true); // release:deployed:<sha> — P-102 LANDED (deploy.ts dual-emit)
     expect(byFamily['git-sync'].awaitable_now).toBe(true); // git-sync:committed — P-102 LANDED (git-sync-action emit)
+    expect(byFamily['service-up'].awaitable_now).toBe(true); // service:up:<name> — P-104 LANDED (service-health tick)
+    expect(byFamily['service-down'].awaitable_now).toBe(true); // service:down:<name> — P-104 LANDED (service-health tick)
     // Phase-2 additions still not-yet-wired:
     expect(byFamily['fleet-drained'].awaitable_now).toBe(false); // P-105
   });
