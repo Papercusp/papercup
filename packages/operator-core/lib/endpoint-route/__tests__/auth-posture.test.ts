@@ -112,6 +112,11 @@ const RULES: ReadonlyArray<{
       // (EI-338, "mirrors /register, /reset-rate") as its siblings here.
       { method: 'POST', path: '/admin/deploy-accounts/link-start', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/link-complete', auth: VTL },
+      // link-status: the tab POLLS the held link while the owner approves in the browser —
+      // claude CLI ≥2.1.200 auto-delivers the code to the held CLI on a same-machine approval,
+      // so completion happens server-side with no pasted code (2026-07-03). Same cookie-less
+      // desktop-webview rationale (EI-338) as its link-* siblings.
+      { method: 'POST', path: '/admin/deploy-accounts/link-status', auth: VTL },
       // Session-now account override read/write (accounts-pool-tab P-004) — same
       // cookie-less desktop-webview rationale (EI-338) as its deploy-accounts siblings.
       { method: 'GET', path: '/admin/deploy-accounts/session-override', auth: VTL },
