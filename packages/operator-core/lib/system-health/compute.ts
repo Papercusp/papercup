@@ -507,7 +507,7 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
             concurrencyCap: gm.concurrencyCap, shed429: gm.shed429, shedAllThrottled: gm.shedAllThrottled,
             failovers: gm.failovers, upstream429: gm.upstream429, utilizationPct: gm.utilizationPct,
             aimdEffective: gm.aimdEffective, aimdCap: gm.aimdCap,
-            wedge: v.wedge, saturated: v.saturated, sustainedThrottle: v.sustainedThrottle, reasons: v.reasons,
+            wedge: v.wedge, saturated: v.saturated, sustainedThrottle: v.sustainedThrottle, slotLeak: v.slotLeak, reasons: v.reasons,
           };
         }
       } catch { /* /stats unreadable — leave gateway null (greyed), panel still renders */ }
@@ -526,6 +526,8 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
     // The gateway wedge/throttle takes the headline summary when present (the loud signal).
     const gwSummary = gateway?.wedge
       ? `GATEWAY WEDGED — ${gateway.reasons[0] ?? `inFlight ${gateway.inFlight}/${gateway.maxConcurrent}`} (watchdog auto-restarts)`
+      : gateway?.slotLeak
+      ? `gateway SLOT LEAK — ${gateway.reasons.find((r) => r.includes('slot-leak')) ?? 'a held admission slot the self-heal valve cannot reclaim'}`
       : gateway?.sustainedThrottle
         ? `gateway throttling — ${gateway.reasons.find((r) => r.includes('AIMD') || r.includes('throttled')) ?? gateway.reasons[0] ?? 'sustained upstream 429s'}`
         : gateway?.saturated
@@ -547,6 +549,7 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
           m('gw queue', `${gateway.inFlight}/${gateway.maxConcurrent}+${gateway.queueDepth}`, gateway.wedge ? 'crit' : gateway.saturated ? 'warn' : undefined),
           ...(gateway.wedge ? [m('WEDGE', 'yes', 'crit')]
             : gateway.sustainedThrottle ? [m('throttle', 'sustained', 'warn')] : []),
+          ...(gateway.slotLeak ? [m('slot leak', 'yes', 'warn')] : []),
           ...(gateway.shed429 + gateway.shedAllThrottled > 0 ? [m('shed', gateway.shed429 + gateway.shedAllThrottled, 'warn')] : []),
           ...(gateway.failovers > 0 ? [m('failovers', gateway.failovers)] : []),
         ] : []),

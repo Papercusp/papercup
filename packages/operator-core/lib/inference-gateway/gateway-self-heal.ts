@@ -98,3 +98,37 @@ export function pickReclaimTarget<T extends ReclaimCandidate>(entries: readonly 
   const pool = nonStream.length > 0 ? nonStream : entries;
   return pool.reduce((oldest, e) => (e.startedAt < oldest.startedAt ? e : oldest));
 }
+
+/** The two slot-leak shapes the reconcile guard flags (P-005/W3, D-001). */
+export type SlotReconcileViolation = 'registry>slots' | 'wedged-unreclaimable';
+
+/**
+ * P-005/W3 slot-leak RECURRENCE GUARD (D-001) — PURE classifier. Cross-checks the two INDEPENDENT
+ * in-flight accountings that must move together: the admission queue's held-slot counter (`running`)
+ * and the self-heal in-flight registry (`tracked`). Every request bumps `running` at admission and
+ * registers exactly one registry entry (deleted just before its slot frees), so the registry is a
+ * strict SUBSET of held slots — `tracked <= running` always, and equal when quiescent. A `running >
+ * tracked` gap is a NORMAL transient (a request between queue admission and registry insert — e.g. mid
+ * body-read), so it is NOT flagged on its own. Only two shapes cannot be a healthy transient:
+ *   - `registry>slots` (`tracked > running`): structurally impossible — a registry entry that outlived
+ *     its slot, i.e. a broken decrement path; and
+ *   - `wedged-unreclaimable`: the self-heal decider WANTS to reclaim (saturated + nothing drained for
+ *     freezeMs) and slots are held, but NOTHING is registered to reclaim (`!hasReclaimTarget`) — an
+ *     un-registered leak (e.g. a stall BEFORE the request reached the registry) the valve is blind to,
+ *     which today rides silently to the watchdog restart.
+ * STATELESS: the sweeper owns the de-bounce (only a violation sustained across sweeps counts) + the
+ * counter + the log. Returns the violation shape, or null when the two accountings are consistent.
+ */
+export function classifySlotReconcile(args: {
+  running: number;
+  tracked: number;
+  /** The self-heal decider's verdict this tick (`evaluateSelfHeal(...).reclaim`). */
+  wantsReclaim: boolean;
+  /** Whether `pickReclaimTarget` found a registry entry to reclaim this tick. */
+  hasReclaimTarget: boolean;
+}): SlotReconcileViolation | null {
+  const { running, tracked, wantsReclaim, hasReclaimTarget } = args;
+  if (tracked > running) return 'registry>slots';
+  if (wantsReclaim && running > 0 && !hasReclaimTarget) return 'wedged-unreclaimable';
+  return null;
+}

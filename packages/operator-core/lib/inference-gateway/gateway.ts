@@ -43,7 +43,7 @@ import {
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
 import { withOAuthBeta } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
-import { evaluateSelfHeal, pickReclaimTarget } from './gateway-self-heal';
+import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
@@ -3970,18 +3970,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
         // ── P-005/W3 slot-leak RECURRENCE GUARD (D-001) ─────────────────────────────────────────────
         // Cross-check the two INDEPENDENT in-flight accountings that must move together: the queue's held-
-        // slot counter (`running`) and the self-heal registry (`tracked`). Every Claude request bumps
-        // `running` at admission and registers exactly one inFlightReg entry (deleted in its finally, just
-        // before the slot frees), so the registry is a strict SUBSET of held slots — `tracked <= running`
-        // always, equal when quiescent. A `running > tracked` gap is a NORMAL transient (a request between
-        // queue admission and inFlightReg.set — e.g. mid readBody). So we flag ONLY the two shapes that
-        // cannot be a healthy transient: (a) tracked > running — structurally impossible (a broken decrement
-        // path / a registry entry that outlived its slot); and (b) WEDGED (evaluateSelfHeal wants to reclaim:
-        // saturated + nothing drained for freezeMs) with slots held but NOTHING registered to reclaim — an
-        // un-registered leak (e.g. a stall BEFORE the request reached inFlightReg.set) the valve is blind to
-        // and that today rides silently to the watchdog restart. Telemetry only — NEVER throws.
-        const reconcileViolation =
-          tracked > running ? 'registry>slots' : decision.reclaim && running > 0 && !target ? 'wedged-unreclaimable' : null;
+        // slot counter (`running`) and the self-heal registry (`tracked`). The pure classifier flags only
+        // the two shapes that cannot be a healthy transient (see classifySlotReconcile). This is telemetry
+        // only — it NEVER throws (a guard must not crash the gateway); the de-bounce + counter + log below
+        // are the stateful half the pure classifier deliberately leaves to the sweeper.
+        const reconcileViolation = classifySlotReconcile({
+          running,
+          tracked,
+          wantsReclaim: decision.reclaim,
+          hasReclaimTarget: !!target,
+        });
         if (reconcileViolation) {
           slotReconcileConsecutive++;
           // De-bounce: only a violation SUSTAINED across ≥2 sweeps counts — skips the documented 1-tick

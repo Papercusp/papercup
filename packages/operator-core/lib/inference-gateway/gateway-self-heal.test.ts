@@ -3,6 +3,7 @@ import {
   isSaturated,
   evaluateSelfHeal,
   pickReclaimTarget,
+  classifySlotReconcile,
   type SelfHealMetrics,
   type ReclaimCandidate,
 } from './gateway-self-heal';
@@ -122,5 +123,42 @@ describe('pickReclaimTarget', () => {
     const copy = entries.map((x) => ({ ...x }));
     pickReclaimTarget(entries);
     expect(entries).toEqual(copy);
+  });
+});
+
+describe('classifySlotReconcile (P-005/W3 slot-leak recurrence guard, D-001)', () => {
+  test('consistent accountings → no violation (running === tracked, quiescent)', () => {
+    expect(classifySlotReconcile({ running: 4, tracked: 4, wantsReclaim: false, hasReclaimTarget: true })).toBeNull();
+    expect(classifySlotReconcile({ running: 0, tracked: 0, wantsReclaim: false, hasReclaimTarget: false })).toBeNull();
+  });
+
+  test('running > tracked is a NORMAL transient (a request mid body-read, before it registers) → no violation', () => {
+    // The registry is a strict subset of held slots — a healthy in-flight request that has not yet
+    // reached inFlightReg.set legitimately makes running exceed tracked. Not flagged on its own.
+    expect(classifySlotReconcile({ running: 6, tracked: 4, wantsReclaim: false, hasReclaimTarget: true })).toBeNull();
+    // Even under a healthy wedge where the valve CAN reclaim (a registered target exists), running>tracked alone is fine.
+    expect(classifySlotReconcile({ running: 6, tracked: 4, wantsReclaim: true, hasReclaimTarget: true })).toBeNull();
+  });
+
+  test('tracked > running → registry>slots (structurally impossible: an entry outlived its slot)', () => {
+    expect(classifySlotReconcile({ running: 3, tracked: 4, wantsReclaim: false, hasReclaimTarget: true })).toBe('registry>slots');
+    // Takes precedence even when the decider also wants to reclaim.
+    expect(classifySlotReconcile({ running: 3, tracked: 5, wantsReclaim: true, hasReclaimTarget: true })).toBe('registry>slots');
+  });
+
+  test('wedged with slots held but NOTHING registered to reclaim → wedged-unreclaimable (the blind-spot leak)', () => {
+    // Saturated + nothing drained (wantsReclaim) + running>0 + the registry is empty → an un-registered
+    // leak (e.g. a stall before the request registered) the valve is blind to; today it rides to the restart.
+    expect(classifySlotReconcile({ running: 4, tracked: 0, wantsReclaim: true, hasReclaimTarget: false })).toBe('wedged-unreclaimable');
+  });
+
+  test('wedged but a reclaim target EXISTS → not a violation (the valve will reclaim normally)', () => {
+    expect(classifySlotReconcile({ running: 4, tracked: 4, wantsReclaim: true, hasReclaimTarget: true })).toBeNull();
+  });
+
+  test('NOT wedged (decider idle) with an empty registry and free slots → not a violation', () => {
+    // A quiet gateway (no reclaim wanted) with running>0 but nothing registered is only the normal
+    // pre-registration transient — never flagged unless the wedge signal is also present.
+    expect(classifySlotReconcile({ running: 2, tracked: 0, wantsReclaim: false, hasReclaimTarget: false })).toBeNull();
   });
 });

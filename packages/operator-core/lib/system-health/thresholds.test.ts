@@ -203,7 +203,7 @@ describe('tokensStatus', () => {
   const gw = (o: Partial<NonNullable<TokensHealth['gateway']>> = {}): NonNullable<TokensHealth['gateway']> => ({
     inFlight: 3, queueDepth: 0, maxConcurrent: 24, concurrencyCap: 24, shed429: 0, shedAllThrottled: 0,
     failovers: 0, upstream429: 0, utilizationPct: 40, aimdEffective: 24, aimdCap: 24,
-    wedge: false, saturated: false, sustainedThrottle: false, reasons: [], ...o,
+    wedge: false, saturated: false, sustainedThrottle: false, slotLeak: false, reasons: [], ...o,
   });
   it('crit when the gateway is WEDGED', () => {
     expect(tokensStatus(tk({ gateway: gw({ wedge: true, saturated: true }) }))).toBe('crit');
@@ -213,6 +213,9 @@ describe('tokensStatus', () => {
   });
   it('warn when the gateway is sustained-throttling', () => {
     expect(tokensStatus(tk({ gateway: gw({ sustainedThrottle: true }) }))).toBe('warn');
+  });
+  it('warn on a slot-leak (P-005/W3): a leaked slot the valve cannot reclaim, before it wedges', () => {
+    expect(tokensStatus(tk({ gateway: gw({ slotLeak: true }) }))).toBe('warn');
   });
   it('ok with a healthy gateway sub-panel', () => {
     expect(tokensStatus(tk({ gateway: gw() }))).toBe('ok');

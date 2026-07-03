@@ -29,7 +29,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, fuzzyEnum } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -44,6 +44,7 @@ import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import type { ColorScheme } from '../../console-color-schemes';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
+import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 
 /** Opening more than this many desktop windows in one call is heavy + almost always
@@ -367,10 +368,14 @@ export default defineTool({
       .string()
       .optional()
       .describe('psu --role: the su role each member runs as (default the standard su collaborator).'),
-    model: z
-      .string()
+    model: fuzzyEnum(localModelIdsSync, { applies: isOmpLocalModel, label: 'local model' })
       .optional()
-      .describe('psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default).'),
+      .describe(
+        'psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default). A ' +
+          'LOCAL/gateway model (ollama-cc/…, ornith) is fuzzy-validated against the registered local ' +
+          'backends — an invalid id returns the nearest registered model + the allowed list (generic-' +
+          'tool-arg-fuzzy-validation). A non-local model (claude/codex alias) is an open set, unchecked.',
+      ),
     feature: z.string().optional().describe('psu --feature: a feature id each member should pick up.'),
     launchContext: z
       .string()

@@ -49,6 +49,31 @@ test('summarizeGatewayMetrics — projects the post-AIMD structured bag', () => 
   assert.equal(m.aimdEffective, 12);
   assert.equal(m.aimdCap, 24);
   assert.equal(m.aimdDecreases, 3);
+  assert.equal(m.slotReconcileMismatch, 0); // healthy default
+});
+
+// ── P-005/W3 slot-leak recurrence guard (D-001): the slotReconcileMismatch → slotLeak verdict path ──
+
+test('summarizeGatewayMetrics — projects slotReconcileMismatch; deploy-skew (pre-P-005 gateway omits it) → 0', () => {
+  assert.equal(summarizeGatewayMetrics(healthyStats({ slotReconcileMismatch: 3 })).slotReconcileMismatch, 3);
+  // A pre-P-005 /stats payload has no field → read as 0 (never throws), exactly like the AIMD deploy-skew.
+  const legacy: RawGatewayStats = { totalRequests: 10, admission: { running: 2, queued: 0, maxConcurrent: 24 } };
+  assert.equal(summarizeGatewayMetrics(legacy).slotReconcileMismatch, 0);
+});
+
+test('detectGatewayWedge — slotReconcileMismatch > 0 → slotLeak verdict + a leak reason (a leaked slot the valve cannot reclaim)', () => {
+  // NOT saturated / not throttling — a pure leak signal must surface on its own, no prior sample needed.
+  const v = detectGatewayWedge(summarizeGatewayMetrics(healthyStats({ slotReconcileMismatch: 2 })), undefined, NOW);
+  assert.equal(v.slotLeak, true);
+  assert.equal(v.wedge, false);
+  assert.equal(v.saturated, false);
+  assert.ok(v.reasons.some((r) => r.includes('slot-leak')), 'a slot-leak reason must be surfaced');
+});
+
+test('detectGatewayWedge — slotReconcileMismatch === 0 → no slotLeak (healthy)', () => {
+  const v = detectGatewayWedge(summarizeGatewayMetrics(healthyStats()), undefined, NOW);
+  assert.equal(v.slotLeak, false);
+  assert.ok(!v.reasons.some((r) => r.includes('slot-leak')));
 });
 
 test('summarizeGatewayMetrics — DEPLOY-SKEW: a pre-AIMD gateway (no aimd/shedAllThrottled/concurrencyCap) degrades to nulls/0, never throws', () => {
