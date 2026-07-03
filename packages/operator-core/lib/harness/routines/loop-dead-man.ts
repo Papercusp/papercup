@@ -83,6 +83,22 @@ export async function checkLoopDeadMan(
 }
 
 /**
+ * Read the loop's live fire count (`metadata.fire_count`) — the number of PRIOR fires (0 when
+ * never fired). The cold-auto wakeCount cadence (su-cold-auto-mode-2026-07-03 P-003/P-005)
+ * stamps wakeCount = priorFireCount + 1 on a cold wake so the consumer's coldWakeMode can
+ * recycle every Nth wake. Best-effort; 0 on any miss. Reuses the same jsonb seam as the
+ * dead-man guard (no new column).
+ */
+export async function readLoopFireCount(sql: Sql | undefined, routineId: string): Promise<number> {
+  const db = sql ?? getOrgPg().sql;
+  const rows = await db<Array<{ fire_count: string | number | null }>>`
+    SELECT COALESCE((metadata->>'fire_count')::int, 0) AS fire_count
+      FROM harness_shared.routines
+     WHERE id = ${routineId}`;
+  return Number(rows[0]?.fire_count ?? 0);
+}
+
+/**
  * Bump the loop's live fire counter (`metadata.fire_count`) after a fire. Single-flight per
  * loop (parked at 'infinity' while a turn runs), so no concurrent-increment race. Stored as a
  * jsonb number; read back via `(metadata->>'fire_count')::int`.

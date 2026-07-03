@@ -379,3 +379,16 @@ the tool host — it's the MCP tool's requirement, tool handles the lock/drain) 
 → flip P-101 done + WI-1732 complete (work_items_complete with migrations:['476'] etc) + fleet notify.
 Fleet delta: 6e3f9 finished P-103 standing puller (45/45) and is pulling the next p2p item — member lane
 near-dry; d1985 done P-102/203/205/304. 35c3b still owes P-201/206 signal.
+
+### ✅ P-101 CLOSED — 2026-07-03 ~12:40Z. Do NOT redo anything above this line.
+All 8 steps done+verified: 25 unit tests green (schema 7 / store+roster 8 / projection 10 incl teeth),
+46 adjacent contract tests green (op-keys / capture-coverage — needed a table-registry.ts peer-log entry
+for p2p_fleet_directory / register-all), tsc slice clean over all 9 touched files. Mig 476 APPLIED via
+psql (db:migrate confirm:true drains but WITHHOLDS apply — env gate; filed EI-6962) + schema_migrations
+row recorded (sha256) + pull-schema.mjs regenerated. Plan rev 91: P-101 done, claim auto-released;
+WI-1732 passed w/ structured completion (deferred: live 2-machine co-verify — tower-VM fed still down
+per P-059; UI card surface not in scope). 6e3f9 messaged (mr4x8j76): directed to P-106 or P-107.
+MY NEXT LANE: P-108 results channel (WI-1739, design-decision-required, ratified designs D-017/D-018
+referenced in task list) — claim via coord:orient { planItems:['P-108'] } on wake, or sweep P-104/P-105
+if still open. Claim-discipline nudge outstanding: I hold NO claim right now (P-101 released) — re-claim
+before building.

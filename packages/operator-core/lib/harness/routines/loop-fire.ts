@@ -32,6 +32,7 @@ import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   checkLoopDeadMan as defaultCheckLoopDeadMan,
   incrementLoopFireCount as defaultIncrementLoopFireCount,
+  readLoopFireCount as defaultReadLoopFireCount,
 } from './loop-dead-man';
 
 /** The wake-turn text delivered when the loop's row carries no explicit kickoff. Mirrors the
@@ -70,6 +71,8 @@ export interface LoopFireDeps {
   costCap?: typeof defaultCheckLoopCostCap;
   deadMan?: typeof defaultCheckLoopDeadMan;
   incrementFireCount?: typeof defaultIncrementLoopFireCount;
+  /** su-cold-auto P-003: read the prior fire count for the cold wakeCount cadence. */
+  readFireCount?: typeof defaultReadLoopFireCount;
   deactivateLoop?: (input: { sql?: Sql; installSlug: string; routineName: string }) => Promise<boolean>;
 }
 
