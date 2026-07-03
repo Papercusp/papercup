@@ -20,9 +20,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  buildFederatedMapLane,
   synthesizeStateOfHive,
   type StateOfHiveReaders,
   type SynthesizeOptions,
+  type FederatedMapEliteRow,
 } from './corpus-digest';
 import { buildStateOfHiveReaders } from './corpus-digest-deps';
 import { runIdeators, ScoutIdeatorsTransportError } from './ideators';
@@ -45,6 +47,9 @@ import { DEFAULT_SCOUT_CONFIG, type ScoutConfig } from './config';
 import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
 import type { ExperimentDispatchPort } from './experiment-rail';
+import { activeWorkspaceId } from '../workspace-registry';
+import { getOwnerSteering } from '../owner-steering';
+import { resolveFederatedPrimingConfig, type FederatedPrimingConfig } from './federated-priming';
 
 export interface BuildScoutCycleDepsOptions {
   /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
@@ -113,6 +118,83 @@ export function rosterForBudget(
   return { lenses: lenses.slice(0, Math.max(1, Math.floor(maxIdeators))) };
 }
 
+type FederatedArchiveSqlRow = {
+  niche_key: string;
+  candidate_id: string;
+  scope: string;
+  domain: string;
+  risk: string;
+  fitness: number;
+  rationale: string | null;
+  source_hive: string | null;
+  novelty_gift: boolean | null;
+};
+
+type FederatedSeedView = {
+  ref: string;
+  nicheKey: string;
+  fitness: number;
+  rationale: string | null;
+  sourceHive: string;
+  scope: string;
+  domain: string;
+  risk: string;
+  adjacentLocalNiche?: string;
+  noveltyGift: boolean;
+};
+
+function changedGymDims(
+  a: { scope: string; domain: string; risk: string },
+  b: { scope: string; domain: string; risk: string },
+): number {
+  return Number(a.scope !== b.scope) + Number(a.domain !== b.domain) + Number(a.risk !== b.risk);
+}
+
+function buildNicheMapPriming(
+  nicheMap: readonly { summary: string; ref: string }[],
+  cfg: FederatedPrimingConfig,
+): string | undefined {
+  if (cfg.crowded <= 0 && cfg.empty <= 0) return undefined;
+  const crowded = nicheMap.filter((p) => p.ref.startsWith('niche:v1:crowded:')).slice(0, cfg.crowded);
+  const empty = nicheMap.filter((p) => p.ref.startsWith('niche:v1:empty:')).slice(0, cfg.empty);
+  if (crowded.length === 0 && empty.length === 0) return undefined;
+  const lines = [
+    'AVOID crowded niches and TARGET empty niches when you choose what to mutate next.',
+  ];
+  if (crowded.length > 0) {
+    lines.push('', 'Crowded niches to avoid:');
+    for (const item of crowded) lines.push(`- ${item.summary} (ref: ${item.ref})`);
+  }
+  if (empty.length > 0) {
+    lines.push('', 'Empty niches to target:');
+    for (const item of empty) lines.push(`- ${item.summary} (ref: ${item.ref})`);
+  }
+  return lines.join('\n');
+}
+
+function buildFederatedSeedPriming(
+  seeds: readonly FederatedSeedView[],
+  cfg: FederatedPrimingConfig,
+): string | undefined {
+  if (cfg.foreignElites <= 0) return undefined;
+  const picked = seeds.slice(0, cfg.foreignElites);
+  if (picked.length === 0) return undefined;
+  const lines = [
+    '## Federated mutation seeds',
+    'These won in a distant context. Recombine their mechanism with local friction; do not clone them verbatim. If you adapt one, cite it in `seededByRefs`.',
+  ];
+  for (const seed of picked) {
+    const where = `${seed.scope}|${seed.domain}|${seed.risk}`;
+    const adjacency = seed.adjacentLocalNiche ? `; one-step from local ${seed.adjacentLocalNiche}` : '';
+    const novelty = seed.noveltyGift ? '; novelty gift' : '';
+    lines.push(
+      `- [${seed.sourceHive}] ${where} (fitness ${seed.fitness.toFixed(2)}, ref: ${seed.ref}${adjacency}${novelty})` +
+        (seed.rationale ? ` — ${seed.rationale}` : ''),
+    );
+  }
+  return lines.join('\n');
+}
+
 /**
  * Production search-first novelty corpus: prior plans (what's been designed) +
  * their ratified decisions (settled judgments) — the substrate the novelty critic
@@ -178,6 +260,109 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
   const readers = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
   const noveltyCorpus = opts.noveltyCorpus ?? readNoveltyCorpus;
   const scoutConfig = opts.scoutConfig ?? DEFAULT_SCOUT_CONFIG;
+  const baseFederatedPriming = scoutConfig.federatedPriming;
+
+  async function readFederatedPriming(): Promise<FederatedPrimingConfig> {
+    try {
+      const steering = await getOwnerSteering(activeWorkspaceId(), opts.harnessSlug);
+      return resolveFederatedPrimingConfig(steering.federatedPriming ?? baseFederatedPriming);
+    } catch {
+      return { ...baseFederatedPriming };
+    }
+  }
+
+  async function readFederatedArchive(): Promise<{
+    merged: FederatedMapEliteRow[];
+    foreignSeeds: FederatedSeedView[];
+  }> {
+    try {
+      const { sql } = getOrgPg();
+      const rows = (await sql<FederatedArchiveSqlRow[]>`
+        SELECT
+          niche_key,
+          candidate_id,
+          scope,
+          domain,
+          risk,
+          fitness,
+          rationale,
+          NULL::text AS source_hive,
+          NULL::boolean AS novelty_gift
+        FROM harness_shared.gym_qd_archive
+        WHERE workspace_id = ${activeWorkspaceId()}
+          AND harness_slug = ${opts.harnessSlug}
+
+        UNION ALL
+
+        SELECT
+          niche_key,
+          candidate_id,
+          scope,
+          domain,
+          risk,
+          fitness,
+          rationale,
+          source_hive,
+          novelty_gift
+        FROM harness_shared.gym_qd_foreign_elites
+        WHERE workspace_id = ${activeWorkspaceId()}
+          AND harness_slug = ${opts.harnessSlug}
+      `) as FederatedArchiveSqlRow[];
+
+      const local = rows
+        .filter((row) => !row.source_hive)
+        .map((row) => ({
+          nicheKey: row.niche_key,
+          scope: row.scope,
+          domain: row.domain,
+          risk: row.risk,
+        }));
+
+      const foreignSeeds = rows
+        .filter((row) => !!row.source_hive)
+        .map<FederatedSeedView>((row) => {
+          const adjacentLocal = local
+            .filter((candidate) => changedGymDims(candidate, row) === 1)
+            .map((candidate) => candidate.nicheKey)
+            .sort()[0];
+          return {
+            ref: `elite:${row.source_hive}:${row.niche_key}:${row.candidate_id}`,
+            nicheKey: row.niche_key,
+            fitness: Number(row.fitness),
+            rationale: row.rationale,
+            sourceHive: row.source_hive!,
+            scope: row.scope,
+            domain: row.domain,
+            risk: row.risk,
+            ...(adjacentLocal ? { adjacentLocalNiche: adjacentLocal } : {}),
+            noveltyGift: row.novelty_gift === true,
+          };
+        })
+        .sort(
+          (a, b) =>
+            Number(!!b.adjacentLocalNiche) - Number(!!a.adjacentLocalNiche) ||
+            Number(b.noveltyGift) - Number(a.noveltyGift) ||
+            b.fitness - a.fitness ||
+            a.nicheKey.localeCompare(b.nicheKey) ||
+            a.sourceHive.localeCompare(b.sourceHive),
+        );
+
+      return {
+        merged: rows.map((row) => ({
+          nicheKey: row.niche_key,
+          fitness: Number(row.fitness),
+          sourceHive: row.source_hive,
+          scope: row.scope,
+          domain: row.domain,
+          risk: row.risk,
+          noveltyGift: row.novelty_gift,
+        })),
+        foreignSeeds,
+      };
+    } catch {
+      return { merged: [], foreignSeeds: [] };
+    }
+  }
 
   return {
     llmCall: opts.llmCall,
@@ -185,6 +370,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     cycleId: opts.cycleId,
     ...(opts.onPhase ? { onPhase: opts.onPhase } : {}),
     readCorpus: async () => {
+      const federatedPriming = await readFederatedPriming();
       const digest = await synthesizeStateOfHive(readers, opts.digestOptions);
       // L1c (queen-memory-hybrid): fold live standing facts (harness + workspace
       // scopes) into the digest as a pattern lane so ideation is grounded in the
@@ -211,25 +397,12 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       // ideators actively steer toward UNEXPLORED territory (quality-diversity
       // novelty search). Fail-soft; an empty archive adds nothing.
       try {
-        const { getOrgPg } = await import('@papercusp/db-org');
-        const { sql } = getOrgPg();
-        const niches = await sql<Array<{ niche_key: string; n: number; best: number | null }>>`
-          SELECT niche_key, count(*)::int AS n, max(fitness)::float AS best
-            FROM harness_shared.gym_qd_archive
-           GROUP BY niche_key ORDER BY n DESC LIMIT 10`;
-        if (niches.length > 0) {
-          digest.nicheMap = [
-            ...niches.map((r) => ({
-              summary: `niche ${r.niche_key}: OCCUPIED (${r.n} elite${r.n === 1 ? '' : 's'}${r.best != null ? `, best fitness ${r.best.toFixed(2)}` : ''}) — do not duplicate; beat it or move on`,
-              ref: `niche:${r.niche_key}`,
-            })),
-            {
-              summary:
-                'Behavior-space guidance: the archive covers only the niches above — PREFER proposals whose (scope, domain, risk) combination is NOT listed (unexplored = automatic novelty value).',
-              ref: 'niche:frontier',
-            },
-          ];
-        }
+        const { merged } = await readFederatedArchive();
+        const nicheMap = buildFederatedMapLane(merged, {
+          crowdedLimit: federatedPriming.crowded,
+          emptyLimit: federatedPriming.empty,
+        });
+        if (nicheMap.length > 0) digest.nicheMap = nicheMap;
       } catch {
         /* best-effort */
       }
@@ -285,6 +458,7 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     // the roster (D-010), the cap wins — skip the meta-learned extras so the cycle
     // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
     ideate: async (digest, ctx) => {
+      const federatedPriming = await readFederatedPriming();
       const roster = rosterForBudget(ctx.maxIdeators, scoutConfig.lenses);
       const weighting = roster.lenses ? {} : await getScoutLensWeights({ harnessSlug: opts.harnessSlug });
       // P-012 archive→Scout FEED: prime the ideators with the gym QD archive's diverse
@@ -298,12 +472,20 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
         harnessSlug: opts.harnessSlug,
         ...(opts.graderFeedbackReader ? { readRows: opts.graderFeedbackReader } : {}),
       });
-      const primingBlocks = [...(stones.length ? [priming] : []), ...(grader.priming ? [grader.priming] : [])];
+      const { foreignSeeds } = await readFederatedArchive();
+      const nicheMapPriming = buildNicheMapPriming(digest.nicheMap ?? [], federatedPriming);
+      const federatedSeedPriming = buildFederatedSeedPriming(foreignSeeds, federatedPriming);
+      const primingBlocks = [
+        ...(federatedSeedPriming ? [federatedSeedPriming] : []),
+        ...(stones.length ? [priming] : []),
+        ...(grader.priming ? [grader.priming] : []),
+      ];
       const ideated = await runIdeators(digest, {
         llmCall: ctx.llmCall,
         ...roster,
         ...weighting,
         ...(primingBlocks.length ? { priming: primingBlocks.join('\n\n') } : {}),
+        ...(nicheMapPriming ? { nicheMapPriming } : {}),
         // P-010: per-blueprint ideator mission framing (default ⇒ byte-identical).
         mission: scoutConfig.framing.ideatorMission,
         model: scoutConfig.models.ideator,

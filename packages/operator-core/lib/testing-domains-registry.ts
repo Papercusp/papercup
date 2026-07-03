@@ -1052,6 +1052,46 @@ defineTestDomain({
   ],
 });
 
+// behaviour-suite: the DESKTOP agent-behaviour suite (plan desktop-agent-behaviour-suite-2026-07-03).
+// It scores a REAL agent's own omp session transcript against 8 codified behaviour checks — the
+// desktop counterpart to the headless cert-battery (which drives an LLM directly). Surfaced as its
+// own subsystem view; files also match the operator-core catch-all (overlap intentional).
+defineTestDomain({
+  id: 'behaviour-suite',
+  label: 'Behaviour Suite (desktop)',
+  description:
+    'The desktop agent-behaviour suite: scores a real su/ornith run (its captured omp session transcript) against 8 deterministic, no-LLM-judge checks — model-routing, context-fit, routing-gate, plan-execution, scope-adherence, lock-discipline, fleet-launch, completion-evidence — reusing cert-battery\'s ToolCallStats + verdict shape. The transcript parser + assertions + report are pure; the runner\'s launch/capture I/O sits behind an injected port.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'scoring',
+      label: 'Scoring core (assertions + report)',
+      description: 'The 8 pure behaviour checks and the report/verdict assembly (a failed critical check fails the run).',
+      globs: [
+        'packages/operator-core/lib/behaviour-suite/assertions.test.ts',
+      ],
+    },
+    {
+      id: 'runner',
+      label: 'Runner (transcript capture + orchestration)',
+      description: 'The transcript parser and the launch→wait-for-session→capture→score→teardown orchestration (fake fs + fake launch).',
+      globs: [
+        'packages/operator-core/lib/behaviour-suite/runner.test.ts',
+      ],
+    },
+    {
+      id: 'tool',
+      label: 'behaviour:run tool',
+      description: 'The on-demand agent surface (behaviour:run / behaviour:catalog) that scores a session by id/path or launches + scores a fresh run.',
+      globs: [
+        'packages/operator-core/lib/agent-tools/behaviour/*.test.ts',
+      ],
+    },
+    // Catch-the-rest so a new behaviour-suite test appears here with no registry edit.
+    { id: 'lib', label: 'Lib', globs: ['packages/operator-core/lib/behaviour-suite/**/*.test.ts'] },
+  ],
+});
+
 defineTestDomain({
   id: 'operator-core',
   label: 'Operator (core & misc)',
@@ -1530,7 +1570,7 @@ const PAPERCUSP_IDS = [
   'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
-  'gym', 'inference-gateway', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
+  'gym', 'inference-gateway', 'behaviour-suite', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // First-party Rust crates (Cargo) surfaced via per-crate manifestPath cargo runners (EI-1610) — the repo has no root Cargo workspace.
   'rust',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.

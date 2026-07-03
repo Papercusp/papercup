@@ -265,6 +265,12 @@ export interface BuildIdeatorPromptInput {
    * re-deriving them. Empty/absent ⇒ no priming (pre-archive cold start).
    */
   priming?: string;
+  /**
+   * Explicit niche-map guidance (P-006/P-007): the crowded niches to avoid and
+   * empty-adjacent niches to target. Kept separate from generic priming so it
+   * lands as a dedicated section beside the lens framing.
+   */
+  nicheMapPriming?: string;
 }
 
 /**
@@ -298,17 +304,23 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
     );
   }
 
+  if (input.nicheMapPriming && input.nicheMapPriming.trim()) {
+    system.push('', '## Federated niche guidance', input.nicheMapPriming.trim());
+  }
+
   system.push(
     '',
     '## Rules',
     '- Do NOT propose the obvious, incremental, or already-tried. Each idea must be a genuine leap through your lens.',
     '- GROUND every idea in the Hive\'s real history: cite the `ref`(s) of the digest meta-pattern(s) it addresses in `addressesPatternRefs`. An idea that grounds in nothing will be rejected downstream.',
+    '- If federated mutation seeds are provided, ADAPT them to local friction instead of copying them. Cite any foreign elite you actively reuse in optional `seededByRefs`.',
     '- State the concrete `mechanism` — HOW it would work. No hand-waving.',
     '- Diverge: prefer one strong unexpected idea over three safe ones.',
     '',
     '## Output',
     `Return ONLY a JSON object (no prose, no code fences), at most ${maxIdeas} ideas:`,
     '{"ideas":[{"title":"<short>","body":"<what it is and why it could matter>","mechanism":"<how it works>","addressesPatternRefs":["<ref>",...]' +
+      ',"seededByRefs":["<elite-ref>",...]' +
       (def.usesDistantDomain ? ',"seedDomain":"<the domain key you transplanted>"' : '') +
       '}]}',
   );

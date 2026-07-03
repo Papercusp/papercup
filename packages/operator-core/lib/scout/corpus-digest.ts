@@ -34,11 +34,23 @@
 import { z } from 'zod';
 import type { ChangeFeedEntry } from '../curation/change-feed';
 import {
+  DOMAIN_VOCAB,
+  RISK_BANDS,
+  SCOPE_BANDS,
+  nicheKey as gymNicheKey,
+  type RiskBand,
+  type ScopeBand,
+} from '../gym/qd/niche';
+import {
   dedupSignature,
   findLikelyDuplicates,
   signatureRecurrence,
 } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
+import {
+  computeDepthAwareCrowding,
+  type FederatedEliteView,
+} from './federated-priming';
 import type { MetaPattern, MetaPatternCategory } from './types';
 
 // ---------------------------------------------------------------------------
@@ -273,6 +285,152 @@ export const DigestSchema = z.object({
  * Assignable to `CorpusDigest`, so the P-004 ideators consume it directly.
  */
 export type StateOfHiveDigest = z.infer<typeof DigestSchema>;
+
+export interface FederatedMapEliteRow {
+  nicheKey: string;
+  fitness: number;
+  sourceHive?: string | null;
+  scope?: string | null;
+  domain?: string | null;
+  risk?: string | null;
+  noveltyGift?: boolean | null;
+}
+
+export interface BuildFederatedMapLaneOptions {
+  crowdedLimit?: number;
+  emptyLimit?: number;
+  fitnessBar?: number;
+}
+
+interface GymNicheCoords {
+  scope: ScopeBand;
+  domain: string;
+  risk: RiskBand;
+}
+
+function parseGymCoords(row: FederatedMapEliteRow): GymNicheCoords | null {
+  if (row.scope && row.domain && row.risk) {
+    if (
+      (SCOPE_BANDS as readonly string[]).includes(row.scope) &&
+      (RISK_BANDS as readonly string[]).includes(row.risk)
+    ) {
+      return {
+        scope: row.scope as ScopeBand,
+        domain: row.domain.trim().toLowerCase(),
+        risk: row.risk as RiskBand,
+      };
+    }
+  }
+  const m = /^([^|]+)\|([^|]+)\|([^|]+)$/.exec(row.nicheKey);
+  if (!m) return null;
+  const [, scope, domain, risk] = m;
+  if (!(SCOPE_BANDS as readonly string[]).includes(scope) || !(RISK_BANDS as readonly string[]).includes(risk)) {
+    return null;
+  }
+  return {
+    scope: scope as ScopeBand,
+    domain: domain.trim().toLowerCase(),
+    risk: risk as RiskBand,
+  };
+}
+
+function changedDims(a: GymNicheCoords, b: GymNicheCoords): number {
+  return Number(a.scope !== b.scope) + Number(a.domain !== b.domain) + Number(a.risk !== b.risk);
+}
+
+function normalizeWeights(patterns: MetaPattern[]): MetaPattern[] {
+  if (patterns.length === 0) return [];
+  const denom = Math.max(1, patterns.length - 1);
+  return patterns.map((pattern, index) => ({
+    ...pattern,
+    weight: patterns.length === 1 ? 1 : 1 - index / denom,
+  }));
+}
+
+/**
+ * Build the federated niche-map lane over the read-time union of local archive
+ * rows and foreign-elite partitions. Crowded niches rank by depth-aware crowding;
+ * empty niches prioritize one-step moves from locally occupied niches so Scout
+ * proposes reachable novelty before remote leaps.
+ */
+export function buildFederatedMapLane(
+  mergedArchive: readonly FederatedMapEliteRow[],
+  opts: BuildFederatedMapLaneOptions = {},
+): MetaPattern[] {
+  const crowdedLimit = Math.max(0, opts.crowdedLimit ?? 5);
+  const emptyLimit = Math.max(0, opts.emptyLimit ?? 5);
+  const fitnessBar = Number.isFinite(opts.fitnessBar) ? (opts.fitnessBar as number) : 0;
+  if (crowdedLimit === 0 && emptyLimit === 0) return [];
+
+  const withCoords = mergedArchive
+    .map((row) => {
+      const coords = parseGymCoords(row);
+      return coords ? { row, coords } : null;
+    })
+    .filter((row): row is { row: FederatedMapEliteRow; coords: GymNicheCoords } => row !== null);
+
+  const crowding = computeDepthAwareCrowding(
+    withCoords.map<FederatedEliteView>(({ row }) => ({
+      nicheKey: row.nicheKey,
+      fitness: row.fitness,
+      sourceHive: row.sourceHive ?? null,
+      noveltyGift: row.noveltyGift ?? false,
+    })),
+    { fitnessBar },
+  );
+
+  const localOccupied = withCoords.filter(({ row }) => !row.sourceHive).map(({ coords }) => coords);
+  const occupied = new Set(withCoords.map(({ coords }) => gymNicheKey(coords)));
+
+  const crowded = normalizeWeights(
+    crowding.slice(0, crowdedLimit).map((stat) => ({
+      category: 'niche-map' as const,
+      summary: `crowded niche ${stat.nicheKey} — ${stat.totalElites} elites across ${stat.contributingSources} hives`,
+      detail:
+        `best fitness ${stat.bestFitness != null ? stat.bestFitness.toFixed(2) : 'n/a'}; ` +
+        `${stat.elitesAboveBar} above crowding bar`,
+      ref: `niche:v1:crowded:${stat.nicheKey}`,
+    })),
+  );
+
+  const emptyCandidates = [];
+  for (const scope of SCOPE_BANDS) {
+    for (const domain of DOMAIN_VOCAB) {
+      for (const risk of RISK_BANDS) {
+        const coords: GymNicheCoords = { scope, domain, risk };
+        const key = gymNicheKey(coords);
+        if (occupied.has(key)) continue;
+        const adjacentLocals = localOccupied
+          .filter((local) => changedDims(local, coords) === 1)
+          .map((local) => gymNicheKey(local))
+          .sort();
+        emptyCandidates.push({ coords, key, adjacentLocals });
+      }
+    }
+  }
+
+  const empty = normalizeWeights(
+    emptyCandidates
+      .sort(
+        (a, b) =>
+          Number(b.adjacentLocals.length > 0) - Number(a.adjacentLocals.length > 0) ||
+          b.adjacentLocals.length - a.adjacentLocals.length ||
+          a.key.localeCompare(b.key),
+      )
+      .slice(0, emptyLimit)
+      .map(({ key, adjacentLocals }) => ({
+        category: 'niche-map' as const,
+        summary: `empty niche ${key} — ${adjacentLocals.length > 0 ? 'adjacent to local winners' : 'unoccupied frontier'}`,
+        detail:
+          adjacentLocals.length > 0
+            ? `one-step move from local ${adjacentLocals.slice(0, 2).join(', ')}`
+            : 'no one-step local neighbor; a farther novelty leap',
+        ref: `niche:v1:empty:${key}`,
+      })),
+  );
+
+  return [...crowded, ...empty];
+}
 
 // ---------------------------------------------------------------------------
 // Pure synthesis — deterministic given `nowMs`.

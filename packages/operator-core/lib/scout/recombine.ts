@@ -220,6 +220,9 @@ export async function recombineProposals(
     const addressesPatternRefs = [
       ...new Set(group.members.flatMap((m) => m.idea.addressesPatternRefs ?? [])),
     ];
+    const seededByRefs = [
+      ...new Set(group.members.flatMap((m) => m.idea.seededByRefs ?? [])),
+    ];
     const { system, user } = buildRecombinePrompt(group, opts);
     const thinkingBudgetTokens = opts.thinkingBudgetTokens ?? 2048;
     const res = await deps.llmCall({
@@ -240,9 +243,10 @@ export async function recombineProposals(
           cheapExperiment: parsed.cheapExperiment,
           sourceIdeaIds,
           addressesPatternRefs,
+          ...(seededByRefs.length ? { seededByRefs } : {}),
           ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
         }
-      : { sourceIdeaIds, addressesPatternRefs };
+      : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
 
     const v = validateProposal(base);
     if (v.ok) {

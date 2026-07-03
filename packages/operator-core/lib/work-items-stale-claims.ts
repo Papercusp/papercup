@@ -278,20 +278,40 @@ export async function reclaimStaleWorkItemClaims(
     RETURNING d.workspace_id, d.harness_slug, d.feature_id, d.item_kind,
               d.former_taken_by, d.former_status, d.reason,
               f.status AS new_status, f.requeue_count AS requeue_count`;
-  return {
-    released: rows.map((r) => ({
-      workspace_id: r.workspace_id,
-      harness_slug: r.harness_slug,
-      feature_id: r.feature_id,
-      item_kind: r.item_kind,
-      former_taken_by: r.former_taken_by,
-      former_status: r.former_status,
-      new_status: r.new_status,
-      requeue_count: r.requeue_count,
-      action: classify(r, cap),
-      reason: r.reason,
-    })),
-  };
+  const released = rows.map((r) => ({
+    workspace_id: r.workspace_id,
+    harness_slug: r.harness_slug,
+    feature_id: r.feature_id,
+    item_kind: r.item_kind,
+    former_taken_by: r.former_taken_by,
+    former_status: r.former_status,
+    new_status: r.new_status,
+    requeue_count: r.requeue_count,
+    action: classify(r, cap),
+    reason: r.reason,
+  }));
+  // EI-6480: clear the per-Hive authority LEASE for every freed row. A stale lease that survives a
+  // taken_by-clear (this reaper just freed a dead holder's item back to the claimable pool) makes
+  // the item read as unclaimed yet FAIL lease arbitration for every new claimer until the lease TTL
+  // lapses — so claim_next keeps "missing" ready work (the ready-but-raced symptom). EI-6832 fixed
+  // only the VOLUNTARY release path (work_items:release); this extends the same cleanup to the
+  // reaper. Owner-scoped + best-effort (a cleanup failure never fails the sweep); a no-op when the
+  // lease flag is OFF or no lease row exists. Does NOT touch acquireClaimLocal conflict-release
+  // semantics (a real cross-Swarm conflict must still release, else double-runs). Dynamic import
+  // keeps the lease wiring off this module's static graph.
+  if (released.length > 0) {
+    const { workItemClaimLeaseEnabled, releaseWorkItemLease } = await import('./work-item-claim-lease-wiring');
+    if (workItemClaimLeaseEnabled()) {
+      for (const c of released) {
+        try {
+          await releaseWorkItemLease({ harness: c.harness_slug, workItemId: c.feature_id, owner: c.former_taken_by });
+        } catch {
+          // best-effort — a stale-lease cleanup miss must never fail the reap sweep
+        }
+      }
+    }
+  }
+  return { released };
 }
 
 /** An issue-family (bug/change) claim freed from a dead holder. */

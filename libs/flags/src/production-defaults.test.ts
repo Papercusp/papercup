@@ -181,4 +181,18 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(DARK_FLAGS.get(FLAGS.OPEN_SIGNUP)?.case).toBe('owner-authority');
     expect(DARK_FLAGS.get(FLAGS.AUTH_CONFIG_OVERRIDES)?.case).toBe('owner-authority');
   });
+
+  it('P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark', () => {
+    // p2p-work-distribution-2026-07-02 P-005 / FS-D5 (plan decision D-019): the P2P
+    // work-sharing surface follows the landed GITHUB_BRIDGE pattern — the flag is the
+    // FLEET-WIDE kill-switch (default-ON), and activation is the REAL surface (explicit
+    // P-001 grants + host opt-in, zero/empty by default per M11). Inertness is STRUCTURAL,
+    // so NEITHER flag may carry a DARK_FLAGS entry. This pins the rollout decision against
+    // a future "let me dark-ship P2P to be safe" edit — which FS-D5 explicitly forbids
+    // (a dark entry would also trip the shrink-only high-watermark guard above).
+    for (const key of [FLAGS.P2P, FLAGS.GITHUB_BRIDGE]) {
+      expect(FLAG_DEFAULTS[key], `${key} must default ON (fleet kill-switch, not dark)`).toBe(true);
+      expect(DARK_FLAGS.has(key), `${key} must NOT be in DARK_FLAGS — inertness is structural (FS-D5)`).toBe(false);
+    }
+  });
 });

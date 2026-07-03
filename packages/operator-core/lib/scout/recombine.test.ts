@@ -146,12 +146,32 @@ describe('recombineProposals', () => {
   });
 
   it('merges two related survivors into one proposal citing both source ideas', async () => {
-    const s1 = scored({ idea: idea({ id: 'a', title: 'lock contention retry', body: 'blocked edits retry' }), novelty: 0.9 });
-    const s2 = scored({ idea: idea({ id: 'b', title: 'lock contention yield', body: 'blocked edits yield' }), novelty: 0.8 });
+    const s1 = scored({
+      idea: idea({
+        id: 'a',
+        title: 'lock contention retry',
+        body: 'blocked edits retry',
+        seededByRefs: ['elite:peer-a:module|sync|low:c1'],
+      }),
+      novelty: 0.9,
+    });
+    const s2 = scored({
+      idea: idea({
+        id: 'b',
+        title: 'lock contention yield',
+        body: 'blocked edits yield',
+        seededByRefs: ['elite:peer-b:module|sync|low:c2'],
+      }),
+      novelty: 0.8,
+    });
     const r = await recombineProposals([s1, s2], { llmCall: fakeProposer(COMPLETE_PROPOSAL) });
     expect(r.proposals).toHaveLength(1);
     expect(r.proposals[0].sourceIdeaIds.sort()).toEqual(['a', 'b']);
     expect(r.proposals[0].routeHint).toBe('plan');
     expect(r.proposals[0].addressesPatternRefs).toBeDefined();
+    expect(r.proposals[0].seededByRefs?.sort()).toEqual([
+      'elite:peer-a:module|sync|low:c1',
+      'elite:peer-b:module|sync|low:c2',
+    ]);
   });
 });

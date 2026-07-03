@@ -38,6 +38,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { resolveMaxRolloutTier, type P2pEffectiveTier } from './rollout-tiers';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -366,6 +367,13 @@ export interface ForeignWorkAdmission {
   /** Opted-in fleet slugs (null = any fleet passes the opt-in check; the
    *  grant/tier layer — P-001/P-005 — still gates independently). */
   optedInFleets: string[] | null;
+  /** P-005: the MAX rollout tier this host may reach right now (0 = P2P off,
+   *  1 = same-owner machines, 2 = cross-user ≤ Delegate, 3 = Operator). Surfaced
+   *  in the ONE authoritative read so the puller (P-103) / local-authority spawn
+   *  (P-104) apply the rollout gate ALONGSIDE opt-in — cross-user reach (tier ≥ 2)
+   *  is FS-D5-gated on §5.4 per-scope crypto + the X1 loopback boundary (P-105),
+   *  so this is 1 today. */
+  maxRolloutTier: P2pEffectiveTier;
 }
 
 /** Is host-local `nowMs` inside any window? Empty windows = always. */
@@ -394,12 +402,23 @@ export function isWithinP2pWindows(windows: P2pScheduleWindow[], nowMs: number):
  * The ONE authoritative admission read for foreign work (P-103/P-104/P-106).
  * Pure — pass the effective settings + now. Precedence: kill-switch beats
  * opt-in beats windows (receipts name the FIRST refusal).
+ *
+ * `opts.maxRolloutTier` (P-005) is the rollout gate the caller has already
+ * resolved from the flag state (resolveMaxRolloutTier). It defaults to the
+ * flag-ON tier (1 today) so a caller that only cares about opt-in keeps the
+ * old behaviour; a caller that has the flag state passes it so the rollout tier
+ * is surfaced in this one read.
  */
-export function resolveForeignWorkAdmission(s: P2pSettings, nowMs: number): ForeignWorkAdmission {
+export function resolveForeignWorkAdmission(
+  s: P2pSettings,
+  nowMs: number,
+  opts?: { maxRolloutTier?: P2pEffectiveTier },
+): ForeignWorkAdmission {
   const base = {
     windDownGraceSec: s.killSwitch.windDownGraceSec,
     maxConcurrentForeign: s.optIn.maxConcurrentForeign,
     optedInFleets: s.optIn.mode === 'selected-fleets' ? [...s.optIn.fleets] : null,
+    maxRolloutTier: opts?.maxRolloutTier ?? resolveMaxRolloutTier({ flagEnabled: true }),
   };
   if (s.killSwitch.engaged) {
     return {

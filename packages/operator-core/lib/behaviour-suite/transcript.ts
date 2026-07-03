@@ -27,8 +27,24 @@
 /** The papercusp-su MCP prefix omp stamps on tool names, e.g. `mcp__papercusp_su_plans_get`. */
 const MCP_PREFIX = /^mcp__papercusp[_-]su__?/;
 
+/** Known tool GROUPS (matched longest-first) so `<group>_<verb>` → `<group>:<verb>` even
+ *  when BOTH the group AND the verb contain underscores (work_items, acquire_granular) —
+ *  a naive replace(/_/g,':') would produce `locks:acquire:granular`. omp also collapses a
+ *  verb's hyphens to underscores, so `launch-on-plan` arrives as `launch_on_plan`; the
+ *  canonical key here keeps that underscore form (callers compare in underscore form). */
+const TOOL_GROUPS = [
+  'work_items', 'plan_items', 'cross_harness', 'coord', 'plans', 'locks', 'docs', 'memory',
+  'tools', 'fleet', 'capability', 'session', 'dev', 'harness', 'features', 'issues', 'blueprint',
+  'improvements', 'recipes', 'topics', 'events', 'audit', 'ui', 'chat', 'notifications', 'cert',
+];
+
 export function stripToolName(name: string): string {
-  return String(name || '').replace(MCP_PREFIX, '').replace(/_/g, ':').replace('::', ':');
+  const n = String(name || '').replace(MCP_PREFIX, '');
+  for (const g of [...TOOL_GROUPS].sort((a, b) => b.length - a.length)) {
+    if (n === g) return g;
+    if (n.startsWith(`${g}_`)) return `${g}:${n.slice(g.length + 1)}`;
+  }
+  return n; // a built-in (read/bash/write/edit) or unknown group — leave as-is
 }
 
 export interface NormToolCall {
@@ -66,6 +82,7 @@ export interface NormTranscript {
 
 function partText(p: unknown): string {
   if (typeof p === 'string') return p;
+  if (Array.isArray(p)) return p.map(partText).join(' ');
   if (p && typeof p === 'object') {
     const o = p as Record<string, unknown>;
     if (typeof o.text === 'string') return o.text;

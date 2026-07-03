@@ -215,6 +215,10 @@ export function deriveProvenance(
     for (const ideaId of d.sourceIdeaIds ?? []) {
       const idea = ideaById.get(ideaId);
       if (!idea) continue;
+      const seededByTags = (d.seededByRefs ?? []).map((ref) => `seededBy:${ref}`);
+      const addressesPatternRefs = [
+        ...new Set([...(idea.addressesPatternRefs ?? []), ...(d.addressesPatternRefs ?? []), ...seededByTags]),
+      ];
       out.push({
         ideaId,
         lens: idea.lens,
@@ -222,11 +226,7 @@ export function deriveProvenance(
         routedRef: d.routedRef,
         ...(cycleId ? { cycleId } : {}),
         ...(d.title ? { title: d.title } : {}),
-        // The P-013 pattern-attribution key — without this the ledger's
-        // addresses_pattern_refs column is NULL through the tick path.
-        ...(idea.addressesPatternRefs.length > 0
-          ? { addressesPatternRefs: [...idea.addressesPatternRefs] }
-          : {}),
+        ...(addressesPatternRefs.length > 0 ? { addressesPatternRefs } : {}),
       });
     }
   }

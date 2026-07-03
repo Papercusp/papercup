@@ -20,6 +20,7 @@ const SETTINGS_PAGES = [
   '/settings/plugins',
   '/settings/plugins/tools',
   '/settings/operator',
+  '/settings/p2p',
   '/settings/api-keys',
   '/settings/omp',
   '/settings/user',

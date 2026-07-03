@@ -46,6 +46,7 @@
  */
 import type { Sql } from 'postgres';
 import type { ModelTier } from './agent-config-constants';
+import type { FederatedPrimingConfig } from './scout/federated-priming';
 import { listHiveSettings, setHiveSetting, deleteHiveSetting } from './hive-settings-store';
 
 /** The `hive_settings` keys the steering controls occupy (C-1). */
@@ -73,6 +74,7 @@ export const OWNER_STEERING_KEYS = {
   // queen-steering-panel P-009 (decomposition-aggressiveness hint): ADVISORY —
   // surfaced in the wake brief, no hard seam (the Queen self-governs decomposition).
   decomposition: 'owner-steering:decomposition',
+  federatedPriming: 'owner-steering:federated-priming',
   // model-override-sidebar-2026-06-23: SESSION-NOW per-role MODEL overrides for the
   // FRONT-DOOR agents that launch OUTSIDE the fleet:spawn tier path — `sentinel`
   // (the dock psu/Claude TUI) and `overwatch` (the supervisor invoke loop). role →
@@ -147,6 +149,9 @@ export interface OwnerSteering {
    *  psu TUI) and `overwatch` (invoke loop). role → `model[:effort]` spec;
    *  absent/empty ⇒ workspace default. null ⇒ no overrides. */
   modelOverrides?: Record<string, string> | null;
+  /** SESSION federated Scout priming override — nearby foreign elites plus
+   *  crowded/empty niche-map counts. null ⇒ blueprint default. */
+  federatedPriming?: FederatedPrimingConfig | null;
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -164,6 +169,7 @@ export const DEFAULT_OWNER_STEERING: OwnerSteering = {
   autoScaleOut: null,
   decomposition: null,
   modelOverrides: null,
+  federatedPriming: null,
 };
 
 function asStringArray(v: unknown): string[] {
@@ -243,6 +249,22 @@ function asDecomposition(v: unknown): DecompositionMode | null {
     : null;
 }
 
+function asFederatedPriming(v: unknown): FederatedPrimingConfig | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const src = v as Record<string, unknown>;
+  const coerce = (n: unknown): number | null =>
+    typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  const foreignElites = coerce(src.foreignElites);
+  const crowded = coerce(src.crowded);
+  const empty = coerce(src.empty);
+  if (foreignElites == null && crowded == null && empty == null) return null;
+  return {
+    foreignElites: foreignElites ?? 0,
+    crowded: crowded ?? 0,
+    empty: empty ?? 0,
+  };
+}
+
 /**
  * Read the owner-steering state for a Hive in ONE query (listHiveSettings), with
  * every missing key defaulting per {@link DEFAULT_OWNER_STEERING}. Fail-soft by
@@ -273,6 +295,7 @@ export async function getOwnerSteering(
     autoScaleOut: asBoolOrNull(byKey.get(OWNER_STEERING_KEYS.autoScaleOut)),
     decomposition: asDecomposition(byKey.get(OWNER_STEERING_KEYS.decomposition)),
     modelOverrides: asModelOverrides(byKey.get(OWNER_STEERING_KEYS.modelOverrides)),
+    federatedPriming: asFederatedPriming(byKey.get(OWNER_STEERING_KEYS.federatedPriming)),
   };
 }
 
@@ -302,6 +325,8 @@ export interface OwnerSteeringPatch {
   /** Session per-role model overrides (model-override-sidebar-2026-06-23); null / {}
    *  clears them. Merge-semantics are the caller's job: pass the full desired map. */
   modelOverrides?: Record<string, string> | null;
+  /** Session federated Scout priming override; null / {} clears it. */
+  federatedPriming?: FederatedPrimingConfig | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }
@@ -361,6 +386,9 @@ export async function setOwnerSteering(
   }
   if (patch.modelOverrides !== undefined) {
     writes.push([OWNER_STEERING_KEYS.modelOverrides, asModelOverrides(patch.modelOverrides)]);
+  }
+  if (patch.federatedPriming !== undefined) {
+    writes.push([OWNER_STEERING_KEYS.federatedPriming, asFederatedPriming(patch.federatedPriming)]);
   }
   if (patch.pauseNewWork !== undefined) {
     writes.push([OWNER_STEERING_KEYS.pauseNewWork, patch.pauseNewWork === true]);

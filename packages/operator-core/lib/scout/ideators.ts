@@ -152,6 +152,8 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
    * discovered elites. Empty/absent ⇒ cold start (no priming).
    */
   priming?: string;
+  /** Dedicated crowded/empty niche guidance block (P-007). */
+  nicheMapPriming?: string;
   /**
    * Per-blueprint ideator MISSION framing (P-010). Forwarded to every ideator's
    * prompt; absent ⇒ the default coding-platform framing (byte-identical).
@@ -210,6 +212,7 @@ interface RawIdea {
   body: string;
   mechanism: string;
   addressesPatternRefs: string[];
+  seededByRefs?: string[];
   seedDomain?: string;
 }
 
@@ -263,8 +266,11 @@ function coerceRawIdea(x: unknown): RawIdea | null {
   const refs = Array.isArray(o.addressesPatternRefs)
     ? o.addressesPatternRefs.filter((r): r is string => typeof r === 'string')
     : [];
+  const seededByRefs = Array.isArray(o.seededByRefs)
+    ? [...new Set(o.seededByRefs.filter((r): r is string => typeof r === 'string' && r.trim().length > 0))]
+    : [];
   const seedDomain = typeof o.seedDomain === 'string' ? o.seedDomain : undefined;
-  return { title, body, mechanism, addressesPatternRefs: refs, seedDomain };
+  return { title, body, mechanism, addressesPatternRefs: refs, ...(seededByRefs.length ? { seededByRefs } : {}), seedDomain };
 }
 
 /**
@@ -295,6 +301,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
         maxIdeas,
         ...(opts.mission ? { mission: opts.mission } : {}),
         ...(opts.priming ? { priming: opts.priming } : {}),
+        ...(opts.nicheMapPriming ? { nicheMapPriming: opts.nicheMapPriming } : {}),
       });
       try {
         const res = await callIdeatorLlm(
@@ -323,6 +330,9 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
             // Analogical: trust the assigned seed domain over the model's echo.
             seedDomain: slot.seedDomain?.key ?? raw.seedDomain,
             addressesPatternRefs: grounded,
+            ...(raw.seededByRefs && raw.seededByRefs.length > 0
+              ? { seededByRefs: [...raw.seededByRefs] }
+              : {}),
           });
         }
         return {

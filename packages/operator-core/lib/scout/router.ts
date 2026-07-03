@@ -69,6 +69,8 @@ export interface RoutingDecision {
   /** Corpus pattern refs the proposal targets — grounding + P-013 attribution (carried so
    *  the scheduler's `recordRoutedIdea` need not re-join to the proposal). */
   addressesPatternRefs?: string[];
+  /** Federated mutation-seed lineage preserved for routed-ledger tagging. */
+  seededByRefs?: string[];
   /** The change-feed ref of the created artifact: plan:<slug> | gym:<proposalId> | wi:<id>. */
   routedRef?: string;
   /** Dispatch error — defensive: one failed sink never aborts the batch. */
@@ -133,6 +135,7 @@ export function decideRoutes(
     const { rail, reason, followedHint } = classifyProposal(p, opts);
     const title = proposalTitle(p);
     const refs = p.addressesPatternRefs ?? [];
+    const seededByRefs = p.seededByRefs ?? [];
     return {
       proposalId: p.id,
       sourceIdeaIds: [...(p.sourceIdeaIds ?? [])],
@@ -141,6 +144,7 @@ export function decideRoutes(
       followedHint,
       ...(title ? { title } : {}),
       ...(refs.length ? { addressesPatternRefs: [...refs] } : {}),
+      ...(seededByRefs.length ? { seededByRefs: [...seededByRefs] } : {}),
     };
   });
 }
@@ -474,6 +478,7 @@ export function decisionsToProvenance(
         ...(ctx.cycleId ? { cycleId: ctx.cycleId } : {}),
         ...(d.title ? { title: d.title } : {}),
         ...(ctx.routedAt ? { routedAt: ctx.routedAt } : {}),
+        ...(d.addressesPatternRefs?.length ? { addressesPatternRefs: [...d.addressesPatternRefs] } : {}),
       });
     }
   }

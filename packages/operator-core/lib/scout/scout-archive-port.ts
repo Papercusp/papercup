@@ -30,6 +30,8 @@ import {
   type ArchivePort,
   type ArchiveSeedEntry,
 } from './gym-bridge';
+import { listFrontierElites } from './foreign-frontier';
+import { sanitizeForeignPriming } from './foreign-priming-sanitize';
 
 /** An ArchivePort that buffers scout seeds for an async {@link ScoutArchivePort.flush}. */
 export interface ScoutArchivePort extends ArchivePort {
@@ -53,7 +55,16 @@ export async function buildScoutArchivePort(opts: BuildScoutArchivePortOptions):
     opts.api ?? makeGymArchive(getOrgPg().sql, { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug });
 
   const snapshot = new Map<string, ArchiveEliteView>();
-  for (const e of await api.listElites()) {
+  const initialViews = opts.api
+    ? (await api.listElites()).map((e) => ({ ...e, sourceHive: null }))
+    : await listFrontierElites(getOrgPg().sql, { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug });
+  for (const e of initialViews) {
+    const rationale =
+      e.sourceHive && e.rationale
+        ? sanitizeForeignPriming(e.rationale)
+        : e.rationale;
+    const existing = snapshot.get(e.nicheKey);
+    if (existing && existing.fitness >= e.fitness) continue;
     snapshot.set(e.nicheKey, {
       nicheKey: e.nicheKey,
       coords: e.coords,
@@ -61,7 +72,7 @@ export async function buildScoutArchivePort(opts: BuildScoutArchivePortOptions):
       fitness: e.fitness,
       descriptor: e.descriptor,
       source: e.source,
-      ...(e.rationale ? { rationale: e.rationale } : {}),
+      ...(rationale ? { rationale } : {}),
     });
   }
 

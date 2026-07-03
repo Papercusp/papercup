@@ -98,14 +98,11 @@ export function checkRoutingGate(t: NormTranscript): BehaviourCheck {
   const guessedPath = t.toolResults.some((r) => /plan:\/\/|plan-.*\.md.* not found|not found/i.test(r.text) && /plan/i.test(r.text));
   const gateTurn = t.assistantTexts.findIndex((s) => /\boption\b|\(a\)|\(b\)|\(c\)|launch a fleet|do it yourself|hand (it )?to the queen|confirm.*(route|approach|which)/i.test(s));
   const presented = gateTurn >= 0;
-  // did it start work BEFORE presenting options? (claim/edit before the gate text)
-  const firstWorkTurn = t.toolCalls.find((c) => /^work_items:claim|^plans:set-status|^capability:write|^capability:edit$/.test(c.name))?.turn ?? Infinity;
-  const gatedBeforeWork = presented; // heuristic: presence of the gate text is the signal
   const passed = readViaPlansGet && presented && !guessedPath;
   return mk('routing-gate', true, passed, passed
     ? 'read plan via plans:get and presented execution options'
     : `routing-gate weak — plans:get=${readViaPlansGet} presentedOptions=${presented} guessedBadPath=${guessedPath}`,
-    { metrics: { plansGet: readViaPlansGet, presentedOptions: presented, guessedBadPath: guessedPath, gatedBeforeWork },
+    { metrics: { plansGet: readViaPlansGet, presentedOptions: presented, guessedBadPath: guessedPath },
       evidence: (gateTurn >= 0 ? t.assistantTexts[gateTurn] : '').slice(0, 200) });
 }
 
@@ -156,7 +153,7 @@ export function checkLockDiscipline(t: NormTranscript): BehaviourCheck {
 
 /** 7. Fleet launch: use fleet:launch-on-plan (passes --agent/--model); never a psu missing --agent. */
 export function checkFleetLaunch(t: NormTranscript, ctx: BehaviourContext): BehaviourCheck {
-  const usedLaunchOnPlan = calls(t, 'fleet:launch-on-plan').length > 0;
+  const usedLaunchOnPlan = calls(t, 'fleet:launch_on_plan').length > 0;
   const termCalls = t.toolCalls.filter((c) => c.name === 'capability:terminal');
   const psuCmds: string[] = [];
   for (const c of termCalls) {

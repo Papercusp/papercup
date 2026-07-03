@@ -179,7 +179,7 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
   function capturingLlm(): { seen: string[]; llmCall: ScoutLlmCall } {
     const seen: string[] = [];
     const llmCall: ScoutLlmCall = async (opts) => {
-      seen.push(opts.messages.map((m) => m.content).join('\n'));
+      seen.push([opts.system ?? '', ...opts.messages.map((m) => m.content)].join('\n'));
       return {
         text: '',
         json: { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] },
@@ -206,6 +206,29 @@ describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading
       expect(gymIdx).toBeGreaterThan(-1);
       expect(graderIdx).toBeGreaterThan(gymIdx); // grader block sits BELOW the stones
       expect(prompt).toContain('- [★5 · Owner · reframing] Speculative plan drafts: exactly the right altitude');
+    }
+  });
+
+  it('threads niche-map repulsion guidance into the ideator system prompt', async () => {
+    const { deps } = build({
+      archive: { listElites: () => [], seed: () => ({ admitted: false, nicheKey: '' }) },
+      graderFeedbackReader: async () => [],
+    });
+    const { seen, llmCall } = capturingLlm();
+    await deps.ideate(
+      {
+        ...DIGEST,
+        nicheMap: [
+          { summary: 'crowded niche module|sync|low — 4 elites across 3 hives', ref: 'niche:v1:crowded:module|sync|low' },
+          { summary: 'empty niche module|docs|low — adjacent to local winners', ref: 'niche:v1:empty:module|docs|low' },
+        ],
+      },
+      { llmCall, maxIdeators: 2 },
+    );
+    for (const prompt of seen) {
+      expect(prompt).toContain('## Federated niche guidance');
+      expect(prompt).toContain('Crowded niches to avoid');
+      expect(prompt).toContain('Empty niches to target');
     }
   });
 

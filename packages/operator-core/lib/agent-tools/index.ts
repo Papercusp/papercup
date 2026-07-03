@@ -254,6 +254,9 @@ import './provisioner/provisioner';
 // WI-1659 (P-006 fast-follow) — cert:run/cert:catalog, the on-demand agent surface for the
 // model-certification battery (lib/inference-gateway/cert-battery).
 import './cert/battery';
+// desktop-agent-behaviour-suite-2026-07-03 P-014/P-015 — behaviour:run/behaviour:catalog, the
+// on-demand surface that scores a REAL agent run against the behaviour standard (lib/behaviour-suite).
+import './behaviour/run';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

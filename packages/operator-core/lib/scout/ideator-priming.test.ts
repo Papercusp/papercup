@@ -30,13 +30,24 @@ describe('buildIdeatorPrompt priming (P-012)', () => {
     const { user } = buildIdeatorPrompt({ lens: 'reframing', digest: DIGEST });
     expect(user).not.toContain('Gym stepping-stones');
   });
+  it('adds the federated niche-guidance section beside the lens framing', () => {
+    const { system } = buildIdeatorPrompt({
+      lens: 'reframing',
+      digest: DIGEST,
+      nicheMapPriming: 'AVOID crowded niches.\nTARGET empty adjacent niches.',
+    });
+    expect(system).toContain('## Federated niche guidance');
+    expect(system).toContain('AVOID crowded niches');
+    expect(system).toContain('TARGET empty adjacent niches');
+    expect(system).toContain('seededByRefs');
+  });
 });
 
 describe('runIdeators forwards priming to every ideator (P-012)', () => {
   it('passes opts.priming into the ideator prompt', async () => {
     const seen: string[] = [];
     const llmCall: ScoutLlmCall = async (opts) => {
-      seen.push(opts.messages.map((m) => m.content).join('\n'));
+      seen.push([opts.system ?? '', ...opts.messages.map((m) => m.content)].join('\n'));
       return {
         text: '',
         json: { ideas: [{ title: 'T', body: 'B', mechanism: 'M', addressesPatternRefs: ['wi:F-1'] }] },
@@ -45,9 +56,15 @@ describe('runIdeators forwards priming to every ideator (P-012)', () => {
         outputTokens: 0,
       };
     };
-    const res = await runIdeators(DIGEST, { llmCall, lenses: ['reframing', 'first-principles'], priming: 'STEPSTONE-MARKER' });
+    const res = await runIdeators(DIGEST, {
+      llmCall,
+      lenses: ['reframing', 'first-principles'],
+      priming: 'STEPSTONE-MARKER',
+      nicheMapPriming: 'NICHE-MAP-MARKER',
+    });
     expect(res.ideas.length).toBeGreaterThan(0);
     expect(seen.length).toBe(2); // one per lens
     expect(seen.every((s) => s.includes('STEPSTONE-MARKER'))).toBe(true);
+    expect(seen.every((s) => s.includes('NICHE-MAP-MARKER'))).toBe(true);
   });
 });

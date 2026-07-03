@@ -977,6 +977,13 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',
+  // fleet:launch-on-plan IS in the omp spine (it is NOT in the generic orchestrator
+  // CORE): the AUTO-off routing gate offers a weak model "(C) launch a fleet", but the
+  // whole fleet:* group is otherwise hidden, so option C was UN-EXECUTABLE — the model
+  // narrated "I'm launching now" then silently fell back to work_items:* and did the
+  // work itself (session 9870). A weak model does NOT bridge to a hidden tool via
+  // tools:find, so the one verb that makes option C real must be advertised up-front.
+  'fleet:launch-on-plan',
   'tools:find', 'tools:invoke',
 ];
 

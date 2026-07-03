@@ -29,12 +29,21 @@ export function deriveLaunchPromptText(
   }
   // AUTO OFF — a lead/solo agent WITH a human present. Per the persona routing
   // gate (WHAT/HOW/WHO), it must NOT silently start editing: read the plan, then
-  // present the execution options and let the owner choose. (Also names plans:get
-  // to stop weak models flailing on `plan://` / file-path guesses.)
-  return "You've been handed this plan to implement. First read it with the `plans:get` " +
-    'tool (not a file path or a `plan://` URI). Then, BEFORE doing any work, go through your ' +
-    'routing gate: outline the approach and present the execution options — (A) do it ' +
-    'yourself, (B) hand it to the Queen, or (C) launch a fleet of agents to parallelize it — ' +
-    'recommend one based on the plan size, and confirm with the owner which to use. Do not ' +
-    'start editing until they choose.';
+  // present the execution options and let the owner choose.
+  //
+  // Every clause is a weak-model guard proven necessary by a real ornith run:
+  //  · "call the `plans:get` MCP tool … NOT … read/bash/find/grep" — session 9870
+  //    burned 29 turns because "read it with the plans:get tool" made it call the
+  //    `read` BUILTIN with path:"plans:get", then flail with `find`/`grep`/`ls`.
+  //  · "(C) … executed with the `fleet:launch-on-plan` tool" — sessions 9870/9865
+  //    chose C, then never launched (the tool was hidden) or hand-built a broken psu
+  //    command; naming the exact verb makes option C real.
+  return "You've been handed a plan to implement. First read it by calling the `plans:get` " +
+    "MCP tool with the plan's slug — the plan lives in the coordination system, NOT on disk, so " +
+    'do NOT use the `read`, `bash`, `find`, or `grep` file tools and do NOT guess a `plan://` or ' +
+    'file path. Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
+    'and present the execution options — (A) do it yourself, (B) hand it to the Queen, or (C) ' +
+    'launch a fleet of agents to parallelize it (executed in ONE call with the ' +
+    '`fleet:launch-on-plan` tool — never a hand-built psu command) — recommend one based on the ' +
+    'plan size, and confirm with the owner which to use. Do not start editing until they choose.';
 }

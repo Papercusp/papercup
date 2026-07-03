@@ -6,7 +6,7 @@
  * FANOUT_DISTINCT_THRESHOLD imported from code-run-batch-nudge) — these tests pin the at-threshold
  * boundary so a drift between metric and nudge flips RED.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD } from './code-run-batch-nudge';
 import {
   isBatchableSpawn,
@@ -17,10 +17,16 @@ import {
   rollupAdoption,
   gradeToolUtilization,
   ADOPTION_MIN_SAMPLE,
+  ADOPTION_CACHE_TTL_MS,
   CODE_RUN_ADOPTION_SQL,
+  __resetCodeRunAdoptionCacheForTests,
   type CallRow,
   type SpawnAdoptionRow,
 } from './code-run-adoption';
+
+// The herd guard (EI-6889) is module-level state — reset it before every case so the memo/in-flight
+// maps never leak a result across tests.
+beforeEach(() => __resetCodeRunAdoptionCacheForTests());
 
 const fanTools = ['plans:get', 'work_items:get', 'docs:search', 'coord:inbox'];
 
@@ -182,5 +188,88 @@ describe('readCodeRunAdoption — runs the canonical SQL through an injected run
       return [] as unknown as T[];
     });
     expect(seen).toEqual([7]);
+  });
+});
+
+describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
+  // TEETH: the operator wedge came from N subsystems each launching an independent 7-day scan of
+  // harness_shared.tool_invocations. These pin that concurrent + repeated callers collapse onto ONE
+  // scan per window, so a fresh full scan can never be triggered per call again.
+
+  const rows = [
+    { role: 'bee', day: '2026-07-02', work_calls: 5, distinct_tools: 4, max_same_tool: 1, used_code_run: true },
+  ] as const;
+
+  it('SINGLE-FLIGHT: concurrent callers for the same window share ONE scan', async () => {
+    let scans = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runQuery = async <T,>(): Promise<T[]> => {
+      scans += 1;
+      await gate; // hold every scan open so all callers overlap in-flight
+      return rows as unknown as T[];
+    };
+    // Fire 18 concurrent callers — the observed herd size on 2026-07-02.
+    const all = Promise.all(Array.from({ length: 18 }, () => readCodeRunAdoption(runQuery, { sinceDays: 7 })));
+    release();
+    const results = await all;
+    expect(scans).toBe(1); // 18 callers → exactly ONE PG scan
+    // Every caller got the same (correct) rollup.
+    for (const r of results) expect(r).toEqual(results[0]);
+    expect(results[0][0]).toMatchObject({ spawns: 1, opportunitySpawns: 1, opportunitySpawnsUsingCodeRun: 1 });
+  });
+
+  it('SHORT-TTL memo: a second call within the TTL reuses the result without re-scanning', async () => {
+    let scans = 0;
+    let t = 1_000_000;
+    const now = (): number => t;
+    const runQuery = async <T,>(): Promise<T[]> => {
+      scans += 1;
+      return rows as unknown as T[];
+    };
+    await readCodeRunAdoption(runQuery, { sinceDays: 7, now });
+    t += ADOPTION_CACHE_TTL_MS - 1; // still inside the window
+    await readCodeRunAdoption(runQuery, { sinceDays: 7, now });
+    expect(scans).toBe(1); // second call served from the memo
+  });
+
+  it('re-scans once the TTL has elapsed', async () => {
+    let scans = 0;
+    let t = 1_000_000;
+    const now = (): number => t;
+    const runQuery = async <T,>(): Promise<T[]> => {
+      scans += 1;
+      return rows as unknown as T[];
+    };
+    await readCodeRunAdoption(runQuery, { sinceDays: 7, now });
+    t += ADOPTION_CACHE_TTL_MS; // past the window (>= TTL)
+    await readCodeRunAdoption(runQuery, { sinceDays: 7, now });
+    expect(scans).toBe(2);
+  });
+
+  it('keys the memo by sinceDays — a different window is a distinct scan', async () => {
+    let scans = 0;
+    const now = (): number => 1_000_000;
+    const runQuery = async <T,>(): Promise<T[]> => {
+      scans += 1;
+      return rows as unknown as T[];
+    };
+    await readCodeRunAdoption(runQuery, { sinceDays: 7, now });
+    await readCodeRunAdoption(runQuery, { sinceDays: 14, now });
+    expect(scans).toBe(2); // 7d and 14d never share a cache entry
+  });
+
+  it('does NOT memoize a failed scan — the next call retries', async () => {
+    let scans = 0;
+    const runQuery = async <T,>(): Promise<T[]> => {
+      scans += 1;
+      if (scans === 1) throw new Error('pool exhausted');
+      return rows as unknown as T[];
+    };
+    await expect(readCodeRunAdoption(runQuery, { sinceDays: 7 })).rejects.toThrow('pool exhausted');
+    // In-flight slot cleared + failure not cached → the retry actually re-runs and succeeds.
+    const out = await readCodeRunAdoption(runQuery, { sinceDays: 7 });
+    expect(scans).toBe(2);
+    expect(out[0]).toMatchObject({ spawns: 1 });
   });
 });

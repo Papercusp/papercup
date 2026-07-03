@@ -199,6 +199,16 @@ describe('runScoutCycle — provenance (P-013)', () => {
     const r = await runScoutCycle({ ...deps, cycleId: 'cyc-42' });
     expect(r.provenance.every((p) => p.cycleId === 'cyc-42')).toBe(true);
   });
+
+  it('tags federated mutation seeds onto the routed-ledger refs without polluting grounding', async () => {
+    const ideas = fixtureIdeasAllLenses().map((idea, index) =>
+      index === 0 ? { ...idea, seededByRefs: ['elite:peer-a:module|sync|low:c1'] } : idea,
+    );
+    const { deps } = makeDeps({ ideas });
+    const r = await runScoutCycle(deps);
+    expect(r.provenance[0]?.addressesPatternRefs).toContain('seededBy:elite:peer-a:module|sync|low:c1');
+    expect(r.proposals[0]?.addressesPatternRefs).toEqual([FIXTURE_PATTERN_REFS[4]]);
+  });
 });
 
 /* ── short-circuits + budget (D-010) ──────────────────────────────────── */

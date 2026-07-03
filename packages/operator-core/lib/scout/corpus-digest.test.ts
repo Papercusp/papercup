@@ -14,6 +14,7 @@ import type { ChangeFeedEntry } from '../curation/change-feed';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { CorpusDigest, MetaPattern as TypesMetaPattern } from './types';
 import {
+  buildFederatedMapLane,
   synthesizeStateOfHive,
   revertWeight,
   DigestSchema,
@@ -388,6 +389,27 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       const digest = await synthesizeStateOfHive(fixtureReaders({ rubrics: async () => [] }), { nowMs: NOW });
       expect(digest.rubricGaps).toEqual([]);
     });
+  });
+});
+
+describe('buildFederatedMapLane', () => {
+  it('surfaces crowded niches across the local+foreign union and prioritizes empty one-step neighbors of local niches', () => {
+    const lane = buildFederatedMapLane([
+      { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.91 },
+      { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.88, sourceHive: 'peer-a' },
+      { nicheKey: 'module|sync|low', scope: 'module', domain: 'sync', risk: 'low', fitness: 0.82, sourceHive: 'peer-b' },
+      { nicheKey: 'module|docs|low', scope: 'module', domain: 'docs', risk: 'low', fitness: 0.73 },
+    ]);
+
+    const crowded = lane.filter((p) => p.ref.startsWith('niche:v1:crowded:'));
+    const empty = lane.filter((p) => p.ref.startsWith('niche:v1:empty:'));
+
+    expect(crowded[0]?.summary).toContain('crowded niche module|sync|low');
+    expect(crowded[0]?.summary).toContain('3 elites across 3 hives');
+
+    expect(empty[0]?.summary).toContain('adjacent to local winners');
+    expect(empty[0]?.detail).toContain('one-step move from local');
+    expect(empty[0]?.ref).not.toContain('module|sync|low'); // occupied niches never reappear as empty
   });
 });
 

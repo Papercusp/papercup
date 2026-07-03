@@ -30,6 +30,11 @@ import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
 import { DEFAULT_CRITIC_MISSION } from './critics';
 import { DEFAULT_SCOUT_MODELS, type ScoutModelConfig } from './models';
+import {
+  DEFAULT_FEDERATED_PRIMING,
+  resolveFederatedPrimingConfig,
+  type FederatedPrimingConfig,
+} from './federated-priming';
 import type { RoutedRail } from './outcome-feedback';
 
 /** The routing knobs a blueprint can tune (router.ts ClassifyOptions + the markers). */
@@ -61,6 +66,12 @@ export interface ScoutFramingConfig {
 }
 
 /**
+ * Federated Scout↔gym migration-rate knobs (P-016 / D-004). The owner-ratified
+ * default is intentionally small; an all-zero profile is the CONTROL hive.
+ */
+export interface ScoutFederatedPrimingConfig extends FederatedPrimingConfig {}
+
+/**
  * The fully-resolved per-blueprint Scout tuning. Every field is concrete (no optionals)
  * so the engine call sites can use it directly. Build one with {@link resolveScoutConfig}.
  *
@@ -79,6 +90,8 @@ export interface ScoutConfig {
   routing: ScoutRoutingConfig;
   /** Per-step prompt framing (P-010) — the ideator + critic mission strings. */
   framing: ScoutFramingConfig;
+  /** Federated migration-rate knobs (P-016 control-hive baseline + future owner steering). */
+  federatedPriming: ScoutFederatedPrimingConfig;
   /**
    * Per-step model ids. Defaults are behavior-neutral, but the live autonomous loop
    * can move Scout off an unhealthy provider/model lane without a deploy.
@@ -109,6 +122,7 @@ export const DEFAULT_SCOUT_CONFIG: ScoutConfig = {
     wholeSystemMarkers: WHOLE_SYSTEM_MARKERS,
   },
   framing: DEFAULT_SCOUT_FRAMING,
+  federatedPriming: DEFAULT_FEDERATED_PRIMING,
   models: DEFAULT_SCOUT_MODELS,
 };
 
@@ -119,6 +133,7 @@ export interface ScoutConfigOverride {
   buckets?: Partial<BucketOptions>;
   routing?: Partial<ScoutRoutingConfig>;
   framing?: Partial<ScoutFramingConfig>;
+  federatedPriming?: Partial<ScoutFederatedPrimingConfig>;
   models?: Partial<ScoutModelConfig>;
 }
 
@@ -157,6 +172,7 @@ export function resolveScoutConfig(override?: ScoutConfigOverride | null): Scout
       criticMission:
         nonBlank(override.framing?.criticMission) ?? DEFAULT_SCOUT_CONFIG.framing.criticMission,
     },
+    federatedPriming: resolveFederatedPrimingConfig(override.federatedPriming),
     models: mergeDefined<ScoutModelConfig>(DEFAULT_SCOUT_CONFIG.models, override.models),
   };
 }
@@ -234,6 +250,15 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
       framing.criticMission = f.criticMission;
     }
     if (Object.keys(framing).length > 0) out.framing = framing;
+  }
+
+  if (r.federatedPriming && typeof r.federatedPriming === 'object' && !Array.isArray(r.federatedPriming)) {
+    const fp = r.federatedPriming as Record<string, unknown>;
+    const priming: Partial<ScoutFederatedPrimingConfig> = {};
+    if (isFiniteNumber(fp.foreignElites)) priming.foreignElites = fp.foreignElites;
+    if (isFiniteNumber(fp.crowded)) priming.crowded = fp.crowded;
+    if (isFiniteNumber(fp.empty)) priming.empty = fp.empty;
+    if (Object.keys(priming).length > 0) out.federatedPriming = priming;
   }
 
   if (r.models && typeof r.models === 'object' && !Array.isArray(r.models)) {

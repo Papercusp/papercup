@@ -161,6 +161,20 @@ describe('resolveForeignWorkAdmission (M10/X13/M16 contract)', () => {
     const a = resolveForeignWorkAdmission(opted(), at(1, 10));
     expect(a.optedInFleets).toBeNull();
   });
+
+  it('P-005: surfaces the rollout tier — default is tier 1 (same-owner) today', () => {
+    // Even when admitting, the rollout gate is surfaced for the puller (P-104).
+    const admit = resolveForeignWorkAdmission(opted(), at(1, 10));
+    expect(admit.maxRolloutTier).toBe(1);
+    // ...and on a refusal branch too (it is orthogonal to opt-in).
+    const refuse = resolveForeignWorkAdmission(bakedP2pDefaults(), Date.now());
+    expect(refuse.maxRolloutTier).toBe(1);
+  });
+
+  it('P-005: honors an injected max rollout tier (flag-off ⇒ 0, P-105 ⇒ 2)', () => {
+    expect(resolveForeignWorkAdmission(opted(), at(1, 10), { maxRolloutTier: 0 }).maxRolloutTier).toBe(0);
+    expect(resolveForeignWorkAdmission(opted(), at(1, 10), { maxRolloutTier: 2 }).maxRolloutTier).toBe(2);
+  });
 });
 
 describe('P2P_STARTER_PROFILE (m18)', () => {

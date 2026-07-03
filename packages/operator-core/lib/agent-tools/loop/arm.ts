@@ -52,7 +52,7 @@ export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
   description:
-    "Arm an engine-managed LOOP on your own session (or another's, via `ownerId`) — the tracked replacement for Claude /loop. Each fire re-wakes that warm session ~intervalSec after its prior turn settles (context carries across iterations, not a fresh run). Survives restarts, is observable (loop:status / fleet:assignments), and inherits guardrails (failure-streak gate, optional cost-cap). End with loop:end.",
+    "Arm an engine-managed LOOP on your own session (or another's, via `ownerId`) — the tracked replacement for Claude /loop. Each fire re-wakes that warm session ~intervalSec after its prior turn settles (context carries across iterations, not a fresh run). Survives restarts, is observable (loop:status / fleet:assignments), and inherits guardrails (failure-streak gate, optional cost-cap). IN AUTO MODE the DEFAULT intervalSec is 60 (a 1-minute cadence) unless the owner specifies otherwise — a longer interval is only for work genuinely blocked on a slower-moving dependency, and restore 1m once it clears. End with loop:end.",
   guidance: {
     when: 'You (an su/interactive agent) agree to "put this on a loop" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before ending your turn. Pass `ownerId` to arm a loop FOR another already-running, wake-reachable session (e.g. a fleet leader arming a member\'s monitor loop) instead of your own — without it, a caller with no per-session id silently binds to the non-wake-reachable `su-loopback` fallback.',
     notWhen:
@@ -82,7 +82,7 @@ export default defineTool({
       .min(LOOP_INTERVAL_FLOOR_SEC)
       .max(MAX_LOOP_INTERVAL_SEC)
       .describe(
-        'Seconds AFTER each turn settles before the next wake (≥60). The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported.',
+        'Seconds AFTER each turn settles before the next wake (≥60). IN AUTO MODE the DEFAULT is 60 (a 1-minute cadence) unless the owner specifies otherwise — only lengthen it when the loop is genuinely blocked on a slower-moving dependency (a deploy, a long gate suite), and restore 1m the moment it clears, because a multi-minute loop is indistinguishable from a dead one to an owner watching for progress. The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported.',
       ),
     goal: softText(4000, { min: 1 })
       .describe('One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.'),

@@ -279,6 +279,7 @@ describe('decisionsToProvenance', () => {
         reason: 'x',
         followedHint: true,
         title: 'T',
+        addressesPatternRefs: ['plan:lock-contention-2026-06-01', 'seededBy:elite:peer-a:module|sync|low:c1'],
         routedRef: 'plan:foo-2026-06-08',
       },
     ];
@@ -287,6 +288,7 @@ describe('decisionsToProvenance', () => {
     expect(prov.map((p) => p.lens).sort()).toEqual(['analogical', 'reframing']);
     expect(prov.every((p) => p.rail === 'plan' && p.routedRef === 'plan:foo-2026-06-08')).toBe(true);
     expect(prov.every((p) => p.cycleId === 'cyc-1' && p.title === 'T')).toBe(true);
+    expect(prov.every((p) => p.addressesPatternRefs?.includes('seededBy:elite:peer-a:module|sync|low:c1'))).toBe(true);
     expect(prov.map((p) => p.ideaId).sort()).toEqual(['ia', 'ib']);
   });
 
@@ -307,7 +309,15 @@ describe('decisionsToProvenance', () => {
     const { decisions } = await routeProposals(proposals, ports);
     const prov = decisionsToProvenance(decisions, lensOf, { cycleId: 'c' });
     expect(prov).toEqual([
-      { ideaId: 'ia', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-1', cycleId: 'c', title: proposalTitle(proposals[0]) },
+      {
+        ideaId: 'ia',
+        lens: 'analogical',
+        rail: 'improvement',
+        routedRef: 'wi:EI-1',
+        cycleId: 'c',
+        title: proposalTitle(proposals[0]),
+        addressesPatternRefs: ['plan:lock-contention-2026-06-01'],
+      },
     ]);
   });
 });

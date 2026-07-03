@@ -155,6 +155,12 @@ export interface Idea {
    * this). Only refs that exist in the digest are kept.
    */
   addressesPatternRefs: string[];
+  /**
+   * Optional federated mutation seeds — foreign elites the idea adapted rather
+   * than copied verbatim. These are NOT digest refs, so they do not participate
+   * in grounding; they flow to routed provenance as `seededBy:<elite-ref>` tags.
+   */
+  seededByRefs?: string[];
 }
 
 /**
@@ -257,4 +263,6 @@ export interface Proposal {
   routeHint?: 'plan' | 'gym' | 'improvement' | 'instance';
   /** Corpus pattern refs carried from the source ideas — grounding (⊆ digest refs) + P-013 lens attribution. */
   addressesPatternRefs: string[];
+  /** Federated mutation seeds preserved from the source ideas. */
+  seededByRefs?: string[];
 }

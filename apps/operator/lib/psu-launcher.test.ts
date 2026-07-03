@@ -82,7 +82,8 @@ import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-den
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
-// (OMP_CORE_MCP_TOOL_NAMES) must stay byte-identical to it (drift guard below).
+// (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it drops the
+// manual granular lock tools and adds fleet:launch-on-plan (drift guard below).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
 
 describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
@@ -419,10 +420,26 @@ describe('isWeakOmpModel / ompDefaultModel (weak-model-tool-tier — tier gate)'
 });
 
 describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
-  it('is byte-identical to the canonical orchestrator CORE_MCP_TOOL_NAMES (psu-launcher inlines it)', () => {
-    // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the core spine.
-    // This fails the build if the two ever drift — edit the orchestrator source, then mirror here.
-    expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
+  // psu-launcher.mjs is a plain node script with no TS imports, so it inlines the spine.
+  // It is the omp/weak-model VARIANT of the canonical orchestrator CORE spine, and
+  // deliberately diverges in exactly two documented ways (asserted below); any OTHER
+  // drift fails the build — edit the orchestrator source, then mirror here.
+  const LOCK_TOOLS = ['locks:acquire_granular', 'locks:release_granular'];
+
+  it('drops the manual granular lock tools (omp auto-acquires on Edit/Write via the coord hook)', () => {
+    for (const t of LOCK_TOOLS) expect([...OMP_CORE_MCP_TOOL_NAMES]).not.toContain(t);
+  });
+
+  it('adds fleet:launch-on-plan so a routing-gate leader can actually execute option C', () => {
+    // Root cause of session 9870 not launching its fleet: the whole fleet:* group was
+    // hidden, so the AUTO-off "(C) launch a fleet" option had no callable verb.
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain('fleet:launch-on-plan');
+  });
+
+  it('is otherwise identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved', () => {
+    const coreMinusLocks = CORE_MCP_TOOL_NAMES.filter((n) => !LOCK_TOOLS.includes(n));
+    const ompMinusFleet = OMP_CORE_MCP_TOOL_NAMES.filter((n) => n !== 'fleet:launch-on-plan');
+    expect([...ompMinusFleet]).toEqual([...coreMinusLocks]);
   });
 });
 

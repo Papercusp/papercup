@@ -28,7 +28,7 @@ export default defineTool({
   name: 'hive:set-steering',
   profile: 'engineer',
   description:
-    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what she may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, and the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`) — each a SESSION override of a live operator seam. Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Queen so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
+    'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what she may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Scout priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Queen so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
   guidance: {
     when: 'Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.',
     notWhen:
@@ -124,6 +124,15 @@ export default defineTool({
       .nullable()
       .optional()
       .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the fleet:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
+    federatedPriming: z
+      .object({
+        foreignElites: z.number().int().nonnegative().optional(),
+        crowded: z.number().int().nonnegative().optional(),
+        empty: z.number().int().nonnegative().optional(),
+      })
+      .nullable()
+      .optional()
+      .describe('SESSION Scout federated-priming override: nearby foreign-elites surfaced per ideation cycle plus crowded/empty niche counts for the repulsion map. 0 disables each subsection; null / {} clears it back to the blueprint default.'),
     pauseNewWork: z
       .boolean()
       .optional()
@@ -160,6 +169,7 @@ export default defineTool({
     if (args.autoScaleOut !== undefined) patch.autoScaleOut = args.autoScaleOut;
     if (args.decomposition !== undefined) patch.decomposition = args.decomposition;
     if (args.modelOverrides !== undefined) patch.modelOverrides = args.modelOverrides;
+    if (args.federatedPriming !== undefined) patch.federatedPriming = args.federatedPriming;
     if (args.pauseNewWork !== undefined) patch.pauseNewWork = args.pauseNewWork;
     if (args.pausedUntil !== undefined) patch.pausedUntil = args.pausedUntil;
     if (args.clear !== undefined) patch.clear = args.clear;
