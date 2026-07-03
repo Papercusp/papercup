@@ -53,6 +53,11 @@ export interface BehaviourContext {
   expectedWorkItemIds?: string[];
   /** Whether this run was routed to launch a fleet (governs whether fleet-launch applies). */
   fleetExpected?: boolean;
+  /** This run is an AUTO-on fleet MEMBER. Such an agent CORRECTLY does not present the
+   *  A/B/C route menu — the WHAT/HOW/WHO gate is the AUTO-off / leader posture; a member in
+   *  AUTO just orients, claims its lane, and works. So the routing-gate check is N/A for it,
+   *  not a fail (WI-1849). */
+  autoFleetMember?: boolean;
 }
 
 const DEFAULT_CLOUD = ['claude', 'sonnet', 'opus', 'haiku', 'gpt-', 'gemini', 'papercusp-gateway/claude'];
@@ -92,8 +97,16 @@ export function checkContextFit(t: NormTranscript): BehaviourCheck {
     { metrics: { compactionWedge: t.compactionWedge } });
 }
 
-/** 3. AUTO-off plan handoff: read via plans:get, present options, WAIT (do not silently edit). */
-export function checkRoutingGate(t: NormTranscript): BehaviourCheck {
+/** 3. AUTO-off plan handoff: read via plans:get, present options, WAIT (do not silently edit).
+ *  N/A for an AUTO-on fleet MEMBER — it correctly does NOT present the route menu (that is the
+ *  AUTO-off / leader posture), so gating it on A/B/C would false-fail correct behaviour (WI-1849). */
+export function checkRoutingGate(t: NormTranscript, ctx: BehaviourContext = {}): BehaviourCheck {
+  if (ctx.autoFleetMember) {
+    return {
+      ...mk('routing-gate', true, true, 'AUTO-on fleet member — the A/B/C route menu is correctly not presented (n/a)'),
+      na: true,
+    };
+  }
   const readViaPlansGet = calls(t, 'plans:get').length > 0;
   const guessedPath = t.toolResults.some((r) => /plan:\/\/|plan-.*\.md.* not found|not found/i.test(r.text) && /plan/i.test(r.text));
   const gateTurn = t.assistantTexts.findIndex((s) => /\boption\b|\(a\)|\(b\)|\(c\)|launch a fleet|do it yourself|hand (it )?to the queen|confirm.*(route|approach|which)/i.test(s));
@@ -204,7 +217,7 @@ export function runChecks(t: NormTranscript, ctx: BehaviourContext = {}): Behavi
   return [
     checkModelRouting(t, ctx),
     checkContextFit(t),
-    checkRoutingGate(t),
+    checkRoutingGate(t, ctx),
     checkPlanExecution(t),
     checkScopeAdherence(t, ctx),
     checkLockDiscipline(t),
