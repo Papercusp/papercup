@@ -48,6 +48,7 @@ import type { EngineerIssueRow } from './projections/engineer-issues';
 import type { PlanPartWireRow } from './projections/harness-plan-parts';
 import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
 import type { P2pReceiptWireRow } from './projections/p2p-receipts';
+import type { FleetDirectoryRow } from './projections/fleet-directory';
 import type { AgentFactWireRow } from './projections/agent-facts';
 import type { GymQdEliteWireRow } from './projections/gym-qd-elites';
 
@@ -151,6 +152,12 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // INSERT-only (gate_verdicts pattern), hive-home-scoped, M21 offer_id threaded.
   // Projection 'p2p-receipts' (projections/p2p-receipts.ts); key == receipt_id (mig 468).
   p2p_receipts: 'p2p-receipts',
+  // p2p-work-distribution-2026-07-02 (P-101 / D-006): the owner-SIGNED fleet directory
+  // record — hive-home-scoped, receiver-verified (attested-device signature; hive key
+  // only for H10 force-archive). Projection 'p2p-fleet-directory'
+  // (projections/fleet-directory.ts); key == '<owner_ghid>/<fleet_slug>' (the generated
+  // fleet_dir_fed_key column, mig 476).
+  p2p_fleet_directory: 'p2p-fleet-directory',
 };
 
 /**
@@ -554,6 +561,24 @@ function toHivePolicyValue(row: Record<string, unknown>): HivePolicyRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `FleetDirectoryRow` the p2p-fleet-directory
+ *  projection INSERT consumes (P-101 / D-006) — the owner-signed federated subset
+ *  (harness_slug = the Hive home, record_json = the canonical signed JSON TEXT — the
+ *  exact bytes the signature covers, never jsonb). The projection verifies the device
+ *  signature + device→owner attestation before applying. */
+function toFleetDirectoryValue(row: Record<string, unknown>): FleetDirectoryRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    owner_github_user_id: numOrZero(row.owner_github_user_id),
+    fleet_slug: String(row.fleet_slug ?? ''),
+    record_json: String(row.record_json ?? ''),
+    signer_device_pubkey: String(row.signer_device_pubkey ?? ''),
+    signature: String(row.signature ?? ''),
+    record_version: numOrZero(row.record_version),
+    archived: row.archived === true,
+  };
+}
+
 /** Map an outbox `row` jsonb to the `ReportWireRow` the hive-reports projection INSERT
  *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.hive_reports —
  *  harness_slug = the Hive home (demux), report_id = the peer-log key, the reporter
@@ -910,6 +935,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'p2p_receipts':
       value = toP2pReceiptValue(row);
+      break;
+    case 'p2p_fleet_directory':
+      value = toFleetDirectoryValue(row);
       break;
     case 'agent_facts':
       value = toAgentFactValue(row);

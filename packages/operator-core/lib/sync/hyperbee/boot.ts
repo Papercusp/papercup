@@ -87,6 +87,7 @@ import {
 import { ScopeCoreRegistry, type ScopedStoreLike } from './scope-cores';
 import { ScopeFederation } from './scope-federation';
 import { getScopeRoster } from '../../p2p/scope-roster';
+import { PgFleetDirectory } from '../../p2p/fleet-directory';
 import { bumpRefusedOpCounter } from '../../p2p/receipts';
 import { formatScopeId, type ScopeId } from '../hive-git/scope-repo';
 import { offloadReplicationToSidecar } from './substrate-replication-offload';
@@ -2846,9 +2847,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           scopeRegistry = new ScopeCoreRegistry(scopedStore as unknown as ScopedStoreLike);
         }
         const rosterHiveSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
+        // P-101: the fleet directory widens the scope roster from owner-only to
+        // owner ∪ publisher-set, and seeds this peer's participating scopes from
+        // its directory records (owner or publisher of a live fleet ⇒ participant).
+        const fleetDirectory = new PgFleetDirectory({
+          workspaceId: opts.workspaceId,
+          hiveSlug: rosterHiveSlug,
+        });
         scopeFederation = new ScopeFederation({
           registry: scopeRegistry,
-          roster: getScopeRoster({ workspaceId: opts.workspaceId, hiveSlug: rosterHiveSlug }),
+          roster: getScopeRoster({
+            workspaceId: opts.workspaceId,
+            hiveSlug: rosterHiveSlug,
+            directory: fleetDirectory,
+          }),
           selfGithubUserId: identity.githubUserId,
           buildScopedAnnounce: (scopedLogs) =>
             buildAnnounce({ ...announceBody, scoped_logs: scopedLogs }, signOurAnnounce),
@@ -2868,6 +2880,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             }).catch(() => {});
           },
         });
+        // P-101 driver: union the directory-derived participation (fleets this
+        // identity owns or publishes to) into the durable declared set. Best-
+        // effort — a PG/directory failure leaves explicit declarations intact.
+        const directoryScopes = await fleetDirectory
+          .listParticipatingScopes(identity.githubUserId)
+          .catch(() => [] as ScopeId[]);
+        for (const s of directoryScopes) participatingScopes.set(formatScopeId(s), s);
         if (participatingScopes.size > 0) {
           await scopeFederation.ensureOwnScopes([...participatingScopes.values()]);
         }

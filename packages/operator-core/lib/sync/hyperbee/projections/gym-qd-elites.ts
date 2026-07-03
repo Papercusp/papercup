@@ -40,6 +40,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { bumpFederationRefusedOp, type RefusedOpReason } from '../federation-refused-op-counter';
+import { isEliteOutcomeRecord, verifyEliteOutcomeForElite } from '../../../gym/qd/elite-outcome-record';
 
 /** Wire-shape of a federated gym_qd_archive row — the subset we apply. */
 export interface GymQdEliteWireRow {
@@ -58,6 +59,14 @@ export interface GymQdEliteWireRow {
   federatable: boolean;
   /** Sender's elite-update time (epoch ms). */
   updated_at: number;
+  /**
+   * F1-6 / P-014 (D-005 hole 3): the device-signed EliteOutcomeRecord for this
+   * elite, if the sender produced one. UNTRUSTED wire value (typed `unknown`) —
+   * verified receiver-side in writeToPg (verifyEliteOutcomeForElite); it never
+   * gates decode ("where verifiable": an absent/invalid record still admits the
+   * elite, just outcome-UNVERIFIED).
+   */
+  outcome_record?: unknown;
 }
 
 function isString(v: unknown): v is string {
@@ -88,6 +97,20 @@ export interface GymQdElitesProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /**
+   * F1-6 / P-014 anti-lift seam: resolve the DEVICE pubkey that owns the relaying
+   * source log (`sourceLogKeyHex` = provenance.authorPubkey) — boot.ts wires this
+   * from `admittedIdentities.get(sourceLogKeyHex).devicePubkey`. When absent (or it
+   * returns null), the anti-lift check is skipped and only the signature + D-002 +
+   * niche/candidate binding gate `outcome_verified`.
+   */
+  resolveSignerDevice?: (sourceLogKeyHex: string) => string | null;
+  /**
+   * F1-6 / P-014 membership seam (mirrors gate-verdicts): true iff the signer
+   * device is an admitted hive member. When absent, membership is not required for
+   * `outcome_verified` (tier-1 hive-members admission already gates who can write).
+   */
+  isDeviceAdmitted?: (devicePubkey: string) => boolean;
 }
 
 /** Matches mig 464's capture key: the niche_key column. */
@@ -153,11 +176,29 @@ async function writeToPg(
   // H6: receiver-stamped source partition — the immutable sourceLogKeyHex.
   const sourceHive = provenance.authorPubkey || 'unknown-remote';
   const fedTs = provenance.ts ?? null;
+  // F1-6 / P-014 (D-005 hole 3): VERIFY the device-signed outcome record, if the
+  // sender carried a well-formed one. "where verifiable" — an absent/invalid record
+  // does NOT reject the elite (tier-1 admission already gated who can write); it
+  // just leaves outcome_verified=false so the reputation layer weights a
+  // device-verified elite above a merely sender-asserted one. The signer device is
+  // resolved from the RELAYING log (anti-lift) via the boot-wired seam — NOT the
+  // raw sourceLogKeyHex, which is a log key, not a device id.
+  const rec = isEliteOutcomeRecord(row.outcome_record) ? row.outcome_record : null;
+  const signerDevice = opts.resolveSignerDevice?.(provenance.authorPubkey) ?? undefined;
+  const outcomeVerified =
+    rec != null &&
+    verifyEliteOutcomeForElite(rec, {
+      nicheKey: row.niche_key,
+      candidateId: row.candidate_id,
+      expectedSignerDevice: signerDevice,
+      isSignerAdmitted: opts.isDeviceAdmitted,
+    });
+  const outcomeRecordJson = rec != null ? JSON.stringify(rec) : null;
   await sql`
     INSERT INTO harness_shared.gym_qd_foreign_elites
       (workspace_id, harness_slug, niche_key, source_hive, candidate_id,
        scope, domain, risk, fitness, descriptor, rationale, novelty_gift,
-       author_pubkey, fed_ts, updated_at)
+       author_pubkey, fed_ts, updated_at, outcome_record, outcome_verified)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.niche_key}, ${sourceHive},
        ${row.candidate_id}, ${row.scope}, ${row.domain}, ${row.risk}, ${row.fitness},
@@ -166,19 +207,22 @@ async function writeToPg(
           WHERE a.workspace_id = ${opts.workspaceId}
             AND a.harness_slug = ${row.harness_slug}
             AND a.niche_key = ${row.niche_key})),
-       ${sourceHive}, ${fedTs}, ${row.updated_at})
+       ${sourceHive}, ${fedTs}, ${row.updated_at},
+       ${outcomeRecordJson}::text::jsonb, ${outcomeVerified})
     ON CONFLICT (workspace_id, harness_slug, niche_key, source_hive)
     DO UPDATE SET
-      candidate_id  = EXCLUDED.candidate_id,
-      scope         = EXCLUDED.scope,
-      domain        = EXCLUDED.domain,
-      risk          = EXCLUDED.risk,
-      fitness       = EXCLUDED.fitness,
-      descriptor    = EXCLUDED.descriptor,
-      rationale     = EXCLUDED.rationale,
-      author_pubkey = EXCLUDED.author_pubkey,
-      fed_ts        = EXCLUDED.fed_ts,
-      updated_at    = EXCLUDED.updated_at
+      candidate_id     = EXCLUDED.candidate_id,
+      scope            = EXCLUDED.scope,
+      domain           = EXCLUDED.domain,
+      risk             = EXCLUDED.risk,
+      fitness          = EXCLUDED.fitness,
+      descriptor       = EXCLUDED.descriptor,
+      rationale        = EXCLUDED.rationale,
+      author_pubkey    = EXCLUDED.author_pubkey,
+      fed_ts           = EXCLUDED.fed_ts,
+      updated_at       = EXCLUDED.updated_at,
+      outcome_record   = EXCLUDED.outcome_record,
+      outcome_verified = EXCLUDED.outcome_verified
       -- novelty_gift deliberately NOT updated: the first-landing stamp is stable.
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)
       >= harness_shared.fed_order_key(NULL, harness_shared.gym_qd_foreign_elites.fed_ts)

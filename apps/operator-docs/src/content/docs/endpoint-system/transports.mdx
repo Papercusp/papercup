@@ -40,8 +40,8 @@ The HTTP, MCP, and gated in-process paths all go through the same `dispatchProje
 
 The catch-all routes are stupidly simple:
 
-1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`)
-2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
+1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`). It's a **two-step** catch-all: it first tries the in-memory plugin-`apiRoutes` registry (`dispatchPluginApiRoute`) — a plugin can register bespoke handlers outside the projected-tool system; a registry hit returns that plugin's `Response` directly and skips everything below. A registry miss (`null`) falls through to projected-tool dispatch.
+2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404 (a 404 on a path that matches a *registered* route under a different HTTP method is upgraded to 405-with-`Allow`, since the catch-all shadows the global method-not-allowed hook)
 3. Validates the HTTP method against the manifest's `expose.http.methods` (default `['POST']`) — if not allowed, 405
 4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver). If no `run` param/header was supplied, a fresh `runId` is generated server-side so `ctx.askUser` / `ctx.publishState` can install — they gate on `workspaceId + runId`. SSE callers had this since T2.2; the JSON path got parity in the pass-9 audit.
 5. If `Authorization: Bearer ...` present, resolves it to a principal and tx (no-op for plugins; required for built-ins)

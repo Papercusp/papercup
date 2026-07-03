@@ -50,6 +50,7 @@ import { buildGymQdElitesProjection } from './gym-qd-elites';
 import { buildBeeClaimSpecProjection } from './bee-claim-spec';
 import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
+import { buildFleetDirectoryProjection } from './fleet-directory';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildP2pPeerGrantsProjection } from './p2p-peer-grants';
@@ -202,6 +203,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // p2p-work-distribution-2026-07-02 P-004: loud-refusal receipt facts — hive-home-
   // grained, INSERT-only, receiver-enforced (author attestation == responder).
   'p2p-receipts',
+  // p2p-work-distribution-2026-07-02 P-101 (D-006): the owner-SIGNED fleet directory —
+  // hive-home-grained, receiver-verified (attested-device sig; hive key only for the
+  // H10 force-archive). Inert until records are authored.
+  'p2p-fleet-directory',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -288,6 +293,10 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // P-004: receipts are hive-home-grained like grants (the requester's machines
     // must receive them) — scope to hiveScoped.
     buildP2pReceiptsProjection(hiveScoped),
+    // P-101 (D-006): the fleet directory is hive-home-grained like hive_policy (the
+    // record demuxes on the Hive home + its verify resolves attestations there) —
+    // scope to hiveScoped so a joiner receives + verifies directory records.
+    buildFleetDirectoryProjection(hiveScoped),
   ] as TableProjection<unknown>[];
 }
 

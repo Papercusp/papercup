@@ -53,12 +53,16 @@ export const DEFAULT_COLD_LOOP_CAPS: ColdLoopCaps = { recycleEveryNWakes: 8 };
  *  payload carries neither field (an ordinary warm wake). Pure. */
 export function readColdLoopMarker(payload: unknown): ColdLoopMarker | null {
   if (!payload || typeof payload !== 'object') return null;
-  const p = payload as { carry?: unknown; wakeCount?: unknown };
+  const p = payload as { carry?: unknown; wakeCount?: unknown; harness?: unknown };
   const carry = typeof p.carry === 'string' ? p.carry : undefined;
   const wakeCount =
     typeof p.wakeCount === 'number' && Number.isFinite(p.wakeCount) ? p.wakeCount : undefined;
-  if (carry === undefined && wakeCount === undefined) return null;
-  return { carry, wakeCount };
+  // The carry-note scope key (loopScope(harness, ownerId)) — the wake executor needs
+  // it to resolve getLoopCarryNote without a separate routine lookup. A blank/missing
+  // harness ⇒ undefined ⇒ decideColdWake's caller cannot scope the note ⇒ stays warm.
+  const harness = typeof p.harness === 'string' && p.harness.length > 0 ? p.harness : undefined;
+  if (carry === undefined && wakeCount === undefined && harness === undefined) return null;
+  return { carry, wakeCount, harness };
 }
 
 export type ColdWakeDecision =

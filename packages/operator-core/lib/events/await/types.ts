@@ -77,6 +77,13 @@ export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' |
 export type WakeChannel =
   | 'pty-inject'
   | 'psu-socket-inject'
+  // su-cold-auto-mode-2026-07-03 Phase 2: a COLD loop wake injects a fresh-context
+  // RESET-CONTEXT (`/clear` in place, keep the MCP warm) or a periodic RECYCLE
+  // (kill+respawn the psu host) carrying the carry-note, instead of a warm
+  // `mode:'turn'` inject. Both re-invoke the agent (it re-derives from the note), so
+  // both join WAKE_TURN_CHANNELS below. Dormant until a caller wires coldAutoEnabled.
+  | 'psu-socket-reset'
+  | 'psu-socket-recycle'
   | 'resume'
   | 'resume-headless'
   // The Hive Queen is never resumed — her ended-session wake fires a FRESH hive
@@ -95,6 +102,8 @@ export type WakeChannel =
 export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'pty-inject',
   'psu-socket-inject',
+  'psu-socket-reset',
+  'psu-socket-recycle',
   'resume',
   'resume-headless',
   'hive-fresh-wake',
