@@ -1176,10 +1176,28 @@ export async function spawnAgentInHarness(
     if (input.fleet.cursor) extraEnv.PAPERCUSP_FLEET_CURSOR = input.fleet.cursor;
     // The env above only COLORS the bee's terminal at launch (its OWN process reads
     // PAPERCUSP_FLEET_*). The JOIN can't ride env — writePresence's fold runs in the
-    // operator, not the bee — so register a PENDING placement keyed by the spawnId;
-    // writePresence applies it on the bee's first presence write (same operator process).
-    const { setPendingFleet } = await import('../agent-tools/coordination/presence');
-    setPendingFleet(spawnId, input.fleet.slug, input.fleet.role || 'member');
+    // operator, not the bee. WI-1893 (cluster-safe fleet stamp, mirrors bootstrap-su/
+    // bootstrap-role): append the DURABLE membership fact keyed by the spawnId — the
+    // old in-memory setPendingFleet placement lived in ONE :3070 cluster worker and
+    // was lost when the bee's first presence write landed on ANOTHER worker
+    // (node:cluster + SO_REUSEPORT), leaving the bee fleet_slug=null and invisible
+    // to fleet:assignments. The mig-430 triggers apply the fact regardless of
+    // fact-vs-presence-row ordering. FAIL LOUD: a spawn that would produce a fleet-
+    // invisible ghost member must not proceed silently.
+    const { appendFleetMembershipIfAbsent } = await import('../fleet-membership-store');
+    try {
+      await appendFleetMembershipIfAbsent({
+        workspaceId: input.workspaceId,
+        ownerId: spawnId,
+        ownerLabel: null,
+        fleetSlug: input.fleet.slug,
+        fleetRole: input.fleet.role || 'member',
+      });
+    } catch (e: any) {
+      throw new Error(
+        `fleet membership stamp failed for spawn ${spawnId} → fleet ${input.fleet.slug}: ${e?.message ?? e} — refusing to spawn a member that would be invisible to its fleet (WI-1893)`,
+      );
+    }
   }
 
   // directed-wake-honesty-and-spawn-handoff P-021/P-012: assemble the ONE bounded

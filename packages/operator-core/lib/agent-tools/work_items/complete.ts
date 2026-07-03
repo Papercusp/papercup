@@ -38,13 +38,21 @@ import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
+import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 
-const completionSpec = CompletionRecordSchema.extend({ workItem: z.string().min(1).optional() });
+// EI-7031: coerce common LLM mis-shapes (bare string, scalar↔array swaps, missing
+// summary) to the CompletionRecord contract BEFORE validation — a finished
+// completion is normalised, never hard-rejected+lost. Well-formed input is
+// unchanged. Mirrors the `stringTolerantBool` z.preprocess pattern (plans/new.ts).
+const completionSpec = z.preprocess(
+  coerceCompletionShape,
+  CompletionRecordSchema.extend({ workItem: z.string().min(1).optional() }),
+);
 
 /**
  * EI-5269: the canonical terminal states across BOTH families (feature: passed/deprecated;
@@ -213,19 +221,26 @@ export default defineTool({
       },
     },
   ],
-  args: z
-    .object({
-      id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
-      harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-      /** Optional terminal state to also set (single-complete shorthand). */
-      state: z.string().min(1).max(40).optional(),
-      /** The structured completion record (single-complete shorthand). */
-      completion: completionSpec.optional(),
-      items: z.array(itemSpec).min(1).max(100).optional().describe('complete many work-items at once — each { id, completion, state?, harness? }'),
-    })
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
-      message: 'pass { id, completion } for one, or items:[{ id, completion }] for many',
-    }),
+  // EI-7031: rescue a FLAT single-complete (completion fields passed directly on
+  // args, no `completion` wrapper — the 22× "pass { id, completion } …" reject) by
+  // gathering them into `completion` BEFORE the object parse strips unknown keys.
+  // A well-formed { id, completion } / items:[…] call is returned unchanged.
+  args: z.preprocess(
+    gatherFlatCompletion,
+    z
+      .object({
+        id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
+        harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+        /** Optional terminal state to also set (single-complete shorthand). */
+        state: z.string().min(1).max(40).optional(),
+        /** The structured completion record (single-complete shorthand). */
+        completion: completionSpec.optional(),
+        items: z.array(itemSpec).min(1).max(100).optional().describe('complete many work-items at once — each { id, completion, state?, harness? }'),
+      })
+      .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
+        message: 'pass { id, completion } for one, or items:[{ id, completion }] for many',
+      }),
+  ),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
   // get a compact workItem ref per result instead of the full echoed row;
   // outcome fields (ok/error/holder/hint/reflect) pass through verbatim —

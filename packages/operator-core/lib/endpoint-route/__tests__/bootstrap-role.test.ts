@@ -21,7 +21,16 @@ const resolveAccountPinMock = vi.fn();
 // WI-1408 (fleet-join-startup-assertion): a spy (not a fixed stub) so per-test cases
 // can override the resolution outcome — the no-fleet default mirrors the prior fixed
 // stub so every PRE-EXISTING test (none of which pass `fleet`/`fleet_name`) is unaffected.
-const resolveFleetMock = vi.fn(async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }));
+const resolveFleetMock = vi.fn(
+  async (
+    ..._a: unknown[]
+  ): Promise<{
+    env: Record<string, string>;
+    notice: string | null;
+    fleetSlug: string | null;
+    fleetRole: string | null;
+  }> => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }),
+);
 // WI-1893 (cluster-safe fleet stamp): bootstrap-role appends the DURABLE membership
 // fact via stampFleetMembershipAtBoot (exported by bootstrap-su) — null = success,
 // a string = the loud-409 failure message.
