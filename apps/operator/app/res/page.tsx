@@ -10,11 +10,23 @@
  * Gated by FLAGS.RES_ALLOCATION (default ON). Fully tokenized to the frost
  * semantic scale (design/tokens).
  *
- * STATUS: the UI (tree, drag/%, tokens) is real. The DATA is a typed
- * placeholder seam — `useResData()` returns fixture hives/accounts/GPUs and
- * assignments live in local draft state. Wiring `useResData` + persistence to
- * the allocation backend (a workspace-scoped `resource_allocations` table via
- * @papercusp/sync) is the tracked follow-up lane; nothing here persists yet.
+ * STATUS: the UI (tree, drag/%, tokens) is real, and the PERSISTENCE BACKEND is
+ * now landed (P-201) — harness_shared.resource_allotments (mig 473), the
+ * `p2p.allotments` sync read resolver, and the `p2p-allotment-set` write route
+ * (set/remove → notifySyncInvalidate('p2p.allotments')). What remains is the
+ * CLIENT wire. This page still runs on the `useResData()` FIXTURE, so it is NOT
+ * yet safe to persist: allotments keyed to fixture fleet/resource ids would
+ * pollute the live table that P-206 reads. Remaining steps, in order:
+ *   1. Replace the fixture inventory with real sources — accounts from the
+ *      `accounts.pool` sync query; the hive→fleet tree from a (new) workspace
+ *      tree query; GPUs stay an honest empty/stub until local inference (P-207).
+ *   2. Seed `assignments` from useSyncQuery({ queryName: 'p2p.allotments' })
+ *      (map fleetSlug / resourceRef / sharePct onto the board).
+ *   3. On assign/unassign/setPct, POST /api/agent-mcp/p2p-allotment-set
+ *      ({ action:'set'|'remove', fleetSlug, resourceKind, resourceRef, sharePct }).
+ *   4. Live-verify the round-trip in the Tauri shell.
+ * The account axis is ungated; the GPU axis waits on the owner's option-(a/b)
+ * (inference-server vs foreign-spawn) decision, so build accounts first.
  */
 'use client';
 
@@ -357,8 +369,9 @@ export default function ResourcesPage() {
       </div>
 
       <div className="res-draft-note">
-        Draft — allocations are not saved yet. Persistence to the workspace allocation store is the
-        next step; the tree, drag-and-drop, and share % are live.
+        Draft — the tree, drag-and-drop, and share % are live, and the persistence backend is landed,
+        but this board still runs on placeholder inventory, so nothing is saved yet. Real accounts,
+        fleets, and save-on-drop are the next step.
       </div>
     </div>
   );

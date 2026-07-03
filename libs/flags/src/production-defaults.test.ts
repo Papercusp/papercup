@@ -169,9 +169,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover). papercusp-queen-warm-session
-    // graduated to default-ON 2026-07-02 (owner flip directive) and was removed from the snapshot.
-    expect(offCount).toBe(10);
+    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover). Graduated to
+    // default-ON and removed from the snapshot: papercusp-queen-warm-session (2026-07-02,
+    // owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 canary met).
+    expect(offCount).toBe(9);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

@@ -42,6 +42,7 @@ import { runOptimizationLoop, type LoopResult } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
 import { gatherChampionOutcomeEntries } from './post-acceptance-outcomes';
 import { makeLoopQdSeams } from './qd/archive-recorder';
+import { resolveLocalEliteOutcomeSigner } from './qd/local-elite-signer';
 import { readPoolAggregates } from './read-api';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
