@@ -43,5 +43,28 @@ describe('renderLlamaServerUnit', () => {
     });
     expect(unit).toContain('--flash-attn off');
     expect(unit).toContain('ExecStart=/opt/llama.cpp/bin/llama-server');
+    // No jinja/reasoningBudget passed → the flags must NOT appear (back-compat with entry #1).
+    expect(unit).not.toContain('--jinja');
+    expect(unit).not.toContain('--reasoning-budget');
+  });
+
+  it('renders --jinja and --reasoning-budget for the certified qwen3 config (WI-1596)', () => {
+    const unit = renderLlamaServerUnit({
+      alias: 'qwen3:8b',
+      weightsPath: '/home/u/.papercusp/models/Qwen3-8B-Q4_K_M.gguf',
+      host: '127.0.0.1',
+      port: 11437,
+      parallelSlots: 2,
+      ctxTotal: 16384,
+      kvCacheType: 'f16',
+      flashAttn: false,
+      jinja: true,
+      reasoningBudget: 0,
+      logPath: '/log',
+    });
+    expect(unit).toContain('--jinja --reasoning-budget 0 \\');
+    expect(unit).toContain('--alias qwen3:8b');
+    // The extra-flags line sits INSIDE the ExecStart continuation, before --alias.
+    expect(unit.indexOf('--jinja')).toBeLessThan(unit.indexOf('--alias'));
   });
 });

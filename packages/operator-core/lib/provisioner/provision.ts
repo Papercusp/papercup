@@ -153,6 +153,8 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
               ctxTotal: entry.serve.ctxTotal,
               kvCacheType: entry.serve.kvCacheType,
               flashAttn: entry.serve.flashAttn,
+              jinja: entry.serve.jinja,
+              reasoningBudget: entry.serve.reasoningBudget,
               logPath,
               binPath: opts.binPath,
             })

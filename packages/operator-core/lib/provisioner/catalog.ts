@@ -72,6 +72,13 @@ export interface CatalogEntry {
     /** vLLM `--gpu-memory-utilization` (0-1). Only meaningful when `backend === 'vllm'`;
      *  defaults to 0.9 in provision.ts's rendering when unset. */
     gpuMemoryUtilization?: number;
+    /** llama-server `--jinja` — required for structured tool-call parsing on models whose
+     *  tool format needs the jinja chat template (e.g. Qwen3's `<tool_call>`; WI-1596).
+     *  Only meaningful when `backend === 'llama-server'`. */
+    jinja?: boolean;
+    /** llama-server `--reasoning-budget N` (0 = disable thinking-mode preambles — part of
+     *  the certified qwen3 config; WI-1596). Only meaningful when `backend === 'llama-server'`. */
+    reasoningBudget?: number;
   };
   status: CatalogEntryStatus;
   /** Present iff `status === 'certified'` — the cert-battery run that certified this config. */
@@ -109,6 +116,58 @@ export const CERTIFIED_CATALOG: readonly CatalogEntry[] = [
     },
     sourceRef:
       'local-concurrent-inference-2026-07-02 D-005/D-006 — config verified against the live llama-ornith.service unit; certified 2026-07-02 by the P-006 cert battery (lib/inference-gateway/cert-battery)',
+  },
+  {
+    id: 'qwen3-8b-q4km-llama-server',
+    displayName: 'Qwen3-8B (Q4_K_M) via llama-server',
+    backend: 'llama-server',
+    model: { ollamaRef: 'qwen3:8b', quant: 'Q4_K_M', sizeGB: 5.0 },
+    hardwareTier: 'nvidia-low',
+    minVramGB: 10,
+    serve: {
+      host: '127.0.0.1',
+      portDefault: 11437,
+      parallelSlots: 2,
+      ctxTotal: 16384,
+      kvCacheType: 'f16',
+      flashAttn: false,
+      jinja: true,
+      reasoningBudget: 0,
+    },
+    status: 'certified',
+    certification: {
+      verdict: 'certified',
+      ranAt: '2026-07-03T23:18:26.415Z',
+      manglingRate: 0,
+      criticalProbes: '3/3',
+      summary:
+        '[certified] qwen3:8b Q4_K_M @ llama-server (2×8192 ctx): 3/3 critical probes pass, mangling 0.0%',
+      method:
+        'cert-battery (behavior · trimmed-shape · comms · mangling-rate) run live via cert:run against a CPU-only llama-server serve (CUDA_VISIBLE_DEVICES= — GPU held by the live ornith backend; probes measure model+template+parser behavior, placement-independent) of the official Qwen/Qwen3-8B-GGUF Q4_K_M with --jinja --reasoning-budget 0. Without --jinja the tool-call parser never engages (qwen2.5-coder:14b failed 1/3 under BOTH the embedded and official templates — wrong-tag `<tools>` emissions; that model is NOT catalog-eligible).',
+    },
+    sourceRef:
+      'local-concurrent-inference-2026-07-02 P-007 (WI-1596) — certified 2026-07-03 on the tower via cert:run; serve flags are the exact certified config (jinja + reasoning-budget 0)',
+  },
+  {
+    id: 'qwen3-8b-q4km-llama-server-metal',
+    displayName: 'Qwen3-8B (Q4_K_M) via llama-server (Apple Silicon)',
+    backend: 'llama-server',
+    model: { ollamaRef: 'qwen3:8b', quant: 'Q4_K_M', sizeGB: 5.0 },
+    hardwareTier: 'apple-silicon',
+    minVramGB: 12,
+    serve: {
+      host: '127.0.0.1',
+      portDefault: 11437,
+      parallelSlots: 2,
+      ctxTotal: 16384,
+      kvCacheType: 'f16',
+      flashAttn: false,
+      jinja: true,
+      reasoningBudget: 0,
+    },
+    status: 'provisional',
+    sourceRef:
+      'local-concurrent-inference-2026-07-02 P-007 (WI-1596) — same (model, quant, backend, template-flags) combo as qwen3-8b-q4km-llama-server, which certified 3/3 / 0% mangling on x86 CPU serve 2026-07-03; stays provisional until the cert battery runs on a real Metal serve (mac lane su-a1a71 — flip to certified with that run\'s stamp)',
   },
 ] as const;
 

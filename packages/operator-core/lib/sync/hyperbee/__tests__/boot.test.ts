@@ -13,7 +13,7 @@
  * merge poll-timer disabled so the test drives `mergeNow()` by hand.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +28,7 @@ import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import type { AdmittedLog } from '../read-merge';
+import { setReplicationStallEpisodeReporterForTests } from '../replication-liveness';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -1595,6 +1596,15 @@ describe('onSchemaVersionAlert', () => {
 // detector only cares about the shape's `peersCount()`), and drive the merge
 // pass by hand via `mergeNow()` with the poll timer disabled.
 describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
+  // These tests deliberately construct stall episodes; the default episode
+  // reporter's Leg-0 `console.error` line (the rig's grep-able serve.log token,
+  // added 2026-07-03) would trip vitest-fail-on-console. Install a silent
+  // reporter for THIS describe only — the bootHistory entries these tests
+  // assert come from the LEGACY checkReplicationStall path (no_replicator
+  // kind), not from the reporter, so silencing it changes nothing they read.
+  beforeEach(() => setReplicationStallEpisodeReporterForTests(() => {}));
+  afterEach(() => setReplicationStallEpisodeReporterForTests(null));
+
   function tmpWorkspaceRoot(): string {
     const dir = mkdtempSync(join(tmpdir(), 'mb-boot-stall-'));
     cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });

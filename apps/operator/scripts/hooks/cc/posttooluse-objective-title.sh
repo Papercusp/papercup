@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# PostToolUse hook — set the TERMINAL TITLE to this session's CURRENT objective
-# (session-objective-display-2026-06-22, P-003/P-004). The cross-CLI counterpart
-# of the Claude statusline's leading 🔭 segment: Codex and OMP have no statusline,
-# but they DO own a tty, so we emit an OSC-0 title escape (ESC ] 0 ; <obj> BEL)
-# carrying the same `coord:glance` `self.objective` (this session's in-execution
-# work-item title ?? declared coord intent). The human reading the terminal tab /
-# window title sees what THIS session is working on, tracking coordination state
-# with no LLM file-writing.
+# PostToolUse hook — set the TERMINAL TITLE to this session's FULL fleet identity
+# (session-objective-display-2026-06-22 P-003/P-004; extended to full title parity
+# 2026-07-03, WI-1963 #3). Codex and OMP have no bottom status pane (that's a
+# Claude-Code-only TUI feature), but they DO own a tty — so we emit an OSC-0 title
+# escape (ESC ] 0 ; <title> BEL) carrying the SAME `term_title` the Claude statusline
+# writes: fleets (👑/👤 + colour squares) · loop chip · model·effort · id · objective,
+# all from `coord:glance` (+ the launch model spec in PAPERCUSP_MODEL, since these CLIs
+# have no live model object like Claude's statusline stdin). So a human reading the tab /
+# window title sees the full fleet/model/loop/objective state — parity with Claude's
+# title — with no LLM file-writing. The render (term_title) is kept byte-identical to
+# statusline-fleet.sh; objective-title-parity.test.ts guards the two against drift.
 #
 # SHARED by Codex AND OMP (the same `cc/` shell contract the lock/activity hooks
 # use): both fire PostToolUse with a minimal env and own a controlling tty. We

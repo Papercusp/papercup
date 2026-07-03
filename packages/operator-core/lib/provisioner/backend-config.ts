@@ -19,6 +19,13 @@ export interface LlamaServerUnitOptions {
   ctxTotal: number;
   kvCacheType: string;
   flashAttn: boolean;
+  /** Pass `--jinja` (use the model's/served template's jinja chat template — REQUIRED for
+   *  structured tool-call parsing on models whose tool format llama-server doesn't
+   *  auto-detect without it, e.g. Qwen3's hermes-style `<tool_call>`; WI-1596). */
+  jinja?: boolean;
+  /** Pass `--reasoning-budget N` (0 disables thinking-mode preambles on reasoning models —
+   *  the qwen3 cert-battery config; WI-1596). Omit to leave the server default. */
+  reasoningBudget?: number;
   /** Absolute path to append stdout/stderr to. */
   logPath: string;
   /** llama-server binary — defaults to relying on PATH. */
@@ -30,6 +37,11 @@ export interface LlamaServerUnitOptions {
 export function renderLlamaServerUnit(opts: LlamaServerUnitOptions): string {
   const bin = opts.binPath ?? 'llama-server';
   const description = opts.description ?? `llama-server serving ${opts.alias} (provisioner wizard — local-concurrent-inference-2026-07-02 P-009)`;
+  const extraFlags = [
+    ...(opts.jinja ? ['--jinja'] : []),
+    ...(opts.reasoningBudget !== undefined ? [`--reasoning-budget ${opts.reasoningBudget}`] : []),
+  ];
+  const extraLine = extraFlags.length ? `  ${extraFlags.join(' ')} \\\n` : '';
   return `[Unit]
 Description=${description}
 After=network.target
@@ -42,7 +54,7 @@ ExecStart=${bin} \\
   --flash-attn ${opts.flashAttn ? 'on' : 'off'} \\
   -np ${opts.parallelSlots} -c ${opts.ctxTotal} \\
   --cache-type-k ${opts.kvCacheType} --cache-type-v ${opts.kvCacheType} \\
-  --alias ${opts.alias}
+${extraLine}  --alias ${opts.alias}
 Restart=on-failure
 RestartSec=5
 Nice=5
