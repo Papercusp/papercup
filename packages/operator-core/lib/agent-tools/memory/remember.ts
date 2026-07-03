@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
-import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '../../memory/op-deadline';
+import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
@@ -296,7 +296,12 @@ export default defineTool({
     try {
       // B1: bounded so a wedged embedder/store returns `memory_timeout` instead
       // of riding the ~55–60s transport cap out to an apparent infinite hang.
-      ({ ids } = await withMemoryToolTimeout(backend.remember(args.content, {
+      // EI-6684: wrapped in withMemoryWriteRetry so a TRANSIENT write-path stall
+      // (the reported "2x memory_timeout in a row") gets a bounded retry instead
+      // of silently dropping the fact on the first timeout. Each retry re-issues
+      // a fresh backend.remember (a factory) since a settled promise can't be
+      // re-awaited. A sustained wedge fails fast (the degraded-latch skip).
+      ({ ids } = await withMemoryWriteRetry(() => backend.remember(args.content, {
         scope: scopeKey,
         kind: args.kind,
         metadata,

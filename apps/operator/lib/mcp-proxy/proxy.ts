@@ -22,6 +22,9 @@
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
 import http from 'node:http';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 /**
  * Dedicated upstream agent with keep-alive DISABLED — backend-reliability-100pct-2026-07-03 W1.3.
@@ -43,6 +46,29 @@ import http from 'node:http';
  * correct, safe fix now.)
  */
 const UPSTREAM_AGENT = new http.Agent({ keepAlive: false, maxSockets: Infinity });
+
+/**
+ * W8 (backend-reliability-100pct-2026-07-03) — make the proxy's forwarded FAILURES VISIBLE.
+ * A non-2xx the proxy forwards, a retry-recovery, or a window-exhaustion NEVER creates a
+ * `tool_invocations` row (the request errors at the HTTP layer, BELOW tool dispatch), so the
+ * agent-facing failure rate was under-counted and "transient errors" felt normal — exactly how
+ * the W1.3 stale-socket 400s stayed invisible. Append a structured JSONL record (journald-
+ * independent, survives restart) that a health collector / SLO can ingest. NEVER throws —
+ * telemetry must never break forwarding. Env override: PAPERCUSP_MCP_PROXY_FAILURE_LOG.
+ */
+function failureLogPath(): string {
+  // Resolved per-call (not cached at module load) so the sink is env-overridable at runtime + testable.
+  return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
+}
+function recordProxyFailure(rec: Record<string, unknown>): void {
+  try {
+    const path = failureLogPath();
+    mkdirSync(dirname(path), { recursive: true }); // idempotent; failures are rare so this is cheap
+    appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + '\n');
+  } catch {
+    /* telemetry must never break the proxy */
+  }
+}
 
 export interface McpProxyOptions {
   listenPort: number;
@@ -157,9 +183,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const outcome = await forwardOnce(opts, req.method ?? 'GET', req.url ?? '/', req.headers, body);
           if (outcome.ures) {
             const ures = outcome.ures;
-            res.writeHead(ures.statusCode ?? 502, ures.headers);
+            const status = ures.statusCode ?? 502;
+            res.writeHead(status, ures.headers);
             ures.pipe(res);
-            if (attempts > 1) log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
+            if (attempts > 1) {
+              log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
+              recordProxyFailure({ kind: 'recovered', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started });
+            }
+            // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
+            // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
+            // regression of that class is instantly visible, never silently "transient".
+            if (status >= 400) {
+              recordProxyFailure({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
+            }
             return;
           }
           last = outcome;
@@ -181,6 +217,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }),
         );
         log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
+        recordProxyFailure({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
       })();
     });
   });

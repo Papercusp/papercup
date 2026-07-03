@@ -345,8 +345,14 @@ avoidance** — so the semantic opt-in ships behind a flag and a gate, never on 
 default.
 
 **The flag — `papercusp-tool-delta-protocol`** (`libs/flags/src/types.ts`,
-default **ON** since the owner-directed flip 2026-06-22; removed from
-`KNOWN_DARK_FLAGS`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
+default **ON** since the owner-directed flip 2026-06-22; not present in the
+`DARK_FLAGS` registry). Since the P-011 flag-default inversion
+(`enforce-system-on-generic-work-2026-06-29`), `FLAG_DEFAULTS` is **derived**
+from `DARK_FLAGS` (`!DARK_FLAGS.has(key)`) rather than hand-written — a flag
+defaults ON simply by NOT being registered in `DARK_FLAGS`, which replaced the
+old flat `KNOWN_DARK_FLAGS` allowlist with a reasoned
+`Map<FlagKey, { case, reason }>` (`DarkCase`: `incomplete` | `owner-authority`
+| `cutover` | `parked`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
 responses (`full | not_modified`); a tool never emits a `mode:delta` body. The
 flag is the master switch for the semantic merge. It is a `FLAGS` entry, **not**
 an env boolean (env gates ship dark, dodge the default-on guard, and can't be

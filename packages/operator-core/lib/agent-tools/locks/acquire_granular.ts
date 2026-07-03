@@ -19,7 +19,9 @@ import { hardText, LIMITS } from '../limits';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
-const json = (payload: unknown) => ({ data: payload });
+const json = (payload: unknown) => ({
+  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+});
 
 export default defineTool({
   name: 'locks:acquire_granular',

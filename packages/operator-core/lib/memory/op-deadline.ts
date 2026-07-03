@@ -113,6 +113,89 @@ export function withMemoryToolTimeout<T>(p: Promise<T>, label: string): Promise<
   });
 }
 
+/**
+ * How many total attempts a memory WRITE gets under the tool deadline before a
+ * timeout is surfaced. EI-6684: a single transient write-path stall (the mem0
+ * sidecar / PG insert briefly wedged) previously dropped the fact SILENTLY on
+ * the first `MemoryTimeoutError` — agents write-and-forget, so the durable fact
+ * was lost with no second chance (the reported incident: two consecutive
+ * memory:remember calls timed out within seconds). A bounded retry gives a
+ * TRANSIENT blip another attempt. Env-tunable; default 2 (1 retry), clamped to
+ * [1, 5]. Evaluated at call time so tests can flip it per-test.
+ *
+ * Kept SMALL on purpose: a write retry is ~2× the backend load on the (rare)
+ * timeout path, so a large count risks AMPLIFYING a sustained wedge rather than
+ * riding out a blip — and a sustained wedge is additionally skipped via the
+ * process degraded latch (see `withMemoryWriteRetry`).
+ */
+export function memoryWriteMaxAttempts(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 5) : 2;
+}
+
+/** Backoff between memory-write retry attempts (ms). Short — the deadline
+ *  already bounded the failed attempt; this is just a breather to let a
+ *  momentary blip clear. Env-tunable; default 250ms. */
+export function memoryWriteRetryBackoffMs(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 250;
+}
+
+/**
+ * Run a memory WRITE under the tool deadline, RETRYING on a timeout so a
+ * TRANSIENT stall doesn't silently drop the fact (EI-6684). `attempt` is a
+ * factory the caller re-invokes for each try (a fresh backend promise per
+ * attempt — a settled promise can't be re-awaited).
+ *
+ * Retry policy — deliberately conservative to match this module's fail-fast,
+ * degrade-under-load posture:
+ *   - Retries ONLY on `MemoryTimeoutError`. A clean `MemoryUnavailableError`
+ *     or a classified embed failure is DETERMINISTIC (store down / rate-limited
+ *     / bad key) — retrying it just adds latency — so those propagate on the
+ *     first attempt.
+ *   - SKIPS the retry when the process was ALREADY in the degraded cooldown
+ *     BEFORE this write (captured up front): a sustained / known-wedged backend
+ *     should fail fast, not pile retries on. Only a FRESH (possibly transient)
+ *     timeout is retried.
+ *   - Bounded (`memoryWriteMaxAttempts`, default 2) with a short backoff, so the
+ *     worst-case wait (attempts × deadline + backoffs) stays well under the
+ *     ~55–60s MCP transport cap.
+ *
+ * TRADE-OFF (documented honestly): `withMemoryTimeout` does NOT cancel the
+ * underlying work, so if a timed-out first attempt LATER commits, a retry can
+ * create a DUPLICATE row. That is an accepted trade — a rare duplicate fact
+ * (dedup-on-write is a separate, opt-in hygiene layer) is far less harmful than
+ * a SILENTLY LOST one, which is the failure this fixes.
+ */
+export async function withMemoryWriteRetry<T>(
+  attempt: () => Promise<T>,
+  label: string,
+  opts: { sleep?: (ms: number) => Promise<void> } = {},
+): Promise<T> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // Snapshot the degraded state BEFORE the first attempt — this write's own
+  // timeout will arm the latch (via withMemoryToolTimeout), so reading it after
+  // would always look degraded. A process that was already degraded when the
+  // write STARTED is a sustained wedge → fail fast, no retry.
+  const alreadyDegraded = isMemoryDegraded();
+  const maxAttempts = memoryWriteMaxAttempts();
+  let lastErr: unknown;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await withMemoryToolTimeout(attempt(), label);
+    } catch (err) {
+      lastErr = err;
+      const canRetry =
+        err instanceof MemoryTimeoutError && !alreadyDegraded && i < maxAttempts - 1;
+      if (!canRetry) throw err;
+      const backoff = memoryWriteRetryBackoffMs();
+      if (backoff > 0) await sleep(backoff);
+    }
+  }
+  // Unreachable — the loop always returns or throws — but satisfies the type.
+  throw lastErr;
+}
+
 /** Flip the process into degraded mode on a memory timeout. Other failures are
  *  ignored here (they are handled per-caller); only a HANG should quiet the
  *  inject path. */

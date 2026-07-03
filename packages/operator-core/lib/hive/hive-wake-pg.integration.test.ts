@@ -107,6 +107,10 @@ beforeAll(async () => {
       -- (column reschedule_interval_sec ... does not exist).
       reschedule_interval_sec integer,
       target_owner_id text,
+      -- migration 408 (schedule-inventory-and-ephemeral-tier): listDueCronRoutines
+      -- filters tier = durable, so the hand-rolled DDL needs this column or the
+      -- due-list query fails (column tier does not exist). Pre-existing drift.
+      tier text NOT NULL DEFAULT 'durable',
       CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
     )
   `);

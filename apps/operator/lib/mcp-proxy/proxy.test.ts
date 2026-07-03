@@ -131,4 +131,31 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     }
     expect(connections).toBe(N);
   });
+
+  it('RECORDS forwarded failures to the durable JSONL sink (W8 visibility — kills the under-counting)', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const logFile = path.join(os.tmpdir(), `mcp-proxy-fail-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const prev = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      const targetPort = await freePort(); // nothing listening → refused for the whole window → 503 exhaustion
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort, retryWindowMs: 250, retryBackoffMs: 60, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy));
+      expect(r.status).toBe(503);
+      // The exhaustion (previously invisible in tool_invocations) must be durably recorded.
+      const recs = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const rec = recs.find((x) => x.kind === 'exhausted_refused');
+      expect(rec).toBeTruthy();
+      expect(rec.status).toBe(503);
+      expect(typeof rec.ts).toBe('string');
+      expect(rec.attempts).toBeGreaterThanOrEqual(1);
+      fs.rmSync(logFile, { force: true });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prev;
+    }
+  });
 });

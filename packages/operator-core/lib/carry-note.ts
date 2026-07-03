@@ -131,6 +131,23 @@ export interface CarryJournalEntry {
   note: string;
 }
 
+/** Normalize a `journal` jsonb column read from PG. Depending on the pg client's
+ *  type-parser config, a jsonb column comes back either already-parsed (a JS
+ *  array) or as the raw JSON text — accept both, and any other shape degrades to
+ *  an empty ring rather than spreading a string into characters. */
+function normalizeJournal(v: unknown): CarryJournalEntry[] {
+  if (!v) return [];
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? (parsed as CarryJournalEntry[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(v) ? (v as CarryJournalEntry[]) : [];
+}
+
 /**
  * PURE (L1a): append a note to a carry-journal ring, enforcing all three bounds
  * (entry count, per-note chars, total chars — oldest dropped first). A blank note
@@ -193,10 +210,10 @@ export async function setCarryNote(
   const trimmed = (note ?? '').trim();
   const now = Date.now();
   return (await sql.begin(async (tx) => {
-    const rows = await tx<{ journal: CarryJournalEntry[] | null }[]>`
+    const rows = await tx<{ journal: unknown }[]>`
       SELECT journal FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
-    const prevJournal = rows[0]?.journal ?? [];
+    const prevJournal = normalizeJournal(rows[0]?.journal);
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
@@ -241,11 +258,10 @@ export async function getCarryJournal(ref: CarryNoteRef | string): Promise<Carry
     return [];
   }
   const { sql } = getOrgPg();
-  const rows = await sql<{ journal: CarryJournalEntry[] | null }[]>`
+  const rows = await sql<{ journal: unknown }[]>`
     SELECT journal FROM harness_shared.carry_notes
      WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
-  const journal = rows[0]?.journal ?? [];
-  return [...journal].reverse();
+  return [...normalizeJournal(rows[0]?.journal)].reverse();
 }
 
 // ── su-loop carry-note (P-002) — the SU AUTO loop's cold-wake anchor ──────────

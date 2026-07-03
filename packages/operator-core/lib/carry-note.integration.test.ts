@@ -14,7 +14,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from './test/_pg-helpers';
+import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

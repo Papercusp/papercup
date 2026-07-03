@@ -64,7 +64,29 @@ const wedgedBackend = () => ({
   forget: vi.fn(() => NEVER<void>()),
 });
 
-const useBackend = (b: ReturnType<typeof wedgedBackend>): void => {
+/** A backend whose FIRST remember hangs (a transient write-path stall) then
+ *  succeeds — the EI-6684 recovery case. available()/search() are healthy (the
+ *  incident: "reads worked fine"), so the retry lands on the write. */
+const flakyWriteBackend = () => {
+  let rememberCalls = 0;
+  return {
+    name: 'flaky-write',
+    available: vi.fn(async () => ({ ok: true })),
+    search: vi.fn(async () => [] as unknown[]),
+    list: vi.fn(async () => [] as unknown[]),
+    get: vi.fn(async () => null),
+    remember: vi.fn(() => {
+      rememberCalls += 1;
+      return rememberCalls === 1
+        ? NEVER<{ ids: string[] }>()
+        : Promise.resolve({ ids: ['m-new'], storedEvents: 1 });
+    }),
+    update: vi.fn(async () => {}),
+    forget: vi.fn(async () => {}),
+  };
+};
+
+const useBackend = (b: { name: string }): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
@@ -168,5 +190,28 @@ describe('memory tools return memory_timeout on a wedged backend (no infinite ha
       ok: false,
       reason: 'memory_timeout',
     });
+  });
+});
+
+describe('memory:remember recovers a TRANSIENT write timeout instead of dropping the fact (EI-6684)', () => {
+  beforeEach(() => {
+    // No backoff between attempts so the retry is instant in the test.
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '0';
+  });
+  afterAll(() => {
+    delete process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+  });
+
+  it('a first-attempt write timeout is RETRIED and the second attempt succeeds → { ok:true, ids }', async () => {
+    const backend = flakyWriteBackend();
+    useBackend(backend);
+    // The reported incident was two consecutive memory_timeouts silently dropping
+    // a ~700-char project fact; here the write path is only TRANSIENTLY wedged, so
+    // the bounded retry must recover it rather than return memory_timeout.
+    expect(parse(await remember.handler({ content: 'a durable fact', kind: 'project' }, ctx))).toEqual({
+      ok: true,
+      ids: ['m-new'],
+    });
+    expect(backend.remember).toHaveBeenCalledTimes(2); // 1 timed-out + 1 recovered
   });
 });

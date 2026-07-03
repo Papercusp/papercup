@@ -15,6 +15,9 @@ import {
   resetMemoryDegradedForTest,
   memoryDegradedCooldownMs,
   withMemoryTimeout,
+  withMemoryWriteRetry,
+  memoryWriteMaxAttempts,
+  memoryWriteRetryBackoffMs,
   embedFailureReason,
 } from './op-deadline';
 
@@ -87,6 +90,125 @@ describe('withMemoryTimeout — deadline race', () => {
 
   it('resolves with the value when the op beats the deadline', async () => {
     await expect(withMemoryTimeout(Promise.resolve('ok'), 'fast-op', 1000)).resolves.toBe('ok');
+  });
+});
+
+describe('withMemoryWriteRetry — bounded retry so a transient timeout does not silently drop the fact (EI-6684)', () => {
+  // A never-settling promise simulates a wedged write; the tool deadline is
+  // shrunk so it fires in ~20ms (real timers) instead of 10s.
+  const NEVER = <T>(): Promise<T> => new Promise<T>(() => {});
+  const noSleep = async () => {};
+  let prevTimeout: string | undefined;
+
+  beforeEach(() => {
+    resetMemoryDegradedForTest();
+    prevTimeout = process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+    process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = '20';
+  });
+  afterEach(() => {
+    resetMemoryDegradedForTest();
+    if (prevTimeout === undefined) delete process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+    else process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = prevTimeout;
+    delete process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+  });
+
+  it('RETRIES a transient timeout and succeeds on the second attempt — the fact is NOT dropped', async () => {
+    let calls = 0;
+    const attempt = () => {
+      calls += 1;
+      // First attempt hangs past the deadline (the "transient stall"); the retry succeeds.
+      return calls === 1 ? NEVER<{ ids: string[] }>() : Promise.resolve({ ids: ['m1'] });
+    };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).resolves.toEqual({ ids: ['m1'] });
+    expect(calls).toBe(2); // 1 timed-out + 1 success — the drop the incident reported is now recovered
+  });
+
+  it('gives up with MemoryTimeoutError after the bounded attempts on a SUSTAINED wedge — never hangs', async () => {
+    let calls = 0;
+    const attempt = () => { calls += 1; return NEVER<unknown>(); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).rejects.toBeInstanceOf(
+      MemoryTimeoutError,
+    );
+    expect(calls).toBe(2); // default maxAttempts — bounded, not an unbounded storm
+  });
+
+  it('does NOT retry a NON-timeout failure (store down / bad key) — fails fast, one attempt', async () => {
+    let calls = 0;
+    const attempt = () => { calls += 1; return Promise.reject(new Error('mem0_unavailable')); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).rejects.toThrow('mem0_unavailable');
+    expect(calls).toBe(1); // deterministic failure — retrying it just adds latency
+  });
+
+  it('does NOT retry when the process was ALREADY degraded before the write — a sustained wedge fails fast', async () => {
+    noteMemoryFailure(new MemoryTimeoutError('an earlier memory op timed out')); // arm the latch first
+    expect(isMemoryDegraded()).toBe(true);
+    let calls = 0;
+    const attempt = () => { calls += 1; return NEVER<unknown>(); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).rejects.toBeInstanceOf(
+      MemoryTimeoutError,
+    );
+    expect(calls).toBe(1); // already-degraded skip — don't pile retries on a known-wedged backend
+  });
+
+  it('a first-attempt SUCCESS runs exactly once (no wasted retry)', async () => {
+    let calls = 0;
+    const attempt = () => { calls += 1; return Promise.resolve({ ids: ['ok'] }); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).resolves.toEqual({ ids: ['ok'] });
+    expect(calls).toBe(1);
+  });
+
+  it('honors PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS', async () => {
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '3';
+    let calls = 0;
+    const attempt = () => { calls += 1; return NEVER<unknown>(); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).rejects.toBeInstanceOf(
+      MemoryTimeoutError,
+    );
+    expect(calls).toBe(3);
+  });
+
+  it('max attempts = 1 opts OUT of retry (a timeout is surfaced on the first attempt)', async () => {
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '1';
+    let calls = 0;
+    const attempt = () => { calls += 1; return NEVER<unknown>(); };
+    await expect(withMemoryWriteRetry(attempt, 'write', { sleep: noSleep })).rejects.toBeInstanceOf(
+      MemoryTimeoutError,
+    );
+    expect(calls).toBe(1);
+  });
+});
+
+describe('memoryWriteMaxAttempts / memoryWriteRetryBackoffMs — tunables', () => {
+  afterEach(() => {
+    delete process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+    delete process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+  });
+
+  it('defaults: 2 attempts, 250ms backoff', () => {
+    expect(memoryWriteMaxAttempts()).toBe(2);
+    expect(memoryWriteRetryBackoffMs()).toBe(250);
+  });
+
+  it('clamps max attempts to [1, 5] and floors fractionals; invalid → default', () => {
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '99';
+    expect(memoryWriteMaxAttempts()).toBe(5);
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '3.9';
+    expect(memoryWriteMaxAttempts()).toBe(3);
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '0';
+    expect(memoryWriteMaxAttempts()).toBe(2); // < 1 → default
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = 'junk';
+    expect(memoryWriteMaxAttempts()).toBe(2); // NaN → default
+  });
+
+  it('backoff honors env, accepts 0 (no backoff), rejects negatives/junk', () => {
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '1000';
+    expect(memoryWriteRetryBackoffMs()).toBe(1000);
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '0';
+    expect(memoryWriteRetryBackoffMs()).toBe(0);
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '-5';
+    expect(memoryWriteRetryBackoffMs()).toBe(250); // negative → default
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = 'junk';
+    expect(memoryWriteRetryBackoffMs()).toBe(250);
   });
 });
 
