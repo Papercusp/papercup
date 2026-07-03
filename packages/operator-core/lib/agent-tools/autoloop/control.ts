@@ -72,7 +72,18 @@ export default defineTool({
         typeof ctx.workspaceId === 'string' && ctx.workspaceId.trim()
           ? ctx.workspaceId.trim()
           : activeWorkspaceId();
-      const scopes = workspaceBrainReadKeys(workspaceId, slug, await isWorkspaceCoordinationOn());
+      const brainScopes = workspaceBrainReadKeys(workspaceId, slug, await isWorkspaceCoordinationOn());
+      // loop:arm loops (loop-su-*/loop-role-*) record their fire-gate under
+      // install_slug='*' (workspace-wide warm-session loops — see loop-fire.ts
+      // `checkFireGate(input.installSlug, …)` / `recordFire`). The per-harness brain
+      // scopes ([workspaceId, slug]) never include '*', so a role-scoped reset must
+      // also clear the '*' scope — otherwise the remediation the chronic-failure
+      // watchdog explicitly prescribes ("then autoloop:control reset-errors") can
+      // NEVER reach a loop-su-*@* autoloop_state row, and the exact class of loops
+      // that triggers it stays un-resettable (EI-6753). Only when a `role` is given
+      // (always the loop:arm case) — a role-less reset stays per-harness so it can't
+      // silently wipe every warm-session loop's counter across the workspace.
+      const scopes = args.role ? [...new Set([...brainScopes, '*'])] : brainScopes;
       const results = [];
       for (const scope of scopes) {
         results.push({ harness: scope, rowsReset: await resetFireErrors(scope, args.role) });
