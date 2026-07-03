@@ -31,6 +31,14 @@ vi.mock('../../../sync/hyperbee/in-process-status', () => ({
   getInProcessSubstrateStatus: M.getInProcessSubstrateStatus,
 }));
 vi.mock('../../../hive-directory-boot', () => ({ ensureHiveDirectoryWired: M.ensureHiveDirectoryWired }));
+// WI-899 added substrate.sidecarLive, resolved from probeSubstrateSidecar(). Unmocked, its
+// value depends on whether a SUBSTRATE_SIDECAR is reachable on the HOST — env-dependent, so it
+// flakes on the dev box (where sidecars run) vs a clean CI box. Pin sidecar mode OFF (present:false
+// → sidecarLive:null) so the shape assertion below is hermetic.
+vi.mock('../../../service-health', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../service-health')>();
+  return { ...actual, probeSubstrateSidecar: vi.fn(async () => ({ present: false, up: false })) };
+});
 
 import statusRoute from './federation-status';
 import {
@@ -116,6 +124,9 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
       degraded: 1,
       // no undrained outbox rows (default sqlUnsafe → []) → honest zero-drain
       drain: { stalledHarnesses: 0, worstUndrainedCount: 0, worstOldestUndrainedAgeMs: null },
+      // WI-899 (A): SUBSTRATE_SIDECAR liveness — sidecar mode off in this test (mocked
+      // probeSubstrateSidecar → present:false) → null (nothing to probe).
+      sidecarLive: null,
     });
   });
 

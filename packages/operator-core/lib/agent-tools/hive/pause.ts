@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
+import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { clearHiveTimeWake, resolveHiveHomeSlug } from '../../hive/wake';
 import { setHiveStarted, setHivePlacementStarted, anyHivePlacementStarted } from '../../hive/started';
@@ -111,6 +112,9 @@ export default defineTool({
             'The hive is being PAUSED. Checkpoint your state (commit pending edits), release your locks ' +
             '(locks:release { all_mine: true }), return claimed work-items to the pool (work_items:release), ' +
             'and end your turn cleanly. You will not be re-woken until the hive is started again.',
+          // P-003: an intrinsically HIVE-WIDE Queen control — stamp it so a recipient
+          // reads it as a real hive pause, not a fleet-leader draining its members.
+          extra: { [CUE_AUTHORITY_FIELD]: hiveWideCueAuthority(installSlug) },
         });
       }
     }

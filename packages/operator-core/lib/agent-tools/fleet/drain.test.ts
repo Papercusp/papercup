@@ -22,6 +22,10 @@ vi.mock('../coordination/identity', () => ({
 // classifyAgentPane taxonomy — mock only the presence read so the REAL wiring runs
 // (a roleless su- id short-circuits before this is even consulted).
 vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null) }));
+// P-003: the drain cue is stamped with the drainer's authority, resolved from
+// presence.agentRole/hiveSlug + fleet membership. Mock the fleet join so the unit
+// test never reaches getOrgPg; the sender's kind comes from the getPresence mock.
+vi.mock('../coordination/presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new Map()) }));
 
 import drainTool from './drain';
 import { getPresence } from '../coordination/presence';
@@ -137,6 +141,29 @@ describe('fleet:drain (P-051 / D-006; bulk keyed-array P-006)', () => {
       ['planner', 'responsive'],
     ]);
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  // ── P-003: the drain cue carries the drainer's authority + scope stamp ──
+  it('stamps the drain cue with the drainer\'s authority (a Queen → hive-queen/hive-wide)', async () => {
+    // Sender 's-queen' resolves to a queen-kind session with a known hive; the bee
+    // target has no presence row (bee/auto → drainable).
+    getPresenceM.mockImplementation((async (id: string) =>
+      id === 's-queen' ? { ownerId: id, agentRole: 'queen', hiveSlug: 'papercusp' } : null) as typeof getPresence);
+    const b = await env({ bee_id: 's-bee-1' });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    const [, msg] = sendMessage.mock.calls[0] as [unknown, { extra?: Record<string, unknown> }];
+    expect(msg.extra).toEqual({
+      cueAuthority: { authority: 'hive-queen', authorityRef: 'papercusp', scope: 'hive-wide' },
+    });
+  });
+
+  it('leaves the drain cue UNstamped when the drainer has no recognized authority (a bee sender)', async () => {
+    // Default beforeEach: getPresence → null, so 's-queen' classifies as a plain bee
+    // → no control authority → no stamp (never a self-asserted one).
+    const b = await env({ bee_id: 's-bee-1' });
+    expect(b.results[0].ok).toBe(true);
+    const [, msg] = sendMessage.mock.calls[0] as [unknown, { extra?: unknown }];
+    expect(msg.extra).toBeUndefined();
   });
 
   it('a mixed batch drains the bees and refuses ONLY the responsive session', async () => {

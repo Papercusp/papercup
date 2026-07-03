@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
+import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveHiveHomeSlug } from '../../hive/wake';
 import { setOverwatchStarted } from '../../overwatch/control-state';
@@ -101,6 +102,9 @@ export default defineTool({
             'The overwatch is being PAUSED. Checkpoint your state, release your locks ' +
             '(locks:release { all_mine: true }), and end your turn cleanly. You will not be ' +
             're-woken until the overwatch is started again.',
+          // P-003: an intrinsically HIVE-WIDE Queen-sibling control — stamp it so the
+          // stop cue reads as a real hive-level pause, not a peer's fleet drain.
+          extra: { [CUE_AUTHORITY_FIELD]: hiveWideCueAuthority(installSlug) },
         });
       }
     }

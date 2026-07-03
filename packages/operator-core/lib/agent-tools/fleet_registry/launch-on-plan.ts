@@ -199,13 +199,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, context-size (full|trimmed), brain, add-dir, allowSubagents (opt every member back IN to its own subagent-launch tool — DENIED BY DEFAULT for all psu launches), plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+    "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu flags thread onto every member — account, workspace, role, model, feature, launch-context, profile, context-size, brain, add-dir, allowSubagents (subagents DENIED BY DEFAULT), plus `extraArgs` for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start). Linux + macOS only.",
   guidance: {
     when: 'Routing option (3) — "spawn a new desktop fleet to work a plan" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user\'s desktop and start working immediately.',
     notWhen:
       'You only need worker windows with no fleet/plan → capability:terminal. You only need to register a fleet (no terminals) → fleet:create. Authoring or starting the plan → plans:apply-plan-block / plans:start (do that FIRST; this tool does not create or start plans).',
     chaining:
-      'plans:apply-plan-block (or plans:new + plans:add-item) → plans:start (optional, for Queen visibility) → fleet:launch-on-plan { name, plan, count }. As leader you then loop:arm a LEAN monitor — a per-wake dev:pg_query burn-down + coord:inbox to catch and ack messages addressed to you (members flag blockers/findings with wakeOnReply). Do NOT poll fleet:assignments coverage[] or full coord:presence every wake — that blows leader context (the tool response spells out the full leader job).',
+      'plans:apply-plan-block (or plans:new + plans:add-item) → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a LEAN monitor (per-wake dev:pg_query burn-down + coord:inbox); don\'t poll full fleet:assignments/coord:presence every wake (blows leader context).',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',

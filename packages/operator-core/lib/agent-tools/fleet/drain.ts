@@ -26,6 +26,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { classifyOwnerDriveMode } from '../coordination/agent-drive-mode';
+import { resolveSenderCueAuthority } from '../coordination/cue-authority-resolve';
+import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 export default defineTool({
@@ -35,8 +37,8 @@ export default defineTool({
   guidance: {
     when: 'You (the Queen) want to reclaim bee slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each bee a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
-      'The bee is actively running a high-priority task (let it finish naturally). Or if immediate slot reclaim is critical (use fleet:cancel). Or if the bee is unresponsive (use fleet:cancel after a timeout). NEVER to reclaim an owner-directed session (an su-… engineer, a sentinel/operator, or a planner): they are not part of the maxBees loop population — the tool refuses them, but do not target them in the first place (pausing the Hive Queen does NOT mean drain your fleet-leader peers).',
-    chaining: 'fleet:drain { bee_id } | { bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure (or a responsive-session refusal) never fails the rest.',
+      'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the Hive Queen ≠ drain your fleet-leader peers).',
+    chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure never fails the rest.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -66,11 +68,20 @@ export default defineTool({
     // as bee_ids). Resolved from the same drive-mode axis the roster classifies by;
     // resolved once, in parallel, before the send loop.
     const driveModeById = new Map<string, Awaited<ReturnType<typeof classifyOwnerDriveMode>>>();
-    await Promise.all(
-      beeIds.map(async (id) => {
-        driveModeById.set(id, await classifyOwnerDriveMode(id));
-      }),
-    );
+    // P-003: resolve the DRAINER's structured authority + scope ONCE, in parallel
+    // with the per-target drive-mode reads. Stamped on every drain cue so a recipient
+    // distinguishes a fleet leader draining ITS members (fleet-leader→fleet-members)
+    // from the Hive Queen pausing the hive (hive-queen→hive-wide) — the missing
+    // provenance at the core of the incident. Sender-derived (never self-asserted);
+    // best-effort → null for a caller with no recognized control authority.
+    const [, senderAuthority] = await Promise.all([
+      Promise.all(
+        beeIds.map(async (id) => {
+          driveModeById.set(id, await classifyOwnerDriveMode(id));
+        }),
+      ),
+      resolveSenderCueAuthority(identity),
+    ]);
     const summary = `Graceful drain cue: release your slot`;
     const body =
       `You are being asked to gracefully wind down and release your slot so the Queen can place higher-priority work.\n\n` +
@@ -103,8 +114,14 @@ export default defineTool({
           };
         }
         // One drain cue PER bee — never a single broadcast: each bee must be the
-        // sole recipient so its handler reacts to its own slot.
-        const sent = await sendMessage(identity, { to: [bee_id], summary, body });
+        // sole recipient so its handler reacts to its own slot. P-003: stamp the
+        // cue with the drainer's authority+scope when we could resolve one.
+        const sent = await sendMessage(identity, {
+          to: [bee_id],
+          summary,
+          body,
+          ...(senderAuthority ? { extra: { [CUE_AUTHORITY_FIELD]: senderAuthority } } : {}),
+        });
         return {
           ok: true as const,
           bee_id,

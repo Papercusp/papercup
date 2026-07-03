@@ -26,6 +26,7 @@
 
 import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES } from './coord-lifecycle/records';
+import { readCueAuthority, renderCueAuthorityTag } from './agent-tools/coordination/cue-authority';
 
 export interface LegendEntry {
   glyph: string;
@@ -88,6 +89,16 @@ export interface CoordLineSource {
   // digest-notify coalescing fields
   subject?: string;
   digest?: boolean;
+  /**
+   * Structured authority + scope of a CONTROL cue (drain / pause / steer) — the
+   * `cueAuthority` envelope field an emit site stamps via sendMessage.extra
+   * (queen-fleet-authority-boundary P-003). When present + well-formed, the line
+   * is prefixed with a `[hive-queen(<hive>)→hive-wide]` /
+   * `[fleet-leader(<slug>)→fleet-members(<slug>)]` tag so a recipient sees at a
+   * glance whether it's a hive-wide Queen pause or a fleet leader draining its own
+   * members. `unknown` (validated by readCueAuthority) so a legacy/forged value is
+   * simply ignored, never rendered. */
+  cueAuthority?: unknown;
 }
 
 /**
@@ -211,7 +222,13 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
   for (const e of shown) {
     const glyph = glyphFor(e);
     const handle = shortHandle(e.from);
-    const text = clip(e.summary || e.body || '(no summary)', textCap);
+    const body = clip(e.summary || e.body || '(no summary)', textCap);
+    // queen-fleet-authority-boundary P-003: a CONTROL cue (drain/pause/steer) carries
+    // a structured authority+scope stamp — surface it as a leading `[…]` tag so the
+    // reader distinguishes a hive-wide Queen pause from a fleet leader draining its
+    // own members. Malformed/absent → readCueAuthority returns null → no tag.
+    const stamp = readCueAuthority(e as unknown as Record<string, unknown>);
+    const text = stamp ? `[${renderCueAuthorityTag(stamp)}] ${body}` : body;
     lines.push(`${glyph} ${handle} ${text}`);
   }
   return lines.join('\n');

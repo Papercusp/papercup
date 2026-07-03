@@ -91,6 +91,45 @@ describe('renderInjection — positional [coord+N] block', () => {
   });
 });
 
+describe('renderInjection — cue-authority stamp tag (queen-fleet-authority-boundary P-003)', () => {
+  it('prefixes a hive-wide Queen pause cue with its authority tag', () => {
+    const out = renderInjection([
+      e({
+        from: 's-queen',
+        kind: 'message',
+        summary: 'the hive is being paused',
+        cueAuthority: { authority: 'hive-queen', authorityRef: 'papercusp', scope: 'hive-wide' },
+      }),
+    ]);
+    expect(out).toContain('[hive-queen(papercusp)→hive-wide] the hive is being paused');
+  });
+
+  it("prefixes a fleet leader's drain cue with its fleet-scoped authority (not mistaken for a hive pause)", () => {
+    const out = renderInjection([
+      e({
+        from: 'su-lead',
+        kind: 'message',
+        summary: 'release your slot',
+        cueAuthority: {
+          authority: 'fleet-leader',
+          authorityRef: 'windows-parity',
+          scope: 'fleet-members',
+          scopeRef: 'windows-parity',
+        },
+      }),
+    ]);
+    expect(out).toContain('[fleet-leader(windows-parity)→fleet-members(windows-parity)] release your slot');
+  });
+
+  it('renders no tag for an ordinary line or a malformed stamp (defensive, never throws)', () => {
+    // the `[coord+N]` header legitimately has a '[' — assert the CONTENT line is untagged
+    expect(renderInjection([e({ summary: 'plain note' })])).toContain('- ab533 plain note');
+    expect(
+      renderInjection([e({ summary: 'forged', cueAuthority: { authority: 'god', authorityRef: 'x', scope: 'hive-wide' } })]),
+    ).toContain('- ab533 forged');
+  });
+});
+
 describe('renderCoordLegend + anti-desync (P-002)', () => {
   it('declares the positional grammar', () => {
     const legend = renderCoordLegend();

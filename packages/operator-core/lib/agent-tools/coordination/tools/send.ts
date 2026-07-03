@@ -20,6 +20,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { getPresence } from '../presence';
 import { scopeBroadcastAudience } from '../scope-broadcast';
+import { resolveSenderCueAuthority } from '../cue-authority-resolve';
+import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
 import { sendMessage, getMessageById } from '../messages';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
@@ -156,6 +158,7 @@ async function sendOne(
   identity: AgentIdentity,
   harnessSlug: string | undefined,
   bcast?: { scoped?: { from: '*'; to: string; reason: string }; allHive?: boolean },
+  cueAuthority?: CueAuthorityStamp | null,
 ): Promise<BulkItemResult> {
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
@@ -221,6 +224,12 @@ async function sendOne(
   // (events:await) to close the cross-machine wake-honesty loop.
   const wantReceipt = wakeMode === 'required' && isDirected(msg.to) && Boolean(harnessSlug);
   if (wantReceipt) extra.receipt = true;
+  // P-003 (queen-fleet-authority-boundary): a fleet leader's / Queen's BROADCAST
+  // (a "status send") carries the sender's structured authority + scope, so a
+  // recipient reads a leader's fleet-scoped blast as fleet-leader→fleet-members and
+  // never mistakes it for a hive-wide Queen directive. Resolved by the caller only
+  // for broadcasts; a directed 1:1 send is left unstamped (no noise).
+  if (cueAuthority) extra[CUE_AUTHORITY_FIELD] = cueAuthority;
   const env = await sendMessage(identity, {
     to: toSend,
     summary: msg.summary,
@@ -542,10 +551,10 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. If YOU are in a fleet, a bare ["*"] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn\'t flood every agent in the hive — the result reports it as `scopedBroadcast`; pass allHive:true only for a genuine hive-wide notice (system issue / urgent). Default: INJECTED — lands in the recipient\'s inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
+    'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. In a fleet, a bare ["*"] auto-scopes to your fleet (reported `scopedBroadcast`); pass allHive:true for a genuine hive-wide notice. Default INJECTED — lands in the recipient\'s inbox, seen next turn. `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. A DIRECTED send defaults `wakeOnReply` — you\'re auto-woken when a peer replies (set false to opt out; broadcasts off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
-    notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1. In a fleet? Routine status/updates go to your fleet — a bare ["*"] is auto-scoped there; reserve allHive:true for system-wide/urgent news everyone must see.',
+    notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
       'coord:inbox (read replies to what you sent)',
@@ -619,17 +628,26 @@ export default defineTool({
     // hiccup degrades to "no fleet" → today's literal '*' behavior.
     const anyWildcard = list.some((m) => m.to.includes('*'));
     let senderFleet: string | null = null;
+    // P-003: a broadcast is a fleet-leader / Queen "status send" — resolve the
+    // sender's structured authority+scope ONCE (only when something actually
+    // broadcasts) so each `*`-broadcast cue is stamped with its provenance. null
+    // for a caller with no recognized control authority (an ordinary bee/su).
+    let senderCueAuthority: CueAuthorityStamp | null = null;
     if (anyWildcard) {
       try {
         senderFleet = (await getPresence(identity.ownerId))?.fleetSlug ?? null;
       } catch {
         senderFleet = null;
       }
+      senderCueAuthority = await resolveSenderCueAuthority(identity);
     }
 
     const env = await runBulk(
       list,
       async (msg) => {
+        // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
+        // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
+        const wasBroadcast = msg.to.includes('*');
         // Auto-scope the broadcast BEFORE resolve/persist, then thread the report
         // through so the rewrite (or conscious all-hive claim) shows on the result.
         const bcast = scopeBroadcastAudience({ to: msg.to, senderFleet, allHive: msg.allHive });
@@ -641,7 +659,13 @@ export default defineTool({
           msg.to,
         );
         if ('error' in scoped) return scoped.error;
-        return sendOne(msg, identity, scoped.harnessSlug, { scoped: bcast.scoped, allHive: bcast.allHive });
+        return sendOne(
+          msg,
+          identity,
+          scoped.harnessSlug,
+          { scoped: bcast.scoped, allHive: bcast.allHive },
+          wasBroadcast ? senderCueAuthority : null,
+        );
       },
       {
         keyOf: (msg) => ({ to: msg.to }),
