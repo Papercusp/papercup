@@ -217,3 +217,48 @@ legitimately dateless") no longer applies verbatim — a resolved issue is
 fully unassigned, not just date-less. The dateless-claim invariant can be
 checked simply as `assignee='improvement-runner' AND assigned_at IS NULL`
 (no need to additionally exclude resolved/closed state).
+
+## A fourth wedge, found after "close criterion met" (2026-07-03, EI-6953/6954/6938)
+
+The triad above was fixed and the lane ran — but a fourth, same-shaped defect
+was still silently stranding a large fraction of dispatches: **the idempotent-resolve
+guard in `resolveImprovement`** (`resolve-core.ts`) tested `issue.state !== 'open'`
+to decide "this issue is already resolved, no-op success." That's wrong for this
+schema. `engineer_issues` is a **view over `work_items`** (`status AS state`), and
+issue-family items are **minted with the work-item state `todo`** — a normal,
+non-terminal, *active* state, not `open`. Every reader elsewhere in the codebase
+normalizes `todo`/`wip`/`in_progress`/etc. to the canonical `open` bucket before
+comparing, but this one guard compared the raw state directly. The result: a
+freshly-claimed, still-in-flight, `todo`-state issue satisfied `!== 'open'` on its
+very first resolve call, so `resolveImprovement` returned `{ ok: true, outcome:
+'fixed' }` **without ever calling `setIssueState`** — the item never actually
+transitioned to `resolved`, stayed `todo` forever, and got redispatched on the next
+sweep only to "resolve" as a no-op again. Live impact: an estimated ~450–650 items
+stuck in this todo-resolve-loop, indistinguishable from healthy throughput because
+every call returned `ok: true`.
+
+The fix swaps the raw string comparison for a proper terminal-state-set membership
+test:
+
+```diff
++import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+...
+-  if (issue.state !== 'open' && input.outcome === 'fixed') {
++  if (ISSUE_TERMINAL_STATUSES.has(issue.state) && input.outcome === 'fixed') {
+     // Idempotent: resolving an already-TERMINAL item (resolved|closed) is a no-op
+     // success (a re-fired runner must not error out on the second resolve).
+     await closeLedger();
+     return { ok: true, id: input.id, outcome: 'fixed', state: issue.state };
+   }
+```
+
+`ISSUE_TERMINAL_STATUSES` (`work-item-blocking.ts`) is the canonical `{resolved,
+closed}` set — the same vocabulary the rest of the lane already normalizes to. The
+general lesson from the original triad applies again, unchanged: **a state-machine
+guard must test membership in the correct set, not inequality against one assumed
+value** — `!== 'open'` silently treats *every other state including active ones* as
+terminal, which is exactly the "no-op success masking a real skip" shape items 1
+and 3 of the original triad also took. If you're auditing this lane again, check
+first whether a similarly-shaped `state !== <single value>` guard has crept back in
+anywhere in the resolve/claim path — that's the recurring signature, not the
+specific field.

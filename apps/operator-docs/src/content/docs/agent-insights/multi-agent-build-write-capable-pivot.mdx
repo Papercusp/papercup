@@ -3,10 +3,33 @@ title: "Driving a multi-agent build: the write-capable pivot when fleet bees can
 description: "The coordinator runbook for building a whole plan via spawned workers when conditions are degraded. Fleet bees may be READ-ONLY (EI-524 capability confinement) — they draft, they can't write; the 'lift' can be announced-but-not-effective. Org-wide API rate-limiting kills parallel agent BURSTS but serial main-loop work survives. Pivot to write-capable Agent (Task) subagents + serial; place waves at ≤3 concurrency; ALWAYS verify bee/subagent drafts before applying."
 discovered: 2026-06-14
 tags: [coordination, fleet, bee, subagent, rate-limit, capability, confinement, multi-agent, build, migration, plans]
-status: active
+status: superseded
 documents:
   - packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts
 ---
+
+## Current behavior (2026-07-03)
+
+**Wall 1 below is CLOSED — fleet bees are now write+bash capable, not
+read-only.** The "OWNER-PRIORITY FIX (2026-06-15)" (`bee-capability-expansion
+-2026-06-08` D-005/P-004) granted `capability:fs-write` + `capability:bash` (plus
+`fs-read` / `git` / `net` / `code-inspect`) to the `bee` role principal in
+`role-principal-caps.ts`, closing the "two-gate desync" this doc's Wall 1
+describes (the ENVELOPE-layer deny had been lifted, but the principal
+CAPABILITY grant lagged — bees still 100%-failed with `lacks capability
+'capability:fs-write'` until this landed). A `system:bee` today CAN `Edit` /
+`Write` / run bash directly — do **not** assume a bee report of "read-only" is
+still the EI-524 confinement; verify against `role-principal-caps.ts`'s current
+`bee: [...]` grant list (and `bee-tool-boundary.test.ts`) before re-diagnosing
+it as Wall 1. See `agent-spawning/allowlist-and-caps.mdx` for the current,
+maintained capability/allowlist model.
+
+**Everything past Wall 1 — Wall 2 (rate-limit bursts), verify-before-apply,
+migration safety, and the monitor loop — is still generically useful runbook
+knowledge** for a degraded/high-load build (a bee CAN now write, but a
+genuinely capability-confined or otherwise-blocked agent still benefits from
+the write-capable-subagent + serial pivot). Read the body below as historical
+context for *why* that pivot pattern exists, not as "bees are read-only today."
 
 ## When this applies
 
