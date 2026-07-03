@@ -26,8 +26,9 @@ afterEach(() => {
   vi.doUnmock('../../../operator-preferences');
 });
 
-function parsePayload(result: { content: [{ text: string }, ...Array<{ text: string }>] }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+function parsePayload(result: { content?: [{ text: string }, ...Array<{ text: string }>] ; data?: unknown }): Record<string, unknown> {
+  if (result.data) return result.data as Record<string, unknown>;
+  return JSON.parse(result.content![0].text);
 }
 
 describe('operator:standing_approvals_list', () => {

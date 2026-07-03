@@ -148,7 +148,8 @@ describe('autoloop:control', () => {
     const resetFireErrors = vi
       .fn()
       .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(2);
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(3);
     vi.doMock('../../autoloop', () => ({ resetFireErrors }));
     vi.doMock('../../workspace-brain-scope', () => ({
       isWorkspaceCoordinationOn: vi.fn(async () => true),
@@ -163,15 +164,17 @@ describe('autoloop:control', () => {
     );
     expect(resetFireErrors).toHaveBeenNthCalledWith(1, 'papercusp-workspace', 'scout-cycle');
     expect(resetFireErrors).toHaveBeenNthCalledWith(2, '@singleton', 'scout-cycle');
+    expect(resetFireErrors).toHaveBeenNthCalledWith(3, '*', 'scout-cycle');
     const payload = parsePayload(result as never);
     expect(payload).toEqual({
       ok: true,
       op: 'reset-errors',
       harness: '@singleton',
-      rowsReset: 3,
+      rowsReset: 6,
       scopes: [
         { harness: 'papercusp-workspace', rowsReset: 1 },
         { harness: '@singleton', rowsReset: 2 },
+        { harness: '*', rowsReset: 3 },
       ],
     });
   });

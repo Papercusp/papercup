@@ -1063,21 +1063,67 @@ export function hostThroughPty(o) {
       if (!carryText) return;
       // Open the fresh process on the carry-note once it has booted to its prompt
       // (boot output quiesces → the agent-busy gate clears). Same paste-safe per-
-      // agent turn plan; best-effort (a never-settling fresh agent leaves the carry
-      // in the inbox for its next natural turn).
+      // agent turn plan.
+      //
+      // WI-1941: the inject is GUARANTEED-or-retried, not a single best-effort
+      // shot. A fresh cold child can stay busy past one agent-busy cap (large
+      // compacted-context replay, MCP load, an auto-continued boot turn) and THEN
+      // settle; the old single waitAtPrompt() dropped the iteration SILENTLY the
+      // instant it deferred, leaving the session booted-but-idle with no trace
+      // until its next scheduled wake. Now: RETRY waitAtPrompt across a bounded
+      // wall-clock budget so we inject the moment the fresh child reaches its
+      // prompt, and on ultimate exhaustion DROP LOUDLY (stderr + a durable meta
+      // counter) — never silently. The carry note also stays in the inbox as the
+      // last-resort next-turn resume, so a drop is observable, not lossy.
+      const injectChild = child; // bail if a newer recycle supersedes this one
+      const carryDeadline = Date.now() + recycleCarryInjectBudgetMs;
+      let carryAttempts = 0;
       try {
-        const atPrompt = await agentBusyGate.waitAtPrompt();
-        if (atPrompt.deferred) return;
-        for (const step of controlWritesForAgent({ mode: 'turn', data: carryText }, env.PAPERCUSP_AGENT, env)) {
-          if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-          try {
-            child.write(step.data);
-          } catch {
-            /* fresh child may have exited */
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          if (child !== injectChild) return; // a newer recycle owns the child now
+          carryAttempts++;
+          const atPrompt = await agentBusyGate.waitAtPrompt();
+          if (child !== injectChild) return; // superseded while we waited
+          if (!atPrompt.deferred) {
+            for (const step of controlWritesForAgent({ mode: 'turn', data: carryText }, env.PAPERCUSP_AGENT, env)) {
+              if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+              if (child !== injectChild) return;
+              try {
+                child.write(step.data);
+              } catch {
+                /* fresh child may have exited */
+              }
+            }
+            return; // injected — done
           }
+          // Deferred: the fresh child is still mid-boot / mid-turn. Retry until
+          // the budget is spent, then fall through to the loud drop.
+          if (Date.now() >= carryDeadline) break;
+          await new Promise((r) => setTimeout(r, recycleCarryRetryBackoffMs));
         }
       } catch {
-        /* best-effort carry inject */
+        /* an unexpected inject error still falls through to the drop trace */
+      }
+      if (child !== injectChild) return; // superseded — the new recycle owns tracing
+      // Ultimate drop: every attempt across the budget deferred. Make it LOUD and
+      // durably observable (WI-1941) — the carry stays in the inbox for the next
+      // natural turn, but the drop must never again be traceless.
+      try {
+        baseMeta.lastCarryDropAt = Date.now();
+        baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
+        writeMeta();
+      } catch {
+        /* meta is best-effort — discovery degrades to the base contract */
+      }
+      try {
+        process.stderr.write(
+          `psu-pty-host: recycle carry-note DROPPED for ${ownerId} ` +
+            `(fresh child never settled to prompt within ${recycleCarryInjectBudgetMs}ms ` +
+            `over ${carryAttempts} attempt(s)); left in inbox for the next natural turn\n`,
+        );
+      } catch {
+        /* never let a diagnostic write break the host */
       }
     };
 

@@ -266,6 +266,141 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
   );
 });
 
+describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941)', () => {
+  it(
+    'RETRIES past a fresh child that stays busy beyond one busy-cap, injecting the carry once it settles',
+    async () => {
+      const ownerId = `su-recycle-retry-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      // On EACH boot the child prints BOOT:<pid>, then SPINS (a dot every 20ms for
+      // ~700ms) so its output stays "busy" past the busy-cap, THEN goes quiet and
+      // echoes stdin. A single-shot waitAtPrompt (cap 300 < 700ms spin) would DROP
+      // the carry — so 'ECHO:CARRIED' landing proves the retry loop worked.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>35)clearInterval(iv);},20);' +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),20000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300', // shorter than the ~700ms spin → attempts defer
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000', // ample budget → retry, don't drop
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(1200); // let the initial child boot + finish its spin
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+
+      await controlInject(sock, 'recycle', 'CARRIED');
+      // kill + respawn + boot + ~700ms spin + retries across the 300ms cap until it
+      // settles + quiet(150) + submit CR — comfortably inside this window.
+      await sleep(4000);
+
+      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      expect(bootsAfter).toHaveLength(2); // genuinely respawned
+      // The carry landed via RETRY (the fresh child was busy past the first cap).
+      expect(captured()).toContain('ECHO:CARRIED');
+      // …and nothing was recorded as dropped.
+      const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+      expect(metaAfter.carryDropCount ?? 0).toBe(0);
+
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    30_000,
+  );
+
+  it(
+    'DROPS LOUDLY when the fresh child never settles — carry not injected, meta.carryDropCount bumped',
+    async () => {
+      const ownerId = `su-recycle-drop-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      // The child SPINS FOREVER (never goes quiet) — so every waitAtPrompt attempt
+      // across the budget defers and the carry is ultimately DROPPED. The dropped
+      // iteration must be OBSERVABLE (WI-1941: never traceless) — asserted via the
+      // durable meta counter. QUIT still lands (raw inject bypasses the gate; the
+      // stdin handler fires between the non-blocking spin ticks).
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        'setInterval(()=>process.stdout.write("."),20);' +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),20000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '200',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700', // small → exhaust fast, then drop
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(800);
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+
+      await controlInject(sock, 'recycle', 'CARRIED');
+      await sleep(2500); // kill + respawn + budget(700) exhausted → drop recorded
+
+      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      expect(bootsAfter).toHaveLength(2); // respawned, even though the carry drops
+      // The carry was NEVER injected (the fresh child never reached its prompt)…
+      expect(captured()).not.toContain('ECHO:CARRIED');
+      // …and the drop is DURABLY OBSERVABLE, not silent (WI-1941 core guarantee).
+      const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+      expect(metaAfter.carryDropCount).toBe(1);
+      expect(typeof metaAfter.lastCarryDropAt).toBe('number');
+
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    30_000,
+  );
+});
+
 describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg)', () => {
   it(
     'lands a real SIGINT mid-run through the control socket; the shell survives',

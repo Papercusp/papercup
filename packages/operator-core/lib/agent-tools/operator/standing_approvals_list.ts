@@ -32,7 +32,7 @@ export default defineTool({
   async handler() {
     const candidates = await refreshCandidates().catch(async () => await readCandidates());
     return {
-      content: [{ type: 'text', text: JSON.stringify({ candidates }) }],
+      data: { candidates },
     };
   },
 });

@@ -39,6 +39,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
+import { Select } from '../harness/Select';
 import {
   AGENT_SLOT_MAX_QUANTITY,
   AUTO_ACCOUNT,
@@ -528,6 +529,11 @@ export default function ResourcesPage() {
               // unallocated from the fleet (it renders as an extra option).
               const orphanAccount =
                 row.axis.account !== AUTO_ACCOUNT && !acctOptions.some((o) => o.id === row.axis.account);
+              const accountOptions = [
+                { value: AUTO_ACCOUNT, label: 'AUTO' },
+                ...acctOptions.map((o) => ({ value: o.id, label: o.label })),
+                ...(orphanAccount ? [{ value: row.axis.account, label: row.axis.account }] : []),
+              ];
               return (
                 <span key={row.ref} className="res-chip s">
                   <span className="lbl" title={row.ref}>{slotChipLabel(row)}</span>
@@ -551,20 +557,16 @@ export default function ResourcesPage() {
                       +
                     </button>
                   </span>
-                  <select
-                    className="res-acct"
-                    value={row.axis.account}
-                    disabled={busy}
-                    aria-label={`${row.axis.model}·${row.axis.effort} seats gateway account`}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => void retargetSlotAccount(n.id, row, e.target.value)}
-                  >
-                    <option value={AUTO_ACCOUNT}>AUTO</option>
-                    {acctOptions.map((o) => (
-                      <option key={o.id} value={o.id}>{o.label}</option>
-                    ))}
-                    {orphanAccount && <option value={row.axis.account}>{row.axis.account}</option>}
-                  </select>
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <Select
+                      value={row.axis.account}
+                      onChange={(value) => void retargetSlotAccount(n.id, row, value)}
+                      options={accountOptions}
+                      disabled={busy}
+                      ariaLabel={`${row.axis.model}·${row.axis.effort} seats gateway account`}
+                      triggerClassName="res-acct"
+                    />
+                  </span>
                   <button
                     type="button"
                     className="x"
