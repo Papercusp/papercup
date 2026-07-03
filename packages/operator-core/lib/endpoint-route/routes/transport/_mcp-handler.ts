@@ -326,6 +326,14 @@ export interface BuiltSpawnContext {
   parentSpawnId: string | null;
   uiClientId: string | null;
   /**
+   * The CALLING agent's CLI backend + model, stamped by the launcher onto the session MCP URL
+   * (`?agent=`/`?model=`; omp also via the `x-papercusp-agent`/`-model` headers). Folded onto the
+   * tool ctx so fleet:launch-on-plan can inherit the caller's backend/model for a fleet it spawns
+   * (fleet-launch-agent-inheritance-2026-07-03). Null when the launcher didn't stamp them.
+   */
+  callerAgent?: string | null;
+  callerModel?: string | null;
+  /**
    * True when this ctx's spawn-URL HMAC was VERIFIED (branch 2 below) — never
    * set on the unsigned soft-warn path. resolveAgentIdentity's 'signed-spawn'
    * branch keys on it to attribute client=-less invoke-route agents to the
@@ -521,6 +529,18 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
+        // Caller backend + model (fleet-launch-agent-inheritance-2026-07-03): psu stamps them onto
+        // the per-session MCP URL (omp: applyOmpMcpUrlParams; claude/codex: env-interpolated URL),
+        // with the `x-papercusp-agent`/`-model` headers as a parallel carrier. fleet:launch-on-plan
+        // reads these to default a spawned fleet's backend/model to the CURRENT caller's own.
+        callerAgent:
+          (headers.get('x-papercusp-agent') ?? '').trim() ||
+          (url.searchParams.get('agent') ?? '').trim() ||
+          null,
+        callerModel:
+          (headers.get('x-papercusp-model') ?? '').trim() ||
+          (url.searchParams.get('model') ?? '').trim() ||
+          null,
         planRunSessionId,
         isSuperuser: true,
         // gateBypass is computed in buildMcpToolContext from isSuperuser/isPowerUser.
@@ -884,6 +904,8 @@ async function buildMcpToolContext(
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     uiClientId: spawn.uiClientId,
+    callerAgent: spawn.callerAgent ?? null,
+    callerModel: spawn.callerModel ?? null,
     sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,

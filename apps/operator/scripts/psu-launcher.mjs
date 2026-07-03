@@ -1145,7 +1145,7 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
  * — no regression). Exported for tests.
  */
 export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
-  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL } = opts;
+  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');
@@ -1177,6 +1177,9 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       let mcpText = readFileSync(srcMcp, 'utf8');
       mcpText = applyOmpOperatorOrigin(mcpText, operatorUrl);
       if (toolsAllowlist && toolsAllowlist.length) mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
+      // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit
+      // them for a fleet this session launches (fleet-launch-agent-inheritance-2026-07-03).
+      mcpText = applyOmpMcpUrlParams(mcpText, { agent: 'omp', model: model || undefined });
       writeFileSync(join(dstAgent, 'mcp.json'), mcpText, { mode: 0o600 });
     }
     return rel;
@@ -3314,7 +3317,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
       // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
       // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else {
@@ -3335,7 +3338,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
         console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }
