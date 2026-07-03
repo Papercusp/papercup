@@ -21,8 +21,8 @@
  * progress — so no per-fire plan_run is minted (D-006).
  *
  * The completion-rebase that re-arms the parked loop after its turn settles is su-15ea2's
- * B-LOOP-2 (`reconcile-loop-routines.ts`), wired into `reconcileAndGovern`; this module only
- * delivers the fire.
+ * B-LOOP-2 (`reconcile-loop-routines.ts`), wired as its own early `loop-rebase-sweep` step
+ * in routinesTickImpl (Task-#8, 2026-07-03); this module only delivers the fire.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';

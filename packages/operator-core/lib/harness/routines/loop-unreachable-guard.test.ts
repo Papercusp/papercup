@@ -42,6 +42,58 @@ describe('evaluateUnreachableTerminalGuard (WI-1399 — pure decision)', () => {
   });
 });
 
+describe('evaluateUnreachableTerminalGuard — circuit-open fast path (EI-7006 Route A/C)', () => {
+  it('circuit-open + unreachable + ≥min-fires → breaches even with parkedForMs FAR below the 2h dwell window', () => {
+    // parkedForMs=1s is nowhere near the 2h floor — the classic path would NOT breach here. The
+    // whole point of the fix: a circuit-open dead loop terminates without waiting out a dwell window
+    // the hourly circuit probe never lets `parkedForMs` reach.
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: false,
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 8,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(true);
+    expect(v.reason).toContain('circuit-open');
+    expect(v.reason).toContain('WI-1399');
+    expect(v.reason).toContain('EI-7006');
+  });
+
+  it('circuit-open still respects reachability — a reachable owner never breaches (healthy long turn protected)', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 999,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('circuit-open still respects the min-fires floor', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: false,
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 1,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('the classic (circuit-closed) path is byte-unchanged — the dwell window is still enforced', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: false,
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 8,
+      circuitOpen: false, // window NOT decoupled → 1s << 2h → no breach
+    });
+    expect(v.breach).toBe(false);
+  });
+});
+
 describe('terminalUnreachableMs / minStuckFiresForTermination — env overrides + floors', () => {
   const ORIG_TERMINAL_MS = process.env.PAPERCUSP_LOOP_TERMINAL_UNREACHABLE_MS;
   const ORIG_MIN_FIRES = process.env.PAPERCUSP_LOOP_TERMINAL_MIN_STUCK_FIRES;

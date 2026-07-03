@@ -71,6 +71,7 @@ import tool, {
   renderMemberBaseline,
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
+  LEADER_AUTO_MODE_DIRECTIVE,
 } from '../launch-on-plan';
 
 describe('memberLaunchCommand', () => {
@@ -322,6 +323,25 @@ describe('LEADER_STANDING_JOB — steer-don\'t-dispatch + completion mandate (P-
     expect(memberMd).toContain('scheduler:get_next');
     expect(memberMd).toContain('scheduler:set_claim_spec');
     expect(LEADER_STANDING_JOB.some((p) => p.includes('scheduler:set_claim_spec'))).toBe(true);
+  });
+});
+
+// Leadership auto-enters AUTO mode (owner directive 2026-07-03): the launch RESULT is the
+// moment the caller becomes a leader, so the directive rides the result — an AUTO-off leader
+// parks at its ask-first posture while its fleet runs unsupervised (the ornith 9980 run).
+describe('LEADER_AUTO_MODE_DIRECTIVE — leading a fleet auto-enters AUTO mode', () => {
+  it('declares AUTO mode ON now, for the rest of the session — act-don\'t-ask', () => {
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/AUTO MODE/);
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/effective NOW/i);
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/rest of your session/i);
+    // The concrete behavioural bind: never park waiting while the fleet is live.
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/NEVER end a turn waiting/i);
+    // Disclosure, not a permission ask.
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/notice, not a question/i);
+  });
+
+  it('leads INTO the standing-job list (it renders as that list\'s header line)', () => {
+    expect(LEADER_AUTO_MODE_DIRECTIVE).toMatch(/standing job each cycle:$/);
   });
 });
 

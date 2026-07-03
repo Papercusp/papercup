@@ -259,6 +259,23 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
  * steer-don't-micromanage rules a leader runs each cycle until the plan drains. Numbering is
  * applied at render time (`${i + 1}.`) — keep each entry WITHOUT a leading number.
  */
+/**
+ * The AUTO-mode auto-enter directive rendered into the launch result the moment the caller
+ * becomes a fleet LEADER. Leading a fleet from an ask-first posture is how fleets die
+ * unsupervised: an AUTO-off leader parks waiting for permission while members stall, wedge,
+ * or drain unnoticed (the 2026-07-03 ornith run: the leader stayed at its routing-gate
+ * posture after this very call and only supervised when externally woken). The persona rule
+ * ("creating or leading a fleet AUTO-ENTERS AUTO mode") is delivered HERE because this
+ * result is the exact moment the caller becomes a leader — a persona clause alone is too
+ * far from the act for weak models to bind it. Pure + exported for tests.
+ */
+export const LEADER_AUTO_MODE_DIRECTIVE =
+  'LEADING THIS FLEET PUTS YOU IN AUTO MODE — effective NOW, for the rest of your session. ' +
+  'You cannot supervise a fleet from an ask-first posture: act on your own judgment, do not ' +
+  'stop to ask permission between steps, and NEVER end a turn waiting for an instruction while ' +
+  'your fleet is live. Tell your owner you have switched to AUTO mode (a notice, not a question). ' +
+  'Until the plan is drained, your standing job each cycle:';
+
 export const LEADER_STANDING_JOB: readonly string[] = [
   'WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
   'STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
@@ -652,9 +669,9 @@ export default defineTool({
       lines.push(
         `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Do NOT ` +
           `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
-          `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s). Until the plan is ` +
-          `drained, your standing job each cycle:`,
+          `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s).`,
       );
+      lines.push(LEADER_AUTO_MODE_DIRECTIVE);
       // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
       // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
       LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
@@ -675,6 +692,10 @@ export default defineTool({
         ok: opened.length > 0,
         fleet: fleetSlug,
         leaderRole,
+        // The launch result is the moment the caller BECOMES a leader — leadership
+        // auto-enters AUTO mode (persona rule; see the message text). Structured so
+        // non-prose consumers (hooks, scorers) can key on it.
+        autoModeEntered: opened.length > 0,
         plan: args.plan,
         harness,
         agent,

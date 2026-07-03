@@ -54,8 +54,10 @@
  * Caveat (by design): settle is observed on the 30s tick, so the true period is
  * interval + up-to-30s — fine for the 60s /loop floor, not sub-minute.
  *
- * Wired into `reconcileAndGovern` (reconcile-plan-runs.ts) so it rides the same 30s
- * routine tick as the scheduled-run reconcile + the watchdog sweeps.
+ * Wired as its OWN `loop-rebase-sweep` step in routinesTickImpl (routines-workflow.ts),
+ * FIRST after the fire loop — NOT at the tail of reconcileAndGovern where it used to
+ * ride (Task-#8, 2026-07-03: the 9 serial sweeps ahead of it starved under pool
+ * pressure and armed loops sat parked ~17 min between 60s wakes).
  *
  * NB on parked-Date parsing: postgres-js parses `'infinity'::timestamptz` to an INVALID
  * JS Date (d5a84's frozen-seam note). This module never relies on the JS-parsed
@@ -64,7 +66,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { recordFire as defaultRecordFire, readFireState as defaultReadFireState } from '../../autoloop';
+import {
+  recordFire as defaultRecordFire,
+  readFireState as defaultReadFireState,
+  circuitThreshold as defaultCircuitThreshold,
+} from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
 import { checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard } from './loop-unreachable-guard';
 
@@ -189,6 +195,8 @@ export async function reconcileLoopRoutines(
     readFireState?: typeof defaultReadFireState;
     /** Injected for tests; defaults to the real unreachable-owner terminal guard (WI-1399). */
     checkUnreachableTerminalGuard?: typeof defaultCheckUnreachableTerminalGuard;
+    /** Injected for tests; defaults to the real fire-circuit threshold read (EI-7006). */
+    circuitThreshold?: typeof defaultCircuitThreshold;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -196,6 +204,7 @@ export async function reconcileLoopRoutines(
   const recordFire = opts.recordFire ?? defaultRecordFire;
   const readFireState = opts.readFireState ?? defaultReadFireState;
   const checkUnreachableTerminalGuard = opts.checkUnreachableTerminalGuard ?? defaultCheckUnreachableTerminalGuard;
+  const circuitThreshold = opts.circuitThreshold ?? defaultCircuitThreshold;
 
   // Loop routines that may need a re-arm: a PARKED pure loop (rebase off completion) or an
   // armed cron+loop (fold the sooner). A pure loop still ARMED for its FIRST fire (a real
@@ -248,63 +257,86 @@ export async function reconcileLoopRoutines(
       if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
-      } else if (
-        // Stuck-park backstop — a PARKED loop only: no completion signal, no post-fire
-        // activity (a legitimately long turn keeps producing activity, so its
-        // last_active_at would be > last_fired), and parked far past the fire.
-        row.parked &&
-        (tsMs(row.presence_last_active_at) ?? 0) <= lastFiredMs &&
-        nowMs - lastFiredMs >= stuckParkMs(intervalMs)
-      ) {
-        completedAt = lastFiredMs;
-        via = 'stuck-backstop';
       } else {
-        continue; // still in flight / nothing to fold — leave it
-      }
-
-      // WI-1399 — dead-owner terminal guard. Only reachable via the stuck-backstop branch
-      // (a genuine completion signal means the owner is obviously alive). Before re-arming
-      // to retry yet again, check whether the owner has become PERMANENTLY unreachable (no
-      // injectable/resumable wake channel) across a generous terminal window and a run of
-      // consecutive stuck-backstop fires — if so, auto-pause instead of re-arming into the
-      // void forever. Fail-soft: any probe/read failure here falls back to the normal
-      // stuck-backstop re-arm below (never blocks a retry on an uncertain read).
-      if (via === 'stuck-backstop') {
+        // No healthy completion signal. A PARKED loop with NO post-fire activity is a
+        // dead-or-stuck candidate — a legitimately long turn keeps producing activity, so its
+        // last_active_at would be > last_fired and it is skipped here for free (no fire-state read).
+        // Two ways such a loop needs the dead-owner terminal guard (WI-1399):
+        //   • STUCK-PARK — parked past the dwell window (the original backstop trigger); OR
+        //   • CIRCUIT-OPEN (EI-7006) — its fire-circuit already has ≥circuitThreshold consecutive
+        //     failures. The circuit's ~hourly probe keeps refreshing last_fired, so `nowMs-last_fired`
+        //     rarely reaches stuckParkMs and the stuck-park branch is STARVED; and even when reached,
+        //     the 2h terminal-window floor exceeds the inter-probe gap so the guard never breaches.
+        //     Routing a circuit-open loop to the guard directly (dwell window decoupled) is the fix
+        //     for dead loops that otherwise climb to 55→∞ fire-circuit-open EIs and never terminate.
+        const looksDeadOrStuck =
+          row.parked && (tsMs(row.presence_last_active_at) ?? 0) <= lastFiredMs;
+        if (!looksDeadOrStuck) {
+          continue; // still in flight (has post-fire activity) / nothing to fold — leave it
+        }
+        // Read the fire-state ONCE (only on this quiet-parked path, so healthy loops pay nothing):
+        // it drives BOTH the circuit-open decision and the stuck-fire count the guard consumes.
+        // Fail-soft: a read failure is treated as zero prior errors (guard still consulted).
         const priorState = await runWithWorkspace(row.routine_workspace_id, () =>
           readFireState(row.install_slug, row.name),
         ).catch(() => null);
-        const stuckFireCount = (priorState?.consecutiveErrors ?? 0) + 1;
-        const guard = await checkUnreachableTerminalGuard({
-          sql: db,
-          routineId: row.id,
-          targetOwnerId: row.target_owner_id,
-          parkedForMs: nowMs - lastFiredMs,
-          intervalMs,
-          stuckFireCount,
-        }).catch((e) => {
-          console.warn(
-            `[loop-reconcile] unreachable-terminal-guard check failed for '${row.id}' — falling back to stuck-backstop retry: ${e instanceof Error ? e.message : e}`,
-          );
-          return { breach: false } as { breach: boolean; reason?: string };
-        });
-        if (guard.breach) {
-          result.terminated.push({
-            id: row.id,
+        const consecutiveErrors = priorState?.consecutiveErrors ?? 0;
+        const circuitOpen = consecutiveErrors >= circuitThreshold();
+        const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
+
+        // Consult the dead-owner terminal guard when the loop is stuck-park OR circuit-open. Before
+        // re-arming into the void yet again, check whether the owner is PERMANENTLY unreachable (no
+        // injectable/resumable wake channel) — if so, auto-pause instead. Fail-soft: any probe/read
+        // failure falls back to the normal stuck-backstop re-arm below (never blocks a retry on an
+        // uncertain read).
+        if (circuitOpen || stuckParkElapsed) {
+          // stuckFireCount: on the circuit-open path the streak IS consecutiveErrors (already
+          // ≥threshold); on the classic stuck-park path it is prior errors + this fire (+1),
+          // preserving the original WI-1399 contract byte-for-byte when the circuit is closed.
+          const stuckFireCount = circuitOpen ? consecutiveErrors : consecutiveErrors + 1;
+          const guard = await checkUnreachableTerminalGuard({
+            sql: db,
+            routineId: row.id,
             targetOwnerId: row.target_owner_id,
-            reason: guard.reason ?? 'unreachable dead-owner loop',
-          });
-          await runWithWorkspace(row.routine_workspace_id, () =>
-            recordFire(row.install_slug, row.name, 'loop-terminal-unreachable', 'error'),
-          ).catch((e) =>
+            parkedForMs: nowMs - lastFiredMs,
+            intervalMs,
+            stuckFireCount,
+            circuitOpen,
+          }).catch((e) => {
             console.warn(
-              `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
-            ),
-          );
-          console.warn(
-            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) TERMINATED (auto-paused, not re-armed): ${guard.reason}`,
-          );
-          continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
+              `[loop-reconcile] unreachable-terminal-guard check failed for '${row.id}' — falling back to stuck-backstop retry: ${e instanceof Error ? e.message : e}`,
+            );
+            return { breach: false } as { breach: boolean; reason?: string };
+          });
+          if (guard.breach) {
+            result.terminated.push({
+              id: row.id,
+              targetOwnerId: row.target_owner_id,
+              reason: guard.reason ?? 'unreachable dead-owner loop',
+            });
+            await runWithWorkspace(row.routine_workspace_id, () =>
+              recordFire(row.install_slug, row.name, 'loop-terminal-unreachable', 'error'),
+            ).catch((e) =>
+              console.warn(
+                `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+            console.warn(
+              `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) TERMINATED (auto-paused, not re-armed): ${guard.reason}`,
+            );
+            continue; // auto-paused (active=false) inside the guard — do NOT re-arm below
+          }
         }
+
+        // Not terminated. Re-arm to retry ONLY when the stuck-park dwell has actually elapsed (the
+        // original backstop behavior). A circuit-open-but-not-breached loop that has NOT yet reached
+        // the dwell window is left untouched — the fire-gate owns its cadence; re-arming it here would
+        // only fight the circuit's backoff.
+        if (!stuckParkElapsed) {
+          continue;
+        }
+        completedAt = lastFiredMs;
+        via = 'stuck-backstop';
       }
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's

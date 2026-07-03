@@ -18,7 +18,6 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
-import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -130,13 +129,15 @@ export async function autoPauseOnFailureStreak(opts: {
  * Cost is checked first (a successful-but-expensive run still pauses); a template paused on
  * cost is not re-checked for the streak.
  *
- * Also re-arms due interval-LOOPS on the same tick (loop-routines-interval-recurrence-2026-06-20
- * P-002 / B-LOOP-2): a loop fire parks at next_fire_at='infinity' and is re-armed to
- * completed_at + interval once its woken turn settles — see reconcileLoopRoutines.
+ * NOTE (Task-#8, 2026-07-03): the interval-LOOP rebase (reconcileLoopRoutines) no longer
+ * rides here. It used to run at the tail of this function — position #10 of 11 serial
+ * tick sweeps — where pool starvation starved it and armed loops sat parked ~17 min
+ * between 60s wakes. It is now its OWN `loop-rebase-sweep` step immediately after the
+ * fire loop in routinesTickImpl (routines-workflow.ts). Do not re-add it here.
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[]; rearmed: number; terminated: number }> {
+): Promise<{ reconciled: number; paused: string[] }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -163,29 +164,5 @@ export async function reconcileAndGovern(
     if (r.paused) paused.push(s.planSlug);
   }
 
-  // Loop completion-rebase (B-LOOP-2) rides this same 30s tick. Workspace-wide (loops are
-  // keyed by target_owner_id, not a harness), so it runs independent of opts.harnessSlug.
-  // Best-effort — a loop-rebase failure must never break the scheduled-run governance it
-  // rides with (mirrors the sweep's own fail-soft contract).
-  let rearmed = 0;
-  let terminated = 0;
-  try {
-    const loop = await reconcileLoopRoutines({ sql: db });
-    rearmed = loop.rearmed;
-    // WI-1399: loops auto-paused this pass because their owner is permanently unreachable.
-    // Loud, not silent — a terminated loop is a real dead-owner finding worth seeing in the
-    // routine tick's own logs, not just diagnosable from `result.terminated` in a test.
-    terminated = loop.terminated.length;
-    if (terminated > 0) {
-      console.warn(
-        `[loop-reconcile] terminated ${terminated} dead-owner loop(s) this pass: ${loop.terminated
-          .map((t) => `${t.id} (owner ${t.targetOwnerId})`)
-          .join(', ')}`,
-      );
-    }
-  } catch (e) {
-    console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
-  }
-
-  return { reconciled: settled.length, paused, rearmed, terminated };
+  return { reconciled: settled.length, paused };
 }

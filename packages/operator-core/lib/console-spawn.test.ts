@@ -5,15 +5,50 @@
  * must (a) run in a subshell, (b) survive shell-quoting verbatim, then (c) hand
  * off to an interactive login shell so the window stays open.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   buildConsoleOneliner,
   advSessionTitleTag,
   macConsoleInvocation,
+  spawnConsole,
   type AppearanceOpts,
 } from './console-spawn';
+import type { ConsoleEnvelope } from './console-launcher';
+import { isWindowsDesktopHost } from './windows-desktop-windows';
+
+// WI-1882: make the WSL2/Windows-desktop signal deterministic on the Linux CI
+// host (where process.platform is already 'linux'). console-spawn consumes only
+// isWindowsDesktopHost from this module.
+vi.mock('./windows-desktop-windows', () => ({ isWindowsDesktopHost: vi.fn(() => false) }));
 
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
+
+describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => vi.mocked(isWindowsDesktopHost).mockReset());
+
+  it('returns code:501 (defer to the Tauri console_launch) on a Windows desktop host, even though process.platform is "linux" inside WSL', () => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(true);
+    const r = spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(501);
+  });
+
+  it('does NOT short-circuit to 501 on a real Linux desktop (isWindowsDesktopHost false)', () => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    const r = spawnConsole({ envelope });
+    // On a Linux CI host with no terminal emulator this is the 500 "no terminal
+    // emulator found" path; the assertion is only that it did NOT become 501.
+    if (r.status === 'error') expect(r.code).not.toBe(501);
+  });
+});
 
 describe('buildConsoleOneliner', () => {
   it('cds, runs the greeting in a subshell, then execs an interactive login shell', () => {

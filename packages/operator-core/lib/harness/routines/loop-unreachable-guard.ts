@@ -72,18 +72,32 @@ export function evaluateUnreachableTerminalGuard(input: {
   intervalMs: number;
   /** Consecutive stuck-backstop fires, INCLUDING the one under evaluation. */
   stuckFireCount: number;
+  /** EI-7006 (Route A/C): the loop's fire-circuit is already OPEN (≥circuitThreshold consecutive
+   *  failures). When set, the dwell-time terminal window is DECOUPLED — the accumulated failure
+   *  streak is a stronger dead-owner signal than any wall-clock dwell, and (the bug this fixes) the
+   *  circuit's ~hourly probe keeps `parkedForMs` pinned below the 2h window floor forever, so a
+   *  window-gated guard would never breach and the dead loop climbs to 55→∞ fire-circuit-open EIs.
+   *  Reachability (checked first) + the min-fires floor still gate it, so a healthy long turn —
+   *  reachable, and never accruing a consecutive-error streak — is still never terminated. */
+  circuitOpen?: boolean;
 }): { breach: boolean; reason?: string } {
   if (input.reachable) return { breach: false };
-  const window = terminalUnreachableMs(input.intervalMs);
-  if (input.parkedForMs < window) return { breach: false };
+  // Classic (circuit-closed) path: require the full dwell window before terminating. Circuit-open
+  // path (EI-7006): the dwell window is DECOUPLED — see the `circuitOpen` field doc above.
+  if (!input.circuitOpen) {
+    const window = terminalUnreachableMs(input.intervalMs);
+    if (input.parkedForMs < window) return { breach: false };
+  }
   const minFires = minStuckFiresForTermination();
   if (input.stuckFireCount < minFires) return { breach: false };
   return {
     breach: true,
-    reason:
-      `dead-owner: unreachable (no injectable/resumable wake channel), parked ${Math.round(input.parkedForMs / 1000)}s ` +
-      `(≥${Math.round(window / 1000)}s terminal window) across ${input.stuckFireCount} consecutive stuck-backstop fires ` +
-      `— auto-paused (WI-1399, dead-owner loop terminal guard)`,
+    reason: input.circuitOpen
+      ? `dead-owner: unreachable (no injectable/resumable wake channel) with fire-circuit OPEN across ` +
+        `${input.stuckFireCount} consecutive failures — auto-paused (WI-1399 / EI-7006 circuit-open fast path, dwell window decoupled)`
+      : `dead-owner: unreachable (no injectable/resumable wake channel), parked ${Math.round(input.parkedForMs / 1000)}s ` +
+        `(≥${Math.round(terminalUnreachableMs(input.intervalMs) / 1000)}s terminal window) across ${input.stuckFireCount} consecutive stuck-backstop fires ` +
+        `— auto-paused (WI-1399, dead-owner loop terminal guard)`,
   };
 }
 
@@ -115,6 +129,8 @@ export async function checkUnreachableTerminalGuard(
     parkedForMs: number;
     intervalMs: number;
     stuckFireCount: number;
+    /** EI-7006: route a circuit-open loop past the dwell window (see evaluateUnreachableTerminalGuard). */
+    circuitOpen?: boolean;
   },
   deps: UnreachableTerminalGuardDeps = {},
 ): Promise<UnreachableTerminalGuardResult> {
@@ -133,6 +149,7 @@ export async function checkUnreachableTerminalGuard(
     parkedForMs: input.parkedForMs,
     intervalMs: input.intervalMs,
     stuckFireCount: input.stuckFireCount,
+    circuitOpen: input.circuitOpen,
   });
   if (verdict.breach) {
     await autoPause(input.sql, input.routineId, verdict.reason!);

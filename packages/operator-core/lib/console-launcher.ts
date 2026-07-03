@@ -213,7 +213,17 @@ export async function buildConsoleEnvelope(
       requestUrl: opts.operatorBaseUrl,
     }),
     PAPERCUSP_WORKSPACE: opts.workspaceId,
-    PAPERCUSP_OPERATOR_URL: opts.operatorBaseUrl,
+    // WI-1773 follow-up: route through the resilient-proxy resolver, same as
+    // buildSuperuserMcpUrl below. Previously this baked the RAW operatorBaseUrl
+    // (e.g. direct :3070) into the child's env unconditionally — psu-launcher's
+    // resolveOperatorUrl() treats an explicit PAPERCUSP_OPERATOR_URL as the
+    // highest-precedence override, so every console/fleet/capability:terminal
+    // -spawned session inherited a permanent :3070 pin and silently bypassed the
+    // proxy-first default that bare `psu` CLI launches already get (WI-1457).
+    // Confirmed live 2026-07-03: a backlog-clearance fleet member's env carried
+    // PAPERCUSP_OPERATOR_URL=http://localhost:3070 despite papercup-mcp-proxy
+    // being active+healthy on :9071 at launch time.
+    PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(opts.operatorBaseUrl),
     // Scope HOME to the SELECTED workspace — using the global papercuspPath()
     // here was the latent bug that let a spawned agent carry
     // PAPERCUSP_WORKSPACE=<picked> alongside PAPERCUSP_HOME=<active>.

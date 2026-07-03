@@ -3,8 +3,8 @@
  * ids embedded in a shell greeting. Accepts only the randomUUID alphabet
  * [0-9a-f-]; throws (rather than escaping) on anything else.
  */
-import { describe, expect, it } from 'vitest';
-import { shellSafeId, buildSuperuserMcpUrl } from './console-launcher';
+import { afterEach, describe, expect, it } from 'vitest';
+import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
 
 describe('shellSafeId', () => {
   it('accepts a UUID-shaped id', () => {
@@ -37,5 +37,37 @@ describe('buildSuperuserMcpUrl (scoped-superuser-workspace-clamp D-004)', () => 
   it('allWorkspaces: bakes the UNSCOPED wildcard (the only door past the clamp)', () => {
     const url = new URL(buildSuperuserMcpUrl('http://localhost:3070', 'generic-test', true));
     expect(url.searchParams.get('workspace')).toBe('*');
+  });
+});
+
+describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () => {
+  const ORIGINAL = process.env.PAPERCUSP_MCP_PROXY_BASE;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    else process.env.PAPERCUSP_MCP_PROXY_BASE = ORIGINAL;
+  });
+
+  it('bakes the raw operator base into the child env when no proxy is configured', async () => {
+    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      runCommand: 'true',
+      skipMcpJson: true,
+    });
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070');
+  });
+
+  it('routes the child env through the resilient proxy when PAPERCUSP_MCP_PROXY_BASE is set — a console/fleet/capability:terminal launch must NOT permanently pin :3070 past a spawned session (the exact WI-1773 regression: an inherited PAPERCUSP_OPERATOR_URL override silently disables psu-launcher\'s proxy-first default)', async () => {
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      runCommand: 'true',
+      skipMcpJson: true,
+    });
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
   });
 });

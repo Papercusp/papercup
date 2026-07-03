@@ -352,6 +352,36 @@ async function routinesTickImpl(): Promise<void> {
     }
   }
 
+  // Loop completion-rebase (B-LOOP-2) — its OWN step, FIRST after the fire loop
+  // (Task-#8 / su-cold-auto 2026-07-03): a loop fire parks at next_fire_at='infinity'
+  // and stays parked until this rebase re-arms it, so the rebase is as
+  // liveness-critical as the fires themselves. It used to ride at the TAIL of
+  // reconcileAndGovern (position #10 of 11 serial sweeps below) — under pool
+  // starvation the earlier sweeps starved it and armed loops sat parked ~17 min
+  // between 60s wakes while fires for other routines kept flowing. Placing it
+  // here bounds its delay to the fire loop only. Fail-soft: a rebase failure
+  // must never block the watchdog sweeps below.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { reconcileLoopRoutines } = await import('../harness/routines/reconcile-loop-routines');
+        const loop = await reconcileLoopRoutines({ sql });
+        // WI-1399: loops auto-paused because their owner is permanently unreachable.
+        // Loud, not silent — a terminated loop is a real dead-owner finding.
+        if (loop.terminated.length > 0) {
+          console.warn(
+            `[loop-reconcile] terminated ${loop.terminated.length} dead-owner loop(s) this pass: ${loop.terminated
+              .map((t) => `${t.id} (owner ${t.targetOwnerId})`)
+              .join(', ')}`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[loop-reconcile] rebase pass failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'loop-rebase-sweep' },
+  );
+
   // start-hive-wake-orchestration P-011 / D-003: the hive liveness sweep — a
   // deterministic, zero-token dead-man's-switch check riding this existing 30s
   // tick (NOT a cadence: the wake it may arm is the exception path). Started +
