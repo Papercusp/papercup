@@ -142,9 +142,11 @@ describe('delegateResource — remove (the /res chip ×)', () => {
 });
 
 describe('resource:delegate handler (identity + response shaping)', () => {
-  type Out = { content: { text: string }[] };
+  // The handler returns the data-shape ({ data }) per the tool-data-shape
+  // ratchet (see delegate.ts) — the wire envelope is the framework's job.
+  type Out = { data: Record<string, unknown> };
   const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
-  const body = (o: Out) => JSON.parse(o.content[0]!.text);
+  const body = (o: Out) => o.data;
 
   it('resolves the actor workspace + github id and returns the allotment', async () => {
     const b = body(await call({ fleetSlug: 'x', kind: 'agent_slot', model: 'opus', effort: 'xhigh', count: 5 }));

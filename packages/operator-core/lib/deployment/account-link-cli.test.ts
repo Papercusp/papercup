@@ -84,7 +84,7 @@ vi.mock('./account-pool', () => ({
 }));
 vi.mock('./account-pool-store', () => ({ updateAccountPool: h.updateAccountPool, accountStatus: h.accountStatus }));
 
-import { startCliLink, completeCliLink, resolveCliBin, __resetCliLinksForTest } from './account-link-cli';
+import { startCliLink, completeCliLink, resolveCliBin, getCliLinkStatus, __resetCliLinksForTest } from './account-link-cli';
 
 afterEach(() => {
   __resetCliLinksForTest();
@@ -192,6 +192,27 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     const r = await startCliLink({ accountId: 'bad id!' });
     expect(r.ok).toBe(false);
     expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  // claude CLI ≥2.1.200 same-machine auto-callback (2026-07-03): claude.com delivers the OAuth
+  // code straight to the CLI's localhost listener — the owner sees "You're all set up" and NO
+  // code, and the CLI mints spontaneously. The server must harvest that mint on its own.
+  it('auto-finalizes when the CLI mints WITHOUT a pasted code (localhost-callback flow)', async () => {
+    const s = await startCliLink({ accountId: 'auto-acme', label: 'Auto' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    expect(getCliLinkStatus(s.linkId)).toEqual({ status: 'pending' });
+    // The CLI prints the token with no pty write ever having happened.
+    h.state.dataCbs.forEach((cb) => cb('\r\nSuccess!\r\nsk-ant-oat01-AUTOMINTED_AbC-999\r\n'));
+    await vi.waitFor(() => expect(getCliLinkStatus(s.linkId).status).toBe('completed'));
+    expect(h.writeFile).toHaveBeenCalledWith('/tmp/test/deploy-credentials/auto-acme', 'sk-ant-oat01-AUTOMINTED_AbC-999', { mode: 0o600 });
+    expect(h.registerAccount).toHaveBeenCalled();
+    expect(h.state.killed).toBeGreaterThan(0); // the CLI's job is over — process released
+    // A late "Complete link" click with NO code reports the finished link instead of demanding a paste…
+    const done = await completeCliLink({ linkId: s.linkId });
+    expect(done.ok).toBe(true);
+    // …and releases the entry.
+    expect(getCliLinkStatus(s.linkId).status).toBe('unknown');
   });
 
   // WI-1917 (2026-07-03): the no-URL failure used to swallow the CLI's output and blame PATH

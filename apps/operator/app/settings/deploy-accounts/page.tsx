@@ -190,6 +190,43 @@ export default function DeployAccountsPage() {
     }
   }, [accountId, label, provider]);
 
+  // While a claude OAuth link is held open, poll its server-side status: claude CLI ≥2.1.200
+  // runs a localhost callback listener, so a SAME-MACHINE browser approval delivers the code
+  // straight to the CLI ("You're all set up … close this window" — no code shown) and the server
+  // auto-finalizes. Without this poll that path looked like "nothing happened" (2026-07-03).
+  useEffect(() => {
+    if (!linkId || !authorizeUrl || provider !== 'claude') return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/admin/deploy-accounts/link-status', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ linkId }),
+        });
+        if (r.status === 404) return; // older build without the route — paste flow still works
+        const j = await r.json();
+        if (stopped || !j?.ok) return;
+        if (j.status === 'completed') {
+          stopped = true;
+          resetForm();
+          toast.success(`Claude account "${accountId}" linked via browser login`);
+          await refresh();
+        } else if (j.status === 'failed') {
+          stopped = true;
+          setAddError(j.error || 'link failed');
+        }
+      } catch {
+        /* transient — next tick retries */
+      }
+    };
+    const h = setInterval(() => void tick(), 2500);
+    return () => {
+      stopped = true;
+      clearInterval(h);
+    };
+  }, [linkId, authorizeUrl, provider, accountId, resetForm, refresh]);
+
   // OAuth mode step B: finish the held provider CLI and register the server-side credential.
   const completeOAuth = useCallback(async () => {
     setAddError(null);
@@ -198,7 +235,9 @@ export default function DeployAccountsPage() {
       return;
     }
     if (provider === 'claude' && !code.trim()) {
-      setAddError('Paste the code claude.ai showed you after you approved.');
+      setAddError(
+        'Paste the code claude.ai showed you after you approved. (If claude said "You\'re all set up" with no code, the link completes automatically — give it a few seconds.)',
+      );
       return;
     }
     setBusy(true);
@@ -424,8 +463,9 @@ export default function DeployAccountsPage() {
                     <>
                       2 · We'll start a Claude login for this account and give you a link (this runs the real{' '}
                       <code>claude setup-token</code> handshake on the server, so claude.ai accepts it). Open the link signed in
-                      as the <strong>TARGET Max account</strong>, approve, then paste the code claude shows you. The token is
-                      written server-side and never returned to the browser.
+                      as the <strong>TARGET Max account</strong> and approve. If claude shows a code, paste it below; if it says
+                      <em> "You're all set up — you can close this window"</em> (no code), the link completes automatically —
+                      just come back here. The token is written server-side and never returned to the browser.
                     </>
                   )}
                 </p>
@@ -465,6 +505,10 @@ export default function DeployAccountsPage() {
                   <label className="pc-da__field">
                     <span>3 · Paste the code claude.ai shows you</span>
                     <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="code#state" />
+                    <p className="pc-da__step-hint">
+                      No code? If claude said <em>"You're all set up"</em>, the link is completing automatically — this dialog
+                      closes itself within a few seconds.
+                    </p>
                   </label>
                 ) : (
                   <div className="pc-da__step">

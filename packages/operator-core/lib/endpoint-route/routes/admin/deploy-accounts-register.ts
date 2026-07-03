@@ -50,6 +50,12 @@ export default defineTool({
 
     try {
       let credentialRef: string;
+      // A token pasted from a terminal can carry an EMBEDDED newline (line wrap) that `trim()`
+      // cannot see — written raw it corrupts the credential file and every gateway request on the
+      // account dies with `Headers.append: invalid header value` (WI-1919, 2026-07-03: three pool
+      // accounts never served a request). A bearer's alphabet has no whitespace, so collapsing ALL
+      // of it reconstructs the intended token. Bundles (JSON) are left untouched.
+      const tokenValue = value.replace(/\s+/g, '');
       if (provider === 'claude') {
         // Discriminate: a setup-token (token:) vs a pasted .credentials.json bundle (file:).
         const isBundle = value.startsWith('{');
@@ -62,7 +68,7 @@ export default defineTool({
           } catch {
             return Response.json({ ok: false, error: 'value looked like JSON but failed to parse' }, { status: 400 });
           }
-        } else if (!value.startsWith('sk-ant-oat')) {
+        } else if (!tokenValue.startsWith('sk-ant-oat')) {
           // A `code#state` paste is the OAuth authorization CODE from claude.ai's callback page —
           // owners land here when the one-click flow showed them a code and they reach for the
           // manual tab instead (2026-07-03). Name the mistake precisely; a code is useless here
@@ -81,7 +87,7 @@ export default defineTool({
         const fileName = isBundle ? `${accountId}.credentials.json` : accountId;
         const credPath = papercuspPath('deploy-credentials', fileName);
         await mkdir(dirname(credPath), { recursive: true });
-        await writeFile(credPath, value, { mode: 0o600 });
+        await writeFile(credPath, isBundle ? value : tokenValue, { mode: 0o600 });
         await chmod(credPath, 0o600);
         credentialRef = `${isBundle ? 'file' : 'token'}:${credPath}`;
       } else if (value.startsWith('env:')) {
@@ -89,7 +95,7 @@ export default defineTool({
       } else {
         const credPath = papercuspPath('deploy-credentials', `${accountId}.codex`);
         await mkdir(dirname(credPath), { recursive: true });
-        await writeFile(credPath, value, { mode: 0o600 });
+        await writeFile(credPath, tokenValue, { mode: 0o600 });
         await chmod(credPath, 0o600);
         credentialRef = `token:${credPath}`;
       }

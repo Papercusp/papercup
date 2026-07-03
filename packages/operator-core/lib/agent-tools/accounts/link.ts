@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { startCliLink, completeCliLink } from '../../deployment/account-link-cli';
+import { startCliLink, completeCliLink, getCliLinkStatus } from '../../deployment/account-link-cli';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -65,5 +65,26 @@ export const accountsLinkCompleteTool = defineTool({
   }),
   async handler(args) {
     return json(await completeCliLink({ linkId: args.linkId, code: args.code, workspace: args.workspace }));
+  },
+});
+
+export const accountsLinkStatusTool = defineTool({
+  name: 'accounts:link-status',
+  profile: 'engineer',
+  description:
+    "Poll a held accounts:link-start flow. claude CLI ≥2.1.200 auto-delivers the OAuth code to the held CLI when the approving browser is on the operator's own machine (the owner sees \"You're all set up\" and NO code) — the server finalizes on its own and THIS reports it. Returns {ok, status: pending|completed|failed|unknown, account?, error?}.",
+  guidance: {
+    when: 'After accounts:link-start, while the owner approves in the browser — poll until completed/failed instead of demanding a code that may never be shown.',
+    notWhen: 'You have a pasted code — accounts:link-complete. Inspecting the pool — accounts:list.',
+    seeAlso: ['accounts:link-start (begin the OAuth link)', 'accounts:link-complete (finish with a pasted code)'],
+  },
+  capability: 'harness:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    linkId: z.string().min(1).describe('The opaque linkId from accounts:link-start'),
+  }),
+  async handler(args) {
+    return json({ ok: true, ...getCliLinkStatus(args.linkId) });
   },
 });

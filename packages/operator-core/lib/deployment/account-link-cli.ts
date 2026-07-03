@@ -118,6 +118,8 @@ function readUntil(
       resolve(v);
     };
     const to = setTimeout(() => finish(null), timeoutMs);
+    // Never hold the process open for a watcher timeout (the auto-mint watcher waits LINK_TTL_MS).
+    (to as unknown as { unref?: () => void }).unref?.();
     const existing = stripAnsi(getBuf()).match(re);
     if (existing) {
       clearTimeout(to);

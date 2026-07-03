@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   joinHarnessSwarm,
   swarmConstructorOpts,
@@ -601,10 +601,24 @@ describe('_setSharedSwarmForTests / _peekSharedSwarmForTests', () => {
 
 describe('swarmConstructorOpts (P-001 — maxPeers cap)', () => {
   const KEY = 'PAPERCUSP_SWARM_MAX_PEERS';
-  const orig = process.env[KEY];
+  // Hermetic against ALL env folded into the opts: a box with a live isolated-DHT
+  // rig legitimately exports PAPERCUSP_DHT_BOOTSTRAP / PAPERCUSP_DHT_HOST (e.g. the
+  // 172.31.44.x tower↔VM drills), which swarmConstructorOpts folds in as
+  // `bootstrap`/`dhtHost` — without clearing them these exact-shape assertions fail
+  // on that box only (hit live 2026-07-03). Save/clear each, restore after.
+  const ENV_KEYS = [KEY, 'PAPERCUSP_DHT_BOOTSTRAP', 'PAPERCUSP_DHT_HOST'] as const;
+  const orig: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      orig[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
   afterEach(() => {
-    if (orig === undefined) delete process.env[KEY];
-    else process.env[KEY] = orig;
+    for (const k of ENV_KEYS) {
+      if (orig[k] === undefined) delete process.env[k];
+      else process.env[k] = orig[k];
+    }
   });
 
   it('uses the provided default for maxPeers when there is no env override', () => {
