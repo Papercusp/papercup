@@ -35,9 +35,11 @@ import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import {
+  claimFleetLaunchSlot,
   createFleetIfAbsent,
   fleetSlugFromName,
   getFleetScheme,
+  releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
@@ -153,21 +155,14 @@ export function resolveFleetAgent(opts: {
   return { agent, model };
 }
 
-/** PURE: suppress a rapid duplicate launch (the "take leadership" fumble) from the SAME leader —
- *  true iff a prior launch of this (workspace, fleet, owner) landed within the window. */
-export function shouldSuppressRelaunch(
-  prior: { at: number } | undefined,
-  now: number,
-  windowMs: number,
-): boolean {
-  return !!prior && now - prior.at < windowMs;
-}
-
-/** In-process record of the last launch per (workspace, fleet, owner) for the idempotency guard
- *  (P-005). Per-worker: a rapid same-session re-fire rides one MCP connection → one worker, the
- *  exact fumble this catches; a cross-worker duplicate is rare and capped at one extra wave. */
+/** Window inside which a repeat launch of the same fleet is suppressed (the P-005 idempotency
+ *  guard). The state lives in PG (agent_fleets.last_launch_at, migration 484) — NOT an in-process
+ *  map: :3070 serves MCP from a multi-process worker pool, and the 2026-07-03 ornith incident
+ *  proved a per-worker map is porous (a leader re-fired the tool 7× in 40s treating "launch" as a
+ *  status check; 6 calls each landed on a worker with an empty map and opened 2 terminals apiece —
+ *  12 unwanted desktop windows). claimFleetLaunchSlot is one atomic SQL check-and-set shared by
+ *  every worker, so exactly ONE call per fleet can win the window. */
 const RELAUNCH_SUPPRESS_MS = 60_000;
-const recentFleetLaunches = new Map<string, { at: number; count: number }>();
 
 /**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +
@@ -507,14 +502,24 @@ export default defineTool({
     }
 
     // Idempotency guard (P-005): a weak model that re-fires launch-on-plan (the 9896 "take
-    // leadership" fumble) must NOT open a second wave. If THIS leader launched THIS fleet within
-    // the window, no-op with a notice instead of spawning again.
-    const launchKey = `${workspaceId}::${fleetSlug}::${ownerId}`;
-    if (shouldSuppressRelaunch(recentFleetLaunches.get(launchKey), Date.now(), RELAUNCH_SUPPRESS_MS)) {
-      const prior = recentFleetLaunches.get(launchKey)!;
-      const agoS = Math.max(1, Math.round((Date.now() - prior.at) / 1000));
+    // leadership" fumble, the 2026-07-03 7×-re-fire) must NOT open a second wave. The claim is
+    // an atomic PG check-and-set on the fleet row, shared across every operator worker — if ANY
+    // launch of this fleet won the window, no-op with a notice instead of spawning again.
+    let slot;
+    try {
+      slot = await claimFleetLaunchSlot({
+        workspaceId,
+        fleetSlug,
+        count,
+        windowMs: RELAUNCH_SUPPRESS_MS,
+      });
+    } catch (e: any) {
+      return err(`Failed to check the fleet's launch guard: ${e?.message ?? e}`);
+    }
+    if (!slot.won) {
+      const agoS = Math.max(1, Math.round((Date.now() - slot.priorAt) / 1000));
       const lines = [
-        `You already lead \`${fleetSlug}\` — ${prior.count} member${prior.count === 1 ? '' : 's'} opened ${agoS}s ago.`,
+        `Fleet \`${fleetSlug}\` was already launched — ${slot.priorCount} member${slot.priorCount === 1 ? '' : 's'} opened ${agoS}s ago (possibly by this very session).`,
         'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
         `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
       ];
@@ -619,24 +624,32 @@ export default defineTool({
     });
     const opened: Array<{ terminal: string; pid: number | null }> = [];
     const failed: Array<{ error: string; code: number }> = [];
-    for (let i = 0; i < count; i++) {
-      const result = spawnConsole({
-        envelope: { ...base, greetingCmd: command, cwd: base.cwd },
-        label: `${fleetSlug} · member ${i + 1}/${count} (${args.plan})`,
-        writeMcpJson: false,
-        scheme,
-      });
+    // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
+    // window survives an early-exit probe instead of reporting ok+pid for a
+    // client that died off-screen) — a serial loop would stack N probe windows.
+    const results = await Promise.all(
+      Array.from({ length: count }, (_v, i) =>
+        spawnConsole({
+          envelope: { ...base, greetingCmd: command, cwd: base.cwd },
+          label: `${fleetSlug} · member ${i + 1}/${count} (${args.plan})`,
+          writeMcpJson: false,
+          scheme,
+        }),
+      ),
+    );
+    for (const result of results) {
       if (result.status === 'ok') opened.push({ terminal: result.terminal, pid: result.pid });
       else failed.push({ error: result.error, code: result.code });
     }
 
-    // Record this launch for the P-005 idempotency guard (only when members actually opened), and
-    // prune stale entries so the per-worker map stays bounded.
-    if (opened.length > 0) {
-      recentFleetLaunches.set(launchKey, { at: Date.now(), count: opened.length });
-      if (recentFleetLaunches.size > 256) {
-        const cutoff = Date.now() - RELAUNCH_SUPPRESS_MS;
-        for (const [k, v] of recentFleetLaunches) if (v.at < cutoff) recentFleetLaunches.delete(k);
+    // The slot was claimed BEFORE spawning (the atomic winner). If the launch opened NOTHING
+    // (every spawn failed), release it so an immediate legitimate retry isn't suppressed for
+    // the whole window; a partial success keeps the claim. Best-effort — never fails the result.
+    if (opened.length === 0) {
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+      } catch {
+        /* the guard self-heals when the window elapses */
       }
     }
 

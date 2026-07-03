@@ -5,7 +5,8 @@
  * must (a) run in a subshell, (b) survive shell-quoting verbatim, then (c) hand
  * off to an interactive login shell so the window stays open.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildConsoleOneliner,
   advSessionTitleTag,
@@ -21,6 +22,23 @@ import { isWindowsDesktopHost } from './windows-desktop-windows';
 // isWindowsDesktopHost from this module.
 vi.mock('./windows-desktop-windows', () => ({ isWindowsDesktopHost: vi.fn(() => false) }));
 
+// WI-1886: mock the OS spawn so these tests NEVER open a real desktop window
+// (the dev box HAS gnome-terminal + an X socket — an unmocked Linux-path call
+// would now actually open one, since spawnConsole injects the desktop env).
+const spawnMock = vi.fn();
+vi.mock('node:child_process', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  spawn: (...a: unknown[]) => spawnMock(...a),
+}));
+
+/** A fake detached terminal child: emit 'exit' to simulate an early death. */
+function fakeChild(pid = 4242) {
+  const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+  child.pid = pid;
+  child.unref = () => {};
+  return child;
+}
+
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
 
 describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
@@ -32,22 +50,82 @@ describe('spawnConsole Windows-desktop (WSL2) defer — WI-1882', () => {
     needsSuperuserBootstrap: false,
     sessionId: 'test-sid',
   };
-  beforeEach(() => vi.mocked(isWindowsDesktopHost).mockReset());
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReset();
+    spawnMock.mockReset();
+    // Deterministic desktop env: the resolver short-circuits when DISPLAY is set.
+    vi.stubEnv('DISPLAY', ':99');
+  });
+  afterEach(() => vi.unstubAllEnvs());
 
-  it('returns code:501 (defer to the Tauri console_launch) on a Windows desktop host, even though process.platform is "linux" inside WSL', () => {
+  it('returns code:501 (defer to the Tauri console_launch) on a Windows desktop host, even though process.platform is "linux" inside WSL', async () => {
     vi.mocked(isWindowsDesktopHost).mockReturnValue(true);
-    const r = spawnConsole({ envelope });
+    const r = await spawnConsole({ envelope });
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(501);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT short-circuit to 501 on a real Linux desktop (isWindowsDesktopHost false)', () => {
+  it('does NOT short-circuit to 501 on a real Linux desktop (isWindowsDesktopHost false)', async () => {
     vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
-    const r = spawnConsole({ envelope });
-    // On a Linux CI host with no terminal emulator this is the 500 "no terminal
-    // emulator found" path; the assertion is only that it did NOT become 501.
+    // A child that dies instantly → the WI-1886 probe reports 502, not 501.
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
     if (r.status === 'error') expect(r.code).not.toBe(501);
   });
+});
+
+describe('spawnConsole early-exit probe — WI-1886(b)', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockReset();
+    vi.stubEnv('DISPLAY', ':99');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('a terminal client that dies nonzero inside the probe ⇒ LOUD error (no more ok+pid ghost windows)', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(1111);
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    const err = r as { code: number; error: string };
+    expect(err.code).toBe(502);
+    expect(err.error).toMatch(/no window opened/i);
+    expect(err.error).toMatch(/WI-1886/);
+  });
+
+  it('a client killed by a signal inside the probe ⇒ LOUD error', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(2222);
+      queueMicrotask(() => child.emit('exit', null, 'SIGSEGV'));
+      return child;
+    });
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('error');
+    expect((r as { error: string }).error).toContain('SIGSEGV');
+  });
+
+  it('a client that outlives the probe ⇒ ok with its pid', async () => {
+    spawnMock.mockImplementation(() => fakeChild(3333)); // never exits
+    const r = await spawnConsole({ envelope });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(3333);
+  }, 10_000);
 });
 
 describe('buildConsoleOneliner', () => {

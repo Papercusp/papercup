@@ -146,14 +146,6 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
   });
 });
 
-describe('shouldSuppressRelaunch (P-005 idempotency guard)', () => {
-  it('suppresses a re-launch inside the window', () => {
-    expect(shouldSuppressRelaunch({ at: 1_000 }, 1_000 + 30_000, 60_000)).toBe(true);
-  });
-  it('allows a launch once the window has elapsed', () => {
-    expect(shouldSuppressRelaunch({ at: 1_000 }, 1_000 + 61_000, 60_000)).toBe(false);
-  });
-  it('never suppresses the first launch (no prior record)', () => {
-    expect(shouldSuppressRelaunch(undefined, 5_000, 60_000)).toBe(false);
-  });
-});
+// The P-005 idempotency guard moved to PG (agent_fleets.last_launch_at, migration 484) so it
+// holds across the multi-process :3070 worker pool — semantics are covered by
+// agent-fleets-store.integration.test.ts (claimFleetLaunchSlot / releaseFleetLaunchSlot).

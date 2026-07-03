@@ -35,6 +35,10 @@ vi.mock('../../../agent-fleets-store', () => ({
   })),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
+  // The P-005 idempotency guard (PG-backed, migration 484): default every handler test
+  // to a WON slot; suppression semantics live in agent-fleets-store.integration.test.ts.
+  claimFleetLaunchSlot: vi.fn(async () => ({ won: true, at: 1 })),
+  releaseFleetLaunchSlot: vi.fn(async () => {}),
 }));
 
 vi.mock('../../coordination/presence', () => ({

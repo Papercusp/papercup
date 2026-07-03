@@ -126,7 +126,7 @@ describe('p2p metering store (real PG, mig 483)', () => {
       db.adminSql,
     );
     expect(refused.ok).toBe(false);
-    if (!refused.ok) return;
+    if (refused.ok) return;
     expect(refused.code).toBe('workspace_unresolved');
     const empty = await loadMeteringLedger('default', db.adminSql);
     expect(Object.keys(empty.spend)).toHaveLength(0);

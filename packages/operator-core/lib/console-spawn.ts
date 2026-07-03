@@ -205,6 +205,144 @@ export function buildConsoleOneliner(
   return `${prelude} ; (${greeting.replace(/'/g, "'\\''")}) ; exec "\${SHELL:-/bin/bash}" -l`;
 }
 
+// ─── Desktop-env resolution + spawn verification (WI-1886) ───────────
+//
+// The operator commonly runs HEADLESS (a systemd user service with no DISPLAY /
+// DBUS_SESSION_BUS_ADDRESS in its environment). `spawn('gnome-terminal', …)`
+// then SUCCEEDS at the fork/exec layer (the binary exists → a pid is assigned),
+// the client immediately dies off-screen with "Cannot open display", and the
+// tool reported `ok + pid` with ZERO windows — the 2026-07-03 backlog-clearance
+// launch lost all 10 member windows exactly this way. Two-part durable fix:
+//   (a) resolveLinuxDesktopEnv(): when the operator itself has no DISPLAY,
+//       resolve the interactive graphical session's env (X socket → DISPLAY,
+//       /run/user/<uid>/bus → DBUS, gdm/~ Xauthority) and INJECT it; when no
+//       display exists at all, FAIL LOUD before spawning anything.
+//   (b) an early-exit probe: after spawning, watch the child briefly — a
+//       desktop-terminal client that dies within the probe window (nonzero, or
+//       zero under gnome-terminal --wait, whose client lives as long as the
+//       window) never opened a window → FAIL LOUD with its captured stderr.
+
+/** How long to watch a just-spawned terminal for an early death. A real
+ *  interactive window outlives this comfortably; a display-less client dies
+ *  well inside it. */
+export const EARLY_EXIT_PROBE_MS = 1200;
+
+export interface DesktopEnvResolution {
+  /** Extra env to inject into the terminal spawn ({} when the operator's own
+   *  env is already desktop-complete). */
+  env: Record<string, string>;
+  /** False ⇒ no display could be resolved — spawning would ghost. */
+  resolved: boolean;
+  error: string | null;
+}
+
+/** Injectable fs probes so the resolver is unit-testable without a desktop. */
+export interface DesktopEnvProbes {
+  existsSync: (p: string) => boolean;
+  readdirSync: (p: string) => string[];
+  uid: number;
+  home: string;
+}
+
+const realProbes = (): DesktopEnvProbes => ({
+  existsSync,
+  readdirSync: (p: string) => readdirSync(p),
+  uid: process.getuid?.() ?? 1000,
+  home: process.env.HOME ?? '/root',
+});
+
+/**
+ * Resolve the desktop-session env a GUI terminal needs, for an operator that
+ * may be running headless. Pure given its probes; exported for unit tests.
+ */
+export function resolveLinuxDesktopEnv(
+  baseEnv: Record<string, string | undefined> = process.env,
+  probes: DesktopEnvProbes = realProbes(),
+): DesktopEnvResolution {
+  const env: Record<string, string> = {};
+
+  // DISPLAY: trust the operator's own when set; else probe the X sockets.
+  if (!baseEnv.DISPLAY) {
+    let sockets: string[] = [];
+    try {
+      sockets = probes
+        .readdirSync('/tmp/.X11-unix')
+        .filter((n) => /^X\d+$/.test(n))
+        .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    } catch {
+      sockets = [];
+    }
+    if (sockets.length === 0) {
+      return {
+        env: {},
+        resolved: false,
+        error:
+          'no X display: the operator has no DISPLAY and no X socket exists under /tmp/.X11-unix — ' +
+          'a desktop terminal cannot open on this host (headless?). Launch from a desktop session, ' +
+          'or run the command yourself in a terminal on the machine with the display. (WI-1886)',
+      };
+    }
+    env.DISPLAY = `:${sockets[0]!.slice(1)}`;
+  }
+
+  const runtimeDir = `/run/user/${probes.uid}`;
+  if (!baseEnv.DBUS_SESSION_BUS_ADDRESS && probes.existsSync(`${runtimeDir}/bus`)) {
+    env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+  }
+  if (!baseEnv.XDG_RUNTIME_DIR && probes.existsSync(runtimeDir)) {
+    env.XDG_RUNTIME_DIR = runtimeDir;
+  }
+  if (!baseEnv.XAUTHORITY) {
+    const candidates = [`${runtimeDir}/gdm/Xauthority`, `${probes.home}/.Xauthority`];
+    const found = candidates.find((p) => probes.existsSync(p));
+    if (found) env.XAUTHORITY = found;
+  }
+  return { env, resolved: true, error: null };
+}
+
+/**
+ * Classify a terminal child's early exit (within {@link EARLY_EXIT_PROBE_MS}).
+ * Pure; exported for unit tests.
+ *
+ * - nonzero exit / signal death ⇒ ALWAYS a failure (the client refused to run —
+ *   classically "Cannot open display" / a dbus connect failure).
+ * - zero exit ⇒ a failure ONLY under `--wait` semantics (gnome-terminal --wait
+ *   keeps the client alive for the WINDOW's lifetime, so an instant clean exit
+ *   means no window survived). Other emulators' clients may legitimately exit 0
+ *   fast (konsole reusing an existing app instance) — not a failure signal.
+ */
+export function classifyEarlyExit(
+  termArgs: string[],
+  code: number | null,
+  signal: string | null,
+): { failed: boolean; why: string | null } {
+  if (signal) return { failed: true, why: `killed by ${signal}` };
+  if (code !== null && code !== 0) return { failed: true, why: `exit code ${code}` };
+  if (code === 0 && termArgs.includes('--wait')) {
+    return { failed: true, why: 'exited 0 instantly under --wait (no window survived)' };
+  }
+  return { failed: false, why: null };
+}
+
+/** Watch a spawned child for an early exit; resolves null when it outlives the probe. */
+function watchEarlyExit(
+  child: ChildProcess,
+  probeMs: number,
+): Promise<{ code: number | null; signal: string | null } | null> {
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      resolvePromise(null);
+    }, probeMs);
+    timer.unref?.();
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      resolvePromise({ code, signal });
+    };
+    child.once('exit', onExit);
+  });
+}
+
 // ─── The spawn primitive ─────────────────────────────────────────────
 
 export interface SpawnConsoleOpts {
@@ -238,8 +376,13 @@ export type SpawnConsoleResult =
  * Returns the spawned `child` so the caller can attach its own exit watcher /
  * adv-session bookkeeping. The child is already `unref()`'d (it outlives this
  * process). Linux-only — see the module header for the macOS/Windows boundary.
+ *
+ * ASYNC since WI-1886: the Linux path now resolves missing desktop env before
+ * spawning and watches the child for {@link EARLY_EXIT_PROBE_MS} — an
+ * `ok + pid` return now actually means a window survived the probe, never a
+ * client that died off-screen.
  */
-export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
+export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
 
   // 1. Optional .mcp.json displacement (backup the user's, write ours).
@@ -303,19 +446,76 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
     };
   }
 
-  // 6. Spawn a new window running the one-liner; detach so closing the
-  //    operator doesn't kill the user's terminal.
+  // 6. WI-1886(a): the operator often runs headless (systemd user service) —
+  //    resolve the interactive session's desktop env and inject it; with no
+  //    display resolvable, fail LOUD before spawning a client that would ghost.
+  const desktop = resolveLinuxDesktopEnv();
+  if (!desktop.resolved) {
+    return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
+  }
+
+  // 7. Spawn a new window running the one-liner; detach so closing the
+  //    operator doesn't kill the user's terminal. Stderr goes to a temp FILE
+  //    (not a pipe: no backpressure/EPIPE risk on a long-lived window) so the
+  //    early-exit probe can surface the client's actual complaint.
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
+  const stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+  let stderrFd: number | null = null;
+  try {
+    stderrFd = openSync(stderrPath, 'w');
+  } catch {
+    stderrFd = null;
+  }
   try {
     const child = spawn(term.bin, childArgs, {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', stderrFd ?? 'ignore'],
       cwd: envelope.cwd,
-      env: { ...process.env, ...envelope.env },
+      env: { ...process.env, ...desktop.env, ...envelope.env },
     });
     child.unref();
+    if (stderrFd != null) {
+      closeSync(stderrFd); // the child holds its own dup
+      stderrFd = null;
+    }
+
+    // WI-1886(b): a client that dies inside the probe window never opened a
+    // window — report the failure (with its stderr) instead of ok+pid.
+    const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    let stderrText = '';
+    try {
+      stderrText = readFileSync(stderrPath, 'utf8').trim().slice(0, 800);
+    } catch {
+      stderrText = '';
+    }
+    if (earlyExit) {
+      const verdict = classifyEarlyExit(term.args, earlyExit.code, earlyExit.signal);
+      if (verdict.failed) {
+        try {
+          unlinkSync(stderrPath);
+        } catch { /* best-effort */ }
+        return {
+          status: 'error',
+          error:
+            `${term.bin} died ${verdict.why} within ${EARLY_EXIT_PROBE_MS}ms — no window opened` +
+            `${stderrText ? `: ${stderrText}` : ''} (WI-1886: was the operator headless / display unreachable?)`,
+          code: 502,
+        };
+      }
+    }
+    try {
+      unlinkSync(stderrPath); // window survived (fd stays valid for the child on Linux)
+    } catch { /* best-effort */ }
     return { status: 'ok', pid: child.pid ?? null, terminal: term.bin, child };
   } catch (e: any) {
+    if (stderrFd != null) {
+      try {
+        closeSync(stderrFd);
+      } catch { /* already closed */ }
+    }
+    try {
+      unlinkSync(stderrPath);
+    } catch { /* best-effort */ }
     return { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}`, code: 500 };
   }
 }

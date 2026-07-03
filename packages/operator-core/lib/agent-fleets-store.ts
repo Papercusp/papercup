@@ -278,3 +278,68 @@ export async function setFleetScheme(
   )) as unknown as FleetRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
+
+/** Result of {@link claimFleetLaunchSlot}: the caller either WON the slot (proceed to
+ *  spawn; `at` is the recorded claim time, needed to release on a fully-failed spawn)
+ *  or lost to a fresh prior launch (suppress — `priorAt`/`priorCount` feed the notice). */
+export type FleetLaunchSlot =
+  | { won: true; at: number }
+  | { won: false; priorAt: number; priorCount: number };
+
+/**
+ * Atomically claim a fleet's launch slot — the fleet:launch-on-plan idempotency guard.
+ * ONE winner per (workspace, fleet) per `windowMs`, across ALL operator workers: the
+ * check-and-set runs as a single SQL UPDATE, replacing the per-worker in-process Map
+ * that let a weak model open 6 member waves in 40s on 2026-07-03 (each re-fire landed
+ * on a different :3070 worker whose map was empty). Call AFTER createFleetIfAbsent —
+ * the row must exist; a missing row fails OPEN (won, unrecorded) rather than wedging
+ * the launch. `now` is injectable for deterministic window tests.
+ */
+export async function claimFleetLaunchSlot(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  count: number;
+  windowMs: number;
+  now?: number;
+  sql?: Sql;
+}): Promise<FleetLaunchSlot> {
+  const s = pg(opts.sql);
+  const now = opts.now ?? Date.now();
+  const won = (await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET last_launch_at = $3, last_launch_count = $4, updated_at = $3
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND (last_launch_at IS NULL OR last_launch_at < $5)
+      RETURNING fleet_slug`,
+    [opts.workspaceId, opts.fleetSlug, now, opts.count, now - opts.windowMs],
+  )) as unknown as Array<{ fleet_slug: string }>;
+  if (won.length > 0) return { won: true, at: now };
+  const prior = (await s.unsafe(
+    `SELECT last_launch_at, last_launch_count FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND fleet_slug = $2`,
+    [opts.workspaceId, opts.fleetSlug],
+  )) as unknown as Array<{ last_launch_at: string | number | null; last_launch_count: number | null }>;
+  if (!prior[0] || prior[0].last_launch_at == null) return { won: true, at: now }; // fleet row vanished — fail open
+  return { won: false, priorAt: Number(prior[0].last_launch_at), priorCount: Number(prior[0].last_launch_count ?? 0) };
+}
+
+/**
+ * Release a launch slot claimed at `at` — ONLY when the launch it guarded opened
+ * nothing (every spawn failed), so an immediate legitimate retry isn't suppressed
+ * for the whole window. Guarded by `last_launch_at = at` so it never clears a
+ * NEWER launch's claim.
+ */
+export async function releaseFleetLaunchSlot(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  at: number;
+  sql?: Sql;
+}): Promise<void> {
+  const s = pg(opts.sql);
+  await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET last_launch_at = NULL, last_launch_count = NULL
+      WHERE workspace_id = $1 AND fleet_slug = $2 AND last_launch_at = $3`,
+    [opts.workspaceId, opts.fleetSlug, opts.at],
+  );
+}

@@ -101,7 +101,7 @@ async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): 
     slug: opts.slug,
     operatorBaseUrl: opts.operatorBaseUrl,
   });
-  const result = spawnConsole({ envelope, writeMcpJson: true });
+  const result = await spawnConsole({ envelope, writeMcpJson: true });
   if (result.status === 'error') throw new Error(result.error);
   dlog(`doSpawn launched ${result.terminal} pid=${result.pid}`);
 }
@@ -209,7 +209,7 @@ const post = defineTool({
     // Spawn (writes/back-ups .mcp.json, picks a terminal, opens a new window).
     // Linux-only at this tier; non-Linux operators get code 501 and the
     // renderer falls back to the Tauri console_launch command.
-    const result = spawnConsole({
+    const result = await spawnConsole({
       envelope,
       planSlug: body.planSlug ?? null,
       label: body.label ?? null,

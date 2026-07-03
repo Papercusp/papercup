@@ -204,26 +204,34 @@ export default defineTool({
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
     let fleetInjected = false;
-    for (const item of items) {
-      const cwd = item.cwd
-        ? isAbsolute(item.cwd)
-          ? item.cwd
-          : resolvePath(base.cwd, item.cwd)
-        : base.cwd;
-      // With an explicit `fleet`, a psu launch JOINS it (membership), not just colour.
-      const { command, injected } = injectFleetArg(item.command, fleetSlug);
-      if (injected) fleetInjected = true;
-      // Override the greeting per terminal (runs the command, then drops to a shell).
-      const result = spawnConsole({
-        envelope: { ...base, greetingCmd: command, cwd },
-        label: item.label ?? null,
-        writeMcpJson: false,
-        scheme,
-      });
-      if (result.status === 'ok') {
-        opened.push({ command, cwd, terminal: result.terminal, pid: result.pid });
+    // Spawn all windows CONCURRENTLY: spawnConsole is async since WI-1886 (it
+    // watches each child for an early off-screen death) — serializing N spawns
+    // would stack N probe windows.
+    const results = await Promise.all(
+      items.map(async (item) => {
+        const cwd = item.cwd
+          ? isAbsolute(item.cwd)
+            ? item.cwd
+            : resolvePath(base.cwd, item.cwd)
+          : base.cwd;
+        // With an explicit `fleet`, a psu launch JOINS it (membership), not just colour.
+        const { command, injected } = injectFleetArg(item.command, fleetSlug);
+        // Override the greeting per terminal (runs the command, then drops to a shell).
+        const result = await spawnConsole({
+          envelope: { ...base, greetingCmd: command, cwd },
+          label: item.label ?? null,
+          writeMcpJson: false,
+          scheme,
+        });
+        return { command, cwd, injected, result };
+      }),
+    );
+    for (const r of results) {
+      if (r.injected) fleetInjected = true;
+      if (r.result.status === 'ok') {
+        opened.push({ command: r.command, cwd: r.cwd, terminal: r.result.terminal, pid: r.result.pid });
       } else {
-        failed.push({ command, error: result.error, code: result.code });
+        failed.push({ command: r.command, error: r.result.error, code: r.result.code });
       }
     }
 
