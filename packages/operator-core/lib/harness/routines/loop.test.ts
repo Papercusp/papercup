@@ -18,6 +18,30 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
 } from './loop';
 
+describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', () => {
+  const prompt = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'do the thing' });
+
+  it('does NOT carry the old broken directive "in_progress → completed" ("completed" is not a valid state, rejected every wake)', () => {
+    expect(prompt).not.toContain('in_progress → completed');
+  });
+
+  it('directs terminal completion through work_items:complete { state:\'done\' }', () => {
+    expect(prompt).toContain('work_items:complete');
+    expect(prompt).toContain("state:'done'");
+  });
+
+  it('marks in-flight work via a valid state (in_progress)', () => {
+    expect(prompt).toContain("state:'in_progress'");
+  });
+
+  it('substitutes the template vars (no unreplaced {goal}/{harness}/{ownerId})', () => {
+    expect(prompt).toContain('do the thing');
+    expect(prompt).toContain('papercusp');
+    expect(prompt).toContain('su-x');
+    expect(prompt).not.toMatch(/\{(goal|harness|ownerId|intervalSec)\}/);
+  });
+});
+
 describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
   const STUCK = 30 * 60_000; // max(30min, 4×interval) for a ≤7.5min interval
   it('not parked → never stalled', () => {

@@ -1552,6 +1552,18 @@ describe('session-owner index (identity-split fix 2026-07-02 — untracked resum
     expect(raw).toMatchObject({ v: 1, ownerId: 'su-born', advSessionId: '42' });
   });
 
+  it('WI-1863: adv-keyed entry resolves an omp launch (no native UUID) to its ownerId', () => {
+    // omp launches yield nativeSessionIdFromLaunchArgs=null → the native-id write is a
+    // no-op; the launcher ALSO records `adv-<advSessionId>` so a desktop session-<N> is
+    // locally resolvable (the 2026-07-03 ornith misdelivery incident).
+    expect(recordSessionOwner(nativeSessionIdFromLaunchArgs(['--approval-mode', 'yolo']), 'su-omp-leader', { home })).toBe(false);
+    expect(recordSessionOwner('adv-9965', 'su-omp-leader', { home, advSessionId: '9965' })).toBe(true);
+    expect(recoverSessionOwner('adv-9965', { home })).toBe('su-omp-leader');
+    // first-write-wins holds for adv keys too
+    expect(recordSessionOwner('adv-9965', 'su-imposter', { home, advSessionId: '9965' })).toBe(false);
+    expect(recoverSessionOwner('adv-9965', { home })).toBe('su-omp-leader');
+  });
+
   it('nativeSessionIdFromLaunchArgs: fresh launch (--session-id) and both resume forms', () => {
     expect(nativeSessionIdFromLaunchArgs(['--session-id', UUID])).toBe(UUID);
     expect(nativeSessionIdFromLaunchArgs([`--session-id=${UUID}`])).toBe(UUID);

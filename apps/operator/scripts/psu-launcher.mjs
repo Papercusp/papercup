@@ -2443,9 +2443,16 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // instead of minting a fresh SID (see recordSessionOwner). First write wins,
   // so re-recording on every launch/resume is a no-op for a known session.
   if (ownerId) {
-    recordSessionOwner(nativeSessionIdFromLaunchArgs(args), ownerId, {
-      advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
-    });
+    const advSessionId = env.PAPERCUSP_ADV_SESSION_ID || null;
+    recordSessionOwner(nativeSessionIdFromLaunchArgs(args), ownerId, { advSessionId });
+    // WI-1863: omp launches have NO native session UUID (nativeSessionIdFromLaunchArgs
+    // returns null for them by design), so they never got an owner-index entry — a
+    // desktop `session-<N>` was locally unresolvable to its coord ownerId, and a tester
+    // resolving "the leader" from this index picked a nearby CLAUDE entry and misdelivered
+    // directives (the 2026-07-03 ornith fleet-of-claude incident). ALSO key every launch
+    // by its adv session id (`adv-<N>`) so session-number → ownerId always resolves.
+    // Same first-write-wins semantics; the authoritative registry stays adv_sessions.
+    if (advSessionId) recordSessionOwner(`adv-${advSessionId}`, ownerId, { advSessionId });
   }
   // liveness-hardening P-004: supervisor beat covers BOTH launch paths below.
   startSupervisorBeat(ownerId);

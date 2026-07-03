@@ -91,7 +91,7 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '2. Create + SELF-ASSIGN each unit as a work_item in ONE atomic call:',
   "     work_items:create { kind:'task', title:'…', harness:'{harness}', assign_to:'{ownerId}' }",
   '   (creates AND claims it for you in one write — your work then shows in fleet:assignments, owned, with no create→claim race). Omit `topics` — a self-owned loop item needs no topic fanout.',
-  '3. Do the work; update `work_items:set_state` (in_progress → completed) and your plan as you go.',
+  "3. Do the work; mark it `work_items:set_state { state:'in_progress' }` while working, then FINISH each unit with `work_items:complete { id, completion, state:'done' }` (records completion evidence + transitions the item — 'done', not the invalid 'completed'). Update your plan as you go.",
   "4. When this iteration's work is done (or you are blocked), END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
   '',
   'To stop: `loop:end`. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',

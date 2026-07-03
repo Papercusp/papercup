@@ -3283,6 +3283,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // `fleets.byWorkspace` — the /res Resources board's fleet column: this
+  // workspace's persisted named fleets (agent_fleets, mig 417), newest first.
+  // FLAT — fleets are workspace-scoped with NO hive nesting in the data model
+  // (agent_fleets has no hive_slug/parent), so the /res tree renders the real,
+  // currently single-level structure; cross-hive nesting fills in only as
+  // federation (P-301) lands. No args → server-side activeWorkspaceId(). Fleet
+  // create/delete/meta writes should notifySyncInvalidate('fleets.byWorkspace')
+  // for a live board.
+  'fleets.byWorkspace': {
+    resolve: async () => {
+      try {
+        const { listFleets } = await import('../agent-fleets-store');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return await listFleets(activeWorkspaceId());
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
+          console.warn('[fleets.byWorkspace] read failed:', msg);
+        }
+        return []; // degrade to an empty board rather than 500 the page
+      }
+    },
+  },
+
   // `p2p.audit` — the P-002 Audit section: p2p:*-prefixed audit_log rows
   // (kill-switch flips + starter-profile applies now; grant changes + refusal
   // receipts join as P-001/P-004 land — same prefix convention).
