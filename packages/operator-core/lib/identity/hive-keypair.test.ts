@@ -164,3 +164,59 @@ describe('loadHiveKeyStatus', () => {
     if (status.kind === 'error') expect(status.reason).toMatch(/short/);
   });
 });
+
+describe('WI-1981 mint-guard — a joined remote_hive VIEW must never mint', () => {
+  function mockRegistryWith(projects: Array<Record<string, unknown>>) {
+    vi.doMock('../harness-registry', () => ({
+      loadHarnessRegistry: vi.fn(async () => ({ projects })),
+    }));
+  }
+
+  it('REFUSES the mint (loud, typed) when the registry row is remote_hive:true — and stores NO key', async () => {
+    mockRegistryWith([{ slug: 'papercusp', harness_kind: 'hive', remote_hive: true }]);
+    const { loadOrGenerateHiveKeypair, loadHivePubkey, RemoteHiveViewMintRefusedError } = await load();
+    await expect(loadOrGenerateHiveKeypair('papercusp-workspace', 'papercusp')).rejects.toBeInstanceOf(
+      RemoteHiveViewMintRefusedError,
+    );
+    // The recurrence-guard assertion from the live incident: after the refused
+    // mint, this box still holds NO local hive author key (loadHivePubkey null)
+    // — so the epoch-grant owner self-gate stays closed and no origin=local
+    // poison wraps can ever be authored here.
+    expect(await loadHivePubkey('papercusp-workspace', 'papercusp')).toBeNull();
+    vi.doUnmock('../harness-registry');
+  });
+
+  it('still mints for an OWNED hive row (remote_hive absent) and with NO registry row (create-before-registry)', async () => {
+    mockRegistryWith([{ slug: 'my-own-hive', harness_kind: 'hive' }]);
+    const { loadOrGenerateHiveKeypair } = await load();
+    const owned = await loadOrGenerateHiveKeypair('ws1', 'my-own-hive');
+    expect(owned.pubkeyBase64).toBeTruthy();
+    const fresh = await loadOrGenerateHiveKeypair('ws1', 'brand-new-hive');
+    expect(fresh.pubkeyBase64).toBeTruthy();
+    vi.doUnmock('../harness-registry');
+  });
+
+  it('an unreadable registry FAILS OPEN for the owner mint (pre-guard behavior preserved)', async () => {
+    vi.doMock('../harness-registry', () => ({
+      loadHarnessRegistry: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    }));
+    const { loadOrGenerateHiveKeypair } = await load();
+    const kp = await loadOrGenerateHiveKeypair('ws1', 'owner-hive');
+    expect(kp.pubkeyBase64).toBeTruthy();
+    vi.doUnmock('../harness-registry');
+  });
+
+  it('a key that ALREADY exists loads fine even when the row later reads remote_hive (load path unaffected)', async () => {
+    mockRegistryWith([]);
+    const { loadOrGenerateHiveKeypair } = await load();
+    const minted = await loadOrGenerateHiveKeypair('ws1', 'was-owned');
+    vi.doUnmock('../harness-registry');
+    mockRegistryWith([{ slug: 'was-owned', harness_kind: 'hive', remote_hive: true }]);
+    const { loadOrGenerateHiveKeypair: again } = await load();
+    const loaded = await again('ws1', 'was-owned');
+    expect(loaded.pubkeyBase64).toBe(minted.pubkeyBase64);
+    vi.doUnmock('../harness-registry');
+  });
+});
