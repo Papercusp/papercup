@@ -68,6 +68,20 @@ type Db = Sql | TransactionSql;
  *  Matches the fleet_assignment view's 10-minute liveness window (mig 225). */
 export const STALE_CLAIM_GRACE_MS = STALE_MS;
 
+/**
+ * WI-1999: long-horizon fallback for claims held by a LOCALLY-UNKNOWN holder.
+ * work_items rows FEDERATE across the hive but coord_presence is LOCAL-BY-DESIGN,
+ * so a remote node's holder is invisible here — this node's sweep CANNOT
+ * authoritatively judge it dead (the 2026-07-03 incident: the mac-VM's sweep
+ * shredded live tower holders' claims — WI-1964 dead-lettered 5x while actively
+ * driven, WI-1910 requeued 5x). The DEAD leg therefore only reaps holders this
+ * node has EVER seen (any coord_presence / spawned_agents row, however stale);
+ * a never-seen-here holder is possibly-remote → SKIP, unless the claim is
+ * anchored (taken_at NOT NULL) and older than this fallback — so a truly
+ * abandoned row still frees after the presence-row TTL reap, just slowly.
+ */
+export const STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS = 24 * 3600 * 1000;
+
 /** WHY a claim was reclaimed (agent-activity-liveness-truth P-003, D-001/D-004):
  *  - 'dead'       — holder not alive per the alias-aware rule, past the grace window
  *                   (the original behavior).
@@ -174,6 +188,27 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
 }
 
 /**
+ * WI-1999: the "locally-KNOWN holder" set — every alias this node has EVER seen,
+ * regardless of freshness or lifecycle state (any coord_presence row + every
+ * alias of any spawned_agents row). The DEAD reclaim leg requires membership
+ * here before presuming a holder dead: absence from FRESH presence means "not
+ * alive HERE", but absence from this set means "never seen HERE" — which, for a
+ * FEDERATED work_items row, most likely means the holder lives on ANOTHER hive
+ * node whose presence never federates. Reaping those live remote claims is the
+ * WI-1964/WI-1910 shredder. Shared by both reapers so the rule cannot diverge.
+ */
+export function knownHolderFragment(sql: Db) {
+  return sql`
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+      UNION
+      SELECT a.alias
+        FROM harness_shared.spawned_agents n
+        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+       WHERE a.alias IS NOT NULL AND a.alias <> ''`;
+}
+
+/**
  * Release every reclaimable work-item claim and requeue the mid-flight ones
  * (bounded by the requeue cap). One atomic statement; returns the released rows
  * (with former/new status, counter, a derived action, and the REASON) for
@@ -202,15 +237,27 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
  */
 export async function reclaimStaleWorkItemClaims(
   sql: Db,
-  opts: { graceMs?: number; requeueCap?: number; includeStalled?: boolean; stalledMs?: number } = {},
+  opts: {
+    graceMs?: number;
+    requeueCap?: number;
+    includeStalled?: boolean;
+    stalledMs?: number;
+    /** WI-1999: override the never-seen-here holder fallback horizon (tests). */
+    unknownHolderFallbackMs?: number;
+  } = {},
 ): Promise<StaleClaimSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
   const stalledSec = Math.max(1, Math.round((opts.stalledMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const unknownFallbackSec = Math.max(
+    1,
+    Math.round((opts.unknownHolderFallbackMs ?? STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS) / 1000),
+  );
   const cap = opts.requeueCap ?? staleReclaimRequeueCap();
   const includeStalled = opts.includeStalled === true;
   const nonRequeue = WORK_ITEM_NON_REQUEUE_STATES;
   const rows = await sql<ReleasedRow[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    known_holder AS (${knownHolderFragment(sql)}),
     -- Aliases of RECENTLY-terminal spawns — confirmed dead, no grace (P-003/D-004).
     -- Bounded to the last hour so the cross-join stays tiny (older terminal spawns
     -- were already grace-freed by the DEAD leg).
@@ -243,8 +290,21 @@ export async function reclaimStaleWorkItemClaims(
            -- NULL claim read as orphaned forever yet never reap — the EI-2534
            -- strand. Freeing it is safe: the row is only freed when its holder is
            -- already NOT alive, so no live agent (anchored or not) is ever robbed.
+           -- WI-1999 remote-holder guard: only presume DEAD a holder this node has
+           -- EVER seen (known_holder). work_items federate but presence does not —
+           -- a never-seen-here holder is possibly a LIVE agent on another hive node
+           -- (the WI-1964 shredder), so SKIP it, unless the claim is anchored and
+           -- older than the long-horizon fallback (truly abandoned rows still free
+           -- after the presence-row TTL reap).
            ( (f.taken_at IS NULL OR (now() - f.taken_at) > make_interval(secs => ${graceSec}))
-             AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by) )
+             AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+             AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
+                   -- Fallback anchor: taken_at, or updated_ts for a NULL-anchor claim
+                   -- (EI-2534 class) — an actively-driven remote item keeps refreshing
+                   -- updated_ts via federation, deferring the fallback; a truly
+                   -- abandoned one frees once the horizon lapses.
+                   OR (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
+                        > make_interval(secs => ${unknownFallbackSec}) ) )
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
            -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
@@ -347,11 +407,20 @@ export interface StaleIssueSweepResult {
  */
 export async function reclaimStaleIssueClaims(
   sql: Db,
-  opts: { graceMs?: number } = {},
+  opts: {
+    graceMs?: number;
+    /** WI-1999: override the never-seen-here holder fallback horizon (tests). */
+    unknownHolderFallbackMs?: number;
+  } = {},
 ): Promise<StaleIssueSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const unknownFallbackSec = Math.max(
+    1,
+    Math.round((opts.unknownHolderFallbackMs ?? STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS) / 1000),
+  );
   const released = await sql<ReleasedIssueClaim[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    known_holder AS (${knownHolderFragment(sql)}),
     dead AS (
       SELECT e.workspace_id, e.issue_id, e.kind,
              e.assignee AS former_assignee, e.assigned_by
@@ -362,6 +431,11 @@ export async function reclaimStaleIssueClaims(
          AND e.state = 'open'
          AND e.kind IN ('bug', 'change')   -- D-009: exclude task (delegate binding)
          AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = e.assignee)
+         -- WI-1999 remote-holder guard (see reclaimStaleWorkItemClaims): engineer_issues
+         -- federate, presence does not — never presume a never-seen-here assignee dead
+         -- before the long-horizon fallback.
+         AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = e.assignee)
+               OR (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec}) )
          FOR UPDATE OF e SKIP LOCKED
     )
     UPDATE harness_shared.engineer_issues e
