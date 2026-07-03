@@ -28,7 +28,9 @@ vi.mock('../../harness-test-gate', () => ({
   itemTestGate: (...a: unknown[]) => itemTestGate(...a),
 }));
 
+import { z } from 'zod';
 import complete from './complete';
+import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (x: unknown) => (complete.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -252,6 +254,151 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'landed; bad vocab' } });
       expect(r.stateError).toBeTruthy();
       expect(r.stateWarning).toMatch(/NOT closed/); // the failed transition left it claimable
+    });
+  });
+});
+
+/**
+ * EI-7031 — work_items:complete failed ~15% of calls, almost entirely on malformed
+ * `completion` SHAPE from LLM callers (bare string, scalar↔array swaps, missing
+ * summary, flat fields with no wrapper). Each was a finished unit of work whose
+ * completion was REJECTED and LOST, leaving the item claimable. We coerce those
+ * shapes to the contract BEFORE validation ("be liberal in what you accept"); a
+ * well-formed completion is unaffected. These pin the coercion + the wiring + that
+ * the published tools/list schema is unchanged.
+ */
+describe('work_items:complete input coercion (EI-7031)', () => {
+  describe('coerceCompletionShape (unit)', () => {
+    it('a bare string completion → { summary } (the 18× "expected object, received string")', () => {
+      expect(coerceCompletionShape('shipped the fix')).toEqual({ summary: 'shipped the fix' });
+    });
+
+    it('an empty/whitespace-only string is left for validation to reject (not silently accepted)', () => {
+      expect(coerceCompletionShape('   ')).toBe('   ');
+    });
+
+    it('a scalar in an array-typed field is wrapped LOSSLESSLY (no comma-splitting)', () => {
+      const out = coerceCompletionShape({ summary: 's', whatLanded: 'did A, B and C' }) as { whatLanded: unknown };
+      expect(out.whatLanded).toEqual(['did A, B and C']);
+    });
+
+    it('coerces migrations + deferred scalars the same way', () => {
+      const out = coerceCompletionShape({ summary: 's', migrations: '137 foo', deferred: 'timeout follow-up' }) as {
+        migrations: unknown;
+        deferred: unknown;
+      };
+      expect(out.migrations).toEqual(['137 foo']);
+      expect(out.deferred).toEqual(['timeout follow-up']);
+    });
+
+    it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
+      const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
+      expect(out.tests).toBe('67 green; vitest');
+    });
+
+    it('derives a summary from title / whatLanded / status when omitted (the 2× missing summary)', () => {
+      expect((coerceCompletionShape({ title: 'Fix loop guard' }) as { summary: string }).summary).toBe('Fix loop guard');
+      expect((coerceCompletionShape({ whatLanded: 'guard.ts patched' }) as { summary: string }).summary).toBe('guard.ts patched');
+      expect((coerceCompletionShape({ status: 'shipped' }) as { summary: string }).summary).toBe('shipped');
+      expect((coerceCompletionShape({}) as { summary: string }).summary).toBe('done');
+    });
+
+    it('leaves a WELL-FORMED completion deep-equal (only rescues mis-shapes)', () => {
+      const good = { summary: 'all green', whatLanded: ['a.ts', 'b.ts'], tests: '5 green', deferred: ['x'] };
+      expect(coerceCompletionShape(good)).toEqual(good);
+    });
+
+    it('passes a non-string, non-object value through untouched', () => {
+      expect(coerceCompletionShape(42)).toBe(42);
+      expect(coerceCompletionShape(null)).toBe(null);
+    });
+  });
+
+  describe('gatherFlatCompletion (unit)', () => {
+    it('gathers flat completion fields under `completion` when there is no wrapper', () => {
+      expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', whatLanded: ['a'] })).toEqual({
+        id: 'WI-1',
+        completion: { summary: 'done', whatLanded: ['a'] },
+      });
+    });
+
+    it('leaves a call that already has `completion` unchanged (same reference)', () => {
+      const call = { id: 'WI-1', completion: { summary: 'x' } };
+      expect(gatherFlatCompletion(call)).toBe(call);
+    });
+
+    it('leaves an items:[…] batch unchanged', () => {
+      const call = { items: [{ id: 'WI-1', completion: { summary: 'x' } }] };
+      expect(gatherFlatCompletion(call)).toBe(call);
+    });
+
+    it('does NOT gather id/harness/state — only completion fields', () => {
+      expect(gatherFlatCompletion({ id: 'WI-1', harness: 'papercusp', state: 'resolved', summary: 's' })).toEqual({
+        id: 'WI-1',
+        harness: 'papercusp',
+        state: 'resolved',
+        completion: { summary: 's' },
+      });
+    });
+
+    it('leaves a call with an id but no completion-ish fields unchanged', () => {
+      const call = { id: 'WI-1', harness: 'papercusp' };
+      expect(gatherFlatCompletion(call)).toBe(call);
+    });
+  });
+
+  describe('end-to-end through the real tool schema + handler (the wire shapes that 400ed)', () => {
+    beforeEach(() => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'open' });
+      setWorkItemState.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'resolved' });
+    });
+
+    it('completion passed as a bare STRING now records instead of 400ing', async () => {
+      const r = await one({ id: 'WI-9', state: 'resolved', completion: 'fixed the thing' });
+      expect(r.ok).toBe(true);
+      expect(r.completion.summary).toBe('fixed the thing');
+    });
+
+    it('scalar whatLanded + array tests now record', async () => {
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: { summary: 's', whatLanded: 'one file', tests: ['5 green', 'vitest'] },
+      });
+      expect(r.completion.whatLanded).toEqual(['one file']);
+      expect(r.completion.tests).toBe('5 green; vitest');
+    });
+
+    it('a FLAT completion (fields on args, no wrapper) now records instead of tripping the refine', async () => {
+      const r = await one({ id: 'WI-9', state: 'resolved', summary: 'landed flat', whatLanded: ['x.ts'] });
+      expect(r.ok).toBe(true);
+      expect(r.completion.summary).toBe('landed flat');
+      expect(r.completion.whatLanded).toEqual(['x.ts']);
+    });
+
+    it('a completion with NO summary is derived, not rejected', async () => {
+      const r = await one({ id: 'WI-9', state: 'resolved', completion: { title: 'Guard fix', whatLanded: ['g.ts'] } });
+      expect(r.ok).toBe(true);
+      expect(r.completion.summary).toBe('Guard fix');
+    });
+
+    it('a well-formed call is unaffected by the coercion path', async () => {
+      const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'clean', whatLanded: ['a.ts'] } });
+      expect(r.completion.summary).toBe('clean');
+      expect(r.completion.whatLanded).toEqual(['a.ts']);
+    });
+  });
+
+  describe('published JSON schema (tools/list projection) is unchanged by the preprocess wrappers', () => {
+    it('still advertises id / completion / items as object properties', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        type?: string;
+        properties?: Record<string, unknown>;
+      };
+      expect(json.type).toBe('object');
+      expect(json.properties).toHaveProperty('id');
+      expect(json.properties).toHaveProperty('completion');
+      expect(json.properties).toHaveProperty('items');
     });
   });
 });

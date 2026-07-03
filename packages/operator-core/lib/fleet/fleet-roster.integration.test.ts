@@ -9,16 +9,18 @@
  * pattern as assignments.integration.test.ts / presence.integration.test.ts).
  *
  * It drives the exact mechanism a `--fleet=<slug>` launch goes through end to
- * end, WITHOUT hand-simulating the DB writes:
+ * end, WITHOUT hand-simulating the DB writes (WI-1893 cluster-safe form — the
+ * old per-worker in-memory setPendingFleet map is GONE):
  *
- *   1. `setPendingFleet(ownerId, slug, role)` — what bootstrap-su.ts /
- *      bootstrap-role.ts call after `resolveFleet()` resolves a join, since the
- *      resolved fleet lands on the OPERATOR's own env, not the launched
- *      member's (see presence.ts's "Spawned-bee fleet placement" doc-comment).
+ *   1. `appendFleetMembershipIfAbsent(...)` — what bootstrap-su.ts /
+ *      bootstrap-role.ts / operator-spawn call AT BOOT, in whichever cluster
+ *      worker serves the launch: the DURABLE membership fact
+ *      (harness_shared.fleet_membership_events).
  *   2. `writePresence(identity, ...)` — the member's own first presence write,
- *      exactly as psu-launcher's bootstrap call triggers. This is the call that
- *      applies the one-shot pending placement via `takePendingFleet` +
- *      `setPresenceFleet` (append-only fact + DB projection trigger, WI-1345).
+ *      exactly as psu-launcher's bootstrap call triggers, usually served by a
+ *      DIFFERENT worker. The mig-430 materialize trigger applies the fact onto
+ *      the fresh presence row (fact-first ordering — the exact ordering the old
+ *      in-memory map lost).
  *
  * Then it asserts the WI's explicit TERMINAL bar on the two real read surfaces
  * named in the dossier:
@@ -28,10 +30,11 @@
  *       (the fleet:status/roster reader) and `listFleetAssignments` +
  *       `groupByAgent` (fleet:assignments, the claim-primary reader).
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
-import { setPendingFleet, writePresence } from '../agent-tools/coordination/presence';
+import { writePresence } from '../agent-tools/coordination/presence';
+import { appendFleetMembershipIfAbsent } from '../fleet-membership-store';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { listFleetRoster } from './fleet-roster';
 import { listFleetAssignments, groupByAgent } from './assignments';
@@ -62,16 +65,6 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll();
-});
-
-afterEach(async () => {
-  // Defensive: the one-shot pending-fleet map is process-global (in-memory) —
-  // a test that throws before writePresence consumes it must not leak a
-  // placement into the next test. Best-effort drain, matching the module's
-  // own "take" (read+remove) semantics.
-  const { takePendingFleet } = await import('../agent-tools/coordination/presence');
-  takePendingFleet('fr-test-member');
-  takePendingFleet('fr-test-member-direct');
 });
 
 function memberIdentity(ownerId: string): AgentIdentity {
@@ -105,11 +98,19 @@ describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1
     const fleetSlug = 'fr-test-fleet-alpha';
     const identity = memberIdentity(ownerId);
 
-    // 1. What bootstrap-su.ts does once resolveFleet() resolves the --fleet join
-    //    (the operator's env carries the fleet, not the launched member's process).
-    setPendingFleet(ownerId, fleetSlug, 'member');
+    // 1. What bootstrap-su.ts does once resolveFleet() resolves the --fleet join:
+    //    stamp the DURABLE membership fact at boot (WI-1893 — worker-agnostic,
+    //    unlike the removed in-memory pending map).
+    await appendFleetMembershipIfAbsent({
+      workspaceId: WS,
+      ownerId,
+      ownerLabel: ownerId,
+      fleetSlug,
+      fleetRole: 'member',
+    });
 
-    // 2. The member's own first presence write (psu-launcher's bootstrap call).
+    // 2. The member's own first presence write (psu-launcher's bootstrap call) —
+    //    the mig-430 trigger materializes the fact onto the fresh row.
     await writePresence(identity, { intent: 'building' }, null);
 
     // (a) the raw column: this is the exact bug the WI describes — it must NOT be null.
@@ -142,7 +143,7 @@ describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1
   });
 
   it('a direct member launch with --fleet (bootstrap-role path) also lands a non-null fleetSlug', async () => {
-    // Mirrors bootstrap-role.ts's own pending-fleet registration keyed by
+    // Mirrors bootstrap-role.ts's own boot-time membership stamp keyed by
     // spec.sid — a historically SEPARATE bug from bootstrap-su's, per the
     // route's WI-1408 doc-comments. Exercised here as a second, distinct
     // caller identity so the two launch paths can't share a false-positive.
@@ -150,7 +151,13 @@ describe('--fleet launch registration → real fleetSlug + roster grouping (WI-1
     const fleetSlug = 'fr-test-fleet-bravo';
     const identity = memberIdentity(ownerId);
 
-    setPendingFleet(ownerId, fleetSlug, 'leader');
+    await appendFleetMembershipIfAbsent({
+      workspaceId: WS,
+      ownerId,
+      ownerLabel: ownerId,
+      fleetSlug,
+      fleetRole: 'leader',
+    });
     await writePresence(identity, { intent: 'leading' }, null);
 
     const rows = await admin`
