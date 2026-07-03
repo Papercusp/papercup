@@ -20,12 +20,14 @@ documents:
   - packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts
   - packages/operator-core/lib/agent-tools/locks/acquire.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/send.ts
+  - packages/operator-core/lib/events/await/wake-executor-fresh-context.ts
   - libs/papercusp/libs/db/sql/163-await-event-subscriptions.sql
 plans:
   - await-event-primitive-2026-06-05
   - directed-wake-honesty-and-spawn-handoff-2026-06-14
   - turn-lifecycle-control-2026-06-08
   - event-await-discoverability-and-coverage-2026-07-03
+  - bee-context-efficiency-2026-06-14
 ---
 
 :::caution[Superseded — codex now resumes, not parks]
@@ -41,8 +43,13 @@ wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set
 no session id can be recovered — parking is no longer the default for codex.
 
 Everything else in this runbook still checks out against the code; only that one
-gotcha is reversed. (See also the framing note: `events:await {key}` is now
-named sugar over a unified `events:watch` primitive —
+gotcha is reversed (current citations:
+`packages/operator-core/lib/events/await/wake-executor.ts:296-319` for the
+`codex exec resume <uuid> <prompt>` args, `:783-787` for the
+`codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery, `:855` for
+`env.CODEX_HOME` — line numbers drift as the file grows, re-grep the symbol
+names if these are stale again). (See also the framing note: `events:await
+{key}` is now named sugar over a unified `events:watch` primitive —
 `events:await {key}` == `watch(key, { wake: true, once: true })`, at
 `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake
 semantics are unchanged.)
@@ -76,11 +83,24 @@ On fire, the executor walks:
 
 1. **Live managed pty** (pid-matched in pty-bridge) → the wake turn is
    injected directly.
-2. **Process exited** → your session is **resumed** under a managed pty
-   (`claude --resume <native-id>` / `omp -r <thread>`) with the wake reason as
-   the prompt; `PAPERCUSP_SID` is re-exported so identity, lock hooks, and
-   your other awaits survive. claude resume REQUIRES the native session UUID —
+2. **Process exited** → your session is **resumed headless, one turn**
+   (`claude --resume <native-id> -p ...`, `codex exec resume <uuid> ...`, or
+   modern `omp -r <thread> -p ...`) — spawned **detached**, not into a managed
+   pty: a pty resume just sits idle waiting on a TTY nothing drives (Stage-B
+   finding, 2026-06-07). The managed-pty injection path survives only as an
+   explicit fallback for older OMP builds
+   (`PAPERCUSP_OMP_RESUME_VIA_PTY=1`, `wake-executor.ts` `resumeCommandFor`).
+   `PAPERCUSP_SID` is re-exported so identity, lock hooks, and your other
+   awaits survive. claude resume REQUIRES the native session UUID —
    `--continue` would resume a random peer's conversation on the shared cwd.
+   **Exception — a drained bee warm-injected a NEW work-item:** the
+   bee-context-efficiency fork
+   (`packages/operator-core/lib/events/await/wake-executor-fresh-context.ts`,
+   flag `BEE_FRESH_CONTEXT_WARM_INJECT`, default ON) skips `--resume`
+   entirely and spawns a **fresh session** for that item instead — the
+   grown prior-task transcript is dropped, and continuity rides the
+   work-item checkpoint (not the session). Fail-soft: any error there falls
+   through to the legacy resume above.
 3. **Alive but uninjectable** (a detached terminal — the common psu case, or a
    pid-less session row with fresh presence) → **parked** + a one-time inbox
    nudge; the parked wake converts to a resume when your process exits.
