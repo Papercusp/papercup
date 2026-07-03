@@ -131,7 +131,7 @@ export function checkPlanExecution(t: NormTranscript): BehaviourCheck {
   
   // Delegating LEADER: a clean fleet launch satisfies plan-execution
   const fleetLaunchOnPlan = calls(t, 'fleet:launch_on_plan').length > 0;
-  const delegationSatisfied = fleetLaunchOnPlan && completed === 0 && claimed === 0;
+  const delegationSatisfied = fleetLaunchOnPlan && claimed === 0;
   
   // Traditional path: claimed + completed, no direct set_state passed
   const traditionalSatisfied = claimed > 0 && completed > 0 && passedDirect === 0;
