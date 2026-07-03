@@ -53,6 +53,26 @@ export function hiveKeychainId(workspaceId: string, slug: string): string {
 }
 
 /**
+ * WI-1981: thrown when a MINT is attempted for a hive this box only JOINED
+ * (a `remote_hive` registry VIEW). Minting there creates a second, conflicting
+ * hive author identity → wrong epoch secrets (deriveEpochKey is deterministic
+ * per hive PRIVATE key) → poison `origin=local` wraps → a permanent mutual
+ * `epoch_decrypt_fail` wall against the true owner (proven live tower↔VM,
+ * 2026-07-03). The docstring below always said "peers must NOT call this";
+ * this error is that contract, enforced.
+ */
+export class RemoteHiveViewMintRefusedError extends Error {
+  constructor(workspaceId: string, slug: string) {
+    super(
+      `loadOrGenerateHiveKeypair: REFUSING to mint a hive identity for '${workspaceId}/${slug}' — ` +
+        `the registry marks it a JOINED remote_hive VIEW (this box is a peer, not the owner). ` +
+        `Read the pubkey off the registry view (hive_pubkey) or the hives row instead (WI-1981).`,
+    );
+    this.name = 'RemoteHiveViewMintRefusedError';
+  }
+}
+
+/**
  * Load the existing hive keypair, or generate + persist one on first call.
  * Idempotent: repeated calls for the same hive always return the same pubkey.
  * The private key never leaves the keychain — callers receive only the pubkey.
@@ -60,6 +80,10 @@ export function hiveKeychainId(workspaceId: string, slug: string): string {
  * Call this on the Hive's OWNING Swarm (the one that created the hive). A peer
  * Swarm that only holds the pubkey must NOT call this — it would mint a second,
  * conflicting identity. Peers read the pubkey off the Hive entity instead.
+ * WI-1981: that contract is now ENFORCED — the generate (miss) path refuses,
+ * loudly, when the harness_registry row for (workspaceId, slug) is a joined
+ * `remote_hive` VIEW. Loading an EXISTING key is unaffected, and a fresh mint
+ * with no registry row (create-before-registry, the owner path) stays allowed.
  */
 export async function loadOrGenerateHiveKeypair(
   workspaceId: string,
@@ -69,6 +93,21 @@ export async function loadOrGenerateHiveKeypair(
   const loaded = await keychainLoad(keychainId, HIVE_KEYPAIR_SERVICE);
   if (loaded.kind === 'ok') {
     return { keychainId, pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
+  }
+  // MINT path — WI-1981 guard: never mint for a joined remote view. Best-effort
+  // registry read: an unreadable registry must not break the legitimate owner
+  // mint (fail-open matches the pre-guard behavior for owners; the view check
+  // itself is authoritative when the registry IS readable).
+  try {
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    const entry = reg.projects?.find((p) => p.slug === slug);
+    if (entry?.remote_hive === true) {
+      throw new RemoteHiveViewMintRefusedError(workspaceId, slug);
+    }
+  } catch (e) {
+    if (e instanceof RemoteHiveViewMintRefusedError) throw e;
+    // registry unreadable → proceed (owner-mint fail-open, see above)
   }
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
   await keychainStore(keychainId, privateKeyDer, HIVE_KEYPAIR_SERVICE);

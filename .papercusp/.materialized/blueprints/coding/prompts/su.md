@@ -298,9 +298,16 @@ reverse.
   gotcha; and how to VERIFY a change reached a live `~/.papercusp/launch-context/session-*.md`
   render — NOT the materialized copy). This is the #1 "I changed the prompt and nothing happened"
   trap; don't spelunk the prompt tree blind.
-- **Memory has layers.** Durable facts → the shared memory store (`memory:remember`),
-  the one store every client recalls from — not a client-local silo. Live ephemera
-  (intents, handoffs, presence) → coord. Long-form runbooks → the insights docs.
+- **Memory has layers — route by DELIVERY, not habit.** A durable but *fuzzy* fact worth
+  semantic recall → the shared memory store (`memory:remember`), the one store every
+  client recalls from — not a client-local silo. A scoped CONCLUSION future turns must
+  see DETERMINISTICALLY ("X is owner-residue — exclude it") → the standing-facts ledger
+  (`facts:assert`, upsert-by-key + TTL, folded verbatim into every relevant orient;
+  `facts:list` what already stands before asserting; `facts:retract` when it stops being
+  true — a stale fact delivered verbatim is worse than none). In-flight progress your
+  next wake or a successor resumes from → `work_items:checkpoint` / `loop:checkpoint`
+  (the carry-note a cold resume reads), never a prose message that scrolls away. Live
+  ephemera (intents, handoffs, presence) → coord. Long-form runbooks → the insights docs.
 - **Don't default to polling for live updates — push.** Events/SSE/IPC carry state;
   polling the datastore as a message channel is last-resort with a stated reason.
 
@@ -446,7 +453,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 
 ## Memory, docs, coordination — the Papercusp tools
 
-- **Memory layers (mem0 = what I know; coord = what's happening; insights = how things work).** Durable facts → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
+- **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
 - **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (operator scope: pass `harness:'all'`). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
 - **Subscribe → ask → file:** subscribe your areas (`topics:subscribe`); ask peers knowledge-first (`coord:ask`) BEFORE the owner; file discovered out-of-scope problems (`work_items:create`), claim before fixing.

@@ -56,6 +56,31 @@ export async function ensureHiveIdentity(
     );
     if (held.kind === 'ok') return { record: existing, created: false };
   }
+  // WI-1981 (the Phase-1 ownership gate, now real): a joined `remote_hive`
+  // registry VIEW must NEVER reach the mint — that is a PEER's hive. The old
+  // "today every kind:'hive' row is locally owned" assumption died when
+  // joinHiveAsView started materializing view rows; the lazy-backfill below
+  // then MINTED a second conflicting author identity on the joiner (wrong
+  // epoch secrets → poison origin=local wraps → permanent mutual
+  // epoch_decrypt_fail — proven live tower↔VM 2026-07-03). If the view carries
+  // the verified announced pubkey (stamped by joinHiveAsView), heal the missing
+  // hives row from IT (keychainId `remote:<pubkey>`, the existing non-owned
+  // convention); with no stamped pubkey, refuse loudly rather than mint.
+  const view = await remoteHiveView(workspaceId, homeSlug);
+  if (view) {
+    if (view.hive_pubkey) {
+      return insertHiveIfAbsent({
+        workspaceId,
+        homeSlug,
+        pubkeyBase64: view.hive_pubkey,
+        keychainId: `remote:${view.hive_pubkey}`,
+        title: meta?.title ?? null,
+        description: meta?.description ?? null,
+      });
+    }
+    const { RemoteHiveViewMintRefusedError } = await import('./identity/hive-keypair');
+    throw new RemoteHiveViewMintRefusedError(workspaceId, homeSlug);
+  }
   const kp = await loadOrGenerateHiveKeypair(workspaceId, homeSlug);
   return insertHiveIfAbsent({
     workspaceId,
@@ -65,6 +90,23 @@ export async function ensureHiveIdentity(
     title: meta?.title ?? null,
     description: meta?.description ?? null,
   });
+}
+
+/** WI-1981: the harness_registry view row for a JOINED remote hive, or null.
+ *  Best-effort (an unreadable registry reads as "no view" — the keypair-level
+ *  guard in loadOrGenerateHiveKeypair is the authoritative backstop). */
+async function remoteHiveView(
+  workspaceId: string,
+  slug: string,
+): Promise<{ hive_pubkey?: string } | null> {
+  try {
+    const { loadHarnessRegistry } = await import('./harness-registry');
+    const reg = await loadHarnessRegistry(workspaceId);
+    const entry = reg.projects?.find((p) => p.slug === slug);
+    return entry?.remote_hive === true ? entry : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

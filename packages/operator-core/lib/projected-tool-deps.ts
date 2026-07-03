@@ -168,15 +168,22 @@ interface TelemetryRow {
   params: unknown[];
 }
 
+/* invoked_at is stamped EXPLICITLY (EI-7040): the writer is deferred + batched,
+ * and Postgres `now()` is transaction-stable — leaving the column to its
+ * DEFAULT gave every row in a flush batch ONE identical microsecond timestamp
+ * (up to debounceMs after the actual call). That skewed time-series reads and
+ * made batch-mates look like duplicate inserts (EI-7040's "2 identical rows"
+ * were the statusline double-call sharing a flush). $26 carries the real
+ * dispatch-settle time captured in buildTelemetryRow. */
 const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
    (workspace_id, harness_slug, plugin_name, tool_name, role,
     feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
     window_key, duration_ms, status, output_ref, output_size,
     error_message, args_json, transport, event_count, metadata_json,
     principal_kind, principal_auth_method, principal_trust, error_code,
-    coord_owner_id)
+    coord_owner_id, invoked_at)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25)`;
+         $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz)`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -318,6 +325,9 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       p?.trust ?? null,
       input.errorCode ?? null,
       coordOwnerId,
+      // invoked_at (EI-7040): the dispatch-settle wall-clock, NOT the flush
+      // time — see the note on TELEMETRY_INSERT_SQL.
+      new Date().toISOString(),
     ],
   };
 }
