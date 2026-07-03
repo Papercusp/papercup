@@ -325,11 +325,16 @@ closes the general case; a live candidate gap remains
 would be a security regression).
 
 ### 8. The 2-server quota cap → no true 3-machine multi-member LIVE
-The Hetzner quota is ~2 concurrent servers (treat as **permanent** for now).
-True 3-machine member↔member fanout (owner + 2 members, Brief 2) is therefore
-**not live-coverable**; it is proven only via a 2-VM proxy + the in-process
-matrix. Document multi-member fanout as **gated on a >2-server quota**, not as
-live-proven.
+*(historical)* The Hetzner quota was ~2 concurrent servers, so true 3-machine
+member↔member fanout (owner + 2 members, Brief 2) was **not live-coverable**;
+it was proven only via a 2-VM proxy + the in-process matrix, and the owner
+ratified that min-bar (D-006). **UPDATE 2026-07-03 (D-001,
+`shared-hive-p2p-release-readiness-2026-07-03`): Hetzner is gone entirely, and
+the un-gating path is now LOCAL** — extend the containerized rig to 3 frames
+(`bin/local-matrix.sh` provisions docker frames; the rig lib is already
+N-frame) and run the matrix + membership churn there (that plan's P-010).
+"Gated on a >2-server quota" is obsolete; the residual gap is simply that the
+3-frame local run has not been executed yet.
 
 ### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (RESOLVED — both mechanisms fixed + live-verified 2026-07-02)
 A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, real
@@ -458,12 +463,20 @@ exits 0). CI is no longer red on this.
 > **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is
 > RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve;
 > WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went
-> green first-poll with no restart (m1783013203). **One standing owner-wall:**
-> the Hetzner account has rejected ALL billable creates with
-> `403 forbidden "permission denied"` since 2026-07-02 (reads + free writes
-> work; token-a/token-b are dead 401s) — an account-level billing/verification
-> lock only the owner can clear in console.hetzner.cloud. Until then, matrix
-> reruns are container-grade (2-node docker rig), not VM-grade.
+> green first-poll with no restart (m1783013203).
+>
+> **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of
+> `shared-hive-p2p-release-readiness-2026-07-03`).** Access to the Hetzner
+> machines is permanently lost (owner directive); the former "billing lock the
+> owner can clear" framing no longer applies. **The LOCAL rig set is now the
+> proof of record:** (i) the containerized 2-node matrix rig —
+> `bin/local-matrix.sh`, the one-command wrapper over the same BYO-frames seam
+> (`RIG_FRAME_IPS`) that produced m1783013203; (ii) the tower↔VM rig
+> (`bin/vm-rig/` — a REAL kernel + network boundary, i.e. VM-grade, not just
+> container-grade); (iii) the mac VM cross-platform witness; (iv) the
+> single-box `two-instance-*-smoke.sh` suite. The `deb-hetzner-*` cloud
+> provision paths are retired-not-deleted. Historical per-brief Hetzner runs
+> remain valid evidence for the rows above.
 
 ---
 

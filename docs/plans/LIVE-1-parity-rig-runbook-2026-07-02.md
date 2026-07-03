@@ -6,9 +6,12 @@ owner-admit race passed every in-process test and failed live). Everything shipp
 is in-process + fake-swarm green; NOTHING is proven live cross-machine until this runbook
 passes.
 
-> **OWNER-GATED.** This spins up **paid Hetzner cloud VMs** (real money) and flips a prod
-> flag. Do NOT run autonomously — the owner triggers it. The rig auto-destroys the VMs on
-> EXIT (`servers=0` guarantee), but the spend + the `PRESENCE_GOSSIP` cutover are owner calls.
+> **REDEFINED TO LOCAL RIGS (2026-07-03).** Hetzner access is GONE (owner directive; D-001 of
+> `shared-hive-p2p-release-readiness-2026-07-03`) — the old "paid cloud VMs, owner triggers"
+> gate is obsolete. This runbook's proofs now run on the LOCAL rig set, no spend and no owner
+> trigger needed: `bin/local-matrix.sh` (containerized 2-node, the same BYO-frames seam that
+> produced min-bar run m1783013203) or `bin/vm-rig/` (tower↔VM, true kernel/network boundary).
+> The `PRESENCE_GOSSIP` prod-flag cutover REMAINS an owner call.
 
 ## Rig chassis (already scaffolded)
 
@@ -69,10 +72,14 @@ this.
 
 ```bash
 cd papercusp-desktop
-# owner triggers — needs Hetzner creds; auto-destroys VMs on exit:
-bin/deb-hetzner-federation.sh            # 2-frame base (extend with the surface assertions above)
-# or the fuller matrix once surfaces 1-5 are codified into federation-asserts.sh:
-# bin/deb-hetzner-matrix.sh
+# LOCAL, no creds, no spend (D-001): containerized 2-node frames + testnet DHT,
+# then the full scenario matrix through the BYO-frames seam:
+bin/local-matrix.sh                      # full 8-scenario matrix (needs a built .deb)
+bin/local-matrix.sh --only=coord_controlplane   # just the coord boundary scenario
+# tower↔VM rig (true kernel/network boundary — the P-059 drill):
+bin/vm-rig/deploy.sh && bin/vm-rig/probe-fwd.sh && bin/vm-rig/probe-rev.sh
+# (RETIRED, kept for reference — requires Hetzner access we no longer have:)
+# bin/deb-hetzner-federation.sh
 ```
 
 **Follow-up (bounded, not owner-gated):** codify surfaces 1–5 above into `fed_assert_*`

@@ -259,6 +259,12 @@ export function sampleReplicationLiveness(
     logs.set(sample.keyHex, st);
   }
 
+  // Was this log ALREADY behind at the previous sample? Computed BEFORE the
+  // overwrite: a caught-up→behind transition starts a FRESH grace window from
+  // this observation (between samples we cannot know when the backlog
+  // appeared, and an idle stretch must never pre-age the freeze clock).
+  const wasBehind =
+    st.mergedPosition !== null && st.knownLength > st.mergedPosition;
   st.lastSampleMs = now;
   st.knownLength = sample.knownLength;
 
@@ -297,6 +303,11 @@ export function sampleReplicationLiveness(
     } else if (st.knownLength <= sample.mergedPosition) {
       // Caught up: nothing to ingest. Healthy idle — keep the clock fresh so a
       // later backlog gets a full grace window.
+      st.lastIngestProgressMs = now;
+      st.alarmedFrozen = false;
+    } else if (!wasBehind) {
+      // Just BECAME behind (caught-up → behind between samples): the freeze
+      // window starts at this observation, not at the last idle refresh.
       st.lastIngestProgressMs = now;
       st.alarmedFrozen = false;
     } else if (
