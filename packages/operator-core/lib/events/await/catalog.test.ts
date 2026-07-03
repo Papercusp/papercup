@@ -102,8 +102,7 @@ describe('renderCatalog', () => {
     expect(byFamily['service-down'].awaitable_now).toBe(true); // service:down:<name> — P-104 LANDED (service-health tick)
     expect(byFamily['plan-item'].awaitable_now).toBe(true); // plan-item:done:<slug>:<id> — P-105 LANDED (set-status)
     expect(byFamily['claim-released'].awaitable_now).toBe(true); // claim:released:<id> — P-105 LANDED (releaseWorkItem)
-    // Phase-2 additions still not-yet-wired (deferred — no fleet drain-detector sweep exists):
-    expect(byFamily['fleet-drained'].awaitable_now).toBe(false); // P-105 (deferred)
+    expect(byFamily['fleet-drained'].awaitable_now).toBe(true); // fleet:drained:<slug> — WI-1830 LANDED (set-status plan-drain edge)
   });
 });
 

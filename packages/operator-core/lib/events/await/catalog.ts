@@ -237,8 +237,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'fleet:drained:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
     describe: 'Every claimable item in a fleet\'s lanes is done (a leader can sleep until drain, then loop:end + scorecard).',
-    emitter: 'fleet drain check (Phase 2)',
-    exists: false, // P-105
+    emitter: 'fleet-drained-events (packages/operator-core/lib/fleet-drained-events.ts) — fired from plans:set-status when a →done flip drains the plan',
+    exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
     sugar: 'fleet:await-drained',
   },
   // ── Rate limits (already emit) ────────────────────────────────────────────

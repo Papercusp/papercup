@@ -25,9 +25,10 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { ITEM_STATUSES, maskFences, type Importance } from './parser';
+import { ITEM_STATUSES, maskFences, parsePlan, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { emitPlanItemDoneEvent } from './plan-item-events';
+import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
@@ -106,7 +107,16 @@ interface StatusItem {
  *  type argument below rather than inferred from a union-returning
  *  mutator (which TS narrows to the first branch, leaving `T` unknown). */
 type SetStatusValue =
-  | { ok: true; oldStatus: string | null; newStatus: string; itemId: string; importance: Importance }
+  | {
+      ok: true;
+      oldStatus: string | null;
+      newStatus: string;
+      itemId: string;
+      importance: Importance;
+      /** WI-1830: computed inside the lock (race-safe) — this →done flip left the plan with
+       *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
+      drainedPlan: boolean;
+    }
   | { ok: false; code: 'not_found' | 'item_not_found' };
 
 /**
@@ -368,9 +378,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           ? itemImportance(current, it.itemId)
           : 'normal';
       const finalBody = bumpUpdatedDate(newBody);
+      // WI-1830: on a real →done edge, does this flip leave the plan with zero open
+      // (non-terminal) items? Computed here, INSIDE the lock, off the just-written body so
+      // it is race-safe against concurrent flips (the plan lock serializes writes). The
+      // parse runs only on a →done edge, so routine flips skip it.
+      const drainedPlan =
+        it.status === 'done' && oldStatus !== 'done' ? isPlanDrained(parsePlan(finalBody).items) : false;
       return {
         newBody: finalBody,
-        value: { ok: true, oldStatus, newStatus: it.status, itemId: it.itemId, importance },
+        value: { ok: true, oldStatus, newStatus: it.status, itemId: it.itemId, importance, drainedPlan },
       };
     },
   );
@@ -409,6 +425,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // already-done item. Fire-and-forget; never fails the flip.
   if (it.status === 'done' && result.value.oldStatus !== 'done') {
     emitPlanItemDoneEvent(it.slug, it.itemId);
+    // WI-1830: if that →done flip drained the whole plan (zero open items left, computed
+    // race-safe inside the lock above), fire `fleet:drained:<slug>` for each fleet whose
+    // lane thereby drained — so a leader awaiting it wakes exactly once, instead of polling
+    // fleet:assignments. Fire-and-forget; never fails the flip.
+    if (result.value.drainedPlan) {
+      emitFleetDrainedForPlan(it.slug);
+    }
   }
 
   // Push the new item state to any live `useSyncQuery('planItems.byPlan')`
