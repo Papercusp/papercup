@@ -185,3 +185,98 @@ describe('evaluateBgHostTicker (EI-1832 — bg-host DBOS ticker liveness)', () =
     expect(transitions).toEqual([{ name: 'bg-host-ticker', to: 'down' }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// probeSubstrateSidecar — WI-895 discrimination (2026-07-03): "no sidecar
+// spawned by this process" must read present:false (like flag-off / unknown
+// ticker), NEVER a phantom DOWN; a socket that exists but fails healthz IS a
+// real DOWN, with path provenance in the note.
+// ---------------------------------------------------------------------------
+import * as fs from 'node:fs';
+import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, vi } from 'vitest';
+import { probeSubstrateSidecar } from './service-health';
+import { closeSubstrateIpcClient } from './sync/hyperbee/substrate-ipc-client';
+import { SUBSTRATE_SOCKET_ENV } from './sync/hyperbee/substrate-socket-path';
+
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: vi.fn(async () => true), // SUBSTRATE_SIDECAR ON for every probe test
+}));
+
+describe('probeSubstrateSidecar (WI-895 — not-spawned vs truly-dead discrimination)', () => {
+  const sockPath = path.join(os.tmpdir(), `pc-probe-${process.pid}-${Math.floor(Math.random() * 1e6)}.sock`);
+  let envBefore: string | undefined;
+
+  beforeEach(() => {
+    envBefore = process.env[SUBSTRATE_SOCKET_ENV];
+    process.env[SUBSTRATE_SOCKET_ENV] = sockPath;
+    closeSubstrateIpcClient(); // fresh singleton per test — it caches the socket path
+  });
+  afterEach(() => {
+    if (envBefore === undefined) delete process.env[SUBSTRATE_SOCKET_ENV];
+    else process.env[SUBSTRATE_SOCKET_ENV] = envBefore;
+    closeSubstrateIpcClient();
+    fs.rmSync(sockPath, { force: true });
+  });
+
+  it('flag ON + NO socket at the resolved path → present:false "not spawned", NOT a DOWN', async () => {
+    const res = await probeSubstrateSidecar(1500);
+    expect(res.up).toBe(true); // fail-soft: unknown/not-applicable is never DOWN
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/no sidecar spawned by this process/);
+    expect(res.note).toContain(sockPath); // path provenance — the 49989 specimen's missing clue
+    // And diffHealth must skip it (no phantom transition), like the unknown ticker.
+    const { transitions } = diffHealth({ 'substrate-sidecar': true }, [res]);
+    expect(transitions).toEqual([]);
+  });
+
+  it('flag ON + socket answers healthz → UP with path provenance', async () => {
+    const server = net.createServer((conn) => {
+      let buf = '';
+      conn.on('data', (chunk) => {
+        buf += chunk.toString();
+        let idx;
+        while ((idx = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          const req = JSON.parse(line) as { id: number };
+          conn.write(`${JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { ok: true } })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(sockPath, () => resolve());
+    });
+    try {
+      const res = await probeSubstrateSidecar(3000);
+      expect(res.up).toBe(true);
+      expect(res.present).not.toBe(false);
+      expect(res.note).toContain(sockPath);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('flag ON + socket file EXISTS but nothing listens → real DOWN with the TRUE dial error, fast', async () => {
+    // A stale socket file with no listener = the "sidecar died, file left behind"
+    // shape — this one IS a fault worth alarming on.
+    const stale = net.createServer(() => {});
+    await new Promise<void>((resolve, reject) => {
+      stale.once('error', reject);
+      stale.listen(sockPath, () => resolve());
+    });
+    await new Promise<void>((resolve) => stale.close(() => resolve())); // closes listener…
+    // net's close() unlinks the socket file; recreate the FILE to simulate the stale leftover.
+    if (!fs.existsSync(sockPath)) fs.writeFileSync(sockPath, '');
+    const started = Date.now();
+    const res = await probeSubstrateSidecar(4000);
+    expect(res.up).toBe(false);
+    expect(res.note).toMatch(/ECONNREFUSED|ENOTSOCK|Connection/);
+    expect(res.note).toContain(sockPath);
+    expect(Date.now() - started).toBeLessThan(4000); // no masked 5s connect timer
+  });
+});

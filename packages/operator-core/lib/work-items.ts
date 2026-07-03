@@ -1420,12 +1420,38 @@ export interface ClaimFloorsOpts {
    * so the two paths can never drift (D-002). Default/false ⇒ the inline predicate (byte-identical).
    */
   useMaintainedReady?: boolean;
+  /**
+   * Release-cooldown floor (fleet-scheduler-hardening-2026-07-03 P-005 / EI-6956): when set to
+   * the CLAIMING agent's ownerId, a row THIS agent voluntarily released within the cooldown
+   * window is excluded — for this agent only; every other agent can claim it instantly. Kills
+   * the claim/release ping-pong (release resets a row to `todo`, and under a stable rank it
+   * sorts right back to the top for the same bee). Both claim entry points thread their
+   * claimant here, so the two paths share one cooldown.
+   */
+  cooldownAssignee?: string;
 }
+
+/** Release-cooldown window (seconds). Env-overridable; small on purpose — the floor only
+ *  has to outlast one release→re-pull cycle, not park the item. */
+export function releaseCooldownSec(): number {
+  const v = Number(process.env.PAPERCUSP_RELEASE_COOLDOWN_SEC ?? 300);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 300;
+}
+
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   const states = opts.states ?? ['todo'];
+  const cooldown = releaseCooldownSec();
   return sql`
     harness_slug = ${opts.harness}
     AND workspace_id = ${opts.workspaceId}
+    -- Release-cooldown floor (mig 485 / EI-6956): NULL-safe — rows never released, or
+    -- released by someone else, or released long enough ago, all pass.
+    AND ${opts.cooldownAssignee && cooldown > 0
+      ? sql`(last_released_by IS NULL
+        OR last_released_by <> ${opts.cooldownAssignee}
+        OR last_released_at IS NULL
+        OR last_released_at < now() - make_interval(secs => ${cooldown}))`
+      : sql`TRUE`}
     -- Built-in placeable kinds + any generic-kind datatype that opted into placement
     -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
     AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
@@ -1602,6 +1628,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             swarmId: filter.swarmId,
             excludeRedundant: filter.excludeRedundant,
             useMaintainedReady,
+            cooldownAssignee: filter.assignee,
           })}
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
@@ -1957,6 +1984,12 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
        -- P-001: release clears the progress signal too — the next claimant starts fresh
        -- (a stale last_progress_at must not outlive the holder that earned it).
        SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
+           -- Release-cooldown provenance (mig 485 / EI-6956): remember WHO freed this row
+           -- so the claim floors keep the RELEASING bee off it for a short cooldown
+           -- (claim/release ping-pong guard). SET's RHS reads the OLD row, so `taken_by`
+           -- here is the releasing holder; an already-free release keeps prior provenance.
+           last_released_by = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN taken_by ELSE last_released_by END,
+           last_released_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_released_at END,
            status = CASE WHEN status <> ALL(${nonRequeue}::text[]) THEN 'todo' ELSE status END,
            updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}

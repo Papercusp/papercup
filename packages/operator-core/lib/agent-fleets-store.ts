@@ -124,6 +124,29 @@ export async function listFleets(workspaceId: string, sql?: Sql): Promise<AgentF
 }
 
 /**
+ * Every fleet this agent currently LEADS (agent_fleets.leader_owner_id), newest
+ * first. Unlike presence membership — a single soft label that collapses to the
+ * latest fleet joined — leadership is a per-fleet fact, so an agent that took
+ * leadership of several fleets shows up here for ALL of them. This is the Scope-A
+ * source for the multi-fleet terminal identity (WI-1963): "which fleets is this
+ * agent in" as a SET, with no schema change.
+ */
+export async function listFleetsLedBy(
+  workspaceId: string,
+  leaderOwnerId: string,
+  sql?: Sql,
+): Promise<AgentFleetRecord[]> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT ${COLS} FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND leader_owner_id = $2
+      ORDER BY created_at DESC`,
+    [workspaceId, leaderOwnerId],
+  )) as unknown as FleetRow[];
+  return rows.map(rowToRecord);
+}
+
+/**
  * Get-or-create a fleet. Idempotent: an existing (workspace, fleet_slug) row is
  * returned UNCHANGED; title/description/owner/leader apply only on first insert
  * (edit later via updateFleetMeta / setFleetLeader). `created` reflects insert.

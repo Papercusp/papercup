@@ -206,4 +206,47 @@ export function runSubstrateSidecarServer(): void {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+  installSidecarCrashGuards();
+}
+
+/**
+ * WI-895 fix (c) — last-resort crash guards for the sidecar process.
+ *
+ * The WHOLE federation engine (corestore + own-log + merge loop + swarm) runs in
+ * this process under the sidecar flag; before these guards, Node's defaults meant
+ * one unhandled rejection anywhere in the hyperbee/corestore/merge path KILLED the
+ * process. Spawn-side auto-respawn (WI-1504) recovers a crash, but each cycle drops
+ * every live replication stream and burns a respawn-window attempt — so:
+ *
+ *  - unhandledRejection → log loudly with the reason, KEEP RUNNING. An async fault
+ *    in one harness's merge must not take down every other harness's federation.
+ *  - uncaughtException  → log loudly, exit(1) so the spawn-side respawn brings up a
+ *    CLEAN process (a sync throw mid-stack can leave state torn — restarting is the
+ *    safe recovery, and now it is at least attributed in the journal).
+ *
+ * Idempotent + exported for tests.
+ */
+export function installSidecarCrashGuards(): void {
+  if (installedRejectionGuard) return;
+  installedRejectionGuard = (reason: unknown) => {
+    const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    console.error(`[substrate-sidecar] UNHANDLED REJECTION (kept alive, WI-895c): ${msg}`);
+  };
+  installedExceptionGuard = (err: Error) => {
+    console.error(`[substrate-sidecar] UNCAUGHT EXCEPTION — exiting for a clean respawn (WI-895c): ${err.stack ?? err.message}`);
+    process.exit(1);
+  };
+  process.on('unhandledRejection', installedRejectionGuard);
+  process.on('uncaughtException', installedExceptionGuard);
+}
+
+let installedRejectionGuard: ((reason: unknown) => void) | null = null;
+let installedExceptionGuard: ((err: Error) => void) | null = null;
+
+/** Test seam — remove exactly OUR guards (never a test runner's own handlers). */
+export function _resetSidecarCrashGuardsForTests(): void {
+  if (installedRejectionGuard) process.removeListener('unhandledRejection', installedRejectionGuard);
+  if (installedExceptionGuard) process.removeListener('uncaughtException', installedExceptionGuard);
+  installedRejectionGuard = null;
+  installedExceptionGuard = null;
 }

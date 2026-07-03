@@ -34,8 +34,16 @@ const TOAST_ID = 'sync-offline-indicator';
  * How long the connection must stay continuously down before we alarm the
  * user. Long enough to ride out a reconnect / IPC re-dial under load
  * (EI-3033), short enough that a genuine outage surfaces promptly.
+ *
+ * Raised 5s → 8s (WI-1957): under heavy fleet load the operator's main thread
+ * stalls for up to ~5.7s (observed event-loop-lag maxMs), which tripped the old
+ * 5s grace and fired the alarming toast for a stall the app rode out on its own.
+ * 8s clears the observed stall ceiling while still surfacing a genuine outage
+ * (a deploy restart / operator death lasts well beyond 8s) promptly. The real
+ * fix for the stalls themselves is tracked separately; this keeps the *toast*
+ * honest in the meantime.
  */
-export const OFFLINE_TOAST_GRACE_MS = 5000;
+export const OFFLINE_TOAST_GRACE_MS = 8000;
 
 export default function OfflineIndicator() {
   const { offline } = useSyncConnectivity();

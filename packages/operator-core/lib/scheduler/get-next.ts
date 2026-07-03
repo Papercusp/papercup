@@ -458,6 +458,10 @@ export async function getNextWorkItem(
     swarmId: opts.swarmId,
     excludeRedundant: opts.excludeRedundant,
     useMaintainedReady,
+    // Release-cooldown floor (P-005 / EI-6956): a row THIS bee just released is
+    // excluded for it (and only it) for the cooldown window — no claim/release
+    // ping-pong under a stable rank.
+    cooldownAssignee: bee.assignee,
   });
   const order = compileRank(sql, spec, bee);
 

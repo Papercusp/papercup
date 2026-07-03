@@ -18,7 +18,7 @@ describe('feature-state constant invariants', () => {
 
   it('non-requeue states = dispatchable + terminal + blocked, with no duplicates', () => {
     expect(new Set(FEATURE_NON_REQUEUE_STATES)).toEqual(
-      new Set([FEATURE_DISPATCHABLE_STATE, ...FEATURE_TERMINAL_STATES, 'blocked']),
+      new Set([FEATURE_DISPATCHABLE_STATE, ...FEATURE_TERMINAL_STATES, 'blocked', 'needs-human']),
     );
     expect(FEATURE_NON_REQUEUE_STATES.length).toBe(new Set(FEATURE_NON_REQUEUE_STATES).size);
   });
@@ -35,15 +35,19 @@ describe('isRequeueableFeatureState', () => {
     expect(isRequeueableFeatureState('')).toBe(false);
   });
 
-  it('is false for the already-dispatchable, terminal, and blocked states', () => {
+  it('is false for the already-dispatchable, terminal, and deliberate-park states', () => {
     expect(isRequeueableFeatureState('todo')).toBe(false);
     expect(isRequeueableFeatureState('passed')).toBe(false);
     expect(isRequeueableFeatureState('deprecated')).toBe(false);
     expect(isRequeueableFeatureState('blocked')).toBe(false);
+    // P-004 (fleet-scheduler-hardening-2026-07-03): needs-human is an OWNER-park —
+    // a dead holder must NOT return owner-gated work to the claimable pool (the
+    // WI-1774/WI-1775 re-grind loop of 2026-07-03).
+    expect(isRequeueableFeatureState('needs-human')).toBe(false);
   });
 
   it('is true for any mid-flight state stranded by a dead/releasing holder', () => {
-    for (const s of ['in_progress', 'validating', 'failing', 'wip', 'needs-human']) {
+    for (const s of ['in_progress', 'validating', 'failing', 'wip']) {
       expect(isRequeueableFeatureState(s)).toBe(true);
     }
   });

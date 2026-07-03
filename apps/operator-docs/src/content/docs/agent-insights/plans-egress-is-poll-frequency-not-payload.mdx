@@ -196,3 +196,32 @@ pc-admin-plans-ui` via the shared plans-read dispatcher):
   content search skipped it — the delta wiring looked absent when it wasn't. Fixed to the
   escaped form (backslash-u0000) 2026-07-03; if a file's matches mysteriously don't appear,
   check for NUL bytes.
+
+## Fixed 2026-07-03 (su-6c9e4, EI-7028) — pui pinned panes now fetch only what they render; `?payloadTier=` already works on the admin proxy
+
+Two findings closed this out:
+
+1. **The payload-tier lever already works end-to-end over the admin proxy — no
+   server change was ever needed.** `payloadTier` is a FRAMEWORK-RESERVED
+   per-call arg (`extractPayloadTier` in `libs/generic/tooldef/src/payload-tier.ts`
+   strips it from raw input BEFORE schema validation), and the proxy's
+   `bodyFromSearchParams` forwards unknown query params verbatim into the tool
+   body. Live-verified on `:3070`:
+   `GET /api/admin/plans/attention` 1.10MB → `?payloadTier=standard` **40KB
+   (27x)** → `?payloadTier=trimmed` **21.5KB (51x)**; `/list` 521KB →
+   standard **87KB (6x)**. This works for ANY shaped tool on any HTTP dispatch
+   path — remember it before building a new "trim this endpoint" param.
+2. **The pui fix that landed is need-gating, not tier-switching** (zero UX /
+   parse-shape risk): a pinned dock pane (`dock-driver`→Fleet, `wake-pane`,
+   `prompt/mail/work-pane`→AgentCtx, `network/hive-pane`→Network,
+   `plans-pane`→PlansBoard) runs the FULL `refetch_all` but renders ONE tab —
+   8+ live panes were each pulling 1.1MB attention + 0.52MB list per
+   SSE-invalidate/60s tick for tabs they can never draw (~50GB/day).
+   `apps/tui/src/main.rs` now gates the two fat fetches on
+   `pane_fetches_plans` / `pane_fetches_attention` (pure fns, unit-tested):
+   attention is Inbox-only (OS notifications ride `attention.notify` SSE, not
+   this poll); plans stay for Fleet/PlansBoard/Plans/Inbox pins. Expected
+   residual: ~2 panes × 0.52MB ≈ low single GB/day. Full workbench
+   (pinned=None) is byte-identical. Binary installed to `~/.cargo/bin/pui`
+   2026-07-03; live panes pick it up on the next dock relaunch — verify via
+   `route_invocations` req/hr on `GET /admin/plans/:verb` afterwards.

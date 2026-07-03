@@ -134,6 +134,72 @@ export function oscRecolorSequence(scheme: ColorScheme): string {
   return `\x1b]10;${scheme.fg}\x07\x1b]11;${scheme.bg}\x07\x1b]12;${scheme.cursor}\x07`;
 }
 
+// ─── Fleet → emoji color square (multi-fleet-terminal-identity, WI-1963) ─────
+
+/** The Unicode large color squares available for a titlebar/taskbar glyph. A
+ *  terminal window can only ever have ONE background (OSC 11), so when an agent
+ *  belongs to N fleets we represent each fleet as a COLOR SQUARE in the OS title
+ *  instead — this is the fixed palette we snap a fleet's scheme onto. Hue-bucketed
+ *  (below) rather than nearest-RGB so a fleet's family (a purple fleet → 🟪) is
+ *  legible regardless of how dark its background is. No cyan/pink square exists,
+ *  so cyan/teal fold into 🟦 and magenta/pink into 🟪. */
+export const COLOR_SQUARES = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪', '🟫', '⬛', '⬜'] as const;
+export type ColorSquare = (typeof COLOR_SQUARES)[number];
+
+/** `#rrggbb` → HSV with h in [0,360), s/v in [0,1]. Tolerant of a missing `#`,
+ *  3-digit shorthand, or garbage (falls back to black). Pure. */
+export function hexToHsv(hex: string): { h: number; s: number; v: number } {
+  let m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) {
+    const short = /^#?([0-9a-fA-F]{3})$/.exec(hex.trim());
+    if (short) {
+      const [r, g, b] = short[1]!.split('');
+      m = [`#${r}${r}${g}${g}${b}${b}`, `${r}${r}${g}${g}${b}${b}`] as RegExpExecArray;
+    }
+  }
+  if (!m) return { h: 0, s: 0, v: 0 };
+  const n = parseInt(m[1]!, 16);
+  const r = ((n >> 16) & 0xff) / 255;
+  const g = ((n >> 8) & 0xff) / 255;
+  const b = (n & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : d / max;
+  return { h, s, v: max };
+}
+
+/**
+ * Snap a `#rrggbb` color to the nearest {@link COLOR_SQUARES} emoji, by HUE (not
+ * raw RGB distance — the fleet backgrounds are all dark, so a distance metric
+ * would collapse most to ⬛; hue keeps the family). Low-saturation colors are
+ * neutral → ⬛/⬜ by lightness; a dark orange/yellow reads as 🟫 brown. Pure +
+ * deterministic — the single source both the glance payload and any renderer use,
+ * so the square a fleet shows is stable. Intended input: a fleet scheme's `bg`.
+ */
+export function nearestColorSquareEmoji(hex: string): ColorSquare {
+  const { h, s, v } = hexToHsv(hex);
+  // Near-grayscale → neutral square by lightness (the deliberately-neutral schemes:
+  // graphite / charcoal / midnight-slate-if-desaturated).
+  if (s < 0.12) return v < 0.5 ? '⬛' : '⬜';
+  // Warm + dark reads as brown, not a vivid orange/yellow (espresso / antique-gold).
+  if (h >= 15 && h < 70 && v < 0.35) return '🟫';
+  if (h >= 345 || h < 15) return '🟥';
+  if (h < 45) return '🟧';
+  if (h < 70) return '🟨';
+  if (h < 165) return '🟩';
+  if (h < 260) return '🟦'; // includes cyan/teal (no dedicated square)
+  return '🟪'; // 260–345: purple + magenta/pink fold here
+}
+
 /**
  * The RAW OSC escape bytes that RESET a terminal's foreground (OSC 110),
  * background (OSC 111), and cursor (OSC 112) to its CONFIGURED defaults — the

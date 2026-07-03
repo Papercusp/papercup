@@ -25,18 +25,26 @@ export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated
 
 /**
  * Feature states the reaper / release path must NOT requeue to `todo`:
- *   - `todo`        — already claimable, nothing to do;
- *   - terminal      — settled, leave alone;
- *   - `blocked`     — a deliberate park with its own delegator-notify signal path.
+ *   - `todo`         — already claimable, nothing to do;
+ *   - terminal       — settled, leave alone;
+ *   - `blocked`      — a deliberate park with its own delegator-notify signal path;
+ *   - `needs-human`  — a deliberate OWNER-park (fleet-scheduler-hardening-2026-07-03
+ *     P-004): only the owner can progress it, so a dead holder changes nothing.
+ *     Before this, a holder dying (e.g. the 2026-07-03 backlog-clearance fleet
+ *     kill) requeued needs-human items to `todo`, the pool re-OFFERED owner-gated
+ *     work, and every reclaim cycle re-burned agent turns re-discovering and
+ *     re-parking the same items (WI-1774/WI-1775 were each parked needs-human
+ *     three separate times in one afternoon). The owner un-parks by setting `todo`.
  * Any OTHER non-null status on a freed row (in_progress, validating, failing,
- * wip, needs-human, …) is a mid-flight item stranded by a dead/releasing holder
- * and IS requeued. This same predicate defines "freed-but-non-dispatchable" for
- * the stuck-items health metric (P-008a).
+ * wip, …) is a mid-flight item stranded by a dead/releasing holder and IS
+ * requeued. This same predicate defines "freed-but-non-dispatchable" for the
+ * stuck-items health metric (P-008a).
  */
 export const FEATURE_NON_REQUEUE_STATES: readonly string[] = [
   FEATURE_DISPATCHABLE_STATE,
   ...FEATURE_TERMINAL_STATES,
   'blocked',
+  'needs-human',
 ];
 
 /** Pure predicate: is this freed feature row stranded mid-flight (should the

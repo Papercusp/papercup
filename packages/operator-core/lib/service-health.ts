@@ -284,6 +284,34 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
   if (!sidecarOn) {
     return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'SUBSTRATE_SIDECAR flag off — no sidecar to probe' };
   }
+  // WI-895 discrimination (2026-07-03): this probe can only see a sidecar spawned by
+  // THIS process family — the client dials PAPERCUSP_SUBSTRATE_IPC_SOCKET when set,
+  // else /tmp/papercusp-substrate-<own pid>.sock. Flag ON with NO socket at that
+  // path is NOT an outage: no sidecar was spawned here (lazy substrate not yet
+  // booted, in-process fallback, or the install's sidecar belongs to ANOTHER host,
+  // e.g. the bg-host owns it while dev-api runs this probe). Before this check that
+  // state read as a phantom "sidecar DOWN (Connection timeout)" — it burned ~40min
+  // of fleet incident-response on 2026-07-03 against a perfectly healthy sidecar.
+  let sockPath = '';
+  try {
+    const { resolveSubstrateSocketPath } = await import('./sync/hyperbee/substrate-socket-path');
+    sockPath = resolveSubstrateSocketPath();
+    const { existsSync } = await import('node:fs');
+    if (!existsSync(sockPath)) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: `no sidecar spawned by this process — flag ON but no socket at ${sockPath} ` +
+          `(lazy substrate not yet booted, in-process mode, or the sidecar spawner is another ` +
+          `host e.g. bg-host). NOT a liveness verdict on the install's sidecar.`,
+      };
+    }
+  } catch {
+    // Path-resolution failure: fall through to the RPC probe — never fabricate a verdict.
+  }
   try {
     const { getSubstrateIpcClient } = await import('./sync/hyperbee/substrate-ipc-client');
     const client = getSubstrateIpcClient();
@@ -291,7 +319,7 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
       client.call('sidecar:healthz'),
       new Promise((_resolve, reject) => setTimeout(() => reject(new Error('healthz probe timeout')), timeoutMs)),
     ]);
-    return { name, up: true, status: null, latencyMs: Date.now() - start, note: 'sidecar:healthz OK' };
+    return { name, up: true, status: null, latencyMs: Date.now() - start, note: `sidecar:healthz OK (${sockPath})` };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -299,11 +327,11 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
       up: false,
       status: null,
       latencyMs: Date.now() - start,
-      note: `⚠ substrate sidecar DOWN (healthz: ${msg}) — the SEPARATE process that owns federation ` +
+      note: `⚠ substrate sidecar DOWN (healthz to ${sockPath || 'unresolved socket'}: ${msg}) — the SEPARATE process that owns federation ` +
         `replication (Corestore/merge/swarm) for this install. Boot-time handle proxies stay cached in ` +
         `the main process regardless, so federation-status/boot-health can still read "booted" for a ` +
-        `dead sidecar — this probe is the actual liveness signal. Respawn the sidecar (or dev:restart if ` +
-        `it won't respawn), not :3070.`,
+        `dead sidecar — this probe is the actual liveness signal. The socket EXISTS but healthz failed: ` +
+        `a real sidecar fault (spawn-side auto-respawn should recover it; dev:restart if not), not :3070.`,
     };
   }
 }

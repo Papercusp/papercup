@@ -21,6 +21,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { useSyncConnectivity } from '@papercusp/sync';
 import {
   UpdateInfo,
   appVersion,
@@ -39,6 +40,9 @@ export default function UpdateChip() {
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  // The operator's live-transport state (SSE/REST). Used to skip BACKGROUND
+  // update checks while the operator is unreachable — see `poll`.
+  const { offline } = useSyncConnectivity();
 
   useEffect(() => {
     setDesktop(isDesktop());
@@ -50,6 +54,17 @@ export default function UpdateChip() {
 
   const poll = useCallback(async (silent: boolean) => {
     if (!isDesktop()) return;
+    // Skip BACKGROUND (silent) checks while the operator is unreachable. The
+    // check would just race a down / not-yet-ready operator and make the
+    // tauri_plugin_updater crate log a scary `failed to check for updates:
+    // error sending request` — which recovers on the next attempt anyway and
+    // correlates 1:1 with operator restart churn (the chip remounts on the
+    // SPA's reconnect re-render, each remount firing this poll). A user-
+    // initiated check (silent=false) still attempts, so a manual click always
+    // gives feedback. When the transport recovers, this effect re-runs (poll's
+    // `offline` dep) and a catch-up check fires against a confirmed-reachable
+    // operator.
+    if (silent && offline) return;
     setChecking(true);
     try {
       const u = await checkForUpdate();
@@ -66,7 +81,7 @@ export default function UpdateChip() {
     } finally {
       setChecking(false);
     }
-  }, []);
+  }, [offline]);
 
   useEffect(() => {
     if (!desktop) return;

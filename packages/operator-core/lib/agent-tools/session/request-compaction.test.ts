@@ -13,6 +13,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/request-compaction.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { truncateHint } from './request-compaction';
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
@@ -108,5 +110,71 @@ describe('session:request-compaction — WI-1804 auto-continuation caps gating',
     injectIntoHost.mockResolvedValue(false);
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, autoContinue: false });
+  });
+});
+
+/**
+ * EI-7032 — session:request-compaction failed 40% of calls (130/321 in 24h), and
+ * EVERY failure was the SAME thing: `focus: Too big <=600 chars`. That reject lands
+ * at the worst moment (the agent is AT its context limit, which is WHY it called
+ * this), forcing a wasted retry. A focus/continueNote is only a summarizer HINT, so
+ * an over-long one is now TRUNCATED to the cap instead of rejected — the compaction
+ * always proceeds.
+ */
+describe('session:request-compaction over-long hint truncation (EI-7032)', () => {
+  describe('truncateHint (unit)', () => {
+    it('returns a within-cap string unchanged (same value)', () => {
+      expect(truncateHint('short focus', 600)).toBe('short focus');
+      const exact = 'x'.repeat(600);
+      expect(truncateHint(exact, 600)).toBe(exact);
+    });
+
+    it('truncates an over-cap string to EXACTLY the cap, …-marked (never > cap)', () => {
+      const long = 'x'.repeat(700);
+      const out = truncateHint(long, 600);
+      expect(out.length).toBe(600);
+      expect(out.endsWith('…')).toBe(true);
+      expect(out.startsWith('x'.repeat(599))).toBe(true);
+    });
+
+    it('handles the 1000-cap continueNote the same way', () => {
+      expect(truncateHint('y'.repeat(1500), 1000).length).toBe(1000);
+    });
+  });
+
+  describe('through the real tool schema (the 40% of calls that 400ed now parse)', () => {
+    beforeEach(() => {
+      findLiveHost.mockReturnValue(compactHost);
+      injectIntoHost.mockResolvedValue(true);
+    });
+
+    it('a 700-char focus no longer 400s — it parses, truncated to ≤600, and the compaction proceeds', async () => {
+      const long = 'preserve '.repeat(100); // 900 chars, well over 600
+      expect(long.length).toBeGreaterThan(600);
+      const b = body(await call({ focus: long }));
+      expect(b).toMatchObject({ ok: true, requested: true });
+      const msg = injected();
+      expect(msg.focus && msg.focus.length).toBeLessThanOrEqual(600);
+    });
+
+    it('an over-long continueNote also parses instead of rejecting', async () => {
+      const b = body(await call({ focus: 'x', continueNote: 'z'.repeat(1400) }));
+      expect(b).toMatchObject({ ok: true });
+      expect(injected().data.length).toBeLessThanOrEqual(1000);
+    });
+
+    it('a normal short focus is unaffected (byte-for-byte in the injected envelope)', async () => {
+      await call({ focus: 'finish EI-7032' });
+      expect(injected().focus).toBe('finish EI-7032');
+    });
+  });
+
+  it('the published tools/list JSON schema still advertises focus maxLength 600 (clients keep aiming short)', () => {
+    const json = z.toJSONSchema(tool.args as never) as {
+      properties?: Record<string, { maxLength?: number; type?: string }>;
+    };
+    expect(json.properties?.focus?.type).toBe('string');
+    expect(json.properties?.focus?.maxLength).toBe(600);
+    expect(json.properties?.continueNote?.maxLength).toBe(1000);
   });
 });

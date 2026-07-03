@@ -372,6 +372,7 @@ async fn run<B: Backend>(
         app.active_doc.clone(),
         app.active_plan.clone(),
         app.network_focus.clone(),
+        pinned,
     );
     // Debounced persistence of the quiet view-state (P12 / D-002): the run loop
     // ships a snapshot on each nav change; the saver coalesces a burst + PUTs.
@@ -3304,6 +3305,7 @@ fn spawn_sync(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
+    pinned: Option<app::Tab>,
 ) {
     // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
     let (sig_tx, sig_rx) = mpsc::unbounded_channel::<()>();
@@ -3313,6 +3315,7 @@ fn spawn_sync(
         active_doc,
         active_plan,
         network_focus,
+        pinned,
         sig_rx,
     ));
     // Coord-inbox push (P-002 / D-003b): a 3rd task on its own SSE stream.
@@ -3472,6 +3475,7 @@ async fn refetch_loop(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
+    pinned: Option<app::Tab>,
     mut sig_rx: UnboundedReceiver<()>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -3483,7 +3487,7 @@ async fn refetch_loop(
     };
 
     // Initial load.
-    refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+    refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
     if let Some(key) = &network_focus {
         // hive-pane: re-pull the drill-in dossier (beacon history + ask
         // log, P-014 item 2) on the same push-driven cadence — the
@@ -3526,14 +3530,14 @@ async fn refetch_loop(
                 // Debounce a burst of invalidations into one refetch.
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 while sig_rx.try_recv().is_ok() {}
-                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
         }
             }
             _ = safety.tick() => {
-                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
@@ -3719,21 +3723,55 @@ fn parse_attention_notify(data: Option<&serde_json::Value>) -> Option<models::No
     })
 }
 
+/// A pinned dock pane renders exactly ONE tab, so it must not refetch the fat
+/// payloads only OTHER tabs render (EI-7028: 8+ pinned dock panes × ~1.6MB of
+/// plans:list + plans:attention per SSE-invalidate/60s tick ≈ tens of GB/day of
+/// loopback traffic for data none of them could ever draw). `app.plans` is
+/// consumed by Plans / Fleet (progress) / PlansBoard / the plan-filter panel
+/// (Inbox|Fleet) / Overview; a pinned Wake / AgentCtx / Network pane never
+/// reads it.
+fn pane_fetches_plans(pinned: Option<app::Tab>) -> bool {
+    match pinned {
+        None => true, // full workbench: every tab reachable
+        Some(t) => matches!(
+            t,
+            app::Tab::Plans | app::Tab::Fleet | app::Tab::PlansBoard | app::Tab::Inbox
+        ),
+    }
+}
+
+/// `app.inbox` (the plans:attention feed — the single fattest payload, ~1.1MB)
+/// is consumed ONLY by Tab::Inbox, the tab-strip Inbox badge, and the Overview
+/// tiles — all full-workbench surfaces. OS notifications ride the
+/// `attention.notify` SSE events (`push_notif`), NOT this poll, so a pinned
+/// pane skipping it loses nothing (verified EI-7028, 2026-07-03).
+fn pane_fetches_attention(pinned: Option<app::Tab>) -> bool {
+    match pinned {
+        None => true,
+        Some(t) => matches!(t, app::Tab::Inbox),
+    }
+}
+
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
-/// `Event::Error` so one failing endpoint doesn't sink the rest.
+/// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
+/// scopes the fat plans/attention reads to panes that actually render them
+/// (see `pane_fetches_plans` / `pane_fetches_attention`).
 async fn refetch_all(
     client: &OperatorClient,
     tx: &UnboundedSender<Event>,
     active_harness: &Arc<Mutex<String>>,
     active_doc: &Arc<Mutex<Option<String>>>,
     active_plan: &Arc<Mutex<Option<(String, String)>>>,
+    pinned: Option<app::Tab>,
 ) {
-    match client.plans_typed().await {
-        Ok(p) => {
-            let _ = tx.send(Event::Plans(p));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("plans: {e}")));
+    if pane_fetches_plans(pinned) {
+        match client.plans_typed().await {
+            Ok(p) => {
+                let _ = tx.send(Event::Plans(p));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("plans: {e}")));
+            }
         }
     }
     match client.roster_typed().await {
@@ -3762,12 +3800,14 @@ async fn refetch_all(
     if let Ok(rows) = client.network_board().await {
         let _ = tx.send(Event::NetworkBoard(rows));
     }
-    match client.attention_typed().await {
-        Ok(i) => {
-            let _ = tx.send(Event::Inbox(i));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("inbox: {e}")));
+    if pane_fetches_attention(pinned) {
+        match client.attention_typed().await {
+            Ok(i) => {
+                let _ = tx.send(Event::Inbox(i));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("inbox: {e}")));
+            }
         }
     }
     // Harness list (for the selector).
@@ -3930,6 +3970,42 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// EI-7028: pinned dock panes must not refetch the fat plans/attention
+    /// payloads their one tab never renders — 8+ panes × ~1.6MB per
+    /// invalidate/60s tick was ~50GB/day of loopback traffic. The full
+    /// workbench (pinned == None) keeps full fidelity (Inbox detail, Overview
+    /// tiles, tab badge).
+    #[test]
+    fn pinned_pane_fetch_scope_matches_rendered_tab() {
+        // Full workbench: everything.
+        assert!(pane_fetches_plans(None));
+        assert!(pane_fetches_attention(None));
+        // Plans consumers keep the plans list.
+        for t in [app::Tab::Plans, app::Tab::Fleet, app::Tab::PlansBoard, app::Tab::Inbox] {
+            assert!(pane_fetches_plans(Some(t)), "{t:?} renders plans");
+        }
+        // The current dock panes that never read app.plans skip it.
+        for t in [app::Tab::Wake, app::Tab::AgentCtx, app::Tab::Network] {
+            assert!(!pane_fetches_plans(Some(t)), "{t:?} never renders plans");
+        }
+        // attention (the ~1.1MB feed) is Inbox-only; NO current pinned pane
+        // (Fleet/Wake/AgentCtx/Network/PlansBoard) fetches it.
+        assert!(pane_fetches_attention(Some(app::Tab::Inbox)));
+        for t in [
+            app::Tab::Fleet,
+            app::Tab::Wake,
+            app::Tab::AgentCtx,
+            app::Tab::Network,
+            app::Tab::PlansBoard,
+            app::Tab::Plans,
+        ] {
+            assert!(
+                !pane_fetches_attention(Some(t)),
+                "{t:?} never renders the attention inbox"
+            );
+        }
+    }
 
     fn coord_msg(
         kind: &str,

@@ -25,6 +25,12 @@ vi.mock('@papercusp/operator-core/lib/version-tauri', () => ({
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
+// Operator connectivity — drives the background-check gate. Default online.
+let offlineState = false;
+vi.mock('@papercusp/sync', () => ({
+  useSyncConnectivity: () => ({ offline: offlineState }),
+}));
+
 // Tooltip just wraps its children; render them inline.
 vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -47,6 +53,7 @@ beforeEach(() => {
   installUpdate.mockClear();
   installUpdate.mockResolvedValue(undefined);
   checkForUpdate.mockClear();
+  offlineState = false;
   confirmResult = true;
   confirmFn.mockClear();
   vi.mocked(toast.success).mockClear();
@@ -70,6 +77,25 @@ describe('UpdateChip', () => {
   });
 
   it('clicking the version chip force-checks for updates (poll non-silent)', async () => {
+    render(<UpdateChip />);
+    const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
+    checkForUpdate.mockClear();
+    fireEvent.click(chip);
+    await waitFor(() => expect(checkForUpdate).toHaveBeenCalled());
+  });
+
+  it('does NOT background-check while the operator is offline (silent mount poll skipped)', async () => {
+    offlineState = true;
+    render(<UpdateChip />);
+    // The version still resolves (appVersion is not gated) so the chip renders…
+    await screen.findByRole('button', { name: /v1\.2\.3/ });
+    // …but the silent background check is skipped while disconnected — this is
+    // what prevents the updater plugin's `error sending request` log churn.
+    expect(checkForUpdate).not.toHaveBeenCalled();
+  });
+
+  it('a manual click still force-checks even while offline (user gets feedback)', async () => {
+    offlineState = true;
     render(<UpdateChip />);
     const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
     checkForUpdate.mockClear();

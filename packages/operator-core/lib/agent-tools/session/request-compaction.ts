@@ -82,11 +82,9 @@ export default defineTool({
       .describe(
         "After the compaction completes, open the fresh context on a continuation turn so you RESUME automatically instead of sitting idle post-summary (WI-1804). Default true. Needs a host that advertises the 'compact' capability; on an older host a plain /compact is injected (compaction still runs, no auto-continue).",
       ),
-    continueNote: z
-      .string()
-      .max(1000)
+    continueNote: hintString(1000)
       .optional()
-      .describe('Override the auto-continuation turn text opened on the compacted context. Defaults to a "continue + re-orient" note derived from focus.'),
+      .describe('Override the auto-continuation turn text opened on the compacted context. Defaults to a "continue + re-orient" note derived from focus. Over-long is truncated, never rejected (EI-7032).'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
