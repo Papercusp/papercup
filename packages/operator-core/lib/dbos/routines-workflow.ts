@@ -36,6 +36,7 @@ import { fireLoopWake } from '../harness/routines/loop-fire';
 import { getSystemAction, getSystemActionEntry, SYSTEM_TARGET_PREFIX, type SystemActionResult } from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { loopPressure } from '../event-loop-lag-monitor';
+import { poolPressure, recordPoolShed, lastPoolProbeMs } from './pool-pressure';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -294,6 +295,23 @@ async function routinesTickImpl(): Promise<void> {
   const pressure = loopPressure();
   if (pressure !== 'ok') {
     console.warn(`[routines-tick] SKIPPED — event loop ${pressure}, shedding scheduler tick (P-001)`);
+    return;
+  }
+  // P-006/W4 (D-002/D-003): symmetric PG-CONNECTION-POOL shed. The loopPressure() gate
+  // above covers the event-loop freeze mode; POOL STARVATION is the OTHER (the real
+  // ~8× Jul 1-2 root cause) and had no guard. If a trivial acquire+`SELECT 1` against
+  // the org pool is critically slow, every PG sweep below would block the same way and
+  // pile MORE work onto an already-exhausted pool — freezing git-sync (enqueued at the
+  // tick top) with it, then a silent bghost-watchdog restart. Shed + COUNT instead, so
+  // the starvation becomes a loud counted signal (the bghost-watchdog stays the backstop;
+  // the dead-routine detector still catches a sustained freeze — this adds attribution).
+  // Fail-soft: poolPressure() returns 'ok' on any probe error (never shed on no signal).
+  const pool = await poolPressure();
+  if (pool === 'critical') {
+    const shedCount = recordPoolShed();
+    console.warn(
+      `[routines-tick] SKIPPED — PG pool starvation (acquire+SELECT1 probe ${lastPoolProbeMs()}ms ≥ critical), shedding scheduler tick (P-006/W4); pool-shed #${shedCount}`,
+    );
     return;
   }
   const { sql } = getOrgPg();

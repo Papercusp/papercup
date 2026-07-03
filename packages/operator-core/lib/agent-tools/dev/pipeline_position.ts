@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { gitPipelinePosition } from '../../git-pipeline-position';
+import { buildKey } from '../../events/await/catalog';
 
 export default defineTool({
   name: 'dev:pipeline_position',
@@ -45,6 +46,19 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ error: 'Provide a path or a sha.' }) }] };
     }
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    // event-await-discoverability P-001: this is the #1 poll site the leader hit
+    // repeatedly this session while `release:deployed` already fired. Advertise the
+    // awaitable so the answer to "is it live yet?" is a sleep, not a re-poll. Point
+    // at the GLOBAL key (fires on every deploy, always live) — deploy:await refines
+    // it to the per-sha key. Only when the change isn't deployed yet is a wait useful.
+    const deployed = (result as { deployed?: unknown }).deployed === true;
+    const awaitable = deployed
+      ? undefined
+      : {
+          hint: 'Not live yet — instead of re-polling, sleep on the deploy: deploy:await (or events:await the key below), then END YOUR TURN. You are re-invoked when it lands. See events:catalog for all awaitable keys.',
+          event: buildKey('deploy'), // global `release:deployed` — check payload.sha on wake
+          sugar: 'deploy:await',
+        };
+    return { content: [{ type: 'text', text: JSON.stringify({ ...result, ...(awaitable ? { awaitable } : {}) }) }] };
   },
 });

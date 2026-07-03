@@ -143,6 +143,32 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     expect('costCapCents' in input.payloadTemplate).toBe(false);
   });
 
+  it('stamps carry:"cold" onto payload_template only when armed cold (su-cold-auto P-003)', async () => {
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      carry: 'cold',
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', carry: 'cold' });
+  });
+
+  it('a WARM (or absent) carry leaves payload_template byte-identical to today (no carry key)', async () => {
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      carry: 'warm',
+    });
+    const input = upsertRoutineSpy.mock.calls[0][1];
+    expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
+    expect('carry' in input.payloadTemplate).toBe(false);
+  });
+
   it('honours an explicit firstFireInSec (first wake sooner than one interval)', async () => {
     const now = new Date('2026-06-20T00:00:00.000Z');
     await materializeLoop({

@@ -883,10 +883,21 @@ async function collectImprovements(ctx: HealthCtx): Promise<HealthPanel<Improvem
 async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
   return panelSafe<InfraHealth>('infra', async () => {
     let pg: InfraHealth['pg'] = null;
+    let pool: InfraHealth['pool'] = null;
     try {
       const { pgHealth } = await import('../dev-data');
+      const { classifyPoolPressure } = await import('../dbos/pool-pressure');
+      // Pool-starvation fold (P-006/W4): time pgHealth()'s own round-trip — it acquires
+      // a connection + runs two pg_stat_activity aggregates, so its latency is a real (if
+      // coarse) proxy for org-pool acquisition pressure, observed from THIS process (a
+      // request worker) against the shared PG server (cross-process-safe; no new query).
+      const t0 = Date.now();
       const h = await pgHealth();
+      const probeMs = Date.now() - t0;
       pg = { version: h.version, total: h.totalConnections, active: h.activeConnections, idle: h.idleConnections };
+      // Bands are LOOSER than the tick's SELECT-1 probe because this query is heavier:
+      // elevated ≥1.5s, critical ≥4s (a healthy pgHealth returns in tens of ms).
+      pool = { probeMs, band: classifyPoolPressure(probeMs, 1500, 4000) };
     } catch { /* PG unreadable — collector still returns (gateway leg) */ }
     // Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture (F1/
     // P-030). Fail-soft: no capture / E1 not running on this box ⇒ perf null ⇒ infra
@@ -909,9 +920,10 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const recs = readMcpProxyFailureTail();
       if (recs !== null) mcpProxy = summarizeMcpProxyHealth(recs, ctx.now);
     } catch { /* proxy ledger unreadable — leave null (fail-soft) */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy };
+    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool };
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
+    const poolNote = pool?.band === 'critical' ? ', POOL STARVATION' : pool?.band === 'elevated' ? ', pool elevated' : '';
     const mcpHard = mcpProxy?.hardFailures ?? 0;
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
     const mcpWarn = mcpHard > 0 && !mcpCrit;

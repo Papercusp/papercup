@@ -8,6 +8,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { markEliteFederatable } from './federate-elite';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import {
+  isEliteOutcomeRecord,
+  verifyEliteOutcome,
+  verifyEliteOutcomeForElite,
+} from './elite-outcome-record';
 
 /** Tagged-template sql fake capturing interpolated values per call. */
 function fakeSql(rowsToReturn: unknown[] = []): { sql: Sql; calls: unknown[][] } {
@@ -62,5 +68,85 @@ describe('markEliteFederatable — stamp the local row', () => {
     const { sql } = fakeSql([]);
     const res = await markEliteFederatable({ ...base, eligibility: { grade: 5 } }, sql);
     expect(res).toEqual({ federatable: false, reason: 'no-row' });
+  });
+});
+
+describe('markEliteFederatable — P-014 device-signed outcome record', () => {
+  const dev = generateEd25519KeypairDer();
+  const signer = {
+    devicePubkeyBase64: dev.pubkeyBase64,
+    sign: async (b: Buffer) => signWithPrivateKeyDer(dev.privateKeyDer, b),
+  };
+  // The stamp UPDATE returns the row fields the signed record binds.
+  const eliteRow = { candidate_id: 'cand-abc', fitness: 0.87, updated_at: 1720000000000 };
+
+  it('signs + persists a valid record bound to the stamped elite (won)', async () => {
+    const { sql, calls } = fakeSql([eliteRow]);
+    const res = await markEliteFederatable(
+      { ...base, eligibility: { outcome: 'won' }, outcomeSigner: signer },
+      sql,
+    );
+    expect(res.federatable).toBe(true);
+    expect(res.reason).toBe('stamped');
+    expect(res.outcomeRecordId).toMatch(/^[0-9a-f]{64}$/);
+    // Two UPDATEs: [0] stamp federatable + RETURNING fields; [1] persist the record.
+    expect(calls).toHaveLength(2);
+    const record = JSON.parse(calls[1][0] as string);
+    expect(isEliteOutcomeRecord(record)).toBe(true);
+    expect(record.niche_key).toBe(base.nicheKey);
+    expect(record.candidate_id).toBe('cand-abc');
+    expect(record.fitness).toBe(0.87);
+    expect(record.outcome).toBe('won');
+    expect(record.device_pubkey).toBe(dev.pubkeyBase64);
+    expect(record.ts).toBe(1720000000000);
+    expect(verifyEliteOutcome(record)).toBe(true);
+    // The receive-side gate accepts it for the matching elite + signer device.
+    expect(
+      verifyEliteOutcomeForElite(record, {
+        nicheKey: base.nicheKey,
+        candidateId: 'cand-abc',
+        expectedSignerDevice: dev.pubkeyBase64,
+      }),
+    ).toBe(true);
+  });
+
+  it('signs a grade>=4 elite with basis=graded', async () => {
+    const { sql, calls } = fakeSql([eliteRow]);
+    const res = await markEliteFederatable(
+      { ...base, eligibility: { grade: 5 }, outcomeSigner: signer },
+      sql,
+    );
+    expect(res.federatable).toBe(true);
+    const record = JSON.parse(calls[1][0] as string);
+    expect(record.outcome).toBe('graded');
+    expect(record.grade).toBe(5);
+    expect(verifyEliteOutcome(record)).toBe(true);
+  });
+
+  it('returns no-row without signing when the niche has no local elite', async () => {
+    const { sql, calls } = fakeSql([]);
+    const res = await markEliteFederatable(
+      { ...base, eligibility: { outcome: 'won' }, outcomeSigner: signer },
+      sql,
+    );
+    expect(res).toEqual({ federatable: false, reason: 'no-row' });
+    expect(calls).toHaveLength(1); // only the stamp UPDATE; nothing signed/persisted
+  });
+
+  it('the signed record cannot be LIFTED onto a different elite (receive-side bind)', async () => {
+    const { sql, calls } = fakeSql([eliteRow]);
+    await markEliteFederatable(
+      { ...base, eligibility: { outcome: 'won' }, outcomeSigner: signer },
+      sql,
+    );
+    const record = JSON.parse(calls[1][0] as string);
+    // Same valid signature, replayed onto a different candidate → rejected.
+    expect(
+      verifyEliteOutcomeForElite(record, {
+        nicheKey: base.nicheKey,
+        candidateId: 'DIFFERENT-cand',
+        expectedSignerDevice: dev.pubkeyBase64,
+      }),
+    ).toBe(false);
   });
 });

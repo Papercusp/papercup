@@ -104,8 +104,27 @@ export async function markEliteFederatable(
     );
   }
   const sql = inject ?? getOrgPg().sql;
-  // LOCAL row only (source_hive IS NULL): you federate YOUR OWN elite. Foreign
-  // rows are received into gym_qd_foreign_elites and never re-published.
+
+  // BACKWARD-COMPATIBLE path (no signer): the original single-UPDATE stamp on the
+  // LOCAL row (source_hive IS NULL — you federate YOUR OWN elite; foreign rows are
+  // received into gym_qd_foreign_elites and never re-published). `outcome_record`
+  // stays NULL; the receiver treats the elite as outcome-UNVERIFIED (still admitted).
+  if (!args.outcomeSigner) {
+    const rows = (await sql`
+      UPDATE harness_shared.gym_qd_archive
+         SET federatable = true
+       WHERE workspace_id = ${args.workspaceId}
+         AND harness_slug = ${args.harnessSlug}
+         AND niche_key = ${args.nicheKey}
+         AND source_hive IS NULL
+      RETURNING niche_key`) as unknown as Array<{ niche_key: string }>;
+    const stamped = Array.isArray(rows) && rows.length > 0;
+    return { federatable: stamped, reason: stamped ? 'stamped' : 'no-row' };
+  }
+
+  // P-014 SIGNING path: stamp federatable AND return the fields the signed outcome
+  // record binds (candidate_id, fitness) + the elite's op-ts (updated_at, a
+  // Date.now-free deterministic clock). Then sign + persist the record.
   const rows = (await sql`
     UPDATE harness_shared.gym_qd_archive
        SET federatable = true
@@ -113,7 +132,38 @@ export async function markEliteFederatable(
        AND harness_slug = ${args.harnessSlug}
        AND niche_key = ${args.nicheKey}
        AND source_hive IS NULL
-    RETURNING niche_key`) as unknown as Array<{ niche_key: string }>;
-  const stamped = Array.isArray(rows) && rows.length > 0;
-  return { federatable: stamped, reason: stamped ? 'stamped' : 'no-row' };
+    RETURNING candidate_id, fitness, updated_at`) as unknown as Array<{
+    candidate_id: string;
+    fitness: number | string;
+    updated_at: number | string;
+  }>;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { federatable: false, reason: 'no-row' };
+  }
+  const row = rows[0];
+  // The signed basis mirrors federatableElite (D-002): 'won' when the outcome is a
+  // win, else 'graded' (guaranteed grade>=4 here, since federatableElite passed).
+  const outcome: EliteOutcomeBasis = args.eligibility.outcome === 'won' ? 'won' : 'graded';
+  const record = await signEliteOutcome(
+    {
+      nicheKey: args.nicheKey,
+      candidateId: String(row.candidate_id),
+      // Audit only — the trust anchor is the RECEIVER-STAMPED source log, not this.
+      sourceHive: args.harnessSlug,
+      outcome,
+      grade: Number(args.eligibility.grade ?? 0),
+      fitness: Number(row.fitness),
+      devicePubkeyBase64: args.outcomeSigner.devicePubkeyBase64,
+      nowMs: Number(row.updated_at),
+    },
+    args.outcomeSigner.sign,
+  );
+  await sql`
+    UPDATE harness_shared.gym_qd_archive
+       SET outcome_record = ${JSON.stringify(record)}::text::jsonb
+     WHERE workspace_id = ${args.workspaceId}
+       AND harness_slug = ${args.harnessSlug}
+       AND niche_key = ${args.nicheKey}
+       AND source_hive IS NULL`;
+  return { federatable: true, reason: 'stamped', outcomeRecordId: eliteOutcomeRecordId(record) };
 }

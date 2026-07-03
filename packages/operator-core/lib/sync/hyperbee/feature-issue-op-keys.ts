@@ -800,6 +800,11 @@ function toGymQdEliteValue(row: Record<string, unknown>): GymQdEliteWireRow {
         : {},
     rationale: strOrNull(row.rationale),
     federatable: row.federatable === true,
+    // F1-6/P-014: carry the device-signed EliteOutcomeRecord (elite-outcome-record.ts)
+    // onto the wire so the receiver's gym-qd-elites projection can verify the outcome
+    // offline. Passed through opaquely (the receiver shape-guards it via
+    // isEliteOutcomeRecord); NULL/absent when the send side stamped federatable-only.
+    outcome_record: row.outcome_record ?? null,
     updated_at: numOrZero(row.updated_at),
   };
 }

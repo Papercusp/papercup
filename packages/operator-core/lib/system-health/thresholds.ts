@@ -286,6 +286,10 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
+  // P-006/W4: PG-pool starvation is the routinesTick freeze mode — warn (not crit: the
+  // pgHealth-latency proxy is coarse, matching P-005 slotLeak → warn, so one slow tick
+  // doesn't red the panel; a sustained freeze still crits via the dead-routine detector).
+  if (d.pool?.band === 'critical') return 'warn';
   return 'ok';
 }
 

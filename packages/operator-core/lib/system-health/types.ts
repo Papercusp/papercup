@@ -412,6 +412,15 @@ export interface InfraHealth {
   /** MCP proxy windowed failure summary (W8/P-008). null = ledger unreadable this tick
    *  (greyed leg, fail-soft — never blanks the panel). Absent-file = a healthy zero. */
   mcpProxy: McpProxyHealth | null;
+  /**
+   * PG connection-pool acquisition pressure (P-006/W4). `probeMs` = the latency of this
+   * tick's pgHealth() round-trip (a coarse but real acquire-latency proxy: pgHealth
+   * acquires a connection + runs two pg_stat_activity aggregates); `band` classifies it
+   * (elevated ⇒ contended, critical ⇒ starved — the routinesTick freeze mode). Measured
+   * from THIS process, so it observes the shared PG server cross-process-safely (it does
+   * NOT read the bg-host tick's in-process shed counter). OPTIONAL (deploy-skew-safe):
+   * absent on an older projection ⇒ treated as no signal. null when PG is unreadable. */
+  pool?: { probeMs: number; band: 'ok' | 'elevated' | 'critical' } | null;
 }
 
 /** SU fleet (interactive collaborators) presence. */
