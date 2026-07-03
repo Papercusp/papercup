@@ -260,7 +260,14 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     buildAgentFactsProjection(hiveScoped),
     // F1-2/F1-5 (federated-scout-gym): foreign QD elites, hive-home-grained too
     // (the elite's harness_slug carries the hive home slug — mig 465 demux).
-    buildGymQdElitesProjection(hiveScoped),
+    // F1-6/P-014: thread the WI-259 verified-source-log→device resolver as
+    // `resolveSignerDevice` so the receive-side elite-outcome gate
+    // (verifyEliteOutcomeForElite) can bind a signed EliteOutcomeRecord to the
+    // relaying device (anti-lift). `resolveAuthorDevice` maps sourceLogKeyHex →
+    // devicePubkey via `admittedIdentities`, which holds ONLY admitted-member
+    // devices — so a non-null result already proves membership and the separate
+    // isDeviceAdmitted seam is unnecessary here.
+    buildGymQdElitesProjection({ ...hiveScoped, resolveSignerDevice: hiveScoped.resolveAuthorDevice }),
     buildBeeClaimSpecProjection(hiveScoped),
     // P-044 DG-1: verdict facts are hive-home-grained (the gate is a hive-wide
     // aggregate) — scope like hive_settings so a joiner receives + verifies them.
