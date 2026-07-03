@@ -120,4 +120,30 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     expect(h.registerAccount).not.toHaveBeenCalled();
     expect(h.notifySyncInvalidate).not.toHaveBeenCalled();
   });
+
+  // 2026-07-03 hardening: the two ways a paste goes wrong.
+  it('collapses whitespace in a pasted setup-token (a terminal line-wrap embeds a newline)', async () => {
+    // The WI-1919 corruption shape: the paste wrapped mid-token — written raw it kills every
+    // gateway request on the account with `Headers.append: invalid header value`.
+    const wrapped = 'sk-ant-oat01-first-half\nsecond-half\n';
+    const { status, body } = await post({ accountId: 'wrapped', value: wrapped });
+    expect(status).toBe(200);
+    expect(body?.ok).toBe(true);
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-papercusp/deploy-credentials/wrapped',
+      'sk-ant-oat01-first-halfsecond-half',
+      { mode: 0o600 },
+    );
+  });
+
+  it('names the mistake when the owner pastes an OAuth code#state instead of a token', async () => {
+    const { status, body } = await post({
+      accountId: 'aviynw10',
+      value: '7QKpvlNB2RrBaPOJZiVuNGyMsOYVxuLB6zNneU5Y8Z6xNWkw#70gGhlXv0l-eJMzcmEvX3nEq1DRDMgOHxbhRCsP-vY0',
+    });
+    expect(status).toBe(400);
+    expect(String(body?.error)).toMatch(/OAuth code/i);
+    expect(String(body?.error)).toMatch(/browser-login flow/);
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
 });
