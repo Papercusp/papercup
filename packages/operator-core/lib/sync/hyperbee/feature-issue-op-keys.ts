@@ -48,6 +48,8 @@ import type { EngineerIssueRow } from './projections/engineer-issues';
 import type { PlanPartWireRow } from './projections/harness-plan-parts';
 import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
 import type { P2pReceiptWireRow } from './projections/p2p-receipts';
+import type { AgentFactWireRow } from './projections/agent-facts';
+import type { GymQdEliteWireRow } from './projections/gym-qd-elites';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -793,7 +795,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | EngineerIssueRow
     | PlanPartWireRow
     | P2pPeerGrantWireRow
-    | P2pReceiptWireRow;
+    | P2pReceiptWireRow
+    | AgentFactWireRow
+    | GymQdEliteWireRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -854,6 +858,12 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'p2p_receipts':
       value = toP2pReceiptValue(row);
+      break;
+    case 'agent_facts':
+      value = toAgentFactValue(row);
+      break;
+    case 'gym_qd_archive':
+      value = toGymQdEliteValue(row);
       break;
     default:
       value = toIssueValue(row);

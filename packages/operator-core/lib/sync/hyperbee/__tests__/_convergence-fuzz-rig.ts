@@ -308,52 +308,59 @@ export async function runConvergenceFuzz(opts: FuzzOptions): Promise<FuzzResult>
     if (opts.localAuthorApply) {
       const own = ops.filter((g) => (g.op.value as { author: number }).author === p);
       for (const g of own) store.applyLocal(g.op);
-      // WI-1684 FIX (candidate b): the author's OWN DEL envelopes participate in
-      // the merge's winners map (ORDERING) — mirroring how the merge core keeps a
-      // del envelope in `cursor.winners` — even though the apply sink SKIPS the PG
-      // re-apply of own ops (`skipOwnOps`; the author already materialised the
-      // delete via `applyLocal`). The fix is DEL-ONLY on purpose:
-      //   • A DELETE leaves NO PG row, so the projection's fed_hlc guard has
-      //     nothing to arbitrate against — a concurrent LOWER-hlc foreign put hits
-      //     the no-row INSERT path and RESURRECTS the row on the author peer only
-      //     (silent split-brain on row PRESENCE). The winning del must therefore
-      //     ride IN the fold (the "del envelope in cursor.winners") so the foreign
-      //     put is gated before it can insert. Own DEL log FIRST — production seeds
-      //     `admitted` with `ownLog` before any remote, so the own del is in
-      //     `cursor.winners` before a foreign op folds.
-      //   • A PUT leaves a PG row; the fed_hlc guard (made a TOTAL order by node
-      //     ids — migration 459 / WI-1672) arbitrates a foreign put against it.
-      //     Own puts stay excluded from the fold — that put-vs-put tie surface is
-      //     WI-1672's, deliberately left to the guard so its teeth test (delProb:0)
-      //     still characterises the node-less split-brain the node-id fix closes.
+      // WI-1684 — local-del resurrection under skipOwnOps, modelled faithfully as
+      // the DRAIN WINDOW. The author deletes a row locally (applyLocal above → row
+      // gone, NO tombstone), but its own del op reaches its own log only AFTER the
+      // outbox→drain round-trip. During that window a concurrent foreign put can
+      // fold FIRST: the projection sees no row → no-row INSERT path → the row is
+      // RESURRECTED on the author peer only. To reproduce that worst case the own
+      // DEL log folds LAST (after every foreign op — see `logs` below), so any
+      // concurrent foreign put has already resurrected the row before it arrives.
+      //
+      // Production ALREADY folds the own del into `cursor.winners`
+      // (`applyRecordingWinner` records the winner even when apply returns false),
+      // so the del correctly WINS the fold on the author peer. The bug is that
+      // skipOwnOps ALSO skips its APPLY, so the winning del never deletes the
+      // resurrected row → permanent split-brain. The FIX (see `applyImpl` +
+      // `applyOwnDels`) narrows skipOwnOps to PUTS: a winning own del is re-applied
+      // (a fed_hlc-guarded delete) that cleans up the resurrection. It is DEL-ONLY:
+      // own PUTS stay skipped (that put-vs-put tie surface is WI-1672's, left to the
+      // node-id total-order guard — its teeth test runs delProb:0), and re-applying
+      // an own del is echo-safe where re-applying an own put is not (a 0-row delete
+      // never fires the FOR EACH ROW capture trigger; a resurrected row is
+      // origin='remote' → capture's echo-guard skips it — no EI-117 storm).
       ownDelLogs = own
         .filter((g) => g.op.type === 'del')
         .map((g) => singleOpLog(g.sourceLogKeyHex, g.op));
       foreignGen = ops.filter((g) => (g.op.value as { author: number }).author !== p);
     }
-    // The apply sink mirrors production's SINGLE `applyImpl`: SKIP the PG apply for
-    // this peer's OWN ops (skipOwnOps — already materialised via `applyLocal`),
-    // else run the fed-guarded store apply. `applyRecordingWinner` records the
-    // winner on the no-throw path regardless, so an own del establishes its winner
-    // for ordering while its re-apply is skipped — exactly candidate (b). (Only own
-    // DELs reach this sink via the fold; own puts are not folded — see above.)
+    // The apply sink mirrors production's SINGLE `applyImpl` in projection.ts:
+    // skipOwnOps SKIPS the PG re-apply of this peer's own ops (already materialised
+    // via `applyLocal`). `applyRecordingWinner` still records the winner on the
+    // no-throw path, so an own op establishes its fold winner regardless of apply.
+    // WI-1684 FIX: skipOwnOps is narrowed to PUTS — a winning own DEL is re-applied
+    // (a fed_hlc-guarded delete) so it can clean up a drain-window resurrection.
+    // `applyOwnDels` (default true = the shipped fix) gates it; the teeth test sets
+    // it false to reproduce the pre-fix split-brain.
     const applyImpl = async (op: OpEnvelope): Promise<boolean> => {
       if (opts.localAuthorApply && (op.value as { author?: number } | undefined)?.author === p) {
-        return false; // skipOwnOps: record the winner (ordering), skip the PG re-apply
+        if (opts.applyOwnDels !== false && op.type === 'del') return store.apply(op); // WI-1684: apply winning own del
+        return false; // skipOwnOps: own put (or pre-fix own del) — record winner, skip re-apply
       }
       return store.apply(op);
     };
     // This peer eventually receives EVERY op (the post-heal fixed point) but in
     // its OWN seeded fold order — one stable AdmittedLog per origin op (keyHex =
     // its peer-stable sourceLogKeyHex, the merge's deterministic same-clock
-    // tiebreak). The own DEL log(s) fold FIRST (local source of truth, admitted
-    // first in prod); shuffling only the FOREIGN tail models arbitrary
-    // partition/reorder delivery: the winners-fold is order-independent, but the
-    // apply-to-PG (the fed_ts guard) is NOT — that interaction is exactly what
-    // D-001/WI-1684 expose.
+    // tiebreak). Shuffling the FOREIGN ops models arbitrary partition/reorder
+    // delivery; the own DEL log(s) fold LAST to model the WI-1684 DRAIN WINDOW (the
+    // own del reaches the own log only after the outbox→drain round-trip, so every
+    // concurrent foreign put has already folded — and possibly resurrected the row —
+    // before it arrives). The winners-fold is order-independent, but the apply-to-PG
+    // (the fed_hlc guard) is NOT — that interaction is exactly what WI-1684 exposes.
     const logs = [
-      ...ownDelLogs,
       ...shuffle(foreignGen, rng).map((g) => singleOpLog(g.sourceLogKeyHex, g.op)),
+      ...ownDelLogs,
     ];
     // Fold in chunks so the cursor advances across multiple passes (exercises
     // the cross-pass winners-fold persistence, not just one monolithic pass).

@@ -100,15 +100,24 @@ const TERMINAL: ReadonlySet<BootstrapStatus> = new Set(['done', 'skipped', 'erro
 /** Pure reducer over the rows — exported for unit tests (no React, no sync). */
 export function reduceBootstrapRows(rows: BootstrapProgressRow[]): DogfoodBootstrapProgress {
   // Latest row per step (later rows supersede earlier ones for the same step).
-  let clone: BootstrapProgressRow | undefined;
-  let submodules: BootstrapProgressRow | undefined;
-  for (const r of rows) {
-    if (r.step === 'clone') clone = r;
-    else if (r.step === 'submodules') submodules = r;
-  }
+  // The progress store is APPEND-ONLY on status transitions (only same-step
+  // `running` percent ticks coalesce — see from-repo-progress.ts), so a step that
+  // fails and is then RETRIED keeps its stale attempt-1 `error` row in `rows`
+  // alongside the later `running`/`done` rows. The CURRENT state of a step is
+  // therefore its LATEST row — never "did ANY row ever error". Deriving hasError
+  // from all of `rows` latched the attempt-1 error and kept the red "didn't
+  // finish downloading" banner up over a successful retry (and wedged the
+  // setup-finish gate on "Setup needs attention") — WI-1706. Every terminal
+  // signal below is computed from the latest-per-step rows instead.
+  const latestByStep = new Map<BootstrapStep, BootstrapProgressRow>();
+  for (const r of rows) latestByStep.set(r.step, r);
+  const clone = latestByStep.get('clone');
+  const submodules = latestByStep.get('submodules');
 
   const hasRows = rows.length > 0;
-  const errorRows = rows.filter((r) => r.status === 'error');
+  // Only a step whose CURRENT (latest) row is `error` counts — a superseded error
+  // from a since-retried attempt must NOT keep the error state latched (WI-1706).
+  const errorRows = [...latestByStep.values()].filter((r) => r.status === 'error');
   const hasError = errorRows.length > 0;
   // A transient network fault (clone records `detail: 'network_timeout'`; also
   // match the broader connect/DNS/unreachable wording defensively). Keep in sync

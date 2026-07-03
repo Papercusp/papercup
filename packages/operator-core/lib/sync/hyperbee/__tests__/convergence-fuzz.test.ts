@@ -164,42 +164,50 @@ describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnO
   });
 });
 
-describe('WI-1684 — local-del resurrection under skipOwnOps (candidate b: own del envelopes join the winners map)', () => {
+describe('WI-1684 — local-del resurrection under skipOwnOps (drain-window split-brain on row presence)', () => {
   // The bug (found while fixing WI-1672): an author DELETES a row locally (trigger
-  // path — row gone, NO tombstone) and, pre-fix, its own del was skipOwnOps-
-  // excluded from its own fold ENTIRELY. A CONCURRENT foreign put with a LOWER
-  // hlc then won the author's fold among foreign ops alone and hit the
-  // projection's no-row INSERT path, which has nothing to arbitrate against → the
-  // row was resurrected on the author peer ONLY. Every other peer folds del + put
-  // together, the del wins, the row stays deleted: silent split-brain on row
-  // PRESENCE. Node ids (migration 459) cannot fix this — the store never gets to
-  // make the comparison (no row to guard against).
+  // path — row gone, NO tombstone). Its own del op reaches its own log only after
+  // the outbox→drain round-trip; during that DRAIN WINDOW a concurrent foreign put
+  // with a lower-or-equal hlc folds first and hits the projection's no-row INSERT
+  // path (nothing to arbitrate against) → the row is RESURRECTED on the author peer
+  // ONLY. Production DOES fold the own del into the winners map, so the del correctly
+  // WINS the fold on that peer — but skipOwnOps ALSO skips its APPLY, so the winning
+  // del never deletes the resurrected row. Every OTHER peer folds del + put together,
+  // the del wins AND applies, the row stays deleted: silent split-brain on row
+  // PRESENCE, on the deleting peer alone. Node ids (migration 459) cannot fix it —
+  // the store never gets to make the comparison (skipOwnOps skips the apply).
   //
-  // FIX (candidate b, DEL-ONLY): the author's own DEL envelopes now participate in
-  // `cursor.winners` for ORDERING (mirroring how the merge core keeps a del
-  // envelope in the winners map), while the APPLY of own ops stays skipped
-  // (skipOwnOps — already materialised locally). The winning del is now in the
-  // winners map before a foreign op folds, so a lower-hlc foreign put is gated
-  // before it can reach the no-row insert path. Own PUTS remain guard-arbitrated
-  // (WI-1672's node-id total order handles put-vs-put), so this fix is orthogonal
-  // to — and does not disturb — the WI-1672 characterisation above (delProb:0).
-  // RELEASE INVARIANT: the SAME production topology (skipOwnOps + lockstep + node
-  // ids) that split-brained on row presence pre-fix now FULLY CONVERGES on every
-  // seed, dels included.
-  it(`FIXED: dels + production topology converge on row presence — all ${SWEEP} seeds`, async () => {
+  // FIX: narrow skipOwnOps to PUTS (projection.ts `applyOpVia`). A winning own DEL
+  // is re-applied — a fed_hlc-guarded delete that removes the resurrected row. It is
+  // echo-safe (0-row delete never fires the FOR EACH ROW capture trigger; a
+  // resurrected row is origin='remote' → capture's echo-guard skips it), so it can't
+  // restart the EI-117 storm the skip exists to break (a PUT-only UPSERT shape). The
+  // fix is orthogonal to WI-1672 (own puts stay skipped → its delProb:0 teeth above
+  // are untouched). The rig gates it with `applyOwnDels`: false = pre-fix (teeth),
+  // true = the shipped fix.
+  const base = {
+    peers: 4,
+    ops: 40,
+    keys: 6,
+    regime: 'monotone' as const,
+    lockstep: true,
+    localAuthorApply: true,
+    nodeIds: true,
+    delProb: 0.12,
+  };
+
+  it('TEETH (the bug): a skipped own del leaves a drain-window resurrection — divergent seeds exist', async () => {
+    let diverged = 0;
+    for (let seed = 1; seed <= SWEEP; seed++) {
+      if (!(await runConvergenceFuzz({ ...base, seed, applyOwnDels: false })).converged) diverged++;
+    }
+    expect(diverged).toBeGreaterThan(0);
+  });
+
+  it(`FIXED: applying the winning own del converges row presence — all ${SWEEP} seeds`, async () => {
     const failures: Array<{ seed: number; distinct: string[] }> = [];
     for (let seed = 1; seed <= SWEEP; seed++) {
-      const r = await runConvergenceFuzz({
-        seed,
-        peers: 4,
-        ops: 40,
-        keys: 6,
-        regime: 'monotone',
-        lockstep: true,
-        localAuthorApply: true,
-        nodeIds: true,
-        delProb: 0.12,
-      });
+      const r = await runConvergenceFuzz({ ...base, seed, applyOwnDels: true });
       if (!r.converged) failures.push({ seed, distinct: r.distinct });
     }
     expect(failures).toEqual([]);

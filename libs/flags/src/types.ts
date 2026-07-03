@@ -1239,6 +1239,16 @@ export const FLAGS = {
   // long-dead rows in the live roster). OFF ⇒ the reaper tick no-ops (today's behavior:
   // rows accumulate until the opportunistic 24h sweepStalePresence catches them).
   COORD_PRESENCE_REAPER: "papercusp-coord-presence-reaper",
+  // federated-scout-gym-learning-2026-07-02 P-010 (F3-2): the fleet-wide KILL-SWITCH
+  // for federated Scout↔gym ELITE/FACT sharing (island-model QD). Default ON (the
+  // GITHUB_BRIDGE/P2P pattern — NOT in DARK_FLAGS): activation is STRUCTURAL, not the
+  // flag. scout/federation-rollout.ts stages HOW FAR learning propagates in 3 tiers —
+  // tier 1 HIVE-MEMBERS-ONLY (the existing F1 hive-scoped admission, the safe default),
+  // tier 2 CROSS-HIVE gossip (CROSS_HIVE_GOSSIP_LANDED), tier 3 OPEN network behind the
+  // P-009 reputation gate (REPUTATION_GATE_LANDED). Both prereq switches are false until
+  // the machinery lands, so a default-ON flag can never over-share; the effective tier
+  // clamps to 1 today. OFF ⇒ nothing federates (tier 0) — the instant off-switch.
+  FEDERATED_SCOUT_LEARNING: "papercusp-federated-scout-learning",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

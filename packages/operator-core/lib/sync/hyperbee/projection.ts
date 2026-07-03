@@ -248,10 +248,22 @@ export async function applyOpVia(
   const p = lookup(op.table);
   if (!p) return false;
   // EI-117 echo breaker: skip log-source-VERIFIED own ops on CDC-captured
-  // tables (see `TableProjection.skipOwnOps`). Applies to puts AND dels — an
-  // own del is equally a replay of a delete PG already performed.
+  // tables (see `TableProjection.skipOwnOps`). WI-1684: narrowed to PUTS ONLY.
+  // An own PUT re-apply is an UPSERT that re-fires the capture trigger as
+  // origin='local' → the echo storm the skip exists to break. An own DEL must
+  // NOT be skipped: during the drain window (before the author's own del reaches
+  // its own log) a concurrent lower-hlc foreign put can hit the no-row INSERT
+  // path and RESURRECT the row on the author peer only; the winning own del is
+  // then the ONLY thing that can clean it up, and skipping its apply makes the
+  // resurrection permanent (silent split-brain on row PRESENCE — the deleting
+  // peer keeps a row every other peer deleted). Re-applying the del is echo-safe:
+  // a 0-row delete never fires the FOR EACH ROW capture trigger, and a resurrected
+  // row is origin='remote' so capture's echo-guard skips it — neither re-enters the
+  // outbox. deleteFromPg stays fed_hlc-guarded, so it cannot erase a row a
+  // genuinely-newer put recreated.
   if (
     p.skipOwnOps === true &&
+    op.type === 'put' &&
     applyOpts?.ownLogKeyHex !== undefined &&
     op.sourceLogKeyHex !== undefined &&
     op.sourceLogKeyHex === applyOpts.ownLogKeyHex

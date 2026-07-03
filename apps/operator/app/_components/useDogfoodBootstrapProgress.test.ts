@@ -116,6 +116,40 @@ describe('reduceBootstrapRows', () => {
     expect(p.clone?.percent).toBe(90);
     expect(p.activePercent).toBe(90);
   });
+
+  // WI-1706: the store is append-only on status transitions, so a failed-then-
+  // RETRIED clone leaves a stale attempt-1 `error` row in the list. The CURRENT
+  // state of the step is `done`, so the error must clear — the red "didn't finish
+  // downloading" banner (and the finish gate's "Setup needs attention") must
+  // retract once the retry succeeds. Deriving hasError from all history latched it.
+  it('clone error THEN retried done + submodules done → error cleared, ready (WI-1706)', () => {
+    const p = reduceBootstrapRows([
+      row('clone', 'running', { percent: 10 }, 1),
+      row('clone', 'error', { detail: 'network_timeout' }, 2),
+      row('clone', 'running', { percent: 50 }, 3),
+      row('clone', 'done', {}, 4),
+      row('submodules', 'done', {}, 5),
+    ]);
+    expect(p.hasError).toBe(false);
+    expect(p.networkError).toBe(false);
+    expect(p.gitMissing).toBe(false);
+    expect(p.ready).toBe(true);
+    expect(p.inProgress).toBe(false);
+  });
+
+  // The dual: a submodules step that errors AFTER the clone succeeded and is NOT
+  // retried stays errored (its latest row is the error) — the fix must not swallow
+  // a genuine current failure.
+  it('clone done then submodules error (not retried) → still hasError, not ready (WI-1706)', () => {
+    const p = reduceBootstrapRows([
+      row('clone', 'done', {}, 1),
+      row('submodules', 'running', { percent: 20 }, 2),
+      row('submodules', 'error', { detail: 'network_timeout' }, 3),
+    ]);
+    expect(p.hasError).toBe(true);
+    expect(p.networkError).toBe(true);
+    expect(p.ready).toBe(false);
+  });
 });
 
 describe('bootstrapStepLabel', () => {

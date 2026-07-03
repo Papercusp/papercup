@@ -279,15 +279,19 @@ describe('skipOwnOps — the EI-117 echo breaker (own-log replays on CDC tables)
     expect(writes).toEqual([]);
   });
 
-  it('an own DEL on a skipOwnOps projection is equally skipped (a replay of a delete PG already did)', async () => {
+  it('WI-1684: an own DEL on a skipOwnOps projection is NOT skipped — it applies (cleans up a drain-window resurrection)', async () => {
+    // The skip is narrowed to PUTS. An own del must apply: during the drain window a
+    // concurrent lower-hlc foreign put can resurrect the row on the author peer via
+    // the no-row INSERT path, and the winning own del is the only thing that clears
+    // it (echo-safe — a 0-row / origin='remote' delete never re-enters the outbox).
     const { lookup, deletes } = spyWithFlag(true);
     const applied = await applyOpVia(
       lookup,
       { type: 'del', table: 'plans-by-slug', hbKey: 'k', sourceLogKeyHex: 'OWN-LOG-KEY' },
       { ownLogKeyHex: 'OWN-LOG-KEY' },
     );
-    expect(applied).toBe(false);
-    expect(deletes).toEqual([]);
+    expect(applied).toBe(true);
+    expect(deletes).toEqual(['k']);
   });
 
   it('a REMOTE op on a skipOwnOps projection still applies (only own replays are skipped)', async () => {

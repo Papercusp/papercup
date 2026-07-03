@@ -243,6 +243,22 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
     expect(md).toContain('work_items:checkpoint');
   });
 
+  it('P-001: members PULL via scheduler:get_next (spec-driven), not claim_next, and do not self-prioritize', () => {
+    const md = renderMemberBaseline({ fleetSlug: 'ops', plan: 'my-plan', count: 4 });
+    // The pull tool is scheduler:get_next (the bee spec-driven self-select), and the member is
+    // explicitly told NOT to use work_items:claim_next as its pull loop.
+    expect(md).toContain('scheduler:get_next');
+    expect(md).toContain('NOT `work_items:claim_next`');
+    // The bee pull-discipline: leader steers WHICH item via the claim-spec; pickup is the member's;
+    // no self-prioritizing by scanning the raw frontier.
+    expect(md).toContain('scheduler:set_claim_spec');
+    expect(md).toMatch(/PICKUP is yours|blackboard/);
+    expect(md).toMatch(/Do NOT self-prioritize by scanning `work_items:list`/);
+    // The member's pull LOOP line must not still tell it to claim via claim_next (the swap is real,
+    // not additive) — the only claim_next mention left is the "do NOT use it" contrast.
+    expect(md).not.toMatch(/\*\*claim\*\* the highest-priority[^\n]*work_items:claim_next/);
+  });
+
   it('singularizes the worker count for a 1-member fleet', () => {
     const md = renderMemberBaseline({ fleetSlug: 'f', plan: 'p', count: 1 });
     expect(md).toContain('one of 1 parallel worker agent in fleet');
@@ -273,6 +289,39 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
   it('ignores an empty / whitespace custom brief (baseline only)', () => {
     const md = composeMemberLaunchContext({ fleetSlug: 'f', plan: 'p', count: 1, customBriefText: '   \n' });
     expect(md).not.toContain('Fleet-specific brief');
+  });
+});
+
+// su-loop-capability-parity-2026-07-03 P-002: the leader STEERS members by claim-spec
+// (property filters, not id-pins) and OWNS driving the plan to done through the fleet.
+describe('LEADER_STANDING_JOB — steer-don\'t-dispatch + completion mandate (P-002)', () => {
+  const steer = LEADER_STANDING_JOB.find((p) => p.includes('scheduler:set_claim_spec'));
+
+  it('has a steer-via-claim-spec point that names set_claim_spec + a PROPERTY filter, not id-pins', () => {
+    expect(steer, 'a LEADER_STANDING_JOB point must steer via scheduler:set_claim_spec').toBeTruthy();
+    expect(steer).toContain('scheduler:set_claim_spec');
+    expect(steer).toMatch(/PROPERTY FILTER/i);
+    // Explicitly warns off id-pins for standing lanes (the observed micro-dispatch anti-pattern).
+    expect(steer).toMatch(/NEVER id-pins|id-pins for a standing lane/);
+    // Re-steer by bumping the spec, not by hand-assigning each item.
+    expect(steer).toMatch(/bumping its spec|next pull/);
+  });
+
+  it('carries the completion mandate — the leader owns driving the plan to done THROUGH the fleet', () => {
+    const mandate = LEADER_STANDING_JOB.find((p) => /drive|driving the plan to done|OWN/i.test(p));
+    expect(mandate, 'a LEADER_STANDING_JOB point must assert the leader owns completion').toBeTruthy();
+    expect(steer).toMatch(/OWN driving the plan to done THROUGH the fleet/);
+    // Guards the observed failure: silently falling back to solo work when members die/close.
+    expect(steer).toMatch(/do NOT quietly fall back to doing the work solo/i);
+  });
+
+  it('members pull the item the leader steered — the two halves reference the SAME scheduler pair', () => {
+    // P-001 member side pulls via scheduler:get_next; P-002 leader side steers via
+    // scheduler:set_claim_spec. The pair must be internally consistent (the plan's control boundary).
+    const memberMd = renderMemberBaseline({ fleetSlug: 'ops', plan: 'my-plan', count: 4 });
+    expect(memberMd).toContain('scheduler:get_next');
+    expect(memberMd).toContain('scheduler:set_claim_spec');
+    expect(LEADER_STANDING_JOB.some((p) => p.includes('scheduler:set_claim_spec'))).toBe(true);
   });
 });
 

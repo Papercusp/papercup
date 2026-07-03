@@ -135,11 +135,33 @@ export default defineTool({
         return Response.json({ ok: false, error: result.refusal.code, detail: result.refusal.detail }, { status: 409 });
       }
 
+      // P-106: revoking (or downgrading, M16) a host→fleet grant WITHDRAWS CONSENT —
+      // reap this host's in-flight foreign sessions for that fleet (fail-close to
+      // 'reaped' + refusal receipt). Loud on failure and never swallowed: a revoked
+      // peer left running is a security hole. Only fleet grants map to foreign
+      // sessions (p2p_foreign_workspaces.fleet_slug); pool grants have no such rows.
+      let reap: { reaped: number; receiptFailures: number } | { error: string } | undefined;
+      if (action === 'revoke' && granteeKind === 'fleet') {
+        try {
+          const { reapForeignSessionsForRevocation } = await import('../../../p2p/revocation-reaper');
+          const r = await reapForeignSessionsForRevocation({
+            workspaceId: ws,
+            hiveSlug,
+            responderGithubUserId: actor.githubUserId,
+            trigger: { kind: 'grant-revoked', fleetSlug: granteeRef },
+            actor: `p2p-grant-set:${actor.githubUserId}`,
+          });
+          reap = r.ok ? { reaped: r.reaped.length, receiptFailures: r.receiptFailures } : { error: r.refusal.code };
+        } catch (err) {
+          reap = { error: (err as Error)?.message ?? 'reap_failed' };
+        }
+      }
+
       // Args-scoped subscription ({hiveSlug}) → args-scoped invalidate with the SAME args.
       const { notifySyncInvalidate } = await import('../../../sync-sse');
       await notifySyncInvalidate('p2p.grants', { hiveSlug }).catch(() => {});
 
-      return Response.json({ ok: true, action, grant: result.grant });
+      return Response.json({ ok: true, action, grant: result.grant, ...(reap ? { reap } : {}) });
     } catch (err) {
       return Response.json(
         { ok: false, error: (err as Error)?.message ?? 'p2p_grant_set_failed' },

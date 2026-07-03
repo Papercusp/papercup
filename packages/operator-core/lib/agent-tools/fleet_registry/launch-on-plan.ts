@@ -157,7 +157,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of `claim_next` and you loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of your next `scheduler:get_next` pull and you loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
@@ -200,6 +200,8 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
 export const LEADER_STANDING_JOB: readonly string[] = [
   'WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
   'STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
+  // su-loop-capability-parity P-002: steer-don't-dispatch (the queen model) + the completion mandate.
+  "STEER, don't micro-dispatch: your members self-PULL via `scheduler:get_next`; you decide WHICH item each gets by SETTING/BUMPING its claim-spec — `scheduler:set_claim_spec { beeId, spec }` with a PROPERTY FILTER (e.g. `{field:'plan',op:'=',value:'<slug>'}` + a rank), NEVER id-pins for a standing lane (an `id in [...]` pin is a static one-off wave only). Re-steer a running member by bumping its spec (the revision auto-applies on its next pull), not by hand-assigning items. And you OWN driving the plan to done THROUGH the fleet — keep the lanes covered + the dependency order honest; do NOT quietly fall back to doing the work solo.",
   'Keep each wake LEAN: one dev:pg_query for burn-down + active-worker count. Do NOT dump fleet:assignments coverage[] or a full coord:presence every wake — that blows your OWN context within a few cycles and is the #1 leader self-inflicted failure.',
   'AUDIT completions: spot-check a few terminalCompletionRefs (work_items:get) for real evidence — files touched, the exact test run + its result — not just a status flip.',
   // su-loop-capability-parity P-006: the wave-close rubric-graded scorecard folded into the
@@ -223,7 +225,7 @@ export function renderMemberBaseline(opts: { fleetSlug: string; plan: string; co
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, working plan \`${plan}\`. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    'Your loop, until nothing is claimable: **claim** the highest-priority unclaimed non-terminal item (`work_items:claim_next`) → **read** it fully (`work_items:get`) → **classify + act** (real fix / already-fixed-close / genuinely-blocked) → drive it to a **terminal** state with evidence → repeat.',
+    'Your loop, until nothing is claimable: **pull** your next item with `scheduler:get_next` → **read** it fully (`work_items:get`) → **classify + act** (real fix / already-fixed-close / genuinely-blocked) → drive it to a **terminal** state with evidence → repeat. Pull with `scheduler:get_next`, NOT `work_items:claim_next`: your leader steers WHICH item via your claim-spec (`scheduler:set_claim_spec`); with no spec set it is the same priority/oldest-first order as before and also covers the bug/change/task backlog (shared floors). Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader\'s judgment expressed as your spec, the PICKUP is yours (the bee blackboard model).',
     '',
     '## Non-negotiables',
     rules,
