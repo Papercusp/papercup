@@ -52,6 +52,16 @@ export interface OwnerKeyHealthDeps {
   warn: (msg: string) => void;
   /** Owner-facing escalation (coord broadcast + toast). Best-effort. */
   escalate: (ref: OwnedHiveKeyMissingRef, summary: string) => Promise<void>;
+  /**
+   * Cross-restart dedup floor: was this hive already alerted within the cooldown
+   * window, in THIS or a PRIOR operator process? Default: a persistent toast_log
+   * read. The in-memory `signaled` set below dedups within one process, but it
+   * RESETS on every operator restart — so on a box that restarts often a
+   * persistently-dark hive would re-alert on every boot. This persistent check
+   * makes the alert fire once per window, not once per restart. Best-effort +
+   * fail-open (see defaultRecentlyAlerted).
+   */
+  recentlyAlerted?: (ref: OwnedHiveKeyMissingRef) => Promise<boolean>;
 }
 
 function dedupKey(workspaceId: string, hiveSlug: string): string {
@@ -88,10 +98,49 @@ async function defaultEscalate(ref: OwnedHiveKeyMissingRef, summary: string): Pr
   }
 }
 
+/**
+ * How long a prior owner-key-missing toast suppresses a re-alert for the SAME
+ * hive. Bridges operator-restart churn: the in-memory `signaled` set resets on
+ * every restart, so without this a persistently-dark hive re-alerts on every
+ * boot (the noise this module was created to prevent, defeated by frequent
+ * dev-box restarts). A still-dark hive re-surfaces once per window.
+ */
+const RE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+/**
+ * The default cross-restart dedup floor: has an owner-key-missing toast for this
+ * hive been written within RE_ALERT_COOLDOWN_MS, in THIS or a PRIOR process?
+ * Reads the persistent `toast_log` — the SAME rail defaultEscalate writes — so
+ * the suppression survives the in-memory singleton's restart reset.
+ *
+ * Fail-OPEN: any error (PG not ready this early in boot, query failure) returns
+ * false → the alert proceeds. A missed suppression costs one extra toast; the
+ * in-memory dedup still guards within a process. We never fail CLOSED (that
+ * would risk silently swallowing a real owner-key-missing alert).
+ */
+async function defaultRecentlyAlerted(ref: OwnedHiveKeyMissingRef): Promise<boolean> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const cutoff = Date.now() - RE_ALERT_COOLDOWN_MS;
+    const rows = await sql/* sql */ `
+      select 1
+        from harness_shared.toast_log
+       where message = 'Hive owner key missing'
+         and harness_slug = ${ref.hiveSlug}
+         and created_at > ${cutoff}
+       limit 1`;
+    return rows.length > 0;
+  } catch {
+    return false; // fail-open — never swallow a real alert on a transient read error
+  }
+}
+
 const defaultDeps: OwnerKeyHealthDeps = {
   // eslint-disable-next-line no-console
   warn: (msg: string) => console.warn(msg),
   escalate: defaultEscalate,
+  recentlyAlerted: defaultRecentlyAlerted,
 };
 
 /**
@@ -107,7 +156,20 @@ export async function signalOwnedHiveKeyMissing(
 ): Promise<boolean> {
   const d = { ...defaultDeps, ...deps };
   const k = dedupKey(ref.workspaceId, ref.hiveSlug);
-  if (signaled.has(k)) return false; // already escalated; suppress until recovery
+  if (signaled.has(k)) return false; // already escalated THIS process; suppress until recovery
+
+  // Cross-restart dedup: the in-memory `signaled` set above resets on every
+  // operator restart, so a persistently-dark hive would re-alert on each boot.
+  // Gate on a PERSISTENT check (the toast_log) so the owner is alerted once per
+  // cooldown window, not once per restart. Recovery still re-arms the in-process
+  // set immediately (clearOwnedHiveKeyHealth) — this floor only rate-limits how
+  // often a still-dark hive re-surfaces. Fail-open, so it never swallows a real
+  // alert. Cache the outcome in-process so we don't re-query on every reconcile.
+  const recentlyAlerted = d.recentlyAlerted ?? defaultRecentlyAlerted;
+  if (await recentlyAlerted(ref).catch(() => false)) {
+    signaled.add(k);
+    return false;
+  }
   signaled.add(k);
 
   const summary =

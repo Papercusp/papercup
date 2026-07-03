@@ -25,7 +25,7 @@ that other agents then tripped over for hours.
 The DBOS invoke path wraps every spawned run in a hard timeout:
 
 ```ts
-// packages/operator-core/lib/dbos/orchestrator-runner.ts:94-95
+// packages/operator-core/lib/dbos/orchestrator-runner.ts:96-97
 export const invokeTimeoutMs = (): number =>
   Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 2_700_000);
 ```

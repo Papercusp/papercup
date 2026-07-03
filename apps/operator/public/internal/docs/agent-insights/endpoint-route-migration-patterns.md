@@ -66,3 +66,28 @@ if any raw `route.ts` exists under `app/api/**` outside the
 `[[...route]]` host-seam floor. That catches a re-introduced route
 regardless of contents — strictly better than a contents-matching ESLint
 rule. Wire it into CI next to `tsc`.
+
+Two hardening fixes landed 2026-07-03, both worth knowing if you touch this
+script again:
+
+* **A clean checkout with the migration 100% complete has NO `app/api` dir at
+  all** (git doesn't materialize a directory with zero tracked files) — the
+  script used to shell out to `find "$API" …` unconditionally, and `find` on a
+  missing path exits non-zero, which threw out of the wrapping `execSync` and
+  crashed the whole script (a false RED on the isolated green-checkpoint
+  checkout, which is exactly the fully-migrated end state this script exists
+  to celebrate). It now `existsSync(API)`-guards first and treats a missing
+  dir as zero remaining routes, not an error.
+* **The migrated-count barrel path was relative and silently wrong after the
+  barrel moved.** It resolved the `defineRoute` registry barrel as
+  `join(API, '../../lib/endpoint-route/routes/index.ts')` — a path relative to
+  `app/api` that broke the moment the barrel moved to
+  `packages/operator-core/lib/endpoint-route/routes/index.ts` (the
+  operator-core extraction), and the `catch` around the read **swallowed the
+  error and reported `migratedCount: 0`** instead of surfacing the stale path.
+  The barrel is now resolved absolutely from `REPO`
+  (`packages/operator-core/lib/endpoint-route/routes/index.ts`), and a failed
+  read prints a loud `WARNING` naming the path it tried, rather than quietly
+  reporting zero progress. (This only affects the progress *count* the script
+  prints — the `--check` non-zero-on-regression enforcement above was never
+  affected by the barrel-read failure.)

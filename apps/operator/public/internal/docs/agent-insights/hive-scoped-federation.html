@@ -137,6 +137,20 @@ departed member (see <code dir="auto">shared-hive-join-leave-lifecycle</code>).<
 harness, and the <code dir="auto">harness:create { hive }</code> create-time path
 (<code dir="auto">agent-tools/harness/create-hive-membership.ts</code>). Until something sets
 <code dir="auto">hive_slug</code>, a Hive has only its home and no members.</p>
+<p><strong>Boot-storm robustness (2026-07-03, WI-1892/P-059).</strong> <code dir="auto">boot-all.ts</code>’s
+<code dir="auto">bootSingleHarness</code> races each harness’s boot against a timeout (default 30s, now
+operator-tunable via <code dir="auto">PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS</code>) — but a timed-out race
+does NOT unwind the underlying <code dir="auto">bootHarness</code>: it keeps running detached, holding
+the corestore lock and (once it gets there) the joined swarm topic with no
+registered handle, so peers see a zombie endpoint that answers announces but never
+drains/replicates. Live-observed on a 35-substrate boot storm: 16/35 harnesses on
+one bg-host stuck this way. Until true cancellation lands, the raced boot promise
+is now retained and, if it settles AFTER the timeout, <strong>adopted</strong> — the handle is
+registered and the send-side wired exactly as the happy path would — unless a
+newer boot for the same key already won, in which case the late one is closed to
+release its corestore. Relevant here because this is the same boot path the
+per-Hive admission union (above) runs inside; a zombied boot under a large Hive
+(many member harnesses booting at once) is exactly the failure mode this guards.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="track-a--coord-content--presence">Track A — coord content + presence</h2><a class="sl-anchor-link" href="#track-a--coord-content--presence"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Track A — coord content + presence”</span></a></div>
 <ul>
 <li><strong>Content (messages / conversations / threads / work / plans / settings)</strong> rides
@@ -151,7 +165,18 @@ substrate handle returns, <strong>gated on a joined swarm</strong> (a private ha
 peers → returns <code dir="auto">null</code>). Each announce is <strong>stamped with the harness’s home
 <code dir="auto">hive_slug</code></strong> (resolved once via <code dir="auto">hiveHomeSlugForHarness</code>) and projected into
 <code dir="auto">shared_presence.hive_slug</code> (mig 187) — which is exactly what the Hive lock
-authority elects over.</li>
+authority elects over.
+<ul>
+<li><strong>2026-07-03 (P-301):</strong> each announced session is now also stamped with
+<code dir="auto">fleet_slug</code>/<code dir="auto">fleet_role</code>, batch-resolved via <code dir="auto">fetchPresenceFleet(ownerIds)</code>
+(one lookup for the whole announce, not N) and folded into the dedup hash
+alongside <code dir="auto">owner_id</code>/<code dir="auto">intent</code>/<code dir="auto">plan_slug</code>. This is what lets <code dir="auto">@fleet:&#x3C;slug></code>
+pattern-awaits and fleet-membership lookups resolve a fleet’s members <strong>across
+machines</strong> over the same Hive-federated presence channel — best-effort (a
+lookup failure just leaves <code dir="auto">fleet_slug</code>/<code dir="auto">fleet_role</code> null; it never fails the
+announce).</li>
+</ul>
+</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="track-b--lock-authority-is-the-hives-p-009">Track B — lock authority is the HIVE’s (P-009)</h2><a class="sl-anchor-link" href="#track-b--lock-authority-is-the-hives-p-009"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Track B — lock authority is the HIVE’s (P-009)”</span></a></div>
 <p>File-claim / claim-lease mutual exclusion can’t ride the eventually-consistent
@@ -436,4 +461,4 @@ described an env gate with code-default-off, both stale — corrected by P-024).
 <p>See also: <code dir="auto">substrate-write-side-stack</code>, <code dir="auto">workspace-id-pin-and-harness-membership</code>,
 <code dir="auto">phase1b-federation-limitations</code>, <code dir="auto">vm-federation-separate-machine-proof</code> (why
 cross-machine needs two physical boxes), <code dir="auto">packaged-two-instance-federation-merge</code>
-(the cross-machine substrate proof), and the plan <code dir="auto">shared-hive-federation-2026-06-08</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-03T13:49:02.000Z">Jul 3, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/scope-rename-grep-misses-config-strings.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">npm-scope renames: import-grep misses the references that break fresh builds</span> </span> </a> <a href="/internal/docs/agent-insights/starlight-migration-2026-05-20.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">fumadocs → Starlight migration (2026-05-20)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+(the cross-machine substrate proof), and the plan <code dir="auto">shared-hive-federation-2026-06-08</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-03T18:16:22.000Z">Jul 3, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/scope-rename-grep-misses-config-strings.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">npm-scope renames: import-grep misses the references that break fresh builds</span> </span> </a> <a href="/internal/docs/agent-insights/starlight-migration-2026-05-20.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">fumadocs → Starlight migration (2026-05-20)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

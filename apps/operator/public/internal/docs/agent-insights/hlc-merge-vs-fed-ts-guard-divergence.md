@@ -7,8 +7,9 @@ Why two federated cells can "converge" to DIFFERENT values — the merge winners
 
 A federated write goes through **two** ordering decisions, and they must agree:
 
-1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` →
-   `lwwPick`/`beatsStored`, both defined in `projection.ts`) — since P-010 this
+1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogs`, whose
+   `beatsStored` comparator — defined in `read-merge.ts` as a hand-mirror of
+   `projection.ts`'s `lwwPick` — decides winners) — since P-010 this
    orders by the op's **HLC** when
    both ops carry one, else falls back to wall-clock `ts`.
 2. **The PG projection LWW guard** (`harness-features.ts` etc.) — the

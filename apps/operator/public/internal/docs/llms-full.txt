@@ -1611,16 +1611,26 @@ The wake handle is stamped at **registration** (your coord SID → `adv_sessions
 
 Delivery is durable (PG queue, at-least-once + idempotent wake): a host restart re-claims stuck deliveries; a missed lock-grant NOTIFY is re-derived from waiter-table truth each 30s sweep.
 
+A **cold-loop** wake (a `loop:arm` session PG-parked with its context already reset to a carry-note, not a live/resumable process) is injected via `injectPsuHost` with the note run through `renderColdWakeInjection` (`packages/operator-core/lib/su-cold-loop.ts`) — the injected text frames the carry-note as the agent’s entire working state AND tells it to refresh the note with `loop:checkpoint` before ending the turn (or call `loop:end` if done/blocked), so a cold wake can’t silently go stale after one cycle.
+
 ## Finding the key — `events:catalog` + sugar verbs (2026-07-03)
 
 [Section titled “Finding the key — events:catalog + sugar verbs (2026-07-03)”](#finding-the-key--eventscatalog--sugar-verbs-2026-07-03)
 
 The primitive’s remaining friction was **discoverability**, not mechanics: agents kept polling (`dev:pipeline_position`, `dev:build_status`, re-reading a peer’s status) because they never found the event key that already fires. `event-await-discoverability-and-coverage-2026-07-03` closes that gap with two additions layered on top of the same `registerAwait` path — neither is a second subscription system:
 
-* **`events:catalog`** renders the awaitable-key registry (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each row names the family, the key template + a ready `events:await` example, who emits it, whether it fires **today** (`awaitable_now` — some Phase-2 keys are catalogued but not yet wired), the poll it replaces, and its sugar verb. Check it *before* you poll.
+* **`events:catalog`** renders the awaitable-key registry (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each row names the family, the key template + a ready `events:await` example, who emits it, whether it fires **today** (`awaitable_now`), the poll it replaces, and its sugar verb. Check it *before* you poll. As of this doc’s last verify every catalogued key is landed (`exists: true` / `awaitable_now: true` for the whole table — the Phase-2 keys that were still “catalogued but not wired” (`plan-item:done:<id>`, `claim:released:<id>`, `fleet:drained:<slug>`, `service:up|down:<name>`, `session:compacted:<owner>`) all fired their emitters since); `awaitable_now` stays the field to check for any *future* addition still being wired, not a currently-true caveat.
 * **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) — `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`, `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers that build the correctly-shaped key from the catalog and then call the exact same `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy, checkpoint) arm both the success and failure keys at once since the two are mutually exclusive, so the agent wakes either way with no double-wake risk.
 
 Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your turn. This does not change the delivery ladder or cost discipline below — it’s purely a findability layer over the same primitive.
+
+## Pattern awaits — wake on a FAMILY, not one key (P-201, 2026-07-03)
+
+[Section titled “Pattern awaits — wake on a FAMILY, not one key (P-201, 2026-07-03)”](#pattern-awaits--wake-on-a-family-not-one-key-p-201-2026-07-03)
+
+`events:await { event }` also accepts a **pattern**, not just an exact key (`packages/operator-core/lib/events/await/pattern.ts`): a raw glob (`work-item:done:*`, `service:up:*` — `*` matches any run of characters) or a friendly macro — `@plan:<slug>` expands to `plan-item:done:<slug>:*` (any item in that plan finished), `@fleet:<slug>` expands to `fleet:*:<slug>` (any fleet event for that slug). `isPattern`/`expandPatternMacro` classify and expand at registration (`events:await.ts`); `assertUsablePattern` rejects a too-broad glob (fewer than 3 literal, non-`*`/`:` characters) so nobody accidentally wakes on nearly every emit. One await now covers “any lane item finished” instead of N one-per-item awaits.
+
+Matching reuses `@papercusp/rules`’ mingo-backed `matches` operator — the same leaf evaluator the ECA reaction engine’s `when` uses — so pattern semantics stay consistent with rule conditions rather than a second hand-rolled matcher (`keyMatchesPattern` in `pattern.ts`). `store.fireAwaitsForKey` fetches the small set of ACTIVE pattern rows (`event_key LIKE '%*%'`, partial-indexed by `event_awaits_pattern_active`, migration 480) on every emit and matches them against the fired key in JS; a matching one-shot pattern claims atomically (mirrors the exact-key once-row claim — a race between two matching emits can never double-fire the same registration), a matching standing pattern fires without consuming. A pattern await is itself one-shot by default: it wakes on the FIRST matching key, then you re-register if you want the next match too.
 
 ## The patterns
 
@@ -1644,8 +1654,8 @@ A wake = a re-invocation = a turn = tokens. Hence: `notify` is the default and n
 [Section titled “Gotchas”](#gotchas)
 
 * **Workspace scoping is normalized.** Awaits/deliveries live in the ONE coord workspace regardless of your identity’s scoping — an early build registered ’\*‘-scoped awaits that never matched system emits. Event keys embed globally-unique ids, so one namespace is collision-free by construction.
-* **Exact-key match, no globs.** `events:await` matches the literal string.
-* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`); the awaitable-key registry is `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` + every sugar verb read from); the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
+* **Exact key by default; glob/macro only if you opt in (P-201).** A plain key (`work-item:done:WI-12`) matches only the literal string, same as before. `*` or a leading `@` makes it a **pattern** (see “Pattern awaits” above) — don’t put a literal `*` in an exact key, it will be parsed as a wildcard.
+* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`; migration 480: the partial index backing pattern candidate lookups); the awaitable-key registry is `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` + every sugar verb read from); pattern matching is `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
 
 # Bare "fetch failed" spawn failures = loopback retry swallowing undici UND_ERR_* codes during restarts
 
@@ -2754,6 +2764,19 @@ A 2026-06-26 audit of `harness_shared.tool_invocations` found near-zero *organic
 1. **A role gate** excluded worker-tier roles (fixed: `agentRoles: [...AGENT_ROLES]`).
 2. **The structural nudge fired on the wrong pattern.** The original inline nudge triggered only on **same-tool ≥3×** in a session. But among multi-call SU spawns (≥4 calls), only \~**33% (bee) / \~28% (queen)** *have* a same-tool-≥3× pattern — the other \~70% are **many-distinct-tools-once fan-outs** (`get` here, `search` there, `list` somewhere else). The nudge was structurally **blind** to the dominant batchable shape. It was also **one-shot** (ignore once → never again) and gave the agent **no felt cost** (an LLM never experiences the token price of N round-trips).
 
+### The 2026-07-03 finding: the fleet was STRUCTURALLY locked out
+
+[Section titled “The 2026-07-03 finding: the fleet was STRUCTURALLY locked out”](#the-2026-07-03-finding-the-fleet-was-structurally-locked-out)
+
+A follow-up audit (`code-run-self-state-adoption-2026-07-03`) explained why fleet adoption stayed **zero** even after the fixes above: the fleet could not *reach* the tool at all. Layered lockout:
+
+1. **Seeded kits omitted it.** `code:run` (and `recipes:*`, `tools:find`, `tools:invoke`) was absent from `BEE_MCP_TOOL_NAMES` / `QUEEN_MCP_TOOL_NAMES` in `orchestrator/src/invoke.ts` — and the `*_ALLOWED_TOOLS` allowlists derive from those kits, so the omission was also an authorization denial. \~98% of bee spawns had a batchable shape; **0** could act on it.
+2. **Capability envelopes denied the queen** `capability:bash` (code:run’s requirement) and `intel:read` (recipes:search) — see `role-principal-caps.ts`. 59×/14d recipes denials at orient, silently.
+3. **The su CORE spine omitted it too**, so trimmed seeded surfaces read the prose nudge’s “when code:run is in your toolset” self-gate as *not in my toolset* and switched themselves off.
+4. **The inline nudge fired at agents who couldn’t comply** (role-membership check only — no envelope check, no surface check), escalating banners at a dead end.
+
+All four layers were fixed on 2026-07-03: kits + CORE spine carry the batching set (with `tools:find`/`tools:invoke` as the reachability hatch so a future kit omission degrades to discovery, not a dead end), caps granted, and the nudge became surface-aware (below). **Lesson: adoption is gated by REACHABILITY before prompting — audit kit + caps + surface before tuning nudge wording.**
+
 ## What changed (the inline nudge)
 
 [Section titled “What changed (the inline nudge)”](#what-changed-the-inline-nudge)
@@ -2768,7 +2791,14 @@ It **re-fires on exponential backoff** (cooldown 4→8→16→32→64 calls) ins
 * `FLAGS.CODE_RUN_BATCH_NUDGE` — the same-tool trigger.
 * `FLAGS.CODE_RUN_FANOUT_NUDGE` — the new fan-out trigger (its **own** flag so it is an independent A/B knob).
 
-The hot path stays a ring push; `getFlag` is consulted only when a hint actually fires. The nudge is further scoped to `CODE_RUN_CAPABLE_ROLES` (a caller who can’t actually run `code:run` never sees a nudge to use it) — currently the full `AGENT_ROLES` set, in lockstep with `code:run`’s own gate, plus superusers (checked separately at the call site).
+The hot path stays a ring push; `getFlag` is consulted only when a hint actually fires.
+
+**Surface-aware since 2026-07-03** (P-004): the old gate was role-membership only, so envelope-denied roles and sessions whose seeded surface lacked `code:run` were nudged — escalating banners included — toward a tool they could not call. Now:
+
+* `canRoleActOnCodeRun(role)` = role ∈ `CODE_RUN_CAPABLE_ROLES` **AND** the role’s `ROLE_ENVELOPES` entry does not deny `capability:bash` — the envelope deny is folded in, so overwatch/sentinel-style denied roles are never nudged.
+* `codeRunInSurface` (computed at the `_mcp-handler` call site from `getSessionSurface`): when the live seeded surface lacks `code:run`, the hint text switches to the **activate-first** variant (`ACTIVATE_PATH_NOTE` — `tools:find` / `tools:invoke { name:"code:run" }`) instead of advising an uncallable tool.
+
+**Every fire is recorded** (P-005, `code-run-nudge-telemetry.ts`, migration `482` `harness_shared.code_run_nudge_fires`): one narrow row per hint (session key, role, kind, tool) — fire-and-forget, warn-once, never blocks the hot path. That makes the **nudge→conversion funnel** a first-class read: `dev:code_run_adoption` returns `nudge: { nudgedSessions, convertedSessions }` (canonical SQL: `NUDGE_CONVERSION_SQL`, an EXISTS join against `tool_invocations` by spawn\_id/run\_id after the session’s first fire). Before this, the A/B flags existed but fires were invisible — you could ablate the nudge yet never measure whether a nudged session actually converted.
 
 > `code-run-batch-nudge.ts` also exports a third, unrelated nudge — `maybeOrientDedupNudge` (flag `FLAGS.ORIENT_DEDUP_NUDGE`) — which catches a session re-fetching data `coord:orient` already returned within `ORIENT_DEDUP_WINDOW_MS`. It lives in the same module for the shared per-session tracking state, but it is a different metric with its own doc and production-telemetry queries: [`measuring-code-run-adoption.mdx`](/agent-insights/measuring-code-run-adoption/)’s “Production telemetry” section (metric #3, `dev:orient_dedup_rate`). This doc stays scoped to `code:run` itself.
 
@@ -2776,9 +2806,18 @@ The hot path stays a ring push; `getFlag` is consulted only when a hint actually
 
 [Section titled “The adoption metric”](#the-adoption-metric)
 
-`code-run-adoption.ts` makes “are agents batching?” a first-class read. A spawn is a **batchable opportunity** when it fired one tool ≥3× *or* touched ≥4 distinct tools (batch tools excluded) — the **same thresholds the nudge uses, imported**, so metric and nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run` ÷ opportunity-spawns: *of the spawns that could have batched, how many did.*
+`code-run-adoption.ts` makes “are agents batching?” a first-class read. A spawn is a **batchable opportunity** when it fired one tool ≥2× *or* touched ≥3 distinct tools (batch tools excluded) — the **same thresholds the nudge uses, imported**, so metric and nudge can never drift. **adoptionRate** (per role/day) = opportunity-spawns-that-also-used-`code:run` ÷ opportunity-spawns: *of the spawns that could have batched, how many did.*
+
+**Metric hygiene (2026-07-03, P-006)** — three denominator poisons fixed in `CODE_RUN_ADOPTION_SQL` + `spawnRowsFromCalls`:
+
+* `transport = 'mcp'` — UI HTTP polling is not agent traffic (see the denominator warning in [measuring-code-run-adoption](/agent-insights/measuring-code-run-adoption/)).
+
+* `spawn_id IS NOT NULL` — NULL spawn\_ids otherwise collapse into one mega-”spawn” that always counts as an opportunity.
+
+* **Poller tools excluded** (`POLLER_TOOL_NORMS`, currently `activityrecent`): a UI poller calling `activity:recent` twice manufactured a fake same-tool “opportunity” \~87k times/7d. Fleet adoption read **0.26%** before the fix and **\~22%** after — same fleet, honest denominator.
 
 * `computeCodeRunAdoption(rows)` / `summarizeSpawnAdoption(...)` — pure, unit-tested.
+
 * `readCodeRunAdoption(runQuery, { sinceDays })` — runs `CODE_RUN_ADOPTION_SQL`.
 
 ### Run it live (dev:pg\_query)
@@ -2812,7 +2851,7 @@ The `PROMPT_ABLATION` rail ablates SU-playbook **prose** rules — it does **not
 
 [Section titled “Gotcha — keep the metric and the nudge in lockstep”](#gotcha--keep-the-metric-and-the-nudge-in-lockstep)
 
-The opportunity definition lives **once**: `isBatchableSpawn` imports `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` from the nudge module, and `CODE_RUN_ADOPTION_SQL` mirrors the same `normalize()` + excluded-batch-tool set inline. If you change a threshold or the excluded set in the nudge, update the SQL’s literal `IN (...)` list to match (the unit test pins the at-threshold boundary, but the SQL’s literal list is not type-checked against the TS set).
+The opportunity definition lives **once**: `isBatchableSpawn` imports `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` from the nudge module, and `CODE_RUN_ADOPTION_SQL` mirrors the same `normalize()` + excluded-batch-tool set inline. If you change a threshold, the excluded-batch-tool set, or the poller-exclusion set (`POLLER_TOOL_NORMS`) in the TS, update the SQL’s literal `IN (...)` lists to match (the unit test pins the at-threshold boundary, but the SQL’s literal lists are not type-checked against the TS sets). The SQL also carries the `transport='mcp' AND spawn_id IS NOT NULL` filters — keep them if you fork the query, or the denominator re-poisons.
 
 # code:run — when to reach for it, worked exemplars, and the measured payoff
 
@@ -3066,7 +3105,7 @@ Superseded — one named example is now wrong
 The runbook below is overwhelmingly still correct (the `format:` marker, the `_meta` envelope, the negotiation knobs, and the lossless round-trip fallback all still hold). But the specific claim that **`audit:list` reliably arrives as TOON** (in “The lossless guarantee”, below) is now **false**:
 
 * `audit:list` is registered as a **Tier-3 headerless-CSV** tool (`read: 'csv'`) in `packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts:52`. Its summary mode returns exactly `{id,ts,actor,action,subject}` (flat), so in compact mode it self-presents as **headerless CSV** — `format: csv\n[N]\n…rows` — not TOON.
-* The Tier-3 read path **takes precedence** over the generic TOON-auto path: `libs/generic/tooldef/src/serialize-result.ts:191` (`const chosen = tier3 ? { ...tier3, fallback: false } : chooseFormat(data, opts);`), where `tryTier3Read` (lines 151–168) returns `format: 'csv'` for a registry tool whose `readPrePromptFormat` is `'csv'` once the request resolves to compact.
+* The Tier-3 read path **takes precedence** over the generic TOON-auto path: `libs/generic/tooldef/src/serialize-result.ts:280` (`const chosen = tier3 ? { ...tier3, fallback: false } : chooseFormat(data, opts);`), where `tryTier3Read` (lines 198–215) returns `format: 'csv'` for a registry tool whose `readPrePromptFormat` is `'csv'` once the request resolves to compact.
 
 The **general principle** still holds (flat/uniform list tools get a compact format); only the named tool and its claimed format (TOON) are wrong. Treat `audit:list` as headerless CSV.
 
@@ -3912,7 +3951,7 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 * **`pg_notify` is OK** for “wake up and re-read state” patterns — e.g., a UI subscribing to row changes. Not for command dispatch.
 * **If you find yourself writing a polling loop**, stop and ask whether the right answer is an HTTP call or an SSE subscription.
 
-**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `store.setPeerGrant`/`store.revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change.
+**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `store.setPeerGrant`/`store.revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change. `endpoint-route/routes/agent-mcp/p2p-allotment-set.ts` (the `/res` Resources-board owner write path, P-201) is a second instance of the same shape: `set`/`remove` persist to the `p2p/resource-allotments` store, then a **name-only** `notifySyncInvalidate('p2p.allotments')` fires (no args — the board reads with none, so an args-scoped emit would never match a subscriber, per the adding-a-sync-query gotcha).
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
@@ -5523,6 +5562,7 @@ export DATABASE_URL=$(tr '\0' '\n' < /proc/$(systemctl --user show papercup-bg-h
 * **“Prompt is too long” is NOT a 429 / gateway stall.** As of `autonomous-loop-hardening` F1, a prompt-length death classifies `context_overflow` (a LAUNCH-CONFIG bug — too many tokens loaded, e.g. an unscoped MCP toolset on a small-context model), recorded distinctly from `capacity_shed`/`infra_loss`. See `packages/operator-core/lib/fleet/invoke-outcome.ts`. If overwatch (or any spawn) dies this way, fix the **tool-scoping** (`OVERWATCH_MCP_TOOL_NAMES` in `libs/papercusp/packages/orchestrator/src/invoke.ts`), not gateway capacity.
 * **A “rate limit” is usually account-routing, not real capacity.** Verify with `accounts:status` + `dev:rate_governor_status` before concluding you’re capacity-gated — other accounts usually have headroom (`agent-insights/rate-limit-is-usually-account-routing-not-capacity`).
 * **The recorded error is authoritative — read it first.** `autoloop_state.last_status` (and the work-item’s error) already carries the verbatim failure. Don’t go log-spelunking `.out` files (often stale / wrong-tree) before reading the recorded status (audit W3).
+* **A `CHRONIC autoloop failure: loop-su-…` EI is usually ALREADY self-resolved by the time you read it.** These are auto-filed by the chronic-failure escalator (`autoloop-chronic-failure.ts`) at `consecutive_errors >= 6`. The common cause is a **dead-owner loop** — the pinned warm su-session died, so every fire stuck-backstops. The WI-1399 dead-owner terminal guard (`loop-unreachable-guard.ts`) then auto-pauses the routine (`routines.active=false`, `last_status='loop-terminal-unreachable'`), but only after its \~4h window — *later* than the escalator’s \~3h fire, so the EI is filed in the pre-termination window and self-resolves. **Before touching anything, verify it’s already dead:** (1) the routine `active=false` (`SELECT active FROM harness_shared.routines WHERE name=<role> AND workspace_id=<ws>`), and (2) the owner `adv_session` actually `ended_at` and never restarted (confirms the terminal-unreachable verdict was correct, not a false kill). If both hold, the reported live-failure condition is GONE — a dead-owner loop *should* be dead. Close the hygiene with `autoloop:control reset-errors` (or a targeted single-row `consecutive_errors=0` UPDATE for a `*`-scoped brain row the tool can’t target). Once `active=false`, the (twice-hardened) watchdog already **skips** the row (skipped-paused), so it will NOT re-escalate. The **durable class fix** (stop the escalator firing for a dead-owner loop the terminal guard is about to own) touches the self-improvement watchdog + routines scheduler = protected surface — it is tracked as a `change` (EI-7016), not an auto-implement; don’t re-file per-loop dupes.
 
 # Dropping a harness_shared column — the 4-place procedure
 
@@ -5890,6 +5930,11 @@ Old tests imported `{ GET, POST }` from `./route` and called them with a fake `N
 [Section titled “Enforcement is a script, not a lint rule”](#enforcement-is-a-script-not-a-lint-rule)
 
 `apps/operator/scripts/endpoint-route-progress.mjs --check` exits non-zero if any raw `route.ts` exists under `app/api/**` outside the `[[...route]]` host-seam floor. That catches a re-introduced route regardless of contents — strictly better than a contents-matching ESLint rule. Wire it into CI next to `tsc`.
+
+Two hardening fixes landed 2026-07-03, both worth knowing if you touch this script again:
+
+* **A clean checkout with the migration 100% complete has NO `app/api` dir at all** (git doesn’t materialize a directory with zero tracked files) — the script used to shell out to `find "$API" …` unconditionally, and `find` on a missing path exits non-zero, which threw out of the wrapping `execSync` and crashed the whole script (a false RED on the isolated green-checkpoint checkout, which is exactly the fully-migrated end state this script exists to celebrate). It now `existsSync(API)`-guards first and treats a missing dir as zero remaining routes, not an error.
+* **The migrated-count barrel path was relative and silently wrong after the barrel moved.** It resolved the `defineRoute` registry barrel as `join(API, '../../lib/endpoint-route/routes/index.ts')` — a path relative to `app/api` that broke the moment the barrel moved to `packages/operator-core/lib/endpoint-route/routes/index.ts` (the operator-core extraction), and the `catch` around the read **swallowed the error and reported `migratedCount: 0`** instead of surfacing the stale path. The barrel is now resolved absolutely from `REPO` (`packages/operator-core/lib/endpoint-route/routes/index.ts`), and a failed read prints a loud `WARNING` naming the path it tried, rather than quietly reporting zero progress. (This only affects the progress *count* the script prints — the `--check` non-zero-on-regression enforcement above was never affected by the barrel-read failure.)
 
 # Engine-managed loops — the tracked /loop replacement for su sessions
 
@@ -6998,18 +7043,26 @@ cd papercusp-desktop/scripts/linux-test-vm
 
 [Section titled “5. The scheduled gate (live-federation-gate.sh)”](#5-the-scheduled-gate-live-federation-gatesh)
 
-`papercusp-desktop/bin/live-federation-gate.sh` runs the smokes on a schedule on a quiet box and files an EI on any RED (the green-rig/red-binary guard, WI-261). It:
+`papercusp-desktop/bin/live-federation-gate.sh` runs the smokes on a schedule on a quiet box and files an EI on any RED (the green-rig/red-binary guard, WI-261/P-013). It:
 
 * runs a **hermetic \~2s assert-core self-test first** (WI-754: `bin/lib/federation-asserts.selftest.sh` — proves the port-discovery logic before spending minutes on smokes; a fail exits `GATE: RED` with a clear message). Set `GATE_SKIP_SELFTEST=1` to skip it.
-* **SKIPs (not fails)** when 1-min load exceeds `LOAD_GATE` (default 15) — the smokes get killed under load and false-RED below the kill threshold. Better to skip and retry next window than false-RED or pile onto a busy box.
+* **SKIPs (not fails)** when 1-min load exceeds `LOAD_GATE` — the smokes get killed under load and false-RED below the kill threshold. Better to skip and retry next window than false-RED or pile onto a busy box. **`LOAD_GATE` is now core-aware (2026-07-03, P-013):** `max(15, 3*nproc/8)` — an absolute `15` never fired on the 128-core fleet box (it sat well below the box’s ordinary operating load), reproducing the exact “gate never runs” class P-013 exists to kill; a first core-aware cut at `nproc/4` *still* undershot the observed fleet-era floor (35-46). If a mid-run load spike pushes the 1-min load above the new `STORM_GATE` (default `nproc*0.6`) by the time the verdict is computed, a would-be FAIL is **downgraded to `SKIPPED-STORM`** (no EI filed) instead of a false-RED — the exact failure mode a load-94 fleet storm caused before this existed.
+* **Fresh-exit + staleness guard (2026-07-03, P-013):** a GREEN younger than `GATE_SUCCESS_TTL_H` (default 22h) makes the NEXT window’s run a no-op exit before the self-test even runs (hourly timer, \~daily actual smoke run). If no GREEN has landed in `GATE_STALE_DAYS` (default 3) — every window either load-skipped, storm-downgraded, all-legs-skipped, or failed — the gate files a **loud staleness EI** itself: silence must never look like green. Set `GATE_FORCE=1` to ignore the freshness TTL and force a run now (still storm-downgrade-protected if the box saturates mid-run).
+* **EI filing now requires a superuser bearer** (2026-07-03, WI-1841 follow-up to WI-1861): `?superuser=1` on the MCP URL alone is not sufficient — the handler also needs `Authorization: Bearer <token>` matching `~/.papercusp/superuser-token` (`GATE_SUPERUSER_TOKEN_PATH` overrides the path). A missing/short token degrades gracefully to log-only, same as before; it is not fatal.
+* **Build provenance is stamped** (2026-07-03, WI-1861): each rebuild logs the working-tree `HEAD` + dirty-file count, so a “torn-tree build” red (the shared checkout was mid-edit by a fleet peer at build time — unreproducible at the next build, byte-identical blueprints) is diagnosable instead of a mystery.
+* **`log()` now writes to stderr, not stdout** (2026-07-03, load-bearing P-013 fix): the verdict logic reads a smoke leg’s PASS/FAIL via `$(...)` command substitution, and with `log` on stdout the captured string became `"log-line\nPASS|FAIL"`, so `[ "$RES" = FAIL ]` could never match — a genuine content-matrix FAIL was silently masked out of every verdict until this fix. journald still captures both streams, so nothing is lost.
+* **The from-repo leg’s known-red is WI-971, not WI-259** — WI-259 was closed as a duplicate of WI-971 (outbox drain never wired for joined/created hive harnesses); WI-280/WI-1666 are resolved. A content-matrix FAIL whose only `✗` lines match the WI-971 backfill/incr-B→A signature is downgraded to `PASS-971` (not a clean pass — WI-971 remains open) rather than a red.
+* **A new `local-matrix` leg** (P-002, no-op until `bin/local-matrix.sh` exists) runs the full containerized 8-scenario matrix on a weekly cadence (`MATRIX_TTL_H`, default 144h), and only on a window whose content-matrix smoke already passed.
+* **All-legs-skipped is NOT recorded as green** — if load-gate/staleness logic let a window through but every leg still SKIPPED (e.g. `SKIP_MATRIX=1 SKIP_FROMREPO=1`), the gate now exits `GATE: SKIPPED (no legs ran)` rather than silently counting as a pass.
 
 Restart / re-run it manually on a quiet box:
 
 ```sh
 cd papercusp-desktop
 bin/reap-orphans.sh                                   # clear any prior debris first
-LOAD_GATE=20 bin/live-federation-gate.sh              # raise only for a dedicated/idle host
-GATE_NO_FILE=1 SKIP_FROMREPO=1 bin/live-federation-gate.sh   # log-only, skip the WI-259-RED leg
+LOAD_GATE=48 bin/live-federation-gate.sh              # raise only for a dedicated/idle host
+GATE_NO_FILE=1 SKIP_FROMREPO=1 bin/live-federation-gate.sh   # log-only, skip the WI-971-RED leg
+GATE_FORCE=1 bin/live-federation-gate.sh              # ignore the freshness TTL, force a run now
 ```
 
 It’s a routine — check / re-arm it via `routines:list` / `routines:set` (it does **not** push the live `:3070`; it builds + boots isolated instances).
@@ -7048,6 +7101,12 @@ Coordinate a restart
 
 A restart to force a swarm re-peer must be coordinated with whoever owns the live federation/self-heal work (FED-2) — don’t restart a peer another agent is actively investigating. The durable fix (persist/restore auth across restart + a loud no-identity health signal) is tracked in WI-757.
 
+### 6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)
+
+[Section titled “6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)”](#6b-loopback-smoke-gets-0-peer-dials--ambient-fleet-dht-env-leaking-in-2026-07-03)
+
+A different silently-local-only cause, specific to `fed_local_launch` / `fed_local_launch_sidecar` (`bin/lib/federation-asserts.sh`) launches on a **fleet shell**: fleet desktop sessions carry ambient `PAPERCUSP_DHT_HOST=<bridge-ip>` / `PAPERCUSP_DHT_BOOTSTRAP=<bridge-ip:port>` for the tower↔VM rig, and a loopback smoke that inherits either one swarm-binds/bootstraps on the bridge instead of the loopback DHT the smoke actually spun up — so peers never dial each other (0 `peer_connected` fleet-wide, found 2026-07-03). Both launch primitives now **force-empty** `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` before `"$@"` — a caller that *wants* either passes it explicitly in the trailing `VAR=val` args, which win over the forced-empty default. If you’re troubleshooting a hand-rolled smoke that calls these primitives directly and it can’t see its peer, check the calling shell’s environment for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` before suspecting the substrate.
+
 ## 7. Driving the live fed VMs — `fed.sh` (port self-discovery, WI-754)
 
 [Section titled “7. Driving the live fed VMs — fed.sh (port self-discovery, WI-754)”](#7-driving-the-live-fed-vms--fedsh-port-self-discovery-wi-754)
@@ -7074,18 +7133,19 @@ Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use `'d
 
 [Section titled “Quick reference”](#quick-reference)
 
-| symptom                                                                 | do                                                                      |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754) |
-| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                              |
-| one known run’s `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                        |
-| “API never came up” / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                 |
-| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                               |
-| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                             |
-| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                          |
-| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)           |
-| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)             |
-| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)            |
+| symptom                                                                 | do                                                                           |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754)      |
+| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                                   |
+| one known run’s `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                             |
+| “API never came up” / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                      |
+| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                                    |
+| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                                  |
+| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                               |
+| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)                |
+| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)                  |
+| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
+| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)                 |
 
 # Flag flips on PostHog-less boxes — MCP flags:set fails, the HTTP route works
 
@@ -7177,7 +7237,7 @@ Three bees died this way on 2026-06-11 (20:06, 20:19, 22:34). The 22:34 one was 
 The DBOS invoke path wraps every spawned run in a hard timeout:
 
 ```ts
-// packages/operator-core/lib/dbos/orchestrator-runner.ts:94-95
+// packages/operator-core/lib/dbos/orchestrator-runner.ts:96-97
 export const invokeTimeoutMs = (): number =>
   Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 2_700_000);
 ```
@@ -9428,19 +9488,19 @@ The su prompt is assembled by `renderSuPlaybook` on **both** paths — `su-bluep
 
 A common (and load-bearing) misread: “the Hive Queen RESUMES her prior session every wake (`claude --resume`), so she’s a forever-session with an unbounded growing transcript.” **This is wrong.** Verify before designing on it.
 
-The Queen’s **declared, event, watchdog, and manual wakes are ALL already fresh-per-wake** — each spawns a brand-new claude session with a fresh session id and **no carried transcript**. The ONLY path that `--resume`s the Queen is the *generic* wake-executor inbox/await delivery channel (a `coord:send` with `wake:true` to her owner id, or an `events:await` she registered — which her persona tells her not to use).
+The Queen’s **declared, event, watchdog, and manual wakes are ALL already fresh-per-wake** — each spawns a brand-new claude session with a fresh session id and **no carried transcript**. Historically the only path that `--resume`d the Queen was the *generic* wake-executor inbox/await delivery channel (a `coord:send` with `wake:true` to her owner id, or an `events:await` she registered — which her persona tells her not to use) — **that exception is now closed** (queen-brief-cache-assembly B-01/P-012, see Consequence below): `wake-executor.ts` detects a hive-operator session and routes even that path through the same fresh hive launch.
 
-## The wake paths (all FRESH except one)
+## The wake paths (ALL fresh — the last exception closed by P-012)
 
-[Section titled “The wake paths (all FRESH except one)”](#the-wake-paths-all-fresh-except-one)
+[Section titled “The wake paths (ALL fresh — the last exception closed by P-012)”](#the-wake-paths-all-fresh--the-last-exception-closed-by-p-012)
 
-| Path              | Trigger                                                             | Mechanism                                                                                                                                   | Session                        |
-| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| Time wake         | `hive:declare-wake {inSeconds}`                                     | `hive-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('hive')` → `POST /harness/:slug/invoke?bpkind=hive` | **FRESH**                      |
-| Event wake        | `hive:declare-wake {events}`                                        | reaction rule → `hive:wake` tool → `fireLaunchBlueprint('hive')` → same invoke route                                                        | **FRESH**                      |
-| Watchdog recovery | turn-end / boot / 30s tick (`watchdog.ts armFallbackHiveWake`)      | `declareHiveTimeWake` → same routine                                                                                                        | **FRESH**                      |
-| Manual / user     | `hive:wake`                                                         | `fireLaunchBlueprint('hive')` → same invoke route                                                                                           | **FRESH**                      |
-| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → `resumeCommandFor`                                                                            | `--resume` (the one exception) |
+| Path              | Trigger                                                             | Mechanism                                                                                                                                   | Session                                                           |
+| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Time wake         | `hive:declare-wake {inSeconds}`                                     | `hive-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('hive')` → `POST /harness/:slug/invoke?bpkind=hive` | **FRESH**                                                         |
+| Event wake        | `hive:declare-wake {events}`                                        | reaction rule → `hive:wake` tool → `fireLaunchBlueprint('hive')` → same invoke route                                                        | **FRESH**                                                         |
+| Watchdog recovery | turn-end / boot / 30s tick (`watchdog.ts armFallbackHiveWake`)      | `declareHiveTimeWake` → same routine                                                                                                        | **FRESH**                                                         |
+| Manual / user     | `hive:wake`                                                         | `fireLaunchBlueprint('hive')` → same invoke route                                                                                           | **FRESH**                                                         |
+| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `hive ·` label → `defaultFireHiveWake` → `fireLaunchBlueprint('hive')`            | **FRESH** (closed exception — was `--resume` before P-012 landed) |
 
 ### Where “fresh” is decided
 
@@ -9461,7 +9521,7 @@ The misread conflates three true-but-unrelated facts: (a) the BEE forced session
 [Section titled “Consequence”](#consequence)
 
 * The Queen ALREADY re-derives her working state from durable world-state every scheduled wake — and it works. Her load-bearing cross-wake state lives in durable artifacts (work-item claims, `blocked_by` edges, priorities, the `hive:declare-wake` routine, presence, the decision ledger), not the transcript.
-* To make the Queen **uniformly** fresh (close the one `--resume` path), the cutover is in `wake-executor.ts executeWake`: detect a hive-operator session by its `adv_sessions` label (`hive · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and route its ended-session wake through the SAME fresh hive launch (`fireLaunchBlueprint('hive')`, the wake text as kickoff) instead of `resumeCommandFor`. On fire-failure: PARK, never resume (the always-armed time/watchdog wake re-surveys). All other agents resume as before. (queen-brief-cache-assembly B-01 / P-012, channel `hive-fresh-wake`.)
+* **The cutover has now landed** — the Queen is **uniformly** fresh-per-wake; the “one exception” row in the table above is closed. `wake-executor.ts executeWake` detects a hive-operator session by its `adv_sessions` label (`hive · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its ended-session wake through the SAME fresh hive launch (`defaultFireHiveWake` → `fireLaunchBlueprint(HIVE_BLUEPRINT_ID, ...)`, the wake text as kickoff) instead of `resumeCommandFor` — so an inbox-wake or an `events:await` firing on an ended Queen session no longer resumes a stale transcript. A wake-floor debounce (`withinWakeFloor`/`effectiveHiveWakeFloorSec`) collapses a burst of bee-wakes within the floor window to one fresh launch. On fire-failure: PARK, never resume (the always-armed time/watchdog wake re-surveys). All other (non-Queen) agents still resume as before. (queen-brief-cache-assembly B-01 / P-012, channel `hive-fresh-wake`.)
 
 ## How to verify
 
@@ -9653,12 +9713,15 @@ so a contributor revoked at the **Hive grain is refused on EVERY member harness*
 
 Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` / `removeHarnessFromHive` (`agent-tools/hive/_add-member.ts`) for an existing harness, and the `harness:create { hive }` create-time path (`agent-tools/harness/create-hive-membership.ts`). Until something sets `hive_slug`, a Hive has only its home and no members.
 
+**Boot-storm robustness (2026-07-03, WI-1892/P-059).** `boot-all.ts`’s `bootSingleHarness` races each harness’s boot against a timeout (default 30s, now operator-tunable via `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`) — but a timed-out race does NOT unwind the underlying `bootHarness`: it keeps running detached, holding the corestore lock and (once it gets there) the joined swarm topic with no registered handle, so peers see a zombie endpoint that answers announces but never drains/replicates. Live-observed on a 35-substrate boot storm: 16/35 harnesses on one bg-host stuck this way. Until true cancellation lands, the raced boot promise is now retained and, if it settles AFTER the timeout, **adopted** — the handle is registered and the send-side wired exactly as the happy path would — unless a newer boot for the same key already won, in which case the late one is closed to release its corestore. Relevant here because this is the same boot path the per-Hive admission union (above) runs inside; a zombied boot under a large Hive (many member harnesses booting at once) is exactly the failure mode this guards.
+
 ## Track A — coord content + presence
 
 [Section titled “Track A — coord content + presence”](#track-a--coord-content--presence)
 
 * **Content (messages / conversations / threads / work / plans / settings)** rides the **same peer-log P-004 re-keyed**, so it already federates Hive-scoped — no separate Track-A content work was needed (D-011). `hive_settings` federate as first-class Hive state via their own projection (mig 186).
 * **Presence is the write-side keystone (P-008).** Presence is ephemeral / high-frequency, so it federates via an **announce loop**, not a capture trigger: **`lib/sync/hyperbee/wire-presence.ts`** (`wirePresenceAnnounceForHarness` → `startPresenceAnnounceLoop`), wired per-harness from `boot-all.ts` after the substrate handle returns, **gated on a joined swarm** (a private harness has no peers → returns `null`). Each announce is **stamped with the harness’s home `hive_slug`** (resolved once via `hiveHomeSlugForHarness`) and projected into `shared_presence.hive_slug` (mig 187) — which is exactly what the Hive lock authority elects over.
+  * **2026-07-03 (P-301):** each announced session is now also stamped with `fleet_slug`/`fleet_role`, batch-resolved via `fetchPresenceFleet(ownerIds)` (one lookup for the whole announce, not N) and folded into the dedup hash alongside `owner_id`/`intent`/`plan_slug`. This is what lets `@fleet:<slug>` pattern-awaits and fleet-membership lookups resolve a fleet’s members **across machines** over the same Hive-federated presence channel — best-effort (a lookup failure just leaves `fleet_slug`/`fleet_role` null; it never fails the announce).
 
 ## Track B — lock authority is the HIVE’s (P-009)
 
@@ -9916,7 +9979,7 @@ The lever is the fleet `maxSimultaneousAgents` / effective cap, live-editable vi
 
 A federated write goes through **two** ordering decisions, and they must agree:
 
-1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogsIncremental` → `lwwPick`/`beatsStored`, both defined in `projection.ts`) — since P-010 this orders by the op’s **HLC** when both ops carry one, else falls back to wall-clock `ts`.
+1. **The merge winners-fold** (`read-merge.ts` `mergeAdmittedLogs`, whose `beatsStored` comparator — defined in `read-merge.ts` as a hand-mirror of `projection.ts`’s `lwwPick` — decides winners) — since P-010 this orders by the op’s **HLC** when both ops carry one, else falls back to wall-clock `ts`.
 2. **The PG projection LWW guard** (`harness-features.ts` etc.) — the `INSERT … ON CONFLICT … WHERE stored.fed_ts IS NULL OR EXCLUDED.fed_ts >= stored.fed_ts` clause — orders by **`fed_ts`**.
 
 If these two disagree under same-key contention, the system **silently diverges**: the merge picks op X as the winner and hands it to `apply`, but the PG guard rejects X (its `fed_ts` lost) → no write → the cell keeps its own value. Each cell keeps its own → the two cells “converge” (no more ops to drain, `fixedPoint=true`) to **different** values. The tripwire was `split-brain-queen.integration.test.ts` (both Queens steer opposite orders; cell A ended with a mix, cell B with all-its-own).
@@ -10344,6 +10407,28 @@ The genuine residual is narrower: **the durable-spawn path writes no `spawned_ag
 [Section titled “Close criterion met (current code, verified 2026-07-03)”](#close-criterion-met-current-code-verified-2026-07-03)
 
 `durableSpawnFireImpl` (`packages/operator-core/lib/dbos/durable-spawn.ts`) now takes the opt-in `input.spawnRecord` and, when present, records the durable launch via `recordDurableSpawnAdmission`/`recordSpawn` before firing and `finishSpawn`s it after — the same `parentRole: input.parent?.role ?? 'operator'` fallback the fire-and-forget path used (never a bare `parentRole: undefined` that would violate the `spawned_agents.parent_role` NOT NULL constraint from item 3 of the original triad). `buildLaunchSpawnRequest` (`packages/operator-core/lib/blueprint/launch-blueprint.ts`) — the implement seam — passes `spawnRecord`, while the general-purpose `defaultFire` durable branch deliberately does not (hive launches record their own queen/bee rows and would double-count in `fleet:tree` otherwise). So: durably-fired implement workers are now visible in `spawned_agents` / `fleet:tree`, and the `assigned_at`-wedge fix (item 1) has since hardened further — `releaseIssue` (`issues-engineer.ts`) now clears **both** `assignee` and `assigned_at` (EI-6480), so the round-2 caveat above (“`releaseIssue` clears `assigned_at` but leaves `assignee` set, so a resolved-by-runner issue is legitimately dateless”) no longer applies verbatim — a resolved issue is fully unassigned, not just date-less. The dateless-claim invariant can be checked simply as `assignee='improvement-runner' AND assigned_at IS NULL` (no need to additionally exclude resolved/closed state).
+
+## A fourth wedge, found after “close criterion met” (2026-07-03, EI-6953/6954/6938)
+
+[Section titled “A fourth wedge, found after “close criterion met” (2026-07-03, EI-6953/6954/6938)”](#a-fourth-wedge-found-after-close-criterion-met-2026-07-03-ei-695369546938)
+
+The triad above was fixed and the lane ran — but a fourth, same-shaped defect was still silently stranding a large fraction of dispatches: **the idempotent-resolve guard in `resolveImprovement`** (`resolve-core.ts`) tested `issue.state !== 'open'` to decide “this issue is already resolved, no-op success.” That’s wrong for this schema. `engineer_issues` is a **view over `work_items`** (`status AS state`), and issue-family items are **minted with the work-item state `todo`** — a normal, non-terminal, *active* state, not `open`. Every reader elsewhere in the codebase normalizes `todo`/`wip`/`in_progress`/etc. to the canonical `open` bucket before comparing, but this one guard compared the raw state directly. The result: a freshly-claimed, still-in-flight, `todo`-state issue satisfied `!== 'open'` on its very first resolve call, so `resolveImprovement` returned `{ ok: true, outcome: 'fixed' }` **without ever calling `setIssueState`** — the item never actually transitioned to `resolved`, stayed `todo` forever, and got redispatched on the next sweep only to “resolve” as a no-op again. Live impact: an estimated \~450–650 items stuck in this todo-resolve-loop, indistinguishable from healthy throughput because every call returned `ok: true`.
+
+The fix swaps the raw string comparison for a proper terminal-state-set membership test:
+
+```diff
+import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+...
+  if (issue.state !== 'open' && input.outcome === 'fixed') {
+  if (ISSUE_TERMINAL_STATUSES.has(issue.state) && input.outcome === 'fixed') {
+     // Idempotent: resolving an already-TERMINAL item (resolved|closed) is a no-op
+     // success (a re-fired runner must not error out on the second resolve).
+     await closeLedger();
+     return { ok: true, id: input.id, outcome: 'fixed', state: issue.state };
+   }
+```
+
+`ISSUE_TERMINAL_STATUSES` (`work-item-blocking.ts`) is the canonical `{resolved, closed}` set — the same vocabulary the rest of the lane already normalizes to. The general lesson from the original triad applies again, unchanged: **a state-machine guard must test membership in the correct set, not inequality against one assumed value** — `!== 'open'` silently treats *every other state including active ones* as terminal, which is exactly the “no-op success masking a real skip” shape items 1 and 3 of the original triad also took. If you’re auditing this lane again, check first whether a similarly-shaped `state !== <single value>` guard has crept back in anywhere in the resolve/claim path — that’s the recurring signature, not the specific field.
 
 # Integrating an in-container, own-scorer benchmark (the CloneGradeSeam pattern)
 
@@ -11767,6 +11852,7 @@ Pass `capability:terminal { fleet:'x', terminals:[{ command:'psu …' }] }` *wit
 * **A member can boot and PARK without claiming** (auto-kickoff miss). It’s in `coord:presence` but invisible to `fleet:assignments`. Fix = **wake it** (`coord:send wake:'required'`), do NOT relaunch a duplicate.
 * **Killing the terminal window does NOT kill the agent.** `capability:terminal` opens a gnome-terminal that, after psu, drops to an interactive shell; the psu/agent process detaches and survives a `kill <terminal-pid>`. Verify a stand-down via `coord:presence`, not by killing the window.
 * **Long external work (a big download) ≠ a stalled agent.** A driver may background the job (`nohup … &`) and end its turn (parked). Check the actual work (the process / growing file), not just the agent’s turn-state, before “recovering” it.
+* **omp/ornith member identity collisions are FIXED (WI-1866, 2026-07-03).** Before this fix, every `omp`-backed session on the box shared ONE coord identity: omp (unlike `claude`’s `${PAPERCUSP_SID}` URL env-expansion) can’t interpolate its own session id at MCP-connect time, so the user-level template baked a single per-machine `client=` — members’ claims all attributed to one agent, void claim-conflict protection, and wakes black-holed into whichever transcript happened to be visible (live incident: sessions 9980–9982). `writeOmpSessionConfigDir` now also stamps a per-session `client=<ownerId>` param (`applyOmpMcpUrlParams`), so if you previously saw an omp fleet’s members all appearing to act as a single agent, that symptom is resolved — don’t diagnose it as a fleet-launch bug going forward. A companion fix (WI-1863) also indexes `adv-<advSessionId>` → ownerId in the session-owner registry, since omp launches have no native session UUID to key off (`nativeSessionIdFromLaunchArgs` returns null for them by design) and were previously unresolvable from a desktop `session-<N>` to their coord owner.
 
 ## Tool decision table
 
@@ -11788,6 +11874,12 @@ Pass `capability:terminal { fleet:'x', terminals:[{ command:'psu …' }] }` *wit
 If you omit `agent` (and `model`), members no longer hard-default to `claude` — they inherit the **calling session’s own backend + model** (`resolveFleetAgent` in `launch-on-plan.ts`). psu stamps the caller’s resolved `agent`/`model` onto its own `/api/mcp` URL in the per-session `mcp.json` (`writeOmpSessionConfigDir` / `applyOmpMcpUrlParams` in `psu-launcher.mjs`); the operator reads those as `ctx.callerAgent` / `ctx.callerModel` when resolving each member’s backend. So an **omp/ornith `su` leader that calls `fleet:launch-on-plan` without `agent` now spawns `omp` members** (previously always `claude`) — and inherits the caller’s `model` too, but only when the backend was ALSO inherited (an explicit `agent` never picks up the caller’s model, so a claude member is never silently handed an ornith model id).
 
 Precedence, in order: explicit `args.agent` → `omp` (inferred when `model` is a local/ollama id, e.g. `ollama-cc/…ornith`) → the caller’s own backend → `claude` (last-resort fallback). An explicit `claude`/`codex` `agent` paired with a local/ollama `model` is now a hard error (previously silently launched `claude` mislabelled with the ornith model — the “thought ornith, got claude” trap). Set `agent` explicitly whenever you want a fleet backend that differs from your own session’s.
+
+## Becoming a leader now hard-enters AUTO mode (2026-07-03)
+
+[Section titled “Becoming a leader now hard-enters AUTO mode (2026-07-03)”](#becoming-a-leader-now-hard-enters-auto-mode-2026-07-03)
+
+A `fleet:launch-on-plan` call that creates/joins a fleet and makes the caller its **leader** now appends `LEADER_AUTO_MODE_DIRECTIVE` to the launch result, on top of the existing numbered `LEADER_STANDING_JOB` cycle list: *“LEADING THIS FLEET PUTS YOU IN AUTO MODE — effective NOW, for the rest of your session… do not stop to ask permission between steps, and NEVER end a turn waiting for an instruction while your fleet is live.”* This lands the existing “leading a fleet auto-enters AUTO mode” persona rule at the exact moment the caller becomes a leader (a live finding, 2026-07-03: an ornith leader stayed at its ask-first routing-gate posture after this same call and only supervised once externally woken — a persona clause alone was too far from the act for a weaker model to bind). The launch result also now carries a structured `autoModeEntered: true` field (set whenever `opened.length > 0`) so a hook/scorer can key off it without parsing prose.
 
 # Lazy-import coord/presence into registry-loaded files (avoid load-time cycles)
 
@@ -12305,7 +12397,7 @@ A “loop” is the **third recurrence kind** of the routines engine: a row in `
 * **Scheduling:** the DBOS 30s routine tick claims due loops; an in-flight loop parks `next_fire_at = 'infinity'` (the skip-if-in-flight sentinel). Dispatch routes a row with `reschedule_interval_sec != null && target_owner_id` to `fireLoopWake` (`dbos/routines-workflow.ts`). **Note the fire path does NOT re-check `FLAGS.LOOPS`** — only `loop:arm` does.
 * **The fire** (`harness/routines/loop-fire.ts` `fireLoopWake`): Guard 1 = the failure-streak fire-gate (`autoloop.ts` `checkFireGate`, per-loop by routine name); Guard 2 = the cost-cap (`loop-cost-cap.ts`); then `wakeRecipients([targetOwnerId], …)`.
 * **The wake → re-wake:** `wakeRecipients` fires `coord:inbox-wake:<ownerId>`; the await engine’s pump (`events/await/engine.ts`) calls `executeWake` (`events/await/wake-executor.ts`), which runs the liveness ladder: live pty → inject; **process exited → detached `claude --resume <uuid> -p`**; alive-uninjectable → park; gone → drop.
-* **Re-arm:** `reconcile-loop-routines.ts` (the completion-rebase) detects the woken turn’s `Stop`-hook ‘ended’ marker and sets `next_fire_at = completed_at + interval`; a stuck-park backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives.
+* **Re-arm:** `reconcile-loop-routines.ts` (the completion-rebase) detects the woken turn’s `Stop`-hook ‘ended’ marker and sets `next_fire_at = completed_at + interval`; a stuck-park backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives. As of 2026-07-03 this runs as its **own** `loop-rebase-sweep` step in `routinesTickImpl` (`routines-workflow.ts`), fired FIRST right after the fire loop — it no longer rides the tail of `reconcileAndGovern`, where 9 serial sweeps ahead of it were starving it under pool pressure and leaving armed loops parked \~17min between 60s wakes (Task-#8). See the update section below for the cold-loop ladder + circuit-open terminal-guard routing this same file also gained the same day.
 * **State** is all PG: the `routines` row + `autoloop_state` (fire-state/backoff) + `event_wake_deliveries`.
 * **Status (2026-06-23): FLAG-ON at runtime; P0/P1/P2 LANDED.** `papercusp-loops` was flipped ON by the owner-directed flip-dark-flags effort, so `loop:arm` now works (the failure path below is LIVE). `FLAGS.LOOPS` still *defaults* `false` in `libs/flags/src/types.ts` and remains in `KNOWN_DARK_FLAGS` — the remaining gate before flipping the DEFAULT on is a **live post-storm verify of the turn-outcome path** (this doc’s gating criterion; the code is unit+integration tested but the detached-resume-429→handler path has not yet been exercised by a real storm). The default flip is owned by the flip-dark-flags effort, not this fix.
 
@@ -12401,6 +12493,16 @@ The previously-”unverified-live” turn-outcome path is now **production-verif
 A follow-on effort (`su-cold-auto-mode-2026-07-03`) added a **second loop wake mode** on the same `wake-executor.ts` / `engine.ts` path this doc analyzes: a loop armed with `loop:arm { carry: 'cold' }` can RESET-CONTEXT / periodically recycle to a carry-note instead of resuming the warm in-place turn this doc describes throughout. It is gated by its own master flag, `FLAGS.SU_COLD_AUTO` (`papercusp-su-cold-auto`, default ON but only an *availability* switch — nothing goes cold until a loop is explicitly armed `carry:'cold'` AND a carry-note exists via `decideColdWake`). The turn-death-recorded-as-delivered failure mode this doc documents is about the WARM resume path specifically; cold-auto wakes are a distinct code path and are out of scope here — see the code at the `coldAutoEnabled` dep in `engine.ts` if you’re chasing a cold-loop issue instead of a warm one.
 
 **Same day, later commit:** `injectPsuHostWake`’s cold branch (`wake-executor.ts`) no longer injects the raw `carryNote` — it now wraps it with `su-cold-loop.ts`’s new `renderColdWakeInjection(carryNote)`, which frames the note as the woken agent’s entire reconstructed working state and appends a standing mandate to refresh it (`loop:checkpoint`) before ending the turn, or call `loop:end` if done/blocked — otherwise a cold loop’s anchor goes stale after one wake. Still entirely inside the cold-auto branch this section already scopes out of the warm-path failure mode; noted here only so the `wake-executor.ts` anchor stays precise.
+
+## Also since this doc (2026-07-03) — `reconcile-loop-routines.ts` gets a cold-aware settle ladder + a circuit-open terminal route
+
+[Section titled “Also since this doc (2026-07-03) — reconcile-loop-routines.ts gets a cold-aware settle ladder + a circuit-open terminal route”](#also-since-this-doc-2026-07-03--reconcile-loop-routinests-gets-a-cold-aware-settle-ladder--a-circuit-open-terminal-route)
+
+Two more robustness gaps in the SAME re-arm module this doc analyzes (`completionSignal` / `reconcileLoopRoutines`), both found live the same day as the cold-auto rollout above:
+
+* **Cold loops need their OWN settle signal — bare quiescence lies.** A cold (`carry:'cold'`) wake resets/recycles the session: the dying child emits a lifecycle ‘ended’ and the fresh child a lifecycle ‘started’ back-to-back at delivery, then (if the carry-note inject is deferred) sits **booted-but-idle** until it actually runs its iteration. The old warm-style fallback (presence went quiet after the fire ⇒ settled) read that idle boot itself as “turn settled” and re-fired \~91s later into a still-booting host (live: wake #5036 re-fired on top of #5033, the “stale-note-treadmill” finding). `completionSignal` now branches on `row.carry`: a cold loop settles ONLY on (a) the turn’s own `Stop`-hook ‘ended’ marker **newer** than the post-fire ‘started’ boundary (i.e. the session booted *and* finished its turn), or (b) a carry-note refresh after the fire (the cold protocol’s own completion receipt — a cold turn is required to `loop:checkpoint` before ending) — taking whichever is later. Neither present ⇒ no settle at all; the loop stays parked for the stuck-park backstop to retry (which safely re-delivers the same note). This adds `lifecycle_started_at`, `carry`, and `note_updated_ts` to the per-row query and a new `RebaseVia: 'note-refresh'`.
+* **The warm ladder also gained a reset-boundary guard.** Even on the non-cold path, an ‘ended’ marker is now only accepted as a settle when it is NOT older than a newer post-fire ‘started’ marker (`lc != null && (ls == null || ls < lc)`) — defensive hardening against the same reset-boundary confusion, though genuinely warm loops are unaffected in practice (their ‘started’ fires once at process boot, before `last_fired_at`, so it falls outside the post-fire SQL window).
+* **Circuit-open loops now reach the WI-1399 terminal guard WITHOUT waiting on the stuck-park dwell window (EI-7006).** Previously the dead-owner terminal guard (auto-pause a permanently-unreachable loop) was reachable only via the stuck-park branch (`now - last_fired ≥ max(30min, 4×interval)`). But a loop whose fire-circuit is already open (`consecutiveErrors ≥ circuitThreshold()`) gets an \~hourly probe fire that keeps refreshing `last_fired_at` — so the stuck-park dwell almost never elapses, and even when it eventually does, the terminal guard’s own 2h window still exceeds the inter-probe gap. Dead loops climbed to a permanently fire-circuit-open state (55→∞ open-circuit EIs observed) and never terminated. `reconcileLoopRoutines` now takes an injected `circuitThreshold` (default `autoloop.ts` `circuitThreshold()`) and routes a **parked, quiet, circuit-open** loop into the SAME terminal guard as a stuck-park loop — `checkUnreachableTerminalGuard` now also receives a `circuitOpen` flag, and the `stuckFireCount` it uses is `consecutiveErrors` as-is on the circuit-open path (vs. `consecutiveErrors + 1` on the classic stuck-park path, preserving that path’s original contract). A circuit-open-but-not-yet-guard-breached loop that hasn’t reached the stuck-park dwell is left alone — the fire-gate’s own backoff owns its cadence; reconcile no longer fights it by re-arming early.
 
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 
@@ -13552,6 +13654,10 @@ SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
              /NULLIF((SELECT count(*) FROM mcp),0),4)          AS coderun_pct;
 ```
 
+**Since 2026-07-03 the canonical opportunity-based metric (`dev:code_run_adoption` / `CODE_RUN_ADOPTION_SQL`) carries the same denominator discipline built in** — `transport='mcp' AND spawn_id IS NOT NULL`, plus poller tools (`activity:recent`) excluded from opportunity classification: a UI poller firing the same read twice is not a batchable agent flow (it manufactured \~87k fake opportunities/7d and made fleet adoption read 0.26% when the honest figure was \~22%). If you hand-roll an adoption query, copy those filters or your number is fiction.
+
+**Nudge→conversion funnel (2026-07-03):** every inline batch-hint fire is now recorded (migration `482`, `harness_shared.code_run_nudge_fires`) and `dev:code_run_adoption` returns `nudge: { nudgedSessions, convertedSessions }` — the direct measure of whether a nudged session then called `code:run`/`recipes:run`. Details + the structural-lockout finding (kits/caps/surface gate adoption before wording does): [code-run-adoption-metric](/agent-insights/code-run-adoption-metric/).
+
 ### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
 
 [Section titled “3. Redundant-bootstrap rate — orient duplication (the bigger leak)”](#3-redundant-bootstrap-rate--orient-duplication-the-bigger-leak)
@@ -14065,6 +14171,14 @@ Driving a `requirePrincipal`-gated route through `registerAllRoutes` + `app.requ
 # Driving a multi-agent build: the write-capable pivot when fleet bees can't write
 
 > The coordinator runbook for building a whole plan via spawned workers when conditions are degraded. Fleet bees may be READ-ONLY (EI-524 capability confinement) — they draft, they can't write; the 'lift' can be announced-but-not-effective. Org-wide API rate-limiting kills parallel agent BURSTS but serial main-loop work survives. Pivot to write-capable Agent (Task) subagents + serial; place waves at ≤3 concurrency; ALWAYS verify bee/subagent drafts before applying.
+
+## Current behavior (2026-07-03)
+
+[Section titled “Current behavior (2026-07-03)”](#current-behavior-2026-07-03)
+
+**Wall 1 below is CLOSED — fleet bees are now write+bash capable, not read-only.** The “OWNER-PRIORITY FIX (2026-06-15)” (`bee-capability-expansion -2026-06-08` D-005/P-004) granted `capability:fs-write` + `capability:bash` (plus `fs-read` / `git` / `net` / `code-inspect`) to the `bee` role principal in `role-principal-caps.ts`, closing the “two-gate desync” this doc’s Wall 1 describes (the ENVELOPE-layer deny had been lifted, but the principal CAPABILITY grant lagged — bees still 100%-failed with `lacks capability 'capability:fs-write'` until this landed). A `system:bee` today CAN `Edit` / `Write` / run bash directly — do **not** assume a bee report of “read-only” is still the EI-524 confinement; verify against `role-principal-caps.ts`’s current `bee: [...]` grant list (and `bee-tool-boundary.test.ts`) before re-diagnosing it as Wall 1. See `agent-spawning/allowlist-and-caps.mdx` for the current, maintained capability/allowlist model.
+
+**Everything past Wall 1 — Wall 2 (rate-limit bursts), verify-before-apply, migration safety, and the monitor loop — is still generically useful runbook knowledge** for a degraded/high-load build (a bee CAN now write, but a genuinely capability-confined or otherwise-blocked agent still benefits from the write-capable-subagent + serial pivot). Read the body below as historical context for *why* that pivot pattern exists, not as “bees are read-only today.”
 
 ## When this applies
 
@@ -17225,6 +17339,19 @@ Two prior scoping passes (2026-07-02, `su-af6170b0`) confirmed the traffic was r
 * **The actual driver: `harness_shared.harness_plans` is bridged to 8 query names** (`plans.list`, `.get`, `.items`, `.attention`, `.search`, `.byHive`, `.schedule`, `.scheduledOccurrences` — `sync-resolver/table-to-query-names.ts`), all full-bust (bare-string, no scoping registered yet for this table). A Postgres trigger fires `<schema>.harness_plans. changed` on **every row write** — and with dozens of concurrent fleet agents each calling `plans:set-now` / `plans:set-status` / `plans:add-item` / etc. across the workspace, that’s a near-continuous write stream (not the \~10-30/hour this doc measured on 2026-06-23, when fleet concurrency was far lower — write volume scales with **agent count**, not human viewers).
 * **The bug: `notifyInvalidate()`’s 90s source-side dedupe (`invalidation-bus.ts`’s `dedupeWindowMs`, meant to “collapse a chatty per-row reconcile”) only covered EXPLICIT `notifySyncInvalidate(...)` call sites in application code.** The PG-trigger-bridged path (`onMessage()` → `bridge()` → `fanout()`) called `fanout()` **directly**, bypassing the dedupe map entirely — so every one of those 8 bridged full-bust targets fanned out, unthrottled, on every single `harness_plans` row write, to every live SSE subscriber (every open Plans-admin tab/window). That is the poll-shaped traffic this doc measured: it isn’t a poll at all, it’s an invalidation storm whose rate tracks fleet write-rate 1:1 — which is why it never showed up as “SSE fell back to POLLING” (line 108’s hypothesis) and stayed flat/high regardless of the 2026-06-10 drift-repair fix (that fix only bounds the SAFETY-NET tick; it can’t bound invalidation-driven refetches, because those were never throttled at all).
 * **Fix landed**: `invalidation-bus.ts` now runs bridge-synthesized targets through the SAME dedupe helper (`shouldFanout`, extracted from `notifyInvalidate`’s inline check) as explicit calls, keyed by `name + JSON(args)` — so a full-bust target throttles to ≤1 fanout per `dedupeWindowMs` (default 90s) regardless of how many rows in the bridged table were written in that window, while a *scoped* `{name, args}` bridge target (once any table registers one — none do yet) still fires per distinct key, since different args produce different dedupe keys. This is generic to the whole bridge registry, not plans-specific — every table→query-name mapping in `table-to-query-names.ts` gets the same protection. Verified via new unit tests in `invalidation-bus.test.ts` (bridged full-bust dedupe / per-target independence / scoped-target non-cross-suppression) and a full `npm run test:affected` run (no regressions). Not yet re-measured against live `tool_invocations` post-deploy — the fix reduces invalidation *count* server-side; re-run this doc’s SQL a few hours after it ships to confirm the `plans:list`/ `plans:attention` HTTP call rate actually drops, and to see whether another bridged table now dominates instead (any hot table under sustained multi-agent write load had the exact same unthrottled-bridge exposure until this fix).
+
+## Re-measured 2026-07-03 (su-6c9e4, EI-7028) — WI-840 landed; today’s dominant traffic is the pui dock via the ADMIN PROXY, not the sync path
+
+[Section titled “Re-measured 2026-07-03 (su-6c9e4, EI-7028) — WI-840 landed; today’s dominant traffic is the pui dock via the ADMIN PROXY, not the sync path”](#re-measured-2026-07-03-su-6c9e4-ei-7028--wi-840-landed-todays-dominant-traffic-is-the-pui-dock-via-the-admin-proxy-not-the-sync-path)
+
+Post-WI-840 re-measurement, with a **route-level** attribution this doc’s earlier passes lacked (`harness_shared.route_invocations` — records method+path+principal per HTTP request, where `tool_invocations` cannot distinguish the two proxies because BOTH stamp `uiClientId: pc-admin-plans-ui` via the shared plans-read dispatcher):
+
+* **The sync rest-query path is now QUIET** — zero `/rest-query*` route invocations in the measured hour. WI-840’s bridge dedupe is deployed and the invalidation-storm-driven UI refetch traffic this doc’s third pass diagnosed is gone from the route log.
+* **Today’s dominant traffic: `GET /admin/plans/:verb` — 1,090 req/hr, `principal_kind=system`, bearer-token.** That is **`apps/tui` (the pui dock)**: `client.rs` `plans_list()` / `attention_typed()` GET `admin/plans/list|attention`, driven by `main.rs refetch_all` (every panel, on SSE-invalidate + a 60s safety net) — and the desktop dock runs **5–9 pui processes** (`pui chat`, two `brain-view`s, `dock-driver`, `wake-pane`, …), each with its own loop. At \~1.18MB per attention response and \~555KB per list response that is the \~50GB/day residual.
+* **Verified NOT the desktop webviews**: fetch-taps + `performance` resource entries in both live Tauri webviews show zero rest-query/admin-plans calls; neither visible page subscribes plans queries.
+* **The rows-delta client seam (SYNC\_RESOURCE\_DELTA, P-006) is live and the server half is PROVEN** — a cursor round-trip against `/api/zero-harness/rest-query-batch` returns `mode:delta` at **8.8KB vs 1.18MB full (134x)** — but it only covers the sync path, which is no longer the traffic. Do not verify it via `tool_invocations.metadata deltaMode`: that field records the TOOL-layer delta, not the wire negotiation (always reads `full` on this path).
+* **Fix direction for the pui residual** (EI-7028): the trimmed payload shape ALREADY EXISTS server-side (`attention-shape.ts` `shapePlansAttention(data, tier)`, built for MCP ctx-tiers) — expose an opt-in `?tier=trimmed` on the `/admin/plans/:verb` proxy and have pui pass it (its panes render top-N items, not 1.18MB); and/or move `refetch_all`’s plans reads onto the delta-negotiated batch endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing the shape.
+* Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts` contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every content search skipped it — the delta wiring looked absent when it wasn’t. Fixed to the escaped form (backslash-u0000) 2026-07-03; if a file’s matches mysteriously don’t appear, check for NUL bytes.
 
 # Plans vs work-items — how a plan item becomes claimable, and which surface a coordinator pushes work onto
 
@@ -20582,6 +20709,7 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 * `announce_rejected` — Layer-1 conclusive reject. Look at the reason — **`binding_invalid`** (gist/identity, fix that — see WI-797), `revoked` (read-cut, correct), `bad_sig`.
 * `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss` buffered for retry. Will self-resolve if the cause clears; otherwise it ages out at 30 min.
 * `swarm_join_failed` / `peer_connected` / `peer_rejected` / `peer_rate_limited` / `peer_capped` / `peer_revoked` — the **transport** layer. No `peer_connected` for the hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is the #1 silent-local-only cause after a VM reset).
+* `peer_unrevoked` — WI-193 “G8”: a REFRESH-sourced revocation (the pubkey was never named in a live `handle.revoke()` call) dropped out of the freshly-loaded published `revoked_pubkeys` set, so `applyRevocationRefresh` reconciled it back out of `revoked` — the peer is admissible again on its next announce. See `substrate-revocation-model` for the full un-revoke story (still partial: an explicit live `revoke()` call is never undone by this path).
 * `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
 * `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`); carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
 * `epoch_gate_seen` — an encrypted-looking op (epoch-stamped OR `{__rekey}` value) **reached** the gate. Distinguishes “content dropped upstream of the gate” (this never fires) from “reached the gate but was processed” (fires, with `epoch=NULL` flagging the wire-stamp-lost case).
@@ -20590,6 +20718,8 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 * `epoch_applied` — encrypted op decrypted and applied successfully (the success path).
 
 These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously all four non-success paths were **silent** (`return false`), leaving a federated op that never landed with no diagnostic signal at all.
+
+> **GOTCHA (as of 2026-07-03) — a `?kinds=` filter can silently eat the exact kinds this doc tells you to look for.** The route (`dogfood-substrate-boot-history.ts`) filters `?kinds=` against its own hand-maintained `VALID_KINDS` array, not the full `BootHistoryKind` union — and that array is currently STALE: it is missing `peer_cap_near`, `peer_unrevoked`, `announce_clock_skew`, `replication_stalled`, `replication_frozen`, and all six `epoch_*` kinds documented above. Passing any of those in `kinds=` gets them silently dropped (bogus values are filtered, not rejected), so `fed.sh b api GET '…&kinds=epoch_gate_seen,epoch_decrypt_fail'` comes back empty even when those events fired — indistinguishable from “never happened.” **Workaround: omit `kinds=` entirely (or pass no filter) when hunting an `epoch_*` / `peer_unrevoked` / `replication_*` / `announce_clock_skew` event**, and read the `kind` column yourself. This is a genuine code staleness, not intended behavior — flagged for a fix that derives `VALID_KINDS` from `BootHistoryKind` (or drops the allow-list in favor of the union) so it can’t drift again.
 
 ## The diagnostic ladder (use this order)
 
@@ -20613,6 +20743,19 @@ These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06
 * **The new finish line is the CONTENT layer, not admission.** With WI-797 fixed, the owner log merges and control rows (`hive-members`, `hive-epoch-keys` — plaintext per `hive-epoch-content-ops.ts`) apply, but **encrypted content ops** (features/work-items/ plans/issues) can still drop on apply even with the epoch key wrapped for the joiner’s device — the GATE-2 content-apply layer (`owner-side-cross-member-content-apply-gap`, D-003, WI-367 content-before-key ordering-drop + the `drainQueuedEpochContent` replay). Isolate lag-vs-drop with a fresh op; if a NEW op also never lands, it’s a drop, not lag.
 * Substrate boot + swarm join are **registry-gated**: a node swarms only registry hives, not merely-rostered ones.
 * `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its `kind`/`message` to place the failure on the ladder before touching code.
+
+## Multi-process split-brain: the corestore-lock race + timeout-zombie ladder (P-059, 2026-07-03)
+
+[Section titled “Multi-process split-brain: the corestore-lock race + timeout-zombie ladder (P-059, 2026-07-03)”](#multi-process-split-brain-the-corestore-lock-race--timeout-zombie-ladder-p-059-2026-07-03)
+
+When tower↔peer replication is dead BOTH directions with healthy transport, suspect the **tower’s own process topology** before any protocol layer. On a dev box, several processes can host a workspace’s substrate (bg-host boot-all, the dev-api cluster primary’s shared-hive layer) and they RACE for the same corestore RocksDB lock — whoever wins decides which process (and therefore which **DHT config**) federates that hive. Ladder:
+
+1. **Find the corestore holder by fd, not by assumption:** `for P in $(ls /proc | grep -E '^[0-9]+$'); do C=$(ls -l /proc/$P/fd 2>/dev/null | grep -c '<ws>/.papercusp/<harness>/hyperbee'); [ "$C" -gt 0 ] && echo "$P ($C)"; done` The holder may be a deep descendant (sidecar), not the service MainPID.
+2. **Check each candidate host’s DHT env** (`PAPERCUSP_DHT_BOOTSTRAP` / `PAPERCUSP_DHT_HOST` in `/proc/<pid>/environ`). A holder on the isolated DHT is INVISIBLE to a peer on the public DHT and vice versa — the outage flip-flops with every restart race. ⚠ `PAPERCUSP_DHT_HOST` pins the UDP socket to one iface AND **leaks into spawned shells** from a systemd drop-in — inside a container/other netns it makes the node announce an undialable address (“joins succeed, neither ever dials”, WI-1910 class).
+3. **The timeout-zombie (WI-1892):** `bootSingleHarness` races the boot against a timeout (default 30s, env `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`). Under a 35-substrate boot storm the timeout fires but the DETACHED boot keeps running: corestore locked + topic joined, **no registered handle → outbox drain never wired**. Signature: `[hyperbee-substrate] (<ws>::<slug>) failed: boot timeout` in the journal while the pid still holds hyperbee fds and `[swarm] joined topic` fired; `substrate_outbox` rows pile up `drained_at IS NULL`. Since 2026-07-03 a late-completing boot is ADOPTED (registered + wired) — a healthy boot logs `late boot ADOPTED` instead of zombifying (regression tests in `boot-all.test.ts`).
+4. **Decode `[announce-debug]`** (`PAPERCUSP_ANNOUNCE_DEBUG=1`, swarm.ts): per connection you want `mux → defer-open → create → open-request → open → recv/sent`. `create→open-request→ close` with **no `open`/`pair`** = the announce handshake never paired (zombie endpoint, or the peer isn’t a real substrate for that topic). `recv topic=… log=…` names the exact remote log announced — verify it’s the peer you think it is (a local sibling’s log looks identical at a glance).
+5. **A peer’s registry decides what re-boots after ITS restart.** A joined-hive harness that was never persisted (WI-971 class) silently vanishes on reboot: the peer reconnects, its OTHER hives announce, and the one you’re probing is simply absent — check the peer’s boot ring for `boot_start` of the specific (workspace::harness) before debugging admission.
+6. **Journal times are LOCAL (EDT here), not UTC** — `journalctl --since "16:45"` when you mean 16:45Z silently returns nothing. Use direction-unique probe keys per attempt (`p059:v2t:wakeN-<agent>`), never reuse a name in both directions (grep false-positives).
 
 # Shared-hive join/leave lifecycle — what self-heals, what to call, what ages out
 
@@ -22378,7 +22521,10 @@ If you’re about to change substrate admission/revocation, or a security review
 
 1. **Self-revocation** (`papercusp-substrate-revocation-v1-2026-06-01`). A contributor revokes their OWN device key (lost/rotated device). Mechanism: the device pubkey is added to that contributor’s own `revoked_pubkeys` (a `TEXT[]` on `harness_shared.contributors`, replicated via the substrate). Trigger: `revokeSelfDevice` / `POST /api/admin/substrate/revoke-self-device` / the `substrate:revoke_self_device` MCP tool — guarded by `not_your_key` (you can only revoke keys in your OWN `device_attestations`). Enforcement: `boot.ts` seeds the admission `revoked` Set from `loadRevokedPubkeys` at startup (unconditional, fail-open) AND refreshes it inside every `mergeNow`.
 
-2. **Owner-revocation** (`papercusp-substrate-revocation-v2-owner-2026-06-01`, Component A). Kicking out a different contributor (a bad actor). Authority is **GitHub**, not a papercusp-native owner: a repo admin **deletes the contributor’s `user/<id>` branch** (the channel-2 artifact). Enforcement: `boot.ts` periodically **re-verifies admitted peers’ channel-2** (throttled inside `mergeNow`, default \~15 min) and drops any whose binding conclusively `fail`s.
+2. **Owner-revocation** (`papercusp-substrate-revocation-v2-owner-2026-06-01`, Component A — PASSIVE detection; plus Component B, now BUILT with a different design than originally planned, see below). Kicking out a different contributor (a bad actor).
+
+   * **Component A (passive, unchanged):** a repo admin **deletes the contributor’s `user/<id>` branch** (the channel-2 artifact) directly on GitHub. Enforcement: `boot.ts` periodically **re-verifies admitted peers’ channel-2** (throttled inside `mergeNow`, default \~15 min) and drops any whose binding conclusively `fail`s. This drop does **not** blocklist the pubkey (see below).
+   * **Component B (active, `substrate:revoke_contributor` — `non-collaborator-join-fork-pr -2026-06-02` D-001, supersedes the old branch-delete design):** an in-app OWNER trigger. **The original “delete the `user/<id>` branch via the GitHub API” design was dropped before shipping** — it would have been a silent no-op, because admission moved to being gated on the contributor’s attestation **gist** (`read-admission` → `verifyAttestation`), not a repo branch, and an admin can’t delete another user’s gist. The shipped design instead: the owner (gated on holding a GitHub token with **repo-admin** on the shared repo) adds the target’s device pubkeys directly to the **owner’s own** contributor-row `revoked_pubkeys` and publishes it — the same blocklist self-revocation uses (`revoke-contributor.ts` `revokeContributorViaGithub`). Every peer’s `read-admission` union honors it on the next re-verify. A **Hive-scope** variant (`shared-hive-federation-2026-06-08` P-006, `hive-revoke-contributor.ts` `revokeHiveContributor`) revokes the contributor from a WHOLE Hive’s federation (every member harness) in one call — its authority is **holding the Hive’s private key**, not GitHub repo-admin (a Hive may be repo-less); see the authority section below.
 
 The gap that motivated rev-v2
 
@@ -22389,6 +22535,8 @@ Model B verified a peer’s channel-2 binding ONCE at admission and re-checked o
 [Section titled “Why GitHub-anchored authority (not a papercusp owner gate)”](#why-github-anchored-authority-not-a-papercusp-owner-gate)
 
 Deliberate, consistent with `papercusp-trust-model-2026-05-31` + the **no-collaborator-gate** decision + Phase-1b §8 / D-009: **GitHub is the real authority** for the thing that matters (merging code); peer-synced state is **advisory**. An owner-signed revocation list was considered and rejected — it reintroduces exactly the papercusp-side authority gate that decision avoided, and the P-068 “owner” is only *provisional*/contestable. Re-verifying channel-2 is **not** a collaborator gate; it re-applies the *same* check admission already requires, just periodically.
+
+**Update:** `substrate:revoke_contributor` (Component B, above) DOES now gate its harness-scope action on a papercusp-side check — but it’s still anchored in GitHub, not a papercusp-native owner: the gate is “does the caller’s GitHub token have **repo-admin** on the shared repo,” checked live via `octokit.repos.get(...).permissions.admin`, the same authority Component A’s branch-delete always assumed. The **Hive-scope** variant is the one genuine departure: its authority is **holding the Hive’s private key** (a Hive can be repo-less), not a GitHub permission at all — a deliberate, narrower keypair-native authority for the Hive-wide case.
 
 ## Intentional decisions a reviewer will want to “fix” (don’t, without re-deciding the posture)
 
@@ -22402,9 +22550,14 @@ Deliberate, consistent with `papercusp-trust-model-2026-05-31` + the **no-collab
 
 [Section titled “Not built (intentional)”](#not-built-intentional)
 
-* **Rev-v2 Component B** — an in-app “delete a contributor’s `user/<id>` branch via the GitHub API” trigger. It’s a destructive outward-facing action + optional (a repo admin deletes the branch on GitHub directly; Component A enforces it). Held pending an explicit decision.
-* **Un-revoke / re-instate** — YAGNI; revocation is append-only.
 * **Multi-device per login** — see `phase1b-federation-limitations`.
+
+## Built since this doc was first written (2026-07-03 update)
+
+[Section titled “Built since this doc was first written (2026-07-03 update)”](#built-since-this-doc-was-first-written-2026-07-03-update)
+
+* **Rev-v2 Component B is now BUILT** (`substrate:revoke_contributor`, see above) — but with a *different* design than the branch-delete this doc originally described as “not built.” The branch-delete trigger was dropped before shipping (it would have been a no-op once admission moved to gist-based attestation); the shipped trigger blocklists the target’s pubkeys directly.
+* **Un-revoke / re-instate is now PARTIALLY built** (`WI-193` “G8” fix in `boot.ts` `applyRevocationRefresh`) — this doc previously said it was YAGNI/append-only; that is no longer accurate for the *published-list* path. Any pubkey whose provenance is refresh-sourced (`revokedViaRefresh` — seeded at startup from `loadRevokedPubkeys`, or added by a later `applyRevocationRefresh` cycle) is **removed from `revoked`** the moment it disappears from the freshly-loaded published `revoked_pubkeys` set, re-admitting it on its next announce (a `peer_unrevoked` boot-history event records it). This can never silently undo an explicit **live** `revoke()` call (self-revoke or owner-revoke via the tools above) — `revoke()` evicts the pubkey from `revokedViaRefresh` too, so an explicit in-process revocation stays blocked for the life of that boot regardless of the published list. There is still no dedicated “un-revoke” MCP tool; the only way to un-revoke today is to edit the pubkey out of the relevant contributor row’s `revoked_pubkeys` column directly (and, for a pubkey revoked live in the current process, restart the boot so the seed no longer includes it).
 
 # The substrate-sidecar relocation silently fell back to in-process in every packaged build
 
@@ -39594,20 +39747,24 @@ This is the visible end of the [superuser-mode](/internal/docs/endpoint-system/s
 
 [Section titled “How it works”](#how-it-works)
 
-There are two launch paths. The **primary** path is a same-origin, server-side spawn: the operator process spawns the terminal itself, so no Tauri IPC is involved. The **fallback** path (the Tauri `console_launch` IPC command) is used only when the operator host isn’t Linux — the server route returns HTTP 501 and the renderer falls through to it.
+There are two launch paths. The **primary** path is a same-origin, server-side spawn: the operator process spawns the terminal itself, so no Tauri IPC is involved — this now covers **both Linux and macOS** (`console-spawn.ts` shared spawner). The **fallback** path (the Tauri `console_launch` IPC command) is used only when the operator host is the **Windows desktop’s WSL2 sidecar** (`isWindowsDesktopHost()`) — the server route returns HTTP 501 and the renderer falls through to it. (A non-Linux, non-macOS, non-WSL2 host would also 501, but that isn’t a supported desktop target.)
 
 ```plaintext
 click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?, resumeSessionId? }   (PRIMARY)
-              ─►  operator (Linux) spawns directly:
+              ─►  operator spawns directly via console-spawn.ts:
                   ├─ build ConsoleEnvelope (cwd, env, mcp.json body, …)
                   ├─ .mcp.json write with backup-restore at cwd
                   ├─ interactive safety floor (concurrency ceiling → 429)
                   ├─ record adv_sessions row (surfaced in /adv/sessions)
                   └─ spawn OS terminal in NEW WINDOW, recolored + titled
-                          └─ Linux: $TERMINAL → gnome-terminal/konsole/…
+                          ├─ Linux:  $TERMINAL → gnome-terminal/konsole/…
+                          └─ macOS:  open -na <term> /tmp/papercup-console-*.command
+                                     (operator runs natively in the user's GUI
+                                     session as a child of the desktop .app, so
+                                     it can open Terminal/iTerm itself — no IPC)
 
 
-              ─►  if operator host isn't Linux → HTTP 501 → FALLBACK:
+              ─►  if operator host is the Windows WSL2 sidecar → HTTP 501 → FALLBACK:
                   POST /api/agent-mcp/console/resolve { slug? }
                   ─►  returns ConsoleEnvelope
                   ─►  Tauri invoke('console_launch', { envelope })
@@ -39615,13 +39772,14 @@ click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?,
                           ├─ ensure ~/.papercusp/superuser-token (installer)
                           ├─ atomic .mcp.json write with backup-restore
                           └─ spawn OS terminal in NEW WINDOW
-                              ├─ macOS:  open -na <term> /tmp/papercup-*.command
                               └─ Windows: wt.exe -w new wsl.exe -d papercup-runtime
 ```
 
 Every click opens a **new window**, not a new tab.
 
 The primary route also records an `adv_sessions` tracking row (tagged with the launch’s `planSlug` / `label`, visible in `/adv/sessions`) and ends it when the terminal exits. The Tauri fallback path skips this row. Interactive launches waive brain admission but still pass a concurrency ceiling: over-ceiling returns HTTP 429 and **no terminal opens**.
+
+`console-spawn.ts` is the ONE shared spawn primitive (terminal selection, the OSC appearance prelude, the launcher one-liner) reused by both this route and the `capability:terminal` agent tool (and, in turn, `fleet:launch-on-plan`’s member terminals) — see [desktop-fleet-vs-loop-bee](/internal/docs/agent-insights/desktop-fleet-vs-loop-bee). `capability:terminal` calls it with `writeMcpJson:false` (it runs an arbitrary command, so it must not displace the project’s real `.mcp.json`); this route calls it with `writeMcpJson:true`.
 
 ## What appears inside the new terminal
 
@@ -39640,7 +39798,7 @@ cd <cwd> && export PATH=<scripts-dir>:$PATH \
 
 The greeting prints workspace + harness + pending suggestion count + escalations. Then the user is in their normal shell (zsh/bash/fish/…) with everything inherited from their rc files.
 
-On the server-side (Linux) path the launcher prepends an appearance prelude before the one-liner: OSC escapes recolor the window (dark, plan-slug-hashed background; light `#f4f4f5` foreground for ANSI brights) and set the title to `SH[adv:<id>]: <label>` (or just `SH[adv:<id>]` when there’s no label/plan). So the smoke test sees a **colored** window with a tagged title, not a default-theme terminal.
+On the server-side path (Linux and macOS both, via `console-spawn.ts`) the launcher prepends an appearance prelude before the one-liner: OSC escapes recolor the window (dark, plan-slug-hashed background — or a bound fleet color scheme, when the launch belongs to one; light `#f4f4f5` foreground for ANSI brights) and set the title to `SH[adv:<id>]: <label>` (or just `SH[adv:<id>]` when there’s no label/plan). So the smoke test sees a **colored** window with a tagged title, not a default-theme terminal.
 
 `.mcp.json` is dropped at cwd (backup-and-restore if one already existed). Inside that terminal, running `claude` or `codex` connects to `/api/mcp?superuser=1&workspace=<workspaceId>` (the active workspace, e.g. `default` — or `workspace=*` when launched all-workspaces; the harness slug never lands in this param) with the bearer header from `~/.papercusp/superuser-token`.
 
@@ -39666,7 +39824,7 @@ On the server-side (Linux) path the launcher prepends an appearance prelude befo
 
 6. Try a tool call: ask claude “what features are in this harness?” It should call `features:list` or `harness:status` and respond from real data.
 
-If iTerm2 is installed at `/Applications/iTerm.app` the launcher prefers it; otherwise Terminal.app. Per-app fallback is documented in `native_console.rs:detect_macos_default_terminal`.
+If iTerm2 is installed at `/Applications/iTerm.app` the launcher prefers it; otherwise Terminal.app. This detection now happens **server-side** for the primary path (`console-spawn.ts:macConsoleInvocation`, `existsSync('/Applications/iTerm.app')`); `native_console.rs:detect_macos_default_terminal` is the same logic kept in Rust for the Tauri IPC fallback (Windows path today — see “How it works”).
 
 ## Smoke test — Linux
 
@@ -39761,7 +39919,6 @@ Every call is recorded in `harness_shared.tool_invocations` with `role='operator
 
 | Symptom                                     | Cause                                                         | Fix                                                                                   |
 | ------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Button is hidden                            | Running in browser, not Tauri desktop                         | Open the desktop app build                                                            |
 | Toast “no terminal emulator found”          | Linux without any of the 7 known terminals                    | `apt install gnome-terminal` or set `$TERMINAL`                                       |
 | `unknown harness slug` 400                  | UI sent a slug not in `harness_registry`                      | Refresh the page; harness may have been deleted                                       |
 | `429` / over-ceiling, no terminal opens     | Too many concurrent agent sessions (interactive safety floor) | Close some sessions, then retry                                                       |
@@ -39773,16 +39930,18 @@ Every call is recorded in `harness_shared.tool_invocations` with `role='operator
 
 [Section titled “Where the code lives”](#where-the-code-lives)
 
-| File                                                                            | Role                                                        |
-| ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `apps/operator/app/_components/ConsoleLauncherButton.tsx`                       | The button + terminal icon SVG                              |
-| `packages/operator-core/lib/native-console.ts`                                  | Renderer-side wrapper around `commands.consoleLaunch`       |
-| `packages/operator-core/lib/console-launcher.ts`                                | Server-side envelope builder (`buildConsoleEnvelope`)       |
-| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-resolve.ts` | The Hono `POST /api/agent-mcp/console/resolve` handler      |
-| `apps/operator/scripts/papercup-status.mjs`                                     | The greeting CLI shown on first line                        |
-| `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                        |
-| `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri command + per-OS spawners                         |
-| `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console |
+| File                                                                            | Role                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/app/_components/ConsoleLauncherButton.tsx`                       | The button + terminal icon SVG                                                                                                                                                                                             |
+| `packages/operator-core/lib/native-console.ts`                                  | Renderer-side wrapper: tries the server-side `/console/launch` POST first, falls through to `commands.consoleLaunch` (Tauri IPC) only on a 501                                                                             |
+| `packages/operator-core/lib/console-launcher.ts`                                | Server-side envelope builder (`buildConsoleEnvelope`)                                                                                                                                                                      |
+| `packages/operator-core/lib/console-spawn.ts`                                   | Shared spawn primitive (`spawnConsole`/`buildConsoleOneliner`): Linux terminal-cascade selection, the OSC appearance prelude, and the macOS `open -na` spawner — reused by this route AND `capability:terminal`            |
+| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch.ts`  | The Hono `POST /api/agent-mcp/console/launch` handler (primary path — calls `console-spawn.ts`)                                                                                                                            |
+| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-resolve.ts` | The Hono `POST /api/agent-mcp/console/resolve` handler (envelope-only, used by the Tauri fallback)                                                                                                                         |
+| `apps/operator/scripts/papercup-status.mjs`                                     | The greeting CLI shown on first line                                                                                                                                                                                       |
+| `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                                                                                                                                                                                       |
+| `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri `console_launch` command + per-OS spawners (today’s live path only for the Windows/WSL2 host; macOS/Linux logic here is superseded by `console-spawn.ts`’s server-side path but kept for the Tauri IPC fallback) |
+| `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console                                                                                                                                                                |
 
 # Desktop workbench (/workbench)
 

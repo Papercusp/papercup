@@ -22,22 +22,29 @@ page is about how to test it.
 
 There are two launch paths. The **primary** path is a same-origin,
 server-side spawn: the operator process spawns the terminal itself, so
-no Tauri IPC is involved. The **fallback** path (the Tauri
-`console_launch` IPC command) is used only when the operator host isn't
-Linux — the server route returns HTTP 501 and the renderer falls
-through to it.
+no Tauri IPC is involved — this now covers **both Linux and macOS**
+(`console-spawn.ts` shared spawner). The **fallback** path (the Tauri
+`console_launch` IPC command) is used only when the operator host is
+the **Windows desktop's WSL2 sidecar** (`isWindowsDesktopHost()`) —
+the server route returns HTTP 501 and the renderer falls through to
+it. (A non-Linux, non-macOS, non-WSL2 host would also 501, but that
+isn't a supported desktop target.)
 
 ```
 click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?, resumeSessionId? }   (PRIMARY)
-              ─►  operator (Linux) spawns directly:
+              ─►  operator spawns directly via console-spawn.ts:
                   ├─ build ConsoleEnvelope (cwd, env, mcp.json body, …)
                   ├─ .mcp.json write with backup-restore at cwd
                   ├─ interactive safety floor (concurrency ceiling → 429)
                   ├─ record adv_sessions row (surfaced in /adv/sessions)
                   └─ spawn OS terminal in NEW WINDOW, recolored + titled
-                          └─ Linux: $TERMINAL → gnome-terminal/konsole/…
+                          ├─ Linux:  $TERMINAL → gnome-terminal/konsole/…
+                          └─ macOS:  open -na <term> /tmp/papercup-console-*.command
+                                     (operator runs natively in the user's GUI
+                                     session as a child of the desktop .app, so
+                                     it can open Terminal/iTerm itself — no IPC)
 
-              ─►  if operator host isn't Linux → HTTP 501 → FALLBACK:
+              ─►  if operator host is the Windows WSL2 sidecar → HTTP 501 → FALLBACK:
                   POST /api/agent-mcp/console/resolve { slug? }
                   ─►  returns ConsoleEnvelope
                   ─►  Tauri invoke('console_launch', { envelope })
@@ -45,7 +52,6 @@ click +   ─►  POST /api/agent-mcp/console/launch { slug?, planSlug?, label?,
                           ├─ ensure ~/.papercusp/superuser-token (installer)
                           ├─ atomic .mcp.json write with backup-restore
                           └─ spawn OS terminal in NEW WINDOW
-                              ├─ macOS:  open -na <term> /tmp/papercup-*.command
                               └─ Windows: wt.exe -w new wsl.exe -d papercup-runtime
 ```
 
@@ -57,6 +63,15 @@ ends it when the terminal exits. The Tauri fallback path skips this
 row. Interactive launches waive brain admission but still pass a
 concurrency ceiling: over-ceiling returns HTTP 429 and **no terminal
 opens**.
+
+`console-spawn.ts` is the ONE shared spawn primitive (terminal
+selection, the OSC appearance prelude, the launcher one-liner) reused
+by both this route and the `capability:terminal` agent tool (and, in
+turn, `fleet:launch-on-plan`'s member terminals) — see
+[desktop-fleet-vs-loop-bee](/internal/docs/agent-insights/desktop-fleet-vs-loop-bee).
+`capability:terminal` calls it with `writeMcpJson:false` (it runs an
+arbitrary command, so it must not displace the project's real
+`.mcp.json`); this route calls it with `writeMcpJson:true`.
 
 ## What appears inside the new terminal
 
@@ -76,12 +91,14 @@ The greeting prints workspace + harness + pending suggestion count +
 escalations. Then the user is in their normal shell (zsh/bash/fish/…)
 with everything inherited from their rc files.
 
-On the server-side (Linux) path the launcher prepends an appearance
-prelude before the one-liner: OSC escapes recolor the window (dark,
-plan-slug-hashed background; light `#f4f4f5` foreground for ANSI
-brights) and set the title to `SH[adv:<id>]: <label>` (or just
-`SH[adv:<id>]` when there's no label/plan). So the smoke test sees a
-**colored** window with a tagged title, not a default-theme terminal.
+On the server-side path (Linux and macOS both, via `console-spawn.ts`)
+the launcher prepends an appearance prelude before the one-liner: OSC
+escapes recolor the window (dark, plan-slug-hashed background — or a
+bound fleet color scheme, when the launch belongs to one; light
+`#f4f4f5` foreground for ANSI brights) and set the title to
+`SH[adv:<id>]: <label>` (or just `SH[adv:<id>]` when there's no
+label/plan). So the smoke test sees a **colored** window with a tagged
+title, not a default-theme terminal.
 
 `.mcp.json` is dropped at cwd (backup-and-restore if one already
 existed). Inside that terminal, running `claude` or `codex` connects
@@ -109,8 +126,12 @@ bearer header from `~/.papercusp/superuser-token`.
    from real data.
 
 If iTerm2 is installed at `/Applications/iTerm.app` the launcher
-prefers it; otherwise Terminal.app. Per-app fallback is documented
-in `native_console.rs:detect_macos_default_terminal`.
+prefers it; otherwise Terminal.app. This detection now happens
+**server-side** for the primary path
+(`console-spawn.ts:macConsoleInvocation`, `existsSync('/Applications/iTerm.app')`);
+`native_console.rs:detect_macos_default_terminal` is the same logic
+kept in Rust for the Tauri IPC fallback (Windows path today — see
+"How it works").
 
 ## Smoke test — Linux
 
@@ -238,7 +259,6 @@ not by `runId='standalone'` (that returns nothing).
 
 | Symptom                                     | Cause                                                         | Fix                                                                                   |
 | ------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Button is hidden                            | Running in browser, not Tauri desktop                         | Open the desktop app build                                                            |
 | Toast "no terminal emulator found"          | Linux without any of the 7 known terminals                    | `apt install gnome-terminal` or set `$TERMINAL`                                       |
 | `unknown harness slug` 400                  | UI sent a slug not in `harness_registry`                      | Refresh the page; harness may have been deleted                                       |
 | `429` / over-ceiling, no terminal opens     | Too many concurrent agent sessions (interactive safety floor) | Close some sessions, then retry                                                       |
@@ -248,13 +268,15 @@ not by `runId='standalone'` (that returns nothing).
 
 ## Where the code lives
 
-| File                                                                            | Role                                                        |
-| ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `apps/operator/app/_components/ConsoleLauncherButton.tsx`                       | The button + terminal icon SVG                              |
-| `packages/operator-core/lib/native-console.ts`                                  | Renderer-side wrapper around `commands.consoleLaunch`       |
-| `packages/operator-core/lib/console-launcher.ts`                                | Server-side envelope builder (`buildConsoleEnvelope`)       |
-| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-resolve.ts` | The Hono `POST /api/agent-mcp/console/resolve` handler      |
-| `apps/operator/scripts/papercup-status.mjs`                                     | The greeting CLI shown on first line                        |
-| `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                        |
-| `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri command + per-OS spawners                         |
-| `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console |
+| File                                                                            | Role                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/app/_components/ConsoleLauncherButton.tsx`                       | The button + terminal icon SVG                                                                                                                                                                                             |
+| `packages/operator-core/lib/native-console.ts`                                  | Renderer-side wrapper: tries the server-side `/console/launch` POST first, falls through to `commands.consoleLaunch` (Tauri IPC) only on a 501                                                                             |
+| `packages/operator-core/lib/console-launcher.ts`                                | Server-side envelope builder (`buildConsoleEnvelope`)                                                                                                                                                                      |
+| `packages/operator-core/lib/console-spawn.ts`                                   | Shared spawn primitive (`spawnConsole`/`buildConsoleOneliner`): Linux terminal-cascade selection, the OSC appearance prelude, and the macOS `open -na` spawner — reused by this route AND `capability:terminal`            |
+| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch.ts`  | The Hono `POST /api/agent-mcp/console/launch` handler (primary path — calls `console-spawn.ts`)                                                                                                                            |
+| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-resolve.ts` | The Hono `POST /api/agent-mcp/console/resolve` handler (envelope-only, used by the Tauri fallback)                                                                                                                         |
+| `apps/operator/scripts/papercup-status.mjs`                                     | The greeting CLI shown on first line                                                                                                                                                                                       |
+| `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                                                                                                                                                                                       |
+| `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri `console_launch` command + per-OS spawners (today's live path only for the Windows/WSL2 host; macOS/Linux logic here is superseded by `console-spawn.ts`'s server-side path but kept for the Tauri IPC fallback) |
+| `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console                                                                                                                                                                |

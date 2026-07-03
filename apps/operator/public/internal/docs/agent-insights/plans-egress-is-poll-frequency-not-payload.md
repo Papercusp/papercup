@@ -146,3 +146,39 @@ sessions"), but did not find the actual mechanism. This pass did, by reading
   `plans:attention` HTTP call rate actually drops, and to see whether another bridged table now
   dominates instead (any hot table under sustained multi-agent write load had the exact same
   unthrottled-bridge exposure until this fix).
+
+## Re-measured 2026-07-03 (su-6c9e4, EI-7028) — WI-840 landed; today's dominant traffic is the pui dock via the ADMIN PROXY, not the sync path
+
+Post-WI-840 re-measurement, with a **route-level** attribution this doc's earlier passes lacked
+(`harness_shared.route_invocations` — records method+path+principal per HTTP request, where
+`tool_invocations` cannot distinguish the two proxies because BOTH stamp `uiClientId:
+pc-admin-plans-ui` via the shared plans-read dispatcher):
+
+* **The sync rest-query path is now QUIET** — zero `/rest-query*` route invocations in the
+  measured hour. WI-840's bridge dedupe is deployed and the invalidation-storm-driven UI
+  refetch traffic this doc's third pass diagnosed is gone from the route log.
+* **Today's dominant traffic: `GET /admin/plans/:verb` — 1,090 req/hr, `principal_kind=system`,
+  bearer-token.** That is **`apps/tui` (the pui dock)**: `client.rs` `plans_list()` /
+  `attention_typed()` GET `admin/plans/list|attention`, driven by `main.rs refetch_all` (every
+  panel, on SSE-invalidate + a 60s safety net) — and the desktop dock runs **5–9 pui processes**
+  (`pui chat`, two `brain-view`s, `dock-driver`, `wake-pane`, …), each with its own loop. At
+  \~1.18MB per attention response and \~555KB per list response that is the \~50GB/day residual.
+* **Verified NOT the desktop webviews**: fetch-taps + `performance` resource entries in both
+  live Tauri webviews show zero rest-query/admin-plans calls; neither visible page subscribes
+  plans queries.
+* **The rows-delta client seam (SYNC\_RESOURCE\_DELTA, P-006) is live and the server half is
+  PROVEN** — a cursor round-trip against `/api/zero-harness/rest-query-batch` returns
+  `mode:delta` at **8.8KB vs 1.18MB full (134x)** — but it only covers the sync path, which is
+  no longer the traffic. Do not verify it via `tool_invocations.metadata deltaMode`: that field
+  records the TOOL-layer delta, not the wire negotiation (always reads `full` on this path).
+* **Fix direction for the pui residual** (EI-7028): the trimmed payload shape ALREADY EXISTS
+  server-side (`attention-shape.ts` `shapePlansAttention(data, tier)`, built for MCP ctx-tiers) —
+  expose an opt-in `?tier=trimmed` on the `/admin/plans/:verb` proxy and have pui pass it
+  (its panes render top-N items, not 1.18MB); and/or move `refetch_all`'s plans reads onto the
+  delta-negotiated batch endpoint. Beware `apps/tui/src/models.rs` typed parsing when changing
+  the shape.
+* Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`
+  contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every
+  content search skipped it — the delta wiring looked absent when it wasn't. Fixed to the
+  escaped form (backslash-u0000) 2026-07-03; if a file's matches mysteriously don't appear,
+  check for NUL bytes.

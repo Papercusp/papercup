@@ -43,6 +43,18 @@ now auto-injects `--fleet` into a psu command when its `fleet` arg is set — bu
 * **Long external work (a big download) ≠ a stalled agent.** A driver may background the job
   (`nohup … &`) and end its turn (parked). Check the actual work (the process / growing file), not
   just the agent's turn-state, before "recovering" it.
+* **omp/ornith member identity collisions are FIXED (WI-1866, 2026-07-03).** Before this fix, every
+  `omp`-backed session on the box shared ONE coord identity: omp (unlike `claude`'s
+  `${PAPERCUSP_SID}` URL env-expansion) can't interpolate its own session id at MCP-connect time,
+  so the user-level template baked a single per-machine `client=` — members' claims all attributed
+  to one agent, void claim-conflict protection, and wakes black-holed into whichever transcript
+  happened to be visible (live incident: sessions 9980–9982). `writeOmpSessionConfigDir` now also
+  stamps a per-session `client=<ownerId>` param (`applyOmpMcpUrlParams`), so if you previously saw
+  an omp fleet's members all appearing to act as a single agent, that symptom is resolved — don't
+  diagnose it as a fleet-launch bug going forward. A companion fix (WI-1863) also indexes
+  `adv-<advSessionId>` → ownerId in the session-owner registry, since omp launches have no native
+  session UUID to key off (`nativeSessionIdFromLaunchArgs` returns null for them by design) and were
+  previously unresolvable from a desktop `session-<N>` to their coord owner.
 
 ## Tool decision table
 
@@ -72,3 +84,17 @@ e.g. `ollama-cc/…ornith`) → the caller's own backend → `claude` (last-reso
 `claude`/`codex` `agent` paired with a local/ollama `model` is now a hard error (previously silently
 launched `claude` mislabelled with the ornith model — the "thought ornith, got claude" trap). Set
 `agent` explicitly whenever you want a fleet backend that differs from your own session's.
+
+## Becoming a leader now hard-enters AUTO mode (2026-07-03)
+
+A `fleet:launch-on-plan` call that creates/joins a fleet and makes the caller its **leader** now
+appends `LEADER_AUTO_MODE_DIRECTIVE` to the launch result, on top of the existing numbered
+`LEADER_STANDING_JOB` cycle list: *"LEADING THIS FLEET PUTS YOU IN AUTO MODE — effective NOW, for
+the rest of your session… do not stop to ask permission between steps, and NEVER end a turn
+waiting for an instruction while your fleet is live."* This lands the existing "leading a fleet
+auto-enters AUTO mode" persona rule at the exact moment the caller becomes a leader (a live
+finding, 2026-07-03: an ornith leader stayed at its ask-first routing-gate posture after this same
+call and only supervised once externally woken — a persona clause alone was too far from the act
+for a weaker model to bind). The launch result also now carries a structured
+`autoModeEntered: true` field (set whenever `opened.length > 0`) so a hook/scorer can key off it
+without parsing prose.

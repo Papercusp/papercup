@@ -122,4 +122,29 @@ falls back to <code dir="auto">next/headers</code> <code dir="auto">cookies()</c
 if any raw <code dir="auto">route.ts</code> exists under <code dir="auto">app/api/**</code> outside the
 <code dir="auto">[[...route]]</code> host-seam floor. That catches a re-introduced route
 regardless of contents — strictly better than a contents-matching ESLint
-rule. Wire it into CI next to <code dir="auto">tsc</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-03T02:42:34.000Z">Jul 3, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mobile-endpoint-unification.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Mobile endpoints are a defineRoute flag, not a separate router</span> </span> </a> <a href="/internal/docs/agent-insights/adding-a-reactive-table.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Adding a reactive table — the consolidated pattern</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+rule. Wire it into CI next to <code dir="auto">tsc</code>.</p>
+<p>Two hardening fixes landed 2026-07-03, both worth knowing if you touch this
+script again:</p>
+<ul>
+<li><strong>A clean checkout with the migration 100% complete has NO <code dir="auto">app/api</code> dir at
+all</strong> (git doesn’t materialize a directory with zero tracked files) — the
+script used to shell out to <code dir="auto">find "$API" …</code> unconditionally, and <code dir="auto">find</code> on a
+missing path exits non-zero, which threw out of the wrapping <code dir="auto">execSync</code> and
+crashed the whole script (a false RED on the isolated green-checkpoint
+checkout, which is exactly the fully-migrated end state this script exists
+to celebrate). It now <code dir="auto">existsSync(API)</code>-guards first and treats a missing
+dir as zero remaining routes, not an error.</li>
+<li><strong>The migrated-count barrel path was relative and silently wrong after the
+barrel moved.</strong> It resolved the <code dir="auto">defineRoute</code> registry barrel as
+<code dir="auto">join(API, '../../lib/endpoint-route/routes/index.ts')</code> — a path relative to
+<code dir="auto">app/api</code> that broke the moment the barrel moved to
+<code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code> (the
+operator-core extraction), and the <code dir="auto">catch</code> around the read <strong>swallowed the
+error and reported <code dir="auto">migratedCount: 0</code></strong> instead of surfacing the stale path.
+The barrel is now resolved absolutely from <code dir="auto">REPO</code>
+(<code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code>), and a failed
+read prints a loud <code dir="auto">WARNING</code> naming the path it tried, rather than quietly
+reporting zero progress. (This only affects the progress <em>count</em> the script
+prints — the <code dir="auto">--check</code> non-zero-on-regression enforcement above was never
+affected by the barrel-read failure.)</li>
+</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-03T18:25:50.000Z">Jul 3, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mobile-endpoint-unification.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Mobile endpoints are a defineRoute flag, not a separate router</span> </span> </a> <a href="/internal/docs/agent-insights/adding-a-reactive-table.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Adding a reactive table — the consolidated pattern</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

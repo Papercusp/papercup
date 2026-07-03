@@ -27,6 +27,8 @@ describe('signalOwnedHiveKeyMissing', () => {
         escalate: async (ref) => {
           escalated.push(`${ref.workspaceId}::${ref.hiveSlug}`);
         },
+        // Hermetic: no persistent toast_log read (default would touch PG).
+        recentlyAlerted: async () => false,
       },
     };
   };
@@ -74,6 +76,42 @@ describe('signalOwnedHiveKeyMissing', () => {
     expect(escalated).toEqual(['w::h', 'w::h']);
   });
 
+  it('CROSS-RESTART: a hive alerted in a PRIOR process (in-mem set empty) is suppressed', async () => {
+    // Simulates a fresh operator process (in-memory `signaled` reset by beforeEach)
+    // where a persistent toast_log row from a prior boot already alerted this hive.
+    const { warned, escalated } = fakeDeps();
+    const persistedDeps: OwnerKeyHealthDeps = {
+      warn: (m) => warned.push(m),
+      escalate: async (ref) => escalated.push(`${ref.workspaceId}::${ref.hiveSlug}`),
+      recentlyAlerted: async () => true, // a prior process already alerted within the window
+    };
+    const fired = await signalOwnedHiveKeyMissing(
+      { workspaceId: 'w', hiveSlug: 'h', context: 'cross-hive-boot' },
+      persistedDeps,
+    );
+    expect(fired).toBe(false); // suppressed by the persistent floor, not re-alerted on restart
+    expect(warned).toHaveLength(0);
+    expect(escalated).toHaveLength(0);
+    // And it's cached in-process so a second detection this tick doesn't re-query.
+    expect(isOwnedHiveKeyMissingSignaled({ workspaceId: 'w', hiveSlug: 'h' })).toBe(true);
+  });
+
+  it('CROSS-RESTART fail-open: a throwing recentlyAlerted still lets the alert fire', async () => {
+    const { warned, escalated } = fakeDeps();
+    const fired = await signalOwnedHiveKeyMissing(
+      { workspaceId: 'w', hiveSlug: 'h', context: 'c' },
+      {
+        warn: (m) => warned.push(m),
+        escalate: async (ref) => escalated.push(`${ref.workspaceId}::${ref.hiveSlug}`),
+        recentlyAlerted: async () => {
+          throw new Error('toast_log read blew up');
+        },
+      },
+    );
+    expect(fired).toBe(true); // fail-open: a persistent-check error never swallows a real alert
+    expect(escalated).toEqual(['w::h']);
+  });
+
   it('BEST-EFFORT: a throwing escalate (and warn) never throws into the caller', async () => {
     const throwingDeps: OwnerKeyHealthDeps = {
       warn: () => {
@@ -82,6 +120,7 @@ describe('signalOwnedHiveKeyMissing', () => {
       escalate: async () => {
         throw new Error('coord down');
       },
+      recentlyAlerted: async () => false,
     };
     // Must resolve true (a fresh signal) without rejecting, despite both legs throwing.
     await expect(
@@ -93,8 +132,9 @@ describe('signalOwnedHiveKeyMissing', () => {
     const escalate = vi.fn(async () => {
       throw new Error('boom');
     });
-    await signalOwnedHiveKeyMissing({ workspaceId: 'w', hiveSlug: 'h', context: 'c' }, { warn: () => {}, escalate });
-    await signalOwnedHiveKeyMissing({ workspaceId: 'w', hiveSlug: 'h', context: 'c' }, { warn: () => {}, escalate });
+    const q = { warn: () => {}, escalate, recentlyAlerted: async () => false };
+    await signalOwnedHiveKeyMissing({ workspaceId: 'w', hiveSlug: 'h', context: 'c' }, q);
+    await signalOwnedHiveKeyMissing({ workspaceId: 'w', hiveSlug: 'h', context: 'c' }, q);
     expect(escalate).toHaveBeenCalledTimes(1); // second call deduped despite the first throwing
   });
 });

@@ -120,23 +120,71 @@ VM inventory + disk discipline: [build-system/vms](/internal/docs/build-system/v
 
 `papercusp-desktop/bin/live-federation-gate.sh`
 runs the smokes on a schedule on a quiet box and files an EI on any RED (the
-green-rig/red-binary guard, WI-261). It:
+green-rig/red-binary guard, WI-261/P-013). It:
 
 * runs a **hermetic \~2s assert-core self-test first** (WI-754:
   `bin/lib/federation-asserts.selftest.sh` — proves the port-discovery logic
   before spending minutes on smokes; a fail exits `GATE: RED` with a clear
   message). Set `GATE_SKIP_SELFTEST=1` to skip it.
-* **SKIPs (not fails)** when 1-min load exceeds `LOAD_GATE` (default 15) — the
-  smokes get killed under load and false-RED below the kill threshold. Better to
-  skip and retry next window than false-RED or pile onto a busy box.
+* **SKIPs (not fails)** when 1-min load exceeds `LOAD_GATE` — the smokes get
+  killed under load and false-RED below the kill threshold. Better to skip
+  and retry next window than false-RED or pile onto a busy box. **`LOAD_GATE`
+  is now core-aware (2026-07-03, P-013):** `max(15, 3*nproc/8)` — an absolute
+  `15` never fired on the 128-core fleet box (it sat well below the box's
+  ordinary operating load), reproducing the exact "gate never runs" class
+  P-013 exists to kill; a first core-aware cut at `nproc/4` *still* undershot
+  the observed fleet-era floor (35-46). If a mid-run load spike pushes the
+  1-min load above the new `STORM_GATE` (default `nproc*0.6`) by the time the
+  verdict is computed, a would-be FAIL is **downgraded to
+  `SKIPPED-STORM`** (no EI filed) instead of a false-RED — the exact failure
+  mode a load-94 fleet storm caused before this existed.
+* **Fresh-exit + staleness guard (2026-07-03, P-013):** a GREEN younger than
+  `GATE_SUCCESS_TTL_H` (default 22h) makes the NEXT window's run a no-op exit
+  before the self-test even runs (hourly timer, \~daily actual smoke run). If
+  no GREEN has landed in `GATE_STALE_DAYS` (default 3) — every window either
+  load-skipped, storm-downgraded, all-legs-skipped, or failed — the gate files
+  a **loud staleness EI** itself: silence must never look like green. Set
+  `GATE_FORCE=1` to ignore the freshness TTL and force a run now (still
+  storm-downgrade-protected if the box saturates mid-run).
+* **EI filing now requires a superuser bearer** (2026-07-03, WI-1841 follow-up
+  to WI-1861): `?superuser=1` on the MCP URL alone is not sufficient — the
+  handler also needs `Authorization: Bearer <token>` matching
+  `~/.papercusp/superuser-token` (`GATE_SUPERUSER_TOKEN_PATH` overrides the
+  path). A missing/short token degrades gracefully to log-only, same as
+  before; it is not fatal.
+* **Build provenance is stamped** (2026-07-03, WI-1861): each rebuild logs the
+  working-tree `HEAD` + dirty-file count, so a "torn-tree build" red (the
+  shared checkout was mid-edit by a fleet peer at build time — unreproducible
+  at the next build, byte-identical blueprints) is diagnosable instead of a
+  mystery.
+* **`log()` now writes to stderr, not stdout** (2026-07-03, load-bearing
+  P-013 fix): the verdict logic reads a smoke leg's PASS/FAIL via `$(...)`
+  command substitution, and with `log` on stdout the captured string became
+  `"log-line\nPASS|FAIL"`, so `[ "$RES" = FAIL ]` could never match — a
+  genuine content-matrix FAIL was silently masked out of every verdict until
+  this fix. journald still captures both streams, so nothing is lost.
+* **The from-repo leg's known-red is WI-971, not WI-259** — WI-259 was closed
+  as a duplicate of WI-971 (outbox drain never wired for joined/created hive
+  harnesses); WI-280/WI-1666 are resolved. A content-matrix FAIL whose only
+  `✗` lines match the WI-971 backfill/incr-B→A signature is downgraded to
+  `PASS-971` (not a clean pass — WI-971 remains open) rather than a red.
+* **A new `local-matrix` leg** (P-002, no-op until `bin/local-matrix.sh`
+  exists) runs the full containerized 8-scenario matrix on a weekly cadence
+  (`MATRIX_TTL_H`, default 144h), and only on a window whose content-matrix
+  smoke already passed.
+* **All-legs-skipped is NOT recorded as green** — if load-gate/staleness logic
+  let a window through but every leg still SKIPPED (e.g. `SKIP_MATRIX=1
+  SKIP_FROMREPO=1`), the gate now exits `GATE: SKIPPED (no legs ran)` rather
+  than silently counting as a pass.
 
 Restart / re-run it manually on a quiet box:
 
 ```sh
 cd papercusp-desktop
 bin/reap-orphans.sh                                   # clear any prior debris first
-LOAD_GATE=20 bin/live-federation-gate.sh              # raise only for a dedicated/idle host
-GATE_NO_FILE=1 SKIP_FROMREPO=1 bin/live-federation-gate.sh   # log-only, skip the WI-259-RED leg
+LOAD_GATE=48 bin/live-federation-gate.sh              # raise only for a dedicated/idle host
+GATE_NO_FILE=1 SKIP_FROMREPO=1 bin/live-federation-gate.sh   # log-only, skip the WI-971-RED leg
+GATE_FORCE=1 bin/live-federation-gate.sh              # ignore the freshness TTL, force a run now
 ```
 
 It's a routine — check / re-arm it via `routines:list` / `routines:set` (it does
@@ -190,6 +238,23 @@ federation/self-heal work (FED-2) — don't restart a peer another agent is
 actively investigating. The durable fix (persist/restore auth across restart + a
 loud no-identity health signal) is tracked in WI-757.
 
+### 6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)
+
+A different silently-local-only cause, specific to `fed_local_launch` /
+`fed_local_launch_sidecar` (`bin/lib/federation-asserts.sh`) launches on a
+**fleet shell**: fleet desktop sessions carry ambient
+`PAPERCUSP_DHT_HOST=<bridge-ip>` / `PAPERCUSP_DHT_BOOTSTRAP=<bridge-ip:port>`
+for the tower↔VM rig, and a loopback smoke that inherits either one
+swarm-binds/bootstraps on the bridge instead of the loopback DHT the smoke
+actually spun up — so peers never dial each other (0 `peer_connected`
+fleet-wide, found 2026-07-03). Both launch primitives now **force-empty**
+`PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` before `"$@"` — a caller that
+*wants* either passes it explicitly in the trailing `VAR=val` args, which win
+over the forced-empty default. If you're troubleshooting a hand-rolled smoke
+that calls these primitives directly and it can't see its peer, check the
+calling shell's environment for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP`
+before suspecting the substrate.
+
 ## 7. Driving the live fed VMs — `fed.sh` (port self-discovery, WI-754)
 
 `papercusp-desktop/scripts/linux-test-vm/fed.sh` is the **versioned** driver for
@@ -229,15 +294,16 @@ tools whose schema rejects an unknown `workspace` key). The durable fix
 
 ## Quick reference
 
-| symptom                                                                 | do                                                                      |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754) |
-| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                              |
-| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                        |
-| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                 |
-| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                               |
-| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                             |
-| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                          |
-| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)           |
-| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)             |
-| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)            |
+| symptom                                                                 | do                                                                           |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754)      |
+| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                                   |
+| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                             |
+| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                      |
+| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                                    |
+| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                                  |
+| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                               |
+| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)                |
+| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)                  |
+| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
+| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)                 |

@@ -290,6 +290,21 @@ SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
              /NULLIF((SELECT count(*) FROM mcp),0),4)          AS coderun_pct;
 ```
 
+**Since 2026-07-03 the canonical opportunity-based metric (`dev:code_run_adoption` /
+`CODE_RUN_ADOPTION_SQL`) carries the same denominator discipline built in** —
+`transport='mcp' AND spawn_id IS NOT NULL`, plus poller tools (`activity:recent`)
+excluded from opportunity classification: a UI poller firing the same read twice is
+not a batchable agent flow (it manufactured \~87k fake opportunities/7d and made fleet
+adoption read 0.26% when the honest figure was \~22%). If you hand-roll an adoption
+query, copy those filters or your number is fiction.
+
+**Nudge→conversion funnel (2026-07-03):** every inline batch-hint fire is now recorded
+(migration `482`, `harness_shared.code_run_nudge_fires`) and `dev:code_run_adoption`
+returns `nudge: { nudgedSessions, convertedSessions }` — the direct measure of whether
+a nudged session then called `code:run`/`recipes:run`. Details + the structural-lockout
+finding (kits/caps/surface gate adoption before wording does):
+[code-run-adoption-metric](/agent-insights/code-run-adoption-metric/).
+
 ### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
 
 The win is agents NOT re-calling what `coord:orient` already returned. Baseline: orient co-fires with

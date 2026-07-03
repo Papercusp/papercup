@@ -37,6 +37,25 @@ function defaultContinueNote(focus: string): string {
   );
 }
 
+/**
+ * EI-7032: `focus` / `continueNote` are HINTS to the compaction summarizer, not
+ * load-bearing data. Rejecting an over-long one FAILED the whole compaction — and
+ * that failure lands at the worst possible moment (the agent called this BECAUSE it
+ * is at its context limit), forcing a wasted retry with a shorter string. Live data:
+ * 40% of calls (130/321 in 24h) 400ed on "focus: Too big <=600 chars", nothing else.
+ * Fix: truncate an over-long hint to the cap (…-marked) instead of rejecting, so the
+ * compaction ALWAYS proceeds. A within-cap hint is returned unchanged, and the
+ * published schema still advertises the cap so well-behaved clients keep it short.
+ */
+export function truncateHint(value: string, max: number): string {
+  return value.length > max ? value.slice(0, Math.max(0, max - 1)) + '…' : value;
+}
+
+/** A string field that TRUNCATES to `max` (via truncateHint) instead of rejecting. */
+function hintString(max: number) {
+  return z.preprocess((v) => (typeof v === 'string' ? truncateHint(v, max) : v), z.string().max(max));
+}
+
 export default defineTool({
   name: 'session:request-compaction',
   description:
@@ -52,11 +71,11 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 10 } },
   args: z.object({
-    focus: z
-      .string()
-      .max(600)
+    focus: hintString(600)
       .optional()
-      .describe('What to preserve/emphasize in this compaction (defaults to the standard preserve set).'),
+      .describe(
+        'What to preserve/emphasize in this compaction (defaults to the standard preserve set). Keep it ≤600 chars; an over-long focus is truncated, never rejected (EI-7032).',
+      ),
     autoContinue: z
       .boolean()
       .optional()

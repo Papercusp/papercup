@@ -205,6 +205,12 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
   hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go
   back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is
   the #1 silent-local-only cause after a VM reset).
+* `peer_unrevoked` — WI-193 "G8": a REFRESH-sourced revocation (the pubkey was
+  never named in a live `handle.revoke()` call) dropped out of the freshly-loaded
+  published `revoked_pubkeys` set, so `applyRevocationRefresh` reconciled it back
+  out of `revoked` — the peer is admissible again on its next announce. See
+  `substrate-revocation-model` for the full un-revoke story (still partial: an
+  explicit live `revoke()` call is never undone by this path).
 * `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
 * `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`);
   carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
@@ -221,6 +227,23 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously
 all four non-success paths were **silent** (`return false`), leaving a federated op that never
 landed with no diagnostic signal at all.
+
+> **GOTCHA (as of 2026-07-03) — a `?kinds=` filter can silently eat the exact
+> kinds this doc tells you to look for.** The route
+> (`dogfood-substrate-boot-history.ts`) filters `?kinds=` against its own
+> hand-maintained `VALID_KINDS` array, not the full `BootHistoryKind` union —
+> and that array is currently STALE: it is missing `peer_cap_near`,
+> `peer_unrevoked`, `announce_clock_skew`, `replication_stalled`,
+> `replication_frozen`, and all six `epoch_*` kinds documented above. Passing
+> any of those in `kinds=` gets them silently dropped (bogus values are
+> filtered, not rejected), so `fed.sh b api GET
+> '…&kinds=epoch_gate_seen,epoch_decrypt_fail'` comes back empty even when
+> those events fired — indistinguishable from "never happened." **Workaround:
+> omit `kinds=` entirely (or pass no filter) when hunting an `epoch_*` /
+> `peer_unrevoked` / `replication_*` / `announce_clock_skew` event**, and read
+> the `kind` column yourself. This is a genuine code staleness, not intended
+> behavior — flagged for a fix that derives `VALID_KINDS` from `BootHistoryKind`
+> (or drops the allow-list in favor of the union) so it can't drift again.
 
 ## The diagnostic ladder (use this order)
 
@@ -274,3 +297,42 @@ landed with no diagnostic signal at all.
   not merely-rostered ones.
 * `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its
   `kind`/`message` to place the failure on the ladder before touching code.
+
+## Multi-process split-brain: the corestore-lock race + timeout-zombie ladder (P-059, 2026-07-03)
+
+When tower↔peer replication is dead BOTH directions with healthy transport, suspect the
+**tower's own process topology** before any protocol layer. On a dev box, several processes
+can host a workspace's substrate (bg-host boot-all, the dev-api cluster primary's
+shared-hive layer) and they RACE for the same corestore RocksDB lock — whoever wins decides
+which process (and therefore which **DHT config**) federates that hive. Ladder:
+
+1. **Find the corestore holder by fd, not by assumption:**
+   `for P in $(ls /proc | grep -E '^[0-9]+$'); do C=$(ls -l /proc/$P/fd 2>/dev/null | grep -c '<ws>/.papercusp/<harness>/hyperbee'); [ "$C" -gt 0 ] && echo "$P ($C)"; done`
+   The holder may be a deep descendant (sidecar), not the service MainPID.
+2. **Check each candidate host's DHT env** (`PAPERCUSP_DHT_BOOTSTRAP` / `PAPERCUSP_DHT_HOST`
+   in `/proc/<pid>/environ`). A holder on the isolated DHT is INVISIBLE to a peer on the
+   public DHT and vice versa — the outage flip-flops with every restart race.
+   ⚠ `PAPERCUSP_DHT_HOST` pins the UDP socket to one iface AND **leaks into spawned
+   shells** from a systemd drop-in — inside a container/other netns it makes the node
+   announce an undialable address ("joins succeed, neither ever dials", WI-1910 class).
+3. **The timeout-zombie (WI-1892):** `bootSingleHarness` races the boot against a timeout
+   (default 30s, env `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`). Under a 35-substrate boot storm
+   the timeout fires but the DETACHED boot keeps running: corestore locked + topic joined,
+   **no registered handle → outbox drain never wired**. Signature: `[hyperbee-substrate]
+   (<ws>::<slug>) failed: boot timeout` in the journal while the pid still holds hyperbee
+   fds and `[swarm] joined topic` fired; `substrate_outbox` rows pile up `drained_at IS NULL`.
+   Since 2026-07-03 a late-completing boot is ADOPTED (registered + wired) — a healthy boot
+   logs `late boot ADOPTED` instead of zombifying (regression tests in `boot-all.test.ts`).
+4. **Decode `[announce-debug]`** (`PAPERCUSP_ANNOUNCE_DEBUG=1`, swarm.ts): per connection you
+   want `mux → defer-open → create → open-request → open → recv/sent`. `create→open-request→
+   close` with **no `open`/`pair`** = the announce handshake never paired (zombie endpoint,
+   or the peer isn't a real substrate for that topic). `recv topic=… log=…` names the exact
+   remote log announced — verify it's the peer you think it is (a local sibling's log looks
+   identical at a glance).
+5. **A peer's registry decides what re-boots after ITS restart.** A joined-hive harness that
+   was never persisted (WI-971 class) silently vanishes on reboot: the peer reconnects, its
+   OTHER hives announce, and the one you're probing is simply absent — check the peer's
+   boot ring for `boot_start` of the specific (workspace::harness) before debugging admission.
+6. **Journal times are LOCAL (EDT here), not UTC** — `journalctl --since "16:45"` when you
+   mean 16:45Z silently returns nothing. Use direction-unique probe keys per attempt
+   (`p059:v2t:wakeN-<agent>`), never reuse a name in both directions (grep false-positives).

@@ -48,7 +48,13 @@ delivers a **warm coord wake** to that same session so context continues across 
   `claude --resume <uuid> -p`**; alive-uninjectable → park; gone → drop.
 * **Re-arm:** `reconcile-loop-routines.ts` (the completion-rebase) detects the woken turn's
   `Stop`-hook 'ended' marker and sets `next_fire_at = completed_at + interval`; a stuck-park
-  backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives.
+  backstop re-arms after `max(30min, 4×interval)` if no completion signal arrives. As of
+  2026-07-03 this runs as its **own** `loop-rebase-sweep` step in `routinesTickImpl`
+  (`routines-workflow.ts`), fired FIRST right after the fire loop — it no longer rides the
+  tail of `reconcileAndGovern`, where 9 serial sweeps ahead of it were starving it under pool
+  pressure and leaving armed loops parked \~17min between 60s wakes (Task-#8). See the update
+  section below for the cold-loop ladder + circuit-open terminal-guard routing this same file
+  also gained the same day.
 * **State** is all PG: the `routines` row + `autoloop_state` (fire-state/backoff) +
   `event_wake_deliveries`.
 * **Status (2026-06-23): FLAG-ON at runtime; P0/P1/P2 LANDED.** `papercusp-loops` was flipped
@@ -282,3 +288,46 @@ reconstructed working state and appends a standing mandate to refresh it (`loop:
 before ending the turn, or call `loop:end` if done/blocked — otherwise a cold loop's anchor goes
 stale after one wake. Still entirely inside the cold-auto branch this section already scopes out
 of the warm-path failure mode; noted here only so the `wake-executor.ts` anchor stays precise.
+
+## Also since this doc (2026-07-03) — `reconcile-loop-routines.ts` gets a cold-aware settle ladder + a circuit-open terminal route
+
+Two more robustness gaps in the SAME re-arm module this doc analyzes (`completionSignal` /
+`reconcileLoopRoutines`), both found live the same day as the cold-auto rollout above:
+
+* **Cold loops need their OWN settle signal — bare quiescence lies.** A cold
+  (`carry:'cold'`) wake resets/recycles the session: the dying child emits a lifecycle
+  'ended' and the fresh child a lifecycle 'started' back-to-back at delivery, then (if the
+  carry-note inject is deferred) sits **booted-but-idle** until it actually runs its
+  iteration. The old warm-style fallback (presence went quiet after the fire ⇒ settled)
+  read that idle boot itself as "turn settled" and re-fired \~91s later into a still-booting
+  host (live: wake #5036 re-fired on top of #5033, the "stale-note-treadmill" finding).
+  `completionSignal` now branches on `row.carry`: a cold loop settles ONLY on (a) the turn's
+  own `Stop`-hook 'ended' marker **newer** than the post-fire 'started' boundary (i.e. the
+  session booted *and* finished its turn), or (b) a carry-note refresh after the fire (the
+  cold protocol's own completion receipt — a cold turn is required to `loop:checkpoint`
+  before ending) — taking whichever is later. Neither present ⇒ no settle at all; the loop
+  stays parked for the stuck-park backstop to retry (which safely re-delivers the same
+  note). This adds `lifecycle_started_at`, `carry`, and `note_updated_ts` to the per-row
+  query and a new `RebaseVia: 'note-refresh'`.
+* **The warm ladder also gained a reset-boundary guard.** Even on the non-cold path, an
+  'ended' marker is now only accepted as a settle when it is NOT older than a newer
+  post-fire 'started' marker (`lc != null && (ls == null || ls < lc)`) — defensive
+  hardening against the same reset-boundary confusion, though genuinely warm loops are
+  unaffected in practice (their 'started' fires once at process boot, before `last_fired_at`,
+  so it falls outside the post-fire SQL window).
+* **Circuit-open loops now reach the WI-1399 terminal guard WITHOUT waiting on the stuck-park
+  dwell window (EI-7006).** Previously the dead-owner terminal guard (auto-pause a
+  permanently-unreachable loop) was reachable only via the stuck-park branch
+  (`now - last_fired ≥ max(30min, 4×interval)`). But a loop whose fire-circuit is already
+  open (`consecutiveErrors ≥ circuitThreshold()`) gets an \~hourly probe fire that keeps
+  refreshing `last_fired_at` — so the stuck-park dwell almost never elapses, and even when it
+  eventually does, the terminal guard's own 2h window still exceeds the inter-probe gap. Dead
+  loops climbed to a permanently fire-circuit-open state (55→∞ open-circuit EIs observed) and
+  never terminated. `reconcileLoopRoutines` now takes an injected `circuitThreshold` (default
+  `autoloop.ts` `circuitThreshold()`) and routes a **parked, quiet, circuit-open** loop into
+  the SAME terminal guard as a stuck-park loop — `checkUnreachableTerminalGuard` now also
+  receives a `circuitOpen` flag, and the `stuckFireCount` it uses is `consecutiveErrors`
+  as-is on the circuit-open path (vs. `consecutiveErrors + 1` on the classic stuck-park path,
+  preserving that path's original contract). A circuit-open-but-not-yet-guard-breached loop
+  that hasn't reached the stuck-park dwell is left alone — the fire-gate's own backoff owns
+  its cadence; reconcile no longer fights it by re-arming early.

@@ -329,9 +329,9 @@ describe('groupByAgent — surfaces stalled like orphaned (P-005)', () => {
 // WI-1408 (fleet-registration-persists): a member launched with `--fleet <slug>`
 // must show up GROUPED under that fleet here — the read side of the fix. The
 // presence row's fleet_slug/fleet_role columns are a projection of the durable
-// membership fact (fleet_membership_events, WI-1345) that bootstrap-su/-role's
-// setPendingFleet + presence.ts's writePresence bridge actually persist (see
-// presence-pending-fleet-persist.test.ts for that write-side wiring). This pins
+// membership fact (fleet_membership_events, WI-1345) that bootstrap-su/-role/
+// operator-spawn stamp at boot (appendFleetMembershipIfAbsent, WI-1893 — see
+// bootstrap-su-fleet-stamp.test.ts for that write-side wiring). This pins
 // that a `listFleetAssignments` row carrying fleetSlug/fleetRole survives
 // `groupByAgent` into the roster's per-agent fleet label — never silently
 // dropped or left null the way the reported bug produced.
