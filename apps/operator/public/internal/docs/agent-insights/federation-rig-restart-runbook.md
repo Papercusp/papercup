@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/federation-rig-restart-runbook
 
 How to recover the two-instance federation rig when a run wedges or leaves debris: reap ONLY dead runs (reap-orphans.sh) or one run (cleanup-run.sh) — never a broad pkill/rm (EI-1739); clear stale Xvfb / testnet-DHT / orphaned sidecars; free or self-discover wedged ports (the WI-754 self-heal); reset/relaunch the linux-test-vm VMs (vmctl); restart the scheduled live-federation-gate; and — when a peer is up but silently local-only (announces nothing, discovers nothing) — restore its MISSING gh auth, the most common dead-link cause after a VM reset (WI-757).
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside } from "@astrojs/starlight/components";
 
 The **federation rig** = the `papercusp-desktop/bin/*federation*.sh` /
 `bin/two-instance-*.sh` smokes, their shared assert core
@@ -74,18 +74,19 @@ Two port strategies are in play:
 * **Dynamic + discovered:** the packaged `.deb`/Tauri path lets the instance pick
   its own ports; the rig **discovers** them.
 
-Discovery used to be **log-grep only** — it parsed the app log for
-`[serve] listening on http://127.0.0.1:N`. That raced the packaged app's *other*
-http listeners (code-server logs a generic `HTTP server listening on …` line),
-and a marker drift / log race produced an opaque `BOOT_TIMEOUT` or locked onto the
+Discovery used to be **log-grep only** — it parsed the app log for `[serve]
+  listening on http://127.0.0.1:N`. That raced the packaged app's *other* http
+listeners (code-server logs a generic `HTTP server listening on …` line), and
+a marker drift / log race produced an opaque `BOOT_TIMEOUT` or locked onto the
 **wrong** port (every API call then 404/405s). As of WI-754 the assert core
-**self-heals**: `fed_wait_api` requires a **2xx on the sidecar-only
-`GET /api/desktop/preflight`** (code-server 404s it), and when the configured port
-never answers, `fed_discover_sidecar_os` resolves the **real** sidecar port from
-the OS — scoped to THIS instance's own listening sockets + its own log, so it
-never probes a concurrent sibling (EI-1739). `fed_wait_boot` does the same on a
-boot timeout. So a wrong/missing sidecar marker no longer false-REDs; you'll see a
-`sidecar self-discovered on :N … recovered` log line instead.
+**self-heals**: `fed_wait_api` requires a **2xx on the sidecar-only `GET
+  /api/desktop/preflight`** (code-server 404s it), and when the configured port
+never answers, `fed_discover_sidecar_os` resolves the **real** sidecar port
+from the OS — scoped to THIS instance's own listening sockets + its own log,
+so it never probes a concurrent sibling (EI-1739). `fed_wait_boot` does the
+same on a boot timeout. So a wrong/missing sidecar marker no longer
+false-REDs; you'll see a `sidecar self-discovered on :N … recovered` log line
+instead.
 
 If a port is genuinely **held** by a dead run's leftover, §1 frees it (killing the
 holder). To see what an instance is actually listening on, the rig now dumps it on
@@ -233,10 +234,10 @@ Use the identity the peer historically announced as (its
 **preserves** `~/.config/gh`; only a full **VM re-image** wipes it — so prefer a
 process restart over a reset, and re-auth after any reset.
 
-A restart to force a swarm re-peer must be coordinated with whoever owns the live
-federation/self-heal work (FED-2) — don't restart a peer another agent is
-actively investigating. The durable fix (persist/restore auth across restart + a
-loud no-identity health signal) is tracked in WI-757.
+A restart to force a swarm re-peer must be coordinated with whoever owns the
+live federation/self-heal work (FED-2) — don't restart a peer another agent is
+actively investigating. The durable fix (persist/restore auth across restart +
+a loud no-identity health signal) is tracked in WI-757.
 
 ### 6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)
 
@@ -283,13 +284,24 @@ Ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for
 probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override with
 `FED_SSH_A` / `FED_SSH_B`.
 
+For a live two-machine federation witness, do not create an arbitrary
+repo-less throwaway with `hive:create`. The cross-machine join path joins the
+owner's per-member GitHub links (`joinHiveAsView` parses each member link and
+clones the member repo). A repo-less `hive:create` home has no member links
+for the peer to join, so the peer never subscribes to that hive's topic and
+owner writes have no remote log to arrive on. Use `hive:create_from_repo` (or
+an existing repo-bound hive with a joined peer member) for B8/B10-style ban,
+dissolve, grant, and receipt witnesses. A valid witness setup is: owner box
+owns the hive, peer box has joined at least one repo-bound member, then drive
+the federation action.
+
 Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
 `'default'`, so a hive created via `mcp` lands in the wrong workspace and the
 routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
 (`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
 `"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
-injects it for you (opt-in; off by default because blanket injection breaks READ
-tools whose schema rejects an unknown `workspace` key). The durable fix
+injects it for you (opt-in; off by default because blanket injection breaks
+READ tools whose schema rejects an unknown `workspace` key). The durable fix
 (superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
 
 ## Quick reference
