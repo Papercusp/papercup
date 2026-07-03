@@ -103,12 +103,18 @@ export function makeLoopQdSeams(
     // no-ops a non-eligible elite, and its WI-1564 guard THROWS under a non-federating
     // workspace — the caller runs this best-effort). NO signer: tier-1 federatable stamp; the
     // device-signed outcome record (P-014) rides once the substrate device key is threaded.
-    await markEliteFederatable({
-      workspaceId: scope.workspaceId,
-      harnessSlug: scope.harnessSlug,
-      nicheKey: nicheKey(descriptor.coords),
-      eligibility,
-    });
+    await markEliteFederatable(
+      {
+        workspaceId: scope.workspaceId,
+        harnessSlug: scope.harnessSlug,
+        nicheKey: nicheKey(descriptor.coords),
+        eligibility,
+      },
+      // Write through the SAME control-plane pool the archive uses (not a separately
+      // resolved getOrgPg().sql), so the federatable stamp lands on the row recordArchive
+      // wrote — and so tests can inject a fake sql.
+      sql,
+    );
   };
 
   return { recordArchive, noveltyForVariant, federateAcceptedElite };

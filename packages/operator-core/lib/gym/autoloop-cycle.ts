@@ -348,6 +348,9 @@ export async function runOneAutoloopCycle(
       recordArchive: qdSeams.recordArchive,
       // P-011 (D-008): the distance-from-archive novelty signal for QD parent selection.
       noveltyForVariant: qdSeams.noveltyForVariant,
+      // F1-4/P-014: publish an accepted candidate's niche elite to the hive (the live SEND
+      // path elites were missing). Best-effort in the loop; tier-1 (no device signer yet).
+      federateAcceptedElite: qdSeams.federateAcceptedElite,
     });
 
     // 6. (CLI mode) mark autoloop running, run the loop, then settle the status.
