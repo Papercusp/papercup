@@ -222,8 +222,12 @@ async function identityFromCache(
  */
 export async function loadCachedLocalAnnounceIdentity(
   cachePath: string | false = defaultCachePath(),
+  // LOAD-ONLY keypair verifier (tests inject); defaults to the real keychain read.
+  loadKeypair: (
+    keychainId: string,
+  ) => Promise<{ keychainId: string; pubkeyBase64: string } | null> = loadExistingDeviceKeypair,
 ): Promise<LocalAnnounceIdentity | null> {
-  return identityFromCache(cachePath, loadExistingDeviceKeypair);
+  return identityFromCache(cachePath, loadKeypair);
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {

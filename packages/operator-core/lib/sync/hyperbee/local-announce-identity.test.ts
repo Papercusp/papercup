@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   resolveLocalAnnounceIdentity,
   resolveLocalAnnounceIdentityFromHiveMembers,
+  loadCachedLocalAnnounceIdentity,
 } from './local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -223,6 +224,60 @@ describe('resolveLocalAnnounceIdentity', () => {
         })),
       }),
     ).rejects.toThrow(/GitHub timeout/);
+  });
+});
+
+describe('loadCachedLocalAnnounceIdentity (F1-6/P-014 signer reuse seam)', () => {
+  const writeCache = async (over: Record<string, unknown> = {}): Promise<string> => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'identity.json');
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        keychainId: '4242:m',
+        devicePubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+        attestationGistId: 'gist-cached',
+        ...over,
+      }),
+      'utf8',
+    );
+    return cachePath;
+  };
+
+  it('returns the cached identity when the keychain pubkey still matches (the signer seam)', async () => {
+    const cachePath = await writeCache();
+    const identity = await loadCachedLocalAnnounceIdentity(cachePath, async (keychainId) => ({
+      keychainId,
+      pubkeyBase64: 'PUBKEY==',
+    }));
+    // The SAME device the announce signs with — so a receiver's resolveAuthorDevice(ourLog)
+    // matches the pubkey we'll stamp on the outcome record (anti-lift parity).
+    expect(identity).toMatchObject({ keychainId: '4242:m', devicePubkeyBase64: 'PUBKEY==' });
+  });
+
+  it('returns null when the keychain no longer holds a matching key (rotated key)', async () => {
+    const cachePath = await writeCache();
+    expect(
+      await loadCachedLocalAnnounceIdentity(cachePath, async (keychainId) => ({
+        keychainId,
+        pubkeyBase64: 'ROTATED==',
+      })),
+    ).toBeNull();
+  });
+
+  it('returns null when the keychain load fails (no key present)', async () => {
+    const cachePath = await writeCache();
+    expect(await loadCachedLocalAnnounceIdentity(cachePath, async () => null)).toBeNull();
+  });
+
+  it('returns null on a cold box with no cache file', async () => {
+    const missing = join(await mkdtemp(join(tmpdir(), 'papercusp-announce-')), 'absent.json');
+    expect(
+      await loadCachedLocalAnnounceIdentity(missing, async (keychainId) => ({ keychainId, pubkeyBase64: 'X' })),
+    ).toBeNull();
   });
 });
 
