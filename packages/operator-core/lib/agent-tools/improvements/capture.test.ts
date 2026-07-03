@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { z } from 'zod';
 import captureTool from './capture';
+import { coerceCaptureKind } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { resolveAgentIdentity } from '../coordination/identity';
 

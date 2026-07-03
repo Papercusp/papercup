@@ -149,16 +149,18 @@ export type ColorSquare = (typeof COLOR_SQUARES)[number];
 /** `#rrggbb` → HSV with h in [0,360), s/v in [0,1]. Tolerant of a missing `#`,
  *  3-digit shorthand, or garbage (falls back to black). Pure. */
 export function hexToHsv(hex: string): { h: number; s: number; v: number } {
-  let m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
-  if (!m) {
-    const short = /^#?([0-9a-fA-F]{3})$/.exec(hex.trim());
-    if (short) {
-      const [r, g, b] = short[1]!.split('');
-      m = [`#${r}${r}${g}${g}${b}${b}`, `${r}${r}${g}${g}${b}${b}`] as RegExpExecArray;
-    }
-  }
-  if (!m) return { h: 0, s: 0, v: 0 };
-  const n = parseInt(m[1]!, 16);
+  const raw = hex.trim().replace(/^#/, '');
+  // Normalise to a 6-digit hex string; anything else (garbage) → black.
+  const full = /^[0-9a-fA-F]{6}$/.test(raw)
+    ? raw
+    : /^[0-9a-fA-F]{3}$/.test(raw)
+      ? raw
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : null;
+  if (!full) return { h: 0, s: 0, v: 0 };
+  const n = parseInt(full, 16);
   const r = ((n >> 16) & 0xff) / 255;
   const g = ((n >> 8) & 0xff) / 255;
   const b = (n & 0xff) / 255;

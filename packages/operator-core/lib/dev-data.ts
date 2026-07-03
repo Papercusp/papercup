@@ -117,6 +117,11 @@ export interface TelemetryRollupEntry {
    *  the batching-waste signal — calls that a single bulk `items[]` call would have saved.
    *  High values flag a tool the agent over-calls one-at-a-time (P-001). */
   repeat_within_spawn: number;
+  /** Distinct callers over the window: coord_owner_id when stamped, else
+   *  spawn_id. The poll-detector denominator (EI-7029) — spawn_id ALONE is
+   *  confounded by synthetic shared ids ('event-reaction' collapses every
+   *  in-process event reaction fleet-wide into ONE spawn). */
+  distinct_callers: number;
   workspaces: string[];
 }
 
@@ -154,6 +159,7 @@ export async function telemetryRollup(
     total_bytes: number;
     avg_bytes: number | null;
     repeat_within_spawn: number;
+    distinct_callers: number;
     workspaces: string[];
   };
   const rows = wsFilter
@@ -167,6 +173,7 @@ export async function telemetryRollup(
           coalesce(sum(output_size), 0)::float8 AS total_bytes,
           avg(output_size)::float8 AS avg_bytes,
           (count(*) - count(DISTINCT spawn_id))::int AS repeat_within_spawn,
+          count(DISTINCT coalesce(coord_owner_id, spawn_id))::int AS distinct_callers,
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
@@ -186,6 +193,7 @@ export async function telemetryRollup(
           coalesce(sum(output_size), 0)::float8 AS total_bytes,
           avg(output_size)::float8 AS avg_bytes,
           (count(*) - count(DISTINCT spawn_id))::int AS repeat_within_spawn,
+          count(DISTINCT coalesce(coord_owner_id, spawn_id))::int AS distinct_callers,
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
@@ -205,6 +213,7 @@ export async function telemetryRollup(
       total_bytes: Math.round(r.total_bytes ?? 0),
       avg_bytes: r.avg_bytes == null ? null : Math.round(r.avg_bytes),
       repeat_within_spawn: r.repeat_within_spawn ?? 0,
+      distinct_callers: r.distinct_callers ?? 0,
       workspaces: r.workspaces ?? [],
     })),
   };

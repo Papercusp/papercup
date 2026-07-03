@@ -22,6 +22,7 @@ import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { hardText, LIMITS } from '../limits';
+import { coerceCaptureKind } from './capture-coerce';
 
 export default defineTool({
   name: 'improvements:capture',
@@ -47,7 +48,13 @@ export default defineTool({
   // findings (it has coord:write via BLUEPRINT_ROLE_CAPS, but wasn't in
   // this list, so the tool never appeared in its projected surface).
   agentRoles: [...COORD_ROLES, 'scanner'],
-  args: z.object({
+  // WI-1974: normalise a mis-used top-level `kind` (observation / null / an observation
+  // sub-kind / a free-form label) to intent BEFORE validation, so a captured insight is
+  // never rejected+lost on the enum. Only `kind` is touched; the .strict() observation
+  // sub-object keeps failing loud on unknown keys (deliberate, anti-silent-data-loss).
+  args: z.preprocess(
+    coerceCaptureKind,
+    z.object({
     title: hardText(LIMITS.SHORT_TITLE).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),
     body: hardText(LIMITS.CONTENT).optional().describe('repro / context / the correct-state, especially for a bug'),
@@ -99,7 +106,8 @@ export default defineTool({
       .strict()
       .optional()
       .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
-  }),
+    }),
+  ),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const source = id.source === 'omp-hook-session' || id.source === 'static-client' ? 'su' : 'engineer';

@@ -788,6 +788,41 @@ export function runBootstrap(): void {
     }
   })();
 
+  // Spawner sidecar warm-up (WI-344 ③, plan spawner-sidecar-offload-2026-06-30 P-006).
+  // When the per-host PAPERCUSP_SPAWNER_SIDECAR opt-in is set, pre-spawn the
+  // agent-spawn sidecar at boot — beside the substrate boot above — so the FIRST
+  // real bee/queen spawn doesn't pay the fork+handshake, and the buildInvokeOnce +
+  // child_process.spawn CPU (the ~24.5% main-loop load that freezes routinesTick)
+  // leaves the bg-host main event loop from the very first spawn. The lazy path in
+  // spawnInvokeOnceWithFallback still spawns-on-demand, so this is a warm-up, not a
+  // hard dependency. Gated on backgroundWorkers (this IS the spawn host) + the env
+  // opt-in, so an operator without the flag never starts an unused sidecar; skipped
+  // on a short-lived utility host (EI-368) like the substrate boot above. Detached +
+  // fully guarded — a warm-up failure can never wedge boot (lazy fallback covers it).
+  if (
+    backgroundWorkers &&
+    !utilityHost &&
+    process.env.PAPERCUSP_SPAWNER_SIDECAR === '1'
+  ) {
+    void (async () => {
+      try {
+        const { spawnSpawnerSidecar, registerSpawnerSidecarShutdownHooks } =
+          await import('@papercusp/operator-core/lib/fleet/spawner-sidecar-spawn');
+        const t0 = Date.now();
+        await spawnSpawnerSidecar();
+        registerSpawnerSidecarShutdownHooks();
+        console.log(
+          `[spawner-sidecar] warm boot complete in ${Date.now() - t0}ms`,
+        );
+      } catch (err) {
+        console.warn(
+          '[spawner-sidecar] warm boot failed (non-fatal; lazy fallback covers it):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
+
   // [harness-state P-003a] Registry coverage + peer-log drift guard (fail-loud,
   // non-fatal). Asserts every live harness_shared table is intentionally
   // classified by the two-axis registry (lib/harness-state/table-registry.ts)

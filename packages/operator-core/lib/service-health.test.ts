@@ -203,6 +203,7 @@ import { SUBSTRATE_SOCKET_ENV } from './sync/hyperbee/substrate-socket-path';
 
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(async () => true), // SUBSTRATE_SIDECAR ON for every probe test
+  onFlagChange: vi.fn(() => () => {}), // listener registration in the module graph — no-op
 }));
 
 describe('probeSubstrateSidecar (WI-895 — not-spawned vs truly-dead discrimination)', () => {

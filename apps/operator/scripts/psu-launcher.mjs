@@ -159,7 +159,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -239,6 +239,10 @@ export function parseArgs(argv) {
     else if (a.startsWith('--model=')) out.model = normalizeModelSpec(a.slice('--model='.length));
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
+    // solo-launch-provenance: the ownerId of the agent that launched this session
+    // (capability:terminal auto-injects it into psu commands). Forwarded to
+    // bootstrap-su, which bakes it into the system prompt + env + a standing fact.
+    else if (a.startsWith('--launched-by=')) out.launchedBy = a.slice('--launched-by='.length);
     // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
     // (orthogonal to --agent). Forwarded to bootstrap-su; applied per-client at launch.
     else if (a.startsWith('--context-size=')) out.contextSize = a.slice('--context-size='.length);

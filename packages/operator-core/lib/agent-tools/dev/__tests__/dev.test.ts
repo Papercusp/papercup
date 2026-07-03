@@ -301,11 +301,36 @@ describe('dev:resolve_owner', () => {
 // ── dev:telemetry ───────────────────────────────────────────────────
 
 describe('dev:telemetry', () => {
-  it('returns count + entries', async () => {
+  it('returns count + poll_suspects + entries', async () => {
     const entries = [{ tool_name: 'x', call_count: 5, error_count: 0, p50_ms: 10, p95_ms: 20, workspaces: ['default'] }];
-    vi.doMock('../../../dev-data', () => ({ telemetryRollup: vi.fn(async () => ({ entries })) }));
+    // Keep the REAL flagPollSuspects (EI-7029) — only the PG-backed rollup is mocked.
+    vi.doMock('../../../dev-data', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../../dev-data')>()),
+      telemetryRollup: vi.fn(async () => ({ entries })),
+    }));
     const { default: tool } = await import('../telemetry');
-    expect(parsePayload((await tool.handler({ hours: 24 }, MAKE_CTX())) as never)).toEqual({ count: 1, entries });
+    expect(parsePayload((await tool.handler({ hours: 24 }, MAKE_CTX())) as never)).toEqual({
+      count: 1,
+      // 5 calls/24h is nowhere near poll-shaped → the guard stays quiet.
+      poll_suspects: [],
+      entries,
+    });
+  });
+
+  it('flags a poll-shaped storm in poll_suspects (EI-7029)', async () => {
+    const entries = [
+      { tool_name: 'activity:recent', call_count: 6000, error_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 1, repeat_within_spawn: 5990, workspaces: ['default'] },
+    ];
+    vi.doMock('../../../dev-data', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../../dev-data')>()),
+      telemetryRollup: vi.fn(async () => ({ entries })),
+    }));
+    const { default: tool } = await import('../telemetry');
+    const payload = parsePayload((await tool.handler({ hours: 24 }, MAKE_CTX())) as never) as {
+      poll_suspects: Array<{ tool_name: string }>;
+    };
+    expect(payload.poll_suspects).toHaveLength(1);
+    expect(payload.poll_suspects[0].tool_name).toBe('activity:recent');
   });
 });
 

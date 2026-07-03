@@ -45,6 +45,7 @@ import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import type { ColorScheme } from '../../console-color-schemes';
+import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
@@ -162,7 +163,7 @@ export function resolveFleetAgent(opts: {
  *  status check; 6 calls each landed on a worker with an empty map and opened 2 terminals apiece —
  *  12 unwanted desktop windows). claimFleetLaunchSlot is one atomic SQL check-and-set shared by
  *  every worker, so exactly ONE call per fleet can win the window. */
-const RELAUNCH_SUPPRESS_MS = 60_000;
+const RELAUNCH_SUPPRESS_MS = 300_000;
 
 /**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +

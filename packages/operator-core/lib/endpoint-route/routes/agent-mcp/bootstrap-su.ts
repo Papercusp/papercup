@@ -20,6 +20,7 @@
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
@@ -470,6 +471,41 @@ export const AUTO_MODE_DIRECTIVE =
   'brakes still apply.)';
 
 /**
+ * WI-1962: the turn-1 kickoff for a MISSION-BRIEF launch (`--launch-context` with
+ * no plan bound). Without it a scripted solo launch boots to an interactive prompt
+ * and PARKS FOREVER — claude sat 10+ minutes with a full mission in its system
+ * prompt and ZERO turns taken (su-8ab32510, 2026-07-03) until a manual coord wake.
+ * The launcher gates delivery exactly like the plan kickoff (--no-picker, not
+ * --no-kickoff), so an interactive human launch still opens at an empty prompt.
+ */
+export const LAUNCH_CONTEXT_KICKOFF =
+  'Begin your mission NOW, exactly as your launch brief (the launch-context section of your ' +
+  'system prompt) directs. Orient first (coord:orient with a one-line intent), then start the ' +
+  'work — do not park waiting for a human turn; this kickoff IS your first turn.';
+
+/**
+ * The turn-1 kickoff a launch seeds (EI-5503 + WI-1962 + WI-1356) — pure, exported
+ * for tests. A plan-bound launch gets the canonical plan kickoff; a mission-brief
+ * (--launch-context, no plan) launch gets the brief kickoff; an AUTO launch prepends
+ * the AUTO activation (and kicks off even bare). null ⇒ the launcher seeds nothing
+ * (an interactive human launch opens at an empty prompt).
+ */
+export function deriveKickoffPrompt(opts: {
+  planSlug: string | null;
+  autoMode: boolean;
+  launchContextPath: string | null;
+}): string | null {
+  const base = opts.planSlug
+    ? deriveLaunchPromptText(null, opts.autoMode)
+    : opts.launchContextPath
+      ? LAUNCH_CONTEXT_KICKOFF
+      : null;
+  return opts.autoMode
+    ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, base].filter(Boolean).join('\n\n')
+    : base;
+}
+
+/**
  * context-trimming-tiers P-007: the context-discipline line a fleet launch bakes
  * next to the AUTO directive — durable system prompt (survives compaction) +
  * turn-1 kickoff, same dual delivery. Six 200k-window members died mid-task on
@@ -699,6 +735,13 @@ const post = defineTool({
        * Claude/OMP receive this as an extra system prompt from the launcher;
        * Codex has no such flag, so bootstrap folds it into AGENTS.md. */
       launch_context?: string | null;
+      /** solo-launch-provenance (WI-1962 sibling): the ownerId of the agent/session
+       *  that LAUNCHED this one (`psu --launched-by=<ownerId>`; capability:terminal
+       *  auto-injects it into psu commands). Baked into the system prompt, exported
+       *  as PAPERCUSP_LAUNCHED_BY, and asserted as an owner-scoped standing fact —
+       *  so the launched agent can always answer "who launched/supervises you"
+       *  (su-8ab32510 2026-07-03 couldn't: no provenance existed anywhere). */
+      launched_by?: string | null;
       /** su-context-size-variants: 'full' | 'trimmed' — the initial-context size. */
       context_size?: string | null;
       /** context-trimming-tiers P-017: persona tier — 'full' (today's playbook) |
@@ -998,6 +1041,16 @@ const post = defineTool({
     const autoMode = body.auto === true;
 
     const launchContextPath = body.launch_context?.trim() || null;
+    // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather
+    // than bake it into a system prompt / standing fact.
+    const launchedByRaw = body.launched_by?.trim() || null;
+    if (launchedByRaw && !/^[A-Za-z0-9._:-]{1,120}$/.test(launchedByRaw)) {
+      return jsonRes(
+        { status: 'error', error: `launched_by must be an owner id (got ${launchedByRaw.slice(0, 48)})` },
+        400,
+      );
+    }
+    const launchedBy = launchedByRaw;
     let promptText = spec.promptText;
     if (agent === 'codex' && launchContextPath) {
       try {
@@ -1007,6 +1060,45 @@ const post = defineTool({
         }
       } catch (e: any) {
         return jsonRes({ status: 'error', error: `read launch_context: ${e?.message}` }, 400);
+      }
+    }
+
+    // solo-launch-provenance: bake WHO launched this session into the assembled
+    // system prompt (promptText is the single source for all three backends), so
+    // the agent can always answer "who launched you / who supervises this mission"
+    // — across compaction AND cold-loop resets. Found 2026-07-03: su-8ab32510
+    // described its launcher as "an observer who doesn't assign or supervise my
+    // work" because NOTHING in the system recorded the relationship.
+    if (launchedBy) {
+      promptText =
+        `${promptText.replace(/\n+$/, '')}\n\n---\n## Provenance — who launched this session\n\n` +
+        `You were launched by **${launchedBy}**, the agent that chose this mission and its launch ` +
+        `brief. They are your LAUNCHER/SUPERVISOR: report milestones, blockers, and anomalies to ` +
+        `them (coord:send), answer their messages before your own next step, and treat their ` +
+        `directives as steering. If asked who launched you or whose work this is, the answer is ` +
+        `${launchedBy}.\n`;
+      // ALSO assert the provenance as an owner-scoped STANDING FACT — coord:orient
+      // folds owner-scope facts VERBATIM at every orient, so the agent re-learns its
+      // launcher on every wake (a cold loop re-orients from nothing each wake).
+      // Best-effort: a facts outage must never block a launch.
+      try {
+        const { assertFact } = await import('../../../agent-facts/store');
+        await assertFact({
+          scope: 'owner',
+          scopeRef: sid,
+          key: 'launch-provenance',
+          body:
+            `You were launched by ${launchedBy}` +
+            (planSlug ? ` on plan ${planSlug}` : '') +
+            (launchContextPath ? ` with brief ${basename(launchContextPath)}` : '') +
+            `. They are your launcher/supervisor — report milestones + anomalies to them.`,
+          sourceRef: 'bootstrap-su:launched-by',
+          createdBy: launchedBy,
+          ttlSec: 30 * 24 * 3600,
+          workspaceId: workspace,
+        });
+      } catch (e: any) {
+        process.stderr.write(`[bootstrap-su] provenance fact assert failed (non-fatal): ${e?.message}\n`);
       }
     }
 
@@ -1127,6 +1219,8 @@ const post = defineTool({
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
       ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
+      // solo-launch-provenance: the launcher's ownerId, readable by hooks/tools.
+      ...(launchedBy ? { PAPERCUSP_LAUNCHED_BY: launchedBy } : {}),
     };
 
     // psu-account-chooser P-002: when the launch carries an explicit `account`, fold
@@ -1138,20 +1232,14 @@ const post = defineTool({
     // reads those exact var names. Empty when no fleet was chosen (byte-identical).
     Object.assign(envelopeEnv, fleetPin.env);
 
-    // improve-fleet-launch-autokickoff (EI-5503): a plan-bound launch returns the
-    // first user turn the launcher seeds, so a scripted/fleet member STARTS working
-    // instead of parking idle. The launcher GATES delivery (--no-picker + --plan,
-    // unless --no-kickoff); the server just supplies the canonical text — shared with
-    // plans:launch's headless kickoff via ./launch-prompt, so the two never drift.
-    //
-    // fleet-auto-mode (WI-1356): an AUTO launch ALSO prepends the AUTO activation so
-    // turn 1 enters AUTO — and gets a kickoff even with NO plan bound (a fleet member
-    // must start autonomous regardless), so the launcher's kickoffPositionalArgs
-    // (gated to --no-picker) submits it as the first turn.
-    const kickoffBase: string | null = planSlug ? deriveLaunchPromptText(null, autoMode) : null;
-    const kickoffPrompt: string | null = autoMode
-      ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, kickoffBase].filter(Boolean).join('\n\n')
-      : kickoffBase;
+    // improve-fleet-launch-autokickoff (EI-5503) + WI-1962 + fleet-auto-mode
+    // (WI-1356): the first user turn the launcher seeds, so a scripted launch —
+    // plan-bound, mission-brief (--launch-context), or AUTO — STARTS working
+    // instead of parking idle. The launcher GATES delivery (--no-picker, unless
+    // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
+    // pure + tested) — shared with plans:launch's headless kickoff via
+    // ./launch-prompt, so the two never drift.
+    const kickoffPrompt = deriveKickoffPrompt({ planSlug, autoMode, launchContextPath });
 
     const result: BootstrapSuResult = {
       status: 'ok',

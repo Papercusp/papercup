@@ -56,6 +56,22 @@ vi.mock('../../../harness/routines/loop', () => ({
   getLoopStatus: () => getLoopStatus(),
 }));
 
+// self.fleets legs (multi-fleet-terminal-identity, WI-1963): the fleets this agent
+// LEADS + its single presence member-fleet. resolveFleetScheme + nearestColorSquareEmoji
+// stay REAL (pure) so the square each fleet maps to is exercised end-to-end.
+const listFleetsLedBy = vi.fn<(ws: string, owner: string) => Promise<unknown[]>>();
+const getFleet = vi.fn<(ws: string, slug: string) => Promise<unknown>>();
+const fetchPresenceFleet =
+  vi.fn<(ids: string[]) => Promise<Map<string, { fleetSlug: string | null; fleetRole: string | null }>>>();
+vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  listFleetsLedBy: (ws: string, owner: string) => listFleetsLedBy(ws, owner),
+  getFleet: (ws: string, slug: string) => getFleet(ws, slug),
+}));
+vi.mock('../presence-fleet', () => ({
+  fetchPresenceFleet: (ids: string[]) => fetchPresenceFleet(ids),
+}));
+
 import glance from './glance';
 
 const ctx = { uiClientId: 'su-self', isSuperuser: true, workspaceId: 'ws' } as never;
@@ -70,6 +86,9 @@ beforeEach(() => {
   beeCount = 0;
   activityRows = [];
   getLoopStatus.mockResolvedValue(null);
+  listFleetsLedBy.mockResolvedValue([]);
+  getFleet.mockResolvedValue(null);
+  fetchPresenceFleet.mockResolvedValue(new Map());
   sqlCalls.length = 0;
 });
 afterEach(() => vi.clearAllMocks());
@@ -159,5 +178,59 @@ describe('coord:glance', () => {
     const g = out(await glance.handler(parse({}), ctx));
     expect(g.bees.running).toBe(4);
     expect(sqlCalls.some((q) => q.includes('spawned_agents'))).toBe(true);
+  });
+
+  // ── self.fleets — multi-fleet terminal identity (WI-1963) ──
+  it('self.fleets = every LED fleet (👑) ∪ the member fleet (👤), each with its scheme colour square', async () => {
+    listFleetsLedBy.mockResolvedValue([
+      { fleetSlug: 'roman-fleet', title: 'roman', colorScheme: 'royal-purple' },
+      { fleetSlug: 'greek-fleet', title: 'greek', colorScheme: 'forest' },
+    ]);
+    // Keyed by whatever ownerId glance resolves from ctx — robust to the id mapping.
+    fetchPresenceFleet.mockImplementation((ids) =>
+      Promise.resolve(new Map(ids.map((id) => [id, { fleetSlug: 'blue-fleet', fleetRole: 'member' }]))),
+    );
+    getFleet.mockResolvedValue({ fleetSlug: 'blue-fleet', title: 'blue', colorScheme: 'midnight-slate' });
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.fleets).toEqual([
+      { slug: 'roman-fleet', label: 'roman', role: 'leader', square: '🟪' },
+      { slug: 'greek-fleet', label: 'greek', role: 'leader', square: '🟩' },
+      { slug: 'blue-fleet', label: 'blue', role: 'member', square: '🟦' },
+    ]);
+  });
+
+  it('a member fleet that is ALSO led is not duplicated', async () => {
+    listFleetsLedBy.mockResolvedValue([
+      { fleetSlug: 'roman-fleet', title: 'roman', colorScheme: 'royal-purple' },
+    ]);
+    fetchPresenceFleet.mockImplementation((ids) =>
+      Promise.resolve(new Map(ids.map((id) => [id, { fleetSlug: 'roman-fleet', fleetRole: 'leader' }]))),
+    );
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.fleets).toEqual([
+      { slug: 'roman-fleet', label: 'roman', role: 'leader', square: '🟪' },
+    ]);
+  });
+
+  it('label falls back to the slug when a fleet has no title', async () => {
+    listFleetsLedBy.mockResolvedValue([{ fleetSlug: 'nameless-fleet', title: null, colorScheme: 'forest' }]);
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.fleets).toEqual([
+      { slug: 'nameless-fleet', label: 'nameless-fleet', role: 'leader', square: '🟩' },
+    ]);
+  });
+
+  it('no fleets → self.fleets is empty', async () => {
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.fleets).toEqual([]);
+  });
+
+  it('a fleet-store error fails open to empty self.fleets (the render never breaks)', async () => {
+    listFleetsLedBy.mockRejectedValue(new Error('pg down'));
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.self.fleets).toEqual([]);
+    // and the rest of the glance still assembled
+    expect(g.ok).toBe(true);
+    expect(g.wake.default).toBe('auto');
   });
 });
