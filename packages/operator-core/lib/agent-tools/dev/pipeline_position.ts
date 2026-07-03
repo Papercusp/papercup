@@ -51,7 +51,7 @@ export default defineTool({
     // awaitable so the answer to "is it live yet?" is a sleep, not a re-poll. Point
     // at the GLOBAL key (fires on every deploy, always live) — deploy:await refines
     // it to the per-sha key. Only when the change isn't deployed yet is a wait useful.
-    const deployed = (result as { deployed?: unknown }).deployed === true;
+    const deployed = (result as { positions?: { deployed?: boolean } }).positions?.deployed === true;
     const awaitable = deployed
       ? undefined
       : {

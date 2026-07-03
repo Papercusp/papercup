@@ -404,6 +404,17 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   it('a perf crit still dominates an MCP-proxy warn', () => {
     expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'], mcpProxy: mcpProxy({ hardFailures: 1 }) }))).toBe('crit');
   });
+  it('a critical PG-pool band warns — the routinesTick freeze mode (P-006/W4)', () => {
+    expect(infraStatus(infra({ pool: { probeMs: 5000, band: 'critical' } }))).toBe('warn');
+  });
+  it('an elevated / ok / absent PG-pool band does not raise infra on its own (P-006/W4)', () => {
+    expect(infraStatus(infra({ pool: { probeMs: 1800, band: 'elevated' } }))).toBe('ok');
+    expect(infraStatus(infra({ pool: { probeMs: 40, band: 'ok' } }))).toBe('ok');
+    expect(infraStatus(infra({ pool: undefined }))).toBe('ok'); // deploy-skew: field absent
+  });
+  it('a perf crit still dominates a PG-pool warn', () => {
+    expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'], pool: { probeMs: 5000, band: 'critical' } }))).toBe('crit');
+  });
 });
 
 describe('threshold constants are sane', () => {

@@ -217,6 +217,13 @@ export interface LoopStatus {
   harnessSlug: string;
   active: boolean;
   intervalSec: number | null;
+  /** Loop lifecycle (su-cold-auto-mode-2026-07-03 P-003/P-008): 'warm' (default) re-wakes the
+   *  same session in place; 'cold' resets/recycles to the carry-note each wake. Observability so
+   *  an operator can see whether a loop is cold and, if it looks lost, re-arm it warm. */
+  carry: 'warm' | 'cold';
+  /** Total delivered fires so far (metadata.fire_count) — for a cold loop this is the wakeCount
+   *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked. */
+  fireCount: number;
   /** True while the loop's turn is in flight (parked at next_fire_at='infinity'). */
   parked: boolean;
   /** Next scheduled fire (ISO), or null when parked / unset. */
@@ -278,6 +285,7 @@ export async function getLoopStatus(
            r.reschedule_interval_sec,
            r.target_owner_id,
            r.payload_template,
+           COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
            r.last_fired_at,
            (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,
            CASE WHEN r.next_fire_at = 'infinity'::timestamptz THEN NULL
@@ -322,6 +330,8 @@ export async function getLoopStatus(
     harnessSlug: r.install_slug,
     active: r.active,
     intervalSec,
+    carry: pt?.carry === 'cold' ? 'cold' : 'warm',
+    fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,

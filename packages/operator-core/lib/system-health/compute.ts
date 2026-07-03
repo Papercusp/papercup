@@ -934,12 +934,13 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         : perfCrit
         ? `PER-THREAD WEDGE: ${perf!.reasons[0] ?? 'operator degraded'}`
         : pg
-        ? `PG ${pg.active} active / ${pg.total} conns${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
+        ? `PG ${pg.active} active / ${pg.total} conns${poolNote}${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
         : 'PG unreadable',
       data,
       link: { label: 'Tests', href: '/adv?tab=testing' },
       metrics: [
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
+        m('pg pool', pool ? (pool.band === 'ok' ? `${pool.probeMs}ms` : `${pool.band} (${pool.probeMs}ms)`) : 'n/a', pool?.band === 'critical' ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
         m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),

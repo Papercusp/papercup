@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { buildStatus } from '../../dev-data';
+import { buildKey } from '../../events/await/catalog';
 
 export default defineTool({
   name: 'dev:build_status',
@@ -27,6 +28,13 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const result = await buildStatus();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    // event-await-discoverability P-001: if you're re-reading this to see a build/
+    // deploy finish, sleep on the event instead of polling the panel.
+    const awaitable = {
+      hint: 'Waiting on a build/deploy? Don\'t re-poll — events:await the deploy or the gate (or use deploy:await / checkpoint:await), then END YOUR TURN. Full list: events:catalog.',
+      events: [buildKey('deploy'), buildKey('checkpoint')],
+      sugar: ['deploy:await', 'checkpoint:await'],
+    };
+    return { content: [{ type: 'text', text: JSON.stringify({ ...result, awaitable }) }] };
   },
 });
