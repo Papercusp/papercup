@@ -55,7 +55,7 @@ federation is done.
 | Coordination **control plane** cross-machine (wake / push / presence) | ✅ **Boundary LIVE-PROVEN (Brief 7 matrix, 2026-07-02)** | Harness-scoped coord messages + escalations FEDERATE; raw presence/watermarks/await-subscriptions stay LOCAL by design (cross-machine visibility rides `shared_presence`). The "handoffs don't federate" gap (WI-1510) is **CLOSED — by design, not a wire bug**: handoffs DO federate but the receiver-side P-013 comms-tier gate quarantines any handoff whose author is below `steer` (`coord_quarantine`, reason `handoff-below-steer`; no owner special-case — steer is a local per-user grant that never federates). Live-proven both legs 2026-07-02 (m1783013203): ungranted → quarantined; steer-granted → applies |
 | True 3-machine multi-member fanout, **live** | ⛔ **Not coverable** under the current 2-server quota | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts |
 | NAT / firewall / cross-region diversity | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat** | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner's owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox) |
-| Long-running node stability (bg-host listener/handle leak) | 🔴 **Open — re-observed live** | WI-1089's fix did not hold: ~30GB RSS at ~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes |
+| Long-running node stability (bg-host listener/handle leak) | ✅ **RESOLVED + live-re-verified (2026-07-02)** | The re-observed 30GB climb (WI-1417) was the claude-sessions fs-sweep, not the swarm listeners: negative-resolution + roots TTL caches in `claude-sessions.ts` landed and were re-verified live 2026-07-02 — bg-host holds a healthy 5.7–5.8GB sawtooth plateau over a multi-hour soak (RSS *decreased* across a 12-min recheck), no reaper false-reap storm; 3 recurrence-guard tests (`claude-sessions-cache.test.ts`). WI-1089 + WI-1415 + WI-1416 also resolved |
 | LWW convergence under clock skew | ✅ **All four known ordering sources FIXED (2026-07-02)** — one residual PRESENCE gap open (WI-1684) | (1) capture-boundary two-clock bug → **mig 446**; (2) HLC-fold vs fed_ts-guard order split → **mig 458** (`fed_order_key` across all 20 mutable projection writers, EI-1698); (3) exact `(ms,count)` fed_hlc TIES swap winners under counter-lockstep (WI-1672) → **mig 459** node-id total order (3-segment HLC) + locks-core `hlc.ts`; (4) one absurd-future stamp pins every recv-ratcheted clock forever (the WI-1672 amplifier) → **mig 460** + `HlcClock.maxDriftMs` ε recv clamp (600s = 2× the D-007 announce window). Evidence: production-topology convergence-fuzz sweep (TEETH + 120-seed FIXED, monotone AND skew) + forced-tie two-device PG integration test. **Still open: WI-1684** — local-del resurrection under skipOwnOps (missing tombstone; row PRESENCE split-brain; see § 4a) |
 | Revocation **read** cut-off | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)** | Post-ban owner content never reached the banned member over real VMs (~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329 |
 
@@ -301,12 +301,17 @@ the restricted-cone emulation). Earlier rig work also proved that two VMs
 sharing one NAT egress IP **hairpin** and fail a public-DHT holepunch — a
 class of failure single-NAT topologies never surface.
 
-### 6. Long-running node stability (bg-host listener leak)
-25+ substrate boots add `swarm.on('connection')` to the **shared** swarm without
-removal → `MaxListenersExceeded` → a listener/handle/heap leak that degrades a
-node running for days. WI-1088/1089 (Brief 10) — a real release risk for any
-long-lived federated node; needs the listener-lifecycle fix + a heap/handle
-regression guard landed.
+### 6. Long-running node stability (bg-host leak) — RESOLVED (2026-07-02)
+The original listener-leak class (25+ substrate boots adding `swarm.on('connection')`
+to the shared swarm without removal, WI-1088/1089, Brief 10) was fixed; the
+re-observed 30GB RSS climb (WI-1417) turned out to be a **different** driver — the
+claude-sessions full owner-dir fs sweep
+([operator-memory-bloat-claude-sessions-fs-sweep](/internal/docs/agent-insights/operator-memory-bloat-claude-sessions-fs-sweep)),
+fixed with negative-resolution + roots TTL caches in `claude-sessions.ts`.
+Live-re-verified 2026-07-02: bg-host sits at a 5.7–5.8GB sawtooth plateau (GC keeping
+pace, not a monotonic climb), no dbos-reaper false-reap storm; recurrence-guarded by
+3 tests in `claude-sessions-cache.test.ts`. WI-1415/WI-1416 (the git-sync symptom
+chain) independently resolved. No longer a release risk row.
 
 ### 7. Data-completeness is table-grain-guarded, column-grain is the residual risk
 18 federated tables (`harness-state/table-registry.ts`) are structurally guarded

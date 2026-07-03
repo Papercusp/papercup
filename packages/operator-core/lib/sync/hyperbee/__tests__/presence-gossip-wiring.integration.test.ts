@@ -155,6 +155,10 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label));
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '434-shared-session-presence.sql'), 'utf8')));
+    // P-301: the fleet-membership columns the session-presence writer now sets.
+    await db.sql.unsafe(
+      stripMeta(readFileSync(resolve(SQL_DIR, '479-shared-session-presence-fleet-slug.sql'), 'utf8')),
+    );
 
     // Fake swarm + injected deps: the member device is attested; nobody revoked.
     let handler: ((s: unknown) => void) | null = null;

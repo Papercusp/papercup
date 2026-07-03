@@ -19,11 +19,18 @@ import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import {
   applySessionPresenceSet,
   listLiveSessionPresence,
+  listFederatedFleetMembers,
 } from '../session-presence-store';
 import type { SessionPresenceEntry } from '../presence-gossip';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIG_434 = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql/434-shared-session-presence.sql');
+// P-301: the fleet-membership columns (fleet_slug/fleet_role + partial index) the
+// session-presence gossip now carries cross-machine.
+const MIG_479 = resolve(
+  HERE,
+  '../../../../../../libs/papercusp/libs/db/sql/479-shared-session-presence-fleet-slug.sql',
+);
 
 function stripMeta(sql: string): string {
   return sql
@@ -57,6 +64,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     db = await createFreshPgDb('session_presence');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
+    await db.sql.unsafe(stripMeta(readFileSync(MIG_479, 'utf8')));
   }, 60_000);
 
   afterAll(async () => {
@@ -195,5 +203,45 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     );
     expect(wide.every((r) => r.hive_slug === 'hive-home')).toBe(true);
     expect(wide.length).toBeGreaterThan(0);
+  });
+
+  it('round-trips fleet membership + listFederatedFleetMembers scopes to one fleet_slug (P-301)', async () => {
+    const nowMs = T0 + 100_000;
+    await applySessionPresenceSet(
+      {
+        workspaceId: WS,
+        devicePubkey: 'dev-fleet',
+        githubUserId: 11,
+        machineLabel: 'tower',
+        hiveSlug: 'hive-home',
+        sessions: [
+          entry('su-lead', { fleet_slug: 'git-plan', fleet_role: 'leader' }),
+          entry('su-mem', { fleet_slug: 'git-plan', fleet_role: 'member' }),
+          entry('su-other', { fleet_slug: 'other-fleet', fleet_role: 'member' }),
+          entry('su-nofleet'), // no named fleet → null columns (back-compat)
+        ],
+        frameTs: nowMs,
+      },
+      db.sql,
+    );
+    // The membership columns survive the round trip on the unified roster read.
+    const live = await listLiveSessionPresence({ workspaceId: WS, staleMs: 30_000, nowMs }, db.sql);
+    const byId = new Map(live.map((r) => [r.owner_id, r]));
+    expect(byId.get('su-lead')).toMatchObject({ fleet_slug: 'git-plan', fleet_role: 'leader' });
+    expect(byId.get('su-nofleet')).toMatchObject({ fleet_slug: null, fleet_role: null });
+    // The federated fleet-member read scopes to ONE fleet_slug + carries roles —
+    // the cross-machine leg the audience resolver unions in.
+    const members = await listFederatedFleetMembers(
+      { workspaceId: WS, fleetSlug: 'git-plan', staleMs: 30_000, nowMs },
+      db.sql,
+    );
+    expect(members.map((m) => m.ownerId).sort()).toEqual(['su-lead', 'su-mem']);
+    expect(members.find((m) => m.ownerId === 'su-lead')?.fleetRole).toBe('leader');
+    // TTL applies to the federated read too — stale rows drop out.
+    const staleRead = await listFederatedFleetMembers(
+      { workspaceId: WS, fleetSlug: 'git-plan', staleMs: 1, nowMs: nowMs + 60_000 },
+      db.sql,
+    );
+    expect(staleRead).toEqual([]);
   });
 });
