@@ -177,6 +177,32 @@ describe('emitWorkItemClaimedEvent', () => {
   });
 });
 
+describe('emitClaimReleasedEvent (P-105)', () => {
+  it('fires claim:released:<id>, awaiter-only (no `to`), with the id in payload', async () => {
+    const emit = typedEmit();
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-9', title: 'free me' }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'claim:released:WI-9',
+      source: 'work-items',
+      payload: expect.objectContaining({ id: 'WI-9' }),
+    });
+    expect(emit.mock.calls[0][0].to).toBeUndefined();
+  });
+
+  it('never rejects on an emit failure (warns instead)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    expect(() => emitClaimReleasedEvent(wi(), { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('claim-released-event'));
+    warn.mockRestore();
+  });
+});
+
 describe('emitWorkItemBlockedEvent', () => {
   it('fires work-item:blocked:<id> notifying the delegator', async () => {
     const emit = typedEmit();

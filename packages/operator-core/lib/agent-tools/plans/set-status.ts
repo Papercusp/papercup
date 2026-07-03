@@ -27,6 +27,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
+import { emitPlanItemDoneEvent } from './plan-item-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
@@ -401,6 +402,14 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     after: it.status,
     detail: it.itemId,
   });
+
+  // P-105: plan-item:done:<slug>:<id> — wake anyone awaiting this item (a peer's lane,
+  // a cross-plan blocking dependency) the moment it flips to done, instead of polling
+  // plans:get. Transition-gated: a real →done edge only, never a re-set of an
+  // already-done item. Fire-and-forget; never fails the flip.
+  if (it.status === 'done' && result.value.oldStatus !== 'done') {
+    emitPlanItemDoneEvent(it.slug, it.itemId);
+  }
 
   // Push the new item state to any live `useSyncQuery('planItems.byPlan')`
   // subscriber (the Create-tab kanban). The `items` jsonb was already

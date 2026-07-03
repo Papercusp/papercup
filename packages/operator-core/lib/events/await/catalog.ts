@@ -219,8 +219,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       { name: 'id', required: true, describe: 'the plan item id, e.g. P-014' },
     ],
     describe: 'A plan item flipped to done.',
-    emitter: 'plans:set-status (Phase 2)',
-    exists: false, // P-105
+    emitter: 'plans:set-status (packages/operator-core/lib/agent-tools/plans/plan-item-events.ts)',
+    exists: true, // P-105: setStatusOne fires `plan-item:done:<slug>:<id>` on a →done transition
     replacesPoll: 'polling plans:get for an item\'s status',
     sugar: 'plan-item:await',
   },
@@ -229,8 +229,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'claim:released:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item / plan-item id whose claim to watch' }],
     describe: 'A claim was released (pick up orphaned/handed-back work the moment it frees).',
-    emitter: 'work_items:release / claim reaper (Phase 2)',
-    exists: false, // P-105
+    emitter: 'releaseWorkItem → work-items-events (both work_items:release AND the stale-claim reaper)',
+    exists: true, // P-105: releaseWorkItem fires `claim:released:<id>` (voluntary release + reaper)
   },
   {
     family: 'fleet-drained',
