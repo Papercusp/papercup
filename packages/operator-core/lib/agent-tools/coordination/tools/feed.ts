@@ -61,6 +61,10 @@ export default defineTool({
       .string()
       .optional()
       .describe('An ownerId. Matches envelopes where this owner is the sender OR a recipient; broadcasts match any owner.'),
+    from: z
+      .string()
+      .optional()
+      .describe('Match the SENDER only (from === this ownerId). Unlike `owner`, does NOT match recipients and does NOT let broadcasts through — the precise "only what agent X SENT" filter (e.g. verify your own coord:send landed, or read one peer\'s messages).'),
     plan_slug: z.string().optional().describe('Restrict to one plan slug.'),
     audience: z
       .string()
@@ -90,6 +94,7 @@ export default defineTool({
     const { rows, nextCursor, total, byKind, tokens } = await readCoordFeed({
       kinds: args.kinds,
       owner: args.owner,
+      from: args.from,
       plan_slug: args.plan_slug,
       audience: args.audience,
       q: args.q,

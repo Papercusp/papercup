@@ -64,6 +64,11 @@ export interface ReadCoordFeedOpts {
   /** Match an ownerId on EITHER side — `from === owner` OR `to` includes owner
    *  (broadcasts, `['*']`, match any owner filter since they reach everyone). */
   owner?: string;
+  /** Match the SENDER only — `from === this` (EI-7018). Unlike `owner`, this does NOT
+   *  match recipients and does NOT let broadcasts through, so it is the precise "show only
+   *  what agent X SENT" filter (e.g. verifying your own coord:send landed, or reading one
+   *  peer's messages) rather than the sender-OR-recipient-plus-broadcasts `owner` match. */
+  from?: string;
   /** Restrict to one plan slug. */
   plan_slug?: string;
   /** Restrict to envelopes addressed to this audience selector (`@fleet:<slug>` /
@@ -165,6 +170,7 @@ export async function readCoordFeed(
   const filtered = tagged.filter((env) => {
     if (kindSet && !kindSet.has(env.kind)) return false;
     if (opts.owner && !matchesOwner(env, opts.owner)) return false;
+    if (opts.from && env.from !== opts.from) return false; // EI-7018: strict sender-only filter
     if (opts.plan_slug && env.plan_slug !== opts.plan_slug) return false;
     if (opts.audience && !matchesAudience(env, opts.audience)) return false;
     if (needle && !matchesText(env, needle)) return false;
