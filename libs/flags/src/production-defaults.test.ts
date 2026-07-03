@@ -50,7 +50,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   'papercusp-design',
   'papercusp-testing',
   'papercusp-open-signup',
-  'papercusp-per-hive-release-gate',
+  // papercusp-per-hive-release-gate GRADUATED to default-ON 2026-07-03 (D-008 canary
+  // met: oddsmith checkpoint green + main FF'd) — removed from this snapshot; the
+  // count assertion below dropped from 10 to 9 to match.
   'papercusp-auth-config-overrides',
   'papercusp-external-bench',
   'papercusp-test-completion-gate',

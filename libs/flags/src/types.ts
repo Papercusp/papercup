@@ -1289,7 +1289,10 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // incomplete — the code is not fully working / unverified on a path that matters
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],
-    [FLAGS.PER_HIVE_RELEASE_GATE, { case: 'incomplete', reason: 'the per-hive staging→main green-checkpoint + release-trigger seeding is unverified on the live pipeline; OFF leaves the live :3070 pipeline untouched. Owner flips ON only after a canary-hive (oddsmith-hive) verify.' }],
+    // PER_HIVE_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
+    // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
+    // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
+    // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
     // cutover — the flip needs every peer on the new wire first
     [FLAGS.PRESENCE_GOSSIP, { case: 'cutover', reason: 'presence moves off the peer-log onto ephemeral gossip (P-004, cross-machine-coord-parity). A gossip-only announcer is INVISIBLE to a log-only reader, so every hive peer must carry the reader before a writer flips. Owner flips after both dogfood machines update + a 2-machine presence-federation verify.' }],
     // QUEEN_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —

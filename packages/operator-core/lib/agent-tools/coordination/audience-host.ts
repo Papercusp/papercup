@@ -69,20 +69,45 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // NB: this is the deliverable audience, NOT a membership check — the catch-up gate
     // checks membership directly (fetchPresenceFleet) so a muted member still reads history.
     const slug = fleetSlugFromName(fleetSlug);
-    const members = await liveFleetMemberIds(slug, coordWorkspaceId());
+    const ws = coordWorkspaceId();
+    const localMembers = await liveFleetMemberIds(slug, ws);
     // A session leading SEVERAL fleets carries only its newest fleet's label on
     // coord_presence.fleet_slug (the column is singular, mig 407), so the
     // presence fold silently drops the leader from every OTHER fleet's member
     // audience. The leader is definitionally a member: union in the durable
     // registry leader so `@fleet:<slug>` always reaches them. Overrides still
     // apply below — a leader who muted their own fleet stays muted.
+    //
+    // P-301 — the CROSS-MACHINE generalization: once a fleet spans machines, its
+    // members + leader can live on different boxes. Fold in the FEDERATED members
+    // (remote live sessions carrying this fleet_slug, projected from the
+    // session-presence gossip into shared_session_presence, mig 479) and a
+    // FEDERATED leader (when the durable agent_fleets row lives on another machine,
+    // so the local registry read is null, the leader is derived from a federated
+    // member advertising fleet_role='leader'). All federated reads are best-effort:
+    // empty/failing → exactly today's local-only audience.
+    let federatedMembers: FederatedFleetMemberRow[] = [];
     try {
-      const fleet = await getFleet(coordWorkspaceId(), slug);
-      const lead = fleet?.leaderOwnerId;
-      if (lead && !members.includes(lead)) members.push(lead);
+      federatedMembers = await listFederatedFleetMembers({
+        workspaceId: ws,
+        fleetSlug: slug,
+        staleMs: PRESENCE_STALE_MS,
+      });
     } catch {
-      /* registry unavailable — presence members alone */
+      /* federated roster unavailable — local members alone */
     }
+    let localRegistryLeader: string | null = null;
+    try {
+      localRegistryLeader = (await getFleet(ws, slug))?.leaderOwnerId ?? null;
+    } catch {
+      /* registry unavailable — no local leader to union */
+    }
+    const leaderOwnerId = resolveFederatedFleetLeader({ localRegistryLeader, federatedMembers });
+    const members = unionFederatedFleetMembers({
+      localMemberIds: localMembers,
+      federatedMemberIds: federatedMembers.map((m) => m.ownerId),
+      leaderOwnerId,
+    });
     const overrides = await getFleetDeliveryOverrides(slug);
     if (overrides.size === 0) return members;
     return members.filter((id) => {
@@ -94,8 +119,29 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // The current leader from the durable registry (agent_fleets.leader_owner_id) —
     // NOT liveness-gated, so an escalation reaches the lead even if they're offline
     // (it lands in their durable inbox for when they return). Null leader → no one.
-    const fleet = await getFleet(coordWorkspaceId(), fleetSlugFromName(fleetSlug));
-    return fleet?.leaderOwnerId ? [fleet.leaderOwnerId] : [];
+    const slug = fleetSlugFromName(fleetSlug);
+    const ws = coordWorkspaceId();
+    let localRegistryLeader: string | null = null;
+    try {
+      localRegistryLeader = (await getFleet(ws, slug))?.leaderOwnerId ?? null;
+    } catch {
+      /* registry unavailable */
+    }
+    if (localRegistryLeader) return [localRegistryLeader];
+    // P-301: the durable registry row may live on ANOTHER machine (so the local read
+    // is null) — derive the leader from a federated member advertising
+    // fleet_role='leader'. Best-effort: no federated signal → no leader.
+    try {
+      const federatedMembers = await listFederatedFleetMembers({
+        workspaceId: ws,
+        fleetSlug: slug,
+        staleMs: PRESENCE_STALE_MS,
+      });
+      const lead = resolveFederatedFleetLeader({ localRegistryLeader: null, federatedMembers });
+      return lead ? [lead] : [];
+    } catch {
+      return [];
+    }
   },
 };
 

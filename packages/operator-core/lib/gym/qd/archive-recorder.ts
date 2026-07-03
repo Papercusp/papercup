@@ -65,7 +65,7 @@ export interface LoopQdSeams {
 export function makeLoopQdSeams(
   sql: Sql,
   scope: LoopQdScope,
-  opts: { archive?: ArchiveAPI; k?: number } = {},
+  opts: { archive?: ArchiveAPI; k?: number; outcomeSigner?: EliteOutcomeSigner } = {},
 ): LoopQdSeams {
   const archive = opts.archive ?? makeGymArchive(sql, scope);
   const now = scope.now ?? (() => Date.now());
