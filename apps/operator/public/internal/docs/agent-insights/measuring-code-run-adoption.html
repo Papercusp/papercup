@@ -102,10 +102,20 @@ enforcement deltas actually show (a model that already adopts perfectly, like op
 <ul>
 <li><strong><code dir="auto">su-S13-code-run-batch</code></strong> — 12-item per-item loop; the headline “do X for each of N” case.</li>
 <li><strong><code dir="auto">su-S15-code-run-small-batch</code></strong> — only 3 items; the <em>low-N</em> threshold (“reach for it even at 3”).</li>
-<li><strong><code dir="auto">su-S16-code-run-batch-write</code></strong> — per-item WRITE; the dry-run/confirm-gate path.</li>
 <li><strong><code dir="auto">su-S14-code-run-not-for-single</code></strong> — the <strong>guard</strong>: a single-fact call must NOT be wrapped in
 code:run (over-application). Any adoption push must keep S14 green.</li>
 </ul>
+<blockquote>
+<p><strong><code dir="auto">su-S16-code-run-batch-write</code> was repurposed (<code dir="auto">bulk-endpoint-standardization-2026-06-21</code> D-004,
+now <code dir="auto">version: 2</code>) — it no longer tests code:run’s write/confirm-gate path.</strong> Once every
+repeated-call verb went dual-arity (<code dir="auto">items[]</code>/<code dir="auto">ids[]</code> via <code dir="auto">_bulk</code>), a HOMOGENEOUS batch write (same
+mutation applied to every item — S16’s “mark 9 open work items observed”) collapses into ONE bulk
+verb call (<code dir="auto">work_items:set_state { ids:[…], state }</code>), not a <code dir="auto">code:run</code> script; <code dir="auto">code:run</code>’s
+dry-run/confirm gate is now reserved for HETEROGENEOUS/CONDITIONAL batches (different per-item
+logic, computed values, branching). S16’s load-bearing assert is now <code dir="auto">work_items:set_state</code> called
+at most twice — see the “Bulk-arg adoption” section below, which S16 is now a member of alongside
+S21/S22.</p>
+</blockquote>
 <p><code dir="auto">reached_coderun</code> (did it call the tool at all) and <code dir="auto">clean_adopt</code> (called it AND didn’t <em>also</em>
 hand-loop) are different metrics — a weak model often does both, which inflates <code dir="auto">reached</code> while
 <code dir="auto">clean</code> stays low.</p>
@@ -273,7 +283,10 @@ every item in a collection, does it fire ONE <code dir="auto">work_items:get { i
 <ul>
 <li><strong>Scenarios:</strong> <code dir="auto">su-S21-bulk-read-not-hand-loop</code> (reach for <code dir="auto">{ ids:[…] }</code> on a 6-item collection;
 load-bearing assert: at most ONE <code dir="auto">work_items:get</code> call total) + its guard <code dir="auto">su-S22-bulk-not-for-single</code>
-(single known id → <code dir="auto">{ id }</code> directly, no collection machinery — the over-application guard).</li>
+(single known id → <code dir="auto">{ id }</code> directly, no collection machinery — the over-application guard). The
+earlier <strong><code dir="auto">su-S16-code-run-batch-write</code></strong> (a HOMOGENEOUS <em>write</em>: same state applied to every item)
+was retargeted onto this same bulk-arg path (<code dir="auto">version: 2</code>, D-004) rather than code:run’s
+write/confirm-gate — reach for <code dir="auto">work_items:set_state { ids:[…], state }</code> in ONE call, not a script.</li>
 <li><strong>Arms:</strong> same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.</li>
 <li><strong>Key difference from code:run:</strong> no script needed — the bulk call IS the tool call. The adoption bar
 is lower (no language-model capability ceiling on scripting), but the model must still recognize the
@@ -328,4 +341,29 @@ polling-inflated denominator; against <code dir="auto">mcp</code> the honest fig
 <code dir="auto">pct_redundant</code> trends down from ~100%. (<code dir="auto">dev:tool_cooccurrence { hours, orderBy:'confidence' }</code> is
 the quick read; this query is the precise one.)</p>
 <p>Wire all three into a weekly check (a scorecard row or a <code dir="auto">dev:</code> rollup) so a regression — a new tool
-shipping a tight cap, or adoption sliding back — surfaces without a manual audit.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-06-25T19:10:55.000Z">Jun 25, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mcp-host-3070-deploy-restarts-and-verify-before-cutover.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Why the MCP server &#39;keeps going down&#39;: it IS :3070, deploys restart it, and a bad swap crash-loops it</span> </span> </a> <a href="/internal/docs/agent-insights/mem0-entity-store-collection-leak.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+shipping a tight cap, or adoption sliding back — surfaces without a manual audit.</p>
+<p><strong>WI-839 — each metric is a first-class read</strong> (mirrors <code dir="auto">dev:code_run_adoption</code>’s pattern for metric #2
+above):</p>
+<ul>
+<li><strong>Metric #1</strong> (string-limit failure rate) → <strong><code dir="auto">dev:limit_failure_rate { sinceDays? }</code></strong>
+(<code dir="auto">packages/operator-core/lib/limit-failure-rate.ts</code>) — a fleet total + per-tool breakdown + a graded
+rating (<code dir="auto">healthy</code> &#x3C; 10 errs/window, <code dir="auto">broken</code> ≥ 100).</li>
+<li><strong>Metric #3</strong> (orient-dedup / redundant-recall rate) → <strong><code dir="auto">dev:orient_dedup_rate { sinceHours? }</code></strong>
+(<code dir="auto">packages/operator-core/lib/orient-dedup-rate.ts</code>) — oriented-spawn count, redundant-recall count,
+<code dir="auto">pctRedundant</code>, and a graded rating (<code dir="auto">healthy</code> &#x3C; 25%, <code dir="auto">broken</code> ≥ 60%).</li>
+<li>Both are pure + unit-tested (injected <code dir="auto">RunQuery</code>, no PG in tests) exactly like <code dir="auto">code-run-adoption.ts</code>;
+each exports its canonical SQL (<code dir="auto">LIMIT_FAILURE_RATE_SQL</code> / <code dir="auto">ORIENT_DEDUP_RATE_SQL</code>) so it is also
+directly runnable via <code dir="auto">dev:pg_query</code> if a caller wants the raw rows instead of the rolled-up read.</li>
+</ul>
+<p><strong>WI-839 — now ALSO a recurring measurement, not just an on-demand <code dir="auto">dev:</code> read.</strong> The dev: tools above
+are manual (someone has to remember to call them); the item’s real ask (“so a regression surfaces
+without a manual audit”) needed a periodic surface. <code dir="auto">system-health/compute.ts</code>’s <code dir="auto">collectToolEfficiency</code>
+folds all 3 grades (adoption + limit-failure + orient-dedup) into ONE new Health-tab panel
+(<code dir="auto">PanelKey: 'toolEfficiency'</code>, <code dir="auto">types.ts</code>) computed on every <code dir="auto">computeSystemHealth</code> tick (the same ~30s
+cadence every other panel runs on) — surfaced on the read-only Health tab (flag
+<code dir="auto">papercusp-system-health-tab</code>) with zero bespoke UI code (the tab renders generically off
+<code dir="auto">PANEL_ORDER</code>/<code dir="auto">health.panels[key]</code>). Panel status: <code dir="auto">crit</code> if any leg graded <code dir="auto">broken</code>, <code dir="auto">warn</code> if any is
+<code dir="auto">degraded</code>, <code dir="auto">unknown</code> only when every leg’s window is too small to grade, else <code dir="auto">ok</code>
+(<code dir="auto">toolEfficiencyStatus</code>, pure + unit-tested in <code dir="auto">compute.test.ts</code>). So a regression in any of the 3 now
+greys/reds a Health-tab card automatically, on the existing tick — no manual <code dir="auto">dev:</code> call or
+<code dir="auto">dev:pg_query</code> needed to notice one.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-02T23:48:39.000Z">Jul 2, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mcp-host-3070-deploy-restarts-and-verify-before-cutover.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Why the MCP server &#39;keeps going down&#39;: it IS :3070, deploys restart it, and a bad swap crash-loops it</span> </span> </a> <a href="/internal/docs/agent-insights/mem0-entity-store-collection-leak.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

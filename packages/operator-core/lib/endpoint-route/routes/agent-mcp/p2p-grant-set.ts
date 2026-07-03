@@ -95,10 +95,18 @@ export default defineTool({
         const explicit = Array.isArray(body.capabilities)
           ? body.capabilities.filter((c): c is string => typeof c === 'string')
           : [];
-        const capabilities = caps.normalizeCapabilities([
+        const normalized = caps.normalizeCapabilities([
           ...(preset ? caps.expandPreset(preset) : []),
           ...explicit,
         ]);
+        if (!normalized.ok) {
+          // Loud refusal naming the exact invalid capabilities (D-004 — no silent drops).
+          return Response.json(
+            { ok: false, error: 'invalid_capabilities', detail: `unknown capabilities: ${normalized.invalid.join(', ')}` },
+            { status: 400 },
+          );
+        }
+        const capabilities = normalized.capabilities;
         if (capabilities.length === 0) {
           return Response.json({ ok: false, error: 'no_capabilities' }, { status: 400 });
         }

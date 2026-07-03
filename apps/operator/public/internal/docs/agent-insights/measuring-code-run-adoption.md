@@ -62,9 +62,18 @@ GROUP BY scenario, arm ORDER BY scenario, arm;
 
 * **`su-S13-code-run-batch`** — 12-item per-item loop; the headline "do X for each of N" case.
 * **`su-S15-code-run-small-batch`** — only 3 items; the *low-N* threshold ("reach for it even at 3").
-* **`su-S16-code-run-batch-write`** — per-item WRITE; the dry-run/confirm-gate path.
 * **`su-S14-code-run-not-for-single`** — the **guard**: a single-fact call must NOT be wrapped in
   code:run (over-application). Any adoption push must keep S14 green.
+
+> **`su-S16-code-run-batch-write` was repurposed (`bulk-endpoint-standardization-2026-06-21` D-004,
+> now `version: 2`) — it no longer tests code:run's write/confirm-gate path.** Once every
+> repeated-call verb went dual-arity (`items[]`/`ids[]` via `_bulk`), a HOMOGENEOUS batch write (same
+> mutation applied to every item — S16's "mark 9 open work items observed") collapses into ONE bulk
+> verb call (`work_items:set_state { ids:[…], state }`), not a `code:run` script; `code:run`'s
+> dry-run/confirm gate is now reserved for HETEROGENEOUS/CONDITIONAL batches (different per-item
+> logic, computed values, branching). S16's load-bearing assert is now `work_items:set_state` called
+> at most twice — see the "Bulk-arg adoption" section below, which S16 is now a member of alongside
+> S21/S22.
 
 `reached_coderun` (did it call the tool at all) and `clean_adopt` (called it AND didn't *also*
 hand-loop) are different metrics — a weak model often does both, which inflates `reached` while
@@ -204,7 +213,10 @@ every item in a collection, does it fire ONE `work_items:get { ids:[…] }` inst
 
 * **Scenarios:** `su-S21-bulk-read-not-hand-loop` (reach for `{ ids:[…] }` on a 6-item collection;
   load-bearing assert: at most ONE `work_items:get` call total) + its guard `su-S22-bulk-not-for-single`
-  (single known id → `{ id }` directly, no collection machinery — the over-application guard).
+  (single known id → `{ id }` directly, no collection machinery — the over-application guard). The
+  earlier **`su-S16-code-run-batch-write`** (a HOMOGENEOUS *write*: same state applied to every item)
+  was retargeted onto this same bulk-arg path (`version: 2`, D-004) rather than code:run's
+  write/confirm-gate — reach for `work_items:set_state { ids:[…], state }` in ONE call, not a script.
 * **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
 * **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar
   is lower (no language-model capability ceiling on scripting), but the model must still recognize the
@@ -306,3 +318,29 @@ the quick read; this query is the precise one.)
 
 Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a regression — a new tool
 shipping a tight cap, or adoption sliding back — surfaces without a manual audit.
+
+**WI-839 — each metric is a first-class read** (mirrors `dev:code_run_adoption`'s pattern for metric #2
+above):
+
+* **Metric #1** (string-limit failure rate) → **`dev:limit_failure_rate { sinceDays? }`**
+  (`packages/operator-core/lib/limit-failure-rate.ts`) — a fleet total + per-tool breakdown + a graded
+  rating (`healthy` \< 10 errs/window, `broken` ≥ 100).
+* **Metric #3** (orient-dedup / redundant-recall rate) → **`dev:orient_dedup_rate { sinceHours? }`**
+  (`packages/operator-core/lib/orient-dedup-rate.ts`) — oriented-spawn count, redundant-recall count,
+  `pctRedundant`, and a graded rating (`healthy` \< 25%, `broken` ≥ 60%).
+* Both are pure + unit-tested (injected `RunQuery`, no PG in tests) exactly like `code-run-adoption.ts`;
+  each exports its canonical SQL (`LIMIT_FAILURE_RATE_SQL` / `ORIENT_DEDUP_RATE_SQL`) so it is also
+  directly runnable via `dev:pg_query` if a caller wants the raw rows instead of the rolled-up read.
+
+**WI-839 — now ALSO a recurring measurement, not just an on-demand `dev:` read.** The dev: tools above
+are manual (someone has to remember to call them); the item's real ask ("so a regression surfaces
+without a manual audit") needed a periodic surface. `system-health/compute.ts`'s `collectToolEfficiency`
+folds all 3 grades (adoption + limit-failure + orient-dedup) into ONE new Health-tab panel
+(`PanelKey: 'toolEfficiency'`, `types.ts`) computed on every `computeSystemHealth` tick (the same \~30s
+cadence every other panel runs on) — surfaced on the read-only Health tab (flag
+`papercusp-system-health-tab`) with zero bespoke UI code (the tab renders generically off
+`PANEL_ORDER`/`health.panels[key]`). Panel status: `crit` if any leg graded `broken`, `warn` if any is
+`degraded`, `unknown` only when every leg's window is too small to grade, else `ok`
+(`toolEfficiencyStatus`, pure + unit-tested in `compute.test.ts`). So a regression in any of the 3 now
+greys/reds a Health-tab card automatically, on the existing tick — no manual `dev:` call or
+`dev:pg_query` needed to notice one.

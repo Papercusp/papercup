@@ -47,8 +47,11 @@ Two things bite you AFTER unit tests are green:
   text;`. Files ≥215 carry **no** top-level `BEGIN;/COMMIT;` (the runner wraps
   each file — `lint:migrations` enforces it).
 * **source.ts**: `PlanRow`, `PlanDbRow`, `PlanIndex`, `rowFromDb`,
-  `deriveIndexFromContent`, and **all four SELECT lists** (getPlanRow /
-  listPlanRows / listPlanIndexRows / listPlanRowsMatchingAnyToken).
+  `deriveIndexFromContent`, and **all five SELECT lists** (getPlanRow /
+  listPlanRows / listPlanIndexRows / listPlanRowsMatchingAnyToken /
+  `listPlanIndexRowsForWorkspace` — added 2026-06-30 for the scheduled-recurring-plans
+  work; it carries its own column-not-exist fallback query, so both its SELECTs
+  need the new column too).
 * **with-plan-lock.ts**: the INSERT column list + VALUES + the `DO UPDATE SET`.
 * **Federation (3 sites)**: `projections/harness-plans.ts` (wire type — make it
   optional/tolerant in `isHarnessPlanRow` — plus both INSERT paths),

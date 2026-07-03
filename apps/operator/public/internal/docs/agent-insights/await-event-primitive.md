@@ -122,8 +122,6 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
   '\*'-scoped awaits that never matched system emits. Event keys embed
   globally-unique ids, so one namespace is collision-free by construction.
 * **Exact-key match, no globs.** `events:await` matches the literal string.
-* **codex sessions park instead of resuming** (the per-session CODEX\_HOME
-  isn't re-derivable yet) — visible in the delivery row.
 * The store + engine live at
   `packages/operator-core/lib/events/await/` (migration 163:
   `event_awaits` + `event_wake_deliveries`); the lock bridge at

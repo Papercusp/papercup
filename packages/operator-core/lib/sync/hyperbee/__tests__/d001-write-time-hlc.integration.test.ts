@@ -97,11 +97,27 @@ describe('D-001 write-time HLC — a LOCAL write (mig-314 stamp) beats a higher-
     const b = (await sql<{ h: string }[]>`SELECT harness_shared.hlc_now() AS h`)[0].h;
     expect(typeof a).toBe('string');
     expect(b > a).toBe(true); // strictly monotone
-    // recv of a far-future HLC advances the clock above it.
-    const future = encodeHlc({ ms: Date.now() + 5_000_000, count: 0 });
+    // recv of an admissible-future HLC (WITHIN the mig-460 ε drift clamp, 10min)
+    // advances the clock above it. An offset BEYOND the clamp is refused — that
+    // is pinned by the drift-clamp test below; keep this one inside ε.
+    const future = encodeHlc({ ms: Date.now() + 300_000, count: 0 });
     await sql`SELECT harness_shared.hlc_recv(${future})`;
     const c = (await sql<{ h: string }[]>`SELECT harness_shared.hlc_now() AS h`)[0].h;
     expect(c > future).toBe(true); // a later local stamp causally-follows the recv'd op
+  });
+
+  it('recv of an ABSURD-future HLC (beyond the ε drift clamp) does NOT ratchet the clock (WI-1672 / mig-460)', async () => {
+    // The poisoning defense: a remote frontier >10min ahead of wall-now is
+    // outside the hive's ±5min admission skew contract, so hlc_recv REFUSES to
+    // advance the singleton clock (the op still applies to its data; only the
+    // clock ratchet is skipped). Without this, one absurd stamp pins the clock —
+    // and, re-propagated, the whole hive — far ahead (the WI-1672 amplifier).
+    const absurd = encodeHlc({ ms: Date.now() + 3_600_000, count: 0 }); // +1h ≫ 10min ε
+    await sql`SELECT harness_shared.hlc_recv(${absurd})`;
+    const after = (await sql<{ h: string }[]>`SELECT harness_shared.hlc_now() AS h`)[0].h;
+    const afterMs = Number(after.slice(0, after.indexOf(':')));
+    expect(afterMs).toBeLessThan(Date.now() + 600_000); // clock stayed within ε, did NOT jump to +1h
+    expect(after < absurd).toBe(true); // the absurd stamp sorts above our (un-ratcheted) clock
   });
 
   it('local write with a recv-advanced (high) HLC + low fed_ts is NOT clobbered by a higher-fed_ts remote op', async () => {
@@ -109,7 +125,7 @@ describe('D-001 write-time HLC — a LOCAL write (mig-314 stamp) beats a higher-
     //    clock excursion (far ABOVE wall-now). The recv-advance sticks (HLC is
     //    monotone), so the NEXT local write is stamped with that high HLC even
     //    though its fed_ts (wall clock) is ~now.
-    const excursionMs = Date.now() + 10_000_000; // ~2.8h ahead — the historical jump
+    const excursionMs = Date.now() + 400_000; // +6.7min: a recv-advance WITHIN the mig-460 ε clamp (10min), so it still ratchets
     await sql`SELECT harness_shared.hlc_recv(${encodeHlc({ ms: excursionMs, count: 0 })})`;
 
     // 2. LOCAL WRITE W — a direct INSERT firing the mig-314 stamp trigger (NO
@@ -131,8 +147,8 @@ describe('D-001 write-time HLC — a LOCAL write (mig-314 stamp) beats a higher-
     // 3. REMOTE OP L — concurrent, LOWER HLC but HIGHER fed_ts than W. Applied
     //    through the REAL projection. ts (= L's fed_ts) is between W.fed_ts and
     //    the excursion; L's HLC physical is also between, so L.fed_hlc < W.fed_hlc.
-    const lTs = wFedTs + 1_000_000; // L.fed_ts > W.fed_ts (the OLD guard would let L win)
-    const lHlc = encodeHlc({ ms: wFedTs + 1_000_000, count: 0 }); // but L.fed_hlc < W.fed_hlc (excursion-high)
+    const lTs = wFedTs + 100_000; // L.fed_ts > W.fed_ts (the OLD guard would let L win)
+    const lHlc = encodeHlc({ ms: wFedTs + 100_000, count: 0 }); // but L.fed_hlc < W.fed_hlc (excursion-high)
     expect(lHlc < w!.fed_hlc!).toBe(true); // sanity: L is the HLC loser
     const opL: PeerLogOp = {
       type: 'put',

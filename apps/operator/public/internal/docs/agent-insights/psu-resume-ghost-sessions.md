@@ -107,3 +107,59 @@ directions.
 * Pre-fix rows keep `ended_at = NULL` (no backfill — distinguishing
   dead-from-idle retroactively is unsafe); they're harmless now that the
   picker filters by transcript existence.
+
+## The fork identity model (`psu --resume --fork`)
+
+A fork is the opposite of the two skews above: not a row-vs-reality mismatch but
+a deliberate **branch** — a resumed session split into a *new* tracked session
+that runs alongside the original. Its whole correctness rests on one invariant:
+**the fork gets a genuinely fresh identity, so it can never collide with the
+still-live original.**
+
+For a tracked Claude session, `launchTrackedFork` (`psu-launcher.mjs`) re-uses the
+*fresh-launch* server path (`bootstrap-su`), so freshness is guaranteed by
+construction, not by fork-specific code. Three distinct identities are minted:
+
+* **A fresh coord identity** — a new `PAPERCUSP_SID`. This is the join key for
+  file locks, `coord_presence`, inbox-wake, the pty-host control socket, and the
+  supervisor beat, so the fork shares **none** of them with the original.
+* **A fresh `adv_sessions` row** — its own `PAPERCUSP_ADV_SESSION_ID`, so the
+  fork appears in `psu --resume` and its exit stamps *its own* row's `ended_at`,
+  never the original's.
+* **A fresh native session id** (`forkId`) — server-minted, then *forced* onto
+  Claude with `--session-id` so it is known up-front and resumable.
+
+The **history** is branched, not shared: the original's transcript is copied into
+the fork's fresh isolated `CLAUDE_CONFIG_DIR` (`forkSeedPaths` + `cpSync`), then
+`claude --resume <origId> --fork-session --session-id <forkId>` replays it and
+writes new turns to `<forkId>.jsonl` in the fork's *own* dir. **The original's
+transcript is never touched.** (Verified: the installed Claude CLI accepts the
+`--resume … --fork-session --session-id …` trio; the plain `--session-id` +
+`--resume` conflict is lifted by `--fork-session`.)
+
+The identity-split guard lives in `nativeSessionIdFromLaunchArgs`: a fork's argv
+names **two** sessions, and this returns the **fork's** id (the forced
+`--session-id`), never the branch-point's `--resume` id — so `recordSessionOwner`
+binds the fork's native id to the fork's SID, not the original's (binding the
+original's would poison the owner index).
+
+`forkBootstrapBody` carries the original's **workspace + plan + cwd** but sends
+**`harness_slug: null`** (deliberate — so the server doesn't relocate the cwd the
+seeded transcript is keyed by). Two consequences worth knowing, both by design,
+neither a bug: a fork inherits plan *context* but **not** the original's plan
+*claims* (its fresh identity holds no lane — re-claim to parallelize), and it
+drops *harness* scope (a non-issue for SU, where the harness is a per-call arg).
+
+Graceful degradation off the primary path: an **untracked** / pre-native-id
+Claude session forks in place (Claude mints a random id) but *still* takes a
+fresh `PAPERCUSP_SID` via `resumeEnvFor(fork:true)` with **no** adv-row link;
+**Codex** uses native `codex fork` (untracked — it can't force a fork id);
+**OMP** is refused early (no branch primitive). A fork whose first turn never
+lands is a normal **ghost** (above), filtered by `sessionHasTranscript`.
+
+The persisted half of this model — fresh coord owner id + native id, plan/cwd
+carried, `harness_slug` null, N forks → N distinct identities, and the original
+row left untouched when the fork ends — is pinned against real PG by
+`apps/operator/lib/psu-launcher-fork.integration.test.ts` (the `/adv` Tests tab's
+**coordination-suite → C5 fork identity** row); the pure launcher fns by the
+fork cases in `apps/operator/lib/psu-launcher.test.ts`.

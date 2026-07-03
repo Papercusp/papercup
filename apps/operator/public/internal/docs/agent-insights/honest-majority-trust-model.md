@@ -43,9 +43,11 @@ mechanisms working together, never a single server check:
   battery.)
 * **A forged or replayed policy is REJECTED.** A policy not signed by the owner's
   hive key fails `verifyHivePolicy` and is never applied; a tampered field (slug,
-  version, or any rule) breaks the signature; a replayed *older* `policy_version`
-  loses to the stored one (`policyVersionAccepts`) on top of the federation
-  layer's fed\_hlc LWW. (Teeth: `hive-policy.test.ts`.)
+  version, or any rule) breaks the signature; a replayed *older* write loses the
+  PG-level LWW guard, ordered by `harness_shared.fed_order_key(fed_hlc, fed_ts)`
+  (an op's real HLC when it has one, else a wall-clock-derived HLC that mirrors
+  the in-process merge fold exactly — the transitivity fix from EI-1698; see
+  `lww-comparator-non-transitive-under-mixed-hlc`). (Teeth: `hive-policy.test.ts`.)
 * **Author attribution is unforgeable.** Enforcement keys off the
   receiver-stamped `sourceLogKeyHex` (the source log core key), NOT the
   self-declared `writerPubkey` a remote peer controls. An op whose author cannot
