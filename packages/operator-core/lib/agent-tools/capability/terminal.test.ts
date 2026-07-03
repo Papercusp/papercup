@@ -222,3 +222,50 @@ describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
     expect(r.command).toBe('mypsu --plan=p');
   });
 });
+
+describe('injectLaunchedByArg (solo-launch-provenance: --launched-by auto-inject for psu launches)', () => {
+  const OWNER = 'su-94b69875-7d7f-4fcc-9441-0015677b93ed';
+
+  it('injects --launched-by into a psu launch', async () => {
+    const { injectLaunchedByArg } = await import('./terminal');
+    const r = injectLaunchedByArg('psu --no-picker --agent=claude --launch-context=/b.md', OWNER);
+    expect(r.injected).toBe(true);
+    expect(r.command).toBe(`psu --launched-by=${OWNER} --no-picker --agent=claude --launch-context=/b.md`);
+  });
+
+  it('is a no-op when the caller identity is unresolved', async () => {
+    const { injectLaunchedByArg } = await import('./terminal');
+    const r = injectLaunchedByArg('psu --no-picker --plan=p', null);
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe('psu --no-picker --plan=p');
+  });
+
+  it('does not double-inject when --launched-by is already present', async () => {
+    const { injectLaunchedByArg } = await import('./terminal');
+    const cmd = 'psu --launched-by=su-other --no-picker';
+    const r = injectLaunchedByArg(cmd, OWNER);
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe(cmd);
+  });
+
+  it('leaves a non-psu command untouched', async () => {
+    const { injectLaunchedByArg } = await import('./terminal');
+    const r = injectLaunchedByArg('npm run dev', OWNER);
+    expect(r.injected).toBe(false);
+  });
+
+  it('refuses a non-identity-shaped value (shell-injection guard)', async () => {
+    const { injectLaunchedByArg } = await import('./terminal');
+    const r = injectLaunchedByArg('psu --no-picker', 'su-x; rm -rf /');
+    expect(r.injected).toBe(false);
+    expect(r.command).toBe('psu --no-picker');
+  });
+
+  it('composes with injectFleetArg (both flags land, fleet first)', async () => {
+    const { injectFleetArg, injectLaunchedByArg } = await import('./terminal');
+    const fleet = injectFleetArg('cd /repo && psu --no-picker --plan=p', 'f1');
+    const prov = injectLaunchedByArg(fleet.command, OWNER);
+    expect(prov.injected).toBe(true);
+    expect(prov.command).toBe(`cd /repo && psu --launched-by=${OWNER} --fleet=f1 --no-picker --plan=p`);
+  });
+});

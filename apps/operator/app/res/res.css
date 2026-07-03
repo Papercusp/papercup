@@ -88,6 +88,37 @@
   color: var(--fg-mute, #7f9bb4);
   font-variant-numeric: tabular-nums;
 }
+/* ── D-001 rail groups: capacity (accounts+GPUs) vs agent seats ── */
+.res-grouplede {
+  margin: -3px 0 2px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-mute, #7f9bb4);
+}
+.res-grouplede b { color: var(--fg-dim, #b9d4e8); font-weight: 640; }
+.res-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 4px;
+}
+.res-subhead h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 660;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--fg-mute, #7f9bb4);
+}
+.res-subhead .ct {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-mute, #7f9bb4);
+  font-variant-numeric: tabular-nums;
+}
+
 .res-locknote {
   font-size: 11px;
   color: var(--good, #6ee7b7);
@@ -237,6 +268,7 @@
 .res-card.picked { outline: 2px solid var(--accent, #38bdf8); outline-offset: 2px; }
 .res-card[data-type="account"] { border-left-color: var(--accent, #38bdf8); }
 .res-card[data-type="gpu"] { border-left-color: var(--good, #34d399); }
+.res-card[data-type="seat"] { border-left-color: var(--warn, #fbbf24); }
 .res-grip { color: var(--fg-mute, #7f9bb4); font-size: 15px; flex: none; }
 .res-card .body { flex: 1; min-width: 0; }
 .res-card .nm { font-weight: 580; color: var(--fg, #e7f7ff); }
@@ -267,6 +299,10 @@
   color: var(--accent-ink, #051827);
   background: var(--good, #34d399);
 }
+.res-tag.s {
+  color: var(--accent-ink, #051827);
+  background: var(--warn, #fbbf24);
+}
 
 /* ── assignment chips w/ % ── */
 .res-chip {
@@ -289,6 +325,11 @@
   color: var(--good, #6ee7b7);
   background: color-mix(in oklab, var(--good, #34d399), transparent 86%);
   border-color: color-mix(in oklab, var(--good, #34d399), transparent 66%);
+}
+.res-chip.s {
+  color: var(--warn, #fbbf24);
+  background: color-mix(in oklab, var(--warn, #fbbf24), transparent 88%);
+  border-color: color-mix(in oklab, var(--warn, #fbbf24), transparent 66%);
 }
 .res-chip .lbl {
   flex: 0 1 auto;
@@ -323,6 +364,48 @@
   cursor: help;
 }
 .res-chip .lock { font-size: 9.5px; }
+/* ── seat chip controls: count stepper + gateway-account select ── */
+.res-step {
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+}
+.res-step .stepbtn {
+  cursor: pointer;
+  border: 1px solid color-mix(in oklab, currentColor, transparent 66%);
+  background: color-mix(in oklab, currentColor, transparent 92%);
+  color: inherit;
+  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.res-step .stepbtn:hover:not(:disabled) {
+  background: color-mix(in oklab, currentColor, transparent 84%);
+}
+.res-step .stepbtn:disabled { opacity: 0.35; cursor: default; }
+.res-chip .res-acct {
+  flex: 1;
+  min-width: 64px;
+  max-width: 130px;
+  font: inherit;
+  font-size: 10.5px;
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  color: inherit;
+  background: color-mix(in oklab, currentColor, transparent 92%);
+  border: 1px solid color-mix(in oklab, currentColor, transparent 66%);
+  border-radius: 6px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.res-chip .res-acct:disabled { opacity: 0.5; cursor: default; }
+
 .res-chip .x {
   cursor: pointer;
   border: 0;

@@ -992,6 +992,12 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // "serialize fleet creation", churning acquire/release, losing track of lock_ids).
   // They stay REACHABLE via tools:find for the rare genuine multi-file cross-turn hold.
   'docs:search', 'memory:search', 'memory:remember',
+  // 2026-07-03 canonical-core catch-up (drift guard): batching (code:run + recipes),
+  // standing facts, and the loop/work-item checkpoint verbs joined the canonical
+  // CORE_MCP_TOOL_NAMES — mirror them here or the lockstep test fails.
+  'code:run', 'recipes:search', 'recipes:run',
+  'facts:assert', 'facts:list',
+  'work_items:checkpoint', 'loop:checkpoint',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',

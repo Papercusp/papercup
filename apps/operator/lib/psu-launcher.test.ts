@@ -535,6 +535,7 @@ describe('psu-launcher arg parsing', () => {
       model: null,
       resumeSession: null,
       launchContext: null,
+      launchedBy: null,
       profile: null,
       // su-context-size-variants (WI-1282): defaults to null (each client's native default).
       contextSize: null,
@@ -596,6 +597,7 @@ describe('psu-launcher arg parsing', () => {
       model: null,
       resumeSession: null,
       launchContext: null,
+      launchedBy: null,
       profile: null,
       contextSize: null,
       personaTier: null,

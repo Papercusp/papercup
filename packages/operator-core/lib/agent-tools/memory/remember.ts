@@ -27,6 +27,7 @@ import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { getSessionUserOrDefault } from '../../auth';
 import { hardText, LIMITS } from '../limits';
+import { coerceMemoryKind } from './remember-coerce';
 
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
@@ -118,7 +119,13 @@ export default defineTool({
   // definePrincipalGatedTool drops them (never copied to the def, never
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
-  args: z.object({
+  // WI-…: normalise a mis-used `kind` (a legacy kind, a free-form label, or missing)
+  // to the closest valid enum member BEFORE validation, so a durable fact is never
+  // rejected+LOST on the enum. `content` is untouched (a genuinely-missing fact must
+  // still fail — the double-encoded-args class is a separate dispatch-layer fix).
+  args: z.preprocess(
+    coerceMemoryKind,
+    z.object({
     content: hardText(LIMITS.CONTENT),
     kind: z.enum(KINDS),
     harness_slug: z.string().optional()
@@ -129,7 +136,8 @@ export default defineTool({
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
     workspace: z.string().optional()
       .describe('Superuser-only: from an UNSCOPED session, tag the write under THIS workspace (the resolved workspace lands in metadata.workspace_id). Scoped/power-user sessions ignore it.'),
-  }),
+    }),
+  ),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
