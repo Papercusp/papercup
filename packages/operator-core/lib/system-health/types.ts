@@ -240,6 +240,9 @@ export interface GatewayPanelMetrics {
   saturated: boolean;
   /** Sustained upstream throttle (AIMD cut concurrency, fail-fast shed, or backlog overflow). */
   sustainedThrottle: boolean;
+  /** P-005/W3 (D-001): a leaked admission slot the self-heal valve could NOT reclaim (the gateway's own
+   *  reconcile guard counted a mismatch) — surfaces the leak as a signal instead of a silent wedge/restart. */
+  slotLeak: boolean;
   /** Human reasons for any non-ok signal (surfaced on the panel + the overwatch anomaly). */
   reasons: string[];
 }

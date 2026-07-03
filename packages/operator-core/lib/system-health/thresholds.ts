@@ -196,7 +196,9 @@ export function tokensStatus(d: TokensHealth): PanelStatus {
   if (d.accountsTotal > 0 && d.accountsAvailable === 0) return 'crit';
   if (d.gatewayEnabled && d.gatewayReachable === false) return 'crit';
   if (d.gateway?.wedge) return 'crit';
-  if (d.gateway?.saturated || d.gateway?.sustainedThrottle) return 'warn';
+  // P-005/W3 (D-001): a leaked admission slot the valve can't reclaim is an early warn — the root-cause
+  // signal that PRECEDES the wedge it would otherwise silently ride to (the wedge itself stays crit above).
+  if (d.gateway?.saturated || d.gateway?.sustainedThrottle || d.gateway?.slotLeak) return 'warn';
   if (d.pausedBuckets > 0 || d.accountsPaused > 0) return 'warn';
   return 'ok';
 }

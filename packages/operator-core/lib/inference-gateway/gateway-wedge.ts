@@ -39,6 +39,10 @@ export interface RawGatewayStats {
   concurrencyCap?: number;
   /** AIMD admission-concurrency state — `effective < cap` = currently throttled (sustained storm). */
   aimd?: { effective?: number; cap?: number; floor?: number; decreases?: number };
+  /** P-005/W3 slot-leak recurrence guard (D-001): count of self-heal sweeps where the held-slot counter
+   *  and the in-flight registry disagreed in a way the valve could not reclaim — a leaked admission slot
+   *  surfaced as a COUNTED signal. Optional (deploy-skew): a pre-P-005 gateway omits it → read as 0. */
+  slotReconcileMismatch?: number;
 }
 
 /** The structured gateway metrics surfaced on the dashboard (the "emit structured metrics" half). */
@@ -64,6 +68,9 @@ export interface GatewayMetrics {
   aimdCap: number | null;
   /** Lifetime AIMD multiplicative-decrease count (a climbing value = an active storm); null pre-AIMD. */
   aimdDecreases: number | null;
+  /** P-005/W3 slot-leak recurrence guard (D-001): count of un-reclaimable slot-reconcile mismatches. 0 on a
+   *  pre-P-005 gateway (deploy-skew) or in healthy operation; any positive value = a leaked admission slot. */
+  slotReconcileMismatch: number;
 }
 
 /** A minimal rolling sample the detector compares against to confirm the TEMPORAL wedge signature
@@ -92,6 +99,10 @@ export interface GatewayWedgeVerdict {
   /** Sustained upstream throttle: AIMD cut concurrency below its cap, or the pool is fail-fast
    *  shedding (all accounts throttled), or the admission backlog is overflowing. */
   sustainedThrottle: boolean;
+  /** P-005/W3 (D-001): a leaked admission slot the self-heal valve could NOT reclaim — the gateway's
+   *  own slot-reconcile guard counted a mismatch. Surfaces the leak as a signal BEFORE/ALONGSIDE the
+   *  wedge it would otherwise silently ride to (watchdog restart). */
+  slotLeak: boolean;
   /** Human reasons (each surfaced on the panel / overwatch anomaly). */
   reasons: string[];
 }
@@ -137,6 +148,7 @@ export function summarizeGatewayMetrics(stats: RawGatewayStats): GatewayMetrics 
     aimdEffective: typeof stats.aimd?.effective === 'number' ? stats.aimd.effective : null,
     aimdCap: typeof stats.aimd?.cap === 'number' ? stats.aimd.cap : null,
     aimdDecreases: typeof stats.aimd?.decreases === 'number' ? stats.aimd.decreases : null,
+    slotReconcileMismatch: n(stats.slotReconcileMismatch),
   };
 }
 
@@ -218,5 +230,17 @@ export function detectGatewayWedge(
     );
   }
 
-  return { saturated, wedge, sustainedThrottle, reasons };
+  // ── Slot leak (P-005/W3, D-001): the gateway's OWN reconcile guard counted a held slot the self-heal
+  //    valve could not reclaim. This is a confirmed leak the gateway cannot self-heal — surfaced here so it
+  //    becomes a VISIBLE signal (panel warn + overwatch anomaly) instead of silently riding to the wedge /
+  //    watchdog restart. Purely a function of the gateway-reported counter (already de-bounced there), so it
+  //    needs no prior sample. ──────────────────────────────────────────────────────────────────────────
+  const slotLeak = metrics.slotReconcileMismatch > 0;
+  if (slotLeak) {
+    reasons.push(
+      `slot-leak reconcile mismatch ×${metrics.slotReconcileMismatch} — a held admission slot the self-heal valve cannot reclaim (leak, not a rate throttle)`,
+    );
+  }
+
+  return { saturated, wedge, sustainedThrottle, slotLeak, reasons };
 }

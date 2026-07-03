@@ -122,6 +122,7 @@ export {
 export type { SlashPromptListing } from '@papercusp/tooldef';
 export { resolveBearer } from './auth';
 export { sanitizeToolSchema } from './tool-schema-sanitize';
+export { fuzzyEnum, nearestByLevenshtein, type FuzzyEnumOpts } from './fuzzy-enum';
 export {
   onWorkspaceSwitch,
   dispatchWorkspaceSwitch,
