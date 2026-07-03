@@ -34,6 +34,7 @@ describe('behaviour-suite transcript parser', () => {
       modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
       userMsg('You have been handed this plan to implement.'),
       toolCall('plans_get', { slug: 'p' }),
+    asstText('I will launch a fleet with 2 members - option B.'),
       toolResult('ok'),
       inject('Plans changed since you last read'),
     ]);
@@ -58,6 +59,7 @@ describe('behaviour checks — a clean ornith run passes', () => {
     modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
     userMsg('You have been handed this plan to implement. Read it with plans:get then present options.'),
     toolCall('plans_get', { slug: 'p' }),
+    asstText('I will launch a fleet with 2 members - option B.'),
     asstText('Here is the plan. Options: (A) do it yourself, (B) hand it to the Queen, or (C) launch a fleet. I recommend A. Confirm which route?'),
     userMsg('do it yourself'),
     toolCall('work_items_claim', { ids: ['WI-1', 'WI-2'] }),
@@ -184,8 +186,12 @@ describe('routing-gate is N/A for an AUTO-on fleet MEMBER (WI-1848 / WI-1849)', 
 describe('plan-execution delegationSatisfied — delegating LEADER via fleet:launch-on-plan (WI-1850)', () => {
   // A leader who cleanly launches a fleet (delegates execution) should pass plan-execution
   // even without any work_items_claim or work_items_complete calls.
+  // NOTE: Must include a userMsg that triggers the routing-gate check (plans:get + presented options).
   const t = parseTranscript([
     modelChange('maxwell1500/ornith-35b:IQ3_M'),
+    userMsg('You are the LEADER. Implement this plan by launching a fleet.'),
+    toolCall('plans_get', { slug: 'p' }),
+    asstText('I will launch a fleet with 2 members - option B.'),
     toolCall('fleet_launch_on_plan', { name: 'test-fleet', plan: 'p', count: 2, agent: 'omp' }),
   ]);
 
@@ -204,6 +210,9 @@ describe('plan-execution delegationSatisfied — delegating LEADER via fleet:lau
   it('TRADITIONAL path still passes — claim + in_progress + complete still works', () => {
     const t = parseTranscript([
       modelChange('maxwell1500/ornith-35b:IQ3_M'),
+      userMsg('You are the LEADER. Implement this plan by working it directly.'),
+      toolCall('plans_get', { slug: 'p' }),
+    asstText('I will launch a fleet with 2 members - option B.'),
       toolCall('work_items_claim', { ids: ['WI-1'] }),
       toolCall('work_items_set_state', { items: [{ id: 'WI-1', state: 'in_progress' }] }),
       toolCall('work_items_complete', { items: [{ id: 'WI-1', completion: { summary: 'done' } }] }),
