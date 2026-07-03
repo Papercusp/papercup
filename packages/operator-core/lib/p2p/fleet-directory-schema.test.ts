@@ -75,7 +75,9 @@ describe('canonical form + signed bytes', () => {
   });
 
   it('signed bytes bind domain + workspace + hive + version (anti-replay)', () => {
-    const json = canonicalFleetRecordJson(coerceFleetDirectoryRecord(minimal).ok ? (coerceFleetDirectoryRecord(minimal) as { ok: true; record: never }).record : (undefined as never));
+    const c = coerceFleetDirectoryRecord(minimal);
+    if (!c.ok) throw new Error(c.error);
+    const json = canonicalFleetRecordJson(c.record);
     const base = { workspaceId: 'ws-1', hiveHomeSlug: 'hive-a', recordVersion: 1, canonicalRecordJson: json };
     const bytes = fleetDirectorySignedBytes(base);
     expect(bytes.toString('utf8').startsWith(`${FLEET_DIRECTORY_SIG_DOMAIN}\n`)).toBe(true);
