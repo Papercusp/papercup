@@ -37,6 +37,12 @@ import {
   type CaptureImprovementInput,
   type CaptureImprovementResult,
 } from './capture-core';
+import {
+  assertFact,
+  resolveFactFederationSlug,
+  FACT_BODY_MAX_CHARS,
+  type AssertFactInput,
+} from '../../agent-facts/store';
 import type { ObservationRatings, StructuredObservation } from './observation-types';
 
 /**
@@ -202,22 +208,93 @@ export function buildDeprecateLearningsObservation(
   };
 }
 
+/** The stable fact-key prefix negative-result facts upsert under (F1-3). */
+export const NEGATIVE_RESULT_FACT_PREFIX = 'negative-result/' as const;
+
+/** Negative results should outlive the 7d fact default — a dead end stays dead.
+ *  90d = the facts TTL ceiling; a re-deprecation re-asserts (refreshes) it. */
+export const NEGATIVE_RESULT_FACT_TTL_SEC = 90 * 24 * 3600;
+
+/**
+ * PURE (F1-3, federated-scout-gym-learning-2026-07-02 P-005): shape the salvage
+ * learnings into a SHAREABLE standing fact — the negative-result op that rides
+ * the F1-1 agent_facts federation rail so the NETWORK stops re-trying this dead
+ * end (D-001: negative results are the cheapest highest-leverage share).
+ *
+ * Deliberate choices the tests pin:
+ *  - `shareable: true` — the one observation class that federates BY DEFAULT
+ *    (owner-ratified D-006: a dead end leaks no capability, only a warning).
+ *  - key `negative-result/<planSlug>` (≤120 chars) — re-deprecating the same
+ *    draft refreshes ONE fact, never accretes duplicates.
+ *  - body budgets tried/stalled/salvageable into the 500-char fact cap
+ *    (stalled first — it is the "don't go here" signal peers act on).
+ *  - `hiveHomeSlug` = the RESOLVED federation slug (member → hive home); the
+ *    caller resolves (emit does it via {@link resolveFactFederationSlug}).
+ */
+export function buildNegativeResultFact(
+  input: DeprecateLearningsInput,
+  hiveHomeSlug: string | null,
+): AssertFactInput {
+  const { planSlug, learnings } = input;
+  const key = `${NEGATIVE_RESULT_FACT_PREFIX}${planSlug}`.slice(0, 120);
+  const head = `Dead end (deprecated draft ${planSlug}). `;
+  // Budget the three prose fields into the fact cap, stall-reason first.
+  const room = FACT_BODY_MAX_CHARS - head.length;
+  const stalled = oneLine(learnings.stalled, Math.floor(room * 0.45));
+  const tried = oneLine(learnings.tried, Math.floor(room * 0.25));
+  const salvage = oneLine(learnings.salvageable, Math.floor(room * 0.25));
+  const body = `${head}Stalled: ${stalled} Tried: ${tried} Salvage: ${salvage}`.slice(
+    0,
+    FACT_BODY_MAX_CHARS,
+  );
+  return {
+    scope: 'harness',
+    scopeRef: input.sourceHive,
+    key,
+    body,
+    sourceRef: `plan:${planSlug}`,
+    createdBy: input.createdBy ?? `deprecate:${input.deprecatedBy}`,
+    ttlSec: NEGATIVE_RESULT_FACT_TTL_SEC,
+    shareable: true,
+    ...(hiveHomeSlug ? { hiveHomeSlug } : {}),
+  };
+}
+
 /** Injectable writer seam — unit tests run the emit with a fake captureImprovement. */
 export interface DeprecateLearningsDeps {
   captureImprovement: typeof captureImprovement;
+  /** F1-3: the negative-result fact writer (the F1-1 federation rail). */
+  assertFact: typeof assertFact;
+  /** F1-3: member harness → hive home resolution for the fact's federation identity. */
+  resolveFactFederationSlug: typeof resolveFactFederationSlug;
 }
 
-const defaultDeps: DeprecateLearningsDeps = { captureImprovement };
+const defaultDeps: DeprecateLearningsDeps = {
+  captureImprovement,
+  assertFact,
+  resolveFactFederationSlug,
+};
 
 /**
  * Emit the structured, source-tagged learnings observation for a deprecated
- * draft. Thin: builds the input ({@link buildDeprecateLearningsObservation}) and
- * hands it to the shared observation writer. Callers: the deprecate handler
- * (plans:set-plan-status's superseded path) and a future Scout self-deprecate.
+ * draft — AND (F1-3) the shareable negative-result FACT that federates the
+ * dead end over the hive substrate. Thin: builds both inputs and hands them to
+ * the shared writers. The fact leg is BEST-EFFORT: the observation (the local
+ * "no dead ends" guarantee) must land even when the fact rail hiccups.
+ * Callers: the deprecate handler (plans:set-plan-status's superseded path) and
+ * a future Scout self-deprecate.
  */
 export async function emitDeprecateLearnings(
   input: DeprecateLearningsInput,
   deps: DeprecateLearningsDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
-  return deps.captureImprovement(buildDeprecateLearningsObservation(input));
+  const result = await deps.captureImprovement(buildDeprecateLearningsObservation(input));
+  try {
+    const hiveHomeSlug = await deps.resolveFactFederationSlug(input.sourceHive);
+    await deps.assertFact(buildNegativeResultFact(input, hiveHomeSlug));
+  } catch {
+    /* best-effort — the observation already landed; the fact re-asserts on a
+       future deprecate of the same draft (idempotent key). */
+  }
+  return result;
 }

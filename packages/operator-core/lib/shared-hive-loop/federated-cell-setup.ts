@@ -82,6 +82,7 @@ export async function presenceCellSetup(sql: postgres.Sql): Promise<void> {
       hive_slug      text,
       fed_ts         bigint,
       fed_hlc        text,
+      author_pubkey  text,
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     );
   `);

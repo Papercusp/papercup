@@ -151,6 +151,7 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
         hive_slug text,
         fed_ts bigint,
         fed_hlc text,
+        author_pubkey text,
         PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label));
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '434-shared-session-presence.sql'), 'utf8')));

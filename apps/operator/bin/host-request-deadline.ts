@@ -36,30 +36,80 @@
 import type { MiddlewareHandler } from 'hono';
 
 /**
- * The "safe half" (P-006/B2): explicit Node http.Server inbound timeouts.
- * MARGINAL on Node 25 — `requestTimeout` bounds time to RECEIVE the request body,
- * `headersTimeout` time to receive the headers; NEITHER bounds handler runtime
- * (that is the middleware above). So they are OPT-IN: applied only when the env
- * knob is set, leaving Node's defaults untouched otherwise (no default behavior
- * change). Node treats 0 as "disabled", so `>= 0` is honored. Returns what it
- * applied (for the boot log + tests). `server` is structurally an http.Server.
+ * Explicit Node http.Server inbound timeouts.
+ *
+ * TWO jobs:
+ *  1. The "safe half" (P-006/B2) — `requestTimeout` / `headersTimeout` bound how
+ *     long the request BODY / HEADERS may take to arrive (a slow-loris ceiling).
+ *     MARGINAL on Node 25, so these stay OPT-IN (applied only when their env knob
+ *     is set) and NEITHER bounds handler runtime (that is the middleware above).
+ *  2. The keep-alive-race FIX (WI-1711) — `keepAliveTimeout` is DEFAULT-ON.
+ *     Node's default is 5s: the server closes an idle keep-alive socket after 5s,
+ *     but an interactive MCP client routinely reuses a pooled socket >5s later
+ *     (its between-tool-call think/compose gap), racing the server's FIN →
+ *     ECONNRESET, surfaced client-side as "Streamable HTTP error: Error POSTing to
+ *     endpoint" with NO server log. The documented fix is to make the SERVER's
+ *     keep-alive LONGER than any client/proxy idle-reuse window so the CLIENT
+ *     always initiates the close (no race). We default it to 61s. Node requires
+ *     `headersTimeout > keepAliveTimeout`, so when we raise keep-alive we also lift
+ *     headersTimeout above it (an explicit lower headersTimeout wins and clamps
+ *     keep-alive back under it instead). Kill-switch:
+ *     PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS=0 restores Node's 5s default.
+ *
+ * Node treats 0 as "disabled", so `>= 0` is honored. Returns what it applied (for
+ * the boot log + tests). `server` is structurally an http.Server.
  */
 export interface ServerTimeoutTarget {
   requestTimeout: number;
   headersTimeout: number;
+  keepAliveTimeout: number;
 }
+/** Default server keep-alive (ms): comfortably ABOVE any client/proxy idle-reuse
+ *  window so the client, never the server, closes an idle socket first. */
+export const DEFAULT_KEEPALIVE_TIMEOUT_MS = 61_000;
+/** headersTimeout must exceed keepAliveTimeout; keep this margin above it. */
+export const HEADERS_OVER_KEEPALIVE_MARGIN_MS = 4_000;
+
 export function applyServerTimeouts(
   server: ServerTimeoutTarget,
   env: NodeJS.ProcessEnv = process.env,
-): { requestTimeout?: number; headersTimeout?: number } {
-  const applied: { requestTimeout?: number; headersTimeout?: number } = {};
+): { requestTimeout?: number; headersTimeout?: number; keepAliveTimeout?: number } {
+  const applied: { requestTimeout?: number; headersTimeout?: number; keepAliveTimeout?: number } = {};
+
+  // requestTimeout — OPT-IN (unchanged; unset ⇒ Node default).
   const req = Number(env.PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS);
   if (env.PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS != null && Number.isFinite(req) && req >= 0) {
     server.requestTimeout = req;
     applied.requestTimeout = req;
   }
-  const headers = Number(env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS);
-  if (env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS != null && Number.isFinite(headers) && headers >= 0) {
+
+  // keepAliveTimeout — DEFAULT-ON (env override; 0 restores Node's 5s default).
+  const kaRaw = env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+  const kaParsed = Number(kaRaw);
+  let keepAlive =
+    kaRaw != null && Number.isFinite(kaParsed) && kaParsed >= 0 ? kaParsed : DEFAULT_KEEPALIVE_TIMEOUT_MS;
+
+  // headersTimeout — explicit env wins; else, when keep-alive is on, derive it to
+  // sit just above keep-alive (Node requires headersTimeout > keepAliveTimeout).
+  const headersRaw = env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+  const headersParsed = Number(headersRaw);
+  const headersExplicit = headersRaw != null && Number.isFinite(headersParsed) && headersParsed >= 0;
+  let headers: number | undefined = headersExplicit ? headersParsed : undefined;
+
+  if (keepAlive > 0) {
+    if (headers != null && headers > 0 && keepAlive >= headers) {
+      // An explicit (lower) headers ceiling wins — clamp keep-alive under it so the
+      // invariant holds while still far above Node's racy 5s default.
+      keepAlive = Math.max(1_000, headers - HEADERS_OVER_KEEPALIVE_MARGIN_MS);
+    } else if (headers == null) {
+      // Derive headers above the keep-alive we're about to set.
+      headers = keepAlive + HEADERS_OVER_KEEPALIVE_MARGIN_MS;
+    }
+    server.keepAliveTimeout = keepAlive;
+    applied.keepAliveTimeout = keepAlive;
+  }
+
+  if (headers != null) {
     server.headersTimeout = headers;
     applied.headersTimeout = headers;
   }

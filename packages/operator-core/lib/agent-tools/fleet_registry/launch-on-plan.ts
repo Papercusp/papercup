@@ -162,6 +162,42 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     head: 'A hive pause is a Queen-loop signal, not a self-drain order',
     body: '`pauseNewWork` / `maxBees` / a hive-steering fact you merely SEE in your orient governs the autonomous queen-bee loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you: read its authority+scope stamp (`hive-queen(<hive>)→hive-wide` is the Queen pausing the hive; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business, ignore it), or an explicit `fleet:*` / owner action. Unsure? Ask your leader — never self-drain on an observed pause.',
   },
+  {
+    // su-loop-capability-parity P-011: the bee turn-end reflection ritual + the overwatch
+    // integrity clause, ported to fleet members (bee.base.md / the overwatch prompt).
+    head: 'Turn-end reflection + reporting integrity',
+    body: 'End each turn with ONE bounded reflection pass: file an observation (`improvements:capture lane:"observation"`) ONLY if the turn surfaced something a FUTURE agent benefits from — a routine turn records NOTHING. It is a sensor reading (a concrete, attributable fact — a tool/file/WI ref), never a fix and never a self-grade. And never fabricate a signal: a truthful `blocked` beats a fabricated all-clear — never report a state you are not in, a send you did not make, or a reading you did not take.',
+  },
+  {
+    // su-loop-capability-parity P-012: the bee checkpoint protocol (bee.base.md §"End of
+    // turn — checkpoint"), ported to fleet members. Store + injection seam already exist.
+    head: 'Carry-note checkpoint at every boundary',
+    body: 'Write `work_items:checkpoint { id, checkpoint }` at task completion, before going idle at a task boundary, and on graceful-evict — so your successor resumes mid-thread instead of cold. Content = what you accomplished / what is left / the key insight / a gotcha for your successor; concrete facts, not self-evaluation; a compact digest, never a transcript. Replace-on-write (blank to clear).',
+  },
+];
+
+/**
+ * The fleet LEADER's standing-job checklist, rendered (auto-numbered) into the launch-result
+ * message. Pure + exported so (a) its rendered length is test-guarded against silent balloon
+ * (su-loop-capability-parity P-013 — context-blow is the #1 leader self-inflicted failure), and
+ * (b) a future insert never has to hand-renumber the points. The universal
+ * steer-don't-micromanage rules a leader runs each cycle until the plan drains. Numbering is
+ * applied at render time (`${i + 1}.`) — keep each entry WITHOUT a leading number.
+ */
+export const LEADER_STANDING_JOB: readonly string[] = [
+  'WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
+  'STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
+  'Keep each wake LEAN: one dev:pg_query for burn-down + active-worker count. Do NOT dump fleet:assignments coverage[] or a full coord:presence every wake — that blows your OWN context within a few cycles and is the #1 leader self-inflicted failure.',
+  'AUDIT completions: spot-check a few terminalCompletionRefs (work_items:get) for real evidence — files touched, the exact test run + its result — not just a status flip.',
+  // su-loop-capability-parity P-006: the wave-close rubric-graded scorecard folded into the
+  // wind-down point (per-WAVE, never per-turn) — keeps the leader block from growing a point.
+  'Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Queen issues graceful-drain cues, loop:end and report the outcome to the owner. Do not spin empty wakes. AT WAVE CLOSE emit ONE `fleet-execution-health` scorecard — `improvements:capture { rubricRef:"fleet-execution-health", ratings }`, one rating per criterion, evidence MANDATORY, "unknown" the honest value for anything you could not assess — so the fleet gets a comparable wave-over-wave trend line (per-WAVE, never per-turn).',
+  "Pausing the Hive Queen is NOT a 'drain your fleet' order. A hive pause / `pauseNewWork` / `maxBees` / a steering fact you SEE in orient governs the autonomous queen-bee loop, not your fleet — a fleet is drained ONLY by an explicit owner / `fleet:*` action or a graceful-drain cue ADDRESSED to you, never as a side-effect of a hive pause you happened to read. Check a drain cue's authority+scope stamp before acting: `hive-queen(<hive>)→hive-wide` is the Queen; a `fleet-leader(<other>)→fleet-members` cue is a PEER draining ITS members — not a command to you or your fleet. And never drain a peer fleet-leader or another fleet's members; if a hive pause has you unsure, `hive:get-steering` + ask the owner rather than self-draining.",
+  // su-loop-capability-parity P-010: read the CURATED fleet feed at wave boundaries
+  // (salience-ranked, triage-deduped) + the overwatch nudge-hygiene rule.
+  'Read the CURATED fleet feed at wave boundaries: `curation:feed` gives you the salience-ranked, triage-deduped live signals — blockers / escalations / questions, "what matters across the fleet right now" — so you are not re-deriving state from a raw `coord:inbox` scan. Nudge hygiene: before you nudge, RE-READ state (the drift may already be resolved); a nudge that fails to land twice is an ESCALATION to the owner, not a third nudge.',
+  // su-loop-capability-parity P-012 (leader side): park with carry-notes, not prose.
+  'When you PARK or hand off (wind-down, restart, leadership change), leave carry-notes — not prose that scrolls away: a per-item `work_items:checkpoint` for anything mid-flight + a plan `## Now` pointer (`plans:set-now`) to the resume state, so the next leader / your next wake picks up from durable state.',
 ];
 
 /** Render the full member-facing baseline markdown (the numbered rules with a
@@ -461,24 +497,9 @@ export default defineTool({
       lines.push(
         `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Until the plan is drained, your standing job each cycle:`,
       );
-      lines.push(
-        '  1. WATCH YOUR INBOX (coord:inbox) and handle anything addressed to you. Members ping the leader with wakeOnReply:true expecting an ack or a decision — blockers, systemic findings, "nothing left to claim" signals. An unacked flag is a dropped ball: coord:ack it or act on it; do not let it scroll past in the broadcast stream.',
-      );
-      lines.push(
-        '  2. STAY ALIVE across turns: loop:arm a monitor loop so your leadership persists — a leader that ends its turn with no loop stops leading and the fleet runs unsupervised. (To retune the cadence, loop:end then loop:arm fresh; an in-place interval change reverts.)',
-      );
-      lines.push(
-        '  3. Keep each wake LEAN: one dev:pg_query for burn-down + active-worker count. Do NOT dump fleet:assignments coverage[] or a full coord:presence every wake — that blows your OWN context within a few cycles and is the #1 leader self-inflicted failure.',
-      );
-      lines.push(
-        '  4. AUDIT completions: spot-check a few terminalCompletionRefs (work_items:get) for real evidence — files touched, the exact test run + its result — not just a status flip.',
-      );
-      lines.push(
-        '  5. Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Queen issues graceful-drain cues, loop:end and report the outcome to the owner. Do not spin empty wakes.',
-      );
-      lines.push(
-        "  6. Pausing the Hive Queen is NOT a 'drain your fleet' order. A hive pause / `pauseNewWork` / `maxBees` / a steering fact you SEE in orient governs the autonomous queen-bee loop, not your fleet — a fleet is drained ONLY by an explicit owner / `fleet:*` action or a graceful-drain cue ADDRESSED to you, never as a side-effect of a hive pause you happened to read. Check a drain cue's authority+scope stamp before acting: `hive-queen(<hive>)→hive-wide` is the Queen; a `fleet-leader(<other>)→fleet-members` cue is a PEER draining ITS members — not a command to you or your fleet. And never drain a peer fleet-leader or another fleet's members; if a hive pause has you unsure, `hive:get-steering` + ask the owner rather than self-draining.",
-      );
+      // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
+      // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
+      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       if (baselineApplied) {
         lines.push(
           'Your members were launched with this MEMBER OPERATING BASELINE (already told to them — do NOT re-issue or contradict it; your custom brief, if any, is layered BELOW it and wins on fleet-specifics):',

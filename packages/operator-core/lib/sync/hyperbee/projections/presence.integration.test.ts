@@ -62,7 +62,7 @@ beforeAll(async () => {
       last_seen_at timestamptz DEFAULT now() NOT NULL,
       schema_version bigint DEFAULT 1 NOT NULL,
       hive_slug text, fed_ts bigint,
-      fed_hlc text,
+      fed_hlc text, author_pubkey text,
       CONSTRAINT shared_presence_pkey PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
     )`);
   h.sql = rootSql;

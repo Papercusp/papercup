@@ -43,6 +43,14 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { resolveAgentIdentity } = await import('../coordination/identity');
+    // F1-1 federation identity: a SHAREABLE fact must carry the hive-home slug
+    // (mig 461 harness_slug) or the capture routes nowhere and peers reject the
+    // wire row. Resolved only when federating (a registry read per assert is
+    // not worth paying for hive-private facts).
+    const hiveHomeSlug =
+      args.shareable === true
+        ? await (await import('../../agent-facts/store')).resolveFactFederationSlug(ctx.harnessSlug)
+        : null;
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: args.scopeRef ?? null,
@@ -52,6 +60,7 @@ export default defineTool({
       ttlSec: args.ttlSec,
       createdBy: resolveAgentIdentity(ctx).ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
+      ...(hiveHomeSlug ? { hiveHomeSlug } : {}),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, fact }) }] };
   },

@@ -70,6 +70,7 @@ import tool, {
   composeMemberLaunchContext,
   renderMemberBaseline,
   MEMBER_BASELINE_RULES,
+  LEADER_STANDING_JOB,
 } from '../launch-on-plan';
 
 describe('memberLaunchCommand', () => {
@@ -233,6 +234,13 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
     // queen-fleet-authority-boundary P-006: a hive pause ≠ a self-drain order
     expect(md).toContain('A hive pause is a Queen-loop signal, not a self-drain order');
     expect(md).toContain('fleet-leader(<other>)→fleet-members');
+    // su-loop-capability-parity P-011: turn-end reflection + reporting integrity
+    expect(md).toContain('Turn-end reflection + reporting integrity');
+    expect(md).toContain('a routine turn records NOTHING');
+    expect(md).toContain('a truthful `blocked` beats a fabricated all-clear');
+    // su-loop-capability-parity P-012: member carry-note checkpoint
+    expect(md).toContain('Carry-note checkpoint at every boundary');
+    expect(md).toContain('work_items:checkpoint');
   });
 
   it('singularizes the worker count for a 1-member fleet', () => {
@@ -268,6 +276,32 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
   });
 });
 
+// su-loop-capability-parity-2026-07-03 P-013: prompt-bloat budget. The Ph1/2/4 ports stacked
+// onto the member baseline + leader standing-job, and context-blow is the plan's own named #1
+// leader failure. D-002 guards DRIFT; these guard BLOAT — a char ceiling so neither block can
+// silently balloon in future. Budgets are current size + modest headroom (~1 more rule/point);
+// exceeding one is the signal to prune or move detail behind a referenced doc, not to bump it.
+describe('prompt-bloat budget (P-013)', () => {
+  it('MEMBER_BASELINE_RULES stays within the char budget', () => {
+    const chars = MEMBER_BASELINE_RULES.reduce((a, r) => a + r.head.length + r.body.length, 0);
+    expect(chars, `member baseline rule chars = ${chars}`).toBeLessThan(3800);
+  });
+
+  it('the rendered member baseline stays within the char budget', () => {
+    const md = renderMemberBaseline({ fleetSlug: 'ops', plan: 'my-plan', count: 4 });
+    expect(md.length, `renderMemberBaseline chars = ${md.length}`).toBeLessThan(4400);
+  });
+
+  it('LEADER_STANDING_JOB stays within the char budget', () => {
+    const chars = LEADER_STANDING_JOB.reduce((a, p) => a + p.length, 0);
+    expect(chars, `leader standing-job chars = ${chars}`).toBeLessThan(3800);
+  });
+
+  it('each leader standing-job entry carries NO leading number (numbering is render-applied)', () => {
+    for (const p of LEADER_STANDING_JOB) expect(p).not.toMatch(/^\s*\d+\./);
+  });
+});
+
 describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   beforeEach(() => {
     spawnConsoleMock.mockReset();
@@ -287,6 +321,15 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
     expect(payload.memberBaselineHeadlines).toHaveLength(MEMBER_BASELINE_RULES.length);
     expect(payload.memberBaselineHeadlines).toContain('Already-fixed check FIRST');
     expect(typeof payload.memberBaselineApplied).toBe('boolean');
+    // su-loop-capability-parity P-010: leader reads the curated fleet feed + nudge hygiene.
+    expect(payload.message).toContain('curation:feed');
+    expect(payload.message).toMatch(/nudge that fails to land twice is an ESCALATION/);
+    // su-loop-capability-parity P-012 (leader side): park with carry-notes, not prose.
+    expect(payload.message).toContain('work_items:checkpoint');
+    expect(payload.message).toMatch(/plans:set-now/);
+    // su-loop-capability-parity P-006: wave-close fleet-execution-health scorecard.
+    expect(payload.message).toContain('fleet-execution-health');
+    expect(payload.message).toMatch(/per-WAVE, never per-turn/);
     // On a writable tmp the compose lands and its path threads into psu's --launch-context.
     if (payload.memberBaselineApplied) {
       expect(payload.memberLaunchContextPath).toContain('fleet-alpha-fleet-launch-context.md');

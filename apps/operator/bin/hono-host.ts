@@ -195,7 +195,11 @@ function startRequestServers(): void {
   // middleware in host-handler.ts covers the wedge), but the knobs let ops tune the
   // slow-loris / stuck-body ceiling without a code change.
   const appliedTimeouts = applyServerTimeouts(server as unknown as import('node:http').Server);
-  if (appliedTimeouts.requestTimeout !== undefined || appliedTimeouts.headersTimeout !== undefined) {
+  if (
+    appliedTimeouts.requestTimeout !== undefined ||
+    appliedTimeouts.headersTimeout !== undefined ||
+    appliedTimeouts.keepAliveTimeout !== undefined
+  ) {
     console.log('[hono-host] applied inbound server timeouts (ms):', appliedTimeouts);
   }
 

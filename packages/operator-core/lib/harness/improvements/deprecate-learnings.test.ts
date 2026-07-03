@@ -8,8 +8,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeprecateLearningsObservation,
+  buildNegativeResultFact,
   emitDeprecateLearnings,
   DEPRECATE_LEARNINGS_OBSERVATION_KIND,
+  NEGATIVE_RESULT_FACT_TTL_SEC,
   type DeprecateLearningsInput,
 } from './deprecate-learnings';
 import type { CaptureImprovementInput, CaptureImprovementResult } from './capture-core';
@@ -148,25 +150,87 @@ describe('emitDeprecateLearnings', () => {
     issue: { id: 'EI-999' } as CaptureImprovementResult['issue'],
   };
 
+  /** Full injectable deps with the F1-3 fact leg faked (resolves the home slug). */
+  const fakeDeps = () => ({
+    captureImprovement: vi.fn().mockResolvedValue(fakeResult),
+    assertFact: vi.fn().mockResolvedValue({} as never),
+    resolveFactFederationSlug: vi.fn().mockResolvedValue('the-hive-home'),
+  });
+
   it('hands the built input to the injected writer and returns its result', async () => {
-    const captureImprovement = vi.fn().mockResolvedValue(fakeResult);
-    const res = await emitDeprecateLearnings(base, { captureImprovement });
-    expect(captureImprovement).toHaveBeenCalledTimes(1);
-    const passed = captureImprovement.mock.calls[0][0] as CaptureImprovementInput;
+    const deps = fakeDeps();
+    const res = await emitDeprecateLearnings(base, deps);
+    expect(deps.captureImprovement).toHaveBeenCalledTimes(1);
+    const passed = deps.captureImprovement.mock.calls[0][0] as CaptureImprovementInput;
     expect(passed).toEqual(buildDeprecateLearningsObservation(base));
     expect(passed.lane).toBe('observation');
     expect(res).toBe(fakeResult);
   });
 
   it('forwards a rubric-graded variant so capture-core can run the v2 evidence gate', async () => {
-    const captureImprovement = vi.fn().mockResolvedValue(fakeResult);
+    const deps = fakeDeps();
     await emitDeprecateLearnings(
       { ...base, rubricRef: 'idea-quality', ratings: { premise: { rating: 'broken', evidence: 'e' } } },
-      { captureImprovement },
+      deps,
     );
-    const passed = captureImprovement.mock.calls[0][0] as CaptureImprovementInput;
+    const passed = deps.captureImprovement.mock.calls[0][0] as CaptureImprovementInput;
     const obs = (passed.payloadExtra?.observation ?? {}) as StructuredObservation;
     expect(obs.rubricRef).toBe('idea-quality');
     expect(obs.ratings?.premise.evidence).toBe('e');
+  });
+
+  it('F1-3: ALSO asserts the shareable negative-result fact with the RESOLVED hive home', async () => {
+    const deps = fakeDeps();
+    await emitDeprecateLearnings(base, deps);
+    expect(deps.resolveFactFederationSlug).toHaveBeenCalledWith(base.sourceHive);
+    expect(deps.assertFact).toHaveBeenCalledTimes(1);
+    const fact = deps.assertFact.mock.calls[0][0] as ReturnType<typeof buildNegativeResultFact>;
+    expect(fact).toEqual(buildNegativeResultFact(base, 'the-hive-home'));
+    expect(fact.shareable).toBe(true);
+    expect(fact.hiveHomeSlug).toBe('the-hive-home');
+  });
+
+  it('F1-3: the fact leg is BEST-EFFORT — a fact-rail throw never fails the observation', async () => {
+    const deps = fakeDeps();
+    deps.assertFact.mockRejectedValue(new Error('fact rail down'));
+    const res = await emitDeprecateLearnings(base, deps);
+    expect(res).toBe(fakeResult); // observation landed + returned despite the fact throw
+    expect(deps.captureImprovement).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('buildNegativeResultFact (F1-3 — the federated dead-end op)', () => {
+  it('is a SHAREABLE harness-scoped fact keyed by the deprecated plan', () => {
+    const fact = buildNegativeResultFact(base, 'the-hive-home');
+    expect(fact.scope).toBe('harness');
+    expect(fact.scopeRef).toBe(base.sourceHive);
+    expect(fact.key).toBe(`negative-result/${base.planSlug}`);
+    expect(fact.shareable).toBe(true);
+    expect(fact.hiveHomeSlug).toBe('the-hive-home');
+    expect(fact.sourceRef).toBe(`plan:${base.planSlug}`);
+    expect(fact.ttlSec).toBe(NEGATIVE_RESULT_FACT_TTL_SEC);
+    // The stall reason (the "don't go here" signal) leads the body.
+    expect(fact.body.indexOf('Stalled:')).toBeLessThan(fact.body.indexOf('Tried:'));
+  });
+
+  it('an unresolvable home slug yields an un-hived fact (no hiveHomeSlug key)', () => {
+    const fact = buildNegativeResultFact(base, null);
+    expect('hiveHomeSlug' in fact).toBe(false);
+    expect(fact.shareable).toBe(true); // still opt-in; simply won't route until hived
+  });
+
+  it('budgets long prose into the 500-char fact cap and the 120-char key cap', () => {
+    const long = 'x'.repeat(600);
+    const fact = buildNegativeResultFact(
+      {
+        ...base,
+        planSlug: `${'p'.repeat(150)}-2026-07-03`,
+        learnings: { tried: long, stalled: long, salvageable: long },
+      },
+      'h',
+    );
+    expect(fact.key.length).toBeLessThanOrEqual(120);
+    expect(fact.body.length).toBeLessThanOrEqual(500);
+    expect(fact.body).toContain('Stalled:');
   });
 });

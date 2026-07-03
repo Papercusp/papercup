@@ -48,11 +48,35 @@ export const SIGREFS_REF = 'refs/rad/sigrefs';
  *  per-device `version` counter used for rollback protection). */
 export const SIGREFS_SCHEMA_VERSION = 1;
 
+/**
+ * v2 — SCOPE-REPO sigrefs only (P-109 leg iii / C8, ratified D-017 n2 +
+ * D-018 RC-3): entries MAY carry an `originClaim`, the executor's statement
+ * "I signed this ref AS EXECUTOR; its AUTHOR is the named origin". The bump
+ * is CONFINED to per-scope repos: the hive-wide sigref plane stays v1 and
+ * `acceptFetchedSigrefs` REFUSES claim-bearing payloads unless the caller
+ * (a scope-repo integrator) explicitly opts in — the C5 fail-closed posture
+ * for version skew, applied within scope participants.
+ */
+export const SIGREFS_SCHEMA_VERSION_SCOPE = 2;
+
+/** The C8 executor-not-author statement attached to a scope-repo ref. */
+export interface SigrefOriginClaim {
+  /** M21 thread key. */
+  offer_id: string;
+  /** The AUTHOR's GitHub numeric user id (X9 — never a login). */
+  origin_github_user_id: number;
+  /** H9 fencing epoch the executor ran under. */
+  execution_epoch: number;
+}
+
 /** One (ref → sha) entry of a device's namespace snapshot. */
 export interface SigrefEntry {
   /** A within-namespace ref, e.g. `refs/heads/work` (NEVER the sigrefs ref). */
   ref: string;
   sha: string;
+  /** SCOPE-REPO ONLY (v2): the executor's origin claim for a foreign result
+   *  ref. Absent everywhere on the hive-wide plane (D-017 n2 confinement). */
+  originClaim?: SigrefOriginClaim;
 }
 
 /** The signed payload — canonical over a fixed field order + sorted refs. */
@@ -87,7 +111,22 @@ export function sigrefsSigningBytes(payload: SigrefsPayload): Buffer {
     ts: payload.ts,
     refs: [...payload.refs]
       .sort((a, b) => a.ref.localeCompare(b.ref))
-      .map((r) => ({ ref: r.ref, sha: r.sha })),
+      // originClaim (v2, scope repos) is part of the signed statement when
+      // present — a relay must not be able to strip or alter WHO authored a
+      // result without breaking the executor's signature.
+      .map((r) =>
+        r.originClaim
+          ? {
+              ref: r.ref,
+              sha: r.sha,
+              originClaim: {
+                offer_id: r.originClaim.offer_id,
+                origin_github_user_id: r.originClaim.origin_github_user_id,
+                execution_epoch: r.originClaim.execution_epoch,
+              },
+            }
+          : { ref: r.ref, sha: r.sha },
+      ),
   };
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
@@ -140,10 +179,21 @@ function isSignedSigrefs(x: unknown): x is SignedSigrefs {
     Number.isFinite(s.version) &&
     typeof s.ts === 'number' &&
     Array.isArray(s.refs) &&
-    s.refs.every(
-      (e) =>
-        e && typeof e === 'object' && typeof (e as SigrefEntry).ref === 'string' && typeof (e as SigrefEntry).sha === 'string',
-    ) &&
+    s.refs.every((e) => {
+      if (!e || typeof e !== 'object') return false;
+      const entry = e as SigrefEntry;
+      if (typeof entry.ref !== 'string' || typeof entry.sha !== 'string') return false;
+      if (entry.originClaim === undefined) return true;
+      const c = entry.originClaim as unknown as Record<string, unknown>;
+      return (
+        !!c &&
+        typeof c === 'object' &&
+        typeof c.offer_id === 'string' &&
+        typeof c.origin_github_user_id === 'number' &&
+        Number.isSafeInteger(c.origin_github_user_id) &&
+        typeof c.execution_epoch === 'number'
+      );
+    }) &&
     typeof s.sig === 'string'
   );
 }
@@ -188,6 +238,67 @@ export async function buildSigrefs(
 }
 
 /**
+ * Build + STORE the executor's SCOPE-REPO sigrefs (P-109 leg iii, C8/RC-3):
+ * signs the scope repo's TOP-LEVEL `refs/foreign/*` result refs (the RC-4
+ * in-repo marker family — scope repos publish results top-level, not
+ * namespace-nested), attaching each ref's `originClaim` from `claims`. The
+ * payload is v2 iff any claim attaches (D-017 n2: the bump is confined to
+ * scope repos; a claim-less snapshot stays v1). Stored at the executor
+ * device's namespace SIGREFS_REF like every sigrefs snapshot, so the
+ * per-device read/verify/rollback machinery applies unchanged.
+ */
+export async function buildScopeSigrefs(
+  scopeRepoPath: string,
+  executorDevicePubkeyBase64: string,
+  sign: (bytes: Buffer) => Promise<Buffer>,
+  opts: {
+    nowMs: number;
+    /** ref → the executor's origin claim for that result ref. */
+    claims?: Map<string, SigrefOriginClaim>;
+    version?: number;
+    runGit?: RunGit;
+  },
+): Promise<SignedSigrefs> {
+  const runGit = opts.runGit ?? defaultRunGit;
+  const list = await runGit(
+    ['for-each-ref', '--format=%(refname) %(objectname)', 'refs/foreign/'],
+    scopeRepoPath,
+  );
+  if (list.code !== 0) throw new Error(`scope sigrefs: for-each-ref failed: ${list.stderr.trim()}`);
+  const claims = opts.claims ?? new Map<string, SigrefOriginClaim>();
+  const refs: SigrefEntry[] = list.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const sp = l.indexOf(' ');
+      const ref = l.slice(0, sp);
+      const sha = l.slice(sp + 1);
+      const claim = claims.get(ref);
+      return claim ? { ref, sha, originClaim: claim } : { ref, sha };
+    })
+    .sort((a, b) => a.ref.localeCompare(b.ref));
+  let version = opts.version;
+  if (version === undefined) {
+    const prior = await readSigrefs(scopeRepoPath, executorDevicePubkeyBase64, runGit);
+    version = (prior?.version ?? 0) + 1;
+  }
+  const carriesClaims = refs.some((r) => r.originClaim !== undefined);
+  const payload: SigrefsPayload = {
+    v: carriesClaims ? SIGREFS_SCHEMA_VERSION_SCOPE : SIGREFS_SCHEMA_VERSION,
+    device_pubkey: executorDevicePubkeyBase64,
+    version,
+    ts: opts.nowMs,
+    refs,
+  };
+  const sig = (await sign(sigrefsSigningBytes(payload))).toString('base64');
+  const signed: SignedSigrefs = { ...payload, sig };
+  const blobSha = await hashBlob(scopeRepoPath, JSON.stringify(signed), runGit);
+  await writeNamespaceRef(scopeRepoPath, executorDevicePubkeyBase64, SIGREFS_REF, blobSha, runGit);
+  return signed;
+}
+
+/**
  * Verify a signed sigrefs blob: the embedded device_pubkey must equal the
  * EXPECTED device, and the signature must validate over the canonical bytes.
  * Never throws.
@@ -205,7 +316,15 @@ export function verifySigrefs(signed: SignedSigrefs, expectedDevicePubkeyBase64:
 
 export type SigrefsAcceptance =
   | { ok: true }
-  | { ok: false; reason: 'bad-signature' | 'wrong-device' | 'rollback' | 'malformed' };
+  | {
+      ok: false;
+      reason: 'bad-signature' | 'wrong-device' | 'rollback' | 'malformed' | 'origin-claim-outside-scope';
+    };
+
+/** Does any entry carry a (v2, scope-repo-only) origin claim? */
+export function sigrefsCarryOriginClaims(signed: SigrefsPayload): boolean {
+  return signed.refs.some((r) => r.originClaim !== undefined);
+}
 
 /**
  * Decide whether to ACCEPT a fetched sigrefs for `expectedDevice`, given the
@@ -213,16 +332,24 @@ export type SigrefsAcceptance =
  * — null if none). Combines the signature/device check (G-4) with the monotonic
  * rollback guard (G-4b): the incoming version must strictly exceed the prior.
  * Pure — the caller persists acceptance by storing the new blob.
+ *
+ * D-017 n2 CONFINEMENT: origin-claim-bearing (v2) sigrefs belong to per-scope
+ * repos ONLY. The hive-wide integrator calls this without opts and REFUSES
+ * them; a scope-repo integrator passes `allowOriginClaims: true`.
  */
 export function acceptFetchedSigrefs(
   signed: SignedSigrefs,
   expectedDevicePubkeyBase64: string,
   priorVersion: number | null,
+  opts: { allowOriginClaims?: boolean } = {},
 ): SigrefsAcceptance {
   if (!isSignedSigrefs(signed)) return { ok: false, reason: 'malformed' };
   if (signed.device_pubkey !== expectedDevicePubkeyBase64) return { ok: false, reason: 'wrong-device' };
   if (!verifySigrefs(signed, expectedDevicePubkeyBase64)) return { ok: false, reason: 'bad-signature' };
   if (priorVersion !== null && signed.version <= priorVersion) return { ok: false, reason: 'rollback' };
+  if (!opts.allowOriginClaims && sigrefsCarryOriginClaims(signed)) {
+    return { ok: false, reason: 'origin-claim-outside-scope' };
+  }
   return { ok: true };
 }
 

@@ -183,6 +183,9 @@
  *     (lib/graduation/seed-graduation-routine.ts).
  */
 import '../git-sync/git-sync-action';
+// `system:foreign-git-sync` — the P-109 foreign-workspace commit lane (a
+// SEPARATE routine from canonical git-sync by ratified design Q3).
+import './foreign-git-sync-action';
 // papercusp-dogfood-phase7-pr-lifecycle P-042 (un-vaporware, PR-1): `system:pr-poll`
 // — per-harness inbound-PR poll daemon (notice PR → track → trigger reviewer →
 // decideAutoReview → auto-approve/merge). Seeded INACTIVE; the pr-reviewer-settings

@@ -83,15 +83,23 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // D-013 author-scope: persist the writer's unforgeable provenance author so
+  // deleteFromPg can scope a leave-tombstone to it (the hyperbee-log transport
+  // supplies the log-source key, the presence-gossip transport the signer device
+  // pubkey — each transport writes AND deletes with the SAME identity). Mirrors
+  // the proven coord_event_log author_pubkey pattern.
+  const authorPubkey = provenance?.authorPubkey ?? null;
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
-       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts, fed_hlc)
+       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts, fed_hlc,
+       author_pubkey)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
-       ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs}, ${fedHlc})
+       ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs}, ${fedHlc},
+       ${authorPubkey})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
@@ -100,7 +108,8 @@ async function writeToPg(
       schema_version = EXCLUDED.schema_version,
       hive_slug = EXCLUDED.hive_slug,
       fed_ts = EXCLUDED.fed_ts,
-      fed_hlc = EXCLUDED.fed_hlc
+      fed_hlc = EXCLUDED.fed_hlc,
+      author_pubkey = EXCLUDED.author_pubkey
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
@@ -126,11 +135,17 @@ async function deleteFromPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
-  // H2 (audit D-013): when the caller author-scopes the tombstone (the gossip del
-  // path passes the SIGNER device as provenance.authorPubkey), restrict the delete
-  // to rows OWNED by that device — a member can only tombstone its own presence
-  // rows, never evict a peer's (the de-presence DoS that breaks lock-authority
-  // election). Absent provenance ⇒ no device filter (today's behavior).
+  // H2 (audit D-013): when the caller author-scopes the tombstone, restrict the
+  // delete to rows written by that SAME provenance author — a member can only
+  // tombstone its own presence rows, never evict a peer's (the de-presence DoS
+  // that breaks lock-authority election). Scoped by the stored `author_pubkey`
+  // (persisted by writeToPg from provenance), NOT device_pubkey: the two agree on
+  // the gossip transport (author = signer device) but DIVERGE on the hyperbee-log
+  // transport (author = log-source key, device_pubkey = the row value's self-
+  // declared device) — comparing device_pubkey there scoped out every legit
+  // log-path leave-tombstone. Each transport writes AND deletes with the same
+  // author identity, so a self-tombstone matches and a forged one never does.
+  // Absent provenance ⇒ no author filter (today's behavior).
   const authorDevice = provenance?.authorPubkey ?? null;
   await sql`
     DELETE FROM harness_shared.shared_presence
@@ -138,7 +153,7 @@ async function deleteFromPg(
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND machine_label = ${machineLabel}
-      AND (${authorDevice}::text IS NULL OR device_pubkey = ${authorDevice}::text)
+      AND (${authorDevice}::text IS NULL OR author_pubkey = ${authorDevice}::text)
       -- EI-79 step 2 + D-001: guard the delete by the SAME fed_order_key() order (EI-1698)
       AND (
         (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)

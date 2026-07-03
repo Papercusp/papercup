@@ -1095,7 +1095,7 @@ const post = defineTool({
     // turn 1 enters AUTO — and gets a kickoff even with NO plan bound (a fleet member
     // must start autonomous regardless), so the launcher's kickoffPositionalArgs
     // (gated to --no-picker) submits it as the first turn.
-    const kickoffBase: string | null = planSlug ? deriveLaunchPromptText(null) : null;
+    const kickoffBase: string | null = planSlug ? deriveLaunchPromptText(null, autoMode) : null;
     const kickoffPrompt: string | null = autoMode
       ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, kickoffBase].filter(Boolean).join('\n\n')
       : kickoffBase;

@@ -88,28 +88,51 @@ describe('env readers', () => {
   });
 });
 
-describe('applyServerTimeouts (the safe half — opt-in)', () => {
-  it('leaves Node defaults untouched when the env is unset', () => {
-    const server = { requestTimeout: 300_000, headersTimeout: 60_000 };
+describe('applyServerTimeouts (keep-alive-race fix + opt-in body/header ceilings)', () => {
+  // WI-1711: Node's 5s keepAliveTimeout default is the between-call keep-alive
+  // race that reset MCP client POSTs ("Error POSTing to endpoint"). Keep-alive is
+  // now DEFAULT-ON at 61s, with headersTimeout lifted above it, so the CLIENT
+  // always closes an idle socket first. requestTimeout stays opt-in.
+  it('defaults keep-alive to 61s (headers derived above it) when the env is unset', () => {
+    const server = { requestTimeout: 300_000, headersTimeout: 60_000, keepAliveTimeout: 5_000 };
     const applied = applyServerTimeouts(server, {});
-    expect(applied).toEqual({});
-    expect(server).toEqual({ requestTimeout: 300_000, headersTimeout: 60_000 });
+    expect(applied).toEqual({ keepAliveTimeout: 61_000, headersTimeout: 65_000 });
+    // requestTimeout is opt-in → untouched; keep-alive raised off Node's racy 5s.
+    expect(server).toEqual({ requestTimeout: 300_000, headersTimeout: 65_000, keepAliveTimeout: 61_000 });
+    // The Node invariant the race fix depends on.
+    expect(server.headersTimeout).toBeGreaterThan(server.keepAliveTimeout);
   });
 
-  it('applies both knobs (incl. 0 = disabled) when set', () => {
-    const server = { requestTimeout: 300_000, headersTimeout: 60_000 };
+  it('honors an explicit keep-alive override and derives headers above it', () => {
+    const server = { requestTimeout: 300_000, headersTimeout: 60_000, keepAliveTimeout: 5_000 };
+    const applied = applyServerTimeouts(server, { PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS: '90000' });
+    expect(applied).toEqual({ keepAliveTimeout: 90_000, headersTimeout: 94_000 });
+    expect(server.headersTimeout).toBeGreaterThan(server.keepAliveTimeout);
+  });
+
+  it('kill-switch: keep-alive=0 restores Node default (leaves keepAliveTimeout untouched)', () => {
+    const server = { requestTimeout: 300_000, headersTimeout: 60_000, keepAliveTimeout: 5_000 };
+    const applied = applyServerTimeouts(server, { PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS: '0' });
+    expect(applied.keepAliveTimeout).toBeUndefined();
+    expect(server.keepAliveTimeout).toBe(5_000);
+  });
+
+  it('an explicit (lower) headers ceiling wins and clamps keep-alive under it', () => {
+    const server = { requestTimeout: 300_000, headersTimeout: 60_000, keepAliveTimeout: 5_000 };
     const applied = applyServerTimeouts(server, {
       PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS: '0',
       PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS: '45000',
     });
-    expect(applied).toEqual({ requestTimeout: 0, headersTimeout: 45_000 });
-    expect(server).toEqual({ requestTimeout: 0, headersTimeout: 45_000 });
+    // headers honored at 45s; keep-alive clamped to 41s so headers > keep-alive.
+    expect(applied).toEqual({ requestTimeout: 0, headersTimeout: 45_000, keepAliveTimeout: 41_000 });
+    expect(server.headersTimeout).toBeGreaterThan(server.keepAliveTimeout);
   });
 
-  it('ignores junk values', () => {
-    const server = { requestTimeout: 300_000, headersTimeout: 60_000 };
-    applyServerTimeouts(server, { PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS: 'abc' });
+  it('ignores junk values (keep-alive still defaults on)', () => {
+    const server = { requestTimeout: 300_000, headersTimeout: 60_000, keepAliveTimeout: 5_000 };
+    applyServerTimeouts(server, { PAPERCUSP_HTTP_REQUEST_TIMEOUT_MS: 'abc', PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS: 'xyz' });
     expect(server.requestTimeout).toBe(300_000);
+    expect(server.keepAliveTimeout).toBe(61_000);
   });
 });
 

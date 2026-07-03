@@ -23,17 +23,17 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Bee self-select via your Queen-issued claim SPEC: atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ the default ordering (== work_items:claim_next). Returns the claimed item + the spec revision that selected it, or null.',
+    'Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ the default ordering (== work_items:claim_next). Returns the claimed item + the spec revision that selected it, or null.',
   guidance: {
-    when: 'You are a coding-HIVE bee (role="bee") picking up your next item — call this instead of scanning the raw frontier or self-prioritizing. Scheduling is your Queen\'s judgment expressed as your claim spec; the pickup is yours. The coding hive = a queen + self-pulling bees (claim-spec / get_next). NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is role="bee", NOT scoper; only a bee/queen self-pulls here.',
+    when: 'You are a SELF-PULLING agent picking up your next item — a coding-hive bee (role="bee"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your queen\'s / fleet leader\'s judgment expressed as your claim spec; the pickup is yours. NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is a bee or an su fleet member, NOT a scoper.',
     notWhen:
-      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-bee spec — work_items:claim_next.',
+      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-agent spec — work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your Queen re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next).',
+      'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next).',
     seeAlso: [
       'work_items:claim_next (plain oldest-first self-select, no spec)',
       'work_items:claim (claim a SPECIFIC item by id)',
-      'scheduler:set_claim_spec (the spec your Queen steers you with)',
+      'scheduler:set_claim_spec (the spec your queen or fleet leader steers you with)',
     ],
   },
   capability: 'work_items:write',

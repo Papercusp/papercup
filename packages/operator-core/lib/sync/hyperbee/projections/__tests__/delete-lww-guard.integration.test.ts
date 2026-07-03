@@ -133,14 +133,15 @@ function presencePut(userId: number, machine: string, ts: number): OpEnvelope {
       harness_slug: HARNESS,
       github_user_id: userId,
       machine_label: machine,
-      // device_pubkey MUST equal the op author (AUTHOR/writerPubkey). Unlike the
-      // other composite-key deleters, presence.deleteFromPg also enforces the
-      // D-013/H2 author-scope guard (`device_pubkey = provenance.authorPubkey`) so
-      // a member can only tombstone its OWN presence rows. A device announces AND
-      // tombstones its presence with the SAME key, so the fixture must too —
-      // otherwise the author-scope filter (not the fed_order_key LWW floor this
-      // test targets) is what rejects the del, masking the behavior under test.
-      device_pubkey: AUTHOR,
+      // device_pubkey is DELIBERATELY DISTINCT from the op author (AUTHOR /
+      // writerPubkey). presence.deleteFromPg enforces the D-013/H2 author-scope
+      // guard, but scoped by the stored `author_pubkey` (persisted from the op's
+      // provenance author) — NOT device_pubkey. writeToPg stamps author_pubkey =
+      // AUTHOR here from the local-origin provenance, so the self-tombstone (same
+      // AUTHOR) still matches even though device_pubkey differs. Keeping the two
+      // different is the regression catch: if the guard ever reverts to comparing
+      // device_pubkey, the newer del below stops deleting and this test goes red.
+      device_pubkey: `device-${userId}-${machine}`,
       intent: 'working',
       current_view: null,
       last_seen_at: ts,

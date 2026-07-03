@@ -18,12 +18,50 @@ import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-s
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 
 /**
- * The roles that actually self-pull via scheduler:get_next, so a claim-spec STEERS them.
- * Every other role (the coding-FACTORY push-pipeline roles scoper/architect/worker/validator/…)
- * never calls get_next, so a spec set on it is INERT — the exact bee-vs-scoper conflation this guards
- * (coding-hive-bee-vs-coding-factory-scoper-2026-06-23).
+ * The coding-FACTORY push-pipeline roles: each is HANDED a FEATURE_ID by the orchestrator
+ * spine (NEXT_SCOPER/NEXT_ARCHITECT/… all carry `FEATURE_ID=`) and NEVER calls
+ * scheduler:get_next, so a claim-spec set on one is INERT — the exact bee-vs-scoper conflation
+ * this advisory guards (coding-hive-bee-vs-coding-factory-scoper-2026-06-23).
+ *
+ * This is deliberately the INVERSE of a self-pulling allowlist (the prior `{bee,queen}` denylist).
+ * A self-puller is a coding-hive bee, the queen, OR an su fleet LEADER/MEMBER instructed to pull
+ * via get_next (su-loop-capability-parity P-001/P-003) — plus a plain su session with no nursery
+ * row. NONE of those appear here, so none trip the advisory: the fix for the false-positive that
+ * fired 'INERT spec' on every SU fleet member. We warn ONLY for a spawned role that is a genuine
+ * factory push-role. Mirrors FACTORY_PIPELINE_ROLES in fleet/operator-spawn.ts; kept local (and
+ * inclusive of `worker`, which that set omits because it validates a worker via chunk-presence
+ * instead) because a worker also never self-pulls, so a spec on one is equally inert.
  */
-const SELF_PULLING_ROLES = new Set(['bee', 'queen']);
+const FACTORY_PUSH_ROLES = new Set([
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'documenter',
+  'curator',
+  'director',
+]);
+
+/**
+ * Pure advisory decision (unit-testable without the nursery): given the target's spawned role
+ * (from lookupSpawnedRole — or null when no spawn row resolves: a plain su session, an su fleet
+ * member launched as a bare collaborator, a queen), return the prominent INERT-spec warning ONLY
+ * when the role is a coding-FACTORY push role. A null/unknown role, a bee/queen, or an su fleet
+ * leader/member returns null — no false-positive on every SU fleet member (su-loop-capability-parity
+ * P-003). Exported for the advisory unit test.
+ */
+export function claimSpecInertWarning(beeId: string, spawnedRole: string | null): string | null {
+  if (!spawnedRole || !FACTORY_PUSH_ROLES.has(spawnedRole)) return null;
+  return (
+    `beeId "${beeId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
+    'that is HANDED a FEATURE_ID and never calls scheduler:get_next — so this claim-spec is INERT ' +
+    '(it will never select any work). Claim-specs steer SELF-PULLING agents: a coding-hive bee ' +
+    '(role="bee"), the queen, or an su fleet leader/member instructed to pull via get_next. ' +
+    'Did you mean to push a FEATURE_ID to this factory role, or to steer a self-puller instead?'
+  );
+}
 
 /**
  * Best-effort: resolve the role a `beeId` was spawned as, by looking it up in the nursery
@@ -52,16 +90,16 @@ export default defineTool({
   name: 'scheduler:set_claim_spec',
   profile: 'engineer',
   description:
-    "Queen: set/replace a bee's versioned claim spec (view.filter + rank). The bee's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running bee by setting a new spec (the revision bumps; the bee picks it up on its next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
+    "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
   guidance: {
-    when: "THE dispatch surface for a SELF-PULLING coding-HIVE worker (role=\"bee\", or the queen) that calls scheduler:get_next — not micro-dispatch. coding-FACTORY roles (scoper/architect/worker) are PUSHED a FEATURE_ID and never self-pull, so a spec on them is INERT — spawn role=\"bee\" for a self-puller. Encode a scoped VIEW (filter) + ORDERING (rank) over the work-item DAG: a property filter (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; `id in [...]` ONLY to pin a STATIC wave (hotfix/cutover — no auto-inflow, no stealing). Re-steer by setting a NEW spec (revision bumps; the bee picks it up on its next get_next), never by re-dispatching.",
+    when: "THE steer-don't-dispatch surface for a SELF-PULLING agent that calls scheduler:get_next — a coding-hive bee, the queen, OR an su fleet LEADER steering a fleet member's lane (su-loop-capability-parity). Not micro-dispatch. coding-FACTORY roles (scoper/architect/worker) are PUSHED a FEATURE_ID and never self-pull, so a spec on them is INERT — steer a self-puller (role=\"bee\" for a hive, or an su fleet member) instead. Encode a scoped VIEW (filter) + ORDERING (rank) over the work-item DAG: a property filter (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; `id in [...]` ONLY to pin a STATIC wave (hotfix/cutover — no auto-inflow, no stealing). Re-steer by setting a NEW spec (revision bumps; the puller picks it up on its next get_next), never by re-dispatching.",
     notWhen:
       "A coding-FACTORY role (scoper/architect/worker/validator) — PUSHED a FEATURE_ID, never calls get_next, so a spec is INERT; push the FEATURE_ID. Micro-dispatching hand-picked items, or selecting on `id` ALONE for a STANDING lane (hand-listing in disguise) — write a property filter. Global floors (blocked/ready/dedup/cursed) are always resolver-enforced, not set here.",
-    chaining: "scheduler:set_claim_spec (you) → the bee's scheduler:get_next pulls per the spec.",
+    chaining: "scheduler:set_claim_spec (you) → the puller's scheduler:get_next pulls per the spec.",
     seeAlso: [
-      'scheduler:get_next (the bee pulls per this spec)',
+      'scheduler:get_next (the puller pulls per this spec)',
       'scheduler:running (what is executing now)',
-      'fleet:assignments (drill into a bee)',
+      'fleet:assignments (drill into a member/bee)',
     ],
   },
   capability: 'work_items:write',
@@ -109,20 +147,18 @@ export default defineTool({
       hiveSlug,
     });
 
-    // Best-effort bee-vs-scoper guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
-    // spec only STEERS a self-pulling role (role="bee", or the queen) that calls scheduler:get_next.
-    // The observed mistake was setting claim-specs on a coding-FACTORY role (scoper/architect/worker/…),
-    // which never calls get_next — the spec just sits there, INERT, and the agent never pulls. Resolve
-    // the beeId's spawned role and, when it's a non-self-pulling role, attach a prominent `warning`.
-    // Advisory ONLY (not a hard reject): the beeId may be a session id with no nursery row, or a queen.
+    // Best-effort inert-spec guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
+    // spec only STEERS a SELF-PULLING agent (a coding-hive bee, the queen, or an su fleet
+    // leader/member instructed to pull) that calls scheduler:get_next. The observed mistake was
+    // setting claim-specs on a coding-FACTORY role (scoper/architect/worker/…), which never calls
+    // get_next — the spec just sits there, INERT. Resolve the beeId's spawned role and, when it's a
+    // factory push-role, attach a prominent `warning`. Advisory ONLY (not a hard reject): the beeId
+    // may be a session id with no nursery row, a queen, or an su fleet member — none of which warn
+    // (su-loop-capability-parity P-003: no false-positive on every SU fleet member).
     const spawnedRole = await lookupSpawnedRole(args.beeId);
     const out: Record<string, unknown> = { ...res };
-    if (spawnedRole && !SELF_PULLING_ROLES.has(spawnedRole)) {
-      const roleWarning =
-        `beeId "${args.beeId}" was spawned as role="${spawnedRole}", which is NOT a self-pulling ` +
-        'coding-hive role. Claim-specs steer self-pulling BEES (role="bee") that call scheduler:get_next; ' +
-        `a "${spawnedRole}" never calls get_next, so this spec is INERT (it will never select any work). ` +
-        'Did you mean to spawn a bee? — fleet:spawn { role:"bee", … }, then set this claim-spec on it.';
+    const roleWarning = claimSpecInertWarning(args.beeId, spawnedRole);
+    if (roleWarning) {
       // Append — never clobber the store's WI-1564 strand warning.
       out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;
     }

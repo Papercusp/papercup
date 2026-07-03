@@ -397,6 +397,7 @@ import tuiRoutes from './tui/index';
 import activityRoutes from './activity/index';
 import authorityRoutes from './authority/index';
 import suLocksHookHealth from './su-locks/hook-health';
+import suLocksForeignGuard from './su-locks/foreign-guard';
 import operatorNotesRoutes from './operator-notes/index';
 import oracleRoutes from './oracle/index';
 import dockLayoutsRoutes from './dock-layouts/index';
@@ -828,6 +829,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(activityRoutes as AnyRoute[]),
   ...flatten(authorityRoutes as AnyRoute[]),
   ...flatten(suLocksHookHealth as AnyRoute),
+  ...flatten(suLocksForeignGuard as AnyRoute),
   ...flatten(operatorNotesRoutes as AnyRoute[]),
   ...flatten(oracleRoutes as AnyRoute[]),
   ...flatten(dockLayoutsRoutes as AnyRoute[]),

@@ -59,6 +59,15 @@ export interface AssertFactInput {
   /** F0-2 (federated-scout-gym): OPT-IN federation egress — only shareable
    *  facts ever leave the hive. Default false (privacy default, D-001/D-005). */
   shareable?: boolean;
+  /**
+   * F1-1 federation identity (mig 461 `harness_slug` — "the Hive home slug;
+   * NULL = un-hived local fact"). REQUIRED for a shareable fact to actually
+   * federate: the capture routes the outbox row by it AND the peer-side wire
+   * validator (`isAgentFactWireRow`) rejects a null harness_slug, so a
+   * shareable assert without it is captured-then-dropped. Resolve via
+   * {@link resolveFactFederationSlug} (member harness → its hive home).
+   */
+  hiveHomeSlug?: string | null;
 }
 
 /** Validate scope/ref pairing per D-001. Returns an error string or null. */
@@ -92,29 +101,43 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const ws = input.workspaceId ?? activeWorkspaceId();
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
   const ttl = input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_DEFAULT_TTL_SEC;
+  // The arbiter is mig 461's 5-column identity (per-source partitioning, H6):
+  // a LOCAL assert always writes the source_hive-NULL ('') partition, so the
+  // coalesce(source_hive,'') dimension must be IN the inference spec — the old
+  // 4-column spec matched no unique index after 461 and errored EVERY assert
+  // at plan time (found 2026-07-03: zero fact writes since 461 applied).
   const rows = await sql<AgentFactRow[]>`
     INSERT INTO harness_shared.agent_facts
-      (workspace_id, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable)
+      (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable)
     VALUES
-      (${ws}, ${input.scope}, ${ref}, ${key}, ${body}, ${input.sourceRef ?? null}, ${input.createdBy},
+      (${ws}, ${input.hiveHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
+       ${input.sourceRef ?? null}, ${input.createdBy},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true})
-    ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key)
+    ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET body = EXCLUDED.body,
                   source_ref = EXCLUDED.source_ref,
+                  -- keep an already-stamped federation identity when a later
+                  -- assert omits it (never NULL it back out)
+                  harness_slug = COALESCE(EXCLUDED.harness_slug, harness_shared.agent_facts.harness_slug),
                   updated_at = now(),
                   expires_at = EXCLUDED.expires_at,
                   retracted_at = NULL,
                   shareable = EXCLUDED.shareable
     RETURNING scope, scope_ref, key, body, source_ref, created_by,
               updated_at::text, expires_at::text`;
-  // Cap enforcement — evict oldest-updated live facts past the cap for this (scope, ref).
+  // Cap enforcement — evict oldest-updated live facts past the cap for this
+  // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
+  // evict foreign-source observations (those are bounded per-source by the
+  // substrate rate caps + each sender's own cap).
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now()
-     WHERE (workspace_id, scope, coalesce(scope_ref,''), key) IN (
+     WHERE source_hive IS NULL
+       AND (workspace_id, scope, coalesce(scope_ref,''), key) IN (
        SELECT workspace_id, scope, coalesce(scope_ref,''), key
          FROM harness_shared.agent_facts
         WHERE workspace_id = ${ws} AND scope = ${input.scope}
           AND coalesce(scope_ref,'') = ${ref ?? ''}
+          AND source_hive IS NULL
           AND retracted_at IS NULL AND expires_at > now()
         ORDER BY updated_at DESC
        OFFSET ${FACTS_PER_SCOPE_CAP})`;
@@ -131,10 +154,15 @@ export async function retractFact(
   const sql = sqlOf(inject);
   const ws = args.workspaceId ?? activeWorkspaceId();
   const ref = args.scope === 'workspace' ? '' : (args.scopeRef ?? '').trim();
+  // LOCAL partition only (H6): retracting YOUR fact must not retract another
+  // source's independent observation of the same identity. Your retraction
+  // federates to peers' copies of YOUR partition via the mig-461/462 update
+  // capture; foreign partitions retract via the projection's deleteFromPg.
   const rows = await sql<{ key: string }[]>`
     UPDATE harness_shared.agent_facts SET retracted_at = now()
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${args.key.trim()}
+       AND source_hive IS NULL
        AND retracted_at IS NULL
     RETURNING key`;
   return rows.length > 0;
@@ -242,4 +270,29 @@ function rowToFact(r: AgentFactRow): AgentFact {
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
   };
+}
+
+/**
+ * Resolve the FEDERATION identity slug a shareable fact should carry
+ * (`agent_facts.harness_slug`, mig 461): a Hive MEMBER harness resolves to its
+ * hive HOME slug (the registry `hive_slug` pointer — the slug the peer-side
+ * projection is bound to, register-all A-003); a hive home / standalone
+ * harness is itself. Returns null for an unresolvable / wildcard slug — the
+ * fact then stays un-hived (local-only), matching mig 461's NULL semantics.
+ * Fail-soft: a registry read error yields null, never throws (an assert must
+ * not fail on federation-identity resolution).
+ */
+export async function resolveFactFederationSlug(
+  harnessSlug: string | null | undefined,
+): Promise<string | null> {
+  const slug = harnessSlug?.trim();
+  if (!slug || slug === '*') return null;
+  try {
+    const { loadHarnessRegistry } = await import('../harness-registry');
+    const reg = await loadHarnessRegistry();
+    const entry = reg.projects.find((p) => p.slug === slug);
+    return entry?.hive_slug ?? slug;
+  } catch {
+    return null;
+  }
 }

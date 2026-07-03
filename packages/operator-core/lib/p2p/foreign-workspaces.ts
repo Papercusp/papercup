@@ -200,6 +200,51 @@ export async function listForeignWorkspaces(
   return rows.map(fromRow);
 }
 
+/** One live foreign root for the guard's host-direction policy (leg i). */
+export interface ForeignRootEntry {
+  offerId: string;
+  rootPath: string;
+  workspaceId: string;
+  fleetSlug: string;
+  state: ForeignWorkspaceState;
+}
+
+/**
+ * Every non-reaped foreign root on this HOST, across all workspaces (the
+ * guard protects the host's filesystem — workspace boundaries don't matter
+ * to a stray host edit). Parked/winding-down roots stay foreign ground for
+ * hosts; only 'reaped' rows drop out.
+ */
+export async function listLiveForeignRoots(sql: OrgSql = getOrgPg().sql): Promise<ForeignRootEntry[]> {
+  const rows = (await sql`
+    SELECT workspace_id, offer_id, fleet_slug, root_path, state
+    FROM harness_shared.p2p_foreign_workspaces
+    WHERE state <> 'reaped'
+    ORDER BY created_at
+  `) as unknown as Row[];
+  return rows.map((r) => ({
+    offerId: r.offer_id,
+    rootPath: r.root_path,
+    workspaceId: r.workspace_id,
+    fleetSlug: r.fleet_slug,
+    state: r.state as ForeignWorkspaceState,
+  }));
+}
+
+/** Cross-workspace lookup by offer id (the guard's foreign-session check —
+ *  a session presents only its offer id + token, not a workspace). */
+export async function getForeignWorkspaceByOffer(
+  offerId: string,
+  sql: OrgSql = getOrgPg().sql,
+): Promise<ForeignWorkspace | null> {
+  const rows = (await sql`
+    SELECT * FROM harness_shared.p2p_foreign_workspaces
+    WHERE offer_id = ${offerId}
+    LIMIT 1
+  `) as unknown as Row[];
+  return rows.length ? fromRow(rows[0]) : null;
+}
+
 /** Bind the spawned foreign session + flip provisioning→active (P-104). */
 export async function bindForeignSession(
   workspaceId: string,

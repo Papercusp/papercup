@@ -177,6 +177,116 @@ if not raw_paths:
     allow()
 
 
+# ── P-109 leg (i): FOREIGN-WORKSPACE guard (p2p-work-distribution, design §2) ──
+# Two registry-derived directional policies, evaluated by the operator
+# (POST /api/su-locks/foreign-guard → lib/p2p/foreign-guard.ts):
+#   - a FOREIGN-marked session (spawn-injected PAPERCUSP_FOREIGN_OFFER_ID +
+#     PAPERCUSP_FOREIGN_SESSION_ID, minted by P-104, verified against the
+#     p2p_foreign_workspaces row — never trusted alone) may edit ONLY its own
+#     registered root. FAIL-CLOSED: no verdict ⇒ no edit.
+#   - a HOST session must never edit under a registered foreign root (the C7
+#     blending hazard inverted). Roots come from a 30s cache of the registry;
+#     an unreachable operator fails OPEN here (matching the hook's global
+#     posture — containment is P-105's job, this is honest-path policy).
+def _foreign_guard_post(payload, mark=True):
+    """POST to the foreign-guard route; parsed JSON dict or None on ANY failure.
+    mark=False keeps a best-effort call (the host-direction cache refresh) from
+    writing the error marker — fail-open paths stay quiet, the fail-CLOSED
+    foreign-session path stays loud."""
+    try:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            operator_url.rstrip('/') + '/api/su-locks/foreign-guard',
+            data=body,
+            headers={'Authorization': 'Bearer ' + token,
+                     'Content-Type': 'application/json'},
+            method='POST',
+        )
+        # Never let an egress proxy intercept the localhost call (same reason
+        # as the acquire call below).
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        resp = opener.open(req, timeout=6)
+        out = json.loads(resp.read().decode('utf-8', errors='replace'))
+        return out if isinstance(out, dict) else None
+    except Exception as e:
+        if mark:
+            mark_error('foreign-guard', e)
+        return None
+
+
+_abs_paths = []
+for _p in raw_paths:
+    _ap = _p if os.path.isabs(_p) else os.path.join(cwd, _p)
+    _abs_paths.append(os.path.abspath(_ap))
+
+_foreign_offer = os.environ.get('PAPERCUSP_FOREIGN_OFFER_ID')
+if _foreign_offer:
+    # FOREIGN-marked session: one authoritative verdict per edit, FAIL-CLOSED.
+    _v = _foreign_guard_post({
+        'paths': _abs_paths,
+        'offer_id': _foreign_offer,
+        'session_id': os.environ.get('PAPERCUSP_FOREIGN_SESSION_ID', ''),
+    })
+    if not _v or _v.get('decision') != 'allow':
+        _reason = _v.get('reason') if _v else None
+        deny(_reason or (
+            'foreign-work guard: refused — no guard verdict is reachable and this '
+            f'session is foreign-marked (offer {_foreign_offer}). A foreign session '
+            'edits nothing without a live registry verdict (fail-closed).'))
+    # allow → fall through: a foreign clone lives outside the papercup
+    # workspace, so the lock-scoping below skips it (nothing to lock).
+else:
+    # HOST session. Foreign roots live OUTSIDE the workspace root by the Q1
+    # registration invariant, so only out-of-workspace paths can ever hit one
+    # — in-workspace edits skip this check entirely (zero added latency on
+    # the hot path).
+    _ws_root = os.path.realpath(
+        os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
+        or os.path.expanduser('~/papercupai-workspace'))
+    _outside = [a for a in _abs_paths
+                if not (os.path.realpath(a) == _ws_root
+                        or os.path.realpath(a).startswith(_ws_root + os.sep))]
+    # Cached foreign roots (30s TTL); on a hit, get the authoritative verdict
+    # (which also bumps the P-004 counter). Refresh is best-effort: an
+    # unreachable operator fails OPEN here.
+    _roots = None
+    if _outside:
+        try:
+            with open(os.path.join(cache_dir, 'foreign-roots.json')) as _f:
+                _cached = json.load(_f)
+            if time.time() - float(_cached.get('ts', 0)) < 30:
+                _roots = _cached.get('roots')
+        except Exception:
+            pass
+        if _roots is None:
+            _v = _foreign_guard_post({'roots_only': True}, mark=False)
+            _roots = _v.get('roots', []) if _v else []
+            if _v is not None:
+                write_marker('foreign-roots.json', {'ts': time.time(), 'roots': _roots})
+    for _ap in _outside:
+        _rap = os.path.realpath(_ap)
+        _hit = None
+        for _r in _roots or []:
+            _root = _r.get('rootPath') if isinstance(_r, dict) else None
+            if not _root:
+                continue
+            _rroot = os.path.realpath(_root)
+            if _rap == _rroot or _rap.startswith(_rroot + os.sep):
+                _hit = _r
+                break
+        if _hit is None:
+            continue
+        _v = _foreign_guard_post({'paths': _abs_paths})
+        if _v and _v.get('decision') == 'allow':
+            break  # registry moved on since the cache (row reaped) — fine.
+        _reason = _v.get('reason') if _v else None
+        deny(_reason or (
+            f"foreign-work guard: refused — '{_ap}' is inside the FOREIGN "
+            f"workspace of offer {_hit.get('offerId')} (root {_hit.get('rootPath')}). "
+            'Host agents never edit foreign workspaces (C7): the foreign commit '
+            'lane would attribute your work to the ORIGIN author.'))
+
+
 def find_repo_root(abs_path):
     """Walk up from a file (or its nearest existing parent) to the dir
     holding a `.git` entry — file (worktree) or dir. Returns the repo

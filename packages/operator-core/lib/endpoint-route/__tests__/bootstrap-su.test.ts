@@ -282,11 +282,15 @@ describe('bootstrap-su', () => {
 
   it('EI-5503: returns the canonical kickoffPrompt for a plan-bound launch, null without a plan', async () => {
     const withPlan = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' })).json();
-    // The same string headless plans:launch seeds (deriveLaunchPromptText) — the
-    // launcher delivers it as the scripted member's first turn so it auto-starts.
-    expect(withPlan.kickoffPrompt).toBe(
-      'Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.',
-    );
+    // AUTO OFF (this launch passes no auto/fleet) → a lead agent gets the ROUTING-GATE
+    // kickoff (deriveLaunchPromptText(null, false)): read the plan via plans:get, then
+    // present the execution options (do-it-yourself / Queen / fleet) and confirm before
+    // working — instead of the "just work it" order. AUTO-ON's work-order kickoff (the
+    // old default) is covered by launch.test.ts's deriveLaunchPromptText default case.
+    expect(withPlan.kickoffPrompt).toContain('plans:get');
+    expect(withPlan.kickoffPrompt).toContain('routing gate');
+    expect(withPlan.kickoffPrompt).toContain('launch a fleet');
+    expect(withPlan.kickoffPrompt).not.toContain('pick up the next actionable item');
     const noPlan = await (await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null })).json();
     expect(noPlan.kickoffPrompt).toBeNull();
   });
