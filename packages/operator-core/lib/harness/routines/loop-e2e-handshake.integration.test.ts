@@ -33,6 +33,12 @@ import { claimDueRoutine } from './claim';
 import { fireLoopWake } from './loop-fire';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
+/** HERMETIC wrapper — the default recordFire/readFireState bind the LIVE dev DB via
+ *  getOrgPg(), not the testcontainer `sql` (the EI-7006 time-bomb flake in
+ *  reconcile-loop-routines.integration.test.ts, 2026-07-03). Stub both. */
+const reconcile = (o: NonNullable<Parameters<typeof reconcileLoopRoutines>[0]>) =>
+  reconcileLoopRoutines({ recordFire: async () => {}, readFireState: async () => null, ...o });
+
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-loop-e2e';
@@ -128,7 +134,7 @@ describe('Phase-A loop engine — live e2e handshake (claim → fire → settle 
     await seedLifecycleEnded(owner, completedMs);
 
     // ── B-LOOP-2 (15ea2): the 30s reconcile re-arms off that completion. ──
-    const res = await reconcileLoopRoutines({ sql, nowMs: lastFiredMs + 10_000 });
+    const res = await reconcile({ sql, nowMs: lastFiredMs + 10_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id, targetOwnerId: owner, via: 'lifecycle' });
 
@@ -153,7 +159,7 @@ describe('Phase-A loop engine — live e2e handshake (claim → fire → settle 
     );
     const turn1Ms = fired1.lastFiredMs! + 3_000;
     await seedLifecycleEnded(owner, turn1Ms);
-    await reconcileLoopRoutines({ sql, nowMs: fired1.lastFiredMs! + 8_000 });
+    await reconcile({ sql, nowMs: fired1.lastFiredMs! + 8_000 });
     expect((await readRoutine(id)).nextFireMs).toBe(turn1Ms + interval * 1_000);
 
     // ── The interval elapses → the loop is due again. Claim re-parks with a NEW last_fired_at. ──
@@ -168,7 +174,7 @@ describe('Phase-A loop engine — live e2e handshake (claim → fire → settle 
     // ── Settle turn #2 (after the new fire). The turn-#1 marker is now PRE-fire → excluded. ──
     const turn2Ms = fired2.lastFiredMs! + 4_000;
     await seedLifecycleEnded(owner, turn2Ms);
-    const res2 = await reconcileLoopRoutines({ sql, nowMs: fired2.lastFiredMs! + 9_000 });
+    const res2 = await reconcile({ sql, nowMs: fired2.lastFiredMs! + 9_000 });
     expect(res2.rearmed).toBe(1);
     // Re-armed off the MOST-RECENT (second) turn — the loop genuinely repeats.
     expect((await readRoutine(id)).nextFireMs).toBe(turn2Ms + interval * 1_000);

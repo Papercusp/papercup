@@ -17,6 +17,16 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
 let org: OrgTestDb;
+/** HERMETIC wrapper — do NOT call reconcileLoopRoutines bare in this file. The DEFAULT
+ *  recordFire/readFireState bind getOrgPg() — the LIVE dev database, not the testcontainer
+ *  `sql` — so every historical full-file run silently wrote fire-state 'error' rows for
+ *  ('papercup','rt-loop-9') into the DEV DB until the accumulated streak crossed the
+ *  EI-7006 circuit threshold and the circuit-open fast path TERMINATED the backstop test's
+ *  loop (a 12-runs-later time-bomb flake, 2026-07-03). The circuit feed itself is covered
+ *  by the unit file with injected spies; here both seams are stubbed hermetic. */
+const reconcile = (o: NonNullable<Parameters<typeof reconcileLoopRoutines>[0]>) =>
+  reconcileLoopRoutines({ recordFire: async () => {}, readFireState: async () => null, ...o });
+
 let sql: Sql;
 const WS = 'ws-loop';
 const HARNESS = 'papercup';
@@ -100,7 +110,7 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
   it('re-arms a parked loop N sec after the turn settles (lifecycle signal)', async () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-1', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     await seedLifecycle(ownerId, '■ session ended', T0 + 5_000); // turn ended 5s after the fire
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id, via: 'lifecycle' });
     const fire = await readFire(id);
@@ -111,9 +121,9 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
   it('is idempotent — a second pass does not move an already-rebased loop', async () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-2', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     await seedLifecycle(ownerId, '■ session ended', T0 + 5_000);
-    await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    await reconcile({ sql, nowMs: T0 + 10_000 });
     const first = await readFire(id);
-    const res2 = await reconcileLoopRoutines({ sql, nowMs: T0 + 20_000 });
+    const res2 = await reconcile({ sql, nowMs: T0 + 20_000 });
     expect(res2.rearmed).toBe(0);
     expect((await readFire(id)).nextFireMs).toBe(first.nextFireMs);
   });
@@ -122,7 +132,7 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-3', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     // A turn that ended BEFORE this fire must not re-arm the loop.
     await seedLifecycle(ownerId, '■ session ended', T0 - 10_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).parked).toBe(true);
   });
@@ -131,7 +141,7 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-4', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     // No lifecycle 'ended'; activity is RECENT (within the fallback quiet window) → mid-turn.
     await seedPresence(ownerId, T0 + 9_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).parked).toBe(true);
   });
@@ -140,14 +150,14 @@ describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-5', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     await seedLifecycle(ownerId, '■ session ended', T0 + 3_000);
     await seedLifecycle(ownerId, '■ session ended', T0 + 8_000); // most recent
-    await reconcileLoopRoutines({ sql, nowMs: T0 + 12_000 });
+    await reconcile({ sql, nowMs: T0 + 12_000 });
     expect((await readFire(id)).nextFireMs).toBe(T0 + 8_000 + 60_000);
   });
 
   it('ignores the "▶ session started" lifecycle marker (only end settles)', async () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-6', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     await seedLifecycle(ownerId, '▶ session started', T0 + 2_000); // the wake start, NOT a settle
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).parked).toBe(true);
   });
@@ -159,7 +169,7 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     // No lifecycle 'ended' (the detached report was lost), but the session did work after
     // the fire and has since been quiet ≥ 60s.
     await seedPresence(ownerId, T0 + 4_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 70_000 }); // 66s quiet since last_active
+    const res = await reconcile({ sql, nowMs: T0 + 70_000 }); // 66s quiet since last_active
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
     expect((await readFire(id)).nextFireMs).toBe(T0 + 4_000 + 60_000);
@@ -168,7 +178,7 @@ describe('reconcileLoopRoutines — robustness layers', () => {
   it('FALLBACK does NOT fire while the session is still recently active', async () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-8', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     await seedPresence(ownerId, T0 + 50_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 80_000 }); // only 30s quiet (<60s)
+    const res = await reconcile({ sql, nowMs: T0 + 80_000 }); // only 30s quiet (<60s)
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).parked).toBe(true);
   });
@@ -180,7 +190,7 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     // No lifecycle, no presence — a dead/undelivered fire.
     const { id } = await seedLoop({ ownerId: 'o-9', intervalSec: interval, lastFiredAtMs: T0, parked: true });
     const longAfter = T0 + 31 * 60_000; // > the 30m default stuck-park floor
-    const res = await reconcileLoopRoutines({ sql, nowMs: longAfter });
+    const res = await reconcile({ sql, nowMs: longAfter });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop');
     expect((await readFire(id)).nextFireMs).toBe(T0 + interval * 1_000); // last_fired + interval (a retry)
@@ -192,7 +202,7 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     const { id, ownerId } = await seedLoop({ ownerId: 'o-10', intervalSec: 60, lastFiredAtMs: T0, parked: true });
     // A long turn that is STILL working: activity well after the fire, recent vs now.
     await seedPresence(ownerId, T0 + 31 * 60_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 31 * 60_000 + 1_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 31 * 60_000 + 1_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).parked).toBe(true);
   });
@@ -205,7 +215,7 @@ describe('reconcileLoopRoutines — cron+loop composition (take the sooner)', ()
       ownerId: 'o-11', intervalSec: 60, lastFiredAtMs: T0, parked: false, nextFireAtMs: cronNext, cron: '0 * * * *',
     });
     await seedLifecycle(ownerId, '■ session ended', T0 + 5_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(1);
     expect((await readFire(id)).nextFireMs).toBe(T0 + 5_000 + 60_000); // the sooner loop re-arm
   });
@@ -216,7 +226,7 @@ describe('reconcileLoopRoutines — cron+loop composition (take the sooner)', ()
       ownerId: 'o-12', intervalSec: 60, lastFiredAtMs: T0, parked: false, nextFireAtMs: cronNext, cron: '* * * * *',
     });
     await seedLifecycle(ownerId, '■ session ended', T0 + 5_000);
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).nextFireMs).toBe(cronNext); // cron-next preserved
   });

@@ -41,7 +41,7 @@ import {
   type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
-import { withOAuthBeta } from './credential-store';
+import { withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
@@ -1089,7 +1089,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const tokenTimeoutMs = deps.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS;
   const downstreamIdleMs = deps.downstreamIdleMs ?? DEFAULT_DOWNSTREAM_IDLE_MS;
   const requestCeilingMs = deps.requestCeilingMs ?? DEFAULT_REQUEST_CEILING_MS;
-  const log = deps.log ?? (() => {});
+  // Every log line passes through scrubSecrets — an upstream/runtime error message can embed a
+  // live credential (the 2026-07-03 invalid-header 502 echoed a full sk-ant-oat token).
+  const rawLog = deps.log ?? (() => {});
+  const log: NonNullable<typeof deps.log> = (level, msg) => rawLog(level, scrubSecrets(msg));
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const selfHealEnabled = deps.selfHeal?.enabled ?? DEFAULT_SELFHEAL_ENABLED;
   const selfHealFreezeMs = deps.selfHeal?.freezeMs ?? DEFAULT_SELFHEAL_FREEZE_MS;

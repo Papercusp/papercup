@@ -26,6 +26,12 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { claimDueRoutine } from './claim';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
+/** HERMETIC wrapper — the default recordFire/readFireState bind the LIVE dev DB via
+ *  getOrgPg(), not the testcontainer `sql` (the EI-7006 time-bomb flake in
+ *  reconcile-loop-routines.integration.test.ts, 2026-07-03). Stub both. */
+const reconcile = (o: NonNullable<Parameters<typeof reconcileLoopRoutines>[0]>) =>
+  reconcileLoopRoutines({ recordFire: async () => {}, readFireState: async () => null, ...o });
+
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-loop-cycle';
@@ -109,7 +115,7 @@ describe('loop cycle — claimDueRoutine ↔ reconcileLoopRoutines compose throu
     const firedAtMs = parked.firedAtMs!;
     const settledAtMs = firedAtMs + 5_000;
     await seedSettle(settledAtMs);
-    const res = await reconcileLoopRoutines({ sql, nowMs: settledAtMs + 5_000 });
+    const res = await reconcile({ sql, nowMs: settledAtMs + 5_000 });
     expect(res.rearmed).toBe(1); // ← would be 0 if claim's park didn't match reconcile's selector
     expect(res.loops[0]).toMatchObject({ id, via: 'lifecycle' });
 
@@ -136,7 +142,7 @@ describe('loop cycle — claimDueRoutine ↔ reconcileLoopRoutines compose throu
     // No lifecycle 'ended' marker after the fire → reconcile must leave it parked (in-flight),
     // and a parked loop is never due, so a re-claim attempt also loses.
     const firedAtMs = (await readState(id)).firedAtMs!;
-    const res = await reconcileLoopRoutines({ sql, nowMs: firedAtMs + 5_000 });
+    const res = await reconcile({ sql, nowMs: firedAtMs + 5_000 });
     expect(res.rearmed).toBe(0);
     expect((await readState(id)).parked).toBe(true);
     expect(await dueLoop(id)).toBeUndefined(); // still parked → not claimable

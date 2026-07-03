@@ -109,13 +109,40 @@ export interface CredentialResolver {
   readonly kind: 'token' | 'file';
 }
 
+/**
+ * Collapse a raw credential string to the single header-safe token it is meant to be. A bearer is
+ * one RFC 7230 field token — but a hand-pasted credential wrapped by a terminal carries an
+ * EMBEDDED newline that `trim()` cannot see. Left in, it is injected verbatim into the
+ * `Authorization` header and every request on that account dies with
+ * `Headers.append: … is an invalid header value` (502 for the caller) — the 2026-07-03 incident:
+ * three pool accounts had never served a single request because their token files were pasted
+ * with a mid-token line wrap. Stripping ALL whitespace reconstructs the intended token (the
+ * token alphabet has no whitespace), so normalize every read through this.
+ */
+export function normalizeBearerToken(raw: string): string {
+  return raw.replace(/\s+/g, '');
+}
+
+/**
+ * Redact credential material from a string bound for a client-facing error body or a log line.
+ * The 2026-07-03 `Headers.append: "Bearer sk-ant-oat01-…" is an invalid header value` 502 echoed a
+ * LIVE account token verbatim into every caller's terminal + journald — an upstream/runtime error
+ * message is never guaranteed secret-free, so every gateway error surface must pass through this.
+ * Keeps a short identifying prefix so operators can still tell WHICH credential is involved.
+ */
+export function scrubSecrets(s: string): string {
+  return s
+    .replace(/sk-ant-[A-Za-z0-9_-]{12,}/g, (m) => `${m.slice(0, 12)}…[redacted]`)
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/g, '$1[redacted]');
+}
+
 function pickBearerString(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'string' && value.trim()) return normalizeBearerToken(value);
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const rec = value as Record<string, unknown>;
   for (const key of ['value', 'apiKey', 'api_key', 'key']) {
     const candidate = rec[key];
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    if (typeof candidate === 'string' && candidate.trim()) return normalizeBearerToken(candidate);
   }
   return undefined;
 }
@@ -123,7 +150,7 @@ function pickBearerString(value: unknown): string | undefined {
 function extractBearerFromFile(raw: string, path: string): string {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error(`inference-gateway: empty bearer token at ${path}`);
-  if (!trimmed.startsWith('{')) return trimmed;
+  if (!trimmed.startsWith('{')) return normalizeBearerToken(trimmed);
   try {
     const parsed = JSON.parse(trimmed) as { auth_mode?: unknown; OPENAI_API_KEY?: unknown; tokens?: { access_token?: unknown } };
     const apiKey = pickBearerString(parsed.OPENAI_API_KEY);
@@ -135,7 +162,7 @@ function extractBearerFromFile(raw: string, path: string): string {
       );
     }
     const token = parsed?.tokens?.access_token;
-    if (typeof token === 'string' && token.trim()) return token.trim();
+    if (typeof token === 'string' && token.trim()) return normalizeBearerToken(token);
   } catch (e) {
     if (e instanceof Error && e.message.includes('ChatGPT auth.json')) throw e;
     throw new Error(`inference-gateway: bearer credential JSON at ${path} failed to parse`);
@@ -179,7 +206,7 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
     async current() {
       if (kind === 'token') {
         if (cachedToken) return cachedToken;
-        cachedToken = (await fs.readFile(path, 'utf8')).trim();
+        cachedToken = normalizeBearerToken(await fs.readFile(path, 'utf8'));
         if (!cachedToken) throw new Error(`inference-gateway: empty setup-token at ${path}`);
         return cachedToken;
       }
@@ -198,6 +225,7 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
         'access',
       );
       if (!token) throw new Error(`inference-gateway: no access token in bundle ${path}`);
+      const normalized = normalizeBearerToken(token);
       // Re-read the (possibly refreshed) expiry to set the cache window.
       try {
         const bundle = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
@@ -205,8 +233,8 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
       } catch {
         cachedExpiresAt = 0;
       }
-      cachedToken = token;
-      return token;
+      cachedToken = normalized;
+      return normalized;
     },
   };
 }
@@ -222,7 +250,7 @@ export function makeBearerCredentialResolver(credentialRef: string): CredentialR
     async current() {
       if (cachedToken) return cachedToken;
       if (kind === 'env') {
-        const value = process.env[path]?.trim();
+        const value = normalizeBearerToken(process.env[path] ?? '');
         if (!value) throw new Error(`inference-gateway: env credential ${path} is empty or unset`);
         cachedToken = value;
         return cachedToken;

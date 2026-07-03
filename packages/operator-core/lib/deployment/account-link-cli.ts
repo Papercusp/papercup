@@ -227,8 +227,16 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
   }, provider === 'codex' ? CODEX_URL_RE : URL_RE, START_TIMEOUT_MS);
 
   if (!url) {
+    // Surface WHY: the CLI's own output tail (a real failure explains itself), or — when the pty
+    // produced nothing — the resolved binary, so a missing/broken install is named, not guessed at.
+    const tail = stripAnsi(entry.buf).replace(/\s+/g, ' ').trim().slice(-200);
     cleanup(linkId);
-    return { ok: false, error: `the ${providerLabel(provider)} CLI did not produce an authorize URL (is \`${provider === 'codex' ? 'codex' : 'claude'}\` installed + on PATH?)` };
+    return {
+      ok: false,
+      error: tail
+        ? `the ${providerLabel(provider)} CLI did not produce an authorize URL — CLI output: "${tail}"`
+        : `the ${providerLabel(provider)} CLI produced no output (tried \`${bin}\` — is it installed and executable on this operator host? A stripped service PATH is the usual cause)`,
+    };
   }
   if (provider === 'codex') {
     const userCode = await readUntil(pty, () => entry.buf, (d) => {
