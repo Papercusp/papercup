@@ -293,3 +293,11 @@ exists via `decideColdWake`). The turn-death-recorded-as-delivered failure mode 
 documents is about the WARM resume path specifically; cold-auto wakes are a distinct code path
 and are out of scope here — see the code at the `coldAutoEnabled` dep in `engine.ts` if you're
 chasing a cold-loop issue instead of a warm one.
+
+**Same day, later commit:** `injectPsuHostWake`'s cold branch (`wake-executor.ts`) no longer
+injects the raw `carryNote` — it now wraps it with `su-cold-loop.ts`'s new
+`renderColdWakeInjection(carryNote)`, which frames the note as the woken agent's entire
+reconstructed working state and appends a standing mandate to refresh it (`loop:checkpoint`)
+before ending the turn, or call `loop:end` if done/blocked — otherwise a cold loop's anchor goes
+stale after one wake. Still entirely inside the cold-auto branch this section already scopes out
+of the warm-path failure mode; noted here only so the `wake-executor.ts` anchor stays precise.

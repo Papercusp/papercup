@@ -112,6 +112,20 @@ export interface LoopDeps {
    * BEST-EFFORT: the loop swallows any failure so the archive can never abort the optimizer.
    */
   recordArchive?(rec: ArchiveCandidateRecord): Promise<void>;
+  /**
+   * F1-4/P-014: publish an ACCEPTED candidate's niche elite to the hive substrate (stamp
+   * gym_qd_archive.federatable so the CDC trigger federates it — the live SEND path elites
+   * were missing, parity with how shareable facts federate via assertFact). Called ONLY on a
+   * gate accept (verdict.accept ⇒ outcome=won ⇒ D-002 federation-eligible). Optional — absent
+   * ⇒ no federation (existing behavior unchanged). BEST-EFFORT: the loop swallows any failure
+   * (incl. markEliteFederatable's WI-1564 non-federating-workspace refuse) so federation can
+   * never abort the optimizer. The live wiring maps this to markEliteFederatable (no-signer
+   * tier-1; the device-signed outcome record is a follow-up).
+   */
+  federateAcceptedElite?(
+    variantId: string,
+    eligibility: { outcome?: string | null; grade?: number | null },
+  ): Promise<void>;
 }
 
 export interface LoopResult {
@@ -249,6 +263,18 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
 
     if (verdict.accept) {
       accepts++;
+      // F1-4/P-014: an accepted candidate cleared all gates (outcome=won ⇒ D-002 eligible) →
+      // publish its niche's best elite to the hive. BEST-EFFORT: markEliteFederatable's
+      // WI-1564 strand-guard THROWS under a non-federating workspace, and federation must
+      // never abort the optimizer, so any failure here is swallowed (surfacing is a substrate
+      // concern, not the loop's).
+      if (deps.federateAcceptedElite) {
+        try {
+          await deps.federateAcceptedElite(candidateId, { outcome: 'won' });
+        } catch {
+          // best-effort — federation refusal/strand-guard never aborts the loop
+        }
+      }
       // Update frontier (Pareto prune) over the candidate set.
       const candidatesForFrontier = [...frontierIds, candidateId].map((id) => ({
         id,

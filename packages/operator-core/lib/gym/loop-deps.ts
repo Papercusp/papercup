@@ -89,6 +89,12 @@ export interface BuildLoopDepsConfig {
   recordProposal?: (rec: LoopProposalRecord) => Promise<void>;
   /** Live QD-archive recorder (makeLoopArchiveRecorder) — feeds each variant to the MAP-Elites archive (P-010). */
   recordArchive?: (rec: ArchiveCandidateRecord) => Promise<void>;
+  /** Live elite publisher (F1-4/P-014, makeLoopQdSeams.federateAcceptedElite) — stamps an
+   *  accepted candidate's niche elite federatable so it rides the peer-log to the hive. */
+  federateAcceptedElite?: (
+    variantId: string,
+    eligibility: { outcome?: string | null; grade?: number | null },
+  ) => Promise<void>;
   /**
    * Live QD novelty signal (P-011): a frontier member's distance-from-archive. Pair with
    * `config.qualityDiversity` to bias parent selection toward sparse niches (novelty search).
@@ -273,6 +279,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     recordProposal: cfg.recordProposal,
     recordArchive: cfg.recordArchive,
     noveltyForVariant: cfg.noveltyForVariant,
+    federateAcceptedElite: cfg.federateAcceptedElite,
     newVariantId: (cycle) => `cand-c${cycle}`,
     now,
     sleep,

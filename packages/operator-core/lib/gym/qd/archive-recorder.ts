@@ -19,9 +19,10 @@
  * a failure here can never abort the optimizer); this factory just builds the effects.
  */
 import type { Sql } from 'postgres';
-import { describeBehavior, type ArchiveCandidateRecord, type BehaviorDescriptor } from './niche';
+import { describeBehavior, nicheKey, type ArchiveCandidateRecord, type BehaviorDescriptor } from './niche';
 import { QdArchive, type ArchiveAPI } from './archive';
 import { PgArchiveStore } from './archive-store-pg';
+import { markEliteFederatable } from './federate-elite';
 
 /** Scope + clock for the live archive seams. */
 export interface LoopQdScope {
@@ -30,12 +31,29 @@ export interface LoopQdScope {
   now?: () => number;
 }
 
-/** The two QD loop seams, sharing one archive + a variantId→descriptor cache. */
+/** The QD loop seams, sharing one archive + a variantId→descriptor cache. */
 export interface LoopQdSeams {
   /** `deps.recordArchive` — feed each evaluated variant into the MAP-Elites archive (P-010). */
   recordArchive: (rec: ArchiveCandidateRecord) => Promise<void>;
   /** `deps.noveltyForVariant` — a recorded variant's distance-from-archive for QD selection (P-011). */
   noveltyForVariant: (variantId: string) => Promise<number>;
+  /**
+   * `deps.federateAcceptedElite` (F1-4/P-014) — publish an ACCEPTED candidate's niche
+   * elite to the hive substrate: stamp `gym_qd_archive.federatable` on the local best-per-
+   * niche row (via markEliteFederatable) so the CDC trigger federates it, exactly as
+   * shareable facts federate via assertFact. The variant's descriptor is looked up from the
+   * warm record cache (it was recorded before it could be accepted), so this needs only the
+   * variantId + the D-002 eligibility (the loop passes `outcome:'won'` on a gate accept).
+   * NO device signer here (tier-1): the device-signed EliteOutcomeRecord (P-014) layers on
+   * later when the substrate device key is threaded into the loop; until then the elite
+   * federates outcome-UNVERIFIED (still admitted). CAN THROW (markEliteFederatable's WI-1564
+   * strand-guard refuses LOUDLY under a non-federating workspace) — the loop calls it
+   * best-effort so a refuse never aborts the optimizer.
+   */
+  federateAcceptedElite: (
+    variantId: string,
+    eligibility: { outcome?: string | null; grade?: number | null },
+  ) => Promise<void>;
 }
 
 /**
@@ -73,7 +91,27 @@ export function makeLoopQdSeams(
     return archive.noveltyScore(descriptor, opts.k);
   };
 
-  return { recordArchive, noveltyForVariant };
+  const federateAcceptedElite = async (
+    variantId: string,
+    eligibility: { outcome?: string | null; grade?: number | null },
+  ): Promise<void> => {
+    const descriptor = descriptors.get(variantId);
+    // The candidate was recorded (recordArchive) before it could be accepted, so its
+    // descriptor is cached. If somehow it isn't, there is no archive row to federate — no-op.
+    if (!descriptor) return;
+    // Stamp the LOCAL best-per-niche row federatable (markEliteFederatable's own D-002 guard
+    // no-ops a non-eligible elite, and its WI-1564 guard THROWS under a non-federating
+    // workspace — the caller runs this best-effort). NO signer: tier-1 federatable stamp; the
+    // device-signed outcome record (P-014) rides once the substrate device key is threaded.
+    await markEliteFederatable({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      nicheKey: nicheKey(descriptor.coords),
+      eligibility,
+    });
+  };
+
+  return { recordArchive, noveltyForVariant, federateAcceptedElite };
 }
 
 /**

@@ -142,25 +142,25 @@ function main() {
       process.exit(1);
       break;
     case 'ok-ratchet':
-      // Ratchet-only-DOWN, but only on an explicit `--update` (a deliberate act) — NOT
-      // on a bare/CI run. In this multi-agent shared tree the count shuffles ±1 as peers
-      // edit the type-graph concurrently; auto-ratcheting on every bare run locked in a
-      // transient low, then false-RED the whole fleet on the next run where it reappeared
-      // (2026-07-03). A bare run now only CHECKS (pass at/below baseline); `--update` locks
-      // a genuine, verified improvement in.
-      if (updateFlag) {
-        writeBaseline(result.newBaseline, 'Ratcheted down (--update)');
-      } else {
-        console.log(
-          `✓ Below baseline (${errorCount} < ${baselineCount}) — run \`npm run lint:tsc -- --update\` to lock it in. ` +
-            `Bare runs no longer auto-ratchet (the count shuffles ±1 under concurrent fleet edits; auto-ratchet false-red the gate — see .tsc-baseline.json note).`,
-        );
-      }
+      // Reached ONLY on an explicit `--update` (decide() gates it) — a deliberate act.
+      writeBaseline(result.newBaseline, 'Ratcheted down (--update)');
+      process.exit(0);
+      break;
+    case 'ok-below':
+      // Bare run below baseline: CHECK-ONLY, never rewrite. In this multi-agent shared
+      // tree the count shuffles ±1 as peers edit the type-graph concurrently; auto-
+      // ratcheting a bare run locked in a transient low and then false-RED the whole
+      // fleet the next time it reappeared (2026-07-03). `--update` locks a genuine,
+      // verified improvement in.
+      console.log(
+        `✓ ${result.belowBy} under baseline (${errorCount} < ${baselineCount}) — NOT locked in. ` +
+          'A bare run never rewrites the baseline; run `npm run lint:tsc -- --update` on a quiet tree to lower it deliberately (see .tsc-baseline.json note).',
+      );
       process.exit(0);
       break;
     default:
       if (updateFlag) console.log('✓ --update: count equals baseline — nothing to lower.');
-      console.log('✓ Type error count is at or below baseline');
+      console.log('✓ Type error count is at baseline');
       process.exit(0);
   }
 }

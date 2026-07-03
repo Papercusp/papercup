@@ -48,23 +48,39 @@ describe('syntaxBrokenFiles', () => {
   });
 });
 
-describe('decide — ratchet-only-down + syntax hard-fail', () => {
+describe('decide — --update-only ratchet + syntax hard-fail (EI-104)', () => {
   it('syntax-broken files fail even when the count is under baseline', () => {
     const r = decide({ errorCount: 1, baselineCount: 500, brokenFiles: ['lib/broken.ts'] });
     expect(r.verdict).toBe('fail-syntax');
   });
 
-  it('above baseline fails', () => {
+  it('above baseline fails (bare or --update)', () => {
     expect(decide({ errorCount: 476, baselineCount: 475, brokenFiles: [] }).verdict)
       .toBe('fail-exceeds');
+    expect(
+      decide({ errorCount: 476, baselineCount: 475, brokenFiles: [], updateFlag: true }).verdict,
+    ).toBe('fail-exceeds');
   });
 
-  it('below baseline ratchets the baseline down', () => {
+  // The core EI-104 guard: a BARE run below baseline must NOT ratchet — else it locks
+  // in the min of this tree's ±1-flapping error count and false-reds the fleet when it
+  // shuffles back up. The write policy lives in decide() precisely so this invariant is
+  // unit-testable (before EI-104 the policy sat in untested main() and silently regressed).
+  it('below baseline on a BARE run is check-only — no ratchet, no newBaseline', () => {
     const r = decide({ errorCount: 470, baselineCount: 475, brokenFiles: [] });
+    expect(r).toEqual({ verdict: 'ok-below', belowBy: 5 });
+    expect(r.newBaseline).toBeUndefined();
+  });
+
+  it('below baseline WITH --update ratchets the baseline down', () => {
+    const r = decide({ errorCount: 470, baselineCount: 475, brokenFiles: [], updateFlag: true });
     expect(r).toEqual({ verdict: 'ok-ratchet', newBaseline: 470 });
   });
 
-  it('at baseline is ok and never raises', () => {
+  it('at baseline is ok and never raises (bare or --update)', () => {
     expect(decide({ errorCount: 475, baselineCount: 475, brokenFiles: [] }).verdict).toBe('ok');
+    expect(
+      decide({ errorCount: 475, baselineCount: 475, brokenFiles: [], updateFlag: true }).verdict,
+    ).toBe('ok');
   });
 });
