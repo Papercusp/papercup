@@ -39,6 +39,7 @@
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
+import { readRoutineEngineLiveness } from './routine-engine-liveness';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -67,6 +68,8 @@ export interface GreenStallSnapshot {
   lastGreenAt: number | null;
   /** the watchdog's own dedup flag (`gate_health.watchdogAlerted`). */
   watchdogAlerted: boolean;
+  /** The root routine engine is stale; infra-liveness owns this root-cause alarm. */
+  routineEngineStale?: boolean;
 }
 
 export interface GreenStallVerdict {
@@ -97,8 +100,14 @@ export function evaluateGreenStall(
   const fireStaleMs = opts.fireStaleMs ?? DEFAULT_FIRE_STALE_MS;
   const noGreenMs = opts.noGreenMs ?? DEFAULT_NO_GREEN_MS;
 
-  const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
-  const verdictStale = s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
+  // EI-2994: when the root DBOS routinesTick is stale, green-checkpoint not
+  // firing is a downstream symptom. The request-path infra-liveness alarm owns
+  // the single "background routine engine frozen" escalation and auto-resolves
+  // it; suppress this symptom-level alarm to avoid a restart cascade being
+  // triaged as independent release failures. Unknown liveness is fail-open.
+  const rootEngineStale = s.routineEngineStale === true;
+  const fireStale = !rootEngineStale && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
+  const verdictStale = !rootEngineStale && s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
   const stalled = fireStale || verdictStale;
 
   let reason: string | null = null;
@@ -175,11 +184,12 @@ export async function checkGreenStall(
          AND active = true`;
 
     const now = Date.now();
+    const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const lastGreenAt = row.gh?.lastGreenAt ?? null;
       const watchdogAlerted = row.gh?.watchdogAlerted ?? false;
-      const verdict = evaluateGreenStall({ lastFiredMs, lastGreenAt, watchdogAlerted }, now, opts);
+      const verdict = evaluateGreenStall({ lastFiredMs, lastGreenAt, watchdogAlerted, routineEngineStale: routineEngine.stale }, now, opts);
 
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery

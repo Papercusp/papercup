@@ -305,6 +305,18 @@ Ports are cached per-VM under `~/.papercusp/fed-rig-ports.<vm>` for
 probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override with
 `FED_SSH_A` / `FED_SSH_B`.
 
+<Aside type="caution" title="Cross-machine witness hives must be repo-bound">
+For a live two-machine federation witness, do not create an arbitrary repo-less
+throwaway with `hive:create`. The cross-machine join path joins the owner's
+per-member GitHub links (`joinHiveAsView` parses each member link and clones the
+member repo). A repo-less `hive:create` home has no member links for the peer to
+join, so the peer never subscribes to that hive's topic and owner writes have no
+remote log to arrive on. Use `hive:create_from_repo` (or an existing repo-bound
+hive with a joined peer member) for B8/B10-style ban, dissolve, grant, and
+receipt witnesses. A valid witness setup is: owner box owns the hive, peer box has
+joined at least one repo-bound member, then drive the federation action.
+</Aside>
+
 <Aside type="caution" title="EI-3409 — workspace-scoped MCP writes">
 Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
 `'default'`, so a hive created via `mcp` lands in the wrong workspace and the

@@ -40,6 +40,7 @@
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
+import { readRoutineEngineLiveness } from './routine-engine-liveness';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing. git-sync
  *  runs every 3 min, so on an active box 2h of no new commit is a strong stall signal. Tunable;
@@ -96,6 +97,8 @@ export interface GitSyncStallSnapshot {
    *  (`metadata.reaped_count`; the reaper increments it, recordOutcome resets it).
    *  Optional — absent reads as 0. */
   reapedCount?: number;
+  /** The root routine engine is stale; infra-liveness owns this root-cause alarm. */
+  routineEngineStale?: boolean;
 }
 
 export interface GitSyncStallVerdict {
@@ -150,17 +153,23 @@ export function evaluateGitSyncStall(
   // that no longer EXISTED. Commit-staleness therefore requires a status where a
   // commit was ATTEMPTABLE — not clean-idle 'nothing', not gated 'skipped' (the
   // skip stays loud in metadata.last_skip_reason / schedule:inventory).
+  // EI-2994: if routinesTick itself is stale, git-sync fire/commit staleness is
+  // a downstream symptom of the background engine freeze. The request-path
+  // infra-liveness alarm owns the single root-cause escalation and auto-resolve;
+  // this watchdog should not add a second "git-sync failing" page/broadcast for
+  // the same incident. Unknown liveness is fail-open.
+  const rootEngineStale = s.routineEngineStale === true;
   const commitNotAttemptable = s.lastStatus === 'nothing' || s.lastStatus === 'skipped';
-  const commitStale = !commitNotAttemptable && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
-  const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
+  const commitStale = !rootEngineStale && !commitNotAttemptable && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
+  const fireStale = !rootEngineStale && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   // FALSE-ALARM FIX (2026-07-02, second class): a fault observed on a SINGLE sweep is
   // transient (a push/fetch blip git-sync clears on its next healthy 3-min tick) — it must
   // persist across consecutive sweeps before it alarms. commitStale stays the backstop for
   // faults that genuinely freeze HEAD (2026-07-02 hiveloop: 2.5h frozen head still alarms).
   const hasError = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
   const errorSweeps = hasError ? (s.errorSweeps ?? 1) : 0;
-  const errorStall = errorSweeps >= errorStallMinSweeps;
-  const persistentReap = (s.reapedCount ?? 0) >= persistentReapMin;
+  const errorStall = !rootEngineStale && errorSweeps >= errorStallMinSweeps;
+  const persistentReap = !rootEngineStale && (s.reapedCount ?? 0) >= persistentReapMin;
   const stalled = commitStale || fireStale || errorStall || persistentReap;
 
   let reason: string | null = null;
@@ -265,6 +274,7 @@ export async function checkGitSyncStall(
          AND active = true`;
 
     const now = Date.now();
+    const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const wdHeadSinceMs = row.wd_head_since_ms != null ? Number(row.wd_head_since_ms) : null;
@@ -313,6 +323,7 @@ export async function checkGitSyncStall(
           lastStatus: row.last_status,
           watchdogAlerted,
           reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
+          routineEngineStale: routineEngine.stale,
         },
         now,
         opts,

@@ -97,6 +97,17 @@ describe('evaluateGreenStall', () => {
     );
     expect(v.stalled).toBe(false);
   });
+
+  it('EI-2994: a stale root routine engine suppresses green-specific symptom alarms', () => {
+    const v = evaluateGreenStall(
+      { lastFiredMs: NOW - 5 * H, lastGreenAt: NOW - 24 * H, watchdogAlerted: false, routineEngineStale: true },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.fireStale).toBe(false);
+    expect(v.verdictStale).toBe(false);
+    expect(v.reason).toBeNull();
+  });
 });
 
 describe('greenStallEscalationBody', () => {

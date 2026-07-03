@@ -214,4 +214,26 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
     );
     expect(v.stalled).toBe(true);
   });
+
+  it('EI-2994: a stale root routine engine suppresses git-sync symptom alarms', () => {
+    const v = evaluateGitSyncStall(
+      {
+        lastFiredMs: NOW - 48 * 3_600_000,
+        headUnchangedMs: 48 * 3_600_000,
+        lastError: 'push failed',
+        errorSweeps: 5,
+        lastStatus: 'error',
+        watchdogAlerted: false,
+        reapedCount: 5,
+        routineEngineStale: true,
+      },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+    expect(v.fireStale).toBe(false);
+    expect(v.errorStall).toBe(false);
+    expect(v.persistentReap).toBe(false);
+    expect(v.reason).toBeNull();
+  });
 });
