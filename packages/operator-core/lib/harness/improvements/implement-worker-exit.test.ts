@@ -36,6 +36,12 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     ['service unavailable (503)', 'upstream returned 503 Service Unavailable'],
     ['bad gateway (502)', 'API Error: 502 Bad Gateway'],
     ['gateway timeout (504)', 'API Error: 504 Gateway Timeout'],
+    // EI-6890: the inference-gateway's own transient-upstream wrapper — NUMERIC status +
+    // "upstream error: fetch failed" / "server-side issue", NOT the English 5xx phrasings
+    // above. The live EI-6476 death slipped through before this and filed a false EI.
+    ['the live EI-6476 inference-gateway 502', 'API Error: 502 inference-gateway upstream error: fetch failed. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:8788).'],
+    ['a bare numeric 5xx with no English phrasing', 'API Error: 503'],
+    ['undici fetch-failed connectivity death', 'TypeError: fetch failed'],
   ])('classifies %s as env failure', (_label, stdout) => {
     // A long substantive run (well past the DOA floor) so the ONLY thing that can
     // class these env is the new upstream-5xx signature, not the sub-floor DOA rule.
@@ -157,6 +163,31 @@ describe('recordImplementWorkerExit (EI-404 back-edge + EI-406 rollback)', () =>
     expect(calls.mergePayload).toEqual([['EI-6569', { implementAttempts: 0 }]]);
     // Tagged -env so the orphaned-dispatch watchdog EXCLUDES it from the "lane broken"
     // signal — no self-amplifying EI (the loop that produced EI-6876).
+    expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-env');
+    expect(calls.markOrphaned[0][2]).toMatch(/env-failure/);
+  });
+
+  it('EI-6890: the live inference-gateway 502 death rolls the attempt back + tags -env (not a "lane broken" orphan)', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await recordImplementWorkerExit(
+      {
+        dispatchId: 'd-6476',
+        itemId: 'EI-6476',
+        attempt: 1,
+        exitCode: 1,
+        runtimeMs: 249_000, // the real EI-6476 death: a 249s run, well past the DOA floor
+        stdout:
+          'API Error: 502 inference-gateway upstream error: fetch failed. This is a server-side issue, ' +
+          'usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:8788).',
+      },
+      deps,
+    );
+    // A transient inference-gateway 502 says nothing about the item → do NOT charge the attempt.
+    expect(res.charged).toBe(false);
+    expect(res.envReason).toBeTruthy();
+    expect(calls.mergePayload).toEqual([['EI-6476', { implementAttempts: 0 }]]);
+    // Tagged -env so the orphaned-dispatch watchdog EXCLUDES it from the "lane broken"
+    // signal — the fix for the EI-6476 → EI-6890 self-amplifying noise loop.
     expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-env');
     expect(calls.markOrphaned[0][2]).toMatch(/env-failure/);
   });
