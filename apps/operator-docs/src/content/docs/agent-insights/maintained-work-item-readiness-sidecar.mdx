@@ -81,6 +81,11 @@ so a fragment bug in either path is caught.
 - The sidecar key is `(workspace_id, harness_slug, feature_id)` — the feature's **real** workspace, not
   the deps' `'default'` coordination workspace. The triggers resolve the feature row's `workspace_id`
   from `work_items`; the claim anti-join matches on it.
+- The sidecar is **feature-family only** — the `wir_*` triggers never track `bug`/`change`/`task` rows,
+  so it would (wrongly) report a blocked **issue** as ready. The issue-claim path in `work-items.ts`
+  therefore **always** uses the inline `NOT EXISTS` predicate over `work_item_deps`, regardless of the
+  `SCHEDULER_MAINTAINED_READY` flag — it's the secondary, lower-volume claim path, so the un-indexed read
+  is an accepted cost. Only the feature-claim paths (`claimNextWorkItem`, `getNextWorkItem`) cut over.
 - `db:migrate` needs `PAPERCUSP_ALLOW_DB_MIGRATE=1`; without it, validate a migration in a rolled-back
   `BEGIN … ROLLBACK` against the real DB (compiles functions, runs the backfill, lets you check
   reconciliation), then let boot-apply record it — or `psql -f` + INSERT the `schema_migrations` row in

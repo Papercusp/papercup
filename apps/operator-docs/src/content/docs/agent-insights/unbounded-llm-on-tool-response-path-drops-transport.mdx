@@ -60,6 +60,20 @@ Progress notifications (`ctx.progress`) can keep a *cooperating* client's timer
 alive, but they're a **no-op** when the client didn't send a `progressToken`
 (`_mcp-handler.ts`), so don't rely on them as the primary guard.
 
+**Update (B1, `infra-fail-fast-build-integrity-2026-06-19`):** pattern 3 ("bound
+it") is now a shared primitive rather than a one-off — `memory/op-deadline.ts`'s
+`withMemoryToolTimeout` races every explicit memory-tool backend call (the
+`available()` probe, the dedup/conflict neighbor search, and the write itself)
+against a deadline (`PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS`, default 10s — well under
+the ~55–60s transport cap) and returns a clean `{ ok:false, reason:
+'memory_timeout' }` instead of riding the client's timeout out. `remember.ts`
+also wraps its write in `withMemoryWriteRetry` (EI-6684) so a single *transient*
+timeout gets one bounded retry instead of silently dropping the fact — a
+sustained wedge (the process already in the degraded cooldown) skips the retry
+and fails fast. This does not replace patterns 1/2 above (removing/deferring the
+slow call is still strictly better than bounding it); it's the fallback for
+whatever slow step still has to run inline.
+
 ## Rule of thumb
 
 If a tool handler can take more than a few seconds in the worst case, the slow part
