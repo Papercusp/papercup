@@ -8,6 +8,8 @@ import {
   defaultCompactionLimitForSpec,
   clampCompactionLimit,
   MIN_COMPACTION_LIMIT_TOKENS,
+  validateCloudModelSpec,
+  KNOWN_CLOUD_ALIASES,
 } from './agent-config-constants';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher

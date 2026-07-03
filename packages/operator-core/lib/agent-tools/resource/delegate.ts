@@ -151,10 +151,6 @@ export async function delegateResource(
   return { ok: true, action: 'set', allotment: result.allotment };
 }
 
-function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
-}
-
 export default defineTool({
   name: 'resource:delegate',
   profile: 'engineer',
@@ -220,13 +216,16 @@ export default defineTool({
       createdByGithubUserId,
     });
 
+    // Canonical ToolResponse shape — the framework owns wire encoding (the
+    // tool-data-shape ratchet: never hand-roll content:[{ text: JSON.stringify }]).
     if (!result.ok) {
-      return json({ ok: false, error: result.refusal.code, detail: result.refusal.detail });
+      return { data: { ok: false, error: result.refusal.code, detail: result.refusal.detail } };
     }
-    return json(
-      result.action === 'remove'
-        ? { ok: true, action: 'remove', removed: result.removed }
-        : { ok: true, action: 'set', allotment: result.allotment },
-    );
+    return {
+      data:
+        result.action === 'remove'
+          ? { ok: true, action: 'remove', removed: result.removed }
+          : { ok: true, action: 'set', allotment: result.allotment },
+    };
   },
 });

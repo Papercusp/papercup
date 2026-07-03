@@ -100,6 +100,13 @@ now, fire one autonomous spawn carrying a `BLUEPRINT_ID`. A stale `.materialized
   `~/.papercusp/launch-context/session-*.md` — NOT the materialized copy** (and confirm the file
   is actually an su render: H1 `# Superuser engineer-collaborator (su)…`; e.g. the Sentinel voice
   persona also writes into `launch-context/`).
+- **`renderSuPlaybook({})` renders the LEGACY base — a false-negative verification trap**
+  (EI-7075). Calling the renderer with no `baseSource` reads the legacy
+  `apps/operator/prompts/papercusp-su-engineer.tools.md`, NOT the blueprint `su.md` the live
+  flag-on path uses — so a "my base edit is missing from the render" check against the
+  default call fails spuriously. To reproduce the live render programmatically, pass
+  `baseSource: libs/papercusp/packages/harness/blueprints/base/prompts/su.md` (what
+  `buildSuLaunchSpec` resolves when `SU_BLUEPRINT_PERSONA` is ON).
 - **Don't hand-write into a generated section.** If the fact belongs in AUTO mode / promotion
   model / wire schemas, change the renderer — the next splice overwrites anything you typed
   between the markers.

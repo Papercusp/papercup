@@ -34,6 +34,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
+import { validateCloudModelSpec } from '../../agent-config-constants';
 import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
@@ -394,6 +395,19 @@ export default defineTool({
       normalize: (v) => v.replace(/^ollama(-cc)?\//i, ''),
       label: 'local model',
     })
+      // Defense-in-depth (WI-1993): the fuzzyEnum above only validates LOCAL models (applies:
+      // isOmpLocalModel). A malformed CLOUD spec — a hand-typed `[1m]` marker (`fabel5[1m]`, the
+      // WI-1979 incident) or a typo'd alias — would otherwise pass the tool's zod and open N desktop
+      // windows that each die at psu boot with no useful hint. Mirror psu-launcher's validateModelSpec
+      // at the TOOL BOUNDARY so the leader's call fails cleanly, BEFORE any window opens. Local/ornith
+      // specs return ok:true here (fuzzyEnum owns those); the check is deliberately lenient on the open
+      // cloud id set — it only rejects the two unambiguous malformed classes.
+      .superRefine((value, ctx) => {
+        const v = validateCloudModelSpec(value);
+        if (!v.ok) {
+          ctx.addIssue({ code: 'custom', message: v.message ?? 'invalid model spec', params: { cloudModelSpec: true, got: value } });
+        }
+      })
       .optional()
       .describe(
         'psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default). A ' +

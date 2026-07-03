@@ -29,20 +29,26 @@
  *
  * Part of p2p-work-distribution-2026-07-02 (P-201, integration tier).
  *
- * ── JSONB read note (verified 2026-07-03) ────────────────────────────────────
- * PRODUCTION reads the `axis` jsonb column as a PARSED OBJECT: the real
- * getOrgPg() client (native PG :5432) AND the desktop's embedded-postgres-server
- * client both carry postgres.js's static json parser (from:[114,3802]), so
- * rowToAllotment returns axis as an object and the p2p.allotments resolver ships
- * an object to /res. Proven by a direct `SELECT '{...}'::jsonb` probe on both.
- * The createOrgTestDb() harness client, however, hands jsonb back as the RAW JSON
- * STRING (reproduces even with a production-identical client config, so it's the
- * testcontainer PG env, not our config — an isolated harness-fidelity quirk, NOT
- * a store/ship defect). So we normalize the axis read (`axisObj`) to assert the
- * store's WRITE round-trip regardless of the harness's parsing, and additionally
- * assert the value is GENUINE jsonb via `->>`/`->` operators server-side (a check
- * that is independent of client parsing and would fail if the write ever
- * regressed to double-encoding or sql.json()).
+ * ── JSONB axis / harness-fidelity note (verified 2026-07-03) ──────────────────
+ * The `axis` jsonb column behaves correctly in PRODUCTION but differently under
+ * the testcontainer harness, so this test normalizes the read:
+ *   READ: production getOrgPg() on native PG :5432 parses `axis` jsonb → a JS
+ *     OBJECT (direct probe); every postgres.js 3.4.9 copy in the tree — incl. the
+ *     desktop embedded-postgres-server sidecar — carries the static json parser
+ *     (from:[114,3802]) that does this. The createOrgTestDb() harness client,
+ *     however, hands jsonb back as the RAW JSON STRING (reproduces with a
+ *     production-identical client config → it's the testcontainer env, not our
+ *     config). So `axisObj` parses-if-string before deep-equal.
+ *   WRITE: on :5432 the store's `${JSON.stringify(x)}::jsonb` bind stores a
+ *     GENUINE jsonb object (probed jsonb_typeof='object', axis->>'k' navigates);
+ *     the testcontainer double-encodes the same bound-string param to a jsonb
+ *     STRING. So we do NOT assert server-side `axis->>`/`jsonb_typeof` here — that
+ *     would test the harness's param serialization, not the store.
+ * Net: production + the su-35c3bac0-live-verified account axis are correct — NO
+ * store/ship defect. The structural round-trip below (axisObj + toEqual over
+ * nested object/array/number types) is the client- and harness-independent proof.
+ * The one still-open question — does the desktop embedded-PG WRITE path
+ * double-encode like the testcontainer? — is tracked on WI-1887 + an observation.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';

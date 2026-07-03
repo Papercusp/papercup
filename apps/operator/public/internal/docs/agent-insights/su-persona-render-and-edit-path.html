@@ -171,6 +171,13 @@ regenerate at spawn time. <strong>Verify an interactive change by grepping a fre
 <code dir="auto">~/.papercusp/launch-context/session-*.md</code> — NOT the materialized copy</strong> (and confirm the file
 is actually an su render: H1 <code dir="auto"># Superuser engineer-collaborator (su)…</code>; e.g. the Sentinel voice
 persona also writes into <code dir="auto">launch-context/</code>).</li>
+<li><strong><code dir="auto">renderSuPlaybook({})</code> renders the LEGACY base — a false-negative verification trap</strong>
+(EI-7075). Calling the renderer with no <code dir="auto">baseSource</code> reads the legacy
+<code dir="auto">apps/operator/prompts/papercusp-su-engineer.tools.md</code>, NOT the blueprint <code dir="auto">su.md</code> the live
+flag-on path uses — so a “my base edit is missing from the render” check against the
+default call fails spuriously. To reproduce the live render programmatically, pass
+<code dir="auto">baseSource: libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code> (what
+<code dir="auto">buildSuLaunchSpec</code> resolves when <code dir="auto">SU_BLUEPRINT_PERSONA</code> is ON).</li>
 <li><strong>Don’t hand-write into a generated section.</strong> If the fact belongs in AUTO mode / promotion
 model / wire schemas, change the renderer — the next splice overwrites anything you typed
 between the markers.</li>
