@@ -79,6 +79,23 @@ export async function buildHiveRekeyBootDeps(opts: {
     const ident = await resolveLocalGithubIdentity();
     if (ident.kind !== 'ok') return null;
     const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
+    // WI-2009 / wake-#5742 (v3 instrumentation, leg a): the SPLIT-IDENTITY class —
+    // presence stamps one device pubkey while THIS tier resolves another (an OS
+    // keychain unreadable in the service context → a different file-tier key, or a
+    // per-boot regenerate). Record what the epoch tier ACTUALLY resolved + which
+    // keychain tier(s) hold the id, so a mismatch is diagnosable from boot-history.
+    try {
+      const { keychainProbeTiers } = await import('../../identity/keychain');
+      const tiers = await keychainProbeTiers(localDevice.keychainId);
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'epoch_boot_device' as BootHistoryKind,
+        `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}`,
+      );
+    } catch {
+      /* diagnostics must never affect boot */
+    }
     // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
     const crypto = await resolveHiveEpochCrypto(true);
     const provider = createEpochKeyProvider(
@@ -118,11 +135,25 @@ export async function buildHiveRekeyBootDeps(opts: {
     // compared owner↔joiner to confirm/refute the local-slug AAD-mismatch hypothesis.
     recordBootEvent(opts.workspaceId, opts.harnessSlug, 'epoch_gate_built', `hiveHomeSlug=${hiveHomeSlug}`);
     return { hiveHomeSlug, epochGate, epochEncrypt, pending };
-  } catch {
+  } catch (e) {
     // Fail-open: today's behavior (plaintext path, byte-for-byte) — same silent-catch
     // pattern as `ownHiveHomeSlug`'s `hiveHomeSlugForHarness` call at this function's
     // boot.ts call site (no console.error: a caught, expected-degradation path here
     // must not trip a fail-on-console test harness — WI-755).
+    // WI-2009 / wake-#5742 (v3 instrumentation, leg c): the fail-open was fully
+    // SILENT — a hive whose re-key deps throw boots PLAINTEXT with no signal,
+    // indistinguishable from flag-off (6b811's "no drain attempt at all" boots).
+    // Record it in boot-history (not console — WI-755-safe).
+    try {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'epoch_gate_skipped' as BootHistoryKind,
+        `buildHiveRekeyBootDeps fail-open: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } catch {
+      /* best-effort */
+    }
     return null;
   }
 }

@@ -79,6 +79,7 @@
     "libs/generic/resource-profile"
   ],
   "scripts": {
+    "preinstall": "npx --yes only-allow npm",
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
     "tokens:check": "node design-tokens/tokens-check.mjs",
     "gen:borrowable": "node scripts/gen-borrowable-catalog.mjs",

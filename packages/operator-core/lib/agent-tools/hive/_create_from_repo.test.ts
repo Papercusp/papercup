@@ -22,7 +22,7 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
   const calls = {
     cloned: [] as string[],
     hiveCreated: [] as string[],
-    memberCreated: [] as { slug: string; hive: string; path: string }[],
+    memberCreated: [] as { slug: string; hive: string; path: string; workspaceId: string }[],
     removedDirs: [] as string[],
     removedHomes: [] as string[],
     publishes: [] as Record<string, unknown>[],
@@ -46,7 +46,7 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
       return { ok: true, slug: o.slug, path: `/hives/${o.slug}` };
     },
     createMember: async (a) => {
-      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path });
+      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path, workspaceId: a.workspaceId });
       return { ok: true };
     },
     publish: async (o) => {
@@ -131,7 +131,7 @@ describe('createHiveFromRepo (P-006)', () => {
       githubRepositoryId: 100,
     });
     expect(calls.hiveCreated).toEqual(['shop-hive']);
-    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'shop-hive', path: '/clones/shop' }]);
+    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'shop-hive', path: '/clones/shop', workspaceId: 'ws' }]);
     // coord stamp landed on the member entry
     const member = calls.registry.find((p) => p.slug === 'shop');
     expect(member).toBeUndefined(); // member row is created by harness:create (faked) — stamp applies only when present
@@ -146,7 +146,7 @@ describe('createHiveFromRepo (P-006)', () => {
     // the post-create coord stamp (step 7) has a row to land on.
     deps.createMember = async (a) => {
       calls.registry.push({ slug: a.slug, path: a.path });
-      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path });
+      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path, workspaceId: a.workspaceId });
       return { ok: true };
     };
     await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
@@ -156,6 +156,15 @@ describe('createHiveFromRepo (P-006)', () => {
       github_repository_id: 100,
       github_default_branch: 'develop',
     });
+  });
+
+  it('threads workspaceId into member creation so non-default hive homes resolve (EI-3018)', async () => {
+    const { deps, calls } = fakes();
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws-non-default' }, deps);
+    expect(r.ok).toBe(true);
+    expect(calls.memberCreated).toEqual([
+      { slug: 'shop', hive: 'shop-hive', path: '/clones/shop', workspaceId: 'ws-non-default' },
+    ]);
   });
 
   it('test-verify is OPT-IN: default runTests=false reaches detection (hardening D-001)', async () => {
@@ -319,7 +328,7 @@ describe('createHiveFromRepo (P-006)', () => {
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     expect(r.created).toMatchObject({ hiveSlug: 'myhive', memberSlug: 'shop' });
     expect(calls.hiveCreated).toEqual([]); // no new home
-    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'myhive', path: '/clones/shop' }]);
+    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'myhive', path: '/clones/shop', workspaceId: 'ws' }]);
     expect(calls.publishes).toEqual([]); // the NEW-hive publish path is not used
     expect(republishes[0]).toMatchObject({ hiveSlug: 'myhive', onlyRepoIds: [100] });
   });
@@ -468,7 +477,7 @@ describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
       default: { handler: async () => ({ content: [{ text: JSON.stringify(payload) }] }) },
     }));
     const { defaultCreateMember } = await import('./_create_from_repo');
-    return defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h' });
+    return defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h', workspaceId: 'ws-test' });
   };
 
   it('ok:true passes through clean', async () => {
@@ -504,7 +513,7 @@ describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
       default: { handler: async () => ({ content: [{ text: 'not-json' }] }) },
     }));
     const { defaultCreateMember } = await import('./_create_from_repo');
-    const r = await defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h' });
+    const r = await defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h', workspaceId: 'ws-test' });
     expect(r).toEqual({ ok: false, error: 'harness:create returned an unparseable response' });
   });
 });

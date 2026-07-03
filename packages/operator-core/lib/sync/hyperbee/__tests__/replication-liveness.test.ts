@@ -13,6 +13,7 @@ import {
   dropReplicationLiveness,
   _resetReplicationLivenessForTests,
   SAMPLING_STALE_AFTER_MS,
+  SWARM_CHURN_TOLERANCE_MS,
   type ReplicationStallEpisode,
 } from '../replication-liveness';
 import {
@@ -278,5 +279,115 @@ describe('durable EI escalation (replication-stall-ei)', () => {
     const id = await fileReplicationStallEi({ ...episode, kind: 'frozen' }, deps);
     expect(id).toBe('EI-999');
     expect(created).toHaveLength(1);
+  });
+});
+
+describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1783114921)', () => {
+  const sampleWith = (
+    on: (e: ReplicationStallEpisode) => void,
+    now: number,
+    opts: { peers?: number; swarm?: number; pos?: number },
+  ) =>
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      {
+        keyHex: KEY,
+        knownLength: 5,
+        mergedPosition: opts.pos ?? 0,
+        peersCount: opts.peers,
+        swarmConnections: opts.swarm,
+      },
+      { graceMs: GRACE, nowMs: now, onStallEpisode: on },
+    );
+
+  it('fires ONCE after grace when the swarm is connected but the log never attached a replicator; verdict reads no_replicator', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 2 }); // zombie window opens
+    expect(episodes).toHaveLength(0);
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 2 });
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('connected_never_replicated');
+    expect(episodes[0]!.detail).toContain('zombie');
+    // Edge-triggered: still zombied → no re-fire.
+    now += 5_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    expect(episodes).toHaveLength(1);
+    // Read-time verdict lands in the red bucket consumers already handle.
+    const view = getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!;
+    expect(view.logs[0]!.verdict).toBe('no_replicator');
+  });
+
+  it('NEVER alarms with zero swarm connections (offline churn) or when the axis is unfed', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    for (let i = 0; i < 5; i += 1) {
+      sampleWith(on, now, { peers: 0, swarm: 0 }); // offline peer — churn
+      now += GRACE;
+    }
+    for (let i = 0; i < 5; i += 1) {
+      sampleWith(on, now, { peers: 0 }); // no swarm handle — axis disabled
+      now += GRACE;
+    }
+    expect(episodes).toHaveLength(0);
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
+      'never_connected',
+    );
+  });
+
+  it('churn gaps within tolerance KEEP the window (zombie connections churn ~10s); the alarm still fires', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // window opens
+    now += 4_000;
+    sampleWith(on, now, { peers: 0, swarm: 0 }); // reconnect gap — within tolerance, kept
+    now += 4_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // churned back
+    now += 2_000; // total window = GRACE
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.kind).toBe('connected_never_replicated');
+  });
+
+  it('a SUSTAINED offline stretch (past churn tolerance) RESETS the clock — genuinely-offline never alarms', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // window opens
+    now += 4_000;
+    sampleWith(on, now, { peers: 0, swarm: 0 }); // goes offline…
+    now += SWARM_CHURN_TOLERANCE_MS + 1_000; // …and STAYS offline past tolerance
+    sampleWith(on, now, { peers: 0, swarm: 0 }); // sustained → reset (no fire: swarm 0 never fires)
+    now += 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // fresh window from here
+    now += GRACE - 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // inside the fresh window
+    expect(episodes).toHaveLength(0);
+    now += 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 }); // fresh window elapses → fires
+    expect(episodes).toHaveLength(1);
+  });
+
+  it('replicator attachment recovers the log (live verdict) and a later zombie window re-fires', () => {
+    const { episodes, on } = collect();
+    let now = 1_000_000;
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 1 });
+    expect(episodes).toHaveLength(1);
+    // Replication finally attaches AND ingests (the 22:00:00 heal on the rig:
+    // once the channel paired, the whole backlog crossed in <1s).
+    now += 1_000;
+    sampleWith(on, now, { peers: 1, swarm: 1, pos: 5 });
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('live');
+    // Once a log HAS replicated, the zombie axis stays off (no_replicator owns
+    // the was-replicating stall) — no double-alarm.
+    now += 1_000;
+    sampleWith(on, now, { peers: 0, swarm: 1, pos: 5 });
+    now += GRACE;
+    sampleWith(on, now, { peers: 0, swarm: 1, pos: 5 });
+    expect(episodes).toHaveLength(2);
+    expect(episodes[1]!.kind).toBe('no_replicator');
   });
 });

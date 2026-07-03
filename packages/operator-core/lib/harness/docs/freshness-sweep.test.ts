@@ -320,3 +320,59 @@ describe('sweepHarnessDocs — steward retry', () => {
     expect(store.records[0].regenAttempts).toBe(0);
   });
 });
+
+// ── WI-2007: the drift callbacks carry a `becameDrifted` transition flag so a caller can
+// EDGE-TRIGGER the '*' broadcast on NEW drift while still driving the steward retry off
+// every due re-fire. true on the fresh→drift transition; false on a retry re-confirm of an
+// already-drifted doc (the ~30min re-fire that was re-announcing the standing backlog). ──
+describe('sweepHarnessDocs — becameDrifted transition flag (WI-2007)', () => {
+  it('passes becameDrifted=true when a manual doc first transitions fresh→review', async () => {
+    const records = [
+      rec({ docId: 'm.md', source: 'manual', subjectRef: [{ kind: 'path', globs: ['src/man.ts'] }], anchorPaths: ['src/man.ts'], lastVerifiedSha: shas.c0 }),
+    ];
+    const store = memStore(records);
+    const flags: boolean[] = [];
+    await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, changedPaths: ['src/man.ts'], store,
+      onReverifyNeeded: (_d, _detail, becameDrifted) => { flags.push(becameDrifted); },
+    });
+    expect(flags).toEqual([true]); // the fresh→review edge
+  });
+
+  it('passes becameDrifted=true when a generated doc first transitions fresh→stale', async () => {
+    const records = [
+      rec({ docId: 'features/F-1.md', source: 'generated', subjectRef: [{ kind: 'path', globs: ['src/gen.ts'] }], anchorPaths: ['src/gen.ts'], generatedFromSha: shas.c0 }),
+    ];
+    const store = memStore(records);
+    const flags: boolean[] = [];
+    await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, changedPaths: ['src/gen.ts'], store,
+      onRegenNeeded: (_d, _detail, becameDrifted) => { flags.push(becameDrifted); },
+    });
+    expect(flags).toEqual([true]); // the fresh→stale edge
+  });
+
+  it('passes becameDrifted=false on a retry re-confirm of an already-drifted doc (the ~30min re-fire)', async () => {
+    const t = 10_000_000_000;
+    const longAgo = new Date(t - STEWARD_RETRY_BASE_MS - 1).toISOString();
+    const records = [
+      // Already review from a prior sweep; steward never healed it → the retry leg re-fires,
+      // but this is NOT a new transition — the '*' broadcast must NOT re-announce it.
+      rec({
+        docId: 'm.md', source: 'manual', subjectRef: [{ kind: 'path', globs: ['src/man.ts'] }],
+        anchorPaths: ['src/man.ts'], lastVerifiedSha: shas.c0,
+        status: 'review', statusDetail: 'code changed: src/man.ts',
+        reverifyFlaggedAt: longAgo, reverifyAttempts: 1,
+      }),
+    ];
+    const store = memStore(records);
+    const flags: boolean[] = [];
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: repo, runGit, now: t,
+      changedPaths: ['src/unrelated.ts'], // retry leg, not an anchor hit
+      store, onReverifyNeeded: (_d, _detail, becameDrifted) => { flags.push(becameDrifted); },
+    });
+    expect(r.candidates).toBe(1); // still re-dispatched to the steward (retry cadence intact)
+    expect(flags).toEqual([false]); // ...but flagged NOT-new → stays out of the '*' broadcast
+  });
+});

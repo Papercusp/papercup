@@ -36,8 +36,18 @@ export class EpochKeyUnavailableError extends Error {
   constructor(
     readonly hiveId: string,
     readonly epoch: number,
+    // WI-2009 / wake-#5742 (v3 instrumentation, leg b): carry WHAT was queried so a
+    // miss is diagnosable from the error alone — if the hive_epoch_keys row EXISTS
+    // for a DIFFERENT member_device_pubkey, this is the split-device-identity class
+    // (the epoch tier resolved a different key than the presence tier).
+    detail?: { devicePubkey?: string; keychainId?: string },
   ) {
-    super(`no epoch key for (${hiveId}, epoch ${epoch}) on this device — cut off or not yet distributed`);
+    super(
+      `no epoch key for (${hiveId}, epoch ${epoch}) on this device — cut off or not yet distributed` +
+        (detail?.devicePubkey
+          ? ` [queried member_device_pubkey=${detail.devicePubkey} keychainId=${detail.keychainId ?? '?'} row-found=false — WI-2009: a row under a DIFFERENT pubkey ⇒ split device identity]`
+          : ''),
+    );
     this.name = 'EpochKeyUnavailableError';
   }
 }
@@ -58,7 +68,11 @@ export function createEpochKeyProvider(
       const hit = cache.get(ck);
       if (hit) return hit;
       const blob = await loader.load(hiveId, epoch, localDevice.pubkeyBase64);
-      if (!blob) throw new EpochKeyUnavailableError(hiveId, epoch);
+      if (!blob)
+        throw new EpochKeyUnavailableError(hiveId, epoch, {
+          devicePubkey: localDevice.pubkeyBase64,
+          keychainId: localDevice.keychainId,
+        });
       const key = await crypto.unwrapEpochKey(blob, localDevice.keychainId);
       cache.set(ck, key);
       return key;

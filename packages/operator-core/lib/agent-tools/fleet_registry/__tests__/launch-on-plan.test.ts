@@ -151,6 +151,15 @@ describe('memberLaunchCommand', () => {
     ).toContain('--context-size=full');
   });
 
+  it('threads --seat=<ref> for a launch-from-seats member (P-005); omitted otherwise', () => {
+    expect(
+      memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', seat: 'opus:xhigh:AUTO' }),
+    ).toContain('--seat=opus:xhigh:AUTO'); // ':' is shell-safe → bare
+    expect(
+      memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p' }),
+    ).not.toContain('--seat');
+  });
+
   it('shell-quotes a launch-context path with spaces (injection-safe)', () => {
     const cmd = memberLaunchCommand({
       fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', launchContext: '/home/x/brief one.md',

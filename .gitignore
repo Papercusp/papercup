@@ -97,3 +97,8 @@ apps/operator/docs/plans/**/*.md
 .papercusp/scratch/
 **/scratch/relgit-*/
 **/scratch/lockdom-*/
+
+# npm-only repo — a pnpm/yarn install breaks the shared node_modules layout (2026-07-03 fleet incident)
+pnpm-lock.yaml
+yarn.lock
+.pnpm-workspace-state-v1.json

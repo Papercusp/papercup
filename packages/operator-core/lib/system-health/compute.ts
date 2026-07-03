@@ -21,6 +21,8 @@
  * DBOS workflow_status row.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
@@ -80,6 +82,7 @@ const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
 const PLAN_STALE_MS = 24 * 60 * 60_000;
 const ESCALATION_AGING_MS = 6 * 60 * 60_000;
+const execFileP = promisify(execFile);
 
 /** Minimal open-escalation shape this panel needs (a superset of EscalationRecord). */
 export interface EscalationAgingInput {
@@ -608,16 +611,20 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
     // defaults (never-crit) when the routine metadata is unreadable.
     let gitSyncStatus: DeployHealth['gitSyncStatus'] = null;
     let gitSyncConsecutiveErrorTicks = 0;
+    let gitSyncPushBacklog: number | null = null;
     let gitSyncLastSyncedAtMs: number | null = null;
     let gitSyncOversizedCount = 0;
     try {
       const { sql } = getOrgPg();
-      const rows = await sql<Array<{ metadata: Record<string, unknown> | null }>>`
-        SELECT metadata FROM harness_shared.routines
+      const rows = await sql<Array<{ install_slug: string; metadata: Record<string, unknown> | null }>>`
+        SELECT install_slug, metadata FROM harness_shared.routines
          WHERE target_role = 'system:git-sync' AND active = true AND workspace_id = ${ctx.ws}`;
       for (const r of rows) {
         const md = (r.metadata ?? {}) as Record<string, unknown>;
-        const et = Number(md.consecutive_error_ticks ?? 0) || 0;
+        const rawEt = Number(md.consecutive_error_ticks ?? 0) || 0;
+        const backlog = rawEt > 0 ? await liveGitSyncPushBacklog(r.install_slug) : null;
+        if (backlog !== null) gitSyncPushBacklog = Math.max(gitSyncPushBacklog ?? 0, backlog);
+        const et = backlog === 0 ? 0 : rawEt;
         // worst-wins: the most-failing routine drives the panel status.
         if (gitSyncStatus === null || et > gitSyncConsecutiveErrorTicks) {
           gitSyncStatus = (md.last_status as DeployHealth['gitSyncStatus']) ?? 'nothing';
@@ -639,6 +646,7 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
       errors: s.errors,
       gitSyncStatus,
       gitSyncConsecutiveErrorTicks,
+      gitSyncPushBacklog,
       gitSyncLastSyncedAtMs,
       gitSyncOversizedCount,
     };
@@ -658,10 +666,56 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
         m('not-green', data.readyBehindMain ?? '?'),
         m('last sync', agoMin(data.lastCommitAtMs, ctx.now)),
         m('green tip', data.readyAtMainHead === null ? '?' : data.readyAtMainHead ? 'yes' : 'no'),
-        m('git-sync push', pushFailing ? `FAILING ${data.gitSyncConsecutiveErrorTicks}t` : (data.gitSyncStatus ?? 'n/a'), pushFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
+        m('git-sync push', pushFailing ? `FAILING ${data.gitSyncConsecutiveErrorTicks}t` : data.gitSyncPushBacklog === 0 ? 'caught up' : (data.gitSyncStatus ?? 'n/a'), pushFailing ? 'crit' : (data.gitSyncOversizedCount > 0 ? 'warn' : undefined)),
       ],
     };
   });
+}
+
+async function runGit(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileP('git', ['-C', cwd, ...args], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+  return String(stdout).trim();
+}
+
+async function gitAheadCount(cwd: string): Promise<number | null> {
+  try {
+    await runGit(cwd, ['fetch', '--quiet']);
+    const upstream = await runGit(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    if (!upstream) return null;
+    const out = await runGit(cwd, ['rev-list', '--count', `${upstream}..HEAD`]);
+    const n = Number(out);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+async function gitSubmodulePaths(repoRoot: string): Promise<string[]> {
+  try {
+    const out = await runGit(repoRoot, ['config', '--file', '.gitmodules', '--get-regexp', 'path']);
+    return out.split('\n').map((line) => line.trim().split(/\s+/)[1]).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function liveGitSyncPushBacklog(slug: string): Promise<number | null> {
+  try {
+    const { projectDirForSlug } = await import('../operator-notes');
+    const repoRoot = await projectDirForSlug(slug);
+    if (!repoRoot) return null;
+    const rootAhead = await gitAheadCount(repoRoot);
+    if (rootAhead === null) return null;
+    let total = rootAhead;
+    for (const rel of await gitSubmodulePaths(repoRoot)) {
+      const ahead = await gitAheadCount(`${repoRoot}/${rel}`);
+      if (ahead === null) return null;
+      total += ahead;
+    }
+    return total;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -9,7 +9,7 @@
  * PERF_REGRESSION_BUDGETS, filing a watchdog signal on every breach so a regression
  * surfaces as a captured improvement instead of a forensic slog.
  *
- * The four tracked metrics:
+ * The tracked metrics:
  *   1. event-loop-lag p95 (ms)   — `currentLoopLag().p95Ms`, the per-thread saturation
  *                                  signal (reuses perf-budgets.ts PERF_BUDGETS thresholds).
  *   2. PG connection saturation  — `pgHealth().saturationPct` (server-wide).
@@ -17,6 +17,8 @@
  *                                  outcome='orphaned' over a recent window. THE one that
  *                                  silently regressed to 91% — the rig's reason to exist.
  *   4. coord backlog             — open-escalation count (coord_open_escalations).
+ *   5. /adv tab switch median    — app-side time to selected tab (EI-3034).
+ *   6. /adv first contentful paint — app-side boot FCP (EI-3034).
  *
  * ADDITIVE + READ-MOSTLY: it reads existing instruments and INSERTs one snapshot row;
  * it changes no serving behavior. DORMANT-TOLERANT by contract — a missing table or an
@@ -66,6 +68,14 @@ export interface PerfRegressionBudgets {
   coordOpenEscalationsWarn: number;
   /** coord open-escalation backlog: critical at/above this. Default 8000. */
   coordOpenEscalationsCrit: number;
+  /** /adv tab-switch median latency (ms): major at/above this. Default 500. */
+  advTabSwitchMedianWarnMs: number;
+  /** /adv tab-switch median latency (ms): critical at/above this. Default 1000. */
+  advTabSwitchMedianCritMs: number;
+  /** /adv first-contentful-paint (ms): major at/above this. Default 2500. */
+  advFcpWarnMs: number;
+  /** /adv first-contentful-paint (ms): critical at/above this. Default 4000. */
+  advFcpCritMs: number;
   /** orphan-rate min dispatch sample before the SLO applies (a rate over 2 rows is noise). Default 20. */
   dispatchOrphanMinSample: number;
   /** dispatch-orphan recent window (hours). Default 24. */
@@ -83,6 +93,13 @@ export const PERF_REGRESSION_BUDGETS: PerfRegressionBudgets = {
   dispatchOrphanRateCritPct: 0.6,
   coordOpenEscalationsWarn: 2000,
   coordOpenEscalationsCrit: 8000,
+  // EI-3034 baselines captured under load: tab-switch median 253ms (per-tab
+  // 132-379ms), FCP ~1923ms. Warn budgets leave headroom above those medians;
+  // tails still need quiet-window confirmation before tail SLOs are added.
+  advTabSwitchMedianWarnMs: 500,
+  advTabSwitchMedianCritMs: 1000,
+  advFcpWarnMs: 2500,
+  advFcpCritMs: 4000,
   dispatchOrphanMinSample: 20,
   dispatchOrphanWindowHours: 24,
 };
@@ -105,11 +122,21 @@ export interface PerfRegressionMetrics {
   dispatchSample: number;
   /** coord open-escalation backlog, or null when the table is absent. */
   coordOpenEscalations: number | null;
+  /** /adv tab-switch median latency (ms), or null when no app perf sample is available. */
+  advTabSwitchMedianMs: number | null;
+  /** /adv first-contentful-paint (ms), or null when no app perf sample is available. */
+  advFcpMs: number | null;
 }
 
 /** One budget breach (also the JSONB shape persisted in `breached`). */
 export interface PerfRegressionBreach {
-  metric: 'loop-lag-p95' | 'conn-saturation' | 'dispatch-orphan-rate' | 'coord-open-escalations';
+  metric:
+    | 'loop-lag-p95'
+    | 'conn-saturation'
+    | 'dispatch-orphan-rate'
+    | 'coord-open-escalations'
+    | 'adv-tab-switch-median'
+    | 'adv-fcp';
   /** The measured value that breached. */
   value: number;
   /** The budget threshold it crossed. */
@@ -142,6 +169,12 @@ function remediationFor(metric: PerfRegressionBreach['metric']): string {
     case 'coord-open-escalations':
       return 'The coord escalation backlog is unbounded — escalations are being filed faster than ' +
         'they are resolved. Drain the inbox (coord:escalations) or check for a stuck escalation source.';
+    case 'adv-tab-switch-median':
+      return 'The /adv shell tab-switch path has regressed — reproduce with the agent-e2e /adv tab sweep ' +
+        'in a quiet window (load1 < 24) and inspect route/layout work on the slowest tab.';
+    case 'adv-fcp':
+      return 'The /adv boot path first-contentful-paint has regressed — reproduce with the agent-e2e boot ' +
+        'sample in a quiet window and inspect bundle/code-split/static-serve regressions.';
   }
 }
 
@@ -239,6 +272,28 @@ export function evaluatePerfRegression(
       `the coord open-escalation backlog is ${v}, at or past the ${tier} budget of ${budget} — ` +
       `escalations are accumulating faster than they drain.`,
   );
+  consider(
+    'adv-tab-switch-median',
+    metrics.advTabSwitchMedianMs,
+    budgets.advTabSwitchMedianWarnMs,
+    budgets.advTabSwitchMedianCritMs,
+    'adv-tab-switch-median',
+    '/adv tab-switch median regressed past its SLO budget',
+    (v, budget, tier) =>
+      `/adv tab-switch median is ${Math.round(v)}ms, at or past the ${tier} budget of ${budget}ms — ` +
+      `the app-side navigation path is slower than the EI-3034 baseline.`,
+  );
+  consider(
+    'adv-fcp',
+    metrics.advFcpMs,
+    budgets.advFcpWarnMs,
+    budgets.advFcpCritMs,
+    'adv-fcp',
+    '/adv first-contentful-paint regressed past its SLO budget',
+    (v, budget, tier) =>
+      `/adv first-contentful-paint is ${Math.round(v)}ms, at or past the ${tier} budget of ${budget}ms — ` +
+      `the boot/render path is slower than the EI-3034 baseline.`,
+  );
 
   return { signals, breaches };
 }
@@ -276,6 +331,10 @@ export interface PerfRegressionDeps {
   readLoopLagP95Ms: () => number | null;
   /** PG server-wide saturation %, or null on failure. Default `pgHealth().saturationPct`. */
   readConnSaturationPct: () => Promise<number | null>;
+  /** /adv tab-switch median (ms), or null until an app perf sampler writes one. */
+  readAdvTabSwitchMedianMs?: () => Promise<number | null>;
+  /** /adv first-contentful-paint (ms), or null until an app perf sampler writes one. */
+  readAdvFcpMs?: () => Promise<number | null>;
 }
 
 const defaultDeps: PerfRegressionDeps = {
@@ -292,6 +351,8 @@ const defaultDeps: PerfRegressionDeps = {
       return null;
     }
   },
+  readAdvTabSwitchMedianMs: async () => null,
+  readAdvFcpMs: async () => null,
 };
 
 /** The note every tick returns while the flag is OFF (the kill-switch). */
@@ -359,7 +420,7 @@ export async function readCoordOpenEscalations(
 
 /**
  * THE rig entry point (the watchdog collector calls this). When the flag is ON:
- *   1. read the four metrics (each fail-soft → null + a note fragment, never a throw);
+ *   1. read the metrics (each fail-soft → null + a note fragment, never a throw);
  *   2. INSERT one snapshot row (best-effort — a write failure is a note, not a throw,
  *      so a dormant snapshot table never breaks the watchdog tick that rides this);
  *   3. evaluate against PERF_REGRESSION_BUDGETS → one WatchdogSignal per breach.
@@ -408,12 +469,32 @@ export async function collectPerfRegressionSnapshot(
   if (typeof backlog === 'object') notes.push(backlog.dormant);
   else coordOpenEscalations = backlog;
 
+  // 5/6. App-side /adv perf metrics (EI-3034). The sampler is intentionally an
+  // injected seam for now; until a quiet-window E2E writer lands, null means the
+  // budget exists but this tick has no app perf sample to grade.
+  const readNullableUiMetric = async (
+    label: string,
+    reader: (() => Promise<number | null>) | undefined,
+  ): Promise<number | null> => {
+    if (!reader) return null;
+    try {
+      return await reader();
+    } catch (e) {
+      notes.push(`${label}: unreadable this tick (${e instanceof Error ? e.message : String(e)})`);
+      return null;
+    }
+  };
+  const advTabSwitchMedianMs = await readNullableUiMetric('adv-tab-switch-median', deps.readAdvTabSwitchMedianMs);
+  const advFcpMs = await readNullableUiMetric('adv-fcp', deps.readAdvFcpMs);
+
   const metrics: PerfRegressionMetrics = {
     loopLagP95Ms,
     connSaturationPct,
     dispatchOrphanRate,
     dispatchSample,
     coordOpenEscalations,
+    advTabSwitchMedianMs,
+    advFcpMs,
   };
 
   const { signals, breaches } = evaluatePerfRegression(metrics, budgets);
@@ -428,10 +509,10 @@ export async function collectPerfRegressionSnapshot(
     await sql`
       INSERT INTO harness_shared.perf_regression_snapshots
         (workspace_id, loop_lag_p95_ms, conn_saturation_pct, dispatch_orphan_rate, dispatch_sample,
-         coord_open_escalations, breached)
+         coord_open_escalations, adv_tab_switch_median_ms, adv_fcp_ms, breached)
       VALUES
         (${workspaceId}, ${metrics.loopLagP95Ms}, ${metrics.connSaturationPct}, ${metrics.dispatchOrphanRate},
-         ${metrics.dispatchSample}, ${metrics.coordOpenEscalations},
+         ${metrics.dispatchSample}, ${metrics.coordOpenEscalations}, ${metrics.advTabSwitchMedianMs}, ${metrics.advFcpMs},
          ${JSON.stringify(breaches)}::jsonb)`;
   } catch (e) {
     if (isMissingTableError(e, 'perf_regression_snapshots')) {

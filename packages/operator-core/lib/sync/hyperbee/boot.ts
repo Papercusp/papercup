@@ -1762,6 +1762,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                   typeof maybePeers.peersCount === 'function'
                     ? maybePeers.peersCount()
                     : undefined,
+                // WI-183 zombie axis: live swarm connections for the harness
+                // topic. Read from the CURRENT handle (rekey() reassigns it);
+                // null handle (no swarm joined / mid-rekey window) → undefined
+                // disables the axis for this sample, never alarms.
+                swarmConnections: swarmHandle?.liveConnectionCount,
               },
               { graceMs: REPLICATION_STALL_GRACE_MS },
             );

@@ -29,7 +29,7 @@ export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen';
+  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated';
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +

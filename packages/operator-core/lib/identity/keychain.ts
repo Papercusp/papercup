@@ -308,3 +308,43 @@ async function fileDelete(keychainId: string): Promise<void> {
     // ignore — not_found is fine for delete
   }
 }
+
+/**
+ * WI-2009 / wake-#5742 diagnostics: probe WHICH tier(s) currently hold
+ * `keychainId` — READ-ONLY, never mutates, never throws. `file` reports the
+ * first dir (primary | legacy) holding a blob for the id (existence, not
+ * decryptability). Used by the epoch-boot instrumentation to make the
+ * split-device-identity class visible (presence tier vs epoch tier resolving
+ * different keys because a tier is unreadable in one process context).
+ */
+export async function keychainProbeTiers(
+  keychainId: string,
+  serviceName: string = SERVICE_NAME,
+): Promise<{ secretTool: boolean; securityCli: boolean; file: 'primary' | 'legacy' | null }> {
+  let secretTool = false;
+  let securityCli = false;
+  try {
+    const st = await trySecretTool('load', keychainId, '', serviceName);
+    secretTool = st !== null && st !== '';
+  } catch {
+    /* probe only */
+  }
+  try {
+    const sec = await trySecurityCli('load', keychainId, '', serviceName);
+    securityCli = sec !== null && sec !== '';
+  } catch {
+    /* probe only */
+  }
+  let file: 'primary' | 'legacy' | null = null;
+  const dirs = identityReadDirs();
+  for (let i = 0; i < dirs.length; i++) {
+    try {
+      await readFile(join(dirs[i], encFileName(keychainId)));
+      file = i === 0 ? 'primary' : 'legacy';
+      break;
+    } catch {
+      /* miss — try next */
+    }
+  }
+  return { secretTool, securityCli, file };
+}

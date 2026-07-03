@@ -84,6 +84,8 @@ describe('transformStatement — idempotency rewrites', () => {
     expect(out).toContain('WHEN duplicate_object THEN NULL');
     // PK re-add raises 42P16, not duplicate_object — must be tolerated too
     expect(out).toContain('WHEN invalid_table_definition THEN NULL');
+    // Table-to-view migrations make baseline table constraints re-apply against a view.
+    expect(out).toContain('WHEN wrong_object_type THEN NULL');
     expect(out).toMatch(/END \$baseline_guard\$$/);
   });
 

@@ -26,6 +26,7 @@ import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/
 import { resolveCreateHiveMembership } from './create-hive-membership';
 import { applyGenomeConfig, writeGenomePrompts } from '../../instance-spec/genome-storage';
 import type { InstanceConfigFields } from '../../deployment/instance-config';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
@@ -116,10 +117,15 @@ export default defineTool({
     .refine((a) => a.blueprintId != null || a.blueprint != null, {
       message: 'pass `blueprintId` or `blueprint`',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
     const { loadHarnessRegistry, mutateHarnessRegistry } = await import('../../harness-registry');
 
-    const reg = await loadHarnessRegistry();
+    const workspaceId = resolveConcreteWorkspaceId(
+      undefined,
+      ctx?.workspaceId,
+      ctx?.principal?.workspaceId,
+    );
+    const reg = await loadHarnessRegistry(workspaceId);
     if (reg.projects.some((p) => p.slug === args.slug)) return fail({ error: 'slug already exists' });
 
     // Create-time Hive membership (shared-hive-federation D-010 producer): when
@@ -219,10 +225,9 @@ export default defineTool({
       // registered (the dep then reports missing, which is the correct conservative gate).
       let datatypeNames: string[] = [];
       if (declaredDatatypes.length > 0) {
-        const { activeWorkspaceId } = await import('../../workspace-registry');
         const { getOrgPg } = await import('@papercusp/db-org');
         const { listRegisteredDatatypeNames } = await import('../../datatype-registry-store');
-        datatypeNames = await listRegisteredDatatypeNames(getOrgPg().sql, activeWorkspaceId()).catch(() => []);
+        datatypeNames = await listRegisteredDatatypeNames(getOrgPg().sql, workspaceId).catch(() => []);
       }
       // Local-only first: when every declared dep resolves in-process, skip
       // the Cupboard round-trip entirely.
@@ -357,7 +362,7 @@ export default defineTool({
         return cur;
       }
       return { ...cur, projects: [...cur.projects, newEntry] };
-    });
+    }, workspaceId);
     if (dupRace) return fail({ error: 'slug already exists' });
     let provisioning: { ok: true } | { ok: false; error: string };
     try {
@@ -411,9 +416,8 @@ export default defineTool({
     if (hiveMembership) {
       try {
         const { seedGitSyncRoutineForMember } = await import('../../harness/git-sync/git-sync-routine');
-        const { activeWorkspaceId } = await import('../../workspace-registry');
         gitSync = await seedGitSyncRoutineForMember({
-          workspaceId: activeWorkspaceId(),
+          workspaceId,
           installSlug: args.slug,
           entry: newEntry,
           joinerSide: false,
@@ -436,10 +440,9 @@ export default defineTool({
     if (hiveMembership) {
       try {
         const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
-        const { activeWorkspaceId } = await import('../../workspace-registry');
         const { getOrgPg } = await import('@papercusp/db-org');
         const { sql } = getOrgPg();
-        await seedHiveReleaseRoutines({ sql, workspaceId: activeWorkspaceId(), hiveSlug: args.slug });
+        await seedHiveReleaseRoutines({ sql, workspaceId, hiveSlug: args.slug });
       } catch (e) {
         console.warn(
           `[harness:create] release-routine seed failed (${args.slug}): ${e instanceof Error ? e.message : String(e)}`,
@@ -461,8 +464,7 @@ export default defineTool({
     if (requiresRepo && docsKnob?.track !== false) {
       try {
         const { seedHarnessDocTracking } = await import('../../harness/docs/seed-doc-tracking');
-        const { activeWorkspaceId } = await import('../../workspace-registry');
-        docTracking = await seedHarnessDocTracking({ harnessSlug: args.slug, workspaceId: activeWorkspaceId() });
+        docTracking = await seedHarnessDocTracking({ harnessSlug: args.slug, workspaceId });
       } catch (e) {
         docTracking = {
           seeded: false,

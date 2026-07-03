@@ -307,7 +307,15 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // resolved admin URL, not mask it — an empty value reaches the agent as
     // `DATABASE_URL=''`, which spawn-mcp reads as "no PG DSN" and refuses to sign
     // the MCP URL (observed breaking a durable-pipeline director invoke).
-    DATABASE_URL: process.env.DATABASE_URL || getHarnessAdminUrl(),
+    // WI-1666 env-inheritance leg (2026-07-03): in an ISOLATED process (explicit
+    // PAPERCUSP_PG_PORT — smoke witnesses, rig instances, desktop sidecars), an
+    // INHERITED DATABASE_URL (agent shells export the box's shared native :5432)
+    // must NEVER reroute spawned workers to the shared PG — that is exactly how a
+    // "fresh, isolated" from-repo smoke read the tower's pre-existing directory/
+    // binding state. getHarnessAdminUrl() honors PAPERCUSP_PG_PORT, so isolated
+    // processes resolve to their OWN embedded PG.
+    DATABASE_URL:
+      (process.env.PAPERCUSP_PG_PORT ? '' : process.env.DATABASE_URL) || getHarnessAdminUrl(),
     // The orchestrator's pg-bootstrap (which the spawned invoke-once subprocess runs)
     // resolves its DSN from PAPERCUSP_DATABASE_URL > ~/.papercusp/embedded-pg.json >
     // hardcoded :5432/papercusp — it does NOT read DATABASE_URL. So setting DATABASE_URL
@@ -319,7 +327,9 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // For the live fleet this equals DATABASE_URL (= the live DB the fallback already
     // resolved to), so it's a no-op there; an explicit PAPERCUSP_DATABASE_URL is kept.
     PAPERCUSP_DATABASE_URL:
-      process.env.PAPERCUSP_DATABASE_URL || process.env.DATABASE_URL || getHarnessAdminUrl(),
+      process.env.PAPERCUSP_DATABASE_URL ||
+      (process.env.PAPERCUSP_PG_PORT ? '' : process.env.DATABASE_URL) ||
+      getHarnessAdminUrl(),
   };
   if (spec.resultPath) env.RESULT_PATH = spec.resultPath;
   for (const [k, v] of Object.entries(spec.extraEnv ?? {})) {

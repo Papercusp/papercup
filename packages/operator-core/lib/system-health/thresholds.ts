@@ -226,7 +226,7 @@ export const GIT_SYNC_PUSH_FAIL_CRIT = 3;
  * host far behind staging. ok otherwise.
  */
 export function deployStatus(d: DeployHealth, now: number): PanelStatus {
-  if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT) return 'crit';
+  if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
   if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
   if (d.gitSyncStatus === 'error' || d.gitSyncOversizedCount > 0) return 'warn';
   if (d.lastCommitAtMs !== null && now - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';

@@ -154,6 +154,7 @@ export interface CreateHiveFromRepoDeps {
     path: string;
     blueprint: Record<string, unknown>;
     hive: string;
+    workspaceId: string;
   }) => Promise<{ ok: boolean; error?: string }>;
   publish?: typeof publishCreatedHive;
   /** B-07 / C-2: record the owner's beacon-publish consent. Default: the shared
@@ -230,9 +231,11 @@ export async function defaultCreateMember(args: {
   path: string;
   blueprint: Record<string, unknown>;
   hive: string;
+  workspaceId: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const { default: createTool } = await import('../harness/create');
-  const res = (await createTool.handler(args as never, {} as never)) as {
+  const { workspaceId, ...createArgs } = args;
+  const res = (await createTool.handler(createArgs as never, { workspaceId } as never)) as {
     content: { text: string }[];
   };
   try {
@@ -478,6 +481,7 @@ export async function createHiveFromRepo(
     path: memberPath,
     blueprint: bp.blueprint,
     hive: hiveSlug,
+    workspaceId: opts.workspaceId,
   });
   if (!member.ok) {
     mark('create', 'error');

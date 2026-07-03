@@ -14,8 +14,6 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { DeploymentConfigSchema } from '../../deployment/config-schema';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
-import { createHiveHarness } from './_create';
-import { resolveHive } from './_resolve';
 import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -124,6 +122,9 @@ export default defineTool({
       ctx.workspaceId,
       ctx.principal?.workspaceId,
     );
+    const { createHiveHarness } = await import('./_create');
+    const { resolveHive } = await import('./_resolve');
+
     const res = await createHiveHarness({
       slug: args.slug,
       workspaceId,

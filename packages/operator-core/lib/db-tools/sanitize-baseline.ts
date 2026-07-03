@@ -192,6 +192,8 @@ export function transformStatement(stmt: string, onUnknown?: (token: string) => 
   //   duplicate_table (42P07)          — duplicate relation
   //   invalid_table_definition (42P16) — "multiple primary keys not allowed" (PK re-add;
   //                                       PG checks for an existing PK before the name clash)
+  //   wrong_object_type (42809)        — later migrations converted the relation to a view
+  //                                       (baseline table DDL re-applies as a no-op)
   // Safe in this context: statements come from a pg_dump of a VALID schema, so the only
   // re-run failure mode is "already present", never a genuinely invalid definition.
   if (/^\s*ALTER\s+TABLE\s/i.test(code) && /\bADD\s+CONSTRAINT\b/i.test(code)) {
@@ -202,6 +204,7 @@ export function transformStatement(stmt: string, onUnknown?: (token: string) => 
       `  WHEN duplicate_object THEN NULL;\n` +
       `  WHEN duplicate_table THEN NULL;\n` +
       `  WHEN invalid_table_definition THEN NULL;\n` +
+      `  WHEN wrong_object_type THEN NULL;\n` +
       `END ${GUARD_TAG}`
     );
   }

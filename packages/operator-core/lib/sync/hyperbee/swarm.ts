@@ -46,6 +46,14 @@ export interface SwarmHandle {
   topicHex: string;
   /** Number of times the connection handler has fired since join. */
   connectionCount: number;
+  /**
+   * Number of currently-OPEN peer connections on this handle (incremented on
+   * connect, decremented on socket close). Feeds the replication-liveness
+   * `connected_never_replicated` axis (WI-183/WI-1840): swarm-level
+   * connectivity is the discriminator between "peer offline" (never alarms)
+   * and "connected-but-dead replication" (the zombie-connection class).
+   */
+  liveConnectionCount: number;
 }
 
 /** Snapshot of the shared swarm's peer-budget pressure at a near-cap crossing
@@ -761,6 +769,7 @@ export async function joinHarnessSwarm(
 
   const guard = opts.guard ?? getSwarmGuard();
   let connectionCount = 0;
+  let liveConnectionCount = 0;
   // WI-752 self-heal state: the start of the current FAST-refresh window (join
   // time; re-armed on every peer-socket `close`) and the last refresh tick (for
   // the slow keepalive). Declared before `handler` so the close listener can
@@ -769,6 +778,7 @@ export async function joinHarnessSwarm(
   let lastRefreshMs = 0;
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
+    liveConnectionCount++;
     // An unclean peer disconnect (reset / timeout / mid-replication death)
     // emits 'error' on the connection socket; with no listener Node escalates
     // it to an UNCAUGHT EXCEPTION — i.e. a remote peer dying could crash this
@@ -784,6 +794,7 @@ export async function joinHarnessSwarm(
     // across topics) only ever schedules a few extra harmless refreshes.
     (socket as { once?: (ev: string, fn: () => void) => unknown })?.once?.('close', () => {
       fastWindowStartMs = Date.now();
+      liveConnectionCount = Math.max(0, liveConnectionCount - 1);
     });
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
     const remoteIp = extractRemoteIp(socket);
@@ -954,6 +965,9 @@ export async function joinHarnessSwarm(
     topicHex: opts.topic.toString('hex'),
     get connectionCount() {
       return connectionCount;
+    },
+    get liveConnectionCount() {
+      return liveConnectionCount;
     },
     async close() {
       // WI-752: stop the self-heal loop FIRST so no refresh fires after leave.

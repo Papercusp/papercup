@@ -73,6 +73,20 @@ export interface ReplicationLogSample {
    * tests) — disables no_replicator detection for the sample.
    */
   peersCount?: number;
+  /**
+   * Live swarm-connection count for the HARNESS TOPIC at sample time
+   * (`SwarmHandle.liveConnectionCount`), or `undefined` when the caller has no
+   * swarm handle — disables connected_never_replicated detection.
+   *
+   * This is the WI-183 ROOT-CAUSE axis (rig run m1783114921): after a restart
+   * every re-admitted log is `never_connected` this process lifetime, and the
+   * original never-alarms gating made the exact failure class SILENT — swarm
+   * says peer_connected (zombie connections via a stale DHT announce record)
+   * while the core never attaches a replicator. Swarm-connected + core
+   * never-replicated held past grace IS the zombie signature; swarm 0 stays
+   * the never-alarms churn case (peer genuinely offline).
+   */
+  swarmConnections?: number;
 }
 
 /** An edge-triggered stall episode (fires ONCE per episode, per kind). */
@@ -80,7 +94,7 @@ export interface ReplicationStallEpisode {
   workspaceId: string;
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen';
+  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated';
   /** How long the stall condition had been held when the episode fired (ms). */
   stalledForMs: number;
   /** Human-readable one-liner for the boot event / EI body. */
@@ -134,8 +148,23 @@ interface LogState {
   lastNonZeroPeersMs: number | null;
   /** Last time mergedPosition advanced (seeded at first sample with a position). */
   lastIngestProgressMs: number | null;
+  /**
+   * Start of the current swarm-connected-while-never-replicated window; null
+   * when the condition doesn't hold (sustained-offline, or the log has
+   * replicated at least once this lifetime). WI-183 zombie axis.
+   */
+  connectedNeverReplSinceMs: number | null;
+  /**
+   * Last sample time with swarmConnections > 0. Zombie connections CHURN
+   * (rig run m1783114921: ~10s lifetimes with reconnect gaps), so a swarm=0
+   * sample resets the window only after a SUSTAINED offline stretch
+   * (SWARM_CHURN_TOLERANCE_MS) — otherwise churn gaps would eternally reset
+   * the clock and the detector would stay silent in exactly the zombie case.
+   */
+  lastSwarmSeenMs: number | null;
   alarmedNoReplicator: boolean;
   alarmedFrozen: boolean;
+  alarmedConnectedNever: boolean;
 }
 
 /** Registry: `${workspaceId}::${harnessSlug}` → keyHex → state. */
@@ -158,6 +187,13 @@ export const DEFAULT_LIVENESS_GRACE_MS = 3 * 60 * 1000;
  * the READ, and reads pass `nowMs` in tests.
  */
 export const SAMPLING_STALE_AFTER_MS = 60 * 1000;
+
+/**
+ * How long the swarm may sample 0 connections before the zombie-window clock
+ * resets. Zombie connections churn (~10s lifetimes + reconnect gaps on rig run
+ * m1783114921); a genuinely-offline peer shows a SUSTAINED zero stretch.
+ */
+export const SWARM_CHURN_TOLERANCE_MS = 60 * 1000;
 
 export interface SampleReplicationLivenessOpts {
   /** Stall grace window (ms). Default DEFAULT_LIVENESS_GRACE_MS. */
@@ -188,16 +224,35 @@ export function setReplicationStallEpisodeReporterForTests(
 }
 
 function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
+  // Leg 0 — a LOUD process-log line carrying the grep-able event token. The b8
+  // matrix scenario's detector-assert (and any live witness) greps serve.log
+  // for `replication_stalled` / `replication_frozen`; the boot-history ring and
+  // the EI are both invisible to a log grep, so without this line a firing
+  // detector is indistinguishable from a silent one on the rig (the exact gap
+  // rig run m1783114921 exposed).
+  const eventName =
+    episode.kind === 'frozen' ? 'replication_frozen' : 'replication_stalled';
+  try {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[replication-liveness] ${eventName} (${episode.kind}) harness=${episode.harnessSlug} ${episode.detail}`,
+    );
+  } catch {
+    /* diagnostic-only */
+  }
   // Leg 1 — boot-history event (in-process timeline; same ring the legacy
   // WI-183 detector writes to). The legacy `checkReplicationStall` already
   // records `replication_stalled` for the no_replicator kind, so to avoid a
-  // duplicate ring entry only the NEW `frozen` kind records here.
-  if (episode.kind === 'frozen') {
+  // duplicate ring entry it is skipped here; the NEW `frozen` and
+  // `connected_never_replicated` kinds are this module's own (the legacy
+  // peers-only detector shares the never-was-replicating blind spot, so it
+  // can never duplicate the zombie kind).
+  if (episode.kind === 'frozen' || episode.kind === 'connected_never_replicated') {
     try {
       recordBootEvent(
         episode.workspaceId,
         episode.harnessSlug,
-        'replication_frozen',
+        eventName,
         episode.detail,
       );
     } catch {
@@ -253,8 +308,11 @@ export function sampleReplicationLiveness(
       // Seed progress clock at first sight so a pre-existing backlog doesn't
       // instantly alarm — it gets a full grace window from first observation.
       lastIngestProgressMs: sample.mergedPosition !== undefined ? now : null,
+      connectedNeverReplSinceMs: null,
+      lastSwarmSeenMs: null,
       alarmedNoReplicator: false,
       alarmedFrozen: false,
+      alarmedConnectedNever: false,
     };
     logs.set(sample.keyHex, st);
   }
@@ -291,6 +349,49 @@ export function sampleReplicationLiveness(
           `${Math.round((now - st.lastNonZeroPeersMs) / 1000)}s (was previously replicating)`,
       });
     }
+  }
+
+  // ── swarm-connected-but-never-replicated axis (WI-183 zombie connections) ──
+  // Fires when the harness topic HAS live swarm connections yet this admitted
+  // log has NEVER attached a replicator this process lifetime, held ≥ grace.
+  // Discriminates the zombie-connection class (stale DHT announce record →
+  // relay handshake connects, data path dead — rig run m1783114921: 18min
+  // silent window) from ordinary churn (swarm 0 → peer offline → never alarm).
+  if (sample.swarmConnections !== undefined && st.lastNonZeroPeersMs === null) {
+    if (sample.swarmConnections > 0) {
+      st.lastSwarmSeenMs = now;
+      if (st.connectedNeverReplSinceMs === null) st.connectedNeverReplSinceMs = now;
+      if (
+        !st.alarmedConnectedNever &&
+        now - st.connectedNeverReplSinceMs >= graceMs
+      ) {
+        st.alarmedConnectedNever = true;
+        onEpisode({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'connected_never_replicated',
+          stalledForMs: now - st.connectedNeverReplSinceMs,
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… swarm has ${sample.swarmConnections} live ` +
+            `connection(s) but this log has NEVER attached a replicator ` +
+            `(${Math.round((now - st.connectedNeverReplSinceMs) / 1000)}s connected-but-dead — ` +
+            `WI-183 zombie-connection class)`,
+        });
+      }
+    } else if (
+      st.connectedNeverReplSinceMs !== null &&
+      st.lastSwarmSeenMs !== null &&
+      now - st.lastSwarmSeenMs > SWARM_CHURN_TOLERANCE_MS
+    ) {
+      // SUSTAINED offline (past churn tolerance) → genuinely-offline peer;
+      // reset the window. A transient zero (zombie reconnect gap) keeps it.
+      st.connectedNeverReplSinceMs = null;
+    }
+  } else if (st.lastNonZeroPeersMs !== null && st.connectedNeverReplSinceMs !== null) {
+    // Replication established — recovered; a future zombie window re-fires.
+    st.connectedNeverReplSinceMs = null;
+    st.alarmedConnectedNever = false;
   }
 
   // ── ingest-progress axis (frozen) ──
@@ -345,6 +446,17 @@ function deriveVerdict(st: LogState, now: number, graceMs: number): ReplicationL
     (st.peersCount === 0 &&
       st.lastNonZeroPeersMs !== null &&
       now - st.lastNonZeroPeersMs >= graceMs)
+  ) {
+    return 'no_replicator';
+  }
+  // WI-183 zombie axis: swarm-connected + never-replicated past grace reads as
+  // no_replicator (the symptom bucket every consumer already treats as red) —
+  // the episode kind carries the precise diagnosis for triage.
+  if (
+    st.alarmedConnectedNever ||
+    (st.lastNonZeroPeersMs === null &&
+      st.connectedNeverReplSinceMs !== null &&
+      now - st.connectedNeverReplSinceMs >= graceMs)
   ) {
     return 'no_replicator';
   }

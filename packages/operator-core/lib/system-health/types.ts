@@ -305,6 +305,10 @@ export interface DeployHealth {
   /** Max consecutive git-sync ticks whose push FAILED across active routines —
    *  >= 3 means local commits are NOT reaching origin (EI-18 escalation threshold). */
   gitSyncConsecutiveErrorTicks: number;
+  /** Live superproject + submodule commits ahead of upstream. 0 proves a stale
+   *  error counter no longer means commits are waiting to reach origin; null means
+   *  the live git check was unavailable, so the metadata counter stays authoritative. */
+  gitSyncPushBacklog: number | null;
   /** ms epoch of the freshest successful git-sync (metadata.last_synced_at), or null. */
   gitSyncLastSyncedAtMs: number | null;
   /** Oversized files git-sync EXCLUDED from the auto-commit (they will never push). */

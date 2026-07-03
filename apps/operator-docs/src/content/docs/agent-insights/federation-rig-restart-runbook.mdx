@@ -2,7 +2,25 @@
 title: Federation rig — restart / recovery runbook (wedged smokes, stale ports, leaked VMs)
 description: "How to recover the two-instance federation rig when a run wedges or leaves debris: reap ONLY dead runs (reap-orphans.sh) or one run (cleanup-run.sh) — never a broad pkill/rm (EI-1739); clear stale Xvfb / testnet-DHT / orphaned sidecars; free or self-discover wedged ports (the WI-754 self-heal); reset/relaunch the linux-test-vm VMs (vmctl); restart the scheduled live-federation-gate; and — when a peer is up but silently local-only (announces nothing, discovers nothing) — restore its MISSING gh auth, the most common dead-link cause after a VM reset (WI-757)."
 discovered: 2026-06-24
-tags: [federation, rig, smoke-test, runbook, recovery, restart, ports, port-discovery, vm, orphan-reaping, ei-1739, wi-754, gh-auth, announce-identity, discovery, wi-757]
+tags:
+  [
+    federation,
+    rig,
+    smoke-test,
+    runbook,
+    recovery,
+    restart,
+    ports,
+    port-discovery,
+    vm,
+    orphan-reaping,
+    ei-1739,
+    wi-754,
+    gh-auth,
+    announce-identity,
+    discovery,
+    wi-757,
+  ]
 status: active
 sidebar:
   order: 74
@@ -20,7 +38,7 @@ plans:
   - linux-test-vm-and-federation-2026-06-04
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside } from "@astrojs/starlight/components";
 
 The **federation rig** = the `papercusp-desktop/bin/*federation*.sh` /
 `bin/two-instance-*.sh` smokes, their shared assert core
@@ -94,18 +112,19 @@ Two port strategies are in play:
   its own ports; the rig **discovers** them.
 
 <Aside type="tip" title="Port self-discovery now self-heals (WI-754)">
-Discovery used to be **log-grep only** — it parsed the app log for
-`[serve] listening on http://127.0.0.1:N`. That raced the packaged app's *other*
-http listeners (code-server logs a generic `HTTP server listening on …` line),
-and a marker drift / log race produced an opaque `BOOT_TIMEOUT` or locked onto the
-**wrong** port (every API call then 404/405s). As of WI-754 the assert core
-**self-heals**: `fed_wait_api` requires a **2xx on the sidecar-only
-`GET /api/desktop/preflight`** (code-server 404s it), and when the configured port
-never answers, `fed_discover_sidecar_os` resolves the **real** sidecar port from
-the OS — scoped to THIS instance's own listening sockets + its own log, so it
-never probes a concurrent sibling (EI-1739). `fed_wait_boot` does the same on a
-boot timeout. So a wrong/missing sidecar marker no longer false-REDs; you'll see a
-`sidecar self-discovered on :N … recovered` log line instead.
+  Discovery used to be **log-grep only** — it parsed the app log for `[serve]
+  listening on http://127.0.0.1:N`. That raced the packaged app's *other* http
+  listeners (code-server logs a generic `HTTP server listening on …` line), and
+  a marker drift / log race produced an opaque `BOOT_TIMEOUT` or locked onto the
+  **wrong** port (every API call then 404/405s). As of WI-754 the assert core
+  **self-heals**: `fed_wait_api` requires a **2xx on the sidecar-only `GET
+  /api/desktop/preflight`** (code-server 404s it), and when the configured port
+  never answers, `fed_discover_sidecar_os` resolves the **real** sidecar port
+  from the OS — scoped to THIS instance's own listening sockets + its own log,
+  so it never probes a concurrent sibling (EI-1739). `fed_wait_boot` does the
+  same on a boot timeout. So a wrong/missing sidecar marker no longer
+  false-REDs; you'll see a `sidecar self-discovered on :N … recovered` log line
+  instead.
 </Aside>
 
 If a port is genuinely **held** by a dead run's leftover, §1 frees it (killing the
@@ -153,7 +172,7 @@ green-rig/red-binary guard, WI-261/P-013). It:
   is now core-aware (2026-07-03, P-013):** `max(15, 3*nproc/8)` — an absolute
   `15` never fired on the 128-core fleet box (it sat well below the box's
   ordinary operating load), reproducing the exact "gate never runs" class
-  P-013 exists to kill; a first core-aware cut at `nproc/4` *still* undershot
+  P-013 exists to kill; a first core-aware cut at `nproc/4` _still_ undershot
   the observed fleet-era floor (35-46). If a mid-run load spike pushes the
   1-min load above the new `STORM_GATE` (default `nproc*0.6`) by the time the
   verdict is computed, a would-be FAIL is **downgraded to
@@ -195,7 +214,7 @@ green-rig/red-binary guard, WI-261/P-013). It:
   smoke already passed.
 - **All-legs-skipped is NOT recorded as green** — if load-gate/staleness logic
   let a window through but every leg still SKIPPED (e.g. `SKIP_MATRIX=1
-  SKIP_FROMREPO=1`), the gate now exits `GATE: SKIPPED (no legs ran)` rather
+SKIP_FROMREPO=1`), the gate now exits `GATE: SKIPPED (no legs ran)` rather
   than silently counting as a pass.
 
 Restart / re-run it manually on a quiet box:
@@ -224,6 +243,7 @@ tell is `reachablePeers: 0` on an explicit announce. (This masquerades as a deep
 substrate/admission/cursor bug — check auth FIRST.)
 
 Symptoms:
+
 - `GET /api/discovery/hives` on the peer returns `count: 0`.
 - `POST /api/discovery/set-hive {visibility:"public"}` and
   `POST /api/harness/hives/from-repo` return
@@ -254,10 +274,10 @@ Use the identity the peer historically announced as (its
 process restart over a reset, and re-auth after any reset.
 
 <Aside type="caution" title="Coordinate a restart">
-A restart to force a swarm re-peer must be coordinated with whoever owns the live
-federation/self-heal work (FED-2) — don't restart a peer another agent is
-actively investigating. The durable fix (persist/restore auth across restart + a
-loud no-identity health signal) is tracked in WI-757.
+  A restart to force a swarm re-peer must be coordinated with whoever owns the
+  live federation/self-heal work (FED-2) — don't restart a peer another agent is
+  actively investigating. The durable fix (persist/restore auth across restart +
+  a loud no-identity health signal) is tracked in WI-757.
 </Aside>
 
 ### 6b. Loopback smoke gets 0 peer dials — ambient fleet DHT env leaking in (2026-07-03)
@@ -271,7 +291,7 @@ swarm-binds/bootstraps on the bridge instead of the loopback DHT the smoke
 actually spun up — so peers never dial each other (0 `peer_connected`
 fleet-wide, found 2026-07-03). Both launch primitives now **force-empty**
 `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` before `"$@"` — a caller that
-*wants* either passes it explicitly in the trailing `VAR=val` args, which win
+_wants_ either passes it explicitly in the trailing `VAR=val` args, which win
 over the forced-empty default. If you're troubleshooting a hand-rolled smoke
 that calls these primitives directly and it can't see its peer, check the
 calling shell's environment for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP`
@@ -306,40 +326,41 @@ probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override wi
 `FED_SSH_A` / `FED_SSH_B`.
 
 <Aside type="caution" title="Cross-machine witness hives must be repo-bound">
-For a live two-machine federation witness, do not create an arbitrary repo-less
-throwaway with `hive:create`. The cross-machine join path joins the owner's
-per-member GitHub links (`joinHiveAsView` parses each member link and clones the
-member repo). A repo-less `hive:create` home has no member links for the peer to
-join, so the peer never subscribes to that hive's topic and owner writes have no
-remote log to arrive on. Use `hive:create_from_repo` (or an existing repo-bound
-hive with a joined peer member) for B8/B10-style ban, dissolve, grant, and
-receipt witnesses. A valid witness setup is: owner box owns the hive, peer box has
-joined at least one repo-bound member, then drive the federation action.
+  For a live two-machine federation witness, do not create an arbitrary
+  repo-less throwaway with `hive:create`. The cross-machine join path joins the
+  owner's per-member GitHub links (`joinHiveAsView` parses each member link and
+  clones the member repo). A repo-less `hive:create` home has no member links
+  for the peer to join, so the peer never subscribes to that hive's topic and
+  owner writes have no remote log to arrive on. Use `hive:create_from_repo` (or
+  an existing repo-bound hive with a joined peer member) for B8/B10-style ban,
+  dissolve, grant, and receipt witnesses. A valid witness setup is: owner box
+  owns the hive, peer box has joined at least one repo-bound member, then drive
+  the federation action.
 </Aside>
 
 <Aside type="caution" title="EI-3409 — workspace-scoped MCP writes">
-Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
-`'default'`, so a hive created via `mcp` lands in the wrong workspace and the
-routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
-(`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
-`"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
-injects it for you (opt-in; off by default because blanket injection breaks READ
-tools whose schema rejects an unknown `workspace` key). The durable fix
-(superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
+  Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
+  `'default'`, so a hive created via `mcp` lands in the wrong workspace and the
+  routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
+  (`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
+  `"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
+  injects it for you (opt-in; off by default because blanket injection breaks
+  READ tools whose schema rejects an unknown `workspace` key). The durable fix
+  (superuser ctx resolving the concrete workspace) is tracked on **EI-3409**.
 </Aside>
 
 ## Quick reference
 
-| symptom | do |
-| --- | --- |
-| drive a live fed VM (stale `/tmp/fed.sh` ports) | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754) |
-| crashed/timed-out run left debris | `bin/reap-orphans.sh` (§1) |
-| one known run's `$WORK` to clean | `bin/cleanup-run.sh <WORK>` (§1) |
-| "API never came up" / wrong port | now self-heals (WI-754, §3); read the dumped diagnostic |
-| stale `Xvfb` on a smoke display | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2) |
-| wedged Linux VM | `./vmctl reset` / `down` / `up <name>` (§4) |
-| wedged Mac VM | QMP recovery, never pkill (§4) |
-| re-run the scheduled gate | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5) |
-| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757) |
-| loopback smoke gets 0 peer dials, only on a fleet shell | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
-| **anything** | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739) |
+| symptom                                                                 | do                                                                           |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| drive a live fed VM (stale `/tmp/fed.sh` ports)                         | `scripts/linux-test-vm/fed.sh <a\|b> ports\|sql\|api\|mcp` (§7, WI-754)      |
+| crashed/timed-out run left debris                                       | `bin/reap-orphans.sh` (§1)                                                   |
+| one known run's `$WORK` to clean                                        | `bin/cleanup-run.sh <WORK>` (§1)                                             |
+| "API never came up" / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                      |
+| stale `Xvfb` on a smoke display                                         | `pgrep -af 'Xvfb :…'` → `kill <pid>` (§2)                                    |
+| wedged Linux VM                                                         | `./vmctl reset` / `down` / `up <name>` (§4)                                  |
+| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                               |
+| re-run the scheduled gate                                               | `bin/reap-orphans.sh` then `bin/live-federation-gate.sh` (§5)                |
+| peer up but discovers/announces **nothing** (count:0, reachablePeers:0) | check `gh auth status` FIRST → restore gh auth (§6, WI-757)                  |
+| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for `PAPERCUSP_DHT_HOST`/`PAPERCUSP_DHT_BOOTSTRAP` (§6b) |
+| **anything**                                                            | **never** `pkill -f <rig>` / `rm -rf /tmp/<rig>.*` (EI-1739)                 |
