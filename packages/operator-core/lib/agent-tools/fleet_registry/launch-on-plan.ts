@@ -368,7 +368,13 @@ export default defineTool({
       .string()
       .optional()
       .describe('psu --role: the su role each member runs as (default the standard su collaborator).'),
-    model: fuzzyEnum(localModelIdsSync, { applies: isOmpLocalModel, label: 'local model' })
+    model: fuzzyEnum(localModelIdsSync, {
+      applies: isOmpLocalModel,
+      // A leader passes the PROVIDER-PREFIXED spec (ollama-cc/…); the backend registry stores the
+      // BARE id — normalize both so a valid prefixed ornith model is never false-rejected.
+      normalize: (v) => v.replace(/^ollama(-cc)?\//i, ''),
+      label: 'local model',
+    })
       .optional()
       .describe(
         'psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default). A ' +

@@ -65,6 +65,22 @@ describe('fuzzyEnum', () => {
     expect(msgOf(r)).toContain('ollama-cc/ornith-');
   });
 
+  it('normalize maps variant spellings to the canonical candidate (no false reject of a valid model)', () => {
+    // The registry stores BARE ids; a leader passes the ollama-cc/-prefixed form.
+    const schema = fuzzyEnum(['maxwell1500/ornith-35b:IQ3_M', 'ornith'], {
+      applies: (v) => /ornith|ollama/i.test(v),
+      normalize: (v) => v.replace(/^ollama(-cc)?\//i, ''),
+      label: 'local model',
+    });
+    // valid prefixed + valid bare both PASS (the bug this guards against)
+    expect(parse(schema, 'ollama-cc/maxwell1500/ornith-35b:IQ3_M').success).toBe(true);
+    expect(parse(schema, 'ornith').success).toBe(true);
+    // a prefixed TYPO is rejected and suggests the canonical (bare) id
+    const r = parse(schema, 'ollama-cc/maxwell1500/ornith-35b');
+    expect(r.success).toBe(false);
+    expect(msgOf(r)).toContain('Did you mean `maxwell1500/ornith-35b:IQ3_M`');
+  });
+
   it('caps the echoed allowed-list to bound the payload', () => {
     const many = Array.from({ length: 40 }, (_, i) => `model-${i}`);
     const r = parse(fuzzyEnum(many, { maxListed: 5 }), 'zzz');

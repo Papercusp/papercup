@@ -1,8 +1,8 @@
 ---
 title: "Migration-number collisions: the reservation tool and lint:migrations aren't gated"
-description: "Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror."
+description: "Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs — and the violation counts have grown since discovery, not shrunk. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror."
 discovered: 2026-06-20
-tags: [migrations, db, reservations, lint, ci, collision, dx, agent-coordination, footgun]
+tags: [migrations, db, reservations, lint, ci, collision, dx, agent-coordination, footgun, toctou]
 status: active
 documents:
   - packages/operator-core/lib/agent-tools/db/next_migration.ts
@@ -66,6 +66,25 @@ boot-apply semantics.
    validator, reviewer, architect, etc.) can now call the MCP tool directly and
    participate in collision-free allocation without falling back to the npm CLI.
 
+   **fsMax TOCTOU race fixed (2026-07-03, EI-6852):** even after the advisory
+   lock landed, both allocators read the filesystem max (`maxNumberOnDisk`)
+   **before** entering `sql.begin(...)` — i.e. before acquiring
+   `pg_advisory_xact_lock`. That left a window (a pooled-connection-acquire plus
+   the lock-wait, which can run seconds under a busy fleet) during which a
+   concurrent caller could write a higher-numbered `NNN-*.sql` to disk; the
+   stale `fsMax` then failed to fold it in and the tool could hand out an
+   already-used number. Both `next_migration.ts` (the MCP tool) and
+   `scripts/next-migration.mjs` (the CLI) now compute `fsMax` **inside** the
+   `sql.begin` callback, immediately before the `GREATEST(...)` read and the
+   reservation insert, so all three GREATEST inputs (on-disk, reserved, applied)
+   are read atomically under the same lock. `next_migration.ts` also now
+   `export`s `ALLOC_ADVISORY_KEY` so the regression test
+   (`next_migration.integration.test.ts`, case "EI-6852: the filesystem max is
+   read INSIDE the advisory lock") can hold the lock itself to reproduce the
+   race. This closes the last remaining collision window in the "supported
+   path" — the collisions this doc otherwise documents are all from agents who
+   bypassed `db:next-migration`/the CLI entirely.
+
 2. ~~**The MCP client is currently dropped.**~~ **Historical note (2026-06-20):** At the
    time of discovery the harness MCP client was dropped, so even MCP-aware agents
    couldn't reach `db:next-migration` and fell back to hand-picking. The npm CLI
@@ -81,10 +100,19 @@ boot-apply semantics.
    guard never runs automatically; the dup-number check (which is PG-free and
    would run fine in CI) never fires on a PR.
 
-As of `2026-06-20`, `node scripts/lint-migrations.mjs` exits **1**: 7 files carry
-raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and ~10 numbers ≥215 are
-unreserved (`293, 294, 298, 301, 303–307, 319, 320`). The tree has been shipping
-with the linter red.
+As of `2026-06-20`, `node scripts/lint-migrations.mjs` exited **1**: 7 files
+carried raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and ~10 numbers
+≥215 were unreserved (`293, 294, 298, 301, 303–307, 319, 320`).
+
+**Re-verified `2026-07-03` — the guard is still ungated and the violation count
+has grown, not shrunk** (confirming gap #3 is still open): `node
+scripts/lint-migrations.mjs` still exits **1**, now with **3 duplicate-number
+groups** (`357`, `375`, `460` — each has two distinct files sharing the same
+leading `NNN`, exactly the collision this doc is about), **34 files** carrying
+raw top-level `BEGIN;`/`COMMIT;`, and **64 numbers ≥215** on disk with no
+reservation-ledger row. The tree has been shipping with the linter red for
+weeks with nothing catching it at PR time — direct evidence that gap #3
+(below) remains unaddressed.
 
 ## The two-dirs footgun (bonus)
 
@@ -112,11 +140,12 @@ npm run db:next-migration -- --name add-foo-index --intent "what it does"
 # Add --dry-run to see the number without reserving it.
 ```
 
-It scans BOTH dirs for the on-disk max, allocates under the advisory lock, and
-records the reservation — the same contract as the MCP `db:next-migration` tool.
-Then write the file to `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the
-sidecar mirror). It auto-applies on the next operator restart. It refuses to hand
-out a number when PG is unreachable (an unreserved number re-opens the race).
+It scans BOTH dirs for the on-disk max **inside** the advisory lock (the
+`2026-07-03` EI-6852 fix — see above), allocates, and records the reservation —
+the same contract as the MCP `db:next-migration` tool. Then write the file to
+`libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror). It
+auto-applies on the next operator restart. It refuses to hand out a number when
+PG is unreachable (an unreserved number re-opens the race).
 
 ## Recommended fix (plan)
 
@@ -126,16 +155,23 @@ Small, mostly additive; each item is independent:
    `scripts/next-migration.mjs` + the `db:next-migration` npm script. Reservation
    now works without the MCP client (the highest-leverage gap — it kills the
    `ls | tail` path at the source). Mirrors the MCP tool via the shared ledger +
-   advisory key; a follow-up could DRY the two onto one exported core.
+   advisory key. ~~A follow-up could DRY the two onto one exported core~~ — see
+   item 4 below (still open). **Also DONE (`2026-07-03`, EI-6852):** both
+   allocators now read the on-disk max **inside** the advisory-lock transaction
+   instead of before it, closing the TOCTOU window described above.
 2. **Gate `lint:migrations`** (the real detection layer — it already has a
-   `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Wire it
-   into CI (and ideally pre-push). NOTE: the tree is red today, so this must be
-   sequenced AFTER cleaning the 7 raw `BEGIN/COMMIT` files + backfilling the
-   unreserved reservation rows — otherwise the new gate immediately fails. Don't
-   add the gate first. (Do NOT instead change the boot runner to abort on dup
-   numbers: it currently applies both colliding files by filename, and altering
-   boot-apply semantics — especially the `continueOnError` fleet path — is far
-   riskier than catching the dup at PR time.)
+   `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Still
+   **not done** as of `2026-07-03` — see the re-verified counts above (3
+   duplicate-number groups, 34 raw-`BEGIN/COMMIT` files, 64 unreserved numbers
+   ≥215). Wire it into CI (and ideally pre-push). NOTE: the tree is red today
+   (worse than at discovery — see above), so this must be sequenced AFTER
+   cleaning the raw `BEGIN/COMMIT` files, resolving the duplicate-number groups,
+   and backfilling the unreserved reservation rows — otherwise the new gate
+   immediately fails. Don't add the gate first. (Do NOT instead change the boot
+   runner to abort on dup numbers: it currently applies both colliding files by
+   filename, and altering boot-apply semantics — especially the
+   `continueOnError` fleet path — is far riskier than catching the dup at PR
+   time.)
 3. **Mark the sidecar mirror.** Since the mirror dir is itself gitignored, a
    `README` placed in it wouldn't be tracked — put the "this is a gitignored build
    mirror; author migrations in the canonical libs dir" note where it's visible:
@@ -143,6 +179,10 @@ Small, mostly additive; each item is independent:
    `resolveSqlDir`).
 4. **DRY the allocator** (low priority). Export the allocation core from
    `next_migration.ts` and have both the MCP tool and `scripts/next-migration.mjs`
-   call it, instead of the two mirroring the ledger contract independently.
+   call it, instead of the two mirroring the ledger contract independently. The
+   `2026-07-03` EI-6852 fix had to be hand-applied to **both** files in lockstep
+   (see above) precisely because they're still two independent implementations
+   of the same contract — live evidence for why this item matters, not just a
+   hypothetical.
 
 Sequencing matters for #3: clean first, gate second.

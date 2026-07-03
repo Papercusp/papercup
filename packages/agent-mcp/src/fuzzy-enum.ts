@@ -65,6 +65,11 @@ export interface FuzzyEnumOpts {
   /** Only validate when this returns true (default: always). Scopes a set to the values it actually
    *  governs — e.g. only validate a `model` that LOOKS local (a claude alias is an open set). */
   applies?: (value: string) => boolean;
+  /** Canonicalize a value + each candidate BEFORE matching (case-fold, strip a provider prefix,
+   *  …), so variant spellings of the same member match and are NOT false-rejected. Matching + the
+   *  nearest search run on the normalized forms; the ORIGINAL candidate is what's shown as the
+   *  suggestion. Default: identity. */
+  normalize?: (value: string) => string;
   /** Noun used in the error message, e.g. 'model'. Default 'value'. */
   label?: string;
   /** Nearest-match tuning. */
@@ -85,12 +90,17 @@ export function fuzzyEnum(
 ): z.ZodType<string> {
   const label = opts.label ?? 'value';
   const maxListed = opts.maxListed ?? 25;
+  const norm = opts.normalize;
   return z.string().superRefine((value, ctx) => {
     if (opts.applies && !opts.applies(value)) return;
     const list = typeof allowed === 'function' ? allowed() : allowed;
     if (!list || list.length === 0) return; // FAIL-OPEN: nothing to check against
-    if (list.includes(value)) return;
-    const nearest = nearestByLevenshtein(value, list, { k: opts.k, maxRatio: opts.maxRatio });
+    // Match (and nearest-search) on the normalized forms; suggest the ORIGINAL candidates.
+    const target = norm ? norm(value) : value;
+    const pairs = list.map((orig) => ({ orig, key: norm ? norm(orig) : orig }));
+    if (pairs.some((p) => p.key === target)) return;
+    const nearest = nearestByLevenshtein(target, pairs.map((p) => p.key), { k: opts.k, maxRatio: opts.maxRatio })
+      .map((key) => pairs.find((p) => p.key === key)?.orig ?? key);
     const shown = list.slice(0, maxListed);
     const more = list.length > shown.length ? ` (+${list.length - shown.length} more)` : '';
     const suggestion = nearest.length ? ` Did you mean ${nearest.map((s) => `\`${s}\``).join(' / ')}?` : '';
