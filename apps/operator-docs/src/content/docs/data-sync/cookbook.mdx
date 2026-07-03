@@ -283,11 +283,15 @@ The `e.stopPropagation()` is required.
 
 ## Recipe 8: Selected-row highlight
 
+`getRowBg` is called with `(row, rowIndex, isSelected)` — RichGrid already
+tracks whether a row is selected (from its own internal state, or from the
+controlled `selectedRowIds`/`onSelectedRowIdsChange` pair if you pass them):
+
 ```tsx
 const [selectedId, setSelectedId] = useState<string | null>(null);
 
-const getRowBg = (row: Row) =>
-  row.id === selectedId ? '#1f2937' : 'transparent';
+const getRowBg = (row: Row, _rowIndex: number, isSelected: boolean) =>
+  row.id === selectedId ? '#1f2937' : undefined;
 
 <RichGrid
   rows={rows}
@@ -299,10 +303,17 @@ const getRowBg = (row: Row) =>
 />
 ```
 
-The live `DepartmentHarnessDashboard.tsx` → `MemoryEntriesGrid`
-(`apps/operator/app/harness/`) is a current example of RichGrid with
-selection/striping; the retired `SnapshotsPanel.tsx` shows the same
-selected-row pattern.
+Return `undefined` (not `'transparent'`) to fall back to RichGrid's own
+default striping/hover background rather than overriding it outright. For a
+checkbox-style multi-select rather than a single active row, skip the manual
+`selectedId` state entirely: pass `selectable` (or a controlled
+`selectedRowIds`/`onSelectedRowIdsChange` pair) and read the built-in
+`isSelected` argument in `getRowBg` instead of comparing ids yourself.
+
+`apps/operator/app/adv/harnesses/WorkItemsPanel.tsx` is a current live
+example of RichGrid with this exact `getRowBg` selected-row pattern; the
+retired `SnapshotsPanel.tsx` (see Reference panels below) shows the older,
+pre-dock version of the same idea.
 
 ## Recipe 9: PG-mirrored filesystem store
 
@@ -408,21 +419,32 @@ Reference implementations:
 | Panel scope | Location |
 |---|---|
 | Tabular data for one harness, shown in the harness dashboard | `apps/operator/app/harness/<Name>Panel.tsx` |
-| Department-level dashboard panel | `apps/operator/app/harness/DepartmentHarnessDashboard.tsx` (extend the existing file rather than creating a new one) |
+| Dock panel in the per-harness workbench | A `Real<Name>Panel.tsx` under `apps/operator/app/harness/dock/`, registered with `panelRegistry.register('data:<name>', Real<Name>Panel)` in `dock/sample-panels.tsx` (see `RealFeaturesPanel.tsx` / `RealIssuesPanel.tsx` for the shape) |
 | Cross-harness panel (global view) | `apps/operator/app/<route>/<Name>Panel.tsx` |
 
-The live `apps/operator` harness UI is dock-based (`apps/operator/app/harness/[slug]/HarnessDockShell.tsx`);
-wire a new panel in as a dock panel rather than into a monolithic tab switcher.
+The live `apps/operator` harness UI is dock-based
+(`apps/operator/app/harness/[slug]/HarnessDockShell.tsx`); wire a new panel in
+as a dock panel rather than into a monolithic tab switcher. There is no
+single `DepartmentHarnessDashboard.tsx` anymore — that file moved to the
+**retired** `libs/papercusp/_retired/apps-web/app/harness/` tree when the
+dock rewrite shipped (the `MemoryEntriesGrid` component it once hosted is
+gone entirely, not just moved); treat it as historical reference only, not a
+live extension point.
 
 ## Reference panels
 
-When in doubt, copy the structure from one of these. The live example is
-`DepartmentHarnessDashboard`; the others now live in the **retired**
-`@papercusp/web` surface (`libs/papercusp/apps/web/app/harness/`) but still
-show the canonical RichGrid + sync wiring:
+When in doubt, copy the structure from one of these live RichGrid
+consumers:
 
-- `apps/operator/app/harness/DepartmentHarnessDashboard.tsx` →
-  `MemoryEntriesGrid` — **live** RichGrid embedded in a larger dashboard panel.
+- `apps/operator/app/adv/harnesses/WorkItemsPanel.tsx` — sortable/filterable
+  RichGrid with `getRowBg` selected-row highlighting and resizable columns.
+- `apps/operator/app/harness/[slug]/projects/ProjectsList.tsx` — RichGrid
+  with `onRowClick` navigation, a small, focused table.
+
+The following now live in the **retired**
+`@papercusp/web` surface (`libs/papercusp/_retired/apps-web/app/harness/`)
+but still show the canonical RichGrid + sync wiring from before the dock
+rewrite:
 - `…/web/app/harness/SnapshotsPanel.tsx` — small, single per-harness table,
   sortable + per-row delete.
 - `…/web/app/harness/issues/IssuesList.tsx` — RichGrid, multi-state row,

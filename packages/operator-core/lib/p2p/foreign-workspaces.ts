@@ -43,6 +43,10 @@ export interface ForeignWorkspace {
   executionEpoch: number;
   state: ForeignWorkspaceState;
   parkReason: string | null;
+  /** The canonical sha the clone was provisioned FROM (mig 470) — the publish
+   *  admission's range anchor. Null (pre-470 / refused clone) = no anchor:
+   *  full-history judgment, the fail-closed direction. */
+  baseSha: string | null;
 }
 
 interface Row {
@@ -57,6 +61,7 @@ interface Row {
   execution_epoch: string | number;
   state: string;
   park_reason: string | null;
+  base_sha?: string | null;
 }
 
 function fromRow(r: Row): ForeignWorkspace {
@@ -72,6 +77,7 @@ function fromRow(r: Row): ForeignWorkspace {
     executionEpoch: Number(r.execution_epoch),
     state: r.state as ForeignWorkspaceState,
     parkReason: r.park_reason,
+    baseSha: r.base_sha ?? null,
   };
 }
 
@@ -198,6 +204,20 @@ export async function listForeignWorkspaces(
         WHERE workspace_id = ${workspaceId}
         ORDER BY created_at`) as unknown as Row[];
   return rows.map(fromRow);
+}
+
+/** Record the provision base (mig 470) once the clone lands (leg iv → iii). */
+export async function setForeignWorkspaceBaseSha(
+  workspaceId: string,
+  offerId: string,
+  baseSha: string,
+  sql: OrgSql = getOrgPg().sql,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.p2p_foreign_workspaces
+    SET base_sha = ${baseSha}, updated_at = now()
+    WHERE workspace_id = ${workspaceId} AND offer_id = ${offerId}
+  `;
 }
 
 /** One live foreign root for the guard's host-direction policy (leg i). */

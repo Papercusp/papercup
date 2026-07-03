@@ -52,6 +52,8 @@ let base: string;
 let oldRoot: string | undefined;
 let canonical: string;
 let clone: string;
+/** The provision base (mig 470 base_sha) — the publish-admission anchor. */
+let baseSha: string;
 const kp = generateEd25519KeypairDer();
 const sign = (bytes: Buffer): Promise<Buffer> =>
   Promise.resolve(signWithPrivateKeyDer(kp.privateKeyDer, bytes));
@@ -75,6 +77,7 @@ beforeAll(async () => {
   clone = join(base, 'foreign', 'offer-1', 'repo');
   await mkdir(join(base, 'foreign', 'offer-1'), { recursive: true });
   await execFileP('git', ['clone', '--no-local', '-q', canonical, clone]);
+  baseSha = await git(clone, 'rev-parse', 'HEAD');
 }, 30000);
 
 afterAll(async () => {
@@ -96,6 +99,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
       originGithubUserIds: [ORIGIN_ID],
       offerId: 'offer-1',
       executionEpoch: 5,
+      rangeAnchorShas: [baseSha],
       executorDevicePubkeyBase64: kp.pubkeyBase64,
       sign,
       nowMs: 1_700_000_000_000,
@@ -183,6 +187,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
       originGithubUserIds: [ORIGIN_ID],
       offerId: 'offer-1',
       executionEpoch: 5,
+      rangeAnchorShas: [baseSha],
       nowMs: 1_700_000_000_001,
     });
     expect(pub.admitted).toBe(false);
@@ -245,6 +250,7 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
       originGithubUserIds: [ORIGIN_ID],
       offerId: 'offer-1',
       executionEpoch: 5,
+      rangeAnchorShas: [baseSha],
       caps: { maxBlobBytes: 64 * 1024 },
       nowMs: 1_700_000_000_002,
     });

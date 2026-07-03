@@ -211,9 +211,11 @@ Two complementary producers run side by side:
 | PG `emit_change_notify` trigger | Every INSERT/UPDATE/DELETE on attached tables | Catch-all for raw SQL, MCP-tool writes, agent-direct edits, migrations |
 
 Together they cover both planned writes (app code) and any other
-write (trigger). The 90s dedupe window in `sync-sse.ts` collapses
-the inevitable overlap so subscribers see one event per (name, args)
-per dedupe window.
+write (trigger). The 90s source-side dedupe window (`DEFAULT_DEDUPE_WINDOW_MS`
+in the generic `@papercusp/sync/server` invalidation bus,
+`libs/generic/sync/src/server/invalidation-bus.ts` — `sync-sse.ts` just wires
+the operator's PG LISTEN/pg_notify plumbing into it) collapses the inevitable
+overlap so subscribers see one event per (name, args) per dedupe window.
 
 The bridge (P-067, `table-to-query-names.ts`) is what makes the
 trigger producer reach the camelCase consumers. Without it, the

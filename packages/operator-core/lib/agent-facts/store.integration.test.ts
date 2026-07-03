@@ -44,7 +44,15 @@ beforeAll(async () => {
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
   ]) {
-    await db.sql.unsafe(readFileSync(join(SQL_DIR, m), 'utf8'));
+    // Strip psql meta-commands (\set …) and the BEGIN/COMMIT wrapper — sql.unsafe
+    // speaks SQL not psql, and postgres-js forbids raw txn control on a pooled
+    // client (UNSAFE_TRANSACTION). The DDL is idempotent; the wrapper is a
+    // production-apply nicety, not a correctness requirement here.
+    const sqlText = readFileSync(join(SQL_DIR, m), 'utf8')
+      .split('\n')
+      .filter((l) => !l.startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/.test(l.trim()))
+      .join('\n');
+    await db.sql.unsafe(sqlText);
   }
 });
 afterAll(async () => {

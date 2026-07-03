@@ -58,6 +58,13 @@ export interface PublishForeignResultInput {
   offerId: string;
   /** H9 fencing epoch the executor ran under. */
   executionEpoch: number;
+  /**
+   * Range anchors: ALREADY-ADMITTED canonical shas only — typically the
+   * workspace's provision base (p2p_foreign_workspaces.base_sha, mig 470).
+   * Excludes canonical history from the admission judgment so only the
+   * FOREIGN-introduced range is judged. Omit/empty = full-history judgment.
+   */
+  rangeAnchorShas?: string[];
   /** Executor device signing identity — omit BOTH to skip the sigref step
    *  (e.g. a host without hive keys; the receipt still points at the ref). */
   executorDevicePubkeyBase64?: string;
@@ -109,6 +116,7 @@ export async function publishForeignResult(
     sourceBranch: input.sourceBranch,
     foreignRef,
     targetTip,
+    rangeAnchors: input.rangeAnchorShas,
     originGithubUserIds: input.originGithubUserIds,
     offerId: input.offerId,
     caps: input.caps,

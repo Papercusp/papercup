@@ -92,10 +92,11 @@ export default defineTool({
   description:
     "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
   guidance: {
-    when: "THE steer-don't-dispatch surface for a SELF-PULLING agent that calls scheduler:get_next — a coding-hive bee, the queen, OR an su fleet LEADER steering a fleet member's lane (su-loop-capability-parity). Not micro-dispatch. coding-FACTORY roles (scoper/architect/worker) are PUSHED a FEATURE_ID and never self-pull, so a spec on them is INERT — steer a self-puller (role=\"bee\" for a hive, or an su fleet member) instead. Encode a scoped VIEW (filter) + ORDERING (rank) over the work-item DAG: a property filter (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; `id in [...]` ONLY to pin a STATIC wave (hotfix/cutover — no auto-inflow, no stealing). Re-steer by setting a NEW spec (revision bumps; the puller picks it up on its next get_next), never by re-dispatching.",
+    when:
+      'Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.',
     notWhen:
-      "A coding-FACTORY role (scoper/architect/worker/validator) — PUSHED a FEATURE_ID, never calls get_next, so a spec is INERT; push the FEATURE_ID. Micro-dispatching hand-picked items, or selecting on `id` ALONE for a STANDING lane (hand-listing in disguise) — write a property filter. Global floors (blocked/ready/dedup/cursed) are always resolver-enforced, not set here.",
-    chaining: "scheduler:set_claim_spec (you) → the puller's scheduler:get_next pulls per the spec.",
+      'A coding-FACTORY push role (scoper/architect/worker/validator): it is handed a FEATURE_ID and never calls get_next, so a spec is inert. Not for hand-picked micro-dispatch, or for overriding global floors (blocked/ready/dedup/cursed) — the resolver enforces those.',
+    chaining: 'scheduler:set_claim_spec → the puller applies it on the next scheduler:get_next.',
     seeAlso: [
       'scheduler:get_next (the puller pulls per this spec)',
       'scheduler:running (what is executing now)',
@@ -162,6 +163,6 @@ export default defineTool({
       // Append — never clobber the store's WI-1564 strand warning.
       out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;
     }
-    return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
+    return { data: out };
   },
 });

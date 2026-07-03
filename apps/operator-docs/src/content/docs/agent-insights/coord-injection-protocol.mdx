@@ -86,6 +86,21 @@ A missing or malformed stamp (an unrecognized `authority`, a forged value) is
 simply **ignored** — `readCueAuthority` validates it, so a legacy or forged cue
 renders untagged rather than throwing or misrepresenting its scope.
 
+## The legend also carries the reply-priority rule (WI-1720)
+
+`renderCoordLegend()` (Projection 2) is not just the grammar + glyph key —
+since WI-1720 (owner directive 2026-07-02) it also ends with the
+**receiver-side reply-priority rule**: a directed message awaiting the
+reader's answer outranks their own in-flight work, so they should finish only
+the atomic step in hand and reply (or ACK-with-ETA) before continuing their
+own task. This text is a **sourced-once twin** of
+`PEER_REPLY_PRIORITY_NOTE` in `libs/papercusp/packages/orchestrator/src/prompt-build.ts`
+(the spawned-bee/orchestrator prompt path) — the two are meant to say the
+same thing to two different prompt-assembly pipelines (psu via
+`coord-schema.ts`, role agents via the orchestrator), so if you reword one,
+reword the other to match. It has no `[coord+N]` wire representation; it
+lives only in the once-per-session legend, same as the rest of Projection 2.
+
 ## Rules when you touch this
 
 - **Never hardcode a glyph.** Add/change it in `COORD_LEGEND`; the renderer +

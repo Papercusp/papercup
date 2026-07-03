@@ -268,5 +268,17 @@ export function renderCoordLegend(): string {
     '`coord:send` / `coord:handoff`; read full bodies + history via `coord:inbox`',
     '/ `coord:thread`. (This guidance is here once — it is no longer repeated per',
     'injection.)',
+    '',
+    // WI-1720 (owner directive 2026-07-02): the receiver-side reply-priority rule.
+    // Sourced-once twin of the orchestrator PEER_REPLY_PRIORITY_NOTE (prompt-build.ts,
+    // the spawned-bee base) — if you reword one, reword the other to match.
+    '**A DIRECTED message awaiting YOUR answer OUTRANKS your own work.** A question',
+    'addressed to you, a decision only you can make, a peer blocked on something you',
+    'own — that is your highest-priority work the moment it arrives: finish only the',
+    'atomic step in hand, then REPLY FIRST, before the next step of your own task.',
+    'If the full answer needs real work, ACK now with an ETA so the asker is never',
+    'blind-waiting; reply directly (`coord:send` + `related_msg_id`, wake if parked),',
+    'never batched to turn-end. Your minutes are a blocked peer’s hours. Broadcasts',
+    'and FYI chatter carry no such claim.',
   ].join('\n');
 }

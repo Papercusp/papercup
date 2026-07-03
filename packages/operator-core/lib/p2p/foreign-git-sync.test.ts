@@ -63,6 +63,7 @@ function wsFor(clonePath: string, over: Partial<ForeignWorkspace> = {}): Foreign
     executionEpoch: 3,
     state: 'active',
     parkReason: null,
+    baseSha: null,
     ...over,
   };
 }

@@ -967,7 +967,12 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // canonical worker loop; their absence caused "tool not available" self-halts.
   'work_items:claim_next', 'work_items:get', 'work_items:complete',
   'work_items:set_state', 'work_items:update',
-  'locks:acquire_granular', 'locks:release_granular',
+  // locks:*_granular are NOT in the weak-model spine: file-edit locks are acquired
+  // AUTOMATICALLY by the omp `-e` coord extension on every Edit/Write, so a worker
+  // never needs the manual lock tools. Advertising them up-front just invited misuse
+  // — weak models treated them as an operation-mutex (locking the plan file to
+  // "serialize fleet creation", churning acquire/release, losing track of lock_ids).
+  // They stay REACHABLE via tools:find for the rare genuine multi-file cross-turn hold.
   'docs:search', 'memory:search', 'memory:remember',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.

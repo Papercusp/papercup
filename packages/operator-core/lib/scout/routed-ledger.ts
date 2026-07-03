@@ -38,7 +38,12 @@ import { CREATIVE_LENSES, type CreativeLens } from './types';
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
   ideaId: string;
-  lens: CreativeLens;
+  /**
+   * The CreativeLens that produced the idea. For an `origin:'su-ideate'` row (P-005) there is
+   * no Scout lens, so the sentinel `'su-ideate'` is accepted — it never reaches lens-weight
+   * learning (those readers filter origin='scout'), so it cannot skew the diversity floor.
+   */
+  lens: CreativeLens | 'su-ideate';
   rail: RoutedRail;
   /** The Change Feed ref of the artifact created: "plan:<slug>" | "gym:<id>" | "wi:<id>". */
   routedRef: string;
@@ -62,6 +67,14 @@ export interface RecordRoutedIdeaInput {
   routedAt?: number;
   /** Override the active workspace (tests). */
   workspaceId?: string;
+  /**
+   * The ORIGIN dimension (su-loop-capability-parity P-005 / D-009), ORTHOGONAL to `lens`:
+   * 'scout' (default — a Scout-routed idea, counts toward per-lens weight learning) vs
+   * 'su-ideate' (an SU session's IDEATE-pass origination — rides the ledger for
+   * provenance/grading/priming but is EXCLUDED from lens-weight learning, so it never skews
+   * the diversity floor). NOT a pseudo-lens.
+   */
+  origin?: 'scout' | 'su-ideate';
 }
 
 /** Read/scope options shared by the ledger read paths. */
@@ -72,6 +85,19 @@ export interface ScoutLedgerOpts {
   hiveSlug?: string;
   cycleId?: string;
   limit?: number;
+  /**
+   * ORIGIN filter (su-loop-capability-parity P-005 / D-009). DEFAULT 'scout' — so every
+   * existing lens-weight / outcome / cadence reader stays byte-identical (all pre-migration
+   * rows are 'scout') AND automatically EXCLUDES 'su-ideate' rows from lens learning. The
+   * SU-priming path passes 'su-ideate'; 'all' reads both (admin / cross-origin views).
+   */
+  origin?: 'scout' | 'su-ideate' | 'all';
+}
+
+/** The origin WHERE fragment for a ledger read (default 'scout' — D-009 lens-learning isolation). */
+function originClause(sql: ReturnType<typeof getOrgPg>['sql'], origin: ScoutLedgerOpts['origin']) {
+  const o = origin ?? 'scout';
+  return o === 'all' ? sql`` : sql`AND origin = ${o}`;
 }
 
 interface LedgerRow {
@@ -156,16 +182,19 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   // addressed rubric pattern's `@<hive>` tag (the cross-hive routing signal the
   // workspace-Queen places on). Null when neither is present.
   const targetHive = input.targetHive ?? hiveFromPatternRefs(input.addressesPatternRefs) ?? null;
+  // P-005 (D-009): the origin dimension. Default 'scout' so every existing caller (which
+  // passes no origin) lands a Scout-origin row exactly as before.
+  const origin = input.origin ?? 'scout';
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
-       routed_ref, title, addresses_pattern_refs, routed_at)
+       routed_ref, title, addresses_pattern_refs, routed_at, origin)
     VALUES
       (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${targetHive},
        ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
        ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,
-       ${routedAt})
+       ${routedAt}, ${origin})
     ON CONFLICT (idea_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
       source_hive = EXCLUDED.source_hive,
@@ -176,7 +205,8 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       routed_ref = EXCLUDED.routed_ref,
       title = EXCLUDED.title,
       addresses_pattern_refs = EXCLUDED.addresses_pattern_refs,
-      routed_at = EXCLUDED.routed_at`;
+      routed_at = EXCLUDED.routed_at,
+      origin = EXCLUDED.origin`;
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
@@ -330,6 +360,7 @@ export async function readIdeaQueueStatus(
            count(*) FILTER (WHERE outcome IS NULL OR outcome = 'pending') AS pending
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
+       ${originClause(sql, opts.origin)}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}`;
   const row = rows[0] ?? { total: '0', pending: '0' };
   return { total: Number(row.total), pending: Number(row.pending) };
@@ -346,6 +377,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
            human_grade, human_feedback, graded_by, graded_at
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
+       ${originClause(sql, opts.origin)}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
      ORDER BY routed_at DESC

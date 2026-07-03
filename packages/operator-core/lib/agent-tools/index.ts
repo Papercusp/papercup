@@ -917,6 +917,7 @@ import './experiment/results';
 // scout-idea-grading-2026-06-12 B-03 (C-3) — grade a routed Scout idea 1–5
 // (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.
 import './scout/grade-idea';
+import './scout/ideation-feedback';
 
 // self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
 // ledger read surface: recent prompt/rule mutations (change_ledger:list) + the

@@ -221,8 +221,9 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   ideators mine; your OWN observations already feed it, so this is you reading your corpus back
   synthesized, not a cold start; (ii) **\`rubrics:list\` / \`rubrics:search\`** + **\`scorecards:freshness\`**
   for what the system already knows how to MEASURE and where a signal has gone stale (a stale
-  scorecard is itself an idea prompt); (iii) your own past graded proposals — the grader-feedback
-  priming — so a pass builds on what landed and what the grader flagged, not a blank page. Then, AS
+  scorecard is itself an idea prompt); (iii) your own past graded proposals — \`scout:ideation-feedback\`,
+  the grader-feedback priming on features you filed — so a pass builds on what landed and what the
+  grader flagged, not a blank page. Then, AS
   you work: file **RUBRIC-GRADED** observations — \`improvements:capture { rubricRef, ratings }\`,
   each rating carrying concrete EVIDENCE, never a bare score — whenever a ratified rubric covers
   what you just measured; and when you review or triage a Scout-routed idea, **GRADE it** via

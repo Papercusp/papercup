@@ -46,6 +46,7 @@ import {
   startBackgroundJanitor,
   stopBackgroundJanitor,
 } from '../workspace-listener';
+import { acquireWithContentionRetry } from '../contention-retry';
 
 const SUITE_PREFIX = `vitest-su-locks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let suiteIdx = 0;
@@ -1110,15 +1111,17 @@ describe('file-locking #4 — acquire under concurrent load (plan §4 stress)', 
     const N = 100;
     const results = await Promise.all(
       Array.from({ length: N }, (_, i) =>
-        inWorkspaceTxn(ws, `c${i}`, (tx) =>
-          tryAcquire(tx, {
-            coordinationDomain: ws,
-            owner: `c${i}`,
-            ownerLabel: `C${i}`,
-            paths: [`load/file-${i}.ts`],
-            intent: 'stress',
-            ttlSec: 300,
-          }),
+        acquireWithContentionRetry(() =>
+          inWorkspaceTxn(ws, `c${i}`, (tx) =>
+            tryAcquire(tx, {
+              coordinationDomain: ws,
+              owner: `c${i}`,
+              ownerLabel: `C${i}`,
+              paths: [`load/file-${i}.ts`],
+              intent: 'stress',
+              ttlSec: 300,
+            }),
+          ),
         ).then(
           (r) => ({ ok: r.ok, err: null as string | null }),
           (e: unknown) => ({

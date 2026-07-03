@@ -61,6 +61,15 @@ export interface QuarantineFetchInput {
   /** The target's current tip the range is judged against (null = judge full
    *  history; see foreign-merge-admission's no-baseline rule). */
   targetTip: string | null;
+  /**
+   * Additional range anchors (P-109 leg iii): ALREADY-ADMITTED canonical shas
+   * ONLY — typically the provision base recorded at clone time
+   * (p2p_foreign_workspaces.base_sha, mig 470) — NEVER a ref the foreign
+   * session controls. Commits reachable from an anchor are excluded from the
+   * judged range. An anchor missing from the fetched history is SKIPPED:
+   * skipping only WIDENS the judged range (the fail-closed direction).
+   */
+  rangeAnchors?: string[];
   /** The offer's attested origin chain (numeric gh user ids, X9). */
   originGithubUserIds: number[];
   offerId?: string;
@@ -197,8 +206,25 @@ export async function quarantineFetchAndJudge(
     if (headR.code !== 0) return refuse('fetch-failed', 'fetched head unresolvable');
     res.head = headR.stdout.trim();
 
+    // 2b. Range anchors (leg iii): pin each anchor that actually arrived with
+    //     the fetch (or is target-shared via alternates). Missing anchors are
+    //     skipped — the judged range only ever WIDENS.
+    const anchorRefs: string[] = [];
+    for (let i = 0; i < (input.rangeAnchors?.length ?? 0); i++) {
+      const sha = input.rangeAnchors![i];
+      if (!/^[0-9a-f]{40,64}$/i.test(sha)) continue; // never trust a non-sha
+      const exists = await runGit(['cat-file', '-e', `${sha}^{commit}`], quarantine);
+      if (exists.code !== 0) continue;
+      const refName = `refs/quarantine/anchor-${i}`;
+      const set = await runGit(['update-ref', refName, sha], quarantine);
+      if (set.code === 0) anchorRefs.push(refName);
+    }
+
     // 3. Enumerate foreign-NEW objects (head minus what the target already has).
-    const negatives = input.targetTip ? ['^refs/canonical/base'] : [];
+    const negatives = [
+      ...(input.targetTip ? ['^refs/canonical/base'] : []),
+      ...anchorRefs.map((r) => `^${r}`),
+    ];
     const list = await runGit(
       ['rev-list', '--objects', 'refs/quarantine/head', ...negatives],
       quarantine,
@@ -273,6 +299,9 @@ export async function quarantineFetchAndJudge(
       stagingHead: input.targetTip,
       originGithubUserIds: input.originGithubUserIds,
       offerId: input.offerId,
+      // Anchors are already-admitted canonical tips by contract (see input
+      // doc) — exactly what excludeReachableFrom admits.
+      excludeReachableFrom: anchorRefs,
       runGit,
       resolveGithubUserId: input.resolveGithubUserId,
     });

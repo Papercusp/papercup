@@ -28,6 +28,7 @@ import {
   type ForeignWorkspace,
   type RegisterResult,
   registerForeignWorkspace,
+  setForeignWorkspaceBaseSha,
   setForeignWorkspaceState,
 } from './foreign-workspaces';
 
@@ -52,6 +53,7 @@ export interface ProvisionInput {
   /** Injectable registry seams (default: the PG store). */
   register?: (input: Parameters<typeof registerForeignWorkspace>[0]) => Promise<RegisterResult>;
   park?: (offerId: string, reason: string) => Promise<unknown>;
+  recordBaseSha?: (workspaceId: string, offerId: string, baseSha: string) => Promise<void>;
 }
 
 export type ProvisionResult =
@@ -124,5 +126,17 @@ export async function provisionForeignClone(input: ProvisionInput): Promise<Prov
     return { ok: false, refusal: { code: 'odb-not-private', detail } };
   }
 
-  return { ok: true, workspace: reg.workspace, clonePath };
+  // Leg iii range anchor (mig 470): record the canonical sha this clone
+  // started from — the publish admission excludes what it reaches, so only
+  // FOREIGN-introduced commits are judged. Best-effort: a missing base just
+  // means full-history judgment later (fail-closed direction).
+  let baseSha: string | null = null;
+  const head = await runGit(['rev-parse', 'HEAD'], clonePath);
+  if (head.code === 0 && head.stdout.trim()) {
+    baseSha = head.stdout.trim();
+    const record = input.recordBaseSha ?? setForeignWorkspaceBaseSha;
+    await record(input.workspaceId, input.offerId, baseSha).catch(() => {});
+  }
+
+  return { ok: true, workspace: { ...reg.workspace, baseSha }, clonePath };
 }

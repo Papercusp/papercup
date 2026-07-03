@@ -6,7 +6,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
 export const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  data: payload,
 });
 
 /** Flag gate — OFF hides pack management (LEARNING_PACKS, default ON). */

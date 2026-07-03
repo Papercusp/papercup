@@ -19,18 +19,18 @@ import { hardText, LIMITS } from '../limits';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
-const json = (payload: unknown) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const json = (payload: unknown) => ({ data: payload });
 
 export default defineTool({
   name: 'locks:acquire_granular',
   description:
     'Acquire a multi-granularity intention lock on a path NODE (a file, a directory/subtree, or the harness root ""). mode "X" = own the subtree exclusively (a directory lock for a refactor, or a file write); "S" = read the whole subtree; "SIX" = read the subtree while writing one node; IS/IX are the intention modes (usually derived for you). The lock places the matching intention on every ancestor incl. the harness root, so a harness-exclusive (X on "") now conflicts with any descendant file lock. All-or-nothing — you get the whole lock-set or a conflict list. Release with locks:release_granular.',
   guidance: {
-    when: 'A directory/subtree refactor (mode X on the dir), reading a whole subtree (S), or coordinating file-vs-harness-level work the per-edit lock is too fine for. Use "" as the path to take/contend the harness root.',
-    notWhen: 'A single-file edit — rely on the per-edit hook when diagnostics show it is active, or use locks:acquire for that file if hooks are unavailable. Cross-resource coordination (dev-server / db-schema) — use locks:acquire_resource.',
-    chaining: 'locks:acquire_granular { path, mode:"X" } → on ok do the work → locks:release_granular { lock_id }. On conflict, inspect the returned conflicts and pivot/retry.',
+    when:
+      'A directory/subtree refactor (X on a dir), reading a whole subtree (S), or coordinating file-vs-harness-level work when a single-file lock is too narrow. Use "" for the harness root.',
+    notWhen:
+      'A single-file edit: rely on the per-edit hook or use locks:acquire. Cross-resource coordination (dev server, DB schema): use locks:acquire_resource. Not as a mutex for non-file operations like fleet setup or work-item/plan changes.',
+    chaining: 'locks:acquire_granular → do the work → locks:release_granular. On conflict, inspect conflicts and pivot/retry.',
     seeAlso: [
       'locks:acquire (a single deliberate multi-file claim, not a subtree)',
       'locks:acquire_resource (a registered resource, not a path)',

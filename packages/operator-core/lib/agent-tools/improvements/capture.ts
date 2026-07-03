@@ -20,6 +20,7 @@ import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { hardText, LIMITS } from '../limits';
 
 export default defineTool({
@@ -142,6 +143,30 @@ export default defineTool({
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // dedup-decline / checkDuplicatesOnly / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
+      // su-loop-capability-parity P-005 (D-009): an SU session's IDEATE-pass FEATURE origination
+      // earns a routed-ledger provenance row (origin='su-ideate') so it rides the SAME
+      // grade/outcome/priming machinery Scout's ideas do — WITHOUT skewing Scout's per-lens
+      // weight learning (the lens readers filter origin='scout'). Fires only for an su caller's
+      // freshly-created kind:'feature' (not the watchdog, not an observation, not a dedup-decline).
+      // Fully guarded + best-effort: a ledger hiccup must NEVER fail the capture the user asked for.
+      if (source === 'su' && args.kind === 'feature' && args.lane !== 'observation' && captured.created && captured.issue?.id) {
+        const featureId = captured.issue.id;
+        const ledgerHarness =
+          ctxHarness ?? (args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : 'papercusp');
+        try {
+          await recordRoutedIdea({
+            origin: 'su-ideate',
+            ideaId: featureId,
+            lens: 'su-ideate', // sentinel — su-ideate rows are EXCLUDED from lens learning (D-009)
+            rail: 'improvement',
+            routedRef: `wi:${featureId}`,
+            harnessSlug: ledgerHarness,
+            title: captured.issue.title ?? args.title,
+          });
+        } catch {
+          // best-effort provenance — never affects the capture the user requested
+        }
+      }
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
           ? await notifyAgents(id, {

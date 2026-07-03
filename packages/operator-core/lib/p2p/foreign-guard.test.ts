@@ -23,6 +23,7 @@ const row = (over: Partial<ForeignWorkspace> = {}): ForeignWorkspace => ({
   executionEpoch: 1,
   state: 'active',
   parkReason: null,
+  baseSha: null,
   ...over,
 });
 const roots: ForeignRootEntry[] = [
