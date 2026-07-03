@@ -43,8 +43,14 @@ import {
 } from './offer-budget';
 import type { ResourceKind } from './resource-allotments';
 
-/** P-201 allotment resourceKind → P-107 budget axis. account = remote ($), gpu = local (slots). */
-export function axisForResourceKind(kind: ResourceKind): BudgetAxis {
+/**
+ * P-201 allotment resourceKind → P-107 budget axis. account = remote ($),
+ * gpu = local (slots). 'agent_slot' (mig 486, agent-allocation-framework) is
+ * DELIBERATELY excluded at the type level: a seat is launch capacity, not a
+ * spend axis — a claim-gate caller iterating allotment rows must filter
+ * agent_slot rows out before budget math (the compiler enforces it here).
+ */
+export function axisForResourceKind(kind: Exclude<ResourceKind, 'agent_slot'>): BudgetAxis {
   return kind === 'account' ? 'remote' : 'local';
 }
 

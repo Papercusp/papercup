@@ -69,6 +69,33 @@ export function injectFleetArg(
 }
 
 /**
+ * solo-launch-provenance (the EI-5835 pattern, applied to WHO-launched-you): a `psu …`
+ * launch spawned from this tool should carry `--launched-by=<caller ownerId>` so
+ * bootstrap-su can bake the provenance into the launched session (system prompt +
+ * PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact). Without it a solo-launched
+ * agent has NO way to answer "who launched / supervises you" — su-8ab32510
+ * (2026-07-03) described its launcher as "an observer who doesn't assign or
+ * supervise my work". Auto-inject like `--fleet`; commands already carrying the
+ * flag, and non-psu commands, are left untouched. The ownerId is injected into a
+ * shell string, so only identity-shaped values are accepted.
+ */
+export function injectLaunchedByArg(
+  command: string,
+  launcherOwnerId: string | null,
+): { command: string; injected: boolean } {
+  if (!launcherOwnerId || !/^[A-Za-z0-9._:-]{1,120}$/.test(launcherOwnerId)) {
+    return { command, injected: false };
+  }
+  if (/(^|\s)--launched-by(=|\s|$)/.test(command)) return { command, injected: false };
+  const psuToken = /(^|[\s&;|(])psu(\s)/;
+  if (!psuToken.test(command)) return { command, injected: false };
+  return {
+    command: command.replace(psuToken, `$1psu --launched-by=${launcherOwnerId}$2`),
+    injected: true,
+  };
+}
+
+/**
  * The operator's own base URL, used for the terminal's PAPERCUSP_OPERATOR_URL /
  * API-callback env. `PAPERCUSP_OPERATOR_URL` is commonly set to the full
  * `…/api/mcp` endpoint, so strip that suffix back to the bare origin.
@@ -170,6 +197,15 @@ export default defineTool({
       return err(`Failed to prepare terminal(s): ${e?.message ?? e}`);
     }
 
+    // solo-launch-provenance: the CALLER is the launcher — resolve once (best-effort)
+    // so every psu command spawned here carries `--launched-by=<caller ownerId>`.
+    let callerOwnerId: string | null = null;
+    try {
+      callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      callerOwnerId = null;
+    }
+
     // Resolve the fleet's permanently-bound color scheme.
     // Precedence: explicit `fleet` arg → caller's shared_presence fleet_slug → null (plan-hash fallback).
     // Color is cosmetic — a lookup failure must never block the launch.
@@ -184,14 +220,13 @@ export default defineTool({
       } catch {
         scheme = null;
       }
-    } else {
+    } else if (callerOwnerId) {
       // Fallback: resolve from the caller's shared_presence fleet_slug so every
       // terminal a fleet member opens inherits their fleet's color without an
       // explicit arg (capability-terminal fleet-color-schemes-2026-06-30 P-003).
       try {
-        const ownerId = resolveAgentIdentity(ctx).ownerId;
-        const fleetMap = await fetchPresenceFleet([ownerId]);
-        const membership = fleetMap.get(ownerId);
+        const fleetMap = await fetchPresenceFleet([callerOwnerId]);
+        const membership = fleetMap.get(callerOwnerId);
         if (membership?.fleetSlug) {
           scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
         }
@@ -204,6 +239,7 @@ export default defineTool({
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
     let fleetInjected = false;
+    let launchedByInjected = false;
     // Spawn all windows CONCURRENTLY: spawnConsole is async since WI-1886 (it
     // watches each child for an early off-screen death) — serializing N spawns
     // would stack N probe windows.
@@ -215,7 +251,10 @@ export default defineTool({
             : resolvePath(base.cwd, item.cwd)
           : base.cwd;
         // With an explicit `fleet`, a psu launch JOINS it (membership), not just colour.
-        const { command, injected } = injectFleetArg(item.command, fleetSlug);
+        const fleetInj = injectFleetArg(item.command, fleetSlug);
+        // solo-launch-provenance: every psu launch carries WHO launched it.
+        const provInj = injectLaunchedByArg(fleetInj.command, callerOwnerId);
+        const command = provInj.command;
         // Override the greeting per terminal (runs the command, then drops to a shell).
         const result = await spawnConsole({
           envelope: { ...base, greetingCmd: command, cwd },
@@ -223,11 +262,12 @@ export default defineTool({
           writeMcpJson: false,
           scheme,
         });
-        return { command, cwd, injected, result };
+        return { command, cwd, injected: fleetInj.injected, provenanceInjected: provInj.injected, result };
       }),
     );
     for (const r of results) {
       if (r.injected) fleetInjected = true;
+      if (r.provenanceInjected) launchedByInjected = true;
       if (r.result.status === 'ok') {
         opened.push({ command: r.command, cwd: r.cwd, terminal: r.result.terminal, pid: r.result.pid });
       } else {
@@ -249,6 +289,11 @@ export default defineTool({
       if (fleetInjected) {
         lines.push(
           `  ↳ auto-added \`--fleet=${fleetSlug}\` to psu launch(es) so the spawned agents JOIN the fleet (membership, not just colour). EI-5835.`,
+        );
+      }
+      if (launchedByInjected) {
+        lines.push(
+          `  ↳ auto-added \`--launched-by=${callerOwnerId}\` to psu launch(es) — the spawned agents know YOU launched + supervise them (system prompt + standing fact).`,
         );
       }
     }

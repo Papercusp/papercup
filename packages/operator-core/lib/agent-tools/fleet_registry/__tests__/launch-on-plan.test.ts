@@ -41,6 +41,12 @@ vi.mock('../../../agent-fleets-store', () => ({
   releaseFleetLaunchSlot: vi.fn(async () => {}),
 }));
 
+vi.mock('../../../fleet/fleet-roster', () => ({
+  // Live-member deficit guard seam: default to an empty fleet (every legacy handler test
+  // launches into a fresh fleet); the deficit tests below override per-case.
+  liveFleetMemberIds: vi.fn(async () => [] as string[]),
+}));
+
 vi.mock('../../coordination/presence', () => ({
   heartbeatPresence: vi.fn(async () => undefined),
   setPresenceFleet: vi.fn(async () => undefined),
@@ -410,5 +416,60 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       expect(firstGreeting).toContain('--launch-context=');
       expect(firstGreeting).toContain('fleet-alpha-fleet-launch-context.md');
     }
+  });
+});
+
+describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03 leader doom-loop)', () => {
+  beforeEach(async () => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockReset();
+  });
+
+  it('refuses a relaunch when the fleet already has >= count LIVE members — no spawn at all', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1', 'm-2']);
+    const res = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.relaunchSuppressed).toBe(true);
+    expect(payload.liveMembers).toBe(2);
+    expect(payload.opened).toEqual([]);
+    expect(payload.message).toMatch(/already has 2 LIVE members/);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('opens only the DEFICIT when some members are live (2 requested, 1 alive → 1 opened)', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1']);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      { name: 'Beta Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.message).toContain('deficit top-up: 1 already live of the 2 requested');
+  });
+
+  it('does not count the CALLER (the leader) as a live member', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    // resolveFleetCaller's mocked ownerId below must be excluded from the live count.
+    const { resolveFleetCaller } = await import('../_shared');
+    const ownerId = (resolveFleetCaller as ReturnType<typeof vi.fn>)({}).ownerId as string;
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([ownerId]);
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      { name: 'Gamma Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
 });

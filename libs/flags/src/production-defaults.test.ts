@@ -61,6 +61,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // P-004 D-008): every hive peer must carry the gossip READER before a writer
   // flips, so it ships dark until the 2-machine verify.
   'papercusp-presence-gossip',
+  // 2026-07-03 — per-host "accept delegated seats" trust gate (agent-allocation-
+  // framework P-008 / D-006, owner-authority): letting a REMOTE fleet owner spawn on
+  // this host is opt-in, so it ships fail-closed (default-OFF) permanently — each
+  // contributing host flips it ON per-host. Not a pending-flip; OFF is the correct default.
+  'papercusp-accept-delegated-seats',
   // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
   // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
   // snapshot; the count assertion below dropped from 11 to 10 to match.
@@ -169,10 +174,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
-    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover). Graduated to
-    // default-ON and removed from the snapshot: papercusp-queen-warm-session (2026-07-02,
-    // owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 canary met).
-    expect(offCount).toBe(9);
+    // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover) + papercusp-accept-
+    // delegated-seats (2026-07-03, agent-allocation-framework P-008 owner-authority trust gate).
+    // Graduated to default-ON and removed from the snapshot: papercusp-queen-warm-session
+    // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met).
+    expect(offCount).toBe(10);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

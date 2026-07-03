@@ -224,22 +224,26 @@ export async function telemetryRollup(
 export interface PollSuspect {
   tool_name: string;
   call_count: number;
-  /** Sustained call rate over the window. */
+  /** Sustained aggregate call rate over the window. */
   calls_per_hour: number;
-  /** Mean same-tool calls per spawn — a poller re-calls one tool from few spawns. */
-  calls_per_spawn: number;
+  /** Distinct callers (coord_owner_id, else spawn_id) over the window. */
+  callers: number;
+  /** Sustained PER-CALLER rate — the poll-shape signal. */
+  calls_per_caller_per_hour: number;
   /** Aggregate result bytes over the window — the cost of the polling. */
   total_bytes: number;
   reason: string;
 }
 
-/** A tool is poll-suspect when it sustains ≥ this many calls/hour… */
+/** A tool is poll-suspect when it sustains ≥ this aggregate calls/hour… */
 export const POLL_SUSPECT_MIN_CALLS_PER_HOUR = 120;
-/** …AND averages ≥ this many same-tool calls per spawn. Both together
- *  separate a polling loop (few spawns, endless re-calls — the statusline
- *  double-call storm was thousands/hr from hook re-invocations) from a busy
- *  fleet legitimately fanning one call per spawn. */
-export const POLL_SUSPECT_MIN_CALLS_PER_SPAWN = 30;
+/** …AND ≥ this rate PER DISTINCT CALLER (≥ one call every 2 min from the SAME
+ *  caller, sustained across the whole window). The per-caller axis is what
+ *  separates a polling loop (the statusline hook re-called activity:recent
+ *  ~120+/hr per session for days) from broad legitimate use (coord:emit's
+ *  'event-reaction' rows LOOK like one hot spawn — a synthetic shared
+ *  spawn_id — but spread over ~12 owners they are ~14/hr/caller: not a poll). */
+export const POLL_SUSPECT_MIN_CALLS_PER_CALLER_PER_HOUR = 30;
 
 /**
  * Flag poll-shaped tool usage in a telemetry rollup (EI-7029: the statusline
@@ -258,29 +262,37 @@ export function flagPollSuspects(
   const h = Math.max(1, hours);
   const suspects: PollSuspect[] = [];
   for (const e of entries) {
-    const spawns = Math.max(1, e.call_count - (e.repeat_within_spawn ?? 0));
+    // Older callers of the rollup shape (or fixtures) may omit distinct_callers;
+    // fall back to distinct spawns, clamped to 1.
+    const callers = Math.max(
+      1,
+      e.distinct_callers ?? (e.call_count - (e.repeat_within_spawn ?? 0)),
+    );
     const perHour = e.call_count / h;
-    const perSpawn = e.call_count / spawns;
+    const perCallerPerHour = perHour / callers;
     if (
       perHour >= POLL_SUSPECT_MIN_CALLS_PER_HOUR &&
-      perSpawn >= POLL_SUSPECT_MIN_CALLS_PER_SPAWN
+      perCallerPerHour >= POLL_SUSPECT_MIN_CALLS_PER_CALLER_PER_HOUR
     ) {
       suspects.push({
         tool_name: e.tool_name,
         call_count: e.call_count,
         calls_per_hour: Math.round(perHour),
-        calls_per_spawn: Math.round(perSpawn),
+        callers,
+        calls_per_caller_per_hour: Math.round(perCallerPerHour),
         total_bytes: e.total_bytes,
         reason:
-          `${Math.round(perHour)} calls/hr sustained over ${h}h from ~${spawns} spawn(s) ` +
-          `(${Math.round(perSpawn)} calls/spawn) — polling-shaped; expect an SSE/event ` +
+          `${Math.round(perHour)} calls/hr sustained over ${h}h by ${callers} caller(s) ` +
+          `(~${Math.round(perCallerPerHour)}/hr each) — polling-shaped; expect an SSE/event ` +
           `subscription or a cached read instead (EI-7029)`,
       });
     }
   }
-  // Worst first: rate × per-spawn concentration.
+  // Worst first: per-caller intensity × aggregate rate.
   suspects.sort(
-    (a, b) => b.calls_per_hour * b.calls_per_spawn - a.calls_per_hour * a.calls_per_spawn,
+    (a, b) =>
+      b.calls_per_caller_per_hour * b.calls_per_hour -
+      a.calls_per_caller_per_hour * a.calls_per_hour,
   );
   return suspects;
 }

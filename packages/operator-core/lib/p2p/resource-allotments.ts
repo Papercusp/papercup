@@ -16,19 +16,53 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { MODEL_EFFORT_LEVELS, type ModelEffort } from '../agent-config-constants';
 import type { OrgSql } from '../work-items';
 
-export type ResourceKind = 'account' | 'gpu';
+/**
+ * 'account' + 'gpu' are the P-201 two-axis capacity kinds (share-capped).
+ * 'agent_slot' (agent-allocation-framework-2026-07-03 D-002) is delegated
+ * AGENT SEATS — count-capped via `quantity`, mig 486. Budget/claim math
+ * (axisForResourceKind) deliberately excludes agent_slot: a seat is launch
+ * capacity, not a spend axis.
+ */
+export type ResourceKind = 'account' | 'gpu' | 'agent_slot';
 export type AllotmentStatus = 'active' | 'paused';
+
+/** D-002 seat-count bounds: quantity must be an integer in [1, this]. */
+export const AGENT_SLOT_MAX_QUANTITY = 1000;
+
+/**
+ * The structured trio an agent_slot's `axis` carries (D-002/D-003). `account`
+ * is the inference-GATEWAY selection — 'AUTO' (draw from the fleet's allocated
+ * accounts) or a pool id — never a raw credential.
+ */
+export interface AgentSlotAxis {
+  model: string;
+  effort: ModelEffort;
+  account: string;
+}
+
+/**
+ * The DERIVED resource_ref for an agent_slot row: the slot template
+ * '<model>:<effort>:<account>' (e.g. 'opus:xhigh:AUTO'). The store always
+ * derives it from the validated axis trio so ref↔axis can never disagree —
+ * a caller-supplied resourceRef is ignored for agent_slot.
+ */
+export function agentSlotRef(axis: Pick<AgentSlotAxis, 'model' | 'effort' | 'account'>): string {
+  return `${axis.model}:${axis.effort}:${axis.account}`;
+}
 
 export interface ResourceAllotment {
   workspaceId: string;
   fleetSlug: string;
   resourceKind: ResourceKind;
   resourceRef: string;
-  /** Share cap as a percent (0–100). Remote axis: % of pool budget; local axis: % of GPU time/slots. */
+  /** Share cap as a percent (0–100). Remote axis: % of pool budget; local axis: % of GPU time/slots. Stored 0 for agent_slot (count-capped). */
   sharePct: number;
-  /** P-201 forward seam: { dollarCapUsd, modelClassWeights, windows, allowedModels, preemptClass, slots }. */
+  /** Seat COUNT cap (D-002) — set (1..AGENT_SLOT_MAX_QUANTITY) for agent_slot rows, null for the share-capped kinds. */
+  quantity: number | null;
+  /** P-201 forward seam: { dollarCapUsd, modelClassWeights, windows, allowedModels, preemptClass, slots }. For agent_slot: the { model, effort, account } trio (AgentSlotAxis). */
   axis: Record<string, unknown>;
   status: AllotmentStatus;
   createdByGithubUserId: number | null;
@@ -54,7 +88,11 @@ export function resolveAllotmentWorkspace(
 }
 
 function isResourceKind(v: unknown): v is ResourceKind {
-  return v === 'account' || v === 'gpu';
+  return v === 'account' || v === 'gpu' || v === 'agent_slot';
+}
+
+function isModelEffort(v: unknown): v is ModelEffort {
+  return typeof v === 'string' && (MODEL_EFFORT_LEVELS as readonly string[]).includes(v);
 }
 
 interface AllotmentRow {
@@ -63,6 +101,7 @@ interface AllotmentRow {
   resource_kind: string;
   resource_ref: string;
   share_pct: number;
+  quantity: number | string | null;
   axis: Record<string, unknown> | null;
   status: string;
   created_by_github_user_id: string | number | null;
@@ -77,6 +116,7 @@ function rowToAllotment(r: AllotmentRow): ResourceAllotment {
     resourceKind: r.resource_kind as ResourceKind,
     resourceRef: r.resource_ref,
     sharePct: Number(r.share_pct),
+    quantity: r.quantity == null ? null : Number(r.quantity),
     axis: r.axis ?? {},
     status: r.status as AllotmentStatus,
     createdByGithubUserId:
@@ -117,13 +157,81 @@ export interface SetAllotmentArgs {
   workspaceId: string | null | undefined;
   fleetSlug: string;
   resourceKind: ResourceKind | string;
-  resourceRef: string;
-  /** Share cap 0–100. Clamped-checked, not silently coerced. */
-  sharePct: number;
+  /** Resource identity for account/gpu (required there). IGNORED for agent_slot — the ref is DERIVED from the axis trio (agentSlotRef). */
+  resourceRef?: string;
+  /** Share cap 0–100 — required for account/gpu; ignored for agent_slot (stored 0, count-capped instead). */
+  sharePct?: number;
+  /** Seat COUNT cap — required for agent_slot (integer 1..AGENT_SLOT_MAX_QUANTITY); must be absent for account/gpu (stored NULL). */
+  quantity?: number | null;
+  /** For agent_slot: MUST carry the { model, effort, account } trio (D-002); extra seam fields pass through. */
   axis?: Record<string, unknown>;
   status?: AllotmentStatus;
   /** The setting host's numeric GitHub id (display/audit). */
   createdByGithubUserId?: number | null;
+}
+
+/**
+ * Validate an agent_slot write's axis trio + quantity (D-002/D-003). Returns a
+ * structured refusal, or the normalized trio + derived ref on success. All
+ * checks are pre-SQL, mirroring the store's loud-refusal discipline.
+ */
+function validateAgentSlot(args: SetAllotmentArgs):
+  | { ok: true; axis: AgentSlotAxis; ref: string; quantity: number }
+  | { ok: false; refusal: { code: string; detail: string } } {
+  const axis = args.axis ?? {};
+  const model = typeof axis.model === 'string' ? axis.model.trim() : '';
+  if (!model || model.includes(':')) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'invalid_model',
+        detail: `agent_slot requires axis.model (non-empty, no ':' — colons are the slot-ref separators); got ${JSON.stringify(axis.model ?? null)}.`,
+      },
+    };
+  }
+  if (!isModelEffort(axis.effort)) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'invalid_effort',
+        detail: `agent_slot requires axis.effort ∈ ${MODEL_EFFORT_LEVELS.join('|')}; got ${JSON.stringify(axis.effort ?? null)}.`,
+      },
+    };
+  }
+  const account = typeof axis.account === 'string' ? axis.account.trim() : '';
+  if (!account || account.includes(':')) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'invalid_account',
+        detail: `agent_slot requires axis.account (a gateway account/pool id or 'AUTO'; non-empty, no ':'); got ${JSON.stringify(axis.account ?? null)}.`,
+      },
+    };
+  }
+  if (args.quantity == null) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'quantity_required',
+        detail: 'agent_slot allotments are COUNT-capped (D-002): quantity is required.',
+      },
+    };
+  }
+  if (
+    !Number.isInteger(args.quantity) ||
+    args.quantity < 1 ||
+    args.quantity > AGENT_SLOT_MAX_QUANTITY
+  ) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'quantity_out_of_range',
+        detail: `quantity must be an integer 1..${AGENT_SLOT_MAX_QUANTITY} (got ${String(args.quantity)}).`,
+      },
+    };
+  }
+  const trio: AgentSlotAxis = { model, effort: axis.effort, account };
+  return { ok: true, axis: trio, ref: agentSlotRef(trio), quantity: args.quantity };
 }
 
 /** Upsert an allotment (one per (fleet, resource) on this machine). Re-allocating is an UPSERT of the cap. */
@@ -142,31 +250,58 @@ export async function setResourceAllotment(
     };
   }
   if (!isResourceKind(args.resourceKind)) {
-    return { ok: false, refusal: { code: 'invalid_resource_kind', detail: `resource_kind must be account|gpu (got '${String(args.resourceKind)}').` } };
-  }
-  if (!args.resourceRef?.trim()) {
-    return { ok: false, refusal: { code: 'resource_required', detail: 'resourceRef is required.' } };
+    return { ok: false, refusal: { code: 'invalid_resource_kind', detail: `resource_kind must be account|gpu|agent_slot (got '${String(args.resourceKind)}').` } };
   }
   if (!args.fleetSlug?.trim()) {
     return { ok: false, refusal: { code: 'fleet_required', detail: 'fleetSlug is required.' } };
   }
-  if (!Number.isFinite(args.sharePct) || args.sharePct < 0 || args.sharePct > 100) {
-    return { ok: false, refusal: { code: 'invalid_share_pct', detail: `sharePct must be 0–100 (got ${String(args.sharePct)}).` } };
+  // Per-kind cap discipline (D-002): account/gpu are share-capped (0–100 %),
+  // agent_slot is count-capped (quantity 1..AGENT_SLOT_MAX_QUANTITY) with the
+  // ref DERIVED from the validated axis trio.
+  let resourceRef: string;
+  let sharePct: number;
+  let quantity: number | null;
+  let axis: Record<string, unknown>;
+  if (args.resourceKind === 'agent_slot') {
+    const slot = validateAgentSlot(args);
+    if (!slot.ok) return { ok: false, refusal: slot.refusal };
+    resourceRef = slot.ref;
+    sharePct = 0;
+    quantity = slot.quantity;
+    // The validated trio wins over any caller-passed axis fields; extra
+    // forward-seam fields pass through untouched.
+    axis = { ...(args.axis ?? {}), ...slot.axis };
+  } else {
+    if (!args.resourceRef?.trim()) {
+      return { ok: false, refusal: { code: 'resource_required', detail: 'resourceRef is required.' } };
+    }
+    if (
+      typeof args.sharePct !== 'number' ||
+      !Number.isFinite(args.sharePct) ||
+      args.sharePct < 0 ||
+      args.sharePct > 100
+    ) {
+      return { ok: false, refusal: { code: 'invalid_share_pct', detail: `sharePct must be 0–100 (got ${String(args.sharePct)}).` } };
+    }
+    resourceRef = args.resourceRef;
+    sharePct = Math.round(args.sharePct);
+    quantity = null; // share-capped kinds carry no count (DB CHECK resource_allotments_quantity)
+    axis = args.axis ?? {};
   }
   const sql = sqlOverride ?? getOrgPg().sql;
   const status: AllotmentStatus = args.status ?? 'active';
-  const sharePct = Math.round(args.sharePct);
   // jsonb bind: getOrgPg's pooled sql THROWS on sql.json() (prepare:false mis-binds it —
   // see agent-governor-pg-store.ts / the usage-events integration test). Bind the axis
   // object as `${JSON.stringify(x)}::jsonb` instead. Do NOT "fix" this back to sql.json().
   const rows = (await sql`
     INSERT INTO harness_shared.resource_allotments
-      (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, axis, status, created_by_github_user_id)
+      (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
     VALUES
-      (${ws}, ${args.fleetSlug}, ${args.resourceKind}, ${args.resourceRef}, ${sharePct},
-       ${JSON.stringify(args.axis ?? {})}::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+      (${ws}, ${args.fleetSlug}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
+       ${JSON.stringify(axis)}::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
     ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref)
     DO UPDATE SET share_pct = EXCLUDED.share_pct,
+                  quantity = EXCLUDED.quantity,
                   axis = EXCLUDED.axis,
                   status = EXCLUDED.status,
                   updated_at = now()

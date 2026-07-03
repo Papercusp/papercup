@@ -3,19 +3,23 @@
  * Resources board (p2p-work-distribution-2026-07-02 P-201).
  *
  * The /res page writes through this dedicated loopback route (the
- * p2p-settings-set shape): a thin wrapper over the p2p/resource-allotments
- * store, plus the sync invalidation so the board refreshes. Actions:
+ * p2p-settings-set shape). Since agent-allocation-framework-2026-07-03 P-002
+ * (D-004) the route is a thin wrapper over the SHARED delegation core
+ * (`delegateResource` in agent-tools/resource/delegate.ts) — the same core the
+ * `resource:delegate` MCP tool runs — so the UI and agents cannot drift apart:
+ * loopback wraps the tool core; the tool core wraps the store. Actions:
  *
  *   set    — upsert an allotment: a host hands a resource (an account pool =
- *            remote axis, or a local GPU = local axis) to a fleet with a
- *            share-% cap. Re-setting the same (fleet, kind, ref) UPDATES the
- *            cap (PK upsert), so the /res slider writes are idempotent.
+ *            remote axis, a local GPU = local axis, or agent_slot SEATS =
+ *            count-capped) to a fleet. Re-setting the same (fleet, kind, ref)
+ *            UPDATES the cap (PK upsert), so the /res writes are idempotent.
  *   remove — revoke a fleet's draw on a resource (the /res chip's ×).
  *
  * Loopback-only + owner authority (the desktop /res surface is the only
- * caller). Allotments are LOCAL/per-machine (M19) — never federated. The store
- * owns all field validation + the refusal shapes; this route passes them
- * through (a store refusal → 400 { error: refusal.code, detail }).
+ * caller). Allotments are LOCAL/per-machine (M19) — never federated. The STORE
+ * owns all field validation + the refusal shapes; the core passes them through
+ * and this route maps a refusal → 400 { error: refusal.code, detail }. The
+ * core also fires the p2p.allotments sync invalidate (name-only) on success.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
@@ -26,12 +30,20 @@ interface Body {
   resourceKind?: unknown;
   resourceRef?: unknown;
   sharePct?: unknown;
+  /** agent_slot seats (D-002 count cap) — forwarded as the core's `count`. */
+  count?: unknown;
+  /** agent_slot trio — explicit fields win over axis-carried values in the core. */
+  model?: unknown;
+  effort?: unknown;
+  account?: unknown;
   axis?: unknown;
   status?: unknown;
 }
 
 const ACTIONS = ['set', 'remove'] as const;
 type Action = (typeof ACTIONS)[number];
+
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
 
 export default defineTool({
   method: 'POST',
@@ -53,52 +65,41 @@ export default defineTool({
       return Response.json({ ok: false, error: 'missing_action' }, { status: 400 });
     }
 
-    // Pass identity fields through raw — the store validates non-empty + kind and
-    // returns typed refusals (fleet_required / resource_required / invalid_resource_kind).
-    const fleetSlug = typeof body.fleetSlug === 'string' ? body.fleetSlug : '';
-    const resourceKind = typeof body.resourceKind === 'string' ? body.resourceKind : '';
-    const resourceRef = typeof body.resourceRef === 'string' ? body.resourceRef : '';
-
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const ws = activeWorkspaceId();
 
     try {
-      const store = await import('../../../p2p/resource-allotments');
-      const { notifySyncInvalidate } = await import('../../../sync-sse');
-
-      if (action === 'remove') {
-        const removed = await store.removeResourceAllotment({
-          workspaceId: ws,
-          fleetSlug,
-          resourceKind,
-          resourceRef,
-        });
-        // The /res board reads `p2p.allotments` with NO args → name-only invalidate
-        // (an args-scoped emit would never match — the adding-a-sync-query gotcha).
-        await notifySyncInvalidate('p2p.allotments').catch(() => {});
-        return Response.json({ ok: true, workspaceId: ws, action, removed: removed.removed });
-      }
+      const { delegateResource } = await import('../../../agent-tools/resource/delegate');
 
       // action === 'set' — resolve the setting host's numeric GitHub id (X9:
       // display/audit only; the resource is this machine's). Best-effort → null.
       let createdByGithubUserId: number | null = null;
-      try {
-        const { resolveUsageActor } = await import('../../../harness/usage-actor');
-        createdByGithubUserId = (await resolveUsageActor().catch(() => null))?.githubUserId ?? null;
-      } catch {}
+      if (action === 'set') {
+        try {
+          const { resolveUsageActor } = await import('../../../harness/usage-actor');
+          createdByGithubUserId = (await resolveUsageActor().catch(() => null))?.githubUserId ?? null;
+        } catch {}
+      }
 
-      const result = await store.setResourceAllotment({
+      // Pass identity fields through — the store validates non-empty + kind and
+      // returns typed refusals (fleet_required / resource_required / invalid_resource_kind / …).
+      const result = await delegateResource({
         workspaceId: ws,
-        fleetSlug,
-        resourceKind,
-        resourceRef,
-        // NaN when absent/non-numeric → the store's invalid_share_pct refusal.
-        sharePct: typeof body.sharePct === 'number' ? body.sharePct : Number.NaN,
+        fleetSlug: typeof body.fleetSlug === 'string' ? body.fleetSlug : '',
+        kind: typeof body.resourceKind === 'string' ? body.resourceKind : '',
+        ref: str(body.resourceRef),
+        // NaN when absent/non-numeric → the store's invalid_share_pct refusal (account/gpu).
+        sharePct: typeof body.sharePct === 'number' ? body.sharePct : undefined,
+        count: typeof body.count === 'number' ? body.count : undefined,
+        model: str(body.model),
+        effort: str(body.effort),
+        account: str(body.account),
         axis:
           body.axis && typeof body.axis === 'object' && !Array.isArray(body.axis)
             ? (body.axis as Record<string, unknown>)
             : undefined,
         status: body.status === 'paused' ? 'paused' : body.status === 'active' ? 'active' : undefined,
+        remove: action === 'remove',
         createdByGithubUserId,
       });
 
@@ -108,8 +109,11 @@ export default defineTool({
           { status: 400 },
         );
       }
-      await notifySyncInvalidate('p2p.allotments').catch(() => {});
-      return Response.json({ ok: true, workspaceId: ws, action, allotment: result.allotment });
+      return Response.json(
+        result.action === 'remove'
+          ? { ok: true, workspaceId: ws, action, removed: result.removed }
+          : { ok: true, workspaceId: ws, action, allotment: result.allotment },
+      );
     } catch (err) {
       return Response.json(
         { ok: false, error: (err as Error)?.message ?? 'p2p_allotment_set_failed' },

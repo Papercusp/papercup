@@ -234,7 +234,10 @@ describe('probeSubstrateSidecar (WI-895 — not-spawned vs truly-dead discrimina
   });
 
   it('flag ON + socket answers healthz → UP with path provenance', async () => {
+    const conns = new Set<net.Socket>();
     const server = net.createServer((conn) => {
+      conns.add(conn);
+      conn.on('close', () => conns.delete(conn));
       let buf = '';
       conn.on('data', (chunk) => {
         buf += chunk.toString();
@@ -258,6 +261,10 @@ describe('probeSubstrateSidecar (WI-895 — not-spawned vs truly-dead discrimina
       expect(res.present).not.toBe(false);
       expect(res.note).toContain(sockPath);
     } finally {
+      // The probe's singleton client holds its connection open — close it and
+      // destroy server-side conns FIRST, else server.close() waits forever.
+      closeSubstrateIpcClient();
+      for (const c of conns) c.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

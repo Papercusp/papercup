@@ -2691,6 +2691,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (fleetSlug) argv.push(`--fleet=${fleetSlug}`);
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
+  if (args.launchedBy) argv.push(`--launched-by=${args.launchedBy}`);
   for (const d of args.addDir || []) argv.push(`--add-dir=${d}`);
   // Subagent-launch deny is DEFAULT-ON; only the non-default opt-IN needs recording.
   if (args.allowSubagents) argv.push('--allow-subagents');
@@ -2728,6 +2729,9 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(args.fleetName ? { fleet_name: args.fleetName } : {}),
     ...(args.fleetScheme ? { fleet_scheme: args.fleetScheme } : {}),
     ...(args.launchContext ? { launch_context: args.launchContext } : {}),
+    // solo-launch-provenance: who launched this session — bootstrap-su bakes it
+    // into the system prompt + PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact.
+    ...(args.launchedBy ? { launched_by: args.launchedBy } : {}),
     cwd: process.cwd(),
   };
 }

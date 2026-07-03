@@ -719,6 +719,10 @@ import './scheduler/get_next';
 import './scheduler/set_claim_spec';
 // p2p-work-distribution-2026-07-02 P-004: the cross-machine refusal-receipt timeline.
 import './p2p/trace';
+// agent-allocation-framework-2026-07-03 P-002 (D-004): the ONE delegation write path —
+// hand a fleet an account pool / GPU (share-%) or agent seats (agent_slot, count-capped);
+// the /res loopback (p2p-allotment-set) wraps the same core.
+import './resource/delegate';
 // The live-execution view (P-001): in-flight claims + the spec revision each bee runs under.
 import './scheduler/running';
 // The Queen's co-location lever (hive-coordination-model P-002): stamp a work-item's

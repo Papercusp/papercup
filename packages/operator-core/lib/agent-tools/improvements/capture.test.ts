@@ -148,3 +148,97 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('bogusNewField');
   });
 });
+
+/**
+ * WI-1974 — improvements:capture (the self-improvement loop's OWN intake tool) failed
+ * ~17% of calls, 29/34 on the top-level `kind` enum, and every reject LOSES the captured
+ * insight. Live 48h failing-`kind` values: observation 18 · null 11 · process/tooling/
+ * improvement/reliability/issue/tool-friction 9 · friction/gap 3. We coerce these to intent
+ * BEFORE validation — never rejecting on `kind` — while leaving the DELIBERATE observation
+ * `.strict()` key-rejection intact.
+ */
+describe('improvements:capture kind coercion (WI-1974)', () => {
+  const parse = (x: unknown) => (captureTool.args as { parse: (v: unknown) => Record<string, unknown> }).parse(x);
+
+  describe('coerceCaptureKind (unit)', () => {
+    it('leaves a valid {bug,change,feature} kind untouched', () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'bug' })).toEqual({ title: 't', kind: 'bug' });
+    });
+
+    it('case-normalises a valid kind (BUG → bug) instead of rejecting', () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'BUG' })).toEqual({ title: 't', kind: 'bug' });
+    });
+
+    it('drops an explicit null kind so the schema default applies (the 11× null case)', () => {
+      expect(coerceCaptureKind({ title: 't', kind: null })).toEqual({ title: 't' });
+    });
+
+    it("maps kind:'observation' → lane:'observation', dropping the bad kind (the 18× dominant case)", () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'observation' })).toEqual({ title: 't', lane: 'observation' });
+    });
+
+    it('maps an observation SUB-kind → lane:observation + observation.kind', () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'friction' })).toEqual({
+        title: 't',
+        lane: 'observation',
+        observation: { kind: 'friction' },
+      });
+    });
+
+    it('does not clobber a caller-provided observation.kind when mapping a sub-kind', () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'gap', observation: { kind: 'surprise', scope: 'self' } })).toEqual({
+        title: 't',
+        lane: 'observation',
+        observation: { kind: 'surprise', scope: 'self' },
+      });
+    });
+
+    it("maps a free-form label ('tooling','process','improvement','issue') → the default 'change'", () => {
+      for (const label of ['tooling', 'process', 'improvement', 'reliability', 'issue', 'tool-friction']) {
+        expect((coerceCaptureKind({ title: 't', kind: label }) as { kind: string }).kind).toBe('change');
+      }
+    });
+
+    it('passes a non-object through untouched', () => {
+      expect(coerceCaptureKind('x')).toBe('x');
+      expect(coerceCaptureKind(null)).toBe(null);
+    });
+  });
+
+  describe('through the real args schema (the wire shapes that 400ed now parse)', () => {
+    it("kind:'observation' parses to lane:observation (was: kind Invalid option)", () => {
+      const p = parse({ title: 'turn-end note', kind: 'observation' });
+      expect(p.lane).toBe('observation');
+      expect(p.kind).toBeUndefined();
+    });
+
+    it('kind:null parses (was: expected one of bug|change|feature)', () => {
+      expect(() => parse({ title: 't', kind: null })).not.toThrow();
+    });
+
+    it("an observation sub-kind parses to a lane:observation record", () => {
+      const p = parse({ title: 'hit a gap', kind: 'gap' });
+      expect(p.lane).toBe('observation');
+      expect(p.observation).toMatchObject({ kind: 'gap' });
+    });
+
+    it("a free-form label parses as kind:'change'", () => {
+      expect(parse({ title: 'flaky tool', kind: 'tooling' }).kind).toBe('change');
+    });
+
+    it('a well-formed kind:bug is unaffected', () => {
+      expect(parse({ title: 't', kind: 'bug' }).kind).toBe('bug');
+    });
+
+    it('STILL fails loud on an unknown observation key (the deliberate .strict() is preserved)', () => {
+      expect(() => parse({ title: 't', lane: 'observation', observation: { kind: 'friction', bogus: 1 } })).toThrow();
+    });
+  });
+
+  it('the published tools/list JSON schema still advertises kind as the {bug,change,feature} enum', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: { kind?: { enum?: string[]; type?: string } };
+    };
+    expect(json.properties?.kind?.enum).toEqual(['bug', 'change', 'feature']);
+  });
+});

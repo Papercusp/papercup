@@ -502,16 +502,61 @@ export default defineTool({
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
 
+    // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
+    // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
+    // minutes apart (2026-07-03 second incident: leader 10040 re-fired at +5 min and +9 min — each
+    // burst was past the 60s window and opened 2 more ornith terminals while its members were alive
+    // and working). Presence is authoritative once members register; the window below covers only
+    // the boot gap before they do. A read failure never blocks a launch (fail open to the window).
+    let liveMembers = 0;
+    try {
+      liveMembers = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId).length;
+    } catch {
+      liveMembers = 0;
+    }
+    if (liveMembers >= count) {
+      const lines = [
+        `Fleet \`${fleetSlug}\` already has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'} — you asked for ${count}, so NO new terminals were opened.`,
+        'Your fleet is running: monitor it, do not relaunch. Re-call this tool only after members have actually drained (their presence goes stale), or with a HIGHER count to top up.',
+        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+      ];
+      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      return json({
+        ok: true,
+        fleet: fleetSlug,
+        leaderRole,
+        plan: args.plan,
+        harness,
+        agent,
+        account: args.account?.trim() || null,
+        requested: count,
+        liveMembers,
+        sizingAdvisory: null,
+        memberBaselineApplied: false,
+        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
+        memberLaunchContextPath: null,
+        briefReadError: null,
+        opened: [],
+        failed: [],
+        relaunchSuppressed: true,
+        message: lines.join('\n'),
+      });
+    }
+    // Only the DEFICIT opens — a leader asking for 2 with 1 alive gets 1, never a stacked 3.
+    const openCount = count - liveMembers;
+
     // Idempotency guard (P-005): a weak model that re-fires launch-on-plan (the 9896 "take
     // leadership" fumble, the 2026-07-03 7×-re-fire) must NOT open a second wave. The claim is
     // an atomic PG check-and-set on the fleet row, shared across every operator worker — if ANY
-    // launch of this fleet won the window, no-op with a notice instead of spawning again.
+    // launch of this fleet won the window, no-op with a notice instead of spawning again. This
+    // covers the BOOT GAP: members just spawned are not yet in presence, so the deficit guard
+    // above cannot see them for the first ~1-3 min.
     let slot;
     try {
       slot = await claimFleetLaunchSlot({
         workspaceId,
         fleetSlug,
-        count,
+        count: openCount,
         windowMs: RELAUNCH_SUPPRESS_MS,
       });
     } catch (e: any) {
@@ -629,10 +674,10 @@ export default defineTool({
     // window survives an early-exit probe instead of reporting ok+pid for a
     // client that died off-screen) — a serial loop would stack N probe windows.
     const results = await Promise.all(
-      Array.from({ length: count }, (_v, i) =>
+      Array.from({ length: openCount }, (_v, i) =>
         spawnConsole({
           envelope: { ...base, greetingCmd: command, cwd: base.cwd },
-          label: `${fleetSlug} · member ${i + 1}/${count} (${args.plan})`,
+          label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
           writeMcpJson: false,
           scheme,
         }),
@@ -666,7 +711,7 @@ export default defineTool({
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${count} member${count > 1 ? 's' : ''} opened${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No member terminals opened for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) — ${command}`);

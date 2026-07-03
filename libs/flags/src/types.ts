@@ -685,6 +685,14 @@ export const FLAGS = {
   // P-005 layers the rollout TIERS on top (tier 1 same-owner / tier 2 delegate-
   // capped / tier 3 operator grants).
   P2P: "papercusp-p2p",
+  // agent-allocation-framework-2026-07-03 P-008 (D-006): the PER-HOST "accept delegated
+  // seats" trust gate. Cross-machine agent-slot delegation = a remote fleet owner (A) asks
+  // THIS host (B) to spawn bounded agents joined to A's fleet. Letting a remote owner spawn
+  // on your box is a real privilege step, so B must OPT IN. DEFAULT OFF (owner-authority):
+  // OFF ⇒ this host honors NO delegated-seat spawn requests (fail-closed, byte-identical to
+  // today — the gate simply refuses). The contributing-host owner flips it ON per-host via
+  // /res (or /admin/features) to opt in. This is the trust half of P-009's honor path.
+  ACCEPT_DELEGATED_SEATS: "papercusp-accept-delegated-seats",
   // git-sync-dx-hardening-2026-06-17 P-004: DERIVED commit attribution — when ON, git-sync
   // groups dirty files by the agent who declared them (coord:declare-intent / lock holder)
   // and makes per-agent commits with the intent message + a Co-Authored-By trailer (catch-all
@@ -1300,6 +1308,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
     [FLAGS.OPEN_SIGNUP, { case: 'owner-authority', reason: 'SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.' }],
     [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
+    [FLAGS.ACCEPT_DELEGATED_SEATS, { case: 'owner-authority', reason: 'OWNER-AUTHORITY / trust surface (agent-allocation-framework P-008, D-006) — lets a REMOTE fleet owner spawn agents on THIS host (within the host capability envelope). OFF ⇒ this host honors NO delegated-seat spawn requests (fail-closed; byte-identical to today). The contributing-host owner flips it ON per-host via /res or /admin/features to opt in. Permanently default-OFF (per-host opt-in), NOT a pending flip.' }],
   ]);
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────

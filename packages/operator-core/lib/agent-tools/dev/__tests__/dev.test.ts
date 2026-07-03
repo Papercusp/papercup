@@ -319,7 +319,8 @@ describe('dev:telemetry', () => {
 
   it('flags a poll-shaped storm in poll_suspects (EI-7029)', async () => {
     const entries = [
-      { tool_name: 'activity:recent', call_count: 6000, error_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 1, repeat_within_spawn: 5990, workspaces: ['default'] },
+      // 6000/24h from 5 callers = 250/hr aggregate, 50/hr per caller → poll-shaped.
+      { tool_name: 'activity:recent', call_count: 6000, error_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 1, repeat_within_spawn: 5990, distinct_callers: 5, workspaces: ['default'] },
     ];
     vi.doMock('../../../dev-data', async (importOriginal) => ({
       ...(await importOriginal<typeof import('../../../dev-data')>()),

@@ -144,6 +144,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // The canonical "who's on what" state query (state-not-chat-fleet-state):
   // presence + claims unified, orphaned-claim signal included.
   'mcp__agentmcp__fleet:assignments',
+  // The D-004 delegation write (agent-allocation-framework P-002): hand a fleet
+  // an account pool / GPU (share-%) or agent seats (agent_slot, count-capped) —
+  // "join fleet X and assign 5 xhigh opus seats" runs through THIS one tool.
+  'mcp__agentmcp__resource:delegate',
 
   // Tool introspection — answers "what can I call?". Companion to
   // tools/list with role+capability+quota metadata that the standard

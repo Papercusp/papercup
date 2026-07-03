@@ -15,6 +15,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_SLOT_MAX_QUANTITY,
+  agentSlotRef,
   resolveAllotmentWorkspace,
   setResourceAllotment,
   removeResourceAllotment,
@@ -84,6 +86,106 @@ describe('setResourceAllotment refusal paths (loud, structured, SQL-free)', () =
 
   it('a fully-valid set proceeds PAST validation to the SQL write (refusals are not over-broad)', async () => {
     await expect(setResourceAllotment({ ...base }, throwingSql)).rejects.toThrow(/must not touch SQL/);
+  });
+});
+
+describe('agent_slot writes (P-001 agent-allocation-framework, D-002/D-003 — count-capped, derived ref)', () => {
+  const slotBase = {
+    workspaceId: 'ws-1',
+    fleetSlug: 'agent-allocation',
+    resourceKind: 'agent_slot' as const,
+    quantity: 5,
+    axis: { model: 'opus', effort: 'xhigh', account: 'AUTO' },
+  };
+
+  it('agentSlotRef derives the slot template <model>:<effort>:<account>', () => {
+    expect(agentSlotRef({ model: 'opus', effort: 'xhigh', account: 'AUTO' })).toBe('opus:xhigh:AUTO');
+    expect(agentSlotRef({ model: 'sonnet[1m]', effort: 'medium', account: 'pool-main' })).toBe(
+      'sonnet[1m]:medium:pool-main',
+    );
+  });
+
+  it('refuses a missing / blank / colon-bearing model → invalid_model, pre-SQL', async () => {
+    for (const model of [undefined, '', '   ', 'opus:xhigh', 42]) {
+      const r = await setResourceAllotment(
+        { ...slotBase, axis: { ...slotBase.axis, model } },
+        throwingSql,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('invalid_model');
+    }
+  });
+
+  it('refuses an effort outside low|medium|high|xhigh|max → invalid_effort, pre-SQL', async () => {
+    for (const effort of [undefined, '', 'ultra', 'XHIGH', 3]) {
+      const r = await setResourceAllotment(
+        { ...slotBase, axis: { ...slotBase.axis, effort } },
+        throwingSql,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('invalid_effort');
+    }
+  });
+
+  it("refuses a missing / blank / colon-bearing account → invalid_account, pre-SQL ('AUTO' and pool ids are the valid shapes)", async () => {
+    for (const account of [undefined, '', '  ', 'a:b', null]) {
+      const r = await setResourceAllotment(
+        { ...slotBase, axis: { ...slotBase.axis, account } },
+        throwingSql,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('invalid_account');
+    }
+  });
+
+  it('refuses a missing quantity → quantity_required (slots are COUNT-capped, D-002)', async () => {
+    for (const quantity of [undefined, null]) {
+      const r = await setResourceAllotment({ ...slotBase, quantity }, throwingSql);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('quantity_required');
+    }
+  });
+
+  it(`refuses a non-integer / out-of-bounds quantity → quantity_out_of_range (1..${AGENT_SLOT_MAX_QUANTITY})`, async () => {
+    for (const quantity of [0, -1, 2.5, Number.NaN, AGENT_SLOT_MAX_QUANTITY + 1]) {
+      const r = await setResourceAllotment({ ...slotBase, quantity }, throwingSql);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.refusal.code).toBe('quantity_out_of_range');
+    }
+  });
+
+  it('does NOT require resourceRef or sharePct for agent_slot (ref derived, share count-capped): a valid slot write proceeds PAST validation to SQL', async () => {
+    await expect(setResourceAllotment({ ...slotBase }, throwingSql)).rejects.toThrow(
+      /must not touch SQL/,
+    );
+    // A caller-passed ref is ignored (derivation wins) — still valid, still reaches SQL.
+    await expect(
+      setResourceAllotment({ ...slotBase, resourceRef: 'stale:mismatched:ref' }, throwingSql),
+    ).rejects.toThrow(/must not touch SQL/);
+  });
+
+  it("'agent_slot' is a valid kind while unknown kinds still refuse (kind gate widened, not opened)", async () => {
+    const r = await setResourceAllotment(
+      { ...slotBase, resourceKind: 'seat' },
+      throwingSql,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.refusal.code).toBe('invalid_resource_kind');
+  });
+
+  it('account/gpu kinds still REQUIRE resourceRef + sharePct (agent_slot leniency does not leak)', async () => {
+    const noRef = await setResourceAllotment(
+      { workspaceId: 'ws-1', fleetSlug: 'f', resourceKind: 'account', sharePct: 50 },
+      throwingSql,
+    );
+    expect(noRef.ok).toBe(false);
+    if (!noRef.ok) expect(noRef.refusal.code).toBe('resource_required');
+    const noShare = await setResourceAllotment(
+      { workspaceId: 'ws-1', fleetSlug: 'f', resourceKind: 'gpu', resourceRef: 'gpu-0' },
+      throwingSql,
+    );
+    expect(noShare.ok).toBe(false);
+    if (!noShare.ok) expect(noShare.refusal.code).toBe('invalid_share_pct');
   });
 });
 
