@@ -29,8 +29,17 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     ['credential', 'no valid credential found'],
     ['rate limit', 'you are being rate-limited, try again later'],
     ['connectivity', 'connect ECONNREFUSED 127.0.0.1:8788'],
+    // EI-6876: transient upstream model-API 5xx / overload — NOT the item's fault.
+    ['the live EI-6876 server-error-mid-response', 'API Error: Server error mid-response. The response above may be incomplete.'],
+    ['overloaded (529)', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}'],
+    ['internal server error (500)', 'API Error: 500 Internal server error'],
+    ['service unavailable (503)', 'upstream returned 503 Service Unavailable'],
+    ['bad gateway (502)', 'API Error: 502 Bad Gateway'],
+    ['gateway timeout (504)', 'API Error: 504 Gateway Timeout'],
   ])('classifies %s as env failure', (_label, stdout) => {
-    expect(isEnvFailureExit({ exitCode: 1, runtimeMs: 5_000, stdout }).env).toBe(true);
+    // A long substantive run (well past the DOA floor) so the ONLY thing that can
+    // class these env is the new upstream-5xx signature, not the sub-floor DOA rule.
+    expect(isEnvFailureExit({ exitCode: 1, runtimeMs: ENV_FAILURE_RUNTIME_FLOOR_MS + 500_000, stdout }).env).toBe(true);
   });
 
   it('a non-zero sub-floor near-empty exit is a dead-on-arrival env failure', () => {
@@ -127,6 +136,29 @@ describe('recordImplementWorkerExit (EI-404 back-edge + EI-406 rollback)', () =>
     expect(calls.markOrphaned[0][2]).toMatch(/env-failure/);
     // Tagged distinctly so the orphaned-dispatch watchdog excludes it from the "lane broken" signal.
     expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-env');
+  });
+
+  it('EI-6876: a transient upstream "Server error mid-response" rolls the attempt back + tags -env (not a "lane broken" orphan)', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await recordImplementWorkerExit(
+      {
+        dispatchId: 'd-6569',
+        itemId: 'EI-6569',
+        attempt: 1,
+        exitCode: 1,
+        runtimeMs: 866_000, // the real EI-6569 death: a long run, not a DOA
+        stdout: 'API Error: Server error mid-response. The response above may be incomplete.',
+      },
+      deps,
+    );
+    // Transient provider 5xx says nothing about the item → do NOT charge the attempt.
+    expect(res.charged).toBe(false);
+    expect(res.envReason).toBeTruthy();
+    expect(calls.mergePayload).toEqual([['EI-6569', { implementAttempts: 0 }]]);
+    // Tagged -env so the orphaned-dispatch watchdog EXCLUDES it from the "lane broken"
+    // signal — no self-amplifying EI (the loop that produced EI-6876).
+    expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-env');
+    expect(calls.markOrphaned[0][2]).toMatch(/env-failure/);
   });
 
   it('a credential outage on attempt 1 rolls back to 0 (never negative)', async () => {

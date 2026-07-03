@@ -58,6 +58,20 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   /subscription access/i,
   /\borg(anization)?\b.*(disabled|block)/i,
   /econnrefused|enotfound|etimedout|socket hang up/i,
+  // Transient UPSTREAM model-API 5xx / overload (EI-6876): the provider's own server
+  // erroring mid-call — a 500/502/503/504/529, "Overloaded", or a truncated
+  // "Server error mid-response" — is about the provider being briefly unhealthy, NOT
+  // the item, and self-heals on retry, exactly like the rate-limit/connectivity shapes
+  // above. The live EI-6876 death was "API Error: Server error mid-response. The
+  // response above may be incomplete." (exit 1 after 866s). Without these it charged
+  // the attempt AND tagged the death plain 'worker-exit-backedge', so the
+  // orphaned-dispatch watchdog read it as "the lane is broken" and filed a major EI —
+  // the very self-amplifying noise loop the resolved_by tagging below exists to avoid.
+  /server error/i, // "Server error mid-response" + "internal server error"
+  /overloaded/i, // Anthropic 529 overloaded_error
+  /service unavailable/i, // 503
+  /bad gateway/i, // 502
+  /gateway time-?out/i, // 504
 ];
 
 /**
