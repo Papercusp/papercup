@@ -67,7 +67,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     });
     const lines = out.split('\n');
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toContain('papercusp');
+    expect(lines[0]).toContain('◇ su-me');
     expect(lines[0]).toContain('◇ su-me'); // THIS agent's own shorthand id chip
     expect(lines[0]).toContain('⏸ manual ✉2');
     expect(lines[0]).toContain('🐝1');
@@ -158,7 +158,8 @@ describe('statusline-fleet render (fixture mode)', () => {
   it('activity-shaped fixture (no wake key) exercises the legacy fallback render', () => {
     const out = render({ activity });
     expect(out.split('\n')).toHaveLength(1);
-    expect(out).toContain('papercusp');
+    expect(out).toContain('◇ su-me');
+    expect(out).not.toContain('papercusp'); // #2: the static label was removed (owner ask)
     expect(out).toContain('2 peers');
     expect(out).not.toContain('💡');
   });
@@ -177,7 +178,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     );
     // su-9859e == the ownerLabel form (role prefix + first 5 of the uuid body),
     // NOT the last-6 (a21353) used for the ◆ peer chip.
-    expect(out).toContain('papercusp · ◇ su-9859e');
+    expect(out).toContain('◇ su-9859e');
     expect(out).not.toContain('a21353');
   });
 
@@ -192,8 +193,8 @@ describe('statusline-fleet render (fixture mode)', () => {
       self: { objective: 'wire objective display' },
     });
     const line1 = out.split('\n')[0];
-    // 🔭 leads — before 'papercusp' and the ◇ id chip.
-    expect(line1.startsWith('🔭 wire objective display · papercusp')).toBe(true);
+    // 🔭 leads — ahead of the ◇ id chip.
+    expect(line1.startsWith('🔭 wire objective display · ◇ su-me')).toBe(true);
     expect(line1).toContain('◇ su-me');
   });
 
@@ -208,7 +209,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       self: { objective: null },
     });
     expect(out).not.toContain('🔭');
-    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+    expect(out.split('\n')[0].startsWith('◇ su-me')).toBe(true);
   });
 
   it('a missing self key (older operator) → no 🔭 segment, render fails open', () => {
@@ -221,7 +222,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       tips: [],
     });
     expect(out).not.toContain('🔭');
-    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+    expect(out.split('\n')[0].startsWith('◇ su-me')).toBe(true);
   });
 
   it('a blank-string objective is treated as absent — no empty 🔭 segment', () => {
@@ -235,7 +236,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       self: { objective: '   ' },
     });
     expect(out).not.toContain('🔭');
-    expect(out.split('\n')[0].startsWith('papercusp')).toBe(true);
+    expect(out.split('\n')[0].startsWith('◇ su-me')).toBe(true);
   });
 
   it('a long objective is clipped with an ellipsis so it cannot swallow line 1', () => {
@@ -255,7 +256,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     // The clipped objective segment stays well under the full objective length.
     const objSeg = line1.split(' · ')[0];
     expect([...objSeg].length).toBeLessThanOrEqual(50);
-    expect(line1).toContain('papercusp');
+    expect(line1).toContain('◇ su-me');
   });
 
   it('the 🔭 objective also leads the legacy fallback line when present', () => {
@@ -263,7 +264,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     // segment leads the single-line legacy render too.
     const out = render({ activity, self: { objective: 'legacy path objective' } });
     expect(out.split('\n')).toHaveLength(1);
-    expect(out.startsWith('🔭 legacy path objective · papercusp')).toBe(true);
+    expect(out.startsWith('🔭 legacy path objective · ◇ su-me')).toBe(true);
     expect(out).toContain('2 peers');
   });
 
@@ -347,8 +348,42 @@ describe('statusline-fleet render (fixture mode)', () => {
   });
 
   it('no session-JSON model (fixture/no-stdin shape) → no 🧠 chip, render unchanged', () => {
-    // Settings are gated off in fixture mode, so a dev's ~/.claude/settings.json can't leak in here.
+    // No settings-fixture env here, so settings stay empty (a dev's ~/.claude/settings.json is
+    // read ONLY in a real, non-fixture session) — nothing to derive a label from.
     expect(render(quietGlance)).not.toContain('🧠');
+  });
+
+  // ── #1 model accuracy: the LIVE model is authoritative; the stale launch spec must not leak ──
+  it('#1: a stale launch settings.model does NOT contaminate the LIVE model (opus→sonnet drops [1m])', () => {
+    // The reported bug: after /model-switching to a non-1M sonnet, the persisted launch spec
+    // (opus[1m]:xhigh) still marked the live model [1m] and could override its family.
+    const out = render(
+      quietGlance,
+      { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'opus[1m]:xhigh', effortLevel: 'high' }) },
+      JSON.stringify({ model: { display_name: 'Sonnet 4.5', id: 'claude-sonnet-4-5' } }),
+    );
+    expect(out).toContain('🧠 sonnet·high'); // live sonnet wins; effort still from settings
+    expect(out).not.toContain('opus');
+    expect(out).not.toContain('[1m]');
+  });
+
+  it('#1: settings.model [1m] REINFORCES the live model ONLY when the family matches', () => {
+    const out = render(
+      quietGlance,
+      { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'opus[1m]:xhigh' }) },
+      JSON.stringify({ model: { display_name: 'Opus 4.8', id: 'claude-opus-4-8' }, effort: 'xhigh' }),
+    );
+    // display_name 'Opus 4.8' carries no '1m', but the launch spec opus[1m] is the SAME family → [1m] applies.
+    expect(out).toContain('🧠 opus[1m]·xhigh');
+  });
+
+  it('#1: with NO live model piped, the label falls back wholly to the launch settings.model', () => {
+    const out = render(
+      quietGlance,
+      { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'sonnet[1m]:high', effortLevel: 'high' }) },
+      '{}',
+    );
+    expect(out).toContain('🧠 sonnet[1m]·high');
   });
 });
 

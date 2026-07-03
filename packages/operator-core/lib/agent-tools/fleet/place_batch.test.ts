@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import placeBatchTool, { mergeBrief, executeBatch, buildPlacementWarnings, type ExecuteBatchDeps } from './place_batch';
+import placeBatchTool, {
+  mergeBrief,
+  executeBatch,
+  buildPlacementWarnings,
+  currentFilesFromLivePresence,
+  type ExecuteBatchDeps,
+} from './place_batch';
 import type { PlacementDecision, BatchPlacementPlan } from '../../fleet/batch-placement';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { AgentIdentity } from '../coordination/identity';
@@ -38,6 +44,21 @@ describe('mergeBrief — per-lane brief + Queen overlay (queen-wave-dispatch P-0
     expect(mergeBrief('   ', '')).toBeNull();
     expect(mergeBrief(null, undefined)).toBeNull();
     expect(mergeBrief('  ', 'real')).toBe('real');
+  });
+});
+
+describe('currentFilesFromLivePresence — EI-3061 peer-lane coverage', () => {
+  it('uses live peer currentFiles for touch-set exclusion and ignores stale/blank rows', () => {
+    expect(
+      currentFilesFromLivePresence([
+        { stale: false, currentFiles: ['packages/operator-core/lib/inference-gateway/gateway.test.ts', '  '] },
+        { stale: true, currentFiles: ['stale-owner.ts'] },
+        { stale: false, currentFiles: ['packages/operator-core/lib/inference-gateway/gateway.test.ts', 'apps/operator/live.ts'] },
+      ]),
+    ).toEqual([
+      'packages/operator-core/lib/inference-gateway/gateway.test.ts',
+      'apps/operator/live.ts',
+    ]);
   });
 });
 

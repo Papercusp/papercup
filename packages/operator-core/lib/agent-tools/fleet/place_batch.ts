@@ -33,6 +33,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
+import { listPresence } from '../coordination/presence';
 import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 import { softText, clampText, LIMITS } from '../limits';
@@ -151,7 +152,10 @@ export default defineTool({
     let tasks = gathered.tasks;
     let skipped = gathered.skipped;
     if (await getFlag(FLAGS.TOUCH_SET_EXCLUSION, 'system').catch(() => false)) {
-      const inUse = bees.flatMap((b) => b.currentFiles ?? []);
+      const inUse = [
+        ...bees.flatMap((b) => b.currentFiles ?? []),
+        ...(await gatherLivePresenceCurrentFiles(workspaceId)),
+      ];
       const { admitted, deferred } = admitConflictFree(tasks, inUse);
       tasks = admitted;
       if (deferred.length > 0) {
@@ -159,7 +163,7 @@ export default defineTool({
           ...skipped,
           ...deferred.map((t) => ({
             id: t.id,
-            reason: 'file-conflict — touch-set overlaps a running bee or an admitted sibling (P-002)',
+            reason: 'file-conflict — touch-set overlaps a running bee, active peer lane, or an admitted sibling (P-002/EI-3061)',
           })),
         ];
       }
@@ -232,6 +236,38 @@ export default defineTool({
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+}
+
+export interface PresenceFileRecord {
+  stale?: boolean | null;
+  currentFiles?: readonly string[] | null;
+}
+
+export function currentFilesFromLivePresence(records: readonly PresenceFileRecord[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of records) {
+    if (r.stale) continue;
+    for (const raw of r.currentFiles ?? []) {
+      const file = raw.trim();
+      if (!file || seen.has(file)) continue;
+      seen.add(file);
+      out.push(file);
+    }
+  }
+  return out;
+}
+
+async function gatherLivePresenceCurrentFiles(workspaceId: string): Promise<string[]> {
+  try {
+    return currentFilesFromLivePresence(await listPresence({ workspaceId }));
+  } catch (e) {
+    console.warn(
+      `[fleet:place_batch] presence file read failed — touch-set exclusion falls back to bee files only:`,
+      e instanceof Error ? e.message : e,
+    );
+    return [];
+  }
 }
 
 /**

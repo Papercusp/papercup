@@ -3265,7 +3265,14 @@ async function roleFlow(args, role, rolesMeta) {
     wrapperBin: bin,
     args: roleArgs,
     cwd: res.cwd,
-    envelopeEnv: { ...res.envelopeEnv, PAPERCUSP_AGENT_SESSION: '1' },
+    // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
+    // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
+    // live model object like Claude's statusline stdin). Omitted when no --model (default).
+    envelopeEnv: {
+      ...res.envelopeEnv,
+      PAPERCUSP_AGENT_SESSION: '1',
+      ...(args.model ? { PAPERCUSP_MODEL: args.model } : {}),
+    },
   });
 }
 
@@ -3563,6 +3570,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     envelopeEnv: {
       ...res.envelopeEnv,
       ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+      // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
+      // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
+      // live model object like Claude's statusline stdin). Omitted when no --model (default).
+      ...(args.model ? { PAPERCUSP_MODEL: args.model } : {}),
       // fleet-auto-mode (WI-1356): mark the running session as AUTO so the persona +
       // hooks read it at runtime (the durable prompt directive + turn-1 kickoff come
       // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
