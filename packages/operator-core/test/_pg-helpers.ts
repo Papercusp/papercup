@@ -25,6 +25,25 @@ export interface FreshPgDb {
   cleanup: () => Promise<void>;
 }
 
+/**
+ * Federation ordering key (mig-458 / EI-1698). Every hyperbee projection's
+ * PG-level LWW guard (ON CONFLICT … WHERE / DELETE WHERE) compares in one order
+ * space via harness_shared.fed_order_key(hlc, ts) — the SAME derivation as the
+ * in-process lwwPick. Hand-provisioned projection integration tests build only a
+ * subset of the schema and never run mig-458, so without seeding this every
+ * projection write/delete throws "function fed_order_key(text, bigint) does not
+ * exist". It's a pure, table-free, IMMUTABLE fn — safe + idempotent to seed in
+ * any fresh test DB after `CREATE SCHEMA harness_shared`. Keep the body
+ * word-for-word in sync with
+ * libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql.
+ */
+export const FED_ORDER_KEY_DDL = `
+  CREATE OR REPLACE FUNCTION harness_shared.fed_order_key(hlc text, ts bigint)
+  RETURNS text LANGUAGE sql IMMUTABLE AS $fed_order_key$
+    SELECT COALESCE(hlc, lpad(COALESCE(ts, 0)::text, 15, '0') || ':00000');
+  $fed_order_key$;
+`;
+
 export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
   const db = await createFreshTestDb({ prefix });
 
@@ -38,22 +57,7 @@ export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
     },
   });
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-
-  // Federation ordering key (mig-458 / EI-1698). Every hyperbee projection's
-  // PG-level LWW guard (ON CONFLICT … WHERE / DELETE WHERE) compares in one order
-  // space via harness_shared.fed_order_key(hlc, ts) — the SAME derivation as the
-  // in-process lwwPick. These hand-provisioned integration DBs apply only a subset
-  // of migrations and never run mig-458, so the function must be installed here or
-  // every projection write throws "function fed_order_key(text, bigint) does not
-  // exist". It's a pure, table-free, IMMUTABLE fn — safe + idempotent to seed in
-  // every fresh test DB. Keep the body word-for-word in sync with
-  // libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql.
-  await sql.unsafe(`
-    CREATE OR REPLACE FUNCTION harness_shared.fed_order_key(hlc text, ts bigint)
-    RETURNS text LANGUAGE sql IMMUTABLE AS $fed_order_key$
-      SELECT COALESCE(hlc, lpad(COALESCE(ts, 0)::text, 15, '0') || ':00000');
-    $fed_order_key$;
-  `);
+  await sql.unsafe(FED_ORDER_KEY_DDL);
 
   const cleanup = async () => {
     await sql.end({ timeout: 5 });

@@ -42,21 +42,24 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional().describe('max receipts (default 100)'),
   }),
   async handler(args, ctx) {
+    const json = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    });
     const ident = resolveAgentIdentity(ctx);
     const ws = resolveP2pGrantWorkspace(ident.workspaceId);
     if (!ws) {
-      return {
+      return json({
         ok: false,
         error: 'workspace_unresolved',
         detail:
           "p2p:trace needs a concrete workspace partition (WI-1564) — an un-scoped session can't name which hive-home partition to read. Re-run from a workspace-scoped session or pass a scoped identity.",
-      };
+      });
     }
     const [receipts, counters] = await Promise.all([
       listP2pReceipts({ workspaceId: ws, hiveSlug: args.hive, offerId: args.offerId ?? null, limit: args.limit }),
       listRefusedOpCounters({ workspaceId: ws, hiveSlug: args.hive }),
     ]);
-    return {
+    return json({
       ok: true,
       hive: args.hive,
       offerId: args.offerId ?? null,
@@ -83,6 +86,6 @@ export default defineTool({
         receipts.length === 0 && counters.length === 0
           ? 'no P2P receipts or refused-op counters for this scope — either nothing was refused, or the action predates mig 468.'
           : undefined,
-    };
+    });
   },
 });

@@ -32,6 +32,7 @@ import {
   type JoinState,
   type JoinStepId,
 } from '../join-shared-harness';
+import { workspacesRoot } from '../../workspace-registry';
 
 // ─── shared key fixture ───────────────────────────────────────────────────────
 
@@ -154,10 +155,56 @@ describe('step2_cloneRepo', () => {
     });
 
     expect(result.cloneDir).toContain(slug);
+    // WI-1705: the clone MUST be bounded — a hard timeout plus git's low-speed
+    // abort — so a stalled TCP transfer can never hang the join forever (which
+    // wedged the canonical dogfood join at 40% and held the bootstrap latch).
     expect(execFileFn).toHaveBeenCalledWith(
       'git',
       expect.arrayContaining(['clone', '--depth', '1', 'https://github.com/myorg/myrepo']),
+      expect.objectContaining({
+        timeout: expect.any(Number),
+        env: expect.objectContaining({
+          GIT_HTTP_LOW_SPEED_LIMIT: expect.any(String),
+          GIT_HTTP_LOW_SPEED_TIME: expect.any(String),
+        }),
+      }),
     );
+  });
+
+  it('WI-1705: removes a PARTIAL cloneDir (no resolvable HEAD) and re-clones instead of adopting it', async () => {
+    const slug = 'test-clone-partial-' + Date.now();
+    const { mkdir: realMkdir, rm: realRm } = await import('node:fs/promises');
+    const { resolve: presolve, join: pjoin } = await import('node:path');
+    const cloneDir = pjoin(presolve(workspacesRoot(), 'clones'), slug);
+    await realMkdir(cloneDir, { recursive: true }); // a partial dir: exists, not a git repo
+    try {
+      const execFileFn = vi
+        .fn()
+        // 1st call: rev-parse HEAD validation → fails (not a repo)
+        .mockRejectedValueOnce(new Error('fatal: not a git repository'))
+        // 2nd call: the re-clone → succeeds
+        .mockResolvedValue({ stdout: '', stderr: '' });
+      const result = await step2_cloneRepo({
+        githubFullName: 'myorg/myrepo',
+        slug,
+        execFileFn,
+        mkdirFn: vi.fn().mockResolvedValue(undefined),
+      });
+      expect(result.cloneDir).toBe(cloneDir);
+      // validation ran, then a REAL clone — the partial dir was not adopted
+      expect(execFileFn).toHaveBeenNthCalledWith(
+        1,
+        'git',
+        ['-C', cloneDir, 'rev-parse', '--verify', 'HEAD'],
+        expect.anything(),
+      );
+      expect(execFileFn).toHaveBeenCalledTimes(2);
+      expect(execFileFn.mock.calls[1]?.[1]).toEqual(
+        expect.arrayContaining(['clone', '--depth', '1']),
+      );
+    } finally {
+      await realRm(cloneDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   it('throws JoinStepError on clone failure', async () => {

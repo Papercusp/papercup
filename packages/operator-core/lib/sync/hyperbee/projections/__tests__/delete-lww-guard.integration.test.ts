@@ -133,7 +133,14 @@ function presencePut(userId: number, machine: string, ts: number): OpEnvelope {
       harness_slug: HARNESS,
       github_user_id: userId,
       machine_label: machine,
-      device_pubkey: 'dev-' + userId,
+      // device_pubkey MUST equal the op author (AUTHOR/writerPubkey). Unlike the
+      // other composite-key deleters, presence.deleteFromPg also enforces the
+      // D-013/H2 author-scope guard (`device_pubkey = provenance.authorPubkey`) so
+      // a member can only tombstone its OWN presence rows. A device announces AND
+      // tombstones its presence with the SAME key, so the fixture must too —
+      // otherwise the author-scope filter (not the fed_order_key LWW floor this
+      // test targets) is what rejects the del, masking the behavior under test.
+      device_pubkey: AUTHOR,
       intent: 'working',
       current_view: null,
       last_seen_at: ts,

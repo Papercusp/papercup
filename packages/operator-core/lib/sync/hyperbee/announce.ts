@@ -75,6 +75,21 @@ export interface AnnounceBody {
   /** Epoch-ms timestamp at announce-build time. Covered by sig; used for
    *  freshness check in verifyAnnounce (D-007 replay hardening). */
   ts: number;
+  /** P-006 FederationScope disclosure (design §5.2, ratified D-017): the
+   *  sender's SCOPED log declarations, disclosed PER CONNECTION to scope
+   *  members only — the sender filters this list against each remote peer's
+   *  verified identity BEFORE building the frame (sender-side scoping; a
+   *  non-member never learns a scoped core key). Each entry is the canonical
+   *  packed string `scope_id|log_core_key_hex|scope_epoch`
+   *  (scope-disclosure.ts owns pack/parse) — an array of STRING PRIMITIVES so
+   *  the fixed-field-order JCS-equivalence argument holds unchanged (the
+   *  hive-announce `member_topics: string[]` precedent). OPTIONAL + additive
+   *  and sig-covered only when non-empty, so an absent/empty field signs the
+   *  exact bytes a pre-P-006 frame did (the harness_slug A-003 pattern).
+   *  D-017 n1: a roster mutation re-discloses on LIVE connections — the
+   *  connection layer re-announces with the updated list (scope-disclosure.ts
+   *  computeRedisclosure). */
+  scoped_logs?: string[];
   /** Optional random nonce for additional replay resistance. Covered by sig. */
   nonce?: string;
 }
@@ -98,7 +113,7 @@ const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
  */
 export function announceSigningBytes(body: AnnounceBody): Buffer {
   // Build ordered object — nonce only when present (undefined → omit key).
-  const ordered: Record<string, string | number> = {
+  const ordered: Record<string, string | number | string[]> = {
     device_pubkey: body.device_pubkey,
     github_user_id: body.github_user_id,
     github_login: body.github_login,
@@ -112,6 +127,13 @@ export function announceSigningBytes(body: AnnounceBody): Buffer {
   // pre-(a′) frame, so existing signatures verify unchanged (backward compat).
   if (typeof body.harness_slug === 'string') {
     ordered.harness_slug = body.harness_slug;
+  }
+  // P-006 §5.2 (D-017): scoped-log disclosures are signed-over when present so
+  // a relay cannot graft/strip a scope disclosure in transit. Order-significant
+  // string[] (the member_topics precedent); empty → omitted, so a frame with no
+  // scoped logs signs byte-identical to a pre-P-006 frame (backward compat).
+  if (Array.isArray(body.scoped_logs) && body.scoped_logs.length > 0) {
+    ordered.scoped_logs = body.scoped_logs;
   }
   if (typeof body.nonce === 'string') {
     ordered.nonce = body.nonce;
@@ -181,6 +203,16 @@ export function verifyAnnounceDetailed(
       typeof frame.attestation_gist_id !== 'string' ||
       typeof frame.log_core_key !== 'string' ||
       typeof frame.sig !== 'string'
+    ) {
+      return { ok: false, reason: 'malformed' };
+    }
+    // P-006 §5.2: when present, scoped_logs must be an array of strings —
+    // entry-level parsing/membership is the disclosure layer's job
+    // (scope-disclosure.ts, fail-closed per entry), but a structurally alien
+    // field is a malformed frame.
+    if (
+      frame.scoped_logs !== undefined &&
+      (!Array.isArray(frame.scoped_logs) || frame.scoped_logs.some((e) => typeof e !== 'string'))
     ) {
       return { ok: false, reason: 'malformed' };
     }

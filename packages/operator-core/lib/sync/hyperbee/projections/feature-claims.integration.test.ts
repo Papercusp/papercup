@@ -17,6 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
+import { FED_ORDER_KEY_DDL } from '../../../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -47,6 +48,10 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // Federation ordering key (mig-458 / EI-1698) — projection LWW guards call
+  // harness_shared.fed_order_key(hlc, ts); this hand-provisioned DB skips mig-458,
+  // so seed it or every projection write/delete throws "function … does not exist".
+  await rootSql.unsafe(FED_ORDER_KEY_DDL);
   // FAITHFUL to baseline: seq/github_user_id bigint, claimed_at timestamptz, 4-col PK.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.feature_claims (

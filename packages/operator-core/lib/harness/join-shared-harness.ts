@@ -31,7 +31,7 @@
 import { execFile as _execFile } from 'node:child_process';
 import { workspacesRoot } from '../workspace-registry';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -262,7 +262,7 @@ export async function step2_cloneRepo(opts: {
   execFileFn?: (
     file: string,
     args: string[],
-    opts?: { cwd?: string; timeout?: number },
+    opts?: { cwd?: string; timeout?: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ stdout: string; stderr: string }>;
   mkdirFn?: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
 }): Promise<CloneRepoResult> {
@@ -274,16 +274,42 @@ export async function step2_cloneRepo(opts: {
   const cloneDir = join(clonesBase, slug);
 
   if (existsSync(cloneDir)) {
-    // Already cloned — idempotent.
-    return { cloneDir };
+    // Adopt an existing clone ONLY when it is a real, resolvable git repo. A
+    // PARTIAL dir (a clone killed mid-transfer — observed live on the Mac VM,
+    // WI-1705: a QEMU user-net stall left a tmp_pack and no HEAD) must NOT be
+    // adopted as "already cloned" — that strands every later join step on a
+    // broken checkout. Validate cheaply; remove + re-clone on failure.
+    try {
+      await exF('git', ['-C', cloneDir, 'rev-parse', '--verify', 'HEAD'], { timeout: 15_000 });
+      return { cloneDir }; // valid repo — idempotent adopt
+    } catch {
+      await rm(cloneDir, { recursive: true, force: true });
+    }
   }
 
   await mkF(clonesBase, { recursive: true });
   const cloneUrl = buildCloneUrl(githubFullName, token);
   try {
-    await exF('git', ['clone', '--depth', '1', cloneUrl, cloneDir]);
+    // WI-1705: bound the clone. Without these a stalled TCP transfer (flaky
+    // NAT / dead socket) hangs `git clone` FOREVER — which wedged the canonical
+    // dogfood join at 40% AND held the bootstrap single-flight latch so no
+    // retry could ever fire. Low-speed abort (<1KB/s for 60s → git exits) plus
+    // a 30-min hard ceiling (a --depth 1 member clone is ~GBs at worst).
+    await exF('git', ['clone', '--depth', '1', cloneUrl, cloneDir], {
+      timeout: 30 * 60_000,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_HTTP_LOW_SPEED_LIMIT: '1000',
+        GIT_HTTP_LOW_SPEED_TIME: '60',
+      },
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
+    // A failed/aborted clone can leave a partial dir behind (git cleans up on
+    // its own errors but NOT on an external kill/timeout) — remove it so the
+    // NEXT attempt re-clones instead of adopting the wreck via existsSync.
+    await rm(cloneDir, { recursive: true, force: true }).catch(() => {});
     // redactToken: never let an embedded x-access-token reach an error surface.
     throw new JoinStepError('clone_repo', 'clone_failed', redactToken(msg).slice(0, 300));
   }
