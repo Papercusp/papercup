@@ -198,3 +198,49 @@ describe('emitWorkItemBlockedEvent', () => {
     expect(emit.mock.calls[0][0]).toMatchObject({ to: [] });
   });
 });
+
+describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', () => {
+  it('fires work-item:status:<id> carrying prevState → state on the payload', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    emitWorkItemStatusEvent(wi({ id: 'WI-9', state: 'wip', title: 'the work' }), 'todo', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:status:WI-9',
+      source: 'work-items',
+      summary: 'WI-9 todo → wip: the work',
+      payload: expect.objectContaining({ id: 'WI-9', state: 'wip', prevState: 'todo' }),
+    });
+  });
+
+  it('is an awaiter-only key — no `to` push (the audience is whoever awaited it)', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    // assignedBy set, but a general status change must NOT spam the delegator —
+    // only the specific done/blocked keys target the delegator.
+    emitWorkItemStatusEvent(wi({ id: 'WI-10', assignedBy: 'su-parent', assignee: 'su-child' }), 'wip', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls[0][0].to).toBeUndefined();
+  });
+
+  it('never rejects on an emit failure (warns; a state write must never break)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw new Error('engine down'); });
+    expect(() => emitWorkItemStatusEvent(wi(), 'todo', { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('status-event'));
+    warn.mockRestore();
+  });
+
+  it('swallows expected teardown noise WITHOUT warning (CONNECTION_ENDED / partial schema)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' }); });
+    expect(() => emitWorkItemStatusEvent(wi(), 'todo', { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});

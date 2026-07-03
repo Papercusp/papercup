@@ -1053,6 +1053,20 @@ export async function setWorkItemState(
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
+  // event-await-discoverability-and-coverage P-101: EVERY real status transition
+  // fires the general `work-item:status:<id>` — the "wake me on any change of
+  // WI-X" signal (a dependency's progress, a peer's item). Complements the
+  // specific done/blocked/unblocked/claimed keys below; the catalog's
+  // one-entry-one-family model keeps them from being awaited together, so no
+  // double-wake. Fire-and-forget + lazy import — an emit failure never breaks
+  // the write.
+  if (result && result.state !== wi.state) {
+    const transitioned = result;
+    const prevState = wi.state;
+    void import('./work-items-events')
+      .then((m) => m.emitWorkItemStatusEvent(transitioned, prevState))
+      .catch(() => {});
+  }
   // await-event-primitive P-012/P-013: a SETTLED item fires
   // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
   // last blocker cleared). Fire-and-forget + lazy import (work-items-events

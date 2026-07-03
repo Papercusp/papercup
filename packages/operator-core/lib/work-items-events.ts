@@ -113,6 +113,43 @@ export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsD
     .catch((e: unknown) => failSoft(`blocked-event for ${wi.id}`, e));
 }
 
+/**
+ * `work-item:status:<id>` — fired on EVERY real status transition of a work item
+ * (event-await-discoverability-and-coverage-2026-07-03 P-101). The GENERAL
+ * transition signal that answers "wake me on ANY change of WI-X" — a dependency's
+ * progress, a peer's item, an issue moving through triage — in ONE await, instead
+ * of polling `work_items:get`. It CO-fires with the specific keys
+ * (`work-item:done` / `:blocked` / `:unblocked` / `:claimed`); per the catalog's
+ * one-entry-one-family model those are never awaited together, so an agent picks
+ * either the general key OR a specific one and is woken exactly once per
+ * transition. `payload.prevState` + `payload.state` carry the edge so the waiter
+ * needn't re-read. Fire-and-forget; never throws.
+ */
+export function emitWorkItemStatusEvent(
+  wi: WorkItem,
+  prevState: string,
+  deps: Pick<SettledEventsDeps, 'emit'> = {},
+): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: `work-item:status:${wi.id}`,
+        summary: `${wi.id} ${prevState} → ${wi.state}: ${wi.title}`,
+        payload: {
+          id: wi.id,
+          state: wi.state,
+          prevState,
+          kind: wi.kind,
+          harness: wi.harness,
+          title: wi.title,
+        },
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`status-event for ${wi.id}`, e));
+}
+
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {
   return SETTLED_STATES[wi.family]?.includes(wi.state) ?? false;
 }

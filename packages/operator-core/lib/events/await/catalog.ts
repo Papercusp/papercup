@@ -136,7 +136,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     params: [{ name: 'id', required: true, describe: 'the work-item id, e.g. WI-1234' }],
     describe: 'ANY status transition of a work item (todo/wip/blocked/done/…) — wake on every change of WI-X.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts)',
-    exists: false, // P-101 adds the general per-transition emit
+    exists: true, // P-101: emitWorkItemStatusEvent fires from setWorkItemState on every transition
     replacesPoll: 'polling work_items:get for a peer/dependency item',
     sugar: 'work-item:await',
   },

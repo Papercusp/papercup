@@ -95,8 +95,8 @@ describe('renderCatalog', () => {
     expect(byFamily['checkpoint'].awaitable_now).toBe(true); // release:green
     expect(byFamily['deploy-failed'].awaitable_now).toBe(true); // release:deploy-failed
     expect(byFamily['work-item-done'].awaitable_now).toBe(true); // work-item:done
-    // Phase-2 additions are not-yet-wired:
-    expect(byFamily['work-item'].awaitable_now).toBe(false); // work-item:status (P-101)
+    expect(byFamily['work-item'].awaitable_now).toBe(true); // work-item:status — P-101 LANDED (setWorkItemState emit)
+    // Phase-2 additions still not-yet-wired:
     expect(byFamily['git-sync'].awaitable_now).toBe(false); // git-sync:committed (P-102)
     expect(byFamily['fleet-drained'].awaitable_now).toBe(false); // P-105
   });
