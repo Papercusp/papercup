@@ -33,8 +33,10 @@ already runs on its own machinery (`hive:declare-wake` / `overwatch:declare-wake
 and is explicitly out of scope — never `loop:arm` from an autonomous-fleet agent
 (plan `loop-routines-interval-recurrence-2026-06-20`, D-007).
 
-> Gated by the **`papercusp-loops`** flag (default OFF until the engine is verified
-> green end-to-end). While OFF, `loop:arm` returns `loops_disabled`; `loop:end` /
+> Gated by the **`papercusp-loops`** flag — **DEFAULT ON** (WI-612; owner-flipped
+> live 2026-06-23, and NOT in `DARK_FLAGS`, so the derived `FLAG_DEFAULTS` inversion
+> enables it for fresh hosts too — see `libs/flags/src/types.ts` `LOOPS`). Only if a
+> host explicitly turns it OFF does `loop:arm` return `loops_disabled`; `loop:end` /
 > `loop:status` always work.
 
 ## Three words: plan · schedule · loop
