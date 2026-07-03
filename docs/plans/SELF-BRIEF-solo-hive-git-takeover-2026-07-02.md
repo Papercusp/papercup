@@ -466,3 +466,20 @@ Executor must setForeignWorkspaceBaseSha? no — recordBaseSha seam handles it; 
 setState/attachSession helper — check foreign-workspaces.ts for a state-transition fn (saw
 setForeignWorkspaceBaseSha only; may need to ADD attachForeignSession(offerId, sessionId,
 state:'active') — small store addition, fine).
+
+### ✅ P-104 CLOSED — 2026-07-03 ~15:02Z (plan rev 103; WI-1735 passed). Do NOT redo.
+Shipped: lib/p2p/offer-executor.ts (executeClaimedOffer: H9 fence → D-007 gate → ONE
+provisionForeignClone → C2 envelope → launchSession SEAM + M14 label + bindForeignSession →
+H11 buildClaimLedgers; host-side only, no MCP tool) + lib/p2p/foreign-supervision.ts
+(decideSupervision pure H12/H13 + superviseForeignSessions sweep + windDownForeignSession
+X8 primitive) + setForeignWorkspaceState fromStates guard (foreign-workspaces.ts; reaper
+updated to pass REAPABLE_STATES). NOTE: bindForeignSession/setForeignWorkspaceState already
+existed — the "attachForeignSession needed" note above was stale. Tests 34/34 + adjacent
+19/19 + tsc slice clean; su-c2428 verified 83-test P-104×P-107×P-202 integration green.
+DEFERRED (in WI-1735 record): production wiring of the 4 required injections + the
+tier:ephemeral blueprint system:p2p-foreign-supervision — HELD because owner is mid-reshape
+of the worker-seat/foreign-spawn model (35c3b heads-up ~14:55Z); the seams are the landing
+zone. 35c3b holds P-201/P-206 (active, don't sweep); 754bf→P-301, 80b66→P-302/303, c2428
+hunting next open item. NEXT LANE on wake: P-105 isolation epic (X1 loopback boundary;
+likely owner input on OS-user/userns/netns tier — D-015) OR pause p2p spawn-side work until
+the owner reshape settles and pick task #2 (close per-hive-git plan) — decide at orient.

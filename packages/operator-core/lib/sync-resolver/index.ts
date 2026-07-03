@@ -3257,6 +3257,32 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // `p2p.allotments` — the /res Resources board (P-201): every resource
+  // allotment in this workspace — a host handing its account pools (remote axis)
+  // + local GPUs (local axis) to the fleets in its hive tree, each with a share
+  // cap. LOCAL/per-machine (M19), so workspace-scoped via activeWorkspaceId()
+  // (NOT hive-federated like p2p.grants). No args → the board reads the whole
+  // workspace; includePaused so it can render the Contributing/Paused control,
+  // and the client groups rows by fleet + resourceKind. Writes go through the
+  // res-allotment-set loopback route, which re-invalidates this NAME (name-only
+  // emit, like p2p.settings).
+  'p2p.allotments': {
+    resolve: async () => {
+      try {
+        const { listResourceAllotments } = await import('../p2p/resource-allotments');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return await listResourceAllotments({ workspaceId: activeWorkspaceId(), includePaused: true });
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
+          console.warn('[p2p.allotments] read failed:', msg);
+        }
+        return []; // pre-migration-473 degrades to the empty board, never a 500
+      }
+    },
+  },
+
   // `p2p.audit` — the P-002 Audit section: p2p:*-prefixed audit_log rows
   // (kill-switch flips + starter-profile applies now; grant changes + refusal
   // receipts join as P-001/P-004 land — same prefix convention).
