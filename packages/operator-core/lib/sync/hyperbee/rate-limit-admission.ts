@@ -31,6 +31,21 @@
 
 import type { OpEnvelope } from './op-envelope-types';
 import { capForClass, type MemberRateLimiter, type RateCaps, type RateClass } from './rate-limiter';
+import type { EliteNicheRateLimiter } from './elite-niche-rate-limiter';
+
+/** The op.table (projection tag) of a federated QD elite put — the only op the
+ *  per-source-per-niche cap (P-014) applies to. For such an op the wire key
+ *  (`op.hbKey`) IS the niche_key (mig 464: "wire key == niche_key"). */
+export const GYM_QD_ELITES_TAG = 'gym-qd-elites-by-niche';
+
+/** Resolve the per-source-per-niche elite cap (P-014). `undefined` (⇒ unlimited)
+ *  for an unset / negative / non-finite value; a finite `>= 0` (incl. 0 =
+ *  block-all elite puts to any one niche) otherwise. Mirrors `capForClass`. */
+export function capForNiche(caps: RateCaps | null | undefined): number | undefined {
+  const raw = caps?.elitesPerNichePerHour;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return undefined;
+  return raw;
+}
 
 /**
  * Tables NEVER rate-limited:
@@ -108,8 +123,9 @@ export function originOf(op: OpEnvelope, ownLogKeyHex: string): 'local' | 'remot
 
 export interface RateDropInfo {
   authorId: number | null;
-  /** The class that tripped, or 'unattributable' for a fail-closed drop. */
-  cls: RateClass | 'unattributable';
+  /** The class that tripped, `'unattributable'` for a fail-closed drop, or
+   *  `'niche'` for the per-source-per-niche elite cap (P-014). */
+  cls: RateClass | 'unattributable' | 'niche';
   cap: number | null;
   table?: string;
   hbKey?: string;
@@ -118,6 +134,14 @@ export interface RateDropInfo {
 export interface RateLimitedApplyDeps {
   /** The pure decider (one instance per booted harness). */
   limiter: MemberRateLimiter;
+  /**
+   * P-014: the per-(source-author, niche) elite decider. When present AND
+   * `caps.elitesPerNichePerHour` is set, a federated elite put is ALSO gated on how
+   * many the source has landed in that niche this window (the concentration axis the
+   * per-source `rowsPerHour` cap can't express). Omit ⇒ no per-niche enforcement
+   * (tier-1 backward-compatible; every other op is unaffected).
+   */
+  nicheLimiter?: EliteNicheRateLimiter;
   /** This harness's own writable log keyHex — to detect (and skip) local ops. */
   ownLogKeyHex: string;
   /**
@@ -146,7 +170,7 @@ export interface RateLimitedApplyDeps {
 export function makeRateLimitedApply(
   deps: RateLimitedApplyDeps,
 ): (op: OpEnvelope) => Promise<boolean> {
-  const { limiter, ownLogKeyHex, resolveAuthorId, currentCaps, apply, onDrop } = deps;
+  const { limiter, nicheLimiter, ownLogKeyHex, resolveAuthorId, currentCaps, apply, onDrop } = deps;
 
   const safeOnDrop = (info: RateDropInfo): void => {
     if (!onDrop) return;
@@ -168,27 +192,40 @@ export function makeRateLimitedApply(
     const classes = classifyOpRate(op);
     if (classes.length === 0) return apply(op); // ephemeral / governance / unknown
 
-    // Are any of this op's classes actually capped? If not, skip (passthrough).
+    // Are any of this op's classes actually capped?
     const capped = classes
       .map((cls) => ({ cls, cap: capForClass(caps, cls) }))
       .filter((c) => c.cap !== undefined) as Array<{ cls: RateClass; cap: number }>;
-    if (capped.length === 0) return apply(op);
 
-    // A cap IS in force for this op's class(es). Attribute the author.
+    // P-014: is the per-source-per-niche elite cap in force for THIS op? (Only a
+    // federated elite put, only when a limiter + an `elitesPerNichePerHour` cap are
+    // present.) The wire key of an elite put IS the niche_key (mig 464).
+    const nicheCap =
+      nicheLimiter !== undefined && op.type === 'put' && op.table === GYM_QD_ELITES_TAG
+        ? capForNiche(caps)
+        : undefined;
+
+    // No class cap AND no niche cap in force ⇒ passthrough (zero behavior change).
+    if (capped.length === 0 && nicheCap === undefined) return apply(op);
+
+    // A cap IS in force. Attribute the author (needed by BOTH deciders).
     const authorId = resolveAuthorId(op.sourceLogKeyHex!);
     if (authorId === null) {
       // FAIL-CLOSED: an unattributable op must not bypass an in-force cap.
       safeOnDrop({
         authorId: null,
         cls: 'unattributable',
-        cap: capped[0]?.cap ?? null,
+        cap: capped[0]?.cap ?? nicheCap ?? null,
         table: op.table,
         hbKey: op.hbKey,
       });
       return false;
     }
 
-    const outcome = limiter.decide(authorId, buildOpId(op), op.ts ?? 0, capped);
+    const opId = buildOpId(op);
+    // Per-source class caps first (empty `capped` ⇒ decide returns 'unlimited', no
+    // state touched). A tripped class conclusively drops.
+    const outcome = limiter.decide(authorId, opId, op.ts ?? 0, capped);
     if (outcome === 'drop') {
       // Conclusive drop (mirrors the slug-filter's `out_of_scope`): not merged,
       // never canonical. Report the tightest tripped class for observability.
@@ -201,6 +238,22 @@ export function makeRateLimitedApply(
         hbKey: op.hbKey,
       });
       return false;
+    }
+
+    // P-014 per-niche axis, checked AFTER the class caps admit. The (author, niche)
+    // decider is a separate deterministic counter (elite-niche-rate-limiter.ts):
+    // convergent, but not atomically joined with the class decide above — so a
+    // niche-dropped op has already spent a class `rows` slot. That is deterministic
+    // on every honest peer (⇒ convergent) and only ever bites an OVER-cap source
+    // (honest under-cap traffic trips neither axis), i.e. it fails toward stricter,
+    // which is the correct direction for an anti-farming cap.
+    if (nicheCap !== undefined) {
+      const nicheKey = op.hbKey ?? '';
+      const nicheOutcome = nicheLimiter!.decide(authorId, nicheKey, opId, op.ts ?? 0, nicheCap);
+      if (nicheOutcome === 'drop') {
+        safeOnDrop({ authorId, cls: 'niche', cap: nicheCap, table: op.table, hbKey: op.hbKey });
+        return false;
+      }
     }
     return apply(op);
   };

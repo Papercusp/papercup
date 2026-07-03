@@ -1,7 +1,7 @@
 {
   "createdAt": "2026-06-07T00:07:55.932Z",
-  "updatedAt": "2026-07-03T12:52:00.000Z",
+  "updatedAt": "2026-07-03T12:56:05.432Z",
   "description": "Baseline type error count for operator-core. New errors above this count will gate CI.",
   "note": "2026-07-03: PINNED at 224 to absorb a known transient. The true operator-core error count SHUFFLES between 223 and 224 under unrelated type-graph perturbations (concurrent fleet edits, intermediate typechecks) — the 224th is a pre-existing deep-instantiation/test-fixture ripple (e.g. inference-gateway/observability.test.ts GatewayStats), NOT a new regression. Pinning the HIGHER value (224) makes the gate pass at both 223 and 224, eliminating false-red flapping; pinning 223 throws a false regression every time it shuffles back to 224. DO NOT let a bare `lint:tsc` run auto-ratchet this to 223 — it did exactly that twice on 2026-07-03 (su-4f4f5 observed a run() ratchet 224->223 while diagnosing a transient 228 that was itself concurrent-edit noise; re-restored to 224). If you genuinely drive the count to a STABLE 223 (verified across several clean runs with a quiet tree), ratchet it then, not off one transient dip. RE-RESTORED to 224 by su-01386 (2026-07-03) after a bare-run ratchet to 223 had left the gate false-red at 224: verified P-006/W4 (pool-pressure.ts + routines-workflow.ts + system-health compute/types/thresholds) adds ZERO tsc errors — no error names any of those files; the 224th is again the documented observability.test.ts GatewayStats ripple. Net new errors from P-006/W4: 0. (Earlier Lane T / WI-1813 work also verified net-0.)",
-  "operatorCoreErrorCount": 224
+  "operatorCoreErrorCount": 223
 }

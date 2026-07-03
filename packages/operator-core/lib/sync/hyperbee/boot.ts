@@ -121,6 +121,7 @@ import type { HivePolicy } from '../../hive-policy-schema';
 import { getHivePolicy } from '../../hive-policy-store';
 import { isContentTakenDown } from '../../hive-moderation';
 import { MemberRateLimiter } from './rate-limiter';
+import { EliteNicheRateLimiter } from './elite-niche-rate-limiter';
 import { registerRateLimiter, unregisterRateLimiter } from './rate-limiter-registry';
 import { makeRateLimitedApply } from './rate-limit-admission';
 import { makePolicyEnforcedApply } from './policy-admission';
@@ -969,6 +970,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // reused; the owner policy is re-snapshotted per pass below. Inert until an owner
   // sets a rate cap (no caps ⇒ the wrapper is a pure passthrough).
   const rateLimiter = new MemberRateLimiter();
+  // F1-6/P-014: the sibling per-(source-author, niche) elite decider — STATEFUL like
+  // rateLimiter (its per-(author,niche) tumbling windows persist across merge passes),
+  // inert until an owner sets `hive_policy.rate.elitesPerNichePerHour`. Bounds a
+  // source's elite concentration on ONE niche (the novelty-gift farm the per-source
+  // rowsPerHour cap can't express); see elite-niche-rate-limiter.ts.
+  const eliteNicheLimiter = new EliteNicheRateLimiter();
   // WI-253 (findings-EN-4.md "EN-1 GUI snapshot surface" fast-follow): register this
   // instance into the process-local registry so the owner-facing "member X at N/cap"
   // observability endpoint can read it. Additive only — the merge seam below still
@@ -1828,6 +1835,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             isContentTakenDown: (policy, op) => isContentTakenDown(policy, op.hbKey ?? ''),
             apply: makeRateLimitedApply({
               limiter: rateLimiter,
+              nicheLimiter: eliteNicheLimiter,
               ownLogKeyHex: ownLog.keyHex,
               resolveAuthorId: (k) => admittedIdentities.get(k)?.githubUserId ?? null,
               currentCaps: () => ownerPolicy.rate ?? null,

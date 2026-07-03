@@ -9,11 +9,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { OpEnvelope } from './op-envelope-types';
 import { MemberRateLimiter, type RateCaps } from './rate-limiter';
+import { EliteNicheRateLimiter } from './elite-niche-rate-limiter';
 import {
   makeRateLimitedApply,
   classifyOpRate,
   originOf,
   buildOpId,
+  capForNiche,
+  GYM_QD_ELITES_TAG,
   CONTENT_TABLE_TAGS,
   NEVER_RATE_LIMITED_TABLE_TAGS,
 } from './rate-limit-admission';
