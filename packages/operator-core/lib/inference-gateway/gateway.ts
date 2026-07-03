@@ -785,6 +785,22 @@ export interface GatewayStats {
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
   selfHealReclaims: number;
+  /** P-005/W3 slot-leak RECURRENCE GUARD (D-001): count of self-heal sweeps where the held-slot counter
+   *  (`inFlight`) and the in-flight registry (`inFlightTracked`) disagreed in a way the valve could NOT
+   *  reclaim — a leaked admission slot surfaced as a COUNTED signal instead of a silent wedge→watchdog
+   *  restart. Two shapes are counted: the registry outliving its slot (structurally impossible → a broken
+   *  decrement path), and a wedge with slots held but nothing registered to reclaim (an un-registered leak
+   *  the valve is blind to). 0 in healthy operation; any climb is a page (folded into the gateway health
+   *  vector / Infra SLO). De-bounced (only a mismatch sustained ≥2 sweeps counts) so a normal
+   *  admit/complete transient never trips it. */
+  slotReconcileMismatch: number;
+  /** Live count of requests tracked in the self-heal in-flight registry — the reconcile DENOMINATOR against
+   *  `inFlight` (held admission slots). The registry is a strict subset of held slots, so a persistent
+   *  `inFlight` > this while wedged = an un-reclaimable leak (drives `slotReconcileMismatch`). */
+  inFlightTracked: number;
+  /** Age (ms) of the OLDEST slot in the self-heal registry (0 when idle) — the live "how long has anything
+   *  been held" gauge. A value approaching the self-heal freeze (75s) / watchdog (120s) is a wedge's leading edge. */
+  oldestHeldSlotAgeMs: number;
   /** Count of rate-limit STALL candidates recorded (P-002): all-throttled sheds to an identified bee. The
    *  full {ownerId, accountId, soonestResetAt} events are on GET /admin/stalls (for the stall-waker). */
   stallsRecorded: number;
@@ -1524,6 +1540,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let beeEgressExhausted = 0; // 503 after all egress-proxy retries stalled/errored (the flaky-proxy leak)
   let beeTokenStall = 0; // 503 from a stalled OAuth token refresh
   let selfHealReclaims = 0; // EI-2086: in-process release-valve slot reclaims (pre-empted watchdog restarts)
+  // P-005/W3 slot-leak RECURRENCE GUARD (D-001): the reconcile-invariant counters. The self-heal sweep
+  // cross-checks the queue's held-slot counter against the in-flight registry each tick and bumps
+  // `slotReconcileMismatch` when they disagree in a way the valve cannot reclaim — a leak surfaced as a
+  // COUNTED signal, not a silent wedge→watchdog restart. `...Consecutive`/`...Logged` de-bounce it (only a
+  // violation sustained ≥2 sweeps counts; logs ONCE per contiguous streak). Fail-soft — never throws.
+  let slotReconcileMismatch = 0;
+  let slotReconcileConsecutive = 0;
+  let slotReconcileLogged = false;
 
   // Rate-limit STALL events (gateway-rate-limit-stall-autowake P-002): when the gateway sheds an
   // all-throttled 429 to an IDENTIFIED bee (x-papercusp-owner present), record {ownerId, accountId,
@@ -1788,6 +1812,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ]),
       ),
       selfHealReclaims,
+      slotReconcileMismatch,
+      inFlightTracked: inFlightReg.size,
+      // Oldest tracked slot age — the live "how long has anything been held" gauge (0 when idle). `now` is
+      // the stats() clock read above; inFlightReg carries each admitted request's startedAt.
+      oldestHeldSlotAgeMs: inFlightReg.size ? now - Math.min(...[...inFlightReg.values()].map((e) => e.startedAt)) : 0,
       stallsRecorded,
       proactiveEgressProbe: {
         enabled: proactiveProbeHandle !== null,
@@ -3926,17 +3955,54 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try {
         // Read queue.snapshot() directly (NOT stats(), which advances the pool round-robin cursor).
         const admission = queue.snapshot();
+        const running = admission.running; // held Claude admission slots (the queue's own counter)
+        const tracked = inFlightReg.size; // requests registered live in the self-heal registry
         const decision = evaluateSelfHeal(
           {
-            inFlight: admission.running,
+            inFlight: running,
             queueDepth: admission.queued,
             maxConcurrent: admission.maxConcurrent,
             msSinceLastDrain: Date.now() - lastDrainAt,
           },
           selfHealFreezeMs,
         );
+        const target = decision.reclaim ? pickReclaimTarget([...inFlightReg.values()]) : null;
+
+        // ── P-005/W3 slot-leak RECURRENCE GUARD (D-001) ─────────────────────────────────────────────
+        // Cross-check the two INDEPENDENT in-flight accountings that must move together: the queue's held-
+        // slot counter (`running`) and the self-heal registry (`tracked`). Every Claude request bumps
+        // `running` at admission and registers exactly one inFlightReg entry (deleted in its finally, just
+        // before the slot frees), so the registry is a strict SUBSET of held slots — `tracked <= running`
+        // always, equal when quiescent. A `running > tracked` gap is a NORMAL transient (a request between
+        // queue admission and inFlightReg.set — e.g. mid readBody). So we flag ONLY the two shapes that
+        // cannot be a healthy transient: (a) tracked > running — structurally impossible (a broken decrement
+        // path / a registry entry that outlived its slot); and (b) WEDGED (evaluateSelfHeal wants to reclaim:
+        // saturated + nothing drained for freezeMs) with slots held but NOTHING registered to reclaim — an
+        // un-registered leak (e.g. a stall BEFORE the request reached inFlightReg.set) the valve is blind to
+        // and that today rides silently to the watchdog restart. Telemetry only — NEVER throws.
+        const reconcileViolation =
+          tracked > running ? 'registry>slots' : decision.reclaim && running > 0 && !target ? 'wedged-unreclaimable' : null;
+        if (reconcileViolation) {
+          slotReconcileConsecutive++;
+          // De-bounce: only a violation SUSTAINED across ≥2 sweeps counts — skips the documented 1-tick
+          // delete/admit race where the registry is momentarily empty while a slot is between requests.
+          if (slotReconcileConsecutive >= 2) {
+            slotReconcileMismatch++;
+            if (!slotReconcileLogged) {
+              slotReconcileLogged = true; // log ONCE per contiguous streak (never a log storm)
+              log(
+                'error',
+                `inference-gateway: SLOT-RECONCILE mismatch (${reconcileViolation}) — held=${running} tracked=${tracked} maxConcurrent=${admission.maxConcurrent} msSinceDrain=${Math.round((Date.now() - lastDrainAt) / 1000)}s: a leaked admission slot the self-heal valve cannot reclaim (mismatch #${slotReconcileMismatch})`,
+              );
+            }
+          }
+        } else {
+          slotReconcileConsecutive = 0;
+          slotReconcileLogged = false; // reset so the next distinct streak logs afresh
+        }
+        // ────────────────────────────────────────────────────────────────────────────────────────────
+
         if (!decision.reclaim) return;
-        const target = pickReclaimTarget([...inFlightReg.values()]);
         if (!target) return; // saturated per the counters but the registry is momentarily empty — skip
         target.reclaimed = true;
         selfHealReclaims++;

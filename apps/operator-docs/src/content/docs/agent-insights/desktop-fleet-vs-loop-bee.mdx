@@ -9,6 +9,8 @@ documents:
   - packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts
   - packages/operator-core/lib/agent-tools/fleet_registry/list.ts
   - packages/operator-core/lib/agent-tools/fleet_registry/status.ts
+  - packages/operator-core/lib/fleet/operator-spawn.ts
+  - packages/operator-core/lib/fleet/fleet-roster.ts
 ---
 
 ## The mistake this prevents
@@ -44,15 +46,16 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
   you got desktop members. A bee-spawn that materialises a new fleet now returns a loud
   `fleet_advisory` telling you so (WI-1764 #2).
 - **The count now splits.** `fleet:list` and `fleet:status` report **`memberCount`
-  (visible desktop su) vs `beeCount` (background bees that joined the fleet's presence
-  label)**, plus a workspace-wide **`runningBees`** total (WI-1764 #4). A fleet
-  showing `0 members` while `runningBees > 0` is the tell that you spawned bees where
-  you meant `fleet:launch-on-plan`.
-- **Bees carry no per-fleet linkage in the nursery.** A `spawned_agents` row has no
-  fleet column, and nursery spawn-ids never appear in `fleet_membership_events` or
-  `coord_presence.fleet_slug`. That is *why* `liveMemberCount` read 0 in the origin
-  incident — the bees were simply not attributed to the fleet anywhere. The
-  workspace-wide `runningBees` count is what makes the mismatch visible regardless.
+  (visible desktop su) vs `beeCount` (background bees spawned INTO the fleet)**, plus a
+  workspace-wide **`runningBees`** total (WI-1764 #4). A fleet showing `0 members` while
+  `runningBees > 0` is the tell that you spawned bees where you meant `fleet:launch-on-plan`.
+- **`beeCount` is nursery-attributed and reliable (WI-1813).** A bee's `fleet_slug` is now
+  stamped on its `spawned_agents` row at spawn (mig 475), so `beeCount` (via
+  `countRunningFleetBees`) counts every running bee attributed to the fleet — *independent*
+  of whether the bee booted far enough to write a `coord_presence` fleet label (the earlier
+  weak signal). `memberCount` still comes from presence — a member IS a live desktop
+  session. The workspace-wide `runningBees` remains the belt-and-suspenders total that also
+  catches ungrouped and pre-mig-475 bees carrying no `fleet_slug`.
 
 ## The two-line heuristic
 
