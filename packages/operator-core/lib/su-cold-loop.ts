@@ -116,3 +116,30 @@ export function decideColdWake(input: {
   const mode = coldWakeMode(marker.wakeCount ?? 0, input.caps ?? DEFAULT_COLD_LOOP_CAPS);
   return { cold: true, mode, carryNote: note };
 }
+
+/**
+ * Render the text a COLD wake injects (P-002 producer half): the agent's carry-note
+ * framed as its reconstructed working state, plus the STANDING re-checkpoint mandate.
+ *
+ * On a cold wake the injected `data` is the agent's ENTIRE opening context — the prior
+ * transcript is gone. So the carry-note alone is not enough: the fresh agent must also
+ * be told (a) that the note IS its continuity (continue from its "Next action"), and
+ * (b) to refresh the note via `loop:checkpoint` before ending, or the NEXT cold wake
+ * restarts from this same stale note. This closes the loop that keeps a cold loop's
+ * anchor fresh across wakes. Pure — the wake executor calls it at the inject boundary.
+ */
+export function renderColdWakeInjection(carryNote: string): string {
+  const note = (carryNote ?? '').trim();
+  return [
+    '❄️ COLD LOOP WAKE — your context was just reset to your carry-note. Your prior transcript is GONE;',
+    'the note below IS your continuity — treat it as your working state and continue from its "Next action".',
+    '',
+    note,
+    '',
+    '────────',
+    'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —',
+    'otherwise the next wake restarts from this same note:',
+    '    loop:checkpoint { did, left, insight, next }   (compressed facts, not a transcript)',
+    'If the goal is DONE or you are blocked, call loop:end instead of leaving the loop spinning.',
+  ].join('\n');
+}

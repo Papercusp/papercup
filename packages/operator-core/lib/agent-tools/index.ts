@@ -221,6 +221,7 @@ import './autoloop/control';
 // LOOP surface: arm a tracked warm-wake loop on your own session (the /loop replacement),
 // end it, inspect it. Gated by FLAGS.LOOPS (loop:arm); loop:end/status are always available.
 import './loop/arm';
+import './loop/checkpoint';
 import './loop/end';
 import './loop/soak_report';
 import './loop/status';

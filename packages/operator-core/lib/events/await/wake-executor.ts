@@ -46,7 +46,12 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
-import { decideColdWake, readColdLoopMarker, type ColdWakeDecision } from '../../su-cold-loop';
+import {
+  decideColdWake,
+  readColdLoopMarker,
+  renderColdWakeInjection,
+  type ColdWakeDecision,
+} from '../../su-cold-loop';
 import { getLoopCarryNote } from '../../carry-note';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
@@ -611,7 +616,14 @@ async function injectPsuHostWake(
   }
 
   if (decision.cold) {
-    const ok = await injectPsuHost(sock, { mode: decision.mode, data: decision.carryNote });
+    // Wrap the carry-note with the standing re-checkpoint mandate (P-002 producer): the
+    // injected text is the cold agent's ENTIRE opening context, so it must both frame the
+    // note as the working state AND tell the agent to refresh it before ending — else the
+    // note goes stale after one cold wake.
+    const ok = await injectPsuHost(sock, {
+      mode: decision.mode,
+      data: renderColdWakeInjection(decision.carryNote),
+    });
     if (ok) {
       return {
         kind: 'delivered',

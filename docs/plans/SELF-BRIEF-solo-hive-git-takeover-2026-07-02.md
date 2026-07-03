@@ -405,3 +405,22 @@ P-106/P-107 offered to 6e3f9 (msg mr4x8j76); Phase 2 open: P-202 host-gateway cl
 billing matrix, P-206 fleet capacity view; P-201 with 35c3b (STILL no signal — nudge or reclaim).
 Also standing: task #2 close per-hive-git plan; P-059 LIVE-1 still walled on tower-VM federation
 (su-f5d28/su-26de47). Deferred pair now shared by P-101+P-108: one live 2-machine co-verify covers both.
+
+### SWEEP RESULT + NEW LANE — 2026-07-03 ~14:45Z (loop armed 60s; wake #4824)
+Sweep of p2p plan (plans_get-item batch): P-106 ✓(su-1b034 reaper) P-107 ✓(su-c2428 offer-budget)
+P-109 ✓(me, all 4 legs, pre-compaction) P-202 ✓(su-c2428 claim-authority) P-204 ✓(su-c2428
+billing-matrix) P-306 ✓(d1985 sim harness — LIVE-2 gate green). P-201+P-206 wip with 35c3b (RES
+/res backend lane; nudge sent mr51m2d0). P-207 todo but GATED on local-concurrent-inference deltas
+(M12 fail-closed). Phase-3: P-304 ✓(d1985); P-301/302/303/305 unchecked.
+**MY LANE NOW: P-104 local-authority spawn (WI-1736?, claimed wip rev 95±)** — the wiring hub all
+done modules defer to: P-107 offer-budget executor/H12 cancel delivery, P-202 claim-authority
+production caller, P-106 reaper mirror-lane trigger, P-109 foreign-publish lifecycle trigger.
+Item text pillars: host supervisor launches claimed offers (never remote peer); C2 v1 capability
+profile (capability-envelope machinery LANDED: capability-envelope-overrides.ts, envelope-set-role.ts,
+grant-role.ts); C7 origin-attributed commits (foreign-git-sync.ts landed in P-109); C8 marked-namespace
+publish (foreign-publish.ts landed); H13 orphan supervision T-unreachable → park/wind-down + receipt;
+M14 fleet-scoped presence labels; H9 epoch fencing at spawn. BUILD = mostly composition of landed
+modules: foreign-workspaces.ts store + foreign-clone.ts + spawn plumbing + steering via coord plane.
+Read P-104 item text + grep lib/p2p/{foreign-workspaces,foreign-clone,offer-budget,claim-authority,
+revocation-reaper}.ts before designing. P-105 (isolation epic, X1 loopback boundary) stays open after —
+likely needs owner input on the OS-user/netns tier.
