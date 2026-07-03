@@ -223,29 +223,61 @@ export async function handleJoinLink(
     throw e;
   }
 
-  // Register the harness in the workspace registry. The join orchestrator's
-  // boot_federate step already registers the clone (the substrate boot
-  // resolves the harness path through the registry, so it must exist BEFORE
-  // the boot) — reload and skip when present; pushing onto the stale pre-join
-  // `reg` would clobber that entry.
+  // Register the harness in the workspace registry — an ATOMIC upsert-or-enrich
+  // (EI-82 hardening, 2026-07-03, WI-971 adjacent). The join orchestrator's
+  // boot_federate step already registers the clone pre-boot (the substrate boot
+  // resolves the harness path through the registry), historically as a MINIMAL
+  // { slug, path } row — which made this block's EI-1623 self-describing
+  // enrichment DEAD CODE (the slug-present check skipped it) and left the clone
+  // invisible to the hive_slug/joined_via_link-keyed git-sync reconcile. The
+  // old shape here was also a racy load→push→save whole-payload overwrite that
+  // could silently clobber (or be clobbered by) any concurrent registry writer
+  // — the suspected mechanism behind a joined-hive row that federated for hours
+  // then vanished at restart (mac-VM P-003 repro, 2026-07-03). Now: absent →
+  // insert the full self-describing row; present-but-minimal → fill ONLY the
+  // missing coord fields in place; already-enriched → no-op.
   if (state.cloneDir) {
-    const reg2 = await deps.loadRegistry();
-    if (!reg2.projects.some((p) => p.slug === slug)) {
-      // EI-1623: register the link-join clone as a self-describing JOINER member
-      // — upstream coords + the `joined_via_link` marker — so the boot git-sync
-      // reconcile (which keys on hive_slug/joined_via_link) BACKFILLS its routine
-      // joiner-side (push:false) if the best-effort join-time seed below fails.
-      // Without this the clone carries only { slug, path }, is invisible to the
-      // reconcile's member loop, and silently never syncs on a seed failure.
-      reg2.projects.push({
-        slug,
-        path: state.cloneDir,
-        github_remote: `https://github.com/${link.github}`,
-        github_repository_id: link.repoId,
-        joined_via_link: true,
-      });
-      await deps.saveRegistry(reg2);
-    }
+    const cloneDir = state.cloneDir;
+    await deps.mutateRegistry((reg) => {
+      const existing = reg.projects.find((p) => p.slug === slug);
+      if (!existing) {
+        return {
+          ...reg,
+          projects: [
+            ...reg.projects,
+            {
+              slug,
+              path: cloneDir,
+              github_remote: `https://github.com/${link.github}`,
+              github_repository_id: link.repoId,
+              joined_via_link: true,
+            },
+          ],
+        };
+      }
+      if (
+        existing.github_remote &&
+        typeof existing.github_repository_id === 'number' &&
+        existing.joined_via_link !== undefined
+      ) {
+        return reg; // already self-describing — nothing to do
+      }
+      return {
+        ...reg,
+        projects: reg.projects.map((p) =>
+          p.slug !== slug
+            ? p
+            : {
+                ...p,
+                ...(p.github_remote ? {} : { github_remote: `https://github.com/${link.github}` }),
+                ...(typeof p.github_repository_id === 'number'
+                  ? {}
+                  : { github_repository_id: link.repoId }),
+                ...(p.joined_via_link === undefined ? { joined_via_link: true } : {}),
+              },
+        ),
+      };
+    });
 
     // Scaffold the harness schema (best-effort — don't fail the join if this fails).
     try {

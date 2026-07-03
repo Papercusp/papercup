@@ -304,6 +304,12 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // not-federatable / rate-capped). LOCAL-ONLY — each receiver counts what IT
   // refused; federating them would let a peer skew another machine's metrics.
   'federation_refused_op_counters',
+  // p2p-work-distribution-2026-07-02 (P-205 / WI-1938, mig 483): the durable
+  // metering + contribution ledger. LOCAL-ONLY, never federated (PRIVACY — raw
+  // account totals + per-user breakdowns must not leave the machine; peers see
+  // only the fleet-scoped remainder projection metering-ledger.ts builds).
+  'p2p_metering_spend',
+  'p2p_metering_contribution',
 ];
 
 /**

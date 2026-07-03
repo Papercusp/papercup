@@ -24,7 +24,17 @@
  * Server-only.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, writeFileSync, renameSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';

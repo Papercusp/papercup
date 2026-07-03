@@ -49,7 +49,10 @@ function makeDeps(overrides: Partial<JoinLinkDeps> = {}): JoinLinkDeps {
   return {
     resolveIdentity: vi.fn(async () => GH_OK),
     loadRegistry: vi.fn(async () => ({ projects: [] })),
-    saveRegistry: vi.fn(async () => {}),
+    // Atomic upsert-or-enrich seam (EI-82 hardening). The fake applies the
+    // mutator to an empty registry; tests re-apply the recorded mutator to
+    // their own fixtures to assert its behavior.
+    mutateRegistry: vi.fn(async (fn: (r: { projects: never[] }) => unknown) => fn({ projects: [] })) as never,
     joinHarness: vi.fn(async () => FAKE_STATE),
     scaffold: vi.fn(async () => {}),
     seedGitSync: vi.fn(async () => ({
@@ -149,16 +152,17 @@ describe('handleJoinLink', () => {
     expect(body.stepId).toBe('oauth_attest');
   });
 
-  it('registers harness and scaffolds when cloneDir is set', async () => {
+  it('registers harness (atomic upsert) and scaffolds when cloneDir is set', async () => {
     const deps = makeDeps();
     await handleJoinLink(VALID_INPUT, deps);
 
-    expect(deps.saveRegistry).toHaveBeenCalledTimes(1);
-    const saved = (deps.saveRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(deps.mutateRegistry).toHaveBeenCalledTimes(1);
+    const mutator = (deps.mutateRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     // EI-1623: the link-join clone is registered as a self-describing JOINER member
     // (upstream coords + `joined_via_link`), so the boot git-sync reconcile can
     // backfill its routine joiner-side if the best-effort join-time seed fails.
-    expect(saved.projects).toContainEqual({
+    const next = mutator({ projects: [] });
+    expect(next.projects).toContainEqual({
       slug: 'my-harness',
       path: '/tmp/my-harness',
       github_remote: 'https://github.com/Papercusp/papercup',
@@ -168,6 +172,43 @@ describe('handleJoinLink', () => {
     expect(deps.scaffold).toHaveBeenCalledWith('my-harness');
   });
 
+  it('ENRICHES a minimal pre-boot row in place (EI-1623 revival) — no duplicate entry', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps);
+
+    const mutator = (deps.mutateRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    // The join orchestrator's pre-boot registration inserts { slug, path } —
+    // the mutator must fill the missing coords on THAT row, not append a dup.
+    const next = mutator({ projects: [{ slug: 'my-harness', path: '/tmp/my-harness' }] });
+    expect(next.projects).toHaveLength(1);
+    expect(next.projects[0]).toEqual({
+      slug: 'my-harness',
+      path: '/tmp/my-harness',
+      github_remote: 'https://github.com/Papercusp/papercup',
+      github_repository_id: 12345,
+      joined_via_link: true,
+    });
+  });
+
+  it('an already self-describing row is returned UNCHANGED (idempotent re-join)', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps);
+
+    const mutator = (deps.mutateRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    const full = {
+      slug: 'my-harness',
+      path: '/existing/clone',
+      github_remote: 'https://github.com/someone/else',
+      github_repository_id: 777,
+      joined_via_link: false,
+      hive_slug: 'some-hive',
+    };
+    const reg = { projects: [full] };
+    const next = mutator(reg);
+    // Same object back — existing coords (even divergent ones) are never clobbered.
+    expect(next).toBe(reg);
+  });
+
   it('does NOT register harness when cloneDir is missing', async () => {
     const stateNoClone: JoinState = { ...FAKE_STATE, cloneDir: undefined };
     const deps = makeDeps({
@@ -175,7 +216,7 @@ describe('handleJoinLink', () => {
     });
     await handleJoinLink(VALID_INPUT, deps);
 
-    expect(deps.saveRegistry).not.toHaveBeenCalled();
+    expect(deps.mutateRegistry).not.toHaveBeenCalled();
     expect(deps.scaffold).not.toHaveBeenCalled();
   });
 

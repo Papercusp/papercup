@@ -640,13 +640,31 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
             );
           } else {
             // Atomic upsert (P-006/EI-82): load→push→save races a concurrent
-            // registry write and silently reverts it.
+            // registry write and silently reverts it. SELF-DESCRIBING from the
+            // start (2026-07-03, WI-971 adjacent): include the upstream coords +
+            // joined_via_link here, not just { slug, path } — the minimal row
+            // made the route's post-join EI-1623 enrichment dead code (its
+            // slug-present check skipped an existing row) and left the clone
+            // invisible to the hive_slug/joined_via_link-keyed git-sync
+            // reconcile, and easy to mistake for registry debris.
             const { mutateHarnessRegistry } = await import('../harness-registry');
             const cloneDir = state.cloneDir;
             await mutateHarnessRegistry((reg) =>
               reg.projects.some((p) => p.slug === opts.slug)
                 ? reg
-                : { ...reg, projects: [...reg.projects, { slug: opts.slug, path: cloneDir }] },
+                : {
+                    ...reg,
+                    projects: [
+                      ...reg.projects,
+                      {
+                        slug: opts.slug,
+                        path: cloneDir,
+                        github_remote: `https://github.com/${opts.link.github}`,
+                        github_repository_id: opts.link.repoId,
+                        joined_via_link: true,
+                      },
+                    ],
+                  },
             );
           }
         } catch {

@@ -22,7 +22,10 @@ const resolveAccountPinMock = vi.fn();
 // can override the resolution outcome — the no-fleet default mirrors the prior fixed
 // stub so every PRE-EXISTING test (none of which pass `fleet`/`fleet_name`) is unaffected.
 const resolveFleetMock = vi.fn(async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null }));
-const setPendingFleetMock = vi.fn();
+// WI-1893 (cluster-safe fleet stamp): bootstrap-role appends the DURABLE membership
+// fact via stampFleetMembershipAtBoot (exported by bootstrap-su) — null = success,
+// a string = the loud-409 failure message.
+const stampFleetMembershipMock = vi.fn(async (_opts: unknown) => null as string | null);
 // EI-155: mock the interactive-claude config-dir materializer so this unit test
 // never symlinks the dev box's real ~/.claude into a session dir.
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
@@ -52,18 +55,10 @@ vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   // faithful minimal stub suffices.
   reconstructPsuLaunchArgv: (o: { agent?: string; role?: string | null }) =>
     ['psu', '--no-picker', `--agent=${o?.agent ?? ''}`, ...(o?.role ? [`--role=${o.role}`] : [])],
+  // WI-1893: the durable membership stamp replaced the in-memory setPendingFleet
+  // placement (which lived in ONE cluster worker and was lost cross-worker).
+  stampFleetMembershipAtBoot: (opts: unknown) => stampFleetMembershipMock(opts),
 }));
-// WI-1408 (psu-fleet-presence, extended to the role path): bootstrap-role now calls
-// setPendingFleet directly (mirroring bootstrap-su's WI-1343 fix, which this route was
-// missing entirely). Mock it so tests assert the call without touching real presence.ts
-// (PG-backed) machinery.
-vi.mock('../../agent-tools/coordination/presence', async (orig) => {
-  const actual = (await orig()) as Record<string, unknown>;
-  return {
-    ...actual,
-    setPendingFleet: (...a: unknown[]) => setPendingFleetMock(...a),
-  };
-});
 vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (opts: { sid: string }) => writeInteractiveClaudeConfigMock(opts) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
 // isn't exercising it (the materialize integration test is), and running it for
@@ -94,6 +89,7 @@ beforeEach(() => {
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
   resolveAccountPinMock.mockResolvedValue({ env: {}, notice: null, accountId: null, provider: null });
   resolveFleetMock.mockResolvedValue({ env: {}, notice: null, fleetSlug: null, fleetRole: null });
+  stampFleetMembershipMock.mockResolvedValue(null);
   getPlanContextBySlugMock.mockResolvedValue('## Source Plan Context\n\n**Plan:** `p1`');
   writeRoleCodexHomeMock.mockReturnValue({
     codexHome: '/tmp/role-codex-homes/session-7',
@@ -286,16 +282,15 @@ describe('bootstrap-role', () => {
   });
 });
 
-// WI-1408 (fleet-join-startup-assertion + psu-fleet-presence extended to the role
-// path): bootstrap-role previously resolved a `--fleet=<slug>` join into env vars on
-// the AGENT's own process — useless to writePresence's env-fold, which reads the
-// OPERATOR's process.env — and NEVER registered a setPendingFleet placement (the
-// WI-1343 fix bootstrap-su already had). A role+fleet launch therefore silently
-// registered presence with fleet_slug=null, invisible to fleet:assignments. These
-// tests guard both halves of the fix: the hard startup assertion, and the pending
-// placement now actually being registered.
-describe('bootstrap-role — fleet join (WI-1408)', () => {
-  it('a successful --fleet join registers a pending placement (setPendingFleet) keyed by spec.sid', async () => {
+// WI-1408 (fleet-join-startup-assertion) + WI-1893 (cluster-safe fleet stamp): a
+// role+fleet launch must (a) fail LOUD when the fleet doesn't resolve — never a
+// silent unfleeted member — and (b) append the DURABLE membership fact
+// (stampFleetMembershipAtBoot → fleet_membership_events) keyed by spec.sid. The old
+// in-memory setPendingFleet placement lived in ONE :3070 cluster worker and was lost
+// when the member's first presence write landed on another worker (the 2026-07-03
+// backlog-clearance batch lost all 10 members this way).
+describe('bootstrap-role — fleet join (WI-1408 + WI-1893)', () => {
+  it('a successful --fleet join appends the durable membership fact keyed by spec.sid', async () => {
     resolveFleetMock.mockResolvedValue({
       env: { PAPERCUSP_FLEET_SLUG: 'real-fleet', PAPERCUSP_FLEET_ROLE: 'member' },
       notice: 'joined fleet real-fleet as member.',
@@ -307,12 +302,15 @@ describe('bootstrap-role — fleet join (WI-1408)', () => {
     const json = await res.json();
     expect(json.fleetSlug).toBe('real-fleet');
     expect(json.fleetRole).toBe('member');
-    // The pending placement is keyed by spec.sid (== coord_owner_id == PAPERCUSP_SID),
-    // the same identity the agent's first presence write looks itself up by.
-    expect(setPendingFleetMock).toHaveBeenCalledWith('role-abc', 'real-fleet', 'member');
+    // The fact is keyed by spec.sid (== coord_owner_id == PAPERCUSP_SID), the same
+    // identity the agent's first presence write looks itself up by (mig-430 triggers
+    // cover fact-first AND row-first ordering).
+    expect(stampFleetMembershipMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'role-abc', fleetSlug: 'real-fleet', fleetRole: 'member' }),
+    );
   });
 
-  it('a --fleet join that fails to resolve is a hard 409 — never a silent unfleeted launch, no pending placement, no recorded session', async () => {
+  it('a --fleet join that fails to resolve is a hard 409 — never a silent unfleeted launch, no membership stamp, no recorded session', async () => {
     resolveFleetMock.mockResolvedValue({
       env: {},
       notice: 'fleet `ghost-fleet` does not exist in this workspace — join skipped (check the slug, or create it first).',
@@ -325,16 +323,33 @@ describe('bootstrap-role — fleet join (WI-1408)', () => {
     expect(json.status).toBe('error');
     expect(json.error).toMatch(/fleet join failed/i);
     expect(json.error).toMatch(/ghost-fleet/i);
-    expect(setPendingFleetMock).not.toHaveBeenCalled();
+    expect(stampFleetMembershipMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
-  it('no fleet requested ⇒ no assertion fires, no pending placement, fleetSlug/fleetRole both null', async () => {
+  it('a membership-stamp failure is a hard 409 (WI-1893) — no silent ghost member, no recorded session', async () => {
+    resolveFleetMock.mockResolvedValue({
+      env: { PAPERCUSP_FLEET_SLUG: 'real-fleet', PAPERCUSP_FLEET_ROLE: 'member' },
+      notice: 'joined fleet real-fleet as member.',
+      fleetSlug: 'real-fleet',
+      fleetRole: 'member',
+    });
+    stampFleetMembershipMock.mockResolvedValue('pg down');
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', fleet: 'real-fleet' });
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.status).toBe('error');
+    expect(json.error).toMatch(/membership stamp failed/i);
+    expect(json.error).toMatch(/WI-1893/);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('no fleet requested ⇒ no assertion fires, no membership stamp, fleetSlug/fleetRole both null', async () => {
     const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.fleetSlug).toBeNull();
     expect(json.fleetRole).toBeNull();
-    expect(setPendingFleetMock).not.toHaveBeenCalled();
+    expect(stampFleetMembershipMock).not.toHaveBeenCalled();
   });
 });
