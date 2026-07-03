@@ -17,6 +17,7 @@ import {
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
+import { coerceDocsGetSlugs } from './get-coerce';
 
 function wrapWithPreamble(base: DocSource): DocSource {
   return {
