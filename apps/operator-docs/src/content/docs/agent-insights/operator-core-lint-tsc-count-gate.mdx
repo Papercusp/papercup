@@ -43,7 +43,13 @@ re-restored to 224 — see the baseline file's own `note` field). The gate:
   and then false-red the gate for the whole fleet the next time the count
   shuffled back up. `--update` still only ever *lowers* the baseline (or
   no-ops at parity) — raising it remains a deliberate human JSON edit, never
-  automatic.
+  automatic. This `--update`-only policy now lives in the **pure `decide()`**
+  function (a bare run below baseline returns `ok-below` and `main()` never
+  writes; only `--update` yields `ok-ratchet`) and is locked by
+  `lint-tsc.test.ts` — so a `main()` refactor can't silently reintroduce the
+  auto-ratchet flap. (EI-104 shipped in `main()` first but left the invariant in
+  untested imperative code while `decide()` + its test still encoded the old
+  auto-ratchet; WI-1822 folded the policy into `decide()` and added the guard.)
 - **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless
   of the total count because `tsc` under-reports the errors behind a parse
   failure.

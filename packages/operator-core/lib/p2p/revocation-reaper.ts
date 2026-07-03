@@ -179,7 +179,14 @@ export async function reapForeignSessionsForRevocation(
 
   for (const w of matches) {
     // 1. Fail-close the session: state != 'active' ⇒ guard denies edits + no commits.
-    const updated = await deps.setForeignWorkspaceState(ws, w.offerId, 'reaped', { parkReason }, sql);
+    //    fromStates makes the raced-to-terminal skip real at the row level.
+    const updated = await deps.setForeignWorkspaceState(
+      ws,
+      w.offerId,
+      'reaped',
+      { parkReason, fromStates: REAPABLE_STATES },
+      sql,
+    );
     if (!updated) continue; // raced to terminal by another actor — idempotent skip
     reaped.push({
       offerId: w.offerId,

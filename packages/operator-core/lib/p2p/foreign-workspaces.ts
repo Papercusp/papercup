@@ -283,12 +283,15 @@ export async function bindForeignSession(
 }
 
 /** Transition state (wind-down / park / reap). `parkReason` is the loud
- *  breadcrumb (e.g. 'attestation-unresolvable', 'quota-exhausted'). */
+ *  breadcrumb (e.g. 'attestation-unresolvable', 'quota-exhausted').
+ *  `fromStates` guards the transition: the update only lands when the row is
+ *  currently in one of them (null return = absent OR raced elsewhere) — so a
+ *  wind-down sweep can never resurrect a row another actor already reaped. */
 export async function setForeignWorkspaceState(
   workspaceId: string,
   offerId: string,
   state: ForeignWorkspaceState,
-  opts: { parkReason?: string } = {},
+  opts: { parkReason?: string; fromStates?: readonly ForeignWorkspaceState[] } = {},
   sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace | null> {
   const rows = (await sql`
@@ -297,6 +300,7 @@ export async function setForeignWorkspaceState(
         park_reason = ${opts.parkReason ?? null},
         updated_at = now()
     WHERE workspace_id = ${workspaceId} AND offer_id = ${offerId}
+      AND ${opts.fromStates ? sql`state = ANY(${opts.fromStates as string[]}::text[])` : sql`TRUE`}
     RETURNING *
   `) as unknown as Row[];
   return rows.length ? fromRow(rows[0]) : null;

@@ -66,3 +66,58 @@ describe('makeLoopQdSeams', () => {
     expect(elites[0]!.updatedAt).toBe(4242);
   });
 });
+
+/** Tagged-template sql fake capturing interpolated values per call (for the federation seam,
+ *  which routes through markEliteFederatable(inject=sql)). */
+function fakeSql(rowsToReturn: unknown[] = []): { sql: Sql; calls: unknown[][] } {
+  const calls: unknown[][] = [];
+  const fn = (_s: TemplateStringsArray, ...vals: unknown[]) => {
+    calls.push(vals);
+    return Promise.resolve(rowsToReturn);
+  };
+  return { sql: fn as unknown as Sql, calls };
+}
+
+const WORKER_OVERLAY: VariantOverlay = { promptOverrides: { worker: 'x'.repeat(50) } };
+const EMPTY_OVERLAY: VariantOverlay = { promptOverrides: {} };
+
+describe('makeLoopQdSeams — federateAcceptedElite (F1-4/P-014 elite publisher)', () => {
+  it('stamps the accepted candidate\'s niche row federatable via the seam sql (no-signer tier-1)', async () => {
+    const archive = new QdArchive(new InMemoryArchiveStore());
+    const { sql, calls } = fakeSql([{ niche_key: 'n' }]);
+    const seams = makeLoopQdSeams(sql, { workspaceId: 'papercusp-workspace', harnessSlug: 'h' }, { archive });
+    await seams.recordArchive(rec('cand-1', WORKER_OVERLAY, EMPTY_OVERLAY, 7.5)); // caches the descriptor
+    await seams.federateAcceptedElite('cand-1', { outcome: 'won' });
+    // markEliteFederatable ran its single no-signer UPDATE with (workspaceId, harnessSlug, nicheKey).
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('papercusp-workspace');
+    expect(calls[0][1]).toBe('h');
+    expect(typeof calls[0][2]).toBe('string'); // the derived niche_key
+    expect((calls[0][2] as string).length).toBeGreaterThan(0);
+  });
+
+  it('is a no-op (no sql) for a variant that was never recorded (no cached descriptor)', async () => {
+    const archive = new QdArchive(new InMemoryArchiveStore());
+    const { sql, calls } = fakeSql([{ niche_key: 'n' }]);
+    const seams = makeLoopQdSeams(sql, { workspaceId: 'papercusp-workspace', harnessSlug: 'h' }, { archive });
+    await seams.federateAcceptedElite('never-recorded', { outcome: 'won' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does NOT stamp a non-eligible outcome (markEliteFederatable D-002 guard, no sql)', async () => {
+    const archive = new QdArchive(new InMemoryArchiveStore());
+    const { sql, calls } = fakeSql([{ niche_key: 'n' }]);
+    const seams = makeLoopQdSeams(sql, { workspaceId: 'papercusp-workspace', harnessSlug: 'h' }, { archive });
+    await seams.recordArchive(rec('cand-1', WORKER_OVERLAY, EMPTY_OVERLAY, 7.5));
+    await seams.federateAcceptedElite('cand-1', { outcome: 'lost', grade: 2 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('THROWS (WI-1564 strand-guard) under a non-federating workspace — the loop calls it best-effort', async () => {
+    const archive = new QdArchive(new InMemoryArchiveStore());
+    const { sql } = fakeSql([{ niche_key: 'n' }]);
+    const seams = makeLoopQdSeams(sql, { workspaceId: 'default', harnessSlug: 'h' }, { archive });
+    await seams.recordArchive(rec('cand-1', WORKER_OVERLAY, EMPTY_OVERLAY, 7.5));
+    await expect(seams.federateAcceptedElite('cand-1', { outcome: 'won' })).rejects.toThrow(/WI-1564/);
+  });
+});
