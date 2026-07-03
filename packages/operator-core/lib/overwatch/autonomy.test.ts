@@ -24,7 +24,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       ['autoloop:control', 'structural'],
       ['deploy:harness', 'structural'],
       // D-001: overwatch never re-places / spawns work
-      ['fleet:spawn', 'structural'],
+      ['bee:spawn', 'structural'],
       ['work_items:set_priority', 'structural'],
       // unmapped verb ⇒ fail-safe structural
       ['totally:unknown', 'structural'],
@@ -78,7 +78,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       expect(d.reasons).toEqual(['overwatch-structural-action', 'escalate-only']);
     });
 
-    it.each(['flags:set', 'processes:kill', 'dev:restart', 'fleet:spawn', 'deploy:harness'])(
+    it.each(['flags:set', 'processes:kill', 'dev:restart', 'bee:spawn', 'deploy:harness'])(
       'GATES the structural verb %s (escalate-only)',
       (action) => {
         const d = decideOverwatchAutonomy({ action });
@@ -107,7 +107,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
         expect(decideOverwatchAutonomy({ action: v }).posture).toBe('auto');
       }
       // the structural mirror of the capability wall (B-01): non-allowlisted ⇒ gated
-      for (const v of ['flags:set', 'routines:write', 'processes:kill', 'fleet:spawn']) {
+      for (const v of ['flags:set', 'routines:write', 'processes:kill', 'bee:spawn']) {
         expect(decideOverwatchAutonomy({ action: v }).posture).toBe('gated');
       }
     });

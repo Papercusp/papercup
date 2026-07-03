@@ -81,7 +81,7 @@ export interface LearningInfraHealth {
 }
 
 /** The watchdog key the runner-spawn structural failure files under (EI-334 class). */
-export const SPAWN_PATH_WATCHDOG_KEY = 'repeated-tool-error:fleet:spawn:structural';
+export const SPAWN_PATH_WATCHDOG_KEY = 'repeated-tool-error:bee:spawn:structural';
 
 // Keep in sync with GYM_CYCLE_FIRE_ROLE in harness/routines/gym-actions.ts —
 // not imported because that module registers system actions at import time,

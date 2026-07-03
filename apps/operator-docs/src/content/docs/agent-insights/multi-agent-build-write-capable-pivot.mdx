@@ -18,7 +18,7 @@ the two infra walls that path hit in practice, and the pivots that got through.
 
 ## Wall 1 — fleet bees can be READ-ONLY (EI-524 capability confinement)
 
-A `system:bee` spawned via `fleet:spawn`/`fleet:place_batch` may lack
+A `system:bee` spawned via `bee:spawn`/`fleet:place_batch` may lack
 `capability:fs-write`. It can read, diagnose, and produce an excellent **draft**
 (exact migration SQL, code diffs), but its `Edit`/`Write` fails:
 

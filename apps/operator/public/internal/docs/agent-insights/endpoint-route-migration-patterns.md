@@ -43,7 +43,11 @@ and drives `app.request('/api/...')`. Move the file to
 `lib/endpoint-route/__tests__/`. Two recurring fixes:
 
 * **Flag-gated routes** (`gateApiRoute(FLAGS.X)`) 404 in tests unless you
-  `vi.mock('@/lib/require-flag', () => ({ gateApiRoute: async () => null }))`.
+  mock the flag gate. Endpoint-route tests now live under
+  `packages/operator-core/lib/endpoint-route/__tests__/` (moved off the
+  `apps/operator` tree with the rest of the barrel — see below), so mock the
+  **relative** path, not the old `@/lib/...` Next alias:
+  `vi.mock('../../require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }))`.
 * **Never `vi.mock('node:fs')`** — `registerAllRoutes` transitively loads
   prompt-assembly, which `existsSync`/`readFileSync`s real persona files. A
   blanket fs mock breaks unrelated routes. Mock the specific lib instead.

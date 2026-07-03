@@ -180,7 +180,7 @@ export function formatInvokeStderr(role: string, exitCode: number, stderr: strin
  * spawnInvokeOnce — THE single agent-spawn chokepoint. Spawn one headless
  * `invoke-once` run for `role` with the given `extras` (complete KEY=value list)
  * inside `projectDir`. Shared by the pipeline role runner, the finalizer
- * (curator/documenter), the operator nursery (`fleet:spawn`), and the coord-program
+ * (curator/documenter), the operator nursery (`bee:spawn`), and the coord-program
  * fan-out. Resolves to the agent's output + exit code + captured stderr; never
  * rejects. On a non-zero exit the child's stderr is surfaced to the operator run
  * log so a throw-before-run isn't silent.
@@ -194,7 +194,7 @@ export function formatInvokeStderr(role: string, exitCode: number, stderr: strin
  *     the provider's rate limits, plus the single hard ceiling (rate_limit_config
  *     `maxSimultaneousAgents`, D-002/P-007). Reactive physics, never the worth-it call.
  *   • DELIVERY / DURABILITY — opt-in BY SPAWN CLASS (D-003): AUTONOMOUS spawns
- *     (routine fires, launch-blueprints, `fleet:spawn`) are wrapped in a durable,
+ *     (routine fires, launch-blueprints, `bee:spawn`) are wrapped in a durable,
  *     idempotency-keyed DBOS step so a crash re-runs them once (P-010); INTERACTIVE
  *     `psu` is NOT made durable — a human is the durability, and auto-retrying their
  *     session would be wrong — but it STILL passes admission + the safety floor.

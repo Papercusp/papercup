@@ -55,7 +55,7 @@ export interface SpawnRequest {
 /**
  * `<handoff_to_queen>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
  * P-014). The Sentinel/Herald never places work itself (its capability envelope
- * denies fleet:spawn/placement by design); instead it SUGGESTS + HANDS OFF: it
+ * denies bee:spawn/placement by design); instead it SUGGESTS + HANDS OFF: it
  * files a HIGH-PRIORITY work_item the user asked for and nudges the Queen, who is
  * the placer. This is the structured twin of `<spawn>` — same parse-server-side,
  * dispatch-side-effect shape — but honored ONLY for role==='sentinel' (the
@@ -80,7 +80,7 @@ export interface HandoffRequest {
    *  the brain's hint / the fallback when no capability is named. Default 'high'
    *  (user-asked work is high-priority by default — the persona contract). */
   tier: 'low' | 'medium' | 'high';
-  /** The capability the handoff ultimately exercises (e.g. 'fleet:spawn'); when
+  /** The capability the handoff ultimately exercises (e.g. 'bee:spawn'); when
    *  present the server resolves the AUTHORITATIVE tier from the substrate
    *  tier-table (resolveActualTier) rather than trusting the brain's `tier`. null
    *  when the request is generic. */

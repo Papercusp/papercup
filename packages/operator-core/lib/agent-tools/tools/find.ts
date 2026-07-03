@@ -5,7 +5,7 @@
  * Hybrid lexical + semantic search (the committed `cupboard/tool-find.ts`
  * floored-union core): the lexical leg is exact-name-authoritative, the semantic
  * leg broadens recall so "feature flag" finds `flags:*` and "spawn a worker"
- * finds `fleet:spawn` even with no shared words. Better than omp's keyword-only
+ * finds `bee:spawn` even with no shared words. Better than omp's keyword-only
  * `search_tool_bm25`, and — unlike that omp-internal search — usable by
  * claude/codex too.
  *

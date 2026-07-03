@@ -104,7 +104,7 @@ describe('capability→category map: shape', () => {
     expect(isAutonomyCategory(r!.category)).toBe(true);
   });
   it('every resolved category is one of the 13 canonical ids', () => {
-    for (const a of ['fleet:spawn', 'plans:promote', 'memory:forget', 'gym:judge', 'work_items:set_priority']) {
+    for (const a of ['bee:spawn', 'plans:promote', 'memory:forget', 'gym:judge', 'work_items:set_priority']) {
       const cat = categoryForAction(a);
       expect(cat).not.toBeNull();
       expect(isAutonomyCategory(cat!)).toBe(true);

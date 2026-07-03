@@ -138,3 +138,26 @@ must NOT absorb "the gym is failing"; that's the `gym-circuit` leg's job. A gym
 that errors while its LLM transport is demonstrably reachable is a gym/upstream
 problem (the gateway's own `/stats` shows `upstream429`/`upstreamErrors`), not a
 spine-reachability problem — the two legs disagreeing is the signal, not a bug.
+
+## Coda — an even-earlier boot preflight landed ahead of the DBOS race (2026-06-25)
+
+`apps/operator/bin/hono-host.ts` now imports `./boot-integrity-first` as its
+**very first statement**, ahead of `host-bootstrap` (and therefore ahead of the
+DBOS-migration/HTTP-listen race trap 2 describes). It is a dependency-free
+`runBootIntegrityGuardOrExit()` check (imports only `node:module`) that fails
+fast with a single named diagnostic when `node_modules` is inconsistent with
+source — the "every cluster worker crash-loops on a raw `MODULE_NOT_FOUND` for
+\~35 minutes" class from the 2026-06-25 inconsistent-release incident, not the
+Napi abort this page is otherwise about.
+
+This does **not** change the trap-2 boot order: the HTTP listener still binds
+before the DBOS system-DB migration completes (`onWorker` calls
+`runBootstrap()` — which kicks off the DBOS launch without awaiting it — then
+immediately `startRequestServers()`, which calls `.listen()`), so
+`GET /api/health/ready`'s `dbosStarted()` gate (`health-ready.ts`) and
+`waitForOperatorReady` (`operator-ready.ts`) remain the correct readiness
+mechanism described above. The integrity preflight is a distinct, *earlier*
+fail-fast for an unrelated failure mode (a broken checkout, not a native
+runtime abort) — see
+[the two-port model](/internal/docs/system/repo-conventions) and
+`boot-integrity-first.ts`'s own doc-comment for detail.

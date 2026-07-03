@@ -1,11 +1,11 @@
 # Fleet bee killed by the DBOS invoke timeout (was 600s/10 min; default now 45 min)
 URL: /internal/docs/agent-insights/fleet-bee-600s-invoke-timeout
 
-A fleet:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration landing exactly on PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS was killed by the DBOS invoke timeout (invokeTimeoutMs(), orchestrator-runner.ts). The default was 600_000ms (10 min) when first hit — three bees died that way on 2026-06-11 mid-edit, one leaving the shared tree red — and has since been raised to 2_700_000ms (45 min). Don't re-dispatch a task that outruns the timeout into the same guillotine — do it inline or raise the env.
+A bee:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration landing exactly on PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS was killed by the DBOS invoke timeout (invokeTimeoutMs(), orchestrator-runner.ts). The default was 600_000ms (10 min) when first hit — three bees died that way on 2026-06-11 mid-edit, one leaving the shared tree red — and has since been raised to 2_700_000ms (45 min). Don't re-dispatch a task that outruns the timeout into the same guillotine — do it inline or raise the env.
 
 ## Symptom
 
-A `fleet:spawn`'d agent shows `failed` in the nursery
+A `bee:spawn`'d agent shows `failed` in the nursery
 (`harness_shared.spawned_agents`) with:
 
 * `exit_code` **143** (SIGTERM)
@@ -34,7 +34,7 @@ export const invokeTimeoutMs = (): number =>
 below died at the old 10-minute default, which "was insufficient" per the code comment). A
 coding bee with a long brief can still exceed it.
 `operator-spawn.ts` supports a per-spawn `timeoutMs` override (threaded to the
-DBOS step), but **`fleet:spawn` does not expose it** — so a dispatcher cannot
+DBOS step), but **`bee:spawn` does not expose it** — so a dispatcher cannot
 grant a longer window. Filed as **EI-361** (with the empty-`error_message` and
 dead `one_for_one` legs).
 

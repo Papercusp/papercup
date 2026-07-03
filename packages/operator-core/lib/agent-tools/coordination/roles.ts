@@ -21,7 +21,7 @@ export const COORD_ROLES = [
   'bee',
   // The QUEEN — the hive's placement decider (operator specialized; local-hive
   // D-001/P-030). Her whole loop is coord/fleet/work_items: survey
-  // (coord:presence/inbox, work_items:list) → place (fleet:spawn — note
+  // (coord:presence/inbox, work_items:list) → place (bee:spawn — note
   // fleet/spawn.ts filters OUT bee+sentinel but keeps queen; placement is hers)
   // → warm-inject (coord:send {wake}) → drain (fleet:drain). EI-286 follow-up:
   // the role existed only in the blueprint, so every gate here filtered her out.
@@ -32,7 +32,7 @@ export const COORD_ROLES = [
   // orphaned spawns) and RAISES ALARMS (coord:escalate/send). Its caps
   // (BLUEPRINT_ROLE_CAPS.sentinel) are read-mostly, so the COORD_ROLES write tools
   // it cannot use (work_items:write etc.) stay capped out — only coord:write
-  // resolves. Excluded from fleet:spawn (placement is the Queen's, not the
+  // resolves. Excluded from bee:spawn (placement is the Queen's, not the
   // watcher's — see fleet/spawn.ts, same carve-out as bee).
   'sentinel',
   // The OVERWATCH — the autonomous system-health supervisor (overwatch-role-2026-06-15
@@ -42,7 +42,7 @@ export const COORD_ROLES = [
   // (decision_ledger, hive:status) and its ONLY writes are NUDGES + observations
   // (coord:send / coord:escalate / improvements:capture). Its caps
   // (BLUEPRINT_ROLE_CAPS.overwatch) are read-mostly (coord:write for nudges only), so the
-  // COORD_ROLES write tools it cannot use stay capped out. Excluded from fleet:spawn
+  // COORD_ROLES write tools it cannot use stay capped out. Excluded from bee:spawn
   // (placement is the Queen's — the overwatch NUDGES her to re-place, never re-places
   // itself; D-001 — same carve-out as bee/sentinel).
   'overwatch',

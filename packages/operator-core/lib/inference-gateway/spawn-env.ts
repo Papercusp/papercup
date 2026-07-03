@@ -106,7 +106,7 @@ export async function resolveSpawnGatewayEnv(opts: {
    *  models.yml (P-005/WI-951 per-role fidelity); a non-claude/local spec falls back to the wire default. */
   model?: string;
   /** Explicit per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the
-   *  fleet:spawn `account` arg. Mirrors the interactive psu path (resolveAccountPin):
+   *  bee:spawn `account` arg. Mirrors the interactive psu path (resolveAccountPin):
    *   • 'default' | 'none' | 'system' → skip the gateway entirely (direct egress, system credential).
    *   • 'auto' | 'gateway'            → gateway auto-route (active()/drain-select + failover, NO pin).
    *   • '<pool-id>'                   → HARD pin to that account via the gateway (no failover) — trusts

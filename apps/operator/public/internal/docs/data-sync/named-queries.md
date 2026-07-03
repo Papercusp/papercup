@@ -3,74 +3,51 @@ URL: /internal/docs/data-sync/named-queries
 
 The shared catalog of queries every panel reads from.
 
-:::danger\[Zero is being retired — historical reference]
-Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
-path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
-host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
-**not run** on desktop. Treat this page as historical reference. Source of
-truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
-doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::danger\[Zero is fully decommissioned — this page is historical reference only]
+The Zero / zero-cache / ZQL named-queries / WebSocket-push stack described below
+is **gone, not just retiring**: `zero-decommission-2026-06-20` (Z-2) removed
+`@rocicorp/zero` from every `package.json`, deleted the `@papercusp/zero-harness`
+package (`libs/zero-harness` — the directory itself no longer exists in the
+tree), and stripped the Zero-specific WS transport out of `@papercusp/sync`.
+Zero-repo-wide `@rocicorp/zero` deps: **0**. The shipping desktop app uses
+**SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over
+Postgres `LISTEN/NOTIFY` through the v2 sync-resolver registry described
+below); zero-cache is not run anywhere. Source of truth:
+`apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
+doc-comment), the root `CLAUDE.md` deployment-model section, and
+[Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query)
+for the current, authoritative recipe. The "Query does not implement
+QueryInternals" section further down describes an error that **cannot recur**
+— it is kept only so an agent that finds an old comment/plan mentioning it
+isn't left guessing what it meant.
 :::
 
 ## Why named queries
 
-Every Zero query the harness UI runs is registered in
-`libs/zero-harness/src/queries.ts`. The reason is twofold:
+Every panel read the harness UI does goes through one **named query** —
+`useSyncQuery({ queryName, args })` — resolved against a single registry, so
+"what does the harness sync from Postgres?" always has one answer: open the
+registry. That principle survived the Zero decommission unchanged; only the
+registry's *shape* changed.
 
-1. **Type safety end-to-end** — both the panel calling
-   `queries.snapshotsConsolidated.bySlug({ harnessSlug })` and the
-   `zero-cache` resolving the query reference the same TypeScript
-   definition. Adding a column adds it to the row type. Renaming a column
-   breaks the panel at compile time.
-2. **A surface area that's easy to grep** — when an agent asks "what does
-   the harness sync from Postgres?" the answer is: open `queries.ts`. The
-   registry is a single `defineQueries({ ... })` call organized into
-   namespaces, and it is the entire surface.
-
-## How a named query is wired
-
-Each entry is a `defineQuery(...)` under a namespace inside one
-`defineQueries({ ... })` call. A query with arguments takes a Zod schema
-for its args plus a resolver that returns ZQL:
-
-```ts
-import { defineQueries, defineQuery } from '@rocicorp/zero';
-import { z } from 'zod';
-import { zql } from './schema';
-
-export const queries = defineQueries({
-  snapshotsConsolidated: {
-    bySlug: defineQuery(
-      z.object({ harnessSlug: z.string() }),
-      ({ args: { harnessSlug } }) =>
-        zql.snapshotsConsolidated.where('harnessSlug', harnessSlug).orderBy('ts', 'desc'),
-    ),
-  },
-});
-```
-
-Two non-obvious things:
-
-* **`args` is an object, validated by Zod** — e.g.
-  `{ harnessSlug }`, `{ id }`. The arg names come from the
-  `z.object({ ... })` you declare. (Passing a bare array will fail
-  validation on the server and the query returns nothing.) This matches
-  the `useSyncQuery({ queryName, args })` call site, whose `args` is also
-  a plain object.
-* **Queries are namespaced** — you reference
-  `queries.<namespace>.<name>` (e.g. `queries.snapshotsConsolidated.bySlug`),
-  not a flat top-level name.
+Today the registry is
+`REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the "v2"
+resolver) — a flat `Record<string, QueryEntry>` (150+ entries as of this
+writing) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
+`'snapshotsConsolidated.bySlug'`, `'messages.recent'`, …), each entry pairing
+a Zod `argsSchema` with an async `resolve(args)` that runs a normal
+drizzle/PG query and returns a flat row array. There is no `defineQueries`
+namespace object, no ZQL, and no separate `schema.ts`/publication step — a
+dotted name is just a registry key, and adding one is a \~15 LOC addition to
+that one file. **Full recipe, key points, and gotchas:**
+[Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query) —
+this page won't duplicate it.
 
 ## The current catalog
 
-The registry has grown well past a single flat list — it is a
-`defineQueries({ ... })` call with **60+ namespaces** (`projects`,
-`auditLog`, `messages`, the four `*Consolidated` entities, the per-table
-`harness*` and `operator*` namespaces, the `org*` department tables, …).
-**`libs/zero-harness/src/queries.ts` is the canonical list** — read it
-there rather than trusting an inline copy that will drift.
-
-The four core per-harness entities are now slug-agnostic consolidated
+`knownQueryNamesV2()` (same file) enumerates every registered name — that's
+the canonical list; don't trust an inline copy here to stay in sync with it.
+The four core per-harness entities are still slug-agnostic consolidated
 tables in `harness_shared`, each read by a `.bySlug` query keyed on
 `harnessSlug` (a column, not a schema name):
 
@@ -83,30 +60,32 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 | `projects.all` / `projects.byId`              | `ProjectRow[]`  | (none) / `{ id }` |
 | `messages.recent`                             | `MessageRow[]`  | `{ limit }`       |
 
-Each `*Consolidated` namespace also exposes an `.all` query that takes no
-args — the cross-harness / portfolio read over the whole consolidated
-table. `featuresConsolidated` carries two extra variants on top of `.all`
-and `.bySlug`: `bySourcePlan` (`{ planSlug }`, keyed on `sourcePlanSlug`)
-and `needsReview` (no args, the rows flagged `needsHumanReview`).
-
-Adding a new harness no longer adds a query — the slug is a regular row
-value. When you add a *new* entry, update both `queries.ts` and
-`schema.ts` together.
+`featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259
+P-006/D-010), `.byPlanSlug`/`bySourcePlan`, and a `needsReview` variant (no
+args, rows flagged `needsHumanReview`) on top of `.all`/`.bySlug`. Adding a
+new harness still doesn't add a query — the slug is a regular row value, not
+a schema name.
 
 ## Adding a new named query
 
+See the full recipe (schema check, registry entry shape, the P-067 PG-trigger
+bridge, the test-count-assertion gotcha, verification) at
+[Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query).
+In short, an entry in `REGISTRY` looks like:
+
 ```ts
-// libs/zero-harness/src/queries.ts
-export const queries = defineQueries({
-  // …existing namespaces
-  myNewThing: {
-    bySlug: defineQuery(
-      z.object({ harnessSlug: z.string() }),
-      ({ args: { harnessSlug } }) =>
-        zql.myNewThing.where('harnessSlug', harnessSlug),
-    ),
+// packages/operator-core/lib/sync-resolver/index.ts
+'myNewThing.bySlug': {
+  argsSchema: z.object({ harnessSlug: z.string() }),
+  resolve: async (args) => {
+    const { harnessSlug } = args as { harnessSlug: string };
+    const { getOrgPg, generated } = await import('@papercusp/db-org');
+    const { eq } = await import('drizzle-orm');
+    const { db } = getOrgPg();
+    return (await db.select().from(generated.myNewThing)
+      .where(eq(generated.myNewThing.harnessSlug, harnessSlug))) as unknown[];
   },
-});
+},
 ```
 
 Then in your panel, read it through the `@papercusp/sync` wrapper. The
@@ -121,23 +100,22 @@ const { data: rows } = useSyncQuery<MyNewThingRow>({
 });
 ```
 
-The same package also exports the companion write/read hooks:
-`useSyncMutate(path, restFallback)` for namespaced Zero custom mutators
-(optimistic on the WebSocket transport, REST fallback otherwise) and
-`useSyncPrefetch()` to warm the cache so a later `useSyncQuery` for the
-same `queryName` + `args` resolves instantly.
+The same generic (`libs/generic/sync`) package also exports the companion
+write hook `useSyncMutate(path, restFallback)` and `useSyncPrefetch()`. On the
+operator harness UI (SSE transport, no WebSocket client) `useSyncMutate`
+always takes the `restFallback` — it exists so a call site can adopt the same
+API a `WEBSOCKETS`-transport consumer of the generic package would use
+(elsewhere in the monorepo) without a behavior difference on SSE/polling.
+`useSyncPrefetch()` warms the cache so a later `useSyncQuery` for the same
+`queryName` + `args` resolves instantly.
 
-You also need:
-
-1. The table declared in `libs/zero-harness/src/schema.ts`, then added to
-   the `tables` array of the `createSchema({ tables, relationships })`
-   call in the same file (there is no separate schema-version field to
-   bump).
-2. The table added to the `zero_harness` Postgres publication for each
-   harness that has it.
-3. `zero-cache-harness` restarted.
-
-If you forget any of these the query returns 0 rows silently.
+You also need the PG-trigger bridge entry so writes that bypass app code
+(raw SQL, MCP-tool writes, migrations) still invalidate the query: add
+`'harness_shared.your_table': ['myNewThing.bySlug']` to `TABLE_TO_QUERY_NAMES`
+in `packages/operator-core/lib/sync-resolver/table-to-query-names.ts` — see
+[Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query)
+Step 3. Skip it and the query still works for app-code writes (which call
+`notifySyncInvalidate` directly) but silently misses out-of-band ones.
 
 :::note
 A subtler silent-empty case: `useSyncQuery` rendered **outside** a
@@ -148,31 +126,15 @@ An unwrapped panel therefore shows no data with no error. If you need live
 data outside a provider, branch on the result and supply your own fallback.
 :::
 
-## "Query does not implement QueryInternals"
+## "Query does not implement QueryInternals" (Zero-era, historical)
 
-This error means the panel's `@rocicorp/zero` package and the one Zero
-instantiated against are different copies. Every `useQuery` call throws
-it.
-
-Standard fix in our tree (force a single `@rocicorp/zero` copy by
-removing the duplicate and symlinking it to the workspace-root copy):
-
-```bash
-# from the app that owns the duplicate copy
-rm -rf node_modules/@rocicorp/zero
-ln -s ../../node_modules/@rocicorp/zero node_modules/@rocicorp/zero
-```
-
-Why this exists: an app's `package.json` declaring `@rocicorp/zero` as a
-direct dep can make npm resolve it into a private `node_modules` copy when
-workspace hoisting decides not to hoist. Symlinking forces a single copy.
-
-If a fresh app you're scaffolding hits this, check whether its
-`package.json` declares `@rocicorp/zero` directly — prefer consuming it
-transitively from `@papercusp/zero-harness`. (The historical offender was
-`apps/papercup` — package `@papercup/web` — which is now retired at
-`_retired/papercup`; the live `@rocicorp/zero` declarations are in
-`apps/operator`, `libs/zero-harness`, and the zero-cache-server.)
+This error meant the panel's `@rocicorp/zero` package and the one Zero
+instantiated against were different copies, thrown from every `useQuery`
+call. It cannot recur — `@rocicorp/zero` has zero `package.json` references
+left anywhere in the repo (`zero-decommission-2026-06-20` Z-2) — but it's
+left here in case an old comment, plan, or search result references it and
+an agent needs to know it's inert history, not a live failure mode to
+reproduce or guard against.
 
 ## Cross-harness queries (consolidated tables)
 
@@ -199,19 +161,27 @@ So a per-harness read still works (it goes through the view), but the
 canonical store everything resolves against is the single consolidated base
 table.
 
-Why a base table and not a Postgres view at the top? Because Zero
-publications can't include views — they require base tables for logical
-replication. The per-harness *views* are read conveniences over that base
-table, not replication sources.
+Why a base table and not a Postgres view at the top? The PG trigger that
+drives invalidation (`emit_change_notify`, the bridge behind
+`TABLE_TO_QUERY_NAMES`) fires on the underlying relation's row-level
+INSERT/UPDATE/DELETE; an auto-updatable view's writes execute against that
+same underlying relation, so a trigger on the base table still sees them —
+but a view is not itself a relation a trigger can attach row-level logic to
+directly. Historically this table-not-view split was **also** required
+because Zero's logical-replication publications couldn't include views; that
+constraint is gone along with Zero, but the trigger-attachment reason still
+holds on its own, so the architecture is unchanged.
 
 The cross-harness `/features` page reads from the consolidated table, with
-no slug arg, via the `featuresConsolidated.all` named query. That replaced
-an older polling implementation; the page is now real-time.
+no slug arg, via the `featuresConsolidated.all` named query — real-time via
+the v2 resolver + SSE, same as every other query on this page.
 
 If you need another cross-harness aggregation, the recipe is:
 
 1. Add a canonical base table in `harness_shared` and have writers target
    it directly (optionally expose per-harness views over it, filtered by
    `harness_slug`, rather than fanning in via triggers).
-2. Add the base table to the `zero_harness` publication.
-3. Register a named query with no slug arg (an `.all`-style query).
+2. Register the table in `TABLE_TO_QUERY_NAMES`
+   (`table-to-query-names.ts`) so out-of-band writes still invalidate.
+3. Register a named query with no slug arg (an `.all`-style query) in the
+   v2 registry.

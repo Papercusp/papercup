@@ -23,11 +23,11 @@ documents:
 
 ## The three tools
 
-Every spawn flows through the `fleet:*` surface — launch with `fleet:spawn`, watch with `fleet:tree`, abort with `fleet:cancel`.
+Every spawn flows through the `fleet:*` surface — launch with `bee:spawn`, watch with `fleet:tree`, abort with `fleet:cancel`.
 
 ```
                        ┌──────────────────────────┐
-                       │  fleet:spawn             │
+                       │  bee:spawn             │
                        │  → returns spawn_id      │
                        │  → status='running'      │
                        └──────────┬───────────────┘
@@ -47,7 +47,7 @@ parent  ─ fleet:tree → │  status: running         │ ←── │  child
 
 Unlike a poll loop, a parent doesn't have to keep checking: when a child reaches a terminal status, `wakeParentOnChildDeath` fires the parent's inbox-wake key (with the death notice + output tail), so a sleeping parent re-wakes on its own. `fleet:tree` is for on-demand inspection of the subtree, not mandatory polling.
 
-## `fleet:spawn { harness?, role, feature?, chunk?, brief?, extras? }`
+## `bee:spawn { harness?, role, feature?, chunk?, brief?, extras? }`
 
 What happens server-side (in `spawnAgentInHarness`):
 

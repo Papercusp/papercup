@@ -77,10 +77,14 @@ can never be honored for another.
 context**. The server can validate the cursor/view/scope, but it **cannot** see
 whether the model still holds the base. So the **harness, not the model, owns
 cursor storage and base-presence tracking** — exactly as coord already does for
-OMP/psu agents ([`coord-schema.ts`](packages/operator-core/lib/coord-schema.ts)):
-`coord_watermarks` per-channel cursors, the `[coord+N]` positional injection, the
-`messages_shown_ts` read-receipt, and a `snapshot_rebootstrap_pending` flag that
-re-sends full state after compaction.
+OMP/psu agents: the `[coord+N]` positional injection line-protocol
+([`coord-schema.ts`](packages/operator-core/lib/coord-schema.ts) is the single
+source for that schema — the shared legend the renderer and the psu prompt both
+read, so the two can't desync), `coord_watermarks` per-channel cursors
+(`agent-tools/coordination/watermarks.ts`), the `messages_shown_ts` read-receipt
+and `snapshot_rebootstrap_pending` flag that re-sends full state after
+compaction (`agent-tools/coordination/tools/inbox.ts`,
+`agent-tools/coordination/presence-snapshot.ts`).
 
 The harness contract:
 
@@ -270,6 +274,10 @@ the harness, and the tests share ONE implementation.
 ```ts
 delta: {
   itemKey: (row) => row.id,           // stable per-row id (the merge key)
+  itemKeyField: 'id',                 // optional; the FIELD NAME row.id reads —
+                                       // conveyed on the wire (below) for an
+                                       // out-of-process client, which has no
+                                       // access to the itemKey FUNCTION itself
   rowRevision: (row) => row.version,  // optional; defaults to a content hash
   rowType: (row) => row.kind,         // optional; tags DeltaChange.type
   rows: (data) => data.items,         // optional; extract the row array when data isn't itself one
@@ -277,6 +285,14 @@ delta: {
   // revision omitted → derived from the item-set checksum
 }
 ```
+
+When `itemKeyField` is declared, `negotiateToolDelta` (`define-tool.ts`) conveys
+it as `_meta.delta.itemKeyField` alongside `mode`/`cursor`/`checksum` — the
+generic merge key an **out-of-process** client (the MCP proxy /
+`dispatchWithConveyedDelta`) needs to apply `row[itemKeyField]` itself. An
+**in-process** client (`dispatchWithBasePresence`) doesn't need this: it reads
+the `itemKey` function straight off the tool registry (`ProjectedTool.delta`),
+same process, no wire hop.
 
 The framework declines a semantic delta WHENEVER it isn't safe — and says why in
 `_meta.delta.reason`: `no_digest` (prior cursor had none), `max_age` (cursor too
@@ -311,16 +327,29 @@ avoidance** — so the semantic opt-in ships behind a flag and a gate, never on 
 default.
 
 **The flag — `papercusp-tool-delta-protocol`** (`libs/flags/src/types.ts`,
-default **ON** since the owner-directed flip 2026-06-22; removed from
-`KNOWN_DARK_FLAGS`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
+default **ON** since the owner-directed flip 2026-06-22; not present in the
+`DARK_FLAGS` registry). Since the P-011 flag-default inversion
+(`enforce-system-on-generic-work-2026-06-29`), `FLAG_DEFAULTS` is **derived**
+from `DARK_FLAGS` (`!DARK_FLAGS.has(key)`) rather than hand-written — a flag
+defaults ON simply by NOT being registered in `DARK_FLAGS`, which replaced the
+old flat `KNOWN_DARK_FLAGS` allowlist with a reasoned
+`Map<FlagKey, { case, reason }>` (`DarkCase`: `incomplete` | `owner-authority`
+\| `cutover` | `parked`). OFF ⇒ tools serve only the unconditionally-safe Lane-B
 responses (`full | not_modified`); a tool never emits a `mode:delta` body. The
 flag is the master switch for the semantic merge. It is a `FLAGS` entry, **not**
 an env boolean (env gates ship dark, dodge the default-on guard, and can't be
-flipped at runtime). The flip is **dormant-safe**: it enables the *server*
-capability ahead of any client, but no caller sends `_meta.delta` yet (the
-delta-aware client is WI-514), so today every response is still `full |
-not_modified` regardless — ON simply makes the server *ready* and keeps the flag
-a real runtime kill-switch rather than dead config.
+flipped at runtime). The flip was **dormant-safe** at the time it landed: it
+enabled the *server* capability ahead of any client. That gap has since closed —
+the client side (originally tracked as WI-514, **resolved as superseded** by the
+`agent-tool-delta-client-rollout-2026-06-23` plan) now ships too: `DeltaToolClient`
+(`delta-client.ts`) plus the two one-line integration recipes,
+`dispatchWithConveyedDelta` (out-of-process — reads the `itemKeyField` the server
+conveys in `_meta.delta`, see below) and `dispatchWithBasePresence` (in-process,
+composed with `BasePresenceTracker`). Real `mode:delta` traffic still depends on
+a runtime actually calling one of these from its own tool-exec loop (psu/bee
+Claude-Code sessions and the operator's own `runAgentChat` don't yet — see
+"Where this lands" above), so most calls today are still `full | not_modified`
+in practice, but the flag is no longer gating on a nonexistent client.
 
 **Where the flag actually bites — the runtime gate.** The flag is enforced
 per-request inside `defineTool`'s `negotiateToolDelta` (`define-tool.ts`), not
@@ -358,15 +387,22 @@ ON but any scenario is red/errored/stale/missing, it **holds the deploy**
   green-light an opt-in it could not verify. Freshness window:
   `PAPERCUSP_DELTA_GATE_MAX_AGE_MS` (default 7d).
 
-**State of the rollout (as of 2026-06-22).** Step (2) is **done** —
-`FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL]` is `true` and the flag is out of
-`KNOWN_DARK_FLAGS` (owner-directed; safe because the opt-in is inert without the
-WI-514 client). What remains before any *real* `mode:delta` traffic flows: (1)
-confirm `su-S23`/`S24`/`S25` are green in the matrix; (3) **arm the gate**
-(`PAPERCUSP_DELTA_GATE=1`, and `_BLOCK=1` once trusted) so that once a client
-exists, a future regression that reds the scenarios holds the deploy instead of
-shipping a silent-wrong-merge. Until then the gate stays default-warn/un-armed so
-it never blocks deploys for a capability nothing exercises yet.
+**State of the rollout.** The flag flip (`FLAG_DEFAULTS[TOOL_DELTA_PROTOCOL] =
+true`, out of `KNOWN_DARK_FLAGS`) and the client build (`DeltaToolClient` +
+`dispatchWithConveyedDelta`/`dispatchWithBasePresence`, itemKey conveyance
+shipped in `define-tool.ts`) are both **done** — WI-514 closed as superseded by
+`agent-tool-delta-client-rollout-2026-06-23` once it found the client + itemKey
+conveyance had already landed. What remains is **wiring a real runtime** to call
+the recipe from its own tool-exec loop: the out-of-process MCP proxy path is
+architecturally closed (a stateless proxy can't see client-side compaction, so
+it could only save localhost wire bytes, not model tokens — not worth building);
+the live win is an OMP/Meridian-style in-process adopter, which is an
+external-runtime change, not an in-repo one. Independent of that: **arm the
+gate** (`PAPERCUSP_DELTA_GATE=1`, and `_BLOCK=1` once trusted) once a runtime
+actually sends `_meta.delta`, so a future regression that reds the `su-S23`/`S24`/
+`S25` scenarios holds the deploy instead of shipping a silent-wrong-merge. Until
+then the gate stays default-warn/un-armed — there is still no live caller for it
+to protect.
 
 **Telemetry.** Every negotiated response records its mode on
 `tool_invocations.metadata_json.deltaMode` (`full | delta | not_modified`,

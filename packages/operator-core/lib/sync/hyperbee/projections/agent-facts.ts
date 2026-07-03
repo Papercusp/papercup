@@ -23,6 +23,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 
 /** Wire-shape of an agent_facts row — the federated subset. Defensive on every field. */
 export interface AgentFactWireRow {
@@ -77,6 +78,31 @@ function composeKey(row: AgentFactWireRow): string {
 
 function decodeValue(raw: unknown): AgentFactWireRow | null {
   return isAgentFactWireRow(raw) ? raw : null;
+}
+
+/**
+ * F1-4 / P-012: record a per-source refused-op counter when a FOREIGN shareable
+ * fact op was declined at decode (a malformed wire row from a buggy/hostile
+ * sender's log). Only REMOTE ops carry an attributable source — a local decode
+ * failure is a local bug, not a peer's spam, so it is not counted. Fail-soft via
+ * the counter fn.
+ */
+function onRefusedOp(
+  opts: AgentFactsProjectionOpts,
+  _raw: unknown,
+  provenance: ProvenanceContext | undefined,
+): Promise<void> | void {
+  if (provenance?.origin !== 'remote') return;
+  return bumpFederationRefusedOp(
+    {
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      sourceHive: provenance.authorPubkey,
+      tableTag: 'agent-facts-by-key',
+      reason: 'malformed',
+    },
+    opts.sql,
+  );
 }
 
 async function writeToPg(
@@ -157,9 +183,10 @@ export function buildAgentFactsProjection(
     skipOwnOps: true,
     composeKey,
     decodeValue,
+    onRefusedOp: (raw, provenance) => onRefusedOp(opts, raw, provenance),
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key, delTs, delHlc) => deleteFromPg(opts, key, delTs, delHlc),
   };
 }
 
-export const _testing = { composeKey, decodeValue, isAgentFactWireRow };
+export const _testing = { composeKey, decodeValue, isAgentFactWireRow, onRefusedOp };

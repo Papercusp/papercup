@@ -217,7 +217,7 @@ are exposed via `?superuser=1`:
 * **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
 * **Spawn / supervise other agents** (the full `fleet:*` surface):
-  `fleet:spawn`, `fleet:supervise`, `fleet:cancel`, `fleet:tree`,
+  `bee:spawn`, `fleet:supervise`, `fleet:cancel`, `fleet:tree`,
   `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
   `fleet:drain`, `fleet:governor`, `fleet:place_batch`,
   `fleet:sandbox_deps`, `fleet:selected_bee`. (The old

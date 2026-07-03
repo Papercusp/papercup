@@ -177,12 +177,12 @@ lives in `action-surface.ts`.
 | Promote staging → green                       | release-deploy      | **irrev** | owner     | — (automation)                                | partial  |
 | Approve spend / set a budget                  | spend-budget        | **irrev** | owner     | `operator:budget`                             | covered  |
 | Scale out accounts                            | spend-budget        | **irrev** | owner     | `accounts:scale_out`                          | covered  |
-| Spawn an agent                                | agent-lifecycle     | rev       | system    | `fleet:spawn`                                 | covered  |
+| Spawn an agent                                | agent-lifecycle     | rev       | system    | `bee:spawn`                                   | covered  |
 | Cancel / drain an agent                       | agent-lifecycle     | rev       | system    | `fleet:cancel`, `fleet:drain`                 | covered  |
 | Admit / supervise / govern the fleet          | agent-lifecycle     | rev       | system    | `fleet:admit`, `fleet:governor`               | covered  |
 | Create / start / pause / dissolve a hive      | agent-lifecycle     | rev       | system    | `hive:create`, `hive:start`                   | covered  |
 | Approve a new subagent                        | agent-lifecycle     | rev       | system    | `new_subagent:approve`                        | covered  |
-| Choose the model tier for a spawn             | agent-lifecycle     | rev       | system    | `fleet:spawn` (param)                         | partial  |
+| Choose the model tier for a spawn             | agent-lifecycle     | rev       | system    | `bee:spawn` (param)                           | partial  |
 | Register / remove a credential account        | credentials-auth    | **irrev** | owner     | `accounts:register`                           | covered  |
 | Grant cross-hive authorization                | credentials-auth    | rev       | owner     | `hive:cross_grant`                            | covered  |
 | Flip an auth-affecting flag                   | credentials-auth    | rev       | owner     | `flags:set`                                   | partial  |

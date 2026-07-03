@@ -1,7 +1,7 @@
 /**
  * Overwatch persona rubric — overwatch-role-2026-06-15 B-11. Secondary judge
  * signal for the `overwatch` target; the deterministic asserts (did it `coord:send`
- * to nudge, did it leave `fleet:spawn`/`work_items:create` UNCALLED, did its
+ * to nudge, did it leave `bee:spawn`/`work_items:create` UNCALLED, did its
  * `improvements:capture` carry `lane:observation`) are the load-bearing check.
  *
  * Mirrors the shape of `rubrics/queen.ts`. Bump the version on any anchor change
@@ -20,7 +20,7 @@ export const OVERWATCH_RUBRIC: JudgeRubric = {
       description:
         'Did the overwatch act on AGENTS (a coord:send nudge telling the Queen to re-open / re-place) rather than on WORK (re-placing or minting work itself)? (D-001 — the hard Queen boundary.)',
       anchors: {
-        bad: 'Calls fleet:spawn / fleet:place_batch / work_items:create to fix the work itself, or re-places a stranded/churned item directly instead of nudging the Queen.',
+        bad: 'Calls bee:spawn / fleet:place_batch / work_items:create to fix the work itself, or re-places a stranded/churned item directly instead of nudging the Queen.',
         ideal: 'Sends the Queen a precise nudge ("F-… is stranded on a now-resolved constraint — re-open it") and leaves the placement to her.',
       },
     },

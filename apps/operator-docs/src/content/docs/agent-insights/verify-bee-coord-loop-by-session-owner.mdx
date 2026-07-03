@@ -1,6 +1,6 @@
 ---
-title: "Proving a fleet:spawn bee can actually report: join coord_event_log to spawned_agents.session_owner"
-description: "A fleet:spawn bee can do its FILE work perfectly yet be coordination-MUTE — zero coord/MCP writes under its real identity — because its platform MCP tools are DEFERRED behind Claude Code's ToolSearch and a small backend degrades to raw curl with the WRONG id (EI-311/EI-317). Unit tests pass; the reporting half of the Queen↔bee model silently doesn't exist (EI-75). You cannot see this from a green test run — verify it operationally with one SQL probe: coord_event_log.body->>'from' JOIN spawned_agents.session_owner WHERE child_role='bee'. Zero across N bees = mute. Non-zero with writer_key set = the loop is alive."
+title: "Proving a bee:spawn bee can actually report: join coord_event_log to spawned_agents.session_owner"
+description: "A bee:spawn bee can do its FILE work perfectly yet be coordination-MUTE — zero coord/MCP writes under its real identity — because its platform MCP tools are DEFERRED behind Claude Code's ToolSearch and a small backend degrades to raw curl with the WRONG id (EI-311/EI-317). Unit tests pass; the reporting half of the Queen↔bee model silently doesn't exist (EI-75). You cannot see this from a green test run — verify it operationally with one SQL probe: coord_event_log.body->>'from' JOIN spawned_agents.session_owner WHERE child_role='bee'. Zero across N bees = mute. Non-zero with writer_key set = the loop is alive."
 discovered: 2026-06-13
 tags: [fleet-spawn, bee, coord, session_owner, deferred-tools, ToolSearch, MCP, EI-75, EI-317, EI-311, verification, debugging]
 status: active
@@ -26,7 +26,7 @@ just went to the wrong place under the wrong identity.
 
 ## Why it happens
 
-A fleet:spawn bee's platform tools (`mcp__papercusp__<group>_<verb>`) are
+A bee:spawn bee's platform tools (`mcp__papercusp__<group>_<verb>`) are
 **DEFERRED** behind Claude Code's ToolSearch — they are not eager-loaded into the
 tool list. A small/cheap backend (often haiku) that doesn't know the contract
 concludes *"I don't have a way to call MCP tools,"* writes a bash script, and

@@ -24,10 +24,10 @@ export default defineTool({
     notWhen:
       'You ARE the brain/operator (you allocate directly) OR this is already-decided pipeline work (the pipeline admits its own role progression) OR a human-initiated psu session (no request needed).',
     chaining:
-      'new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice="approve", fleet:spawn { role, harness, feature }.',
+      'new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice="approve", bee:spawn { role, harness, feature }.',
     seeAlso: [
       'new_subagent:approve (the brain approves the request)',
-      'fleet:spawn (spawn once approved)',
+      'bee:spawn (spawn once approved)',
       'events:await (wait for the approval decision)',
     ],
   },
@@ -75,7 +75,7 @@ export default defineTool({
                   budget_scope: budgetScope,
                   next:
                     `Pre-approved from your stream budget (no brain round-trip) — ` +
-                    `fleet:spawn { role: "${args.role}"${args.harness ? `, harness: "${args.harness}"` : ''}${args.feature ? `, feature: "${args.feature}"` : ''} }.`,
+                    `bee:spawn { role: "${args.role}"${args.harness ? `, harness: "${args.harness}"` : ''}${args.feature ? `, feature: "${args.feature}"` : ''} }.`,
                 }),
               },
             ],
@@ -123,7 +123,7 @@ export default defineTool({
             headroom,
             next:
               `events:await { event: "${awaitEvent}" } then end your turn. On wake, if choice==="approve", ` +
-              `fleet:spawn { role: "${args.role}"${args.harness ? `, harness: "${args.harness}"` : ''}${args.feature ? `, feature: "${args.feature}"` : ''} }.`,
+              `bee:spawn { role: "${args.role}"${args.harness ? `, harness: "${args.harness}"` : ''}${args.feature ? `, feature: "${args.feature}"` : ''} }.`,
           }),
         },
       ],

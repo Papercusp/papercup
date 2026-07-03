@@ -48,7 +48,7 @@ import type { AutonomyCategory } from './categories';
 
 /** The event matched against the category rules: the tool name + its capability. */
 interface ActionEvent {
-  /** The MCP tool name, `group:verb` (e.g. `deploy:harness`, `fleet:spawn`). */
+  /** The MCP tool name, `group:verb` (e.g. `deploy:harness`, `bee:spawn`). */
   action: string;
   /** The tool's coarse RBAC capability string — last-resort fallback only. */
   capability?: string;
@@ -96,6 +96,9 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── agent-lifecycle — hive: overrides (cross_grant/declare-wake/ask*) handled above/below ──
   { id: 'cat:hive-ask', on: TRIGGER, when: { action: { matches: '^hive:(ask|request_work|asks)' } }, fire: 'escalations', meta: { reason: 'asks another hive (a cross-hive question)' } },
   { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
+  // bee:spawn (WI-1764 #3 renamed fleet:spawn → bee:spawn) places a background
+  // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
+  { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^bee:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
   { id: 'cat:hive', on: TRIGGER, when: { action: { matches: '^hive:' } }, fire: 'agent-lifecycle', meta: { reason: 'hive (swarm of agents) lifecycle' } },
   { id: 'cat:new-subagent-approve', on: TRIGGER, when: { action: { matches: '^new_subagent:approve' } }, fire: 'agent-lifecycle', meta: { reason: 'approves a new subagent spawn' } },
   { id: 'cat:new-subagent-request', on: TRIGGER, when: { action: { matches: '^new_subagent:request' } }, fire: 'escalations', meta: { reason: 'requests approval for a new subagent (an ask)' } },

@@ -386,7 +386,7 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'agent-lifecycle',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['fleet:spawn'],
+    queenVerbs: ['bee:spawn'],
     humanSurface: 'Fleet controls',
     coverage: 'covered',
     notes: 'Reversible: a spawned agent can be cancelled/drained. Cost is governed separately by spend-budget.',
@@ -437,10 +437,10 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'agent-lifecycle',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['fleet:spawn'],
+    queenVerbs: ['bee:spawn'],
     humanSurface: 'Spawn settings (queen-model-tier-selection)',
     coverage: 'partial',
-    notes: 'Model tier is a spawn parameter on fleet:spawn rather than a standalone verb; finer per-spawn tier control may warrant a dedicated knob. Reversible (next spawn can differ).',
+    notes: 'Model tier is a spawn parameter on bee:spawn rather than a standalone verb; finer per-spawn tier control may warrant a dedicated knob. Reversible (next spawn can differ).',
   },
 
   // ── credentials & auth (PROTECTED) ────────────────────────────────────────────────

@@ -123,7 +123,7 @@ export default defineTool({
       .record(z.string(), z.string().max(120))
       .nullable()
       .optional()
-      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the fleet:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
+      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the bee:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
     federatedPriming: z
       .object({
         foreignElites: z.number().int().nonnegative().optional(),

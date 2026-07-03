@@ -101,7 +101,7 @@ as a short voice/text approval prompt ("approve `<slug>`"). After handoff the
 Sentinel subscribes to the work\_item thread and **reports the landing**; if the
 session was away it surfaces the outcome via hindsight ("\[While you were away]",
 `notifyOperatorHindsight`). An invariant test asserts the Sentinel **never** calls
-`fleet:spawn`.
+`bee:spawn`.
 
 ## The settings tab — live overrides over workspace defaults
 

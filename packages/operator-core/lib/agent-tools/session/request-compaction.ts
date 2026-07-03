@@ -17,11 +17,25 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { findLiveHost, injectIntoHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
 
 /** Focus applied when the agent names none — mirrors the compaction.claude recipe. */
 const DEFAULT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.';
+
+/**
+ * WI-1804: the continuation turn opened on the compacted context when the host supports
+ * auto-continue. Derived from `focus` so the fresh context resumes THIS unit of work.
+ * Re-orient first — a compaction is a stale-snapshot boundary, so the successor must
+ * reconcile live fleet/claim state before acting (the classic post-compaction error).
+ */
+function defaultContinueNote(focus: string): string {
+  return (
+    'Continue where you left off — this is a fresh turn right after your compaction. ' +
+    'First re-run coord:orient to reconcile live state (fleet/claims/inbox may have moved), ' +
+    `then resume: ${focus}`
+  );
+}
 
 export default defineTool({
   name: 'session:request-compaction',
@@ -43,6 +57,17 @@ export default defineTool({
       .max(600)
       .optional()
       .describe('What to preserve/emphasize in this compaction (defaults to the standard preserve set).'),
+    autoContinue: z
+      .boolean()
+      .optional()
+      .describe(
+        "After the compaction completes, open the fresh context on a continuation turn so you RESUME automatically instead of sitting idle post-summary (WI-1804). Default true. Needs a host that advertises the 'compact' capability; on an older host a plain /compact is injected (compaction still runs, no auto-continue).",
+      ),
+    continueNote: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Override the auto-continuation turn text opened on the compacted context. Defaults to a "continue + re-orient" note derived from focus.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -63,7 +88,20 @@ export default defineTool({
       };
     }
     const focus = (args.focus ?? DEFAULT_FOCUS).trim();
-    const ok = await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
+    const autoContinue = args.autoContinue ?? true;
+    // WI-1804: when the live host understands mode:'compact', let IT drive the sequence —
+    // submit /compact, wait for the compaction TURN to complete (output-idle, the only place
+    // "compaction done" is observable), then type the carry-note continuation. An old host
+    // (no `caps`) falls back to the plain /compact turn inject: compaction still runs, no
+    // auto-continue — so the rollout is a pure no-op until hosts advertise the capability.
+    const canAutoContinue = autoContinue && hostSupports(host, 'compact');
+    const ok = canAutoContinue
+      ? await injectIntoHost(host.sock, {
+          mode: 'compact',
+          data: (args.continueNote ?? defaultContinueNote(focus)).trim(),
+          focus,
+        })
+      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
     return {
       content: [
         {
@@ -71,9 +109,16 @@ export default defineTool({
           text: JSON.stringify({
             ok,
             requested: ok,
-            note: ok
-              ? 'Compaction queued — /compact runs when this turn ends (idle-gated). Wrap up now and stop.'
-              : 'Failed to reach the session TUI host socket; try again or compact manually.',
+            autoContinue: ok ? canAutoContinue : false,
+            note: !ok
+              ? 'Failed to reach the session TUI host socket; try again or compact manually.'
+              : canAutoContinue
+                ? 'Compaction queued — /compact runs when this turn ends, then the fresh context opens on a continuation turn automatically (WI-1804). Wrap up now and stop.'
+                : `Compaction queued — /compact runs when this turn ends (idle-gated). Wrap up now and stop.${
+                    autoContinue
+                      ? ' (This host predates auto-continue, so it will NOT resume on its own — a loop/AUTO wake or your next turn picks the work back up.)'
+                      : ''
+                  }`,
           }),
         },
       ],

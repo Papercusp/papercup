@@ -180,7 +180,7 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ harness: { type: 'string' } }),
   },
   {
-    name: 'fleet:spawn',
+    name: 'bee:spawn',
     description: 'Spawn a bee on a work item with a situational brief (placement decision).',
     input: obj({ work_item: { type: 'string' }, brief: { type: 'string' } }, ['work_item']),
   },

@@ -71,7 +71,7 @@ describe('auth gating (missing bearer/workspace class)', () => {
 
   it('every operator-converse allowedTool resolves in the core registry (invokable, not just named)', () => {
     // As of Brief 4 (agent-briefs-2026-06-05) the spawn surface is the BUILT-IN
-    // fleet:spawn/tree/cancel (over the durable nursery), replacing the dead
+    // bee:spawn/tree/cancel (over the durable nursery), replacing the dead
     // @papercupai/orchestrator-spawn plugin family that was never installed (every
     // orchestrator_* call returned "tool not found"). So there are no longer any
     // plugin-provided allowedTools to exclude — EVERY entry must resolve.

@@ -45,6 +45,17 @@ function rawInject(sock: string, data: string): Promise<void> {
   });
 }
 
+function controlInject(sock: string, mode: 'turn' | 'raw' | 'osc' | 'reset' | 'recycle', data: string): Promise<void> {
+  return new Promise((resolve) => {
+    const c = net.connect(sock, () => {
+      c.write(encodeControl({ mode, data }));
+      c.end();
+    });
+    c.on('error', () => resolve());
+    c.on('close', () => resolve());
+  });
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('hostThroughPty real round-trip', () => {
@@ -101,6 +112,84 @@ describe('hostThroughPty real round-trip', () => {
       expect(existsSync(meta)).toBe(false);
     },
     20_000,
+  );
+});
+
+describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
+  it(
+    'replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note',
+    async () => {
+      const ownerId = `su-recycle-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      // Child prints BOOT:<pid> once on start, echoes stdin lines, exits on QUIT
+      // (or a 15s safety net). The per-boot pid marker lets us prove the process
+      // was actually replaced by the recycle, not just re-injected.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // Speed the post-respawn carry inject: the fresh child's boot output goes
+          // quiet fast, so a short output-quiet window lets the carry land promptly.
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => { exitCode = c; },
+      });
+
+      await sleep(600);
+      const bootsBefore = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      expect(bootsBefore).toHaveLength(1); // exactly one child so far
+      const pid1 = bootsBefore[0];
+      const ptyPid1 = JSON.parse(readFileSync(meta, 'utf8')).ptyPid;
+      expect(ptyPid1).toBe(pid1);
+
+      // RECYCLE with a carry-note. The host kills the child, fresh-spawns it in the
+      // SAME host (same socket/meta/SID), and opens the fresh process on the carry.
+      await controlInject(sock, 'recycle', 'CARRIED');
+      await sleep(2500); // kill + respawn + boot + output-quiet(200) + submit CR
+
+      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      expect(bootsAfter).toHaveLength(2); // the child was actually respawned
+      const pid2 = bootsAfter[1];
+      expect(pid2).not.toBe(pid1); // a genuinely new process
+      // The carry-note was injected as the opening turn of the fresh context.
+      expect(captured()).toContain('ECHO:CARRIED');
+
+      // The HOST survived the recycle: socket + meta still live, meta now points at
+      // the fresh child's pid (same host pid, new ptyPid).
+      expect(existsSync(sock)).toBe(true);
+      expect(existsSync(meta)).toBe(true);
+      const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+      expect(metaAfter.ownerId).toBe(ownerId);
+      expect(metaAfter.ptyPid).toBe(pid2);
+
+      // End the fresh child → the host tears down and cleans up (not before).
+      await rawInject(sock, 'QUIT\n');
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
   );
 });
 

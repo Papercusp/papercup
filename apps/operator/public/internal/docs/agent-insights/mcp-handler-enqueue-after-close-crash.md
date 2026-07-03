@@ -77,9 +77,20 @@ concurrent with a pending `pull` read (that throws *"read while another read is
 in progress"*).
 
 Disconnect still reaches blocking tools via `request.signal` (unchanged). The
-process-level backstop in `apps/operator/bin/hono-host.ts` (swallows *only* the
-`ERR_INVALID_STATE` / "Controller is already closed" class, fail-fast on
-everything else) stays as defense-in-depth for the rare non-streaming residual.
+process-level backstop in `apps/operator/bin/hono-host.ts`'s
+`unhandledRejection`/`uncaughtException` guards stays as defense-in-depth for
+the rare non-streaming residual — it delegates the swallow-or-exit decision to
+`isBenignHostError()` (`apps/operator/bin/host-benign-errors.ts`), which now
+classifies **five** client-caused/transient-infra classes, not just this one:
+EI-12's `isBenignStreamClose` (this page — `ERR_INVALID_STATE` / "Controller is
+already closed"), EI-714's `isBenignRequestParse` (a malformed-JSON-RPC-body
+`SyntaxError` from the same detached pump), a transient torn-down-PG-connection
+`isTransientPgConnectionError` (2026-06-18), an inotify-watcher-budget
+`isBenignFileWatcherError` (EI-3385, 2026-06-24), and an unresolvable-harness
+`isUnresolvablePlanScopeError` (WI-148). Everything **not** in that predicate
+set still fails fast (exits) — the multi-tenant contract this page describes
+(one bad client costs its own request, never the process) is now enforced by
+that shared classifier, not by a single inline stream-close check.
 
 ## Don'ts
 

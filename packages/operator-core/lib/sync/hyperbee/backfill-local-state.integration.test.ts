@@ -38,14 +38,21 @@ function fakeHandle(workspaceId = WS, harnessSlug = SLUG): BootedHarnessHandle {
 async function seedFeature(
   sql: postgres.Sql,
   id: string,
-  opts: { origin?: string; workspace_id?: string; harness_slug?: string } = {},
+  opts: {
+    origin?: string;
+    workspace_id?: string;
+    harness_slug?: string;
+    fed_ts?: number;
+    fed_hlc?: string;
+  } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, workspace_id, title, status, origin, updated_ts)
+      (harness_slug, feature_id, workspace_id, title, status, origin, updated_ts, fed_ts, fed_hlc)
     VALUES
       (${opts.harness_slug ?? SLUG}, ${id}, ${opts.workspace_id ?? WS},
-       ${`T ${id}`}, 'todo', ${opts.origin ?? 'local'}, 1700)`;
+       ${`T ${id}`}, 'todo', ${opts.origin ?? 'local'}, 1700,
+       ${opts.fed_ts ?? null}, ${opts.fed_hlc ?? null})`;
 }
 
 async function seedIssue(
@@ -92,14 +99,20 @@ async function seedHiveMember(
 async function seedEngineerIssue(
   sql: postgres.Sql,
   id: string,
-  opts: { scope?: string; origin?: string; workspace_id?: string } = {},
+  opts: {
+    scope?: string;
+    origin?: string;
+    workspace_id?: string;
+    fed_ts?: number;
+    fed_hlc?: string;
+  } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, scope, title, origin)
+      (workspace_id, issue_id, scope, title, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspace_id ?? WS}, ${id}, ${opts.scope ?? `harness:${SLUG}`},
-       ${`EI ${id}`}, ${opts.origin ?? 'local'})`;
+       ${`EI ${id}`}, ${opts.origin ?? 'local'}, ${opts.fed_ts ?? null}, ${opts.fed_hlc ?? null})`;
 }
 
 async function outboxRows(sql: postgres.Sql) {
@@ -109,10 +122,13 @@ async function outboxRows(sql: postgres.Sql) {
     key: string;
     workspace_id: string;
     harness_slug: string;
+    // int8 comes back as a string from postgres.js (precision-safe); compare via Number().
+    ts: string;
+    op_hlc: string | null;
     drained_at: number | null;
     row: Record<string, unknown> | null;
   }[]>`
-    SELECT table_name, op, key, workspace_id, harness_slug, drained_at, row
+    SELECT table_name, op, key, workspace_id, harness_slug, ts, op_hlc, drained_at, row
       FROM harness_shared.substrate_outbox ORDER BY id`;
 }
 
@@ -139,6 +155,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         created_ts   BIGINT,
         updated_ts   BIGINT,
         origin       TEXT NOT NULL DEFAULT 'local',
+        fed_ts       BIGINT,
+        fed_hlc      TEXT,
         PRIMARY KEY (harness_slug, issue_id)
       );
       -- plans-pg-canonical-migration-2026-06-03 (Stage 2) added harness_plans to
@@ -153,6 +171,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         status       TEXT,
         content      TEXT,
         origin       TEXT NOT NULL DEFAULT 'local',
+        fed_ts       BIGINT,
+        fed_hlc      TEXT,
         PRIMARY KEY (harness_slug, plan_slug)
       );
       -- shared-hive-federation (P-005) added hive_settings to BACKFILL_TARGETS
@@ -165,6 +185,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         workspace_id TEXT NOT NULL DEFAULT '',
         value        TEXT,
         origin       TEXT NOT NULL DEFAULT 'local',
+        fed_ts       BIGINT,
+        fed_hlc      TEXT,
         PRIMARY KEY (harness_slug, setting_key)
       );
       CREATE TABLE harness_shared.hive_members (
@@ -174,6 +196,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         github_username TEXT  NOT NULL DEFAULT '',
         revoked_pubkeys TEXT[] NOT NULL DEFAULT '{}',
         origin         TEXT   NOT NULL DEFAULT 'local',
+        fed_ts         BIGINT,
+        fed_hlc        TEXT,
         PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
       );
       -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
@@ -193,6 +217,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
+        op_hlc       TEXT,
         drained_at   BIGINT
       );
       CREATE TABLE harness_shared.substrate_meta (
@@ -405,5 +430,54 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       expect(r.op).toBe('put');
       expect(r.row?.hive_home_slug).toBe(SLUG);
     }
+  });
+
+  it('threads each row\'s OWN fed_ts/fed_hlc onto the outbox op — never the boot clock (mig 446 symmetry, WI-1433 regression)', async () => {
+    // ROOT CAUSE this test guards: pre-fix the backfill re-enqueued a joiner's
+    // pre-existing LOCAL rows with `ts=${now}` (boot time) and NO op_hlc. On the
+    // receiver the projection persists the WIRE ts as fed_ts and mints a fresh HLC —
+    // so a genuinely-OLD row got re-stamped with a LATER boot time and clobbered a
+    // newer remote row under LWW (`fed_order_key`). The fix mirrors mig 446's
+    // `capture_*_outbox`: a STAMPED local row (fed_hlc present ⇒ the mig-314 BEFORE
+    // trigger stamped fed_ts atomically) carries its OWN immutable fed_ts/fed_hlc
+    // through; only an UNSTAMPED row (fed_hlc NULL, pre-federation) takes now().
+    const FED_TS = 1782944750814; // genuine ~2026-07-01 write (WI-1433's real `ts`)
+    const FED_HLC = '001782944750814:00000:abc0000000000001';
+    const EI_FED_TS = 1782944888888;
+    const EI_FED_HLC = '001782944888888:00000:abc0000000000002';
+    const BOOT = 1783053983790; // a LATER backfill boot clock (~30h after the write)
+
+    // Stamped rows on BOTH INSERT paths (features INSERT + engineer_issues INSERT).
+    await seedFeature(db.sql, 'F-STAMPED', { fed_ts: FED_TS, fed_hlc: FED_HLC });
+    await seedEngineerIssue(db.sql, 'EI-STAMPED', {
+      scope: `harness:${SLUG}`,
+      fed_ts: EI_FED_TS,
+      fed_hlc: EI_FED_HLC,
+    });
+    // An UNSTAMPED local row (fed_hlc NULL) — pre-federation baseline, no stamp.
+    await seedFeature(db.sql, 'F-UNSTAMPED');
+
+    const res = await backfillLocalState(fakeHandle(), db.sql, { now: BOOT });
+    expect(res.skipped).toBe(false);
+
+    const rows = await outboxRows(db.sql);
+    const stampedF = rows.find((r) => r.key === 'F-STAMPED');
+    const stampedEI = rows.find((r) => r.key === 'EI-STAMPED');
+    const unstamped = rows.find((r) => r.key === 'F-UNSTAMPED');
+
+    // Features INSERT: the stamped row threads its OWN stamp, NOT the boot clock.
+    expect(Number(stampedF?.ts)).toBe(FED_TS);
+    expect(stampedF?.op_hlc).toBe(FED_HLC);
+    expect(Number(stampedF?.ts)).not.toBe(BOOT);
+
+    // engineer_issues INSERT: same symmetry on the second code path.
+    expect(stampedEI?.table_name).toBe('engineer_issues');
+    expect(Number(stampedEI?.ts)).toBe(EI_FED_TS);
+    expect(stampedEI?.op_hlc).toBe(EI_FED_HLC);
+
+    // An unstamped (pre-federation) row keeps the boot clock; op_hlc NULL so the
+    // Stage-3 drain mints a fresh HLC (matches mig 446's `fed_hlc IS NULL → now()`).
+    expect(Number(unstamped?.ts)).toBe(BOOT);
+    expect(unstamped?.op_hlc).toBeNull();
   });
 });

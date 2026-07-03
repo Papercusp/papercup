@@ -86,15 +86,24 @@ There is **no** `snapshots:*` group — full-workspace snapshot tooling lives un
 | `agent_tools:list` | Introspection: every projected tool with `{capability, roles, allowed, reason}` for the caller's ctx. The "what can I call?" primitive — pass `onlyAllowed: false` to also see denied tools with the reason |
 | `audit:list` | Audit log (recent actions) |
 | `actions:recent` | Recent agent actions |
-| `dev:hello-card` | Phase E mcp-ui fixture (verifies UI rendering) |
 | `hooks:known` | Static hook-event allowlist |
-| `issues:list` | Pending issues |
 | `notifications:recent` | Recent notifications |
 | `omp:config` | Read/set OMP CLI config keys |
 | `pending_events:list` | Pending hook events |
 | `papercusp:list_workspaces` | Discovery helper for [superuser](./superuser-mode) shells |
 | `search:query` | Cross-resource search (tasks, goals, projects, audit, messages) |
 | `wiki:backlinks` | Find markdown files referencing `[[target]]` |
+
+<Aside type="note">
+Two former singletons are gone. **`dev:hello-card`** (the Phase E mcp-ui
+fixture) and the dead `hindsight:recall` were REMOVED from the catalog
+(audit P-047) — see `packages/agent-mcp/src/bootstrap.ts`; bring a real
+mcp-ui tool when one lands, the registration shape is unchanged. **`issues:list`**
+was retired onto `work_items:*` (coordination-unification-2026-06-23 P-015);
+the cross-cutting open-issues snapshot now lives inside **`harness:overview`**
+(folds `listIssues`/`countIssues` from the engineer-issues store directly
+rather than round-tripping a tool), not as its own top-level singleton.
+</Aside>
 
 ## Plugin tools (36)
 
@@ -125,7 +134,7 @@ Code-graph queries proxied to a long-lived `gitnexus mcp` subprocess. Tools regi
 | `gitnexus.group_sync` | Re-sync a group's membership |
 
 ### `@papercupai/orchestrator-spawn` — **retired (2026-06-06)**
-The Phase-9 "spawn agents as tool calls" plugin was never installed (its `/api/plugins/orchestrator/spawn` path 404'd) and is now retired — moved to `libs/papercusp/_retired/orchestrator-spawn-plugin/` and superseded by `packages/operator-core/lib/fleet/operator-spawn.ts`. Spawn agents via the built-in `fleet:*` tools (`fleet:spawn`, `fleet:supervise`, `fleet:tree`, …) instead.
+The Phase-9 "spawn agents as tool calls" plugin was never installed (its `/api/plugins/orchestrator/spawn` path 404'd) and is now retired — moved to `libs/papercusp/_retired/orchestrator-spawn-plugin/` and superseded by `packages/operator-core/lib/fleet/operator-spawn.ts`. Spawn agents via the built-in `fleet:*` tools (`bee:spawn`, `fleet:supervise`, `fleet:tree`, …) instead.
 
 ### `@papercupai/firecrawl-bridge` (3)
 Managed scrape via Firecrawl API. Requires `FIRECRAWL_API_KEY`.

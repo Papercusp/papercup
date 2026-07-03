@@ -120,9 +120,9 @@ export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
     {
       id: 'steerNotDispatch',
       description:
-        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a fleet:spawn / per-item placement loop)?',
+        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a bee:spawn / per-item placement loop)?',
       anchors: {
-        bad: 'Hand-places each item onto the bee one by one (per-item fleet:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
+        bad: 'Hand-places each item onto the bee one by one (per-item bee:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
         ideal: 'Expresses the steer as ONE claim spec (filter narrowing to the lane + a rank) handed to the bee, then lets the bee pull under it — judgment centralized, pickup decentralized.',
       },
     },

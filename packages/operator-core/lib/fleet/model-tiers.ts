@@ -312,7 +312,7 @@ export function tierMenuLines(
     .join('\n');
   const ceilings = Object.entries(tierCeilings ?? {});
   const lines = [
-    'MODEL TIERS (weakest → strongest) — pick one per spawn via fleet:spawn { tier }; ' +
+    'MODEL TIERS (weakest → strongest) — pick one per spawn via bee:spawn { tier }; ' +
       'omit for the role default. Your pick is clamped to [role floor, role ceiling], ' +
       'so a wrong tier never downgrades a role — but a too-cheap pick you could have ' +
       'escalated is a silent quality failure; when in doubt, take the stronger.\n' + rows,

@@ -250,7 +250,7 @@ export default defineTool({
       } else if (args.decision === 'gate') {
         note = 'Decision persisted. Escalate for human review before proceeding.';
       } else if (args.decision === 'gym') {
-        note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call fleet:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
+        note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call bee:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
       } else if (args.decision === 'reject') {
         note = 'Decision persisted: issue CLOSED with decidedReason — the recall matcher surfaces it on the next same-signature capture.';
       }

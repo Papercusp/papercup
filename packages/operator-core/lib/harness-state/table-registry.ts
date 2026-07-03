@@ -290,6 +290,11 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // p2p-work-distribution-2026-07-02 (P-004 / M15): refused-op counters for
   // UNAUTHENTICATED failure paths. LOCAL-ONLY metrics — never federated.
   'p2p_refused_op_counters',
+  // federated-scout-gym-learning-2026-07-02 (F1-4 / P-012): per-source counters
+  // for FEDERATED CONTENT ops the receive-side projection declined (malformed /
+  // not-federatable / rate-capped). LOCAL-ONLY — each receiver counts what IT
+  // refused; federating them would let a peer skew another machine's metrics.
+  'federation_refused_op_counters',
 ];
 
 /**

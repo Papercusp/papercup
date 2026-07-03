@@ -1233,7 +1233,7 @@ defineTestDomain({
     {
       id: 'placement',
       label: 'Placement & nursery',
-      description: 'fleet:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.',
+      description: 'bee:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.',
       globs: [
         'packages/operator-core/lib/fleet/operator-spawn.test.ts',
         'packages/operator-core/lib/fleet/assignments*.test.ts',

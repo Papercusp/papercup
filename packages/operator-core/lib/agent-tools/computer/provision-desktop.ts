@@ -41,7 +41,7 @@ export default defineTool({
   },
   capability: 'harness:write',
   requirePrincipal: false,
-  // Placement/infra authority — same allowlist as fleet:spawn (operator + Queen + the SU
+  // Placement/infra authority — same allowlist as bee:spawn (operator + Queen + the SU
   // roles, NOT a worker-bee: a bee does not equip its own hive; the operator/Queen does).
   agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
   args: z

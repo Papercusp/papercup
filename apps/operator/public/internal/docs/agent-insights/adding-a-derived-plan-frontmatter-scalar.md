@@ -12,7 +12,12 @@ deliberately parse-free (audit P-042): it reads `listPlanIndexRows` (index
 columns only, content never leaves PG). Parsing for your field reintroduces the
 exact per-request-parse regression P-042 removed.
 
-Worked example: `initiative` (shared-hive-collaboration P-015 / D-015).
+Worked example: `initiative` (shared-hive-collaboration P-015 / D-015). The same
+edit-site set was reused verbatim for `template`/`promote_policy`/`template_data`
+(mig 329/331, plan-template provenance + auto-promote policy) — `template` is a
+plain frontmatter-derived TEXT scalar (mirrors `initiative`, see the comments in
+`with-plan-lock.ts` and `source.ts`), confirming the pattern below holds across
+more than one addition.
 
 ## Why it's a trap
 

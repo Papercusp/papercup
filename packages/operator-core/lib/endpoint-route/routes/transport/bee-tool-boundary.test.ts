@@ -64,7 +64,7 @@ const CAN: Array<{ path: string; via: string }> = [
 // future change that flips the enforcement layer (e.g. grants the cap) is caught here.
 //  - capabilityDenied: the bee never holds the cap → blocked regardless of any allowlist.
 //  - roleDenied: the bee HOLDS the cap (work_items/harness/coord) but is filtered out of the
-//    allowlist — the placement/optimization carve-out (fleet:spawn, gym:*).
+//    allowlist — the placement/optimization carve-out (bee:spawn, gym:*).
 const CANNOT_CAP: Array<{ path: string }> = [
   { path: '../../../agent-tools/operator/converse.js' }, // operator:converse
   { path: '../../../agent-tools/operator/nudge.js' }, // operator:write
@@ -74,7 +74,7 @@ const CANNOT_CAP: Array<{ path: string }> = [
   { path: '../../../agent-tools/curation/feed.js' }, // curation:read
 ];
 const CANNOT_ROLE: Array<{ path: string }> = [
-  { path: '../../../agent-tools/fleet/spawn.js' }, // work_items:write held, but allowlist filters bee
+  { path: '../../../agent-tools/bee/spawn.js' }, // work_items:write held, but allowlist filters bee
   { path: '../../../agent-tools/gym/judge.js' }, // harness:read held, but allowlist filters bee
   { path: '../../../agent-tools/gym/signals.js' }, // harness:read held, but allowlist filters bee
 ];

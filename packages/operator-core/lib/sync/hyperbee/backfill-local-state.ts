@@ -148,14 +148,28 @@ export async function backfillLocalState(
     if (take > 0) {
       // INSERT-to-outbox (NOT a direct log append — the drain owns the log).
       // Mirror exactly what the capture trigger produces: op='put',
-      // key=<keyCol>, row=to_jsonb(row), ts, drained_at NULL. ORDER BY the PK
-      // for a deterministic which-rows-kept under the cap.
+      // key=<keyCol>, row=to_jsonb(row), ts, op_hlc, drained_at NULL. ORDER BY
+      // the PK for a deterministic which-rows-kept under the cap.
+      //
+      // D-001 / mig 446 symmetry (THE convergence fix): a stamp-regime row
+      // (fed_hlc present ⇒ the mig-314 BEFORE trigger stamped fed_ts atomically
+      // with it) must thread its OWN fed_ts/fed_hlc onto the wire op, so the
+      // author and every receiver persist the SAME LWW ordering key
+      // (fed_order_key(fed_hlc, fed_ts)). The projection persists op.ts as the
+      // receiver's fed_ts and op_hlc as its fed_hlc — so re-stamping the wire ts
+      // with boot-time ${now} (the pre-fix bug) inflated fed_ts by the
+      // boot-minus-write delta, letting a STALE backfilled row (e.g. a joiner's
+      // never-touched `todo`) beat a genuinely-newer one (the owner's `passed`)
+      // under LWW and clobber it both ways. Unstamped rows (fed_hlc NULL) keep
+      // ${now} — the drain's stampOpHlc mints a fallback HLC, matching mig 446.
       const inserted = await pg<{ key: string }[]>`
         INSERT INTO harness_shared.substrate_outbox
-          (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+          (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc, drained_at)
         SELECT
           ${workspaceId}, ${harnessSlug}, ${tableName}, 'put',
-          c.${pg(keyCol)}::text, to_jsonb(c), ${now}, NULL
+          c.${pg(keyCol)}::text, to_jsonb(c),
+          CASE WHEN c.fed_hlc IS NOT NULL THEN COALESCE(c.fed_ts, ${now}) ELSE ${now} END,
+          c.fed_hlc, NULL
           FROM harness_shared.${pg(tableName)} c
          WHERE c.workspace_id = ${workspaceId}
            AND c.${pg(scopeCol)} = ${harnessSlug}
@@ -197,12 +211,16 @@ export async function backfillLocalState(
       if (take > 0) {
         const inserted = await pg<{ key: string }[]>`
           INSERT INTO harness_shared.substrate_outbox
-            (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+            (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc, drained_at)
           SELECT
             ${workspaceId}, ${harnessSlug}, 'engineer_issues', 'put',
             c.issue_id::text,
             to_jsonb(c) || jsonb_build_object('harness_slug', ${harnessSlug}::text),
-            ${now}, NULL
+            -- mig 446 symmetry (see the features INSERT above): thread the row's
+            -- own fed_ts/fed_hlc so backfilled issues carry their genuine LWW key
+            -- instead of a boot-time re-stamp that would clobber newer peers.
+            CASE WHEN c.fed_hlc IS NOT NULL THEN COALESCE(c.fed_ts, ${now}) ELSE ${now} END,
+            c.fed_hlc, NULL
             FROM harness_shared.engineer_issues c
            WHERE c.workspace_id = ${workspaceId}
              AND COALESCE(c.origin, 'local') = 'local'

@@ -276,7 +276,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
   // P-071 smoke regression (local-hive-orchestration, 2026-06-10): the route
   // silently dropped fireLaunchBlueprint's `kickoff`, so the Queen woke with no
   // idea why. It now threads to the child as QUEEN_BRIEF (the same channel
-  // fleet:spawn uses for the Queen brief → buildPrompt's situational overlay).
+  // bee:spawn uses for the Queen brief → buildPrompt's situational overlay).
   it('threads body.kickoff to the child as extraEnv.QUEEN_BRIEF', async () => {
     const res = await appWith(invoke).request(
       '/harness/papercup/invoke?role=worker',

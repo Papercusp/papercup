@@ -74,7 +74,7 @@ export type IdentitySource =
   | 'static-client'
   /** In-process caller identified by its bearer principal. */
   | 'principal'
-  /** Role-gated fleet:spawn child — ownerId is the operator's durable `s-…`
+  /** Role-gated bee:spawn child — ownerId is the operator's durable `s-…`
    *  spawnId, baked as the signed MCP URL's `client=` param. */
   | 'fleet-spawn'
   /** Verified signed spawn WITHOUT a client= owner id (invoke-route agents:
@@ -281,8 +281,8 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     };
   }
 
-  // ── Role-gated fleet:spawn child (THE UMBILICAL) ────────────────────
-  // A fleet:spawn bee connects over a SIGNED (not superuser, not power-user,
+  // ── Role-gated bee:spawn child (THE UMBILICAL) ────────────────────
+  // A bee:spawn bee connects over a SIGNED (not superuser, not power-user,
   // no bearer principal) MCP URL. fleet/operator-spawn bakes the operator's
   // durable `s-…` spawnId as the URL's `client=` param (HMAC-signed; in the
   // allowlist), so parseRequestContext lands it in ctx.uiClientId. THAT is the
@@ -334,7 +334,7 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
   throw new Error(
     'resolveAgentIdentity: context carries no power-user / superuser / ' +
       'principal / fleet-spawn / signed-spawn identity — the caller cannot ' +
-      'be attributed (a fleet:spawn child must carry its `s-…` spawnId as ' +
+      'be attributed (a bee:spawn child must carry its `s-…` spawnId as ' +
       'the signed MCP URL’s client= param, VERIFIED — a bare unverified ' +
       'client= over the public HTTP path is NOT an identity, EI-318; see ' +
       'fleet/operator-spawn.ts + spawn-mcp.ts; an invoke-route agent must ' +

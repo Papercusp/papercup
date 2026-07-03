@@ -305,7 +305,7 @@ export async function checkHomeHarnessResolves(
       aliased: false,
       message:
         `operator-home harness "${slug}" does not resolve to any registered project — ` +
-        `fire-paths, the auto-implement dispatcher, and fleet:spawn will all 404 ("unknown project"). ` +
+        `fire-paths, the auto-implement dispatcher, and bee:spawn will all 404 ("unknown project"). ` +
         `Register it, fix ${HOME_HARNESS_ENV}, or add a retired-slug alias in operator-home-harness.ts.`,
     };
   }

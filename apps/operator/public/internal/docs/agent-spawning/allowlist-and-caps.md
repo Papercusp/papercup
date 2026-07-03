@@ -3,22 +3,22 @@ URL: /internal/docs/agent-spawning/allowlist-and-caps
 
 Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one fleet-wide cap, and how a rejected spawn fails.
 
-## Who may call `fleet:spawn`
+## Who may call `bee:spawn`
 
 There is no per-role *allowlist matrix* (caller-role → set-of-spawnable-roles).
 That layered rule budget lived in the retired `@papercupai/orchestrator-spawn`
 plugin; the live path is `packages/operator-core/lib/fleet/operator-spawn.ts`
-behind the `fleet:spawn` tool.
+behind the `bee:spawn` tool.
 
-`fleet:spawn` is role-gated to a **filtered subset** of `COORD_ROLES`, not the
+`bee:spawn` is role-gated to a **filtered subset** of `COORD_ROLES`, not the
 full set. The full coordination role set the `coord:*` and `locks:*` tools use
 is `scoper`, `architect`, `worker`, `validator`, `reviewer`, `debugger`,
 `operator`, `documenter`, `curator`, `bee`, `queen`, `sentinel`, `overwatch`.
-`fleet:spawn` takes `COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'
+`bee:spawn` takes `COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'
 && r !== 'overwatch')` — placement is the **Queen's** surface (D-002,
 `bee-capability-expansion-2026-06-08`), so:
 
-* **`queen`** is the registered placement decider and **can** call `fleet:spawn`
+* **`queen`** is the registered placement decider and **can** call `bee:spawn`
   (alongside `operator` and the pipeline coding roles).
 * **`bee`**, **`sentinel`**, and **`overwatch`** are explicitly **excluded** —
   the bee *works*, the sentinel *watches* and the overwatch *nudges*; none of
@@ -46,7 +46,7 @@ per-role quota.
 * **`new_subagent:request`** — any agent asks the brain to spin up a sub-agent.
   It routes a typed, brain-only-approvable request and returns an
   `await_event`; the requester `events:await`s the grant, ends its turn, and on
-  wake (`choice === 'approve'`) calls `fleet:spawn`. The response surfaces the
+  wake (`choice === 'approve'`) calls `bee:spawn`. The response surfaces the
   live headroom (`running/ceiling`, free slots) so the brain decides informed.
 * **`new_subagent:approve`** — **brain-only**: approve or deny a pending
   request and wake the requester. The "only the brain decides" rule is enforced
@@ -62,7 +62,7 @@ per-role quota.
   round-trip; only an exhausted (or never-granted) budget routes to the brain.
 
 The operator/brain itself doesn't request — it allocates directly via
-`fleet:spawn`. Already-decided pipeline work admits its own role progression
+`bee:spawn`. Already-decided pipeline work admits its own role progression
 (the harness autoloop dispatches it), and a human-initiated `psu` session needs
 no request at all.
 
@@ -159,7 +159,7 @@ unique index — so even a racing retry can't slip a duplicate through.
 
 ## How the gates compose
 
-The full sequence when an agent calls `fleet:spawn(role: 'worker', feature:
+The full sequence when an agent calls `bee:spawn(role: 'worker', feature:
 'F-001', chunk: 'F-001-1')`:
 
 ```

@@ -15,7 +15,7 @@
  * ── CONTENTION CAP (load-bearing) ─────────────────────────────────────────────────────────────────
  * The su-arm spawns its agents IN-PROCESS (each independent agent drives the `external-bench` spine via
  * `spawnInvokeOnce` inside THIS launcher process — su-independent-backlog.ts D-001/D-002). There is NO
- * Queen and NO :3170 host doing loopback `fleet:spawn`, so — UNLIKE the realqueen launcher — we do NOT
+ * Queen and NO :3170 host doing loopback `bee:spawn`, so — UNLIKE the realqueen launcher — we do NOT
  * PUT the cap to a :3170 host route. The driver reads `spawnConcurrencyCeiling()` →
  * `getCachedRateLimitConfig()` (this process's module-scoped cache) ONCE at run start, so setting the cap
  * in THIS launcher's cache via `writeRateLimitConfig`/`initRateLimitConfig` is sufficient and complete —
@@ -237,7 +237,7 @@ async function main() {
   // CONTENTION CAP (load-bearing). The driver reads `spawnConcurrencyCeiling()` → `getCachedRateLimitConfig()`
   // — THIS process's module-scoped cache — ONCE at run start to size its in-process pool. So setting the cap
   // in THIS launcher's cache is necessary AND sufficient: the independent agents spawn in THIS process via
-  // `spawnInvokeOnce`, NOT via a Queen's loopback `fleet:spawn` to :3170, so there is NO foreign cache to
+  // `spawnInvokeOnce`, NOT via a Queen's loopback `bee:spawn` to :3170, so there is NO foreign cache to
   // propagate to. We DROP the realqueen launcher's :3170 host PUT entirely (it only mattered because the
   // Queen's spawns ran in the :3170 process — a different cache; that scenario does not exist for this arm).
   {

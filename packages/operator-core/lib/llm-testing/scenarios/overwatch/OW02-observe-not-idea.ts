@@ -149,7 +149,7 @@ export const OVERWATCH_OW02_OBSERVE_NOT_IDEA: Scenario = {
     { kind: 'tool_called', name: 'improvements:capture', minTimes: 1 },
     CAPTURE_IS_OBSERVATION,
     { kind: 'tool_not_called', name: 'work_items:create' },
-    { kind: 'tool_not_called', name: 'fleet:spawn' },
+    { kind: 'tool_not_called', name: 'bee:spawn' },
     { kind: 'cost_under', usd: 2.0 },
   ],
   rubric: OVERWATCH_RUBRIC,

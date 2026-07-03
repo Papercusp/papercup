@@ -7,8 +7,16 @@ import { Aside } from '@astrojs/starlight/components';
 
 Papercusp currently has two visual identity layers:
 
-* **Classic Papercusp** is the default product identity and remains the active skin when `papercusp-the-hive` is off.
-* **The Swarm** is a flag-gated visual layer for the bee lexicon and swarm-intelligence direction. It changes presentation assets, theme tokens, favicon, and labeled nouns only; it does not rename code identifiers, database rows, or tools.
+* **The Swarm** is the DEFAULT active skin — `FLAGS.THE_HIVE` (`papercusp-the-hive`) is
+  not in `DARK_FLAGS`, so per the flag-default inversion
+  (`enforce-system-on-generic-work-2026-06-29` P-011, `libs/flags/src/types.ts`) it
+  resolves to **ON** on a fresh install unless explicitly flipped off via
+  `/admin/features`. It changes presentation assets, theme tokens, favicon, and
+  labeled nouns only; it does not rename code identifiers, database rows, or tools.
+* **Classic Papercusp** is the original product identity, still fully maintained and
+  reachable by flipping `papercusp-the-hive` off — but it is no longer the
+  out-of-the-box default (that flipped 2026-06-09, ratified by the flag-default
+  inversion landing 2026-06-29).
 
 The flag-on product-facing name is **The Swarm**. The implementation pack id remains `the-hive` for reversibility and because the user creates or joins a **Hive**; inside a Hive, many **Swarms** can run.
 

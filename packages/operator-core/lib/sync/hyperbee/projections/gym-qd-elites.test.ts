@@ -189,3 +189,44 @@ describe('purgeRevokedForeignElites — D-005 revocation cleanup', () => {
     expect(calls[2].flat()).toContain('log-x');
   });
 });
+
+describe('onRefusedOp — per-source refused-op counter (F1-4 / P-012)', () => {
+  const mkOpts = (sql: postgres.Sql) => ({ workspaceId: 'ws', harnessSlug: 'papercusp', sql });
+
+  it('bumps the counter for a REMOTE declined op with the source + not-federatable reason', async () => {
+    const { sql, calls } = fakeSql();
+    await buildGymQdElitesProjection(mkOpts(sql)).onRefusedOp!(
+      { niche_key: 'v1:loop/guard/r2/size-m', federatable: false },
+      { authorPubkey: 'peer-log-key', origin: 'remote' },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(['ws', 'papercusp', 'peer-log-key', 'gym-qd-elites-by-niche', 'not-federatable']);
+  });
+
+  it('classifies a non-elite-shaped op as malformed', async () => {
+    const { sql, calls } = fakeSql();
+    await buildGymQdElitesProjection(mkOpts(sql)).onRefusedOp!(
+      { garbage: true },
+      { authorPubkey: 'peer', origin: 'remote' },
+    );
+    expect(calls[0]?.[4]).toBe('malformed');
+  });
+
+  it('does NOT count a LOCAL decode failure (not an anti-poisoning signal)', async () => {
+    const { sql, calls } = fakeSql();
+    await buildGymQdElitesProjection(mkOpts(sql)).onRefusedOp!(
+      { niche_key: 'v1:x', federatable: false },
+      { authorPubkey: 'self', origin: 'local' },
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('classifyEliteRefusal: not-federatable vs malformed', () => {
+    const { classifyEliteRefusal } = _testing;
+    expect(classifyEliteRefusal({ niche_key: 'n', federatable: false })).toBe('not-federatable');
+    expect(classifyEliteRefusal({ niche_key: 'n' })).toBe('not-federatable');
+    expect(classifyEliteRefusal({ federatable: false })).toBe('malformed');
+    expect(classifyEliteRefusal(null)).toBe('malformed');
+    expect(classifyEliteRefusal({ niche_key: 'n', federatable: true })).toBe('malformed');
+  });
+});

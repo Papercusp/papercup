@@ -59,6 +59,6 @@ now auto-injects `--fleet` into a psu command when its `fleet` arg is set — bu
 | Desktop fleet on a plan (the default) | **`fleet:launch-on-plan`** (auto-join + auto-start) |
 | Register a fleet, no terminals | `fleet:create` |
 | One-off visible terminal(s), no fleet/plan | `capability:terminal` (its `fleet` = colour only) |
-| Headless workers (no desktop window) | `fleet:spawn` / `fleet:place_batch` (nursery bees) |
+| Headless workers (no desktop window) | `bee:spawn` / `fleet:place_batch` (nursery bees) |
 
-`fleet:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."
+`bee:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."

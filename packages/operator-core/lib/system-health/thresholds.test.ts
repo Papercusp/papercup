@@ -19,10 +19,12 @@ import {
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
+  infraStatus,
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
   GIT_SYNC_PUSH_FAIL_CRIT,
+  MCP_PROXY_HARD_FAIL_CRIT,
 } from './thresholds';
 import type {
   QueenHealth,
@@ -36,6 +38,8 @@ import type {
   EscalationsHealth,
   AutonomyHealth,
   OverwatchPanelHealth,
+  InfraHealth,
+  McpProxyHealth,
 } from './types';
 
 const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -356,8 +360,55 @@ describe('worstStatus — the fail-soft roll-up', () => {
   });
 });
 
+const mcpProxy = (o: Partial<McpProxyHealth> = {}): McpProxyHealth => ({
+  windowMs: 60 * 60_000, total: 0, hardFailures: 0, recovered: 0, otherNon2xx: 0, byKind: {}, newestAt: null, ...o,
+});
+const infra = (o: Partial<InfraHealth> = {}): InfraHealth => ({
+  pg: { version: '16', total: 10, active: 2, idle: 8 }, gatewayReachable: true, perf: null, mcpProxy: null, ...o,
+});
+
+describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () => {
+  it('ok when PG healthy, gateway up, no perf/mcp signal', () => {
+    expect(infraStatus(infra())).toBe('ok');
+  });
+  it('unknown when PG is unreadable (greyed leg) and nothing else reds it', () => {
+    expect(infraStatus(infra({ pg: null }))).toBe('unknown');
+  });
+  it('crit when the gateway is enabled-but-unreachable (spine down)', () => {
+    expect(infraStatus(infra({ gatewayReachable: false }))).toBe('crit');
+  });
+  it('crit on a per-thread perf WEDGE (operator_degraded)', () => {
+    // A minimal PerfVerdict-shaped object — only `status` is read by infraStatus.
+    expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'] }))).toBe('crit');
+  });
+
+  // ── MCP tool-call transport SLO (W8/P-008) ──────────────────────────────────
+  it('ok when the MCP proxy reports zero hard failures (healthy transport)', () => {
+    expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: 0, recovered: 5 }) }))).toBe('ok');
+  });
+  it('warn on ANY MCP-proxy hard failure — ends the "transient is normal" culture (visible, sub-page)', () => {
+    expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: 1, total: 1 }) }))).toBe('warn');
+  });
+  it('crit at/above MCP_PROXY_HARD_FAIL_CRIT hard failures — a regression that pages', () => {
+    expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');
+  });
+  it('a crit MCP-proxy SLO breach OUTRANKS a greyed (null) PG leg — a real failure beats unknown', () => {
+    expect(infraStatus(infra({ pg: null, mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');
+  });
+  it('a null mcpProxy leg (ledger unreadable) contributes nothing — fail-soft', () => {
+    expect(infraStatus(infra({ mcpProxy: null }))).toBe('ok');
+  });
+  it('a perf crit still dominates an MCP-proxy warn', () => {
+    expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'], mcpProxy: mcpProxy({ hardFailures: 1 }) }))).toBe('crit');
+  });
+});
+
 describe('threshold constants are sane', () => {
   it('Queen stall is 30 minutes (the failure mode the tab exists for)', () => {
     expect(QUEEN_STALL_MS).toBe(30 * 60_000);
+  });
+  it('MCP-proxy hard-fail crit threshold is a positive integer (the SLO page line)', () => {
+    expect(MCP_PROXY_HARD_FAIL_CRIT).toBeGreaterThan(0);
+    expect(Number.isInteger(MCP_PROXY_HARD_FAIL_CRIT)).toBe(true);
   });
 });

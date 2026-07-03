@@ -499,6 +499,13 @@ export default defineTool({
     ],
   },
   capability: 'plans:write',
+  // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007): a status flip
+  // sets the item's status token to a FIXED value (todo/wip/done/…) — re-applying is a
+  // no-op, so a write that COMMITTED but whose wall-clock beat the deadline under load is
+  // surfaced as its truthful success instead of a spurious `timeout`. This is the fix for
+  // the ~280 `plans:set-status` false-timeouts (the write landed; the agent was told it
+  // failed and re-dispatched). Inert except in the dispatch abort-race branch.
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...SU_BEE_ROLES],
   modality: ['text'],

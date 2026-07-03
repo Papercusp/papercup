@@ -14,6 +14,11 @@ import {
   controlBytes,
   controlWrites,
   controlWritesForAgent,
+  contextClearCommandForAgent,
+  clearSettleMs,
+  resetWritesForAgent,
+  compactCommandForAgent,
+  compactStartMs,
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
@@ -68,6 +73,33 @@ describe('control wire protocol (v1)', () => {
     const osc = '\x1b]11;#581c87\x07';
     const d = decodeControl(encodeControl({ mode: 'osc', data: osc }));
     expect(d).toEqual({ mode: 'osc', data: osc, gated: false });
+  });
+  it('reset (RESET-CONTEXT) envelope → GATED cold verb carrying the fresh-context carry-note', () => {
+    // su-cold-auto-mode P-004a: gated:true so the host defers it to a settled turn
+    // (P-006 clean-boundary), exactly like a wake turn — never fired mid-turn.
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'carry-note body' }));
+    expect(d).toEqual({ mode: 'reset', data: 'carry-note body', gated: true });
+  });
+  it('recycle envelope → GATED cold verb carrying the fresh-context carry-note', () => {
+    const d = decodeControl(encodeControl({ mode: 'recycle', data: 'carry-note body' }));
+    expect(d).toEqual({ mode: 'recycle', data: 'carry-note body', gated: true });
+  });
+  it('reset/recycle with no data → gated verb with an empty carry (bare reset)', () => {
+    expect(decodeControl(encodeControl({ mode: 'reset' }))).toEqual({ mode: 'reset', data: '', gated: true });
+    expect(decodeControl(encodeControl({ mode: 'recycle' }))).toEqual({ mode: 'recycle', data: '', gated: true });
+  });
+  it('compact envelope → GATED verb carrying the carry-note (data) + the /compact focus (WI-1804)', () => {
+    // The operator's injectIntoHost sends focus as a distinct envelope field; decode it back.
+    const d = decodeControl(JSON.stringify({ v: 1, mode: 'compact', data: 'continue here', focus: 'keep identity' }));
+    expect(d).toEqual({ mode: 'compact', data: 'continue here', focus: 'keep identity', gated: true });
+  });
+  it('compact with no data/focus → gated verb with empty carry + empty focus (bare compact)', () => {
+    expect(decodeControl(JSON.stringify({ v: 1, mode: 'compact' }))).toEqual({
+      mode: 'compact',
+      data: '',
+      focus: '',
+      gated: true,
+    });
   });
   it('a non-envelope payload is a legacy idle-gated turn (psupty back-compat)', () => {
     const d = decodeControl('just some text');
@@ -171,6 +203,100 @@ describe('controlWritesForAgent', () => {
   it('does not add submit bytes to osc (recolor) messages for any backend', () => {
     const d = decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#000000\x07' }));
     expect(controlWritesForAgent(d, 'codex', {})).toEqual([{ data: '\x1b]11;#000000\x07', delayMs: 0 }]);
+  });
+});
+
+// su-cold-auto-mode P-004a: RESET-CONTEXT drops the grown transcript in place
+// (keep the process + MCP warm) then opens the fresh context on the carry-note.
+// The write plan = the backend's context-clear command, then the carry as a
+// normal paste-safe turn whose first keystroke waits for the clear to settle.
+describe('contextClearCommandForAgent (RESET-CONTEXT clear command)', () => {
+  it('Claude / OMP clear in place with /clear (process + MCP stay warm)', () => {
+    expect(contextClearCommandForAgent('claude')).toBe('/clear');
+    expect(contextClearCommandForAgent('omp')).toBe('/clear');
+    expect(contextClearCommandForAgent('')).toBe('/clear');
+    // @ts-expect-error exercising the undefined path
+    expect(contextClearCommandForAgent(undefined)).toBe('/clear');
+  });
+  it('Codex starts a fresh conversation with /new', () => {
+    expect(contextClearCommandForAgent('codex')).toBe('/new');
+    expect(contextClearCommandForAgent(' CODEX ')).toBe('/new');
+  });
+});
+
+describe('compactCommandForAgent (WI-1804 post-compaction auto-continuation)', () => {
+  it('Claude / OMP / default → /compact with the focus appended', () => {
+    expect(compactCommandForAgent('claude', 'keep the plan items')).toBe('/compact keep the plan items');
+    expect(compactCommandForAgent('omp', 'keep X')).toBe('/compact keep X');
+    expect(compactCommandForAgent('', 'keep X')).toBe('/compact keep X');
+    expect(compactCommandForAgent(undefined, 'keep X')).toBe('/compact keep X');
+  });
+  it('a bare /compact when focus is empty/whitespace/undefined', () => {
+    expect(compactCommandForAgent('claude', '')).toBe('/compact');
+    expect(compactCommandForAgent('claude', '   ')).toBe('/compact');
+    expect(compactCommandForAgent('claude', undefined)).toBe('/compact');
+  });
+  it('codex has no compaction → null (the host injects nothing)', () => {
+    expect(compactCommandForAgent('codex', 'keep X')).toBeNull();
+    expect(compactCommandForAgent(' CODEX ', 'keep X')).toBeNull();
+  });
+});
+
+describe('compactStartMs (WI-1804 compaction START delay)', () => {
+  it('defaults to 2000ms; env override wins; a bad override falls back', () => {
+    expect(compactStartMs({})).toBe(2000);
+    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '3500' })).toBe(3500);
+    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: 'nope' })).toBe(2000);
+    expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '-5' })).toBe(2000);
+  });
+});
+
+describe('clearSettleMs (RESET-CONTEXT repaint budget)', () => {
+  it('defaults to 1500ms and honours a session-env override', () => {
+    expect(clearSettleMs({})).toBe(1500);
+    expect(clearSettleMs({ PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '800' })).toBe(800);
+  });
+  it('ignores an invalid override', () => {
+    expect(clearSettleMs({ PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: 'nope' })).toBe(1500);
+    expect(clearSettleMs({ PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '-5' })).toBe(1500);
+  });
+});
+
+describe('resetWritesForAgent (RESET-CONTEXT write plan)', () => {
+  it('Claude: /clear + submit, then the carry turn after the settle', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'CARRY' }));
+    expect(resetWritesForAgent(d, 'claude', {})).toEqual([
+      { data: '/clear', delayMs: 0 }, // type the clear command
+      { data: '\r', delayMs: 150 }, //   submit it (claude CR delay)
+      { data: 'CARRY', delayMs: 1500 }, // carry text — waits for the clear to repaint
+      { data: '\r', delayMs: 150 }, //   submit the carry turn
+    ]);
+  });
+  it('routes through controlWritesForAgent (reset dispatches to the reset plan)', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'CARRY' }));
+    expect(controlWritesForAgent(d, 'claude', {})).toEqual(resetWritesForAgent(d, 'claude', {}));
+  });
+  it('Codex: /new clear + the codex double-submit carry turn', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'CARRY' }));
+    expect(resetWritesForAgent(d, 'codex', {})).toEqual([
+      { data: '/new', delayMs: 0 },
+      { data: '\r', delayMs: 500 }, // codex submit delay
+      { data: 'CARRY', delayMs: 1500 }, // carry text after the settle
+      { data: '\r', delayMs: 500 }, // codex submit
+      { data: '\r', delayMs: 300 }, // codex redundant resubmit
+    ]);
+  });
+  it('an empty carry ⇒ a bare clear (no opening turn)', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: '' }));
+    expect(resetWritesForAgent(d, 'claude', {})).toEqual([
+      { data: '/clear', delayMs: 0 },
+      { data: '\r', delayMs: 150 },
+    ]);
+  });
+  it('honours a custom clear-settle override', () => {
+    const d = decodeControl(encodeControl({ mode: 'reset', data: 'CARRY' }));
+    const steps = resetWritesForAgent(d, 'claude', { PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '600' });
+    expect(steps[2]).toEqual({ data: 'CARRY', delayMs: 600 });
   });
 });
 

@@ -506,7 +506,7 @@ export default defineTool({
       // buildable work (file-and-nudge to the Queen) and `<delegate_deep>` for
       // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
       // the operator path below ignores both entirely (and the sentinel ignores
-      // spawns — the two can't cross). The Sentinel must NOT fleet:spawn.
+      // spawns — the two can't cross). The Sentinel must NOT bee:spawn.
       const isSentinel = input.role === 'sentinel';
       if (isSentinel && parsed.handoffs.length > 0) {
         const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
@@ -553,7 +553,7 @@ export default defineTool({
         }
       }
       // The OPERATOR spawns directly; the SENTINEL never does (its envelope denies
-      // fleet:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
+      // bee:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
       // from the Sentinel persona is a no-op rather than a placement.
       if (!isSentinel && parsed.spawns.length > 0) {
         const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');

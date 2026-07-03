@@ -24,7 +24,7 @@ The generic operator-world worker the Queen places ranked work + a brief onto. C
 The Queen places a work item onto a Bee, which does the task or spins up a coding-factory harness for it.
 
 Queen
-The Hive blueprint's placement-specialist decider — the operator role tuned toward placement: fleet:spawn/drain and work-list shaping. Same judgment layer as the operator, dial turned toward fleet management.
+The Hive blueprint's placement-specialist decider — the operator role tuned toward placement: bee:spawn/drain and work-list shaping. Same judgment layer as the operator, dial turned toward fleet management.
 The Queen decides which Bees run, drains idle ones, and shapes the ranked work list each wake.
 
 Install

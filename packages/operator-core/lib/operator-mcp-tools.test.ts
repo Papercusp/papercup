@@ -23,7 +23,7 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
   });
 
   it('contains the fleet spawn primitives (Brief 4 — replaced the dead orchestrator_* plugin tools)', () => {
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:spawn');
+    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__bee:spawn');
     expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:tree');
     expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:cancel');
     // The plugin-era names must NOT come back — they were dead on this

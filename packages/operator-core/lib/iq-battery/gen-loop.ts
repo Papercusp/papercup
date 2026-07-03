@@ -7,7 +7,7 @@
  *
  * IQ-battery is a TRUE HYBRID (deterministic cadence-decide → governed fleet-bee
  * spawns → deterministic persist). Per D-013, its bee spawns ALREADY route through
- * `spawnAgentInHarness → fleet:spawn → spawnInvokeOnce` (the ONE governed launch
+ * `spawnAgentInHarness → bee:spawn → spawnInvokeOnce` (the ONE governed launch
  * chokepoint), so the migration keeps the spawn INTERNAL to the op (Option A — like
  * regret's replay), NOT a `spawn-roles` step: the bees take a corpus-case BRIEF, not
  * a harness role/persona, so spawn-roles' role-fan-out contract is the wrong fit.

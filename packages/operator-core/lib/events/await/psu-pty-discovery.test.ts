@@ -9,11 +9,13 @@ import { join } from 'node:path';
 import net from 'node:net';
 import {
   findLiveHost,
+  hostSupports,
   injectIntoHost,
   interruptViaPty,
   recolorViaPty,
   sanitizeKey,
   PSU_PTY_DIR,
+  type PsuPtyHost,
 } from './psu-pty-discovery';
 
 const cleanups: Array<() => void> = [];
@@ -208,5 +210,69 @@ describe('interruptViaPty (Phase 4 pty-force leg)', () => {
     expect(recv.length).toBe(2);
     expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
     expect(JSON.parse(recv[1])).toEqual({ v: 1, mode: 'raw', data: '\x1b' });
+  });
+});
+
+describe('injectIntoHost — compact envelope (WI-1804 auto-continuation)', () => {
+  it('writes a v1 compact envelope carrying focus as a distinct field', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-compact');
+    const ok = await injectIntoHost(sock, {
+      mode: 'compact',
+      data: 'Continue where you left off — resume WI-1804.',
+      focus: 'keep the identity block + WI-1804 open items',
+    });
+    expect(ok).toBe(true);
+    // `data` = the carry-note continuation; `focus` = the /compact argument. Kept separate.
+    expect(JSON.parse(await received)).toEqual({
+      v: 1,
+      mode: 'compact',
+      data: 'Continue where you left off — resume WI-1804.',
+      focus: 'keep the identity block + WI-1804 open items',
+    });
+  });
+
+  it('omits `focus` from the envelope for non-compact modes (unchanged wire for turn)', async () => {
+    const dir = tmpDir();
+    const { sock, received } = startSocket(dir, 'su-nofocus');
+    const ok = await injectIntoHost(sock, { mode: 'turn', data: '/compact keep it' });
+    expect(ok).toBe(true);
+    const env = JSON.parse(await received);
+    expect(env).toEqual({ v: 1, mode: 'turn', data: '/compact keep it' });
+    expect(env).not.toHaveProperty('focus');
+  });
+});
+
+describe('hostSupports (WI-1804 rollout gate)', () => {
+  const hostWith = (caps: string[] | null | undefined): PsuPtyHost =>
+    ({
+      ownerId: 'su-x',
+      advSessionId: null,
+      pid: 1,
+      ptyPid: 1,
+      sock: '/x.sock',
+      command: 'claude-su',
+      startedAt: 1,
+      caps,
+    }) as PsuPtyHost;
+
+  it('is false for a null / undefined host (no live host → fall back)', () => {
+    expect(hostSupports(null, 'compact')).toBe(false);
+    expect(hostSupports(undefined, 'compact')).toBe(false);
+  });
+
+  it('is false for an OLD host with no caps field (the rollout-safe fallback path)', () => {
+    expect(hostSupports(hostWith(undefined), 'compact')).toBe(false);
+    expect(hostSupports(hostWith(null), 'compact')).toBe(false);
+  });
+
+  it('is false when caps is present but does not include the capability', () => {
+    expect(hostSupports(hostWith([]), 'compact')).toBe(false);
+    expect(hostSupports(hostWith(['osc']), 'compact')).toBe(false);
+  });
+
+  it('is true only when caps advertises the capability', () => {
+    expect(hostSupports(hostWith(['compact']), 'compact')).toBe(true);
+    expect(hostSupports(hostWith(['osc', 'compact']), 'compact')).toBe(true);
   });
 });

@@ -107,7 +107,7 @@ export interface BenchReportCall {
   /** Which spawned agent issued it (links to the spawn tree). */
   spawnId?: string;
   role?: string;
-  /** The defineTool name, e.g. 'capability:edit', 'fleet:spawn', 'coord:send'. */
+  /** The defineTool name, e.g. 'capability:edit', 'bee:spawn', 'coord:send'. */
   tool: string;
   args?: unknown;
   result?: unknown;

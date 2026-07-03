@@ -27,7 +27,7 @@ export const SN_D02_WORK_NOT_DELEGATED: Scenario = {
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
     { kind: 'custom', name: 'noDelegate', eval: noDelegate },
-    { kind: 'tool_not_called', name: 'fleet:spawn' },
+    { kind: 'tool_not_called', name: 'bee:spawn' },
     { kind: 'cost_under', usd: 1.0 },
   ],
   rubric: OPERATOR_RUBRIC,

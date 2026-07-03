@@ -73,6 +73,7 @@ import {
   countLeadingZeroTokenWakes,
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
+  MCP_PROXY_HARD_FAIL_CRIT,
 } from './thresholds';
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
@@ -894,23 +895,39 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const sig = await readLatestPerfSignals();
       if (sig) perf = evaluatePerfSignals(sig, ctx.now);
     } catch { /* perf-signals unreadable — leave null */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf };
+    // MCP tool-call-transport SLO (W8/P-008): read the resilient MCP proxy's failure
+    // ledger tail and summarize the windowed hard/soft failure counts. Fail-soft — an
+    // unreadable ledger leaves mcpProxy null (greyed leg), an absent ledger is a healthy
+    // zero. Makes the previously-invisible connection-level MCP failures (stale-socket
+    // 400s, deploy-window drops, post-connect errors) a first-class page-on-regression.
+    let mcpProxy: InfraHealth['mcpProxy'] = null;
+    try {
+      const { readMcpProxyFailureTail, summarizeMcpProxyHealth } = await import('./mcp-proxy-health');
+      const recs = readMcpProxyFailureTail();
+      if (recs !== null) mcpProxy = summarizeMcpProxyHealth(recs, ctx.now);
+    } catch { /* proxy ledger unreadable — leave null (fail-soft) */ }
+    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy };
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
+    const mcpHard = mcpProxy?.hardFailures ?? 0;
+    const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
+    const mcpWarn = mcpHard > 0 && !mcpCrit;
     return {
       status,
-      summary: perfCrit
+      summary: mcpCrit
+        ? `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`
+        : perfCrit
         ? `PER-THREAD WEDGE: ${perf!.reasons[0] ?? 'operator degraded'}`
         : pg
-        ? `PG ${pg.active} active / ${pg.total} conns${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
+        ? `PG ${pg.active} active / ${pg.total} conns${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
         : 'PG unreadable',
       data,
       link: { label: 'Tests', href: '/adv?tab=testing' },
       metrics: [
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
+        m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
-        m(':3070 close-wait', perf?.closeWait ?? 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
       ],
     };

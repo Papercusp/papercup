@@ -61,7 +61,7 @@ runs no gym over it).
 `dynamic-tool-confinement.ts` is the **per-dynamic-tool envelope** (P-003 core, adversarially proven):
 `deriveDynamicToolEnvelope` holds ONLY the declared caps/paths/domains, NARROW-ONLY vs the host role, and
 can never hold the minting/escalation floor (`DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS`:
-grant/revoke/envelope/set-tier/meta:define-\*/tools:scaffold/platform:contribute/secrets/processes:kill/fleet:spawn).
+grant/revoke/envelope/set-tier/meta:define-\*/tools:scaffold/platform:contribute/secrets/processes:kill/bee:spawn).
 The runtime PEP wiring of this into dispatch is a **capability-TCB** edit (`capability-envelope/**`,
 `tier:'human'`, D-007) → reviewed PR rail, never an unattended auto-apply.
 

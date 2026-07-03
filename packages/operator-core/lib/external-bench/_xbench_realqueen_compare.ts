@@ -160,7 +160,7 @@ async function main() {
   // "the bus does NOT cross processes"). There is NO separate per-hive cap (confirmed: no maxBees / wave
   // width / swarm cap in hive/** or fleet/**) — this single number IS the hive's concurrency limit.
   //
-  // THE BUG: the real Queen's `fleet:spawn` runs in the LONG-RUNNING :3170 host (startHive →
+  // THE BUG: the real Queen's `bee:spawn` runs in the LONG-RUNNING :3170 host (startHive →
   // fireLaunchBlueprint('hive') → loopback invoke to :3170), NOT in this launcher process. The prior code
   // set the cap only in the LAUNCHER's cache, so :3170's cache stayed at the default 16 — and with 11 bees
   // < 16, admitSpawn admitted them all at once (no contention; the Queen made no sequencing decision). The

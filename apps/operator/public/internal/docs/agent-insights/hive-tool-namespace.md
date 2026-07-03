@@ -19,7 +19,7 @@ It **composes** existing primitives (`fleet:*`, `coord:*`, `harness:create` inte
 
 ## Gotchas
 
-* **Create/dissolve/update are ROOT-ONLY.** They refuse a parented bee (a `fleet:spawn` child — `resolveAgentIdentity(ctx).source === 'fleet-spawn'`) up front; the `assertNotNestedHive` guard in `fireLaunchBlueprint` is the runtime backstop. Hives are peers, never nested — a bee that needs structure spins a `kind:'harness'` subharness, never a hive.
+* **Create/dissolve/update are ROOT-ONLY.** They refuse a parented bee (a `bee:spawn` child — `resolveAgentIdentity(ctx).source === 'fleet-spawn'`) up front; the `assertNotNestedHive` guard in `fireLaunchBlueprint` is the runtime backstop. Hives are peers, never nested — a bee that needs structure spins a `kind:'harness'` subharness, never a hive.
 
 * **`hive:create` must stamp `harness_kind:'hive'` itself.** `harness:create` never sets `harness_kind`, and `resolveHive`/`hive:list` filter on it — so a hive home harness created any other way (or a pre-existing plain harness) is **invisible** to the namespace until stamped. `createHiveHarness` sets it; that's the one non-negotiable difference from a plain `harness:create { blueprintId:'hive' }`.
 

@@ -39,6 +39,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { bumpFederationRefusedOp, type RefusedOpReason } from '../federation-refused-op-counter';
 
 /** Wire-shape of a federated gym_qd_archive row — the subset we apply. */
 export interface GymQdEliteWireRow {
@@ -96,6 +97,45 @@ function composeKey(row: GymQdEliteWireRow): string {
 
 function decodeValue(raw: unknown): GymQdEliteWireRow | null {
   return isGymQdEliteWireRow(raw) ? raw : null;
+}
+
+/**
+ * F1-4 / P-012: classify WHY a foreign elite op was refused for the per-source
+ * counter. An elite-shaped row whose `federatable` stamp is not `true` is the
+ * D-002 anti-spam refusal the defensive re-check exists for (a buggy or hostile
+ * sender's log); anything else that fails the wire validator is 'malformed'.
+ */
+function classifyEliteRefusal(raw: unknown): RefusedOpReason {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const r = raw as Record<string, unknown>;
+    // Shaped like an elite (has a niche_key) but not marked federatable.
+    if (typeof r.niche_key === 'string' && r.federatable !== true) return 'not-federatable';
+  }
+  return 'malformed';
+}
+
+/**
+ * F1-4 / P-012: record a per-source refused-op counter when a FOREIGN elite op
+ * was declined at decode. Only REMOTE ops carry an attributable source and are
+ * the anti-poisoning signal D-005 asks for — a local decode failure is a local
+ * bug, not a peer's spam, so it is not counted. Fail-soft via the counter fn.
+ */
+function onRefusedOp(
+  opts: GymQdElitesProjectionOpts,
+  raw: unknown,
+  provenance: ProvenanceContext | undefined,
+): Promise<void> | void {
+  if (provenance?.origin !== 'remote') return;
+  return bumpFederationRefusedOp(
+    {
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      sourceHive: provenance.authorPubkey,
+      tableTag: 'gym-qd-elites-by-niche',
+      reason: classifyEliteRefusal(raw),
+    },
+    opts.sql,
+  );
 }
 
 async function writeToPg(
@@ -235,10 +275,11 @@ export function buildGymQdElitesProjection(
     skipOwnOps: true,
     composeKey,
     decodeValue,
+    onRefusedOp: (raw, provenance) => onRefusedOp(opts, raw, provenance),
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key, delTs, delHlc, provenance) =>
       deleteFromPg(opts, key, delTs, delHlc, provenance),
   };
 }
 
-export const _testing = { composeKey, decodeValue, isGymQdEliteWireRow };
+export const _testing = { composeKey, decodeValue, isGymQdEliteWireRow, classifyEliteRefusal, onRefusedOp };

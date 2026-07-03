@@ -108,6 +108,27 @@ const OUTPUT_QUIET_MS = Number(process.env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS) ||
  *  live re-invoke the moment it ends; only a pathologically long turn drops. */
 const TURN_INJECT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS) || 180_000;
 
+/** RESET-CONTEXT settle (su-cold-auto-mode P-004a). After the host submits the
+ *  context-clear command (`/clear`) it waits this long before typing the
+ *  carry-note turn, so the TUI has processed the clear and repainted a fresh
+ *  prompt. Too short and the carry text lands in the clearing/animating TUI;
+ *  the clear itself is fast, so this is a repaint budget, not a compute one. */
+const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) || 1_500;
+/** After submitting `/compact`, how long to let the compaction START emitting before
+ *  the host waits for it to COMPLETE (post-compaction auto-continuation, WI-1804). The
+ *  wait-for-completion is the agent-output idle gate (agentBusyGate) — this start-delay
+ *  only ensures the compaction's own output has begun, so the gate reads it as mid-turn
+ *  rather than the pre-compaction at-prompt quiet. Distinct from CLEAR_SETTLE_MS: /clear
+ *  is a fast repaint budget, /compact runs a summarizer (seconds-to-minutes, variable),
+ *  so the carry-note is gated on completion, NOT a fixed settle. */
+const COMPACT_START_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_START_MS) || 2_000;
+
+/** How long a RECYCLE waits for the killed child to actually exit before it
+ *  spawns the fresh one, so we never double-spawn into a still-dying pty
+ *  (su-cold-auto-mode P-004b). Fail-safe: on cap we spawn anyway (the old pid is
+ *  being torn down regardless). */
+const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS) || 5_000;
+
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
@@ -324,11 +345,38 @@ export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
     const o = JSON.parse(text);
-    if (o && o.v === 1 && (o.mode === 'turn' || o.mode === 'raw' || o.mode === 'osc')) {
+    if (
+      o &&
+      o.v === 1 &&
+      (o.mode === 'turn' ||
+        o.mode === 'raw' ||
+        o.mode === 'osc' ||
+        o.mode === 'reset' ||
+        o.mode === 'recycle' ||
+        o.mode === 'compact')
+    ) {
       if (o.mode === 'raw') return { mode: 'raw', data: String(o.data ?? ''), gated: false };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
       // ungated + immediate, routed to the host stdout (see the handler sink).
       if (o.mode === 'osc') return { mode: 'osc', data: String(o.data ?? ''), gated: false };
+      // reset (RESET-CONTEXT) / recycle — the cold-auto verbs (su-cold-auto-mode
+      // P-004). Both are GATED like a turn (P-006 clean-boundary: fire ONLY at a
+      // settled turn, never mid-turn) — the host's idle + agent-busy gates defer
+      // them exactly as they defer a wake turn. `data` is the carry-note the fresh
+      // context opens on. reset = in-place `/clear` (drop transcript, keep the
+      // process + MCP warm); recycle = kill + respawn the child in this same host.
+      if (o.mode === 'reset') return { mode: 'reset', data: String(o.data ?? ''), gated: true };
+      if (o.mode === 'recycle') return { mode: 'recycle', data: String(o.data ?? ''), gated: true };
+      // compact (WI-1804): post-compaction auto-continuation. GATED like a turn (fire at a
+      // settled turn, never mid-turn). `focus` = the `/compact <focus>` argument; `data` =
+      // the carry-note the compacted context opens on (empty ⇒ a bare compact, no carry).
+      if (o.mode === 'compact')
+        return {
+          mode: 'compact',
+          data: String(o.data ?? ''),
+          focus: o.focus != null ? String(o.focus) : '',
+          gated: true,
+        };
       return { mode: 'turn', data: String(o.data ?? ''), gated: true };
     }
   } catch {
@@ -382,9 +430,11 @@ function codexTurnResubmitCrDelay(env = process.env) {
 
 /** Backend-aware write plan for an injected turn. Codex receives one redundant
  *  delayed submit CR because the first CR can be consumed as input, leaving the
- *  turn text visible but unsent. */
+ *  turn text visible but unsent. A `reset` (RESET-CONTEXT) is a turn PREFIXED by
+ *  the backend's context-clear command (see resetWritesForAgent). */
 export function controlWritesForAgent(decoded, agent, env = process.env) {
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
+  if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env);
   const normalized = String(agent || '').trim().toLowerCase();
   if (normalized !== 'codex') {
     return controlWrites(decoded, turnSubmitCrDelayForAgent(agent, env));
@@ -394,6 +444,62 @@ export function controlWritesForAgent(decoded, agent, env = process.env) {
     { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
     { data: '\r', delayMs: codexTurnResubmitCrDelay(env) },
   ];
+}
+
+/** The in-place context-clear command for a backend (su-cold-auto-mode P-004a).
+ *  RESET-CONTEXT drops the grown transcript while keeping the process + MCP
+ *  connections warm — the cheap per-wake cold path. Each interactive CLI exposes
+ *  this as a slash command: Claude Code / OMP `/clear`; Codex starts a fresh
+ *  conversation with `/new`. Pure — exported for tests. */
+export function contextClearCommandForAgent(agent) {
+  const normalized = String(agent || '').trim().toLowerCase();
+  if (normalized === 'codex') return '/new';
+  return '/clear';
+}
+
+/** The RESET-CONTEXT settle window (repaint budget after the clear submits).
+ *  Session-env tunable, module default as fallback. */
+export function clearSettleMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS, CLEAR_SETTLE_MS);
+}
+
+/** The compaction command for a backend (post-compaction auto-continuation, WI-1804).
+ *  Claude Code / OMP expose `/compact [focus]` — summarize-and-continue, the WARM sibling
+ *  of /clear's cold reset (transcript is summarized, not dropped). Codex has no compaction
+ *  → null (the caller injects nothing at all). Pure — exported for tests. */
+export function compactCommandForAgent(agent, focus) {
+  const normalized = String(agent || '').trim().toLowerCase();
+  if (normalized === 'codex') return null;
+  const f = String(focus ?? '').trim();
+  return f ? `/compact ${f}` : '/compact';
+}
+
+/** The compaction START delay (WI-1804): after submitting /compact, wait this long so the
+ *  compaction output has begun before gating on its COMPLETION. Env-tunable, module default
+ *  as fallback. */
+export function compactStartMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_START_MS, COMPACT_START_MS);
+}
+
+/** The ordered write STEPS for a RESET-CONTEXT (su-cold-auto-mode P-004a): submit
+ *  the backend's context-clear command, wait `clearSettleMs` for the TUI to
+ *  repaint a fresh prompt, then type + submit the carry-note as the opening turn
+ *  of the fresh context (the SAME per-agent paste-safe turn plan, its first write
+ *  delayed by the settle). An empty carry ⇒ a bare clear (no opening turn). Pure —
+ *  exported for tests. */
+export function resetWritesForAgent(decoded, agent, env = process.env) {
+  const clearCmd = contextClearCommandForAgent(agent);
+  const steps = [
+    { data: clearCmd, delayMs: 0 },
+    { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
+  ];
+  if (!decoded.data) return steps; // bare clear — no carry turn to open on
+  // The carry turn reuses the normal per-agent turn plan; its FIRST write waits
+  // for the clear to settle so the text lands on the fresh prompt, not mid-clear.
+  const turnPlan = controlWritesForAgent({ mode: 'turn', data: decoded.data }, agent, env);
+  turnPlan[0] = { ...turnPlan[0], delayMs: clearSettleMs(env) };
+  steps.push(...turnPlan);
+  return steps;
 }
 
 /**
@@ -490,21 +596,35 @@ export function hostThroughPty(o) {
     }
   }
 
-  const cols = stdout.columns || 80;
-  const rows = stdout.rows || 24;
-  let child;
-  try {
-    child = pty.spawn(command, args, {
-      name: env.TERM || process.env.TERM || 'xterm-256color',
-      cols,
-      rows,
+  const ptyName = env.TERM || process.env.TERM || 'xterm-256color';
+  /** Spawn the child agent under a fresh pty in THIS host. Reused on RECYCLE
+   *  (su-cold-auto-mode P-004b): same command/args/cwd/env means PAPERCUSP_SID,
+   *  locks, hooks, and the control socket all survive — only the process is new.
+   *  Reads the CURRENT terminal size each spawn. */
+  const spawnChild = () =>
+    pty.spawn(command, args, {
+      name: ptyName,
+      cols: stdout.columns || 80,
+      rows: stdout.rows || 24,
       cwd,
       env,
     });
+  let child;
+  try {
+    child = spawnChild();
   } catch (e) {
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
+  // RECYCLE state (su-cold-auto-mode P-004b). `recycling` guards the child-exit
+  // handler so an intended kill+respawn does NOT tear the host down. The three
+  // fns are (re)assigned below — declared here so the control-socket handler
+  // (created before the teardown Promise) can close over them; they stay no-ops
+  // until assigned, and a recycle cannot arrive before the socket is listening.
+  let recycling = false;
+  let wireChildData = () => {};
+  let wireChildExit = () => {};
+  let recycleChild = async () => {};
 
   // P-006: activity annotation rides the SAME discovery file — additive
   // fields only (the read-side contract in operator-core psu-pty-discovery.ts
@@ -519,6 +639,11 @@ export function hostThroughPty(o) {
     command,
     args,
     startedAt: Date.now(),
+    // Control-socket capabilities beyond the v1 base set (WI-1804). The operator reads
+    // this (psu-pty-discovery.hostSupports) to decide whether to send mode:'compact'
+    // (post-compaction auto-continuation) or fall back to a plain /compact turn on an
+    // older host that has no `caps` field. Additive — grow this as new modes land.
+    caps: ['compact'],
   };
   const writeMeta = () => {
     try {
@@ -603,6 +728,55 @@ export function hostThroughPty(o) {
             return;
           }
         }
+        // RECYCLE (su-cold-auto-mode P-004b): a hard cold reset — kill + respawn
+        // the child in THIS host, then open the fresh process on the carry-note.
+        // Handled specially (not a pty write); the gate above already guaranteed a
+        // settled turn (D-006 clean-boundary). reset/turn/raw/osc fall through to
+        // the write plan below.
+        if (msg.mode === 'recycle') {
+          await recycleChild(msg.data);
+          return;
+        }
+        // COMPACT (post-compaction auto-continuation, WI-1804): the /compact WARM sibling
+        // of reset's cold /clear. The gate above already guaranteed a settled turn. Then,
+        // as ONE sequential operation (no second racing socket inject): (1) submit
+        // `/compact <focus>`; (2) let the compaction START emitting; (3) wait for the
+        // compaction TURN to COMPLETE via the output-idle gate — the ONLY observable
+        // "compaction done" signal; (4) open the compacted context on the carry-note turn.
+        // If the compaction outruns the busy cap we DROP the carry (never type into a
+        // still-compacting TUI) — the agent's loop / next natural turn still resumes it.
+        if (msg.mode === 'compact') {
+          const compactCmd = compactCommandForAgent(env.PAPERCUSP_AGENT, msg.focus);
+          if (!compactCmd) return; // backend has no compaction (codex) — inject nothing
+          const submit = async (text) => {
+            for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
+              if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+              child.write(step.data);
+            }
+          };
+          // (1) submit /compact <focus>
+          await submit(compactCmd);
+          if (!msg.data) return; // bare compact — no continuation requested
+          // (2) let the compaction begin so the busy gate reads it as mid-turn
+          await new Promise((r) => setTimeout(r, compactStartMs(env)));
+          // (3) wait through the compaction to completion (or DROP the carry on cap)
+          const done = await agentBusyGate.waitAtPrompt();
+          if (done.deferred) {
+            try {
+              process.stderr.write(
+                `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
+                  `(compaction still running > ${turnInjectBusyCapMs}ms cap); ` +
+                  `the agent's loop / next turn resumes it\n`,
+              );
+            } catch {
+              /* never let a diagnostic write break the session */
+            }
+            return;
+          }
+          // (4) open the compacted context on the continuation turn
+          await submit(msg.data);
+          return;
+        }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
         // visible window — so a fleet:join recolors the LIVE window. Every other
         // mode targets the agent's stdin (a wake turn / a force-interrupt byte).
@@ -637,11 +811,17 @@ export function hostThroughPty(o) {
     }
   });
 
-  // pty -> stdout (output bytes = the mid-turn signal, P-006)
-  child.onData((d) => {
-    activity.touchOutput();
-    stdout.write(d);
-  });
+  // pty -> stdout (output bytes = the mid-turn signal, P-006). Re-attachable: a
+  // RECYCLE (P-004b) spawns a fresh child and re-wires this bridge to it (node-pty
+  // listeners are per-process). onStdin/onResize below read the live `child`
+  // closure, so they need no re-wiring.
+  wireChildData = () => {
+    child.onData((d) => {
+      activity.touchOutput();
+      stdout.write(d);
+    });
+  };
+  wireChildData();
 
   // stdin (raw) -> pty, tracking activity for the idle gate
   if (bridgeTty) {
@@ -721,7 +901,80 @@ export function hostThroughPty(o) {
       onExit(code ?? 0);
     };
 
-    child.onExit(({ exitCode }) => cleanup(exitCode));
+    // Child-exit wiring, re-attachable for RECYCLE (P-004b). Double-guarded so a
+    // recycle's intended kill never tears the host down: (1) `recycling` skips the
+    // exit that IS the recycle kill; (2) the per-child capture skips a superseded
+    // (already-recycled-away) child whose exit event arrives late. Only the CURRENT
+    // child's genuine exit runs cleanup.
+    wireChildExit = () => {
+      const thisChild = child;
+      thisChild.onExit(({ exitCode }) => {
+        if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
+        if (child !== thisChild) return; // a superseded child that died late — ignore
+        cleanup(exitCode);
+      });
+    };
+    wireChildExit();
+
+    // RECYCLE (su-cold-auto-mode P-004b): the periodic HARD cold reset in the
+    // HYBRID cadence (D-002) — kill the child + fresh-spawn it in THIS same host
+    // (same socket / SID / locks / hooks / env survive, D-003), then open the fresh
+    // process on the carry-note. Only ever reached at a settled turn (the handler's
+    // clean-boundary gate ran first, D-006). Serialized by `recycling`; fail-soft
+    // (a spawn failure leaves the host running, carry stays in the inbox).
+    recycleChild = async (carryText) => {
+      if (recycling) return;
+      recycling = true;
+      try {
+        const dead = new Promise((res) => {
+          try {
+            child.onExit(() => res());
+          } catch {
+            res();
+          }
+        });
+        try {
+          child.kill();
+        } catch {
+          /* already gone */
+        }
+        await Promise.race([dead, new Promise((r) => setTimeout(r, RECYCLE_KILL_TIMEOUT_MS))]);
+        child = spawnChild();
+        baseMeta.ptyPid = child.pid;
+        writeMeta();
+        wireChildData();
+        wireChildExit();
+      } catch (e) {
+        try {
+          process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
+        } catch {
+          /* never let a diagnostic write break the host */
+        }
+        recycling = false;
+        return;
+      }
+      recycling = false;
+      if (!carryText) return;
+      // Open the fresh process on the carry-note once it has booted to its prompt
+      // (boot output quiesces → the agent-busy gate clears). Same paste-safe per-
+      // agent turn plan; best-effort (a never-settling fresh agent leaves the carry
+      // in the inbox for its next natural turn).
+      try {
+        const atPrompt = await agentBusyGate.waitAtPrompt();
+        if (atPrompt.deferred) return;
+        for (const step of controlWritesForAgent({ mode: 'turn', data: carryText }, env.PAPERCUSP_AGENT, env)) {
+          if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+          try {
+            child.write(step.data);
+          } catch {
+            /* fresh child may have exited */
+          }
+        }
+      } catch {
+        /* best-effort carry inject */
+      }
+    };
+
     // In raw mode the terminal does NOT generate SIGINT — Ctrl-C is a byte
     // forwarded to the child (what we want). Handle teardown signals only.
     const killChild = () => {

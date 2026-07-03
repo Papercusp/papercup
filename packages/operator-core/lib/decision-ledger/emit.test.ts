@@ -129,8 +129,8 @@ describe('buildDecisionLedgerRow — governed actions', () => {
     expect(row!.why).toBe('protected');
   });
 
-  it('normalizes a dotted tool name to colon form for the B-04 map (fleet.spawn → agent-lifecycle)', () => {
-    const row = buildDecisionLedgerRow(ev({ capabilities: ['fleet:spawn'], toolName: 'fleet.spawn' }));
+  it('normalizes a dotted tool name to colon form for the B-04 map (bee.spawn → agent-lifecycle)', () => {
+    const row = buildDecisionLedgerRow(ev({ capabilities: ['bee:spawn'], toolName: 'bee.spawn' }));
     expect(row!.category).toBe('agent-lifecycle');
     expect(row!.tier).toBe('medium');
   });

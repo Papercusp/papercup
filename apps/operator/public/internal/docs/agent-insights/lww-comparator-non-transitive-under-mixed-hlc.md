@@ -66,9 +66,10 @@ order-independent for ANY HLC-presence mix. **Both halves have now landed:**
 mig-458 (`libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql`,
 2026-07-02) gave the PG-level guard the SAME fix via a small immutable SQL
 function, `harness_shared.fed_order_key(hlc, ts)`, and swept EVERY mutable
-projection's `ON CONFLICT … WHERE` / `DELETE WHERE` guard onto it (20 projection
-files as of this writing — `grep -rl fed_order_key
-packages/operator-core/lib/sync/hyperbee/projections/`) — so the guard now
+projection's `ON CONFLICT … WHERE` / `DELETE WHERE` guard onto it (30 projection
+files as of 2026-07-03, and growing as new mutable projections land — `grep -rl
+fed_order_key packages/operator-core/lib/sync/hyperbee/projections/ | wc -l`) —
+so the guard now
 compares in the *exact* order space `lwwPick` does, on every table, not just in
 `lwwPick` alone.
 

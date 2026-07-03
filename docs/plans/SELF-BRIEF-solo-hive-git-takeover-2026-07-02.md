@@ -204,3 +204,10 @@ Corestore 7.9.2 facts (verified in source):
 4. P-002 remainder (Tauri live-verify, render test, m24 note), P-005 flag/tiers.
 5. P-101..P-107 (P-101 fleet directory next — it feeds P-108's roster + P-103/P-104).
 6. Phase 2 (P-201..P-207), Phase 3 (P-301..304, P-306 sim harness BEFORE P-305 LIVE-2).
+
+## PROGRESS LOG — 2026-07-03 ~11:12Z (su-16e4c, post-compaction wake)
+- Identity RESOLVED: I am su-16e4c274 (coord:whoami); su-35c3bac0 is a separate live session (holds P-201/P-206). P-108 lane RE-CLAIMED (claim 0668d6fc).
+- **P-108 BUILD ORDER COMPLETE**: boot.ts wiring LANDED — scoped store (corestore.ts getHarnessScopedStore, pre-existing) + ScopeCoreRegistry (boot-scoped, survives rekey) + ScopeFederation (per joinForBinding, binds identity/signer) + onAnnounceWithConnection (admitted-frames-only routing into the scoped layer) + handle.ensureScopeParticipation/rediscloseScopes (D-017 n1) + M15 counters (bumpRefusedOpCounter, `scoped-*:*` reasons) + close-path eviction + dead-conn lazy prune in scope-federation.ts. 105/105 green (boot 40 incl 2 new P-006 tests, scope-cores 10, scope-federation 13, scope-roster 9, swarm 35); tsc clean.
+- Wakes #4736/#4743 ANSWERED (su-f5d28): no collision — their fix landed in backfill-local-state.ts; scope-*.ts + boot/swarm announce path fenced as mine. swarm.test.ts stale reds were already fixed (35/35).
+- Fleet claim map verified (owner ask): P-002=6e3f9 (wip), P-107=c2428 (DONE), P-306=d1985 (DONE, gates LIVE-2), P-201/P-206=35c3b (watch for staleness), su-cd47d/4f4f5/79eda = fed-scout-gym-r2 plan (disjoint); 79eda warned re bumpRefusedOpCounter new call site.
+- NEXT: (1) reconcile P-108 item text vs remaining D-017/D-018 results-channel scope before flipping done; (2) P-101 fleet directory (slots into scope-roster FleetDirectory seam + drives ensureScopeParticipation); (3) live 2-machine co-verify with su-f5d28's isolated-DHT rig once P-101 populates scopes.

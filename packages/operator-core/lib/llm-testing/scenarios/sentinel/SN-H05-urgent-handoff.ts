@@ -27,7 +27,7 @@ export const SN_H05_URGENT_HANDOFF: Scenario = {
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
-    { kind: 'tool_not_called', name: 'fleet:spawn' },
+    { kind: 'tool_not_called', name: 'bee:spawn' },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'cost_under', usd: 1.0 },

@@ -134,7 +134,7 @@ export const FLAGS = {
   // remains the per-host deliberate remote-admin opt-out.
   ENDPOINT_AUTH_TIERS: "papercusp-endpoint-auth-tiers",
   // queen-model-tier-selection-2026-06-11 (P-005): when ON, the Queen's
-  // fleet:spawn `tier` picks are honored (resolved + clamped to [role floor,
+  // bee:spawn `tier` picks are honored (resolved + clamped to [role floor,
   // role ceiling]). OFF = the kill-switch: a queen-supplied tier is ignored
   // and her spawns run at the role's standing default. Human/operator tier
   // and model args are honored regardless — this gates only the Queen's

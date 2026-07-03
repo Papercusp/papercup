@@ -433,10 +433,200 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
 });
 
 describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
   it('registers the P2P settings-surface queries in knownQueryNamesV2', () => {
     for (const expected of ['p2p.settings', 'p2p.devices', 'p2p.grants', 'p2p.audit']) {
       expect(knownQueryNamesV2()).toContain(expected);
     }
+  });
+
+  // ── p2p.settings — the workspace-singleton settings layers (client reads data[0]) ──
+  it('p2p.settings returns the stored layers as a 1-element array (client reads data[0])', async () => {
+    const layers = {
+      workspaceId: 'ws-test',
+      baked: { optIn: { mode: 'off' }, killSwitch: { engaged: false } },
+      defaultLayer: null,
+      overrideLayer: { optIn: { mode: 'any-fleet' } },
+      effective: { optIn: { mode: 'any-fleet' }, killSwitch: { engaged: false } },
+    };
+    vi.doMock('../p2p/settings', () => ({
+      readP2pSettings: vi.fn(async () => layers),
+      bakedP2pDefaults: vi.fn(() => ({ optIn: { mode: 'off' }, killSwitch: { engaged: false } })),
+    }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.settings', {})) as unknown[];
+    expect(out).toEqual([layers]);
+    vi.doUnmock('../p2p/settings');
+  });
+
+  it('p2p.settings degrades to the baked (structurally-inert) defaults on read failure — never a 500', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const baked = { optIn: { mode: 'off', fleets: [], maxConcurrentForeign: 2, windows: [] }, killSwitch: { engaged: false } };
+    vi.doMock('../p2p/settings', () => ({
+      readP2pSettings: vi.fn(async () => {
+        throw Object.assign(new Error('relation "p2p_settings" does not exist'), { code: '42P01' });
+      }),
+      bakedP2pDefaults: vi.fn(() => baked),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.settings', {})) as Array<{ effective: unknown; baked: unknown; workspaceId: string }>;
+    expect(out).toHaveLength(1);
+    expect(out[0].workspaceId).toBe('ws-test');
+    expect(out[0].effective).toEqual(baked); // inert defaults → the page renders, opt-in off
+    expect(out[0].baked).toEqual(baked);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+    vi.doUnmock('../p2p/settings');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  // ── p2p.devices — the Identity & devices section (loud when unresolved / missing) ──
+  it('p2p.devices returns a lone identity-unresolved row when there is no attested actor (page shows RED)', async () => {
+    vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => null) }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
+    expect(out).toEqual([{ kind: 'identity', githubUserId: null, devicePubkey: null }]);
+    vi.doUnmock('../harness/usage-actor');
+  });
+
+  it('p2p.devices maps a hive membership to an attested THIS-device row (no missing badge)', async () => {
+    const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
+    const members = [
+      {
+        hive_home_slug: 'papercusp',
+        device_attestations: [
+          { device_pubkey: 'DEV-THIS', device_label: 'tower', created_at: 1_700_000_000_000, gist_url: 'https://g' },
+        ],
+        revoked_pubkeys: [],
+      },
+    ];
+    vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () => members }) }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
+    expect(out[0]).toEqual({ kind: 'identity', githubUserId: 279242982, devicePubkey: 'DEV-THIS' });
+    const dev = out.find((row) => row.kind === 'device');
+    expect(dev).toMatchObject({ hiveHomeSlug: 'papercusp', devicePubkey: 'DEV-THIS', isThisDevice: true, revoked: false });
+    expect(out.some((row) => row.kind === 'missing')).toBe(false); // this device is live → no RED
+    vi.doUnmock('../harness/usage-actor');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('p2p.devices emits a MISSING row when this device is absent from a hive attestation set (loud, never silent)', async () => {
+    const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
+    const members = [
+      {
+        hive_home_slug: 'papercusp',
+        device_attestations: [{ device_pubkey: 'DEV-OTHER', device_label: 'imac', created_at: 1_700_000_000_000 }],
+        revoked_pubkeys: [],
+      },
+    ];
+    vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () => members }) }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
+    expect(out).toContainEqual({ kind: 'missing', hiveHomeSlug: 'papercusp' });
+    vi.doUnmock('../harness/usage-actor');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('p2p.devices degrades to identity-unresolved when the membership read throws — never a 500', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
+    vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({
+        sql: async () => {
+          throw Object.assign(new Error('relation "hive_members" does not exist'), { code: '42P01' });
+        },
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
+    // The identity row was already pushed → degrade keeps it (resolved identity, no device rows), never throws.
+    expect(out).toEqual([{ kind: 'identity', githubUserId: 279242982, devicePubkey: 'DEV-THIS' }]);
+    warnSpy.mockRestore();
+    vi.doUnmock('../harness/usage-actor');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  // ── p2p.grants — the Peers capability matrix (hive-scoped, includes revoked) ──
+  it('p2p.grants returns the hive-scoped grant list (includeRevoked so the matrix can show revocation)', async () => {
+    const grants = [{ granteeKind: 'fleet', granteeRef: 'fleet-a', status: 'active', capabilities: ['work.offer'] }];
+    const listPeerGrants = vi.fn(async () => grants);
+    vi.doMock('../p2p/grant-store', () => ({ listPeerGrants }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.grants', { hiveSlug: 'papercusp' })) as unknown[];
+    expect(out).toEqual(grants);
+    expect(listPeerGrants).toHaveBeenCalledWith({ workspaceId: 'ws-test', hiveSlug: 'papercusp', includeRevoked: true });
+    vi.doUnmock('../p2p/grant-store');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('p2p.grants degrades to the empty matrix before migration 463 applies (42P01) — never a 500', async () => {
+    vi.doMock('../p2p/grant-store', () => ({
+      listPeerGrants: vi.fn(async () => {
+        throw Object.assign(new Error('relation "peer_grants" does not exist'), { code: '42P01' });
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.grants', { hiveSlug: 'papercusp' })) as unknown[];
+    expect(out).toEqual([]);
+    vi.doUnmock('../p2p/grant-store');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  // ── p2p.audit — p2p:*-prefixed audit rows (default limit 50) ──
+  it('p2p.audit returns p2p-prefixed audit rows and applies the argsSchema default limit (50)', async () => {
+    const rows = [{ id: 'a1', ts: 1_700_000_000_000, actor: 'owner', action: 'p2p:kill-switch', subject: 'host', details: {} }];
+    const captured: { args: unknown[] } = { args: [] };
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({
+        sql: async (..._a: unknown[]) => {
+          captured.args = _a;
+          return rows;
+        },
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.audit', {})) as unknown[];
+    expect(out).toEqual(rows);
+    // tagged-template call: sql`… ${activeWorkspaceId()} … LIMIT ${limit}` → last interpolated value is the default limit.
+    expect(captured.args[captured.args.length - 1]).toBe(50);
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  it('p2p.audit degrades to [] when the audit read throws — never a 500', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({
+        sql: async () => {
+          throw new Error('audit_log unavailable');
+        },
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.audit', { limit: 10 })) as unknown[];
+    expect(out).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
   });
 });
 

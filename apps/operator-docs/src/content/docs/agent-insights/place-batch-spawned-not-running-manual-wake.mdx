@@ -1,7 +1,7 @@
 ---
 title: A fleet placement's `spawned:N` does NOT mean the bees are running — manual wake-mode stages the boot-wake
 description: >-
-  fleet:place_batch / fleet:spawn return spawned:N and look successful, but if the GLOBAL wake-mode is
+  fleet:place_batch / bee:spawn return spawned:N and look successful, but if the GLOBAL wake-mode is
   'manual' (hive paused — e.g. set during a firefight and left), each spawned bee's boot-wake STAGES
   (woken:0) and the bee never starts — a silent no-op. (Read-only confinement, EI-524, was a second such
   cause but was LIFTED 2026-06-14.) Verify placement with fleet:assignments + work_items state, NOT the

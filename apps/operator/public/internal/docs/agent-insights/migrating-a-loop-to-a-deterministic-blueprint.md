@@ -55,7 +55,7 @@ Two program shapes, discriminated by the gate (no schema field):
    iq-battery): the agent leg stays **INTERNAL to the op** (Option A), NOT an
    `orchestrator:spawn-roles` step. Two reasons (D-009 / D-013): (a) those loops'
    "agents" are governed `llmCall`s (regret/transfer/ablation) or fleet bees that
-   already route through `spawnAgentInHarness → fleet:spawn → spawnInvokeOnce` —
+   already route through `spawnAgentInHarness → bee:spawn → spawnInvokeOnce` —
    **the one governed chokepoint** — so there is NO ungoverned second spawn path to
    "close"; (b) `spawn-roles` is for **role fan-out** (vote's per-lens voters): its
    agents take a harness *role/persona*. A loop whose agent takes a *brief* (a corpus

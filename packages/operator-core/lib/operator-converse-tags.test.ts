@@ -378,7 +378,7 @@ describe('handoff_to_queen tags', () => {
     const r = parseOperatorTurn(
       '<say>On it — filing the auth rewrite and flagging the Queen.</say>\n' +
         '<handoff_to_queen summary="rewrite the auth module" harness="papercup" ' +
-        'feature="auth-module" tier="high" urgent="true" capability="fleet:spawn">',
+        'feature="auth-module" tier="high" urgent="true" capability="bee:spawn">',
     );
     expect(r.say).toBe('On it — filing the auth rewrite and flagging the Queen.');
     expect(r.handoffs).toEqual([
@@ -387,7 +387,7 @@ describe('handoff_to_queen tags', () => {
         harness: 'papercup',
         featureId: 'auth-module',
         tier: 'high',
-        capability: 'fleet:spawn',
+        capability: 'bee:spawn',
         urgent: true,
       },
     ]);

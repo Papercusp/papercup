@@ -205,7 +205,7 @@ function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isLoopLaunch: boolean): 
 /**
  * The launcher's kickoff ("why this wake fired") — fireLaunchBlueprint sends
  * it, but this route used to silently DROP it, so the Queen woke with no idea
- * why (P-071 smoke). It is threaded to the child the same way fleet:spawn
+ * why (P-071 smoke). It is threaded to the child the same way bee:spawn
  * threads its Queen brief: via QUEEN_BRIEF, which invoke.ts hands to
  * buildPrompt as the situational-overlay `brief` section.
  */

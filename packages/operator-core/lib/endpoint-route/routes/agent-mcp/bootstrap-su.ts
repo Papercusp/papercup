@@ -931,7 +931,7 @@ const post = defineTool({
     // (the "lost batch" bug). Register a PENDING placement keyed by this session's
     // coord owner id (sid == coord_presence.owner_id), in this SAME operator process:
     // the agent's FIRST presence write (coord:orient/declare-intent) applies it as an
-    // authoritative hard-set — the exact mechanism headless bees use (fleet:spawn),
+    // authoritative hard-set — the exact mechanism headless bees use (bee:spawn),
     // and the same effect as the agent running fleet:join. Best-effort + one-shot.
     if (fleetPin.fleetSlug) {
       setPendingFleet(sid, fleetPin.fleetSlug, fleetPin.fleetRole ?? 'member');

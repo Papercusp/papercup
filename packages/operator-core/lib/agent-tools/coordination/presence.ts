@@ -88,7 +88,7 @@ export async function writePresence(
 
   // Spawned-bee fleet placement (fleet-color-schemes): a headless operator-spawn
   // bee's fleet can't ride the env-fold above (that reads the OPERATOR's env, not
-  // the bee's), so fleet:spawn { fleet } registered a PENDING placement keyed by
+  // the bee's), so bee:spawn { fleet } registered a PENDING placement keyed by
   // the bee's spawnId. The row now exists (store.write above created/updated it),
   // so apply it as an authoritative hard-set, then it's cleared (one-shot). Only a
   // spawned bee with a pending placement pays anything.
@@ -160,7 +160,7 @@ export async function setPresenceFleet(
 }
 
 // ── Spawned-bee pending fleet placement (fleet-color-schemes) ────────────────
-// `fleet:spawn { fleet }` cannot deliver a HEADLESS bee's fleet via env: the
+// `bee:spawn { fleet }` cannot deliver a HEADLESS bee's fleet via env: the
 // env-fold above (deriveFleetMembership) reads the OPERATOR's process.env, but the
 // bee's PAPERCUSP_FLEET_SLUG lands on the BEE's process. operator-spawn instead
 // registers the placement HERE — keyed by the bee's spawnId/ownerId, in the SAME

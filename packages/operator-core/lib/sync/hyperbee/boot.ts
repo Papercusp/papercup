@@ -33,7 +33,13 @@
  *     through PG-direct.
  */
 
-import { getHarnessStore, closeHarnessStore, type HarnessStoreOpts } from './corestore';
+import {
+  getHarnessStore,
+  closeHarnessStore,
+  getHarnessScopedStore,
+  closeHarnessScopedStore,
+  type HarnessStoreOpts,
+} from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog } from './peer-log';
 import { stampOpHlc } from './hlc-stamp';
@@ -71,9 +77,18 @@ import {
 import {
   joinHarnessSwarm,
   getSharedSwarm,
+  type AnnounceConnectionContext,
   type HyperswarmLike,
   type SwarmHandle,
 } from './swarm';
+// ── P-006 §5.1–§5.3 scoped-log federation (P-108) ── scoped cores live in a
+// SEPARATE never-`replicate()`d corestore and are served per-connection through
+// the fail-closed roster gate; the coordinator hangs off the announce exchange.
+import { ScopeCoreRegistry, type ScopedStoreLike } from './scope-cores';
+import { ScopeFederation } from './scope-federation';
+import { getScopeRoster } from '../../p2p/scope-roster';
+import { bumpRefusedOpCounter } from '../../p2p/receipts';
+import { formatScopeId, type ScopeId } from '../hive-git/scope-repo';
 import { offloadReplicationToSidecar } from './substrate-replication-offload';
 import {
   buildAnnounce,
@@ -513,9 +528,11 @@ export interface BootedHarnessHandle {
    * Handle an inbound signed announce from a peer (called by the swarm
    * connection handler in 4b). Verifies the sig, runs the admission
    * decision, and on admit opens + admits the peer's remote log and
-   * triggers a merge.
+   * triggers a merge. When the swarm supplies the per-connection `ctx`
+   * (P-006 §5.2/§5.3), an ADMITTED frame additionally drives the scoped-log
+   * flow: serve gate → disclosed-core admission → directed follow-up.
    */
-  onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult>;
+  onAnnounce(frame: SignedAnnounce, ctx?: AnnounceConnectionContext): Promise<AdmissionResult>;
   /**
    * Subscribe to peer admissions (audit P-022): fires once per newly-admitted
    * remote log with the log key + the post-admission admitted-set size.
@@ -569,6 +586,29 @@ export interface BootedHarnessHandle {
    *  hive-pubkey topic WITHOUT a reboot (EI-681: a reboot breaks the owner's
    *  corestore replication-serving of its own log). No-op once closed. */
   rekey(binding: SwarmBinding): Promise<void>;
+  /**
+   * P-006 §5.1 — declare fleet scopes this peer PARTICIPATES in: mints an own
+   * writable scoped log core per scope (idempotent) in the harness's SEPARATE
+   * never-replicated scoped store; the scopes are disclosed/served per
+   * §5.2/§5.3 on the next announce exchange (or `rediscloseScopes()` for the
+   * immediate edge). Boot-scoped: `rekey()` re-applies the set to the fresh
+   * coordinator. P-101 (fleet directory) is the production driver; a tier-1
+   * boot leaves the set empty (FS-D5 structural inertness — the machinery is
+   * live, nothing is disclosed or served).
+   */
+  ensureScopeParticipation(scopes: readonly ScopeId[]): Promise<void>;
+  /**
+   * D-017 n1 — the IMMEDIATE roster/epoch-mutation edge: re-run scoped-log
+   * disclosure on EVERY live connection NOW. A scope newly hidden from a peer
+   * is detached at once (§5.3 revocation edge); newly visible scopes are
+   * served + disclosed. Without this, changes still converge within one
+   * ANNOUNCE_REFLUSH (≤5 min) — this makes revocation take effect now. No-op
+   * before the first swarm join.
+   */
+  rediscloseScopes(): Promise<void>;
+  /** The scoped-log coordinator — null before the first swarm join or when the
+   *  scoped layer failed to initialize (diagnostics + tests). */
+  readonly scopeFederation: ScopeFederation | null;
   /**
    * Register a teardown hook run (once) on `close()`, BEFORE the swarm + store
    * tear down. The Stage-5 outbox wiring (boot-all.ts `wireOutboxForHarness`)
@@ -2695,6 +2735,34 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
+  // ── P-006 scoped-log federation state (P-108). The REGISTRY is boot-scoped
+  // (own/admitted scoped cores survive a rekey — the store stays open); the
+  // COORDINATOR is rebuilt per joinForBinding because it binds the resolved
+  // announce identity + signer. `participatingScopes` is the durable declared
+  // set so a rekey re-applies it to the fresh coordinator.
+  let scopeRegistry: ScopeCoreRegistry | null = null;
+  let scopeFederation: ScopeFederation | null = null;
+  const participatingScopes = new Map<string, ScopeId>();
+
+  /**
+   * The swarm-facing announce hook: base admission first, then — for an
+   * ADMITTED frame on a connection that supplied `ctx` — the scoped-log flow
+   * (§5.3 serve gate → §5.2 disclosed-core admission → loop-damped directed
+   * follow-up). Fire-and-forget: scoped handling never blocks or fails base
+   * admission, and an unverified/rejected/pending frame NEVER reaches the
+   * scoped layer (frame.github_user_id is only trustworthy once admitted).
+   */
+  async function onAnnounceWithConnection(
+    frame: SignedAnnounce,
+    ctx?: AnnounceConnectionContext,
+  ): Promise<AdmissionResult> {
+    const decision = await onAnnounce(frame);
+    if (decision.admit && ctx && scopeFederation) {
+      void scopeFederation.onPeerAnnounce(frame, ctx).catch(() => {});
+    }
+    return decision;
+  }
+
   async function resolveKnownHiveMemberAnnounceIdentityForBinding(
     binding: SwarmBinding,
   ): Promise<LocalAnnounceIdentity | null> {
@@ -2764,6 +2832,54 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
       const buildOurAnnounce = () => buildAnnounce(announceBody, signOurAnnounce);
       const ourAnnounce = await buildOurAnnounce();
+      // ── P-006 scoped-log federation coordinator (P-108). Best-effort: a
+      // failure here leaves the scoped layer off (null) without failing the
+      // join — base federation is independent of it. The scoped store is a
+      // SEPARATE corestore that is NEVER passed to store.replicate (the §5.3
+      // fail-closed premise); the roster/epoch reads federate under the hive
+      // home slug when one is bound (grants/epochs live there), else our own.
+      try {
+        const scopedStore = await getHarnessScopedStore(storeOpts);
+        if (!scopeRegistry) {
+          // Narrowed at the boundary (scope-cores.ts convention): Corestore
+          // sessions structurally satisfy ScopedSessionLike.
+          scopeRegistry = new ScopeCoreRegistry(scopedStore as unknown as ScopedStoreLike);
+        }
+        const rosterHiveSlug = hiveHomeProjectionSlug ?? opts.harnessSlug;
+        scopeFederation = new ScopeFederation({
+          registry: scopeRegistry,
+          roster: getScopeRoster({ workspaceId: opts.workspaceId, hiveSlug: rosterHiveSlug }),
+          selfGithubUserId: identity.githubUserId,
+          buildScopedAnnounce: (scopedLogs) =>
+            buildAnnounce({ ...announceBody, scoped_logs: scopedLogs }, signOurAnnounce),
+          // M15/D-004: every refused scoped entry is a visible counter + boot
+          // event, never a silent drop. Best-effort (PG may be unavailable in
+          // rigs); the boot event is the always-on local witness.
+          onRefusal: (r) => {
+            const reason =
+              r.kind === 'inbound-announce'
+                ? `scoped-announce:${r.refusal.reason}`
+                : `scoped-${r.kind}:${r.refusal.reason}`;
+            recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', reason);
+            void bumpRefusedOpCounter({
+              workspaceId: opts.workspaceId,
+              hiveSlug: rosterHiveSlug,
+              reason,
+            }).catch(() => {});
+          },
+        });
+        if (participatingScopes.size > 0) {
+          await scopeFederation.ensureOwnScopes([...participatingScopes.values()]);
+        }
+      } catch (e) {
+        scopeFederation = null;
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          `scoped-log layer unavailable: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
       // SUBSTRATE_SIDECAR Option B (WI-604): build the replication-offload seam.
       // A test override wins; else, when the OFF-by-default flag is ON, route each
       // accepted peer socket to the sidecar via offloadReplicationToSidecar.
@@ -2797,7 +2913,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         swarm,
         ourAnnounce,
         buildOurAnnounce,
-        onAnnounce,
+        onAnnounce: onAnnounceWithConnection,
         offloadReplication,
         // WI-752 / FED-2: forward the self-heal re-peer cadence (defaults applied
         // inside joinHarnessSwarm when these are undefined).
@@ -2948,7 +3064,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     admitted,
     mergeNow,
-    onAnnounce,
+    onAnnounce: onAnnounceWithConnection,
+    async ensureScopeParticipation(scopes: readonly ScopeId[]): Promise<void> {
+      for (const s of scopes) participatingScopes.set(formatScopeId(s), s);
+      if (scopeFederation) await scopeFederation.ensureOwnScopes(scopes);
+    },
+    async rediscloseScopes(): Promise<void> {
+      await scopeFederation?.redisclose();
+    },
+    get scopeFederation(): ScopeFederation | null {
+      return scopeFederation;
+    },
     onAdmitted(listener) {
       admittedListeners.add(listener);
       return () => {
@@ -3158,6 +3284,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // boot. (A re-key never reaches here: rekeyHarness/handle.rekey leave the
       // old topic + join the new one WITHOUT closing the store — see boot-all.ts.)
       try { await closeHarnessStore(storeOpts); } catch {}
+      // P-006: the scoped store is a separate Corestore instance — close +
+      // evict it the same way (it was only opened if a swarm join ran).
+      try { await closeHarnessScopedStore(storeOpts); } catch {}
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },
   };

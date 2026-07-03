@@ -759,10 +759,12 @@ import './fleet/tree';
 import './fleet/supervise';
 import './fleet/admit';
 import './fleet/governor';
-// fleet:spawn — the operator→agent launch verb over the same durable nursery
-// (Brief 4, agent-briefs-2026-06-05): chat <spawn> tags, the operator brain's
+// bee:spawn — the operator→bee launch verb over the same durable nursery
+// (Brief 4, agent-briefs-2026-06-05; renamed from fleet:spawn per WI-1764 #3 so
+// the namespace encodes the substrate: bee:* = the autonomous queen↔bee loop,
+// fleet:* = visible desktop su members). chat <spawn> tags, the operator brain's
 // tool call, and the admin HTTP trigger all land in spawnAgentInHarness.
-import './fleet/spawn';
+import './bee/spawn';
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';

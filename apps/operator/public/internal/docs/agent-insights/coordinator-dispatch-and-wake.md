@@ -36,33 +36,67 @@ primitive, and a reclaim lane that stops dead sessions from masquerading as live
 So: **before dispatching, find a `parked` (or `live`) target. An `ended` target cannot be
 woken — relaunch/resume it instead.** Read `summary.wakeable`, not the `active` count.
 
+**`active` is the ACTIONABLE roster only — `ended` rows are excluded by default.** `coord:presence`
+used to have an `include_stale` flag that dumped the whole stale roster; that's gone. Instead:
+`active` returns only live/parked/recorded rows, `summary.byState.ended` gives you the dead count,
+and `owner:<id>` does a **targeted** lookup that *does* return a matching row even if it's `ended`
+— use it to inspect/wake one specific dead agent, never to expand the whole stale pile. Each row
+also carries `onDesktop`/`viewerAttached`: a human is watching that session RIGHT NOW (an open OS
+window, or attached to its PTY panel) — see the reaper exemption below.
+
+**Cheap re-polling: `since:<etag>`.** The roster snapshot carries an `etag`; pass the etag from
+your prior read back as `since` and, if the delta-eligible roster (identity/state — NOT liveness)
+is unchanged, you get a \~100B `{ unchanged:true, etag, as_of }` instead of the full payload. Right
+before you actually dispatch, re-read *without* `since:` — liveness (live↔parked) is deliberately
+excluded from the etag, so a `since`-short-circuited read can be stale on exactly the signal a
+dispatch decision needs.
+
+**Self-identification.** A caller's own row is stamped `isSelf:true`, and the top-level result
+carries `self: { ownerId, ownerLabel }` — so you can tell which roster row is you without a
+separate `coord:whoami` call (`self-marker.ts`).
+
+> `coord:roster { view }` (`tools/roster.ts`) is the newer unified read door — `view:"live"` is the
+> same underlying model as `coord:presence`; `view:"history"` answers "who was ever here" for a
+> roster with `ended` rows; `view:"claims"`/`view:"members"` cover `fleet:assignments`-shaped and
+> membership questions. `coord:glance` gives a one-line fleet headline. `coord:presence` stays the
+> dispatch-focused door documented here.
+
 ## coord:dispatch — assign + wake + confirm, in ONE call
 
 `coord:dispatch { to, planSlug?, items?[], note }` (`tools/dispatch.ts`) replaces the
 hand-composed `plan_items:assign` + `coord:send` + `events:emit` + key-format ritual. It:
 
-1. reads the target's `sessionState`/`wakeable` (so the result tells you what you dispatched to),
+1. reads the target's `sessionState`/`wakeable` via a **targeted** `coord:presence { owner: to }`
+   lookup (not an unscoped roster read — `owner` still resolves an `ended` row, which the default
+   `active` list now omits) so the result tells you what you dispatched to,
 2. **assigns the lane** — `plan_items:assign` of `items` in `planSlug` to `to` (durable; survives
    the target sleeping/dying — omit `planSlug`+`items` for a pure directed wake),
 3. **delivers the note + wakes** — `coord:send { wake:'required' }` persists the directed note to
    the target's inbox AND fires its `coord:inbox-wake:<id>` key, and
-4. returns `{ ok, to, sessionState, wakeable, assigned, delivered, woken, warning? }`.
+4. returns `{ ok, to, sessionState, wakeable, assigned, delivered, woken, staged?, warning? }`.
 
 It is composed (the in-process re-dispatch pattern, like `coord:orient`) — it builds no second
 wake pump; it reuses `coord:send`'s deliver-and-wake, which owns the
-`recipient_absent`/`recipient_dead` honesty signal.
+`recipient_absent`/`recipient_dead`/`staged` honesty signals.
 
-**Read the result, not your hope.** A dispatch to a non-wakeable target is a LOUD miss, never a
-silent `woken:0`:
+**Read the result, not your hope.** A dispatch to a non-wakeable (or non-delivering) target is a
+LOUD miss, never a silent `woken:0`:
 
 * `woken: 1+` → the target was parked and is now running your lane.
 * `warning` + `recipient_dead` / `sessionState: 'ended'` → the lane was **assigned durably** but no
   live process will pick it up until the target is **relaunched/resumed**. Re-dispatch to a
   `parked`/`live` agent or respawn this one. Do NOT assume it landed.
+* `staged: 1+` (EI-5957) → the target is **alive** but in **manual wake-mode** (the hive
+  pause/edit gate), so the note was **queued for owner review**, not delivered — the #1
+  leader-steering trap: a quiet `staged:1` reads like success while the member never acts on it.
+  The lane is still assigned durably; release the wake
+  (`coord:wake-queue { action: "release_all", agent: to }`) or flip the target to auto
+  (`coord:wake-mode { agent: to, mode: "auto" }`) — a fleet leader steering its own members
+  almost always wants them on auto.
 
 ```
 coord:presence → pick a `parked` target → coord:dispatch { to, planSlug, items, note }
-  → check woken / warning → (woken target) coord:orient → plan_items:my_items → claim + work
+  → check woken / staged / warning → (woken target) coord:orient → plan_items:my_items → claim + work
 ```
 
 ## The woken agent's contract: claim + work, don't re-park
@@ -93,3 +127,26 @@ await-polluted.)
 So if a coordinator sees a stale "parked" pile, the reclaim sweep — fired by the
 `system:idle-session-reaper` routine — converges it to honest `ended`, and reclaim "fires on dead
 sessions" as designed.
+
+Two more sessions are now HARD-EXEMPT from reaping regardless of heartbeat age (owner decision
+2026-06-29), folded into the same `protectedOwners` set as the live/claim/wake check:
+`keptOnDesktop` — a session with a live OS window currently on screen
+(`desktop-window-liveness.ts`) — and `keptViewerAttached` — a session with no OS window but a
+human currently attached to its terminal in the operator PTY panel
+(`pty-viewer-heartbeat.ts`). Both are best-effort (headless box / no `wmctrl` → empty set), so they
+can only ever **protect more**, never reap more; `runIdleSessionReap`'s result surfaces both
+counts alongside `keptLive`.
+
+## Wake fan-out is capped — `MAX_WAKE_FANOUT`
+
+`wakeRecipients` (`inbox-wake.ts`) caps how many concrete agents ONE send/dispatch will actually
+re-invoke: `MAX_WAKE_FANOUT` (default 64, `PAPERCUSP_MAX_WAKE_FANOUT`-tunable). Beyond the cap the
+overflow recipients are still **injected** (durable — they see the note on their next turn) but
+**not woken** — this stops a `@fleet:`/`@topic:` audience that expands to thousands of agents from
+turning one message into thousands of billable turns. The result carries `fanoutCapped: string[]`
+(the overflow ownerIds) alongside `targets`/`keys`/`woken`/`staged`/`stagedTargets` — non-empty only
+for an oversized audience fan; a normal directed dispatch never hits it.
+
+`stagedTargets` (the named set behind `staged`) lets a leader-steering send/dispatch surface a
+loud, addressed warning ("wake STAGED, not delivered for `<who>`") instead of a bare `staged:1` —
+see `buildStagedWakeNote` and the `coord:dispatch` `staged` handling above.

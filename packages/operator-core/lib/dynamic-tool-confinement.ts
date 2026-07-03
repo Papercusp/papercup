@@ -53,7 +53,7 @@ export const DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS: readonly string[] = [
   'platform:contribute',
   'secrets:*',
   'processes:kill',
-  'fleet:spawn',
+  'bee:spawn',
 ];
 
 export interface ConfinedEnvelope {

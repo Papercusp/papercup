@@ -1,6 +1,6 @@
 ---
 title: "coding-hive `bee` (self-pulls a claim-spec) vs coding-factory `scoper` (gets a FEATURE_ID pushed) — don't conflate them"
-description: "Papercusp has TWO distinct coding execution models that share the fleet:spawn chokepoint, and agents repeatedly conflate their work units. The coding HIVE is a queen + self-pulling `bee`s: the Queen steers a bee with a versioned claim-spec (scheduler:set_claim_spec) and the bee PULLS its own next item via scheduler:get_next. The coding-FACTORY is the OPPOSITE — a PUSH pipeline (scoper→architect→worker→validator→documenter→curator, driven by a director's spine) where each role is HANDED a FEATURE_ID by the orchestrator (NEXT_SCOPER/NEXT_ARCHITECT/… all carry extras:[\"FEATURE_ID={feature}\"]) and NEVER calls get_next. The exact observed failure: an agent spawned role=\"scoper\" and set claim-specs on it to test the coding-hive handoff — but a scoper never self-pulls, so the claim-spec is INERT and (lacking a pushed FEATURE_ID) the scoper has nothing to do. For a claim-spec self-pulling worker the role is \"bee\", NEVER scoper. operator-spawn now REFUSES a factory pipeline role spawned with no pushed-feature context and points at role=\"bee\"; set_claim_spec WARNS when its beeId resolves to a non-self-pulling role."
+description: "Papercusp has TWO distinct coding execution models that share the bee:spawn chokepoint, and agents repeatedly conflate their work units. The coding HIVE is a queen + self-pulling `bee`s: the Queen steers a bee with a versioned claim-spec (scheduler:set_claim_spec) and the bee PULLS its own next item via scheduler:get_next. The coding-FACTORY is the OPPOSITE — a PUSH pipeline (scoper→architect→worker→validator→documenter→curator, driven by a director's spine) where each role is HANDED a FEATURE_ID by the orchestrator (NEXT_SCOPER/NEXT_ARCHITECT/… all carry extras:[\"FEATURE_ID={feature}\"]) and NEVER calls get_next. The exact observed failure: an agent spawned role=\"scoper\" and set claim-specs on it to test the coding-hive handoff — but a scoper never self-pulls, so the claim-spec is INERT and (lacking a pushed FEATURE_ID) the scoper has nothing to do. For a claim-spec self-pulling worker the role is \"bee\", NEVER scoper. operator-spawn now REFUSES a factory pipeline role spawned with no pushed-feature context and points at role=\"bee\"; set_claim_spec WARNS when its beeId resolves to a non-self-pulling role."
 discovered: 2026-06-23
 tags: [coding-hive, coding-factory, bee, scoper, queen, claim-spec, scheduler, get_next, fleet-spawn, blueprint, push-vs-pull, role-confusion]
 status: active
@@ -28,7 +28,22 @@ claim-spec self-pulling worker is **`role="bee"`**.
 
 The tooling did not flag this. It does now (see *The durable guards* below).
 
-## The two models (they share `fleet:spawn`, but they are opposites)
+:::caution[Current status (2026-06-24): coding-factory is RETIRED — NOT ACTIVE]
+`blueprints/coding-factory/blueprint.yaml` now carries an explicit
+RETIRED/dormant description: its `director` autoloop last fired 2026-05-01 and
+nothing currently instantiates it. Do **not** treat it as the active/default
+coding harness, and do not wire new work to it — it is kept intact for a
+possible future revival (re-enable instantiation + restore the director
+dispatch), not a live pipeline you can spawn into today. The PUSH-vs-PULL
+distinction below still explains the two models correctly and still applies if
+coding-factory is ever revived; the coding **HIVE** (`bee` + Queen,
+`scheduler:get_next`) is the live, actively-used model. If you were about to
+push a `FEATURE_ID` into a `scoper`/`architect`/… role expecting a running
+pipeline to pick it up, there currently isn't one — use the coding-hive `bee`
+path instead.
+:::
+
+## The two models (they share `bee:spawn`, but they are opposites)
 
 ### coding HIVE — PULL (queen + self-pulling bees)
 
@@ -66,7 +81,7 @@ The tooling did not flag this. It does now (see *The durable guards* below).
 
 To test (or run) a coding-hive self-pulling handoff:
 
-1. **Spawn a bee** — `fleet:spawn { role: "bee", harness: "<slug>", brief?: "…" }`. NOT scoper.
+1. **Spawn a bee** — `bee:spawn { role: "bee", harness: "<slug>", brief?: "…" }`. NOT scoper.
 2. **Set its claim-spec** — `scheduler:set_claim_spec { beeId: "<the bee's session/owner id>",
    spec: { …view.filter + rank… } }`. Describe a **lane by property** (plan/paths/tags/priority)
    for a standing, auto-inflowing, steal-able lane; reserve `id in [...]` for a fixed wave.
@@ -91,7 +106,7 @@ the harness autoloop / director dispatch the pipeline for you.
   than a self-pulling role (`bee`/`queen`), the result carries a prominent `warning` that the spec is
   inert and asks "did you mean to spawn a bee?". It does **not** hard-reject (the `beeId` may be a
   plain session id with no nursery row, or a queen) and swallows lookup errors.
-- **Point-of-use guidance** on `fleet:spawn`, `scheduler:set_claim_spec`, and `scheduler:get_next`
+- **Point-of-use guidance** on `bee:spawn`, `scheduler:set_claim_spec`, and `scheduler:get_next`
   spells out the hive-bee-vs-factory-scoper distinction inline.
 
 ## See also

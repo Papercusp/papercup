@@ -254,40 +254,114 @@ export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetR
   return foldFleetRoster(presence, assignments, tier1, Date.now(), wakeability);
 }
 
-/** A persisted fleet annotated with its live-member count (the "available" signal). */
-export interface AvailableFleet extends AgentFleetRecord {
-  /** Presence rows carrying this fleet_slug whose heartbeat is within PRESENCE_STALE_MS.
-   *  >=1 ⇒ the fleet is AVAILABLE for routing (D-003). */
-  liveMemberCount: number;
+/**
+ * Live fleet-presence counts, SPLIT by substrate (WI-1764 #4). A named fleet's live
+ * presence rows are two very different things and conflating them into one
+ * `liveMemberCount` hid the origin incident (a fleet showed 0 members while 3
+ * autonomous-loop bees ran — "correct but ignorable"):
+ *   • members — VISIBLE desktop su agents (fleet:launch-on-plan / capability:terminal),
+ *     the ones a plan is handed to. agent_role != 'bee'.
+ *   • bees — BACKGROUND queen↔bee autonomous-loop workers (bee:spawn) that joined
+ *     this fleet's presence label. agent_role = 'bee'.
+ */
+export interface FleetLiveCounts {
+  /** Live VISIBLE desktop su MEMBERS (fresh presence, agent_role != 'bee'). */
+  members: number;
+  /** Live BACKGROUND autonomous-loop BEES that joined this fleet (agent_role = 'bee'). */
+  bees: number;
 }
 
-/** Pure: annotate each persisted fleet with its live-member count (0 when none). */
+const EMPTY_FLEET_COUNTS: FleetLiveCounts = { members: 0, bees: 0 };
+
+/** A persisted fleet annotated with its live member/bee counts (the "available" signal). */
+export interface AvailableFleet extends AgentFleetRecord {
+  /** VISIBLE desktop su members: presence rows carrying this fleet_slug (heartbeat within
+   *  PRESENCE_STALE_MS), agent_role != 'bee'. >=1 ⇒ the fleet is AVAILABLE for routing
+   *  (D-003) — a live desktop DRIVER a plan can be handed to (a bee cannot). */
+  liveMemberCount: number;
+  /** BACKGROUND autonomous-loop bees that joined this fleet (agent_role = 'bee'). A fleet
+   *  with 0 members but a nonzero beeCount is the WI-1764 substrate mismatch — bees were
+   *  spawned where visible desktop members were meant. */
+  beeCount: number;
+}
+
+/** Pure: annotate each persisted fleet with its live member/bee counts (0 when none). */
 export function annotateFleetsWithCounts(
   fleets: AgentFleetRecord[],
-  counts: Map<string, number>,
+  counts: Map<string, FleetLiveCounts>,
 ): AvailableFleet[] {
-  return fleets.map((f) => ({ ...f, liveMemberCount: counts.get(f.fleetSlug) ?? 0 }));
+  return fleets.map((f) => {
+    const c = counts.get(f.fleetSlug) ?? EMPTY_FLEET_COUNTS;
+    return { ...f, liveMemberCount: c.members, beeCount: c.bees };
+  });
 }
 
-/** IO seam: live members per fleet_slug — presence rows with a fresh heartbeat
- *  (within PRESENCE_STALE_MS) carrying a fleet_slug, grouped by fleet. */
-async function liveFleetMemberCounts(workspaceId: string): Promise<Map<string, number>> {
+/** Pure: is this coord_presence agent_role a background nursery BEE (vs a visible
+ *  desktop su member)? deriveAgentRole maps fleet-spawn/signed-spawn sources → 'bee';
+ *  visible su desktop sessions → 'su'/'human'. WI-1764 #4. */
+export function isBeeRole(agentRole: string | null | undefined): boolean {
+  return agentRole === 'bee';
+}
+
+/** Pure: split a set of live fleet-roster entries into member vs bee counts by
+ *  agent_role (WI-1764 #4). Unit-testable without PG — the fleet:status analog of the
+ *  liveFleetAgentCounts SQL split. */
+export function splitFleetRosterCounts(
+  entries: Array<{ agentRole: string | null }>,
+): FleetLiveCounts {
+  let members = 0;
+  let bees = 0;
+  for (const e of entries) {
+    if (isBeeRole(e.agentRole)) bees += 1;
+    else members += 1;
+  }
+  return { members, bees };
+}
+
+/** IO seam: live member/bee counts per fleet_slug — presence rows with a fresh heartbeat
+ *  (within PRESENCE_STALE_MS) carrying a fleet_slug, grouped by fleet AND split by
+ *  substrate (WI-1764 #4: members = agent_role != 'bee'; bees = agent_role = 'bee'). */
+async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, FleetLiveCounts>> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<{ fleet_slug: string; n: number }[]>`
-    SELECT fleet_slug, count(*)::int AS n
+  const rows = await sql<{ fleet_slug: string; members: number; bees: number }[]>`
+    SELECT fleet_slug,
+           count(*) FILTER (WHERE agent_role IS DISTINCT FROM 'bee')::int AS members,
+           count(*) FILTER (WHERE agent_role = 'bee')::int AS bees
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug IS NOT NULL
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
      GROUP BY fleet_slug
   `;
-  return new Map(rows.map((r) => [r.fleet_slug, Number(r.n)]));
+  return new Map(
+    rows.map((r) => [r.fleet_slug, { members: Number(r.members), bees: Number(r.bees) }]),
+  );
+}
+
+/**
+ * IO seam: how many BACKGROUND autonomous-loop bees are running in this workspace right
+ * now (running/restarting nursery rows, child_role = 'bee'). WI-1764 #4: surfaced on the
+ * fleet reads so the origin mismatch SCREAMS — a fleet showing 0 members while N bees run
+ * in the workspace is the tell that bee:spawn was used where fleet:launch-on-plan was
+ * meant. Workspace-scoped (not per-fleet) because the nursery carries NO fleet linkage —
+ * a bee's spawn row never records which named fleet it belongs to (verified: nursery
+ * spawn-ids never appear in fleet_membership_events or coord_presence.fleet_slug). */
+export async function countRunningWorkspaceBees(workspaceId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND child_role = 'bee'
+       AND status IN ('running', 'restarting')
+  `;
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**
  * IO seam: the LIVE members of ONE named fleet → their coord owner-ids. The
- * id-only, single-fleet analog of liveFleetMemberCounts: presence rows carrying
+ * id-only, single-fleet analog of liveFleetAgentCounts: presence rows carrying
  * `fleetSlug` with a fresh heartbeat (within PRESENCE_STALE_MS), scoped to the
  * workspace (fleet_slug is unique only per-workspace — mig 406). This is what the
  * coord audience resolver calls to expand `@fleet:<slug>` to its currently-live
@@ -315,7 +389,7 @@ export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string)
 export async function availableFleets(workspaceId: string): Promise<AvailableFleet[]> {
   const [fleets, counts] = await Promise.all([
     listFleets(workspaceId),
-    liveFleetMemberCounts(workspaceId),
+    liveFleetAgentCounts(workspaceId),
   ]);
   return annotateFleetsWithCounts(fleets, counts);
 }

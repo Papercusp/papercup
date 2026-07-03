@@ -89,10 +89,11 @@ sections below are now historical context — **new code should use
 
 The 38-file sweep was a point-in-time cleanup, not a standing guarantee: running
 `npx eslint packages/operator-core/lib` today reports **50+ live
-`no-bare-jsonb-cast` violations** re-introduced since the sweep (e.g.
-`lib/system-health/perf-regression-rig.ts`, `lib/work-item-redundancy.ts`,
-`lib/role-capability-grants.ts`, `lib/agent-tools/routines/set.ts`,
-`lib/owner-preference/interactions.ts`, `lib/pr-host/pr-review-report-store.ts`,
+`no-bare-jsonb-cast` violations** (54 counted 2026-07-02, up from 52 earlier the
+same day — the count moves with ordinary fleet activity) re-introduced since
+the sweep (e.g. `lib/system-health/perf-regression-rig.ts`,
+`lib/work-item-redundancy.ts`, `lib/role-capability-grants.ts`,
+`lib/agent-tools/routines/set.ts`, `lib/pr-host/pr-review-report-store.ts`,
 `lib/harness/improvements/watchdog-tunables.ts`,
 `lib/harness/git-sync/pipeline-events.ts`, `lib/iq-battery/corpus.ts`,
 `lib/replay/store.ts`) — so whatever lint gate is supposed to catch this is

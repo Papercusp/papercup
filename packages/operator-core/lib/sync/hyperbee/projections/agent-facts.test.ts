@@ -106,3 +106,26 @@ describe('deleteFromPg — local partition immunity', () => {
     expect((proj as { skipOwnOps?: boolean }).skipOwnOps).toBe(true);
   });
 });
+
+describe('onRefusedOp — per-source refused-op counter (F1-4 / P-012)', () => {
+  const mkOpts = (sql: postgres.Sql) => ({ workspaceId: 'ws', harnessSlug: 'papercusp', sql });
+
+  it('bumps a malformed counter for a REMOTE declined fact op with the source', async () => {
+    const { sql, calls } = fakeSql();
+    await buildAgentFactsProjection(mkOpts(sql)).onRefusedOp!(
+      { totally: 'not-a-fact' },
+      { authorPubkey: 'peer-log-key', origin: 'remote' },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(['ws', 'papercusp', 'peer-log-key', 'agent-facts-by-key', 'malformed']);
+  });
+
+  it('does NOT count a LOCAL decode failure', async () => {
+    const { sql, calls } = fakeSql();
+    await buildAgentFactsProjection(mkOpts(sql)).onRefusedOp!(
+      { x: 1 },
+      { authorPubkey: 'self', origin: 'local' },
+    );
+    expect(calls).toHaveLength(0);
+  });
+});

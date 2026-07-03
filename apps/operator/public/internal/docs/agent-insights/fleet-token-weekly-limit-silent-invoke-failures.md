@@ -56,7 +56,7 @@ outage**:
   Don't propagate a snapshot.
 * **A dead-spawn signature is more often EI-85 than a quota cap.** EI-85
   (open, critical): a restart of the shared `:3170` staging-api host cgroup-kills
-  every in-flight `fleet:spawn` child, and the nursery mislabels it as
+  every in-flight `bee:spawn` child, and the nursery mislabels it as
   stale-heartbeat reclaim. The fleet bounces `:3170` for live smoke tests
   several times a day, so "spawn exited 1 / empty output" *right after* a
   `:3170` restart is almost certainly EI-85 — check for a recent

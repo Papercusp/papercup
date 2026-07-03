@@ -4,7 +4,7 @@
  * Asserts the core contract: a user request via the Sentinel produces a
  * HIGH-PRIORITY, `user-requested`-tagged work_item + a Queen nudge, the tier-gate
  * (P-015) routes medium/high un-approved actions to approval instead of placing,
- * and the Sentinel NEVER calls fleet:spawn (it files + nudges + hands off only).
+ * and the Sentinel NEVER calls bee:spawn (it files + nudges + hands off only).
  *
  * Unit-level: dispatch against injected deps (no PG/coord). Mirrors the
  * converse/tag test style (vitest, spy deps).
@@ -180,23 +180,23 @@ describe('resolveHandoffTier — authoritative tier (P-015)', () => {
     expect(resolveHandoffTier(lowHandoff({ tier: 'medium', capability: null }))).toBe('medium');
   });
 
-  it('a named capability resolves the authoritative substrate tier (fleet:spawn ⇒ not low)', () => {
+  it('a named capability resolves the authoritative substrate tier (bee:spawn ⇒ not low)', () => {
     // The whole point of the handoff is that the Sentinel can't place — the
-    // capability it hands off (fleet:spawn) must NOT resolve to a self-placeable
+    // capability it hands off (bee:spawn) must NOT resolve to a self-placeable
     // low tier. (Unknown caps fail-safe to high.)
     const tier = resolveHandoffTier(lowHandoff({ tier: 'low', capability: HANDOFF_CAPABILITY }));
     expect(tier).not.toBe('low');
   });
 });
 
-describe('the Sentinel NEVER calls fleet:spawn (P-017 invariant)', () => {
+describe('the Sentinel NEVER calls bee:spawn (P-017 invariant)', () => {
   it('a parsed sentinel user-request turn yields handoffs, NO spawns', () => {
     // The sentinel persona files + nudges; it must never emit a <spawn>. Even if
     // it did, the converse dispatch only honors <spawn> for the operator. Here we
     // assert the SHAPE: a user-request turn is a handoff, not a spawn.
     const turn = parseOperatorTurn(
       '<say>Filing the auth rewrite and flagging the Queen.</say>\n' +
-        '<handoff_to_queen summary="rewrite auth" harness="papercup" capability="fleet:spawn">',
+        '<handoff_to_queen summary="rewrite auth" harness="papercup" capability="bee:spawn">',
     );
     expect(turn.handoffs).toHaveLength(1);
     expect(turn.spawns).toHaveLength(0);

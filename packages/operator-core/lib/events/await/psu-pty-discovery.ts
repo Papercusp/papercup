@@ -42,6 +42,23 @@ export interface PsuPtyHost {
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
   lastActivityAt?: number | null;
+  // ── Host capability advertisement (WI-1804; ADDITIVE — absent on files written
+  //    by older hosts, which is exactly how the tool detects an old host and falls
+  //    back). A new host lists the control-socket modes it understands beyond the
+  //    v1 base set, e.g. `['compact']` for the post-compaction auto-continuation
+  //    branch (mode:'compact' = /compact then a completion-gated carry-note turn).
+  //    A consumer MUST treat a missing/empty `caps` as "base modes only".
+  caps?: string[] | null;
+}
+
+/**
+ * Does a discovered host advertise a control-socket capability (WI-1804)? An old
+ * host has no `caps` field, so this is false for it — the caller then falls back
+ * to a base-mode inject (e.g. a plain `mode:'turn'` `/compact`, no auto-continue).
+ * Null-safe: a null/absent host or caps yields false.
+ */
+export function hostSupports(host: PsuPtyHost | null | undefined, cap: string): boolean {
+  return Array.isArray(host?.caps) && host!.caps!.includes(cap);
 }
 
 /** Shared with psu-pty-host.mjs sanitizeKey — MUST match byte-for-byte. */
@@ -133,7 +150,7 @@ export function listLiveHosts(dir: string = PSU_PTY_DIR): PsuPtyHost[] {
  */
 export function injectIntoHost(
   sock: string,
-  msg: { mode: 'turn' | 'raw' | 'osc'; data: string },
+  msg: { mode: 'turn' | 'raw' | 'osc' | 'compact'; data: string; focus?: string },
   timeoutMs = 2000,
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -144,7 +161,12 @@ export function injectIntoHost(
       resolve(ok);
     };
     const c = net.connect(sock, () => {
-      c.write(JSON.stringify({ v: 1, mode: msg.mode, data: msg.data }));
+      // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
+      // as the `/compact <focus>` argument, keeping `data` for the carry-note continuation.
+      const envelope: { v: 1; mode: string; data: string; focus?: string } =
+        { v: 1, mode: msg.mode, data: msg.data };
+      if (msg.focus !== undefined) envelope.focus = msg.focus;
+      c.write(JSON.stringify(envelope));
       c.end();
     });
     c.on('error', () => finish(false));

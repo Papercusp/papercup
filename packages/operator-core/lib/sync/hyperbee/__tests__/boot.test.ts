@@ -15,7 +15,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
@@ -1745,5 +1745,114 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-p006-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  const WORKSPACE_ID = 'ws-p006';
+  const JOINER_MEMBER_SLUG = 'p006-joiner-repo';
+  const OWNER_MEMBER_SLUG = 'p006-owner-repo';
+  const HIVE_HOME_SLUG = 'p006-owner-repo-home';
+  const HIVE_PUBKEY = Buffer.alloc(32, 9).toString('base64');
+
+  async function bootP006(root: string, opts: {
+    userId: number; keychainId: string;
+    loadHiveMembers: (hiveHome: string) => Promise<string[]>;
+    verifyBinding?: () => Promise<'verified' | 'pending' | 'fail'>;
+  }) {
+    const joiner = makeAnnounceIdentityOverride('p006-joiner', opts.userId, opts.keychainId);
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: root,
+      workspaceId: WORKSPACE_ID,
+      harnessSlug: JOINER_MEMBER_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: opts.verifyBinding ?? (async () => 'fail' as const),
+      loadHiveMembersOverride: opts.loadHiveMembers,
+      joinerHiveHomeSlugOverride: async () => HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+    return handle;
+  }
+
+  it('creates the coordinator on join, routes an ADMITTED announce (with ctx) into it, and never routes a non-admitted one', async () => {
+    let ownerDevicePubkey = '';
+    const handle = await bootP006(tmpWorkspaceRoot(), {
+      userId: 9602,
+      keychainId: 'kc-p006-a',
+      loadHiveMembers: async () => (ownerDevicePubkey ? [ownerDevicePubkey] : []),
+    });
+
+    // The scoped-log coordinator exists after a (fake-)swarm join.
+    const fed = handle.scopeFederation;
+    expect(fed).not.toBeNull();
+    const spy = vi.spyOn(fed!, 'onPeerAnnounce').mockResolvedValue(undefined);
+
+    // A NON-admitted frame (unknown device, binding fail ⇒ pending) must never
+    // reach the scoped layer — frame.github_user_id is untrustworthy pre-admit.
+    const strangerFrame = await validAnnounce({
+      github_user_id: 9701,
+      github_login: 'p006-stranger',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'd1'.repeat(32),
+    });
+    const ctx = { muxer: { stream: { destroyed: false } }, send: vi.fn() };
+    const rejected = await handle.onAnnounce(strangerFrame, ctx);
+    expect(rejected.admit).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+
+    // The SAME production path with the device in hive_members admits — and the
+    // admitted frame + per-connection ctx flow into the coordinator.
+    const ownerFrame = await validAnnounce({
+      github_user_id: 9702,
+      github_login: 'p006-owner',
+      harness_slug: OWNER_MEMBER_SLUG,
+      log_core_key: 'd2'.repeat(32),
+    });
+    ownerDevicePubkey = ownerFrame.device_pubkey;
+    const admitted = await handle.onAnnounce(ownerFrame, ctx);
+    expect(admitted).toEqual({ admit: true });
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(spy).toHaveBeenCalledWith(ownerFrame, ctx);
+
+    // Without ctx (direct handle.onAnnounce callers, retry paths) the scoped
+    // layer is skipped — no crash, no phantom connection record.
+    await handle.onAnnounce(ownerFrame);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('ensureScopeParticipation mints an own core in the SEPARATE scoped store; rediscloseScopes resolves', async () => {
+    const root = tmpWorkspaceRoot();
+    const handle = await bootP006(root, {
+      userId: 9603,
+      keychainId: 'kc-p006-b',
+      loadHiveMembers: async () => [],
+    });
+    expect(handle.scopeFederation).not.toBeNull();
+
+    // No scopes declared (tier-1 default): redisclose is a safe no-op.
+    await expect(handle.rediscloseScopes()).resolves.toBeUndefined();
+
+    await handle.ensureScopeParticipation([
+      { kind: 'fleet', ownerGithubUserId: 9603, slug: 'p006-rig-fleet' },
+    ]);
+    // The scoped store is a sibling `hyperbee-scoped/` corestore — minting the
+    // own scope core materializes it on disk, OUTSIDE the main `hyperbee/`
+    // store (the never-replicated §5.3 premise).
+    const scopedDir = join(root, '.papercusp', JOINER_MEMBER_SLUG, 'hyperbee-scoped');
+    expect(existsSync(scopedDir)).toBe(true);
+    expect(readdirSync(scopedDir).length).toBeGreaterThan(0);
   });
 });

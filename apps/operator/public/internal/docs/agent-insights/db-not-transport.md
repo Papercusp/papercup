@@ -59,6 +59,12 @@ case: "tell me when a row changed") but not for *request/response*
 * **If you find yourself writing a polling loop**, stop and ask
   whether the right answer is an HTTP call or an SSE subscription.
 
+**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the
+Peers-capability owner write path) is a clean instance of the shape — the POST
+handler calls `p2p/grant-store`'s `setPeerGrant`/`revokePeerGrant` to persist
+the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}`
+args tuple repaint — no client polls the grants table to notice a change.
+
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview)
 describe the canonical "function as truth, transports as projections"
 shape. Use it.

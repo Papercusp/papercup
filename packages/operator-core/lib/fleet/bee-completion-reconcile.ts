@@ -2,7 +2,7 @@
  * bee-completion-reconcile.ts — the post-bee-exit work-item completion safety net
  * (WI-222).
  *
- * THE GAP. The Hive's bee-placement path (the Queen's `fleet:spawn { role:'bee',
+ * THE GAP. The Hive's bee-placement path (the Queen's `bee:spawn { role:'bee',
  * featureId }` → operator-spawn.ts) runs a bee fire-and-forget and, on exit,
  * settles only the SPAWN row (done/failed/cancelled) — it never settles the bee's
  * WORK-ITEM. A bee that claims its feature (→ `in_progress`), implements + commits,

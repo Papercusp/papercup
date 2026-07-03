@@ -45,7 +45,7 @@ export const AGENT_ROLES = [
   // The QUEEN — the hive blueprint's placement-specialist decider
   // (spine.deciderAlternatives; local-hive-orchestration P-030). The operator role
   // specialized for placement (D-001): same judgment layer, dial turned toward
-  // fleet:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
+  // bee:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
   // blueprint declared the role but the registry never knew it, so a role=queen
   // launch got an almost-empty role-scoped MCP catalog and could not place work.
   'queen',
@@ -111,7 +111,7 @@ export const AGENT_ROLES = [
   // crash-loops), misbehaving agents (lock hogs, retry storms, mute bees), and the
   // coord substrate (presence staleness, undelivered escalations). It is READ-MOSTLY
   // (its only writes are raising alarms: coord:escalate / coord:send), launched
-  // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
+  // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (bee:spawn
   // or the `sentinel` launch blueprint). No execution/mutation capability.
   'sentinel',
   // The OVERWATCH — the autonomous system-health SUPERVISOR, a sibling to the Queen

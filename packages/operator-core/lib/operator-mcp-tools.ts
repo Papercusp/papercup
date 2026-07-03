@@ -124,7 +124,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__memory:forget',
   'mcp__agentmcp__memory:update',
 
-  // Spawn primitive — fleet:spawn over the durable nursery
+  // Spawn primitive — bee:spawn over the durable nursery
   // (harness_shared.spawned_agents), Brief 4 of agent-briefs-2026-06-05.
   // Replaces the @papercupai/orchestrator-spawn plugin's orchestrator_*
   // tools, which were dead on this surface (the plugin is not installed,
@@ -132,7 +132,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // every call returned "tool not found"). These are BUILT-IN tools, so
   // they exist on every surface; what's spawned shows up in fleet:tree
   // and is cancellable with fleet:cancel.
-  'mcp__agentmcp__fleet:spawn',
+  'mcp__agentmcp__bee:spawn',
   // One-wake BATCH placement (queen-autonomous-execution B-07): affinity-ranked
   // fan of spawn + warm-inject across the fleet in a single call.
   'mcp__agentmcp__fleet:place_batch',

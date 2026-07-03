@@ -8,7 +8,7 @@
  * recent-activity > queue-similarity — placement-affinity.ts), then fan
  * placements across the fleet —
  *
- *   warm-inject onto a warm bee  →  fresh `fleet:spawn` into a free slot  →  queue back
+ *   warm-inject onto a warm bee  →  fresh `bee:spawn` into a free slot  →  queue back
  *
  * — up to the fleet cap, in ONE turn. Affinity + the batch decision are pure
  * (placement-affinity.ts / batch-placement.ts); this tool is the gather→plan→
@@ -89,18 +89,18 @@ export default defineTool({
   description:
     'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Queen\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
   guidance: {
-    when: 'You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping fleet:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.',
+    when: 'You (the Queen) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping bee:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm bees by affinity in one turn.',
     notWhen:
-      'Placing a SINGLE task (just fleet:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
+      'Placing a SINGLE task (just bee:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
     chaining:
       'work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
   },
   capability: 'work_items:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: replaces the
-  // per-task fleet:spawn / coord:send placement loop (drives the catalog back-pointer).
-  replaces: ['fleet:spawn', 'coord:send'],
+  // per-task bee:spawn / coord:send placement loop (drives the catalog back-pointer).
+  replaces: ['bee:spawn', 'coord:send'],
   requirePrincipal: false,
-  // Placement is the Queen's (or operator's) surface — same carve-out as fleet:spawn:
+  // Placement is the Queen's (or operator's) surface — same carve-out as bee:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).
   // Overwatch excluded too (overwatch-role-2026-06-15 D-001): it does not place work.
   agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
@@ -130,7 +130,7 @@ export default defineTool({
     dry_run: z.boolean().optional().describe('Return the placement PLAN (decisions + counts) WITHOUT spawning/injecting — preview the batch.'),
     workspace: z.string().max(120).optional(),
   // EI-72: FAIL LOUD on unknown arg keys (same placement-path hazard as
-  // fleet:spawn — a new field sent to a stale host's schema gets silently
+  // bee:spawn — a new field sent to a stale host's schema gets silently
   // stripped, fanning out task-less placements). .strict() aligns the runtime
   // to the already-advertised additionalProperties:false contract.
   }).strict(),

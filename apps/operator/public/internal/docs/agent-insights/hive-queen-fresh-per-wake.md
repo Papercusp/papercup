@@ -42,7 +42,7 @@ resumes the LAST short fresh session (one turn), never a forever-transcript.
 ### The easy way to get it wrong
 
 The misread conflates three true-but-unrelated facts: (a) the BEE forced
-session id at `operator-spawn.ts:646-656` (that's `fleet:spawn`, recorded so a
+session id at `operator-spawn.ts:646-656` (that's `bee:spawn`, recorded so a
 bee *pane* can `--resume`); (b) the `spawn.ts` comment noting a bee's
 `coord:send {wake:true}` resumes the Queen via wake-executor; (c)
 `resumeCommandFor` building `claude --resume`. None of those is the Queen's

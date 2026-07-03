@@ -8,8 +8,9 @@ npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc
 `npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs
 `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the
 **total parsed error count** against
-`packages/operator-core/.tsc-baseline.json` (a single number: `262` as of
-2026-06-25). The gate:
+`packages/operator-core/.tsc-baseline.json` (a single number, `operatorCoreErrorCount` —
+`224` as of 2026-07-03, ratcheted down repeatedly since the `262` figure this doc
+originally cited). The gate:
 
 * **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a
   single net-new error **blocks the whole fleet's deploy**, not just yours.

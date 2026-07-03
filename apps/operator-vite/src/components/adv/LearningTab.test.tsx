@@ -69,7 +69,7 @@ const improvementsDigest = {
   byState: { open: 117, resolved: 15, closed: 3 },
   autoEligible: [
     {
-      id: 'EI-75', kind: 'bug', title: 'fleet:spawn children are coordination-MUTE', scope: 'operator',
+      id: 'EI-75', kind: 'bug', title: 'bee:spawn children are coordination-MUTE', scope: 'operator',
       severity: 'critical', state: 'open', assignee: null, assignedAt: null, attempts: 0,
       tier: 'auto', score: 46, ageDays: 2.6, tierReason: 'no protected path → AUTO', ideaType: 'process',
     },
@@ -227,7 +227,7 @@ describe('LearningTab — Improvements view (default)', () => {
 
   it('lists both lanes in the all view', () => {
     render(<LearningTab />);
-    expect(screen.getByText('fleet:spawn children are coordination-MUTE')).toBeTruthy();
+    expect(screen.getByText('bee:spawn children are coordination-MUTE')).toBeTruthy();
     // The human-lane title renders twice: the list row + the "Decide next"
     // drain panel over the blocking-impact order (consume-edges P-022 / B-08).
     expect(screen.getAllByText('Peer restarts massacre in-flight spawns').length).toBeGreaterThanOrEqual(1);

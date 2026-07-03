@@ -58,9 +58,15 @@ const data = await readJsonBody<{ projects?: { slug: string }[] }>(r);
 - This is about **host-side** (`:3070`) parses. A `.json()` in the browser
   webview can throw without killing the host — lower stakes.
 - Do **not** touch the fail-fast policy in `bin/hono-host.ts`. Exiting on a real
-  unhandled rejection is a deliberate choice (EI-11 night-recovery); the
-  `ERR_INVALID_STATE` stream-close class is already swallowed. The fix is to stop
-  *generating* an unattributable rejection, not to suppress the guard.
+  unhandled rejection is a deliberate choice (EI-11 night-recovery); a small,
+  explicitly-classified set of client-caused/transient-infra errors is already
+  swallowed instead of exiting (`isBenignHostError()` in
+  `apps/operator/bin/host-benign-errors.ts` — the `ERR_INVALID_STATE`
+  stream-close class plus four others; see
+  `agent-insights/mcp-handler-enqueue-after-close-crash`). A frame-less
+  `SyntaxError: Unexpected end of JSON input` is **not** one of them, so it
+  still fatal-exits — the fix here is to stop *generating* an unattributable
+  rejection in the first place, not to add it to that swallow-list.
 - Sibling sites that already do `.json().catch(() => null)` are fine. The danger
   is the ones guarded only by `res.ok`.
 

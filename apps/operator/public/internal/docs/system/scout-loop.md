@@ -150,11 +150,15 @@ there.
 > which is what calls `buildScoutCycleDeps(...) → runScoutCycle(deps)`.
 > `register-scout-action.ts` stays only as the home of `productionScoutRunner`.
 
-**Dark Scout→experiment rail (`SCOUT_EXPERIMENT_RAIL`, default OFF).** Behind a
+**Scout→experiment rail (`SCOUT_EXPERIMENT_RAIL`, default ON).** Behind a
 flag, the route stage *additively* forks each testable (gym-rail) proposal into a
 dry-run `experiment:run` spec (`forkTestableToExperiments` + `generateExperimentRequest`)
 — closing the Scout→experiment loop. It is best-effort: with the flag off (or on
-any failure) there is **no spend and no change to gym routing**.
+any failure) there is **no spend and no change to gym routing**. The flag is not
+registered in `libs/flags/src/types.ts`'s `DARK_FLAGS` allowlist, so per the P-011
+flag-default inversion (`FLAG_DEFAULTS` derives every unregistered flag to ON) it
+now ships **default ON** — the in-code comment calling it "the dark Scout→experiment
+rail" predates that inversion and is stale prose, not current behavior.
 
 ## Autonomy + the gym reframe
 

@@ -254,11 +254,11 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use fleet:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first; Linux and macOS only.',
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use bee:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first; Linux and macOS only.',
   guidance: {
     when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
-      'Not for background bees (fleet:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself.',
+      'Not for background bees (bee:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining:
       'plans:apply-plan-block or plans:new/plans:add-item → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
   },

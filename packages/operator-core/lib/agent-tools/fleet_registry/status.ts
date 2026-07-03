@@ -9,14 +9,14 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
-import { listFleetRoster } from '../../fleet/fleet-roster';
+import { listFleetRoster, splitFleetRosterCounts, countRunningWorkspaceBees } from '../../fleet/fleet-roster';
 import { getCompletionIntegrityStats } from '../../work-items';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:status',
   description:
-    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.',
+    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means bee:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.',
   guidance: {
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
@@ -70,17 +70,23 @@ export default defineTool({
         true,
       );
     }
-    const [roster, completionStats] = await Promise.all([
+    const [roster, completionStats, runningBees] = await Promise.all([
       listFleetRoster({ fleetSlug: args.fleet, workspaceId }),
       args.harness ? getCompletionIntegrityStats(args.harness) : Promise.resolve(null),
+      countRunningWorkspaceBees(workspaceId),
     ]);
+    // WI-1764 #4: split the roster into VISIBLE desktop members vs BACKGROUND bees so a
+    // substrate mismatch is legible; `memberCount` is now members-only (was roster.length).
+    const { members: memberCount, bees: beeCount } = splitFleetRosterCounts(roster);
     return json({
       ok: true,
       slug: fleet.fleetSlug,
       title: fleet.title,
       description: fleet.description,
       leader: fleet.leaderOwnerId,
-      memberCount: roster.length,
+      memberCount,
+      beeCount,
+      runningBees,
       members: roster.map((m) => ({
         agentId: m.agentId,
         label: m.ownerLabel ?? m.label,

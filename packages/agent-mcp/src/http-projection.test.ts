@@ -576,7 +576,7 @@ describe('handleHttpToolRequestStreaming', () => {
     it('defaults a client-less admitted superuser to the stable su-http-loopback identity (EI-334)', async () => {
       // Pre-fix: no `?client=` / x-papercusp-client ⇒ ctx.uiClientId=null ⇒
       // resolveAgentIdentity THROWS for superuser callers, so the advertised
-      // curl-able admin triggers (fleet:spawn et al.) failed deterministically
+      // curl-able admin triggers (bee:spawn et al.) failed deterministically
       // and fired the structural tool-error watchdog key.
       const seen: Array<string | null | undefined> = [];
       registerProjectedTool(makeTool({

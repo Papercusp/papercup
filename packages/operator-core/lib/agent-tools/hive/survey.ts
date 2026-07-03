@@ -50,9 +50,9 @@ export default defineTool({
     "The Queen's plan-aware placement survey: started plans ranked (which plan to pour bees into) AND the unplaced work-item frontier ranked (which ready item to place), across EVERY member harness — one ranker, two views. Read-only; call it at the top of a placement wake.",
   guidance: {
     when: 'You are the Queen starting a placement wake — survey what to work on next (which plan matters, which ready items to place) across all member harnesses.',
-    notWhen: 'You already hold a specific work-item id and just need to place it — go straight to fleet:spawn / the batch placement.',
+    notWhen: 'You already hold a specific work-item id and just need to place it — go straight to bee:spawn / the batch placement.',
     chaining:
-      'hive:survey → place the top frontier items (fleet:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); hive:status to inspect the wake declaration.',
+      'hive:survey → place the top frontier items (bee:spawn / batch placement) and steer plan order (work_items:set_priority / plans:set-priority); hive:status to inspect the wake declaration.',
     seeAlso: [
       'hive:status (inspect the wake declaration)',
       'work_items:set_priority (steer the frontier order surveyed)',

@@ -2,7 +2,7 @@
  * tool-find — hybrid (lexical + semantic) search over the tool catalog. The
  * intent-aware upgrade to the lexical-only `searchTools` (tools-search.ts) and
  * to omp's keyword-only `search_tool_bm25`: it matches by MEANING, so
- * "feature flag" finds `flags:*` and "spawn a worker" finds `fleet:spawn` even
+ * "feature flag" finds `flags:*` and "spawn a worker" finds `bee:spawn` even
  * when the query words don't lexically appear in the tool text. Unlike omp's
  * native search it is operator-side, so it works for Claude/Codex too.
  * (tool-discovery-for-weak-models-2026-06-30 WS3.)

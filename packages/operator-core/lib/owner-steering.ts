@@ -76,7 +76,7 @@ export const OWNER_STEERING_KEYS = {
   decomposition: 'owner-steering:decomposition',
   federatedPriming: 'owner-steering:federated-priming',
   // model-override-sidebar-2026-06-23: SESSION-NOW per-role MODEL overrides for the
-  // FRONT-DOOR agents that launch OUTSIDE the fleet:spawn tier path — `sentinel`
+  // FRONT-DOOR agents that launch OUTSIDE the bee:spawn tier path — `sentinel`
   // (the dock psu/Claude TUI) and `overwatch` (the supervisor invoke loop). role →
   // `model[:effort]` spec; absent ⇒ the workspace default (agent-config models.<role>
   // → CLI default). Session-only: lives here in hive_settings (resets with the Hive),
@@ -145,7 +145,7 @@ export interface OwnerSteering {
    *  null ⇒ default (the Queen's own judgement). */
   decomposition?: DecompositionMode | null;
   /** SESSION per-role MODEL overrides (model-override-sidebar-2026-06-23) for the
-   *  front-door agents launched OUTSIDE the fleet:spawn tier path — `sentinel` (dock
+   *  front-door agents launched OUTSIDE the bee:spawn tier path — `sentinel` (dock
    *  psu TUI) and `overwatch` (invoke loop). role → `model[:effort]` spec;
    *  absent/empty ⇒ workspace default. null ⇒ no overrides. */
   modelOverrides?: Record<string, string> | null;

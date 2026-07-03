@@ -10,6 +10,8 @@ import {
   filterPresenceToFleet,
   foldFleetRoster,
   annotateFleetsWithCounts,
+  isBeeRole,
+  splitFleetRosterCounts,
   type FleetFoldPresence,
 } from './fleet-roster';
 import type { AgentAssignment, WorkListItem } from './assignments';
@@ -228,16 +230,56 @@ describe('annotateFleetsWithCounts (available = >=1 live member)', () => {
     updatedAt: 1,
   });
 
-  it('annotates each persisted fleet with its live-member count (0 when none)', () => {
+  it('annotates each persisted fleet with its live member/bee counts (0 when none)', () => {
     const out = annotateFleetsWithCounts(
-      [fleet('ui-fleet'), fleet('api-fleet')],
-      new Map([['ui-fleet', 3]]),
+      [fleet('ui-fleet'), fleet('api-fleet'), fleet('bee-only-fleet')],
+      new Map([
+        ['ui-fleet', { members: 3, bees: 0 }],
+        // WI-1764 #4: a fleet with 0 members but live bees — the substrate mismatch.
+        ['bee-only-fleet', { members: 0, bees: 2 }],
+      ]),
     );
-    expect(out.map((f) => [f.fleetSlug, f.liveMemberCount])).toEqual([
-      ['ui-fleet', 3],
-      ['api-fleet', 0],
+    expect(out.map((f) => [f.fleetSlug, f.liveMemberCount, f.beeCount])).toEqual([
+      ['ui-fleet', 3, 0],
+      ['api-fleet', 0, 0],
+      ['bee-only-fleet', 0, 2],
     ]);
     // the durable registry row survives with zero live members (D-003) — still listed.
     expect(out.find((f) => f.fleetSlug === 'api-fleet')?.liveMemberCount).toBe(0);
+    // the mismatch tell: 0 members yet 2 background bees grouped into the fleet.
+    const beeOnly = out.find((f) => f.fleetSlug === 'bee-only-fleet');
+    expect(beeOnly?.liveMemberCount).toBe(0);
+    expect(beeOnly?.beeCount).toBe(2);
+  });
+});
+
+describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', () => {
+  it('isBeeRole is true only for the background-nursery bee role', () => {
+    expect(isBeeRole('bee')).toBe(true);
+    expect(isBeeRole('su')).toBe(false);
+    expect(isBeeRole('human')).toBe(false);
+    expect(isBeeRole(null)).toBe(false);
+    expect(isBeeRole(undefined)).toBe(false);
+  });
+
+  it('splits a roster into visible desktop members vs background bees', () => {
+    const counts = splitFleetRosterCounts([
+      { agentRole: 'su' },
+      { agentRole: 'su' },
+      { agentRole: 'bee' },
+      { agentRole: null }, // unlabeled → counts as a member, not a bee
+    ]);
+    expect(counts).toEqual({ members: 3, bees: 1 });
+  });
+
+  it('an all-bee roster reports 0 members (the substrate mismatch)', () => {
+    expect(splitFleetRosterCounts([{ agentRole: 'bee' }, { agentRole: 'bee' }])).toEqual({
+      members: 0,
+      bees: 2,
+    });
+  });
+
+  it('an empty roster is 0/0', () => {
+    expect(splitFleetRosterCounts([])).toEqual({ members: 0, bees: 0 });
   });
 });

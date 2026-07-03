@@ -257,15 +257,33 @@ export function improvementsStatus(_d: ImprovementsHealth): PanelStatus {
   return 'ok';
 }
 
+/**
+ * MCP tool-call transport SLO (backend-reliability-100pct-2026-07-03 W8 / P-008): HARD
+ * MCP-proxy failures in the window at/above this count RED the Infra panel (→
+ * operator_degraded → the overall system light → a page). Calibrated for the "transient
+ * is NOT normal" mandate: normal deploy restarts are ABSORBED by the proxy's retry window
+ * (they log as SOFT `recovered`, not hard failures), so a hard-failure stream this size is
+ * a genuine regression (a >retry-window outage, a post-connect error storm, or the W1.3
+ * stale-socket-400 class returning) — never routine churn. ANY hard failure (>0) is a
+ * WARN (visible), ending the culture of dismissing tool-call errors as normal. */
+export const MCP_PROXY_HARD_FAIL_CRIT = 10;
+
 /** Infra. crit = a per-thread perf WEDGE (operator unreachable / event-loop-lag /
- *  CLOSE_WAIT storm — F1/P-030) or the gateway is enabled but unreachable (the spine
- *  is down). unknown = PG unreadable. warn = a per-thread perf warn (hot worker / RSS
- *  / gateway flap). ok otherwise. A null/stale perf verdict contributes nothing. */
+ *  CLOSE_WAIT storm — F1/P-030), a sustained MCP tool-call-transport failure stream
+ *  (W8/P-008, ≥ MCP_PROXY_HARD_FAIL_CRIT hard failures/window), or the gateway is enabled
+ *  but unreachable (the spine is down). unknown = PG unreadable. warn = a per-thread perf
+ *  warn (hot worker / RSS / gateway flap) or ANY MCP-proxy hard failure in the window
+ *  (visible, sub-page). ok otherwise. A null/stale perf verdict — and a null (unreadable)
+ *  mcpProxy leg — contribute nothing (fail-soft). */
 export function infraStatus(d: InfraHealth): PanelStatus {
   if (d.perf?.status === 'crit') return 'crit';
+  // A real, agent-facing tool-call failure stream OUTRANKS a greyed PG leg: a crit
+  // MCP-proxy SLO breach reds Infra even if PG is momentarily unreadable this tick.
+  if ((d.mcpProxy?.hardFailures ?? 0) >= MCP_PROXY_HARD_FAIL_CRIT) return 'crit';
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
+  if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
   return 'ok';
 }
 

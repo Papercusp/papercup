@@ -125,6 +125,7 @@ export class ScopeFederation {
    * follow-up (see the module header). Never throws (best-effort per step).
    */
   async onPeerAnnounce(frame: SignedAnnounce, ctx: AnnounceConnectionContext): Promise<void> {
+    this.pruneDeadConnections();
     const peerUid = frame.github_user_id;
     if (!Number.isInteger(peerUid) || peerUid <= 0) return; // identity-blind base frame
 
@@ -187,6 +188,7 @@ export class ScopeFederation {
    * (revocation edge, §5.3), then a fresh follow-up is sent if anything changed.
    */
   async redisclose(): Promise<void> {
+    this.pruneDeadConnections();
     for (const [muxer, rec] of this.conns) {
       const visible = await this.visibleTo(rec.peerGithubUserId);
       const next = visible.map(packScopedLog);
@@ -217,6 +219,18 @@ export class ScopeFederation {
   dropConnection(muxer: object): void {
     this.conns.delete(muxer);
     this.registry.dropConnection(muxer);
+  }
+
+  /** The swarm layer has no per-connection close hook into this coordinator, so
+   *  dead muxers are swept lazily on every announce/redisclose — a Protomux
+   *  whose underlying noise stream is destroyed (the same liveness signal
+   *  swarm.ts's reflush tracker keys on) is pruned within one ANNOUNCE_REFLUSH,
+   *  bounding conn-record growth under connection churn. */
+  private pruneDeadConnections(): void {
+    for (const muxer of [...this.conns.keys()]) {
+      const stream = (muxer as { stream?: { destroyed?: boolean } }).stream;
+      if (stream?.destroyed === true) this.dropConnection(muxer);
+    }
   }
 
   /** Live connection count (diagnostics/tests). */

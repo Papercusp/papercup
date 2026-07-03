@@ -362,7 +362,42 @@ export interface ImprovementsHealth {
   bySeverity: Record<string, number>;
 }
 
-/** Infra — PG + gateway reachability + the per-thread perf verdict (F1/P-030). */
+/**
+ * MCP tool-call transport health — the resilient MCP proxy's windowed FAILURE summary
+ * (backend-reliability-100pct-2026-07-03 W8 / P-008). Sourced from the proxy's durable
+ * failure ledger (~/.papercusp/mcp-proxy-failures.jsonl, written by
+ * apps/operator/lib/mcp-proxy/proxy.ts). These connection-level failures NEVER create a
+ * `tool_invocations` row (they error at the HTTP layer, below tool dispatch), so the
+ * agent-facing failure rate was under-counted and "transient errors" felt normal — this
+ * is the SLO signal that ends that culture. Null on `InfraHealth.mcpProxy` when the
+ * ledger is unreadable (greyed leg, never fabricated). Computed by
+ * system-health/mcp-proxy-health.ts (`summarizeMcpProxyHealth`).
+ */
+export interface McpProxyHealth {
+  /** The lookback window these counts cover (ms). */
+  windowMs: number;
+  /** All failure records in the window (hard + soft). */
+  total: number;
+  /** HARD failures — a real agent-facing tool-call error the proxy could NOT hide: the
+   *  retry window exhausted (upstream refused the whole time → 503), a post-connect
+   *  upstream error not safely retried (→ 502), or a forwarded non-2xx bearing the
+   *  stale-socket-400 signature (W1.3 regression: status 400 + `connection: close`). The
+   *  SLO number — sustained non-zero reds the Infra panel → operator_degraded → overall. */
+  hardFailures: number;
+  /** SOFT: the proxy retried a refused upstream and RECOVERED (a deploy-restart window it
+   *  absorbed; the agent saw success). Informational — elevated under deploy churn, never
+   *  alarming (the resilience working as designed). */
+  recovered: number;
+  /** Forwarded non-2xx that were NOT the stale-socket signature (a genuine upstream 4xx/5xx). */
+  otherNon2xx: number;
+  /** Count by raw `kind` (recovered | upstream_non2xx | exhausted_refused | upstream_error). */
+  byKind: Record<string, number>;
+  /** ms epoch of the newest failure record in the window, or null when none. */
+  newestAt: number | null;
+}
+
+/** Infra — PG + gateway reachability + the per-thread perf verdict (F1/P-030) + the
+ *  MCP tool-call transport SLO (W8/P-008). */
 export interface InfraHealth {
   pg: { version: string; total: number; active: number; idle: number } | null;
   gatewayReachable: boolean | null;
@@ -371,6 +406,9 @@ export interface InfraHealth {
    *  stale. Budgets are per-thread (worker CPU%, event-loop lag, CLOSE_WAIT,
    *  reachability) — never loadavg-absolute (128-core box; round-4 D-002 reframe). */
   perf: PerfVerdict | null;
+  /** MCP proxy windowed failure summary (W8/P-008). null = ledger unreadable this tick
+   *  (greyed leg, fail-soft — never blanks the panel). Absent-file = a healthy zero. */
+  mcpProxy: McpProxyHealth | null;
 }
 
 /** SU fleet (interactive collaborators) presence. */

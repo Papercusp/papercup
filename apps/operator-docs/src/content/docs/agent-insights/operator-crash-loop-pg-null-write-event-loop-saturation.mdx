@@ -62,11 +62,26 @@ elsewhere still fails fast) and `CONNECTION_CLOSED` as recoverable. The
 it (log + keep serving — the pool reconnects on the next query) instead of
 exiting. The host degrades under load instead of crash-looping the fleet.
 
-Fault (1) — the saturation itself — is the durable fix, and lives in
-`operator-scalability-event-loop-2026-06-16`: P1 (un-block the loop — offload
-TOON/gzip/large-JSON serialization to worker threads), P3 (split the background
-host off the request loop + cluster). The resilience patch stops the *crash*; it
-does not make a saturated loop fast.
+Fault (1) — the saturation itself — is the durable fix, from
+`operator-scalability-event-loop-2026-06-16`, and both legs have since
+**landed**:
+
+- **P1 (un-block the loop)** — `packages/operator-core/lib/cpu-task-worker.ts`
+  offloads the hot-path `JSON.stringify` + `gzipSync` on large SSE poll
+  payloads to a persistent `worker_threads` Worker (lazy-spawned per process),
+  falling back to inline sync execution if workers are unavailable/crash.
+- **P3 (split the background host off the request loop)** — `hono-host.ts`'s
+  optional `node:cluster` split (`PAPERCUSP_CLUSTER`, `startCluster` /
+  `cluster-fork.ts`): the PRIMARY runs the background machinery
+  (DBOS/git-sync/substrate) while N request-only WORKER processes share the
+  port via `SO_REUSEPORT`, so request serving stays responsive even while the
+  primary's loop saturates. This is **owner-gated and default OFF** — it needs
+  validating under the Tauri shell / a staging restart first — so on a
+  single-process host the symptom above can still recur.
+
+The resilience patch (fault 2) stops the *crash* on every topology; P1 reduces
+how easily the loop saturates in the first place; P3 removes the request-path
+blast-radius once enabled, but is not yet the default.
 
 ## Diagnose / runbook
 

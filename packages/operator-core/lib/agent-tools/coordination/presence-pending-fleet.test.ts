@@ -1,6 +1,6 @@
 /**
  * presence-pending-fleet.test.ts — the in-process hand-off that lets
- * `fleet:spawn { fleet }` place a HEADLESS bee in a named fleet (fleet-color-schemes).
+ * `bee:spawn { fleet }` place a HEADLESS bee in a named fleet (fleet-color-schemes).
  *
  * A spawned bee's fleet can't ride env (writePresence's env-fold reads the OPERATOR's
  * process.env, not the bee's), so operator-spawn registers a PENDING placement keyed

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
   listFleetRoster: vi.fn(),
+  countRunningWorkspaceBees: vi.fn(),
   getCompletionIntegrityStats: vi.fn(),
   resolveAgentIdentity: vi.fn(),
 }));
@@ -10,9 +11,17 @@ const h = vi.hoisted(() => ({
 vi.mock('../../agent-fleets-store', () => ({
   getFleet: (...a: unknown[]) => h.getFleet(...a),
 }));
-vi.mock('../../fleet/fleet-roster', () => ({
-  listFleetRoster: (...a: unknown[]) => h.listFleetRoster(...a),
-}));
+// Real split helpers (pure) + a mocked roster/bee-count IO seam.
+vi.mock('../../fleet/fleet-roster', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../fleet/fleet-roster')>('../../fleet/fleet-roster');
+  return {
+    isBeeRole: actual.isBeeRole,
+    splitFleetRosterCounts: actual.splitFleetRosterCounts,
+    listFleetRoster: (...a: unknown[]) => h.listFleetRoster(...a),
+    countRunningWorkspaceBees: (...a: unknown[]) => h.countRunningWorkspaceBees(...a),
+  };
+});
 vi.mock('../../work-items', () => ({
   getCompletionIntegrityStats: (...a: unknown[]) => h.getCompletionIntegrityStats(...a),
 }));
@@ -51,6 +60,7 @@ beforeEach(() => {
       agentId: 'su-leader',
       ownerLabel: 'Leader',
       fleetRole: 'leader',
+      agentRole: 'su',
       intent: 'ship it',
       alive: true,
       sessionState: 'live',
@@ -59,6 +69,7 @@ beforeEach(() => {
       load: 1,
     },
   ]);
+  h.countRunningWorkspaceBees.mockResolvedValue(0);
   h.getCompletionIntegrityStats.mockResolvedValue({
     harness: 'papercusp',
     terminalTotal: 10,
@@ -73,6 +84,21 @@ describe('fleet:status', () => {
     expect(out.ok).toBe(true);
     expect(out.completionStats).toBeUndefined();
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
+  });
+
+  it('splits the roster into memberCount vs beeCount and reports workspace runningBees (WI-1764 #4)', async () => {
+    h.listFleetRoster.mockResolvedValueOnce([
+      { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true },
+      { agentId: 'su-m2', agentRole: 'su', fleetRole: 'member', alive: true },
+      { agentId: 's-bee1', agentRole: 'bee', fleetRole: 'member', alive: true },
+    ]);
+    h.countRunningWorkspaceBees.mockResolvedValueOnce(4);
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.memberCount).toBe(2);
+    expect(out.beeCount).toBe(1);
+    expect(out.runningBees).toBe(4);
+    // full roster still returned regardless of the split
+    expect(out.members).toHaveLength(3);
   });
 
   it('includes harness completion stats when `harness` is provided', async () => {

@@ -96,6 +96,19 @@ export interface TableProjection<Row> {
   /** Parse the row out of a Hyperbee value. */
   decodeValue: (raw: unknown) => Row | null;
   /**
+   * F1-4 / P-012 (federated-scout-gym): optional per-source refused-op
+   * observability. When `decodeValue` returns null — the op was DECLINED (a
+   * malformed wire row, or a non-federatable elite a buggy/hostile sender's log
+   * carried) — `applyOpVia` invokes this with the raw op value and the SAME
+   * resolved `ProvenanceContext` the put path would see, so a projection can bump
+   * a per-source refused-op counter (`federation_refused_op_counters`, mig 474).
+   * Only content projections that want the observability implement it; the rest
+   * silently drop as before. FAIL-SOFT: `applyOpVia` swallows a throw so refusal
+   * accounting can never break the apply loop. Called only for a `put` whose
+   * decode failed (a `del` carries no value to validate).
+   */
+  onRefusedOp?: (rawValue: unknown, provenance: ProvenanceContext | undefined) => void | Promise<void>;
+  /**
    * Write the row into PG (idempotent — must handle re-application).
    *
    * G1 Provenance (P-002): the second arg carries `{ authorPubkey, origin }`
@@ -298,7 +311,19 @@ export async function applyOpVia(
     return true;
   }
   const row = p.decodeValue(op.value);
-  if (!row) return false;
+  if (!row) {
+    // F1-4 / P-012: the op was DECLINED (malformed / not-federatable). Give the
+    // projection a chance to record a per-source refused-op counter. Fail-soft —
+    // refusal accounting must never break the apply loop.
+    if (p.onRefusedOp) {
+      try {
+        await p.onRefusedOp(op.value, resolveOpProvenance(op, applyOpts));
+      } catch {
+        /* observability is not load-bearing */
+      }
+    }
+    return false;
+  }
 
   const provenance = resolveOpProvenance(op, applyOpts);
 

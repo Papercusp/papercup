@@ -66,7 +66,7 @@ agent-mcp's read-side tools can reach — agent-mcp can't import up into operato
 
 ## Carve-outs (do NOT collapse to bulk-of-single)
 
-`fleet:spawn`/`fleet:place_batch` (affinity ranking + warm-inject + overflow) and
+`bee:spawn`/`fleet:place_batch` (affinity ranking + warm-inject + overflow) and
 `deploy:harness`/`deploy:hive` (hive carries queen/swarm topology) are composites, not pure
 bulk-of-one — keep them distinct (D-002).
 

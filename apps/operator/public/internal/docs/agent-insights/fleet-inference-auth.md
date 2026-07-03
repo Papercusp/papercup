@@ -103,7 +103,7 @@ echo "say OK" | env -u CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.paper
 `check:fleet-auth` has exactly this blind spot — it probes with its own env (the global credential),
 so it can report healthy auth while every bee is dead. Until it grows a fleet-token probe, run the
 A/B above whenever bees fail fast. (Live incident: 2026-06-11, WI-111 thread — bees 8s-dead all
-afternoon while every probe and wire check passed. Related but separate: `fleet:spawn model=` with a
+afternoon while every probe and wire check passed. Related but separate: `bee:spawn model=` with a
 raw model id reroutes via the model catalog to omp/amazon-bedrock and dies on a missing provider key
 — pass tier names or aliases, never raw ids.)
 
