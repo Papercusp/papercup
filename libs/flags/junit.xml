@@ -1,181 +1,181 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="82" failures="0" errors="0" time="0.289063475">
-    <testsuite name="src/client-stream.test.ts" timestamp="2026-07-03T12:28:58.776Z" hostname="main-server-Precision-7865-Tower" tests="9" failures="0" errors="0" skipped="0" time="0.108558881">
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — no EventSource &gt; returns an inert subscription and never opens a stream" time="0.004289798">
+<testsuites name="vitest tests" tests="82" failures="0" errors="0" time="0.280957921">
+    <testsuite name="src/client-stream.test.ts" timestamp="2026-07-03T12:35:30.888Z" hostname="main-server-Precision-7865-Tower" tests="9" failures="0" errors="0" skipped="0" time="0.110833392">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — no EventSource &gt; returns an inert subscription and never opens a stream" time="0.004758492">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; opens the resilient source with credentials + the endpoint url" time="0.000867774">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; opens the resilient source with credentials + the endpoint url" time="0.000825122">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flags_payload applies a JSON payload to the store" time="0.000573597">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flags_payload applies a JSON payload to the store" time="0.000534992">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flags_payload ignores malformed JSON (store unchanged, no throw)" time="0.001084403">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flags_payload ignores malformed JSON (store unchanged, no throw)" time="0.000935555">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flag_changed triggers a reload via fetch" time="0.092889041">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; flag_changed triggers a reload via fetch" time="0.09446087">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; close() delegates to the underlying source" time="0.000540523">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; close() delegates to the underlying source" time="0.000633863">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; forwards optional onOpen/onStatusChange hooks straight through to the resilient source" time="0.000620557">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; forwards optional onOpen/onStatusChange hooks straight through to the resilient source" time="0.00064812">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; passes onOpen/onStatusChange as undefined when no hooks are given (no crash)" time="0.00043543">
+        <testcase classname="src/client-stream.test.ts" name="subscribeToFlagStream — wired transport &gt; passes onOpen/onStatusChange as undefined when no hooks are given (no crash)" time="0.000449577">
         </testcase>
-        <testcase classname="src/client-stream.test.ts" name="readInitialPayload — seed from globalThis.__PAPERCUSP_FLAGS__ &gt; seeds the store from an injected SSR payload at import time" time="0.005264089">
-        </testcase>
-    </testsuite>
-    <testsuite name="src/client.test.ts" timestamp="2026-07-03T12:28:58.779Z" hostname="main-server-Precision-7865-Tower" tests="7" failures="0" errors="0" skipped="0" time="0.059333615">
-        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; returns the FLAG_DEFAULTS value for the initial state" time="0.005607041">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; reflects a value set via setFlagPayload" time="0.000511958">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; a partial payload still defaults every unset flag (resolveWithDefaults)" time="0.003045397">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="getFlagSnapshot &gt; returns the resolved payload (flags + evaluatedAt + source)" time="0.001203232">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="subscribe &gt; notifies on setFlagPayload and stops after unsubscribe" time="0.001274309">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="loadFlags &gt; fetches, applies the payload, and returns the resolved snapshot" time="0.044163038">
-        </testcase>
-        <testcase classname="src/client.test.ts" name="loadFlags &gt; throws on a non-2xx response" time="0.001550913">
+        <testcase classname="src/client-stream.test.ts" name="readInitialPayload — seed from globalThis.__PAPERCUSP_FLAGS__ &gt; seeds the store from an injected SSR payload at import time" time="0.005473422">
         </testcase>
     </testsuite>
-    <testsuite name="src/production-defaults.test.ts" timestamp="2026-07-03T12:28:58.780Z" hostname="main-server-Precision-7865-Tower" tests="9" failures="0" errors="0" skipped="0" time="0.007116694">
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; every flag defaults ON unless consciously registered in DARK_FLAGS" time="0.002735078">
+    <testsuite name="src/client.test.ts" timestamp="2026-07-03T12:35:30.891Z" hostname="main-server-Precision-7865-Tower" tests="7" failures="0" errors="0" skipped="0" time="0.054877581">
+        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; returns the FLAG_DEFAULTS value for the initial state" time="0.004353821">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; DARK_FLAGS covers EXACTLY the default-OFF set (reason guaranteed by construction)" time="0.000445019">
+        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; reflects a value set via setFlagPayload" time="0.000403208">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; every DARK_FLAGS entry is a real registered flag key with a valid case + reason" time="0.001010449">
+        <testcase classname="src/client.test.ts" name="useFlag — defaulting &gt; a partial payload still defaults every unset flag (resolveWithDefaults)" time="0.002274569">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the dark allowlist is not past its review-by date (no silent lingering)" time="0.000261564">
+        <testcase classname="src/client.test.ts" name="getFlagSnapshot &gt; returns the resolved payload (flags + evaluatedAt + source)" time="0.001048062">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)" time="0.000211919">
+        <testcase classname="src/client.test.ts" name="subscribe &gt; notifies on setFlagPayload and stops after unsubscribe" time="0.001155871">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; VALUE-PRESERVING: the derived FLAG_DEFAULTS matches the pre-inversion snapshot for EVERY flag" time="0.000326861">
+        <testcase classname="src/client.test.ts" name="loadFlags &gt; fetches, applies the payload, and returns the resolved snapshot" time="0.042617363">
         </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)" time="0.000232739">
-        </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark" time="0.000287786">
-        </testcase>
-        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark" time="0.000236767">
+        <testcase classname="src/client.test.ts" name="loadFlags &gt; throws on a non-2xx response" time="0.001531856">
         </testcase>
     </testsuite>
-    <testsuite name="src/server-backend.test.ts" timestamp="2026-07-03T12:28:58.781Z" hostname="main-server-Precision-7865-Tower" tests="22" failures="0" errors="0" skipped="0" time="0.06323351">
-        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; &quot;1&quot; and &quot;true&quot;/&quot;TRUE&quot; enable; &quot;0&quot;/&quot;false&quot;/other disable" time="0.003240924">
+    <testsuite name="src/production-defaults.test.ts" timestamp="2026-07-03T12:35:30.892Z" hostname="main-server-Precision-7865-Tower" tests="9" failures="0" errors="0" skipped="0" time="0.008563234">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; every flag defaults ON unless consciously registered in DARK_FLAGS" time="0.003715399">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; takes precedence over an in-process test override" time="0.000537487">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; DARK_FLAGS covers EXACTLY the default-OFF set (reason guaranteed by construction)" time="0.000453885">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; an unset env var leaves the normal resolution path intact" time="0.000545623">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; every DARK_FLAGS entry is a real registered flag key with a valid case + reason" time="0.000989039">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getFlag — in-process test override (no env, no backend) &gt; returns the override value resolved over defaults" time="0.000439098">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the dark allowlist is not past its review-by date (no silent lingering)" time="0.000241035">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="backend lifecycle &gt; initFlagBackend(cfg) marks the backend configured and exposes the config" time="0.000964592">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)" time="0.000224443">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="backend lifecycle &gt; re-init shuts the previous client down; init(null) clears config" time="0.00049264">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; VALUE-PRESERVING: the derived FLAG_DEFAULTS matches the pre-inversion snapshot for EVERY flag" time="0.000333934">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; returns the client boolean when PostHog answers" time="0.001203032">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)" time="0.000229172">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; falls back to the default when PostHog returns a non-boolean" time="0.000424048">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark" time="0.000294088">
         </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; falls back to the default when the client throws (fail-safe-closed)" time="0.000657458">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getAllFlags — configured (PostHog client mocked) &gt; merges evaluated values over defaults and reports source=posthog" time="0.001489374">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="getAllFlags — configured (PostHog client mocked) &gt; a per-key evaluation throw degrades that key to its default, not a crash" time="0.001210486">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; returns flag-backend-not-configured when no config is set" time="0.000710161">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; enable: PATCHes active=true + rollout 100 for the matched flag id" time="0.043597135">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; disable: PATCHes active=false + rollout 0" time="0.001074765">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports list:&lt;status&gt; when the list request is not ok" time="0.000608104">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports flag-not-found-in-posthog when no result matches the key" time="0.000618012">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports patch:&lt;status&gt; when the patch request is not ok" time="0.000610919">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; captures a thrown fetch error as the failure reason" time="0.000519432">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports &quot;unknown&quot; when a non-Error value is thrown" time="0.000480147">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; notifies a registered handler with the changed key, and null for a broad change" time="0.00045053">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; stops notifying after the returned unsubscribe" time="0.000375825">
-        </testcase>
-        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; swallows a throwing handler and still dispatches to the others" time="0.001055016">
+        <testcase classname="src/production-defaults.test.ts" name="production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED) &gt; P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark" time="0.00026409">
         </testcase>
     </testsuite>
-    <testsuite name="src/server-override.test.ts" timestamp="2026-07-03T12:28:58.785Z" hostname="main-server-Precision-7865-Tower" tests="12" failures="0" errors="0" skipped="0" time="0.011885216">
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; without a store, behavior is unchanged (defaults)" time="0.004200767">
+    <testsuite name="src/server-backend.test.ts" timestamp="2026-07-03T12:35:30.894Z" hostname="main-server-Precision-7865-Tower" tests="22" failures="0" errors="0" skipped="0" time="0.058112572">
+        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; &quot;1&quot; and &quot;true&quot;/&quot;TRUE&quot; enable; &quot;0&quot;/&quot;false&quot;/other disable" time="0.003070044">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; a stored override beats the default" time="0.000735389">
+        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; takes precedence over an in-process test override" time="0.000498232">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; env var beats a stored override" time="0.000341219">
+        <testcase classname="src/server-backend.test.ts" name="env override (PAPERCUSP_FLAG_&lt;KEY&gt;) &gt; an unset env var leaves the normal resolution path intact" time="0.000463134">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; test overrides beat a stored override" time="0.000353181">
+        <testcase classname="src/server-backend.test.ts" name="getFlag — in-process test override (no env, no backend) &gt; returns the override value resolved over defaults" time="0.000387428">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; setFlagOverride writes through and is visible immediately (cache busted)" time="0.000800755">
+        <testcase classname="src/server-backend.test.ts" name="backend lifecycle &gt; initFlagBackend(cfg) marks the backend configured and exposes the config" time="0.000920737">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; clearAllFlagOverrides removes every stored override (the leave-testing reset)" time="0.000669331">
+        <testcase classname="src/server-backend.test.ts" name="backend lifecycle &gt; re-init shuts the previous client down; init(null) clears config" time="0.000498773">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; clearAllFlagOverrides with no store configured is a safe no-op" time="0.000293427">
+        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; returns the client boolean when PostHog answers" time="0.001110412">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; reads are TTL-cached — repeated getFlag calls do not re-hit the store" time="0.000353141">
+        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; falls back to the default when PostHog returns a non-boolean" time="0.000345597">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; partitions the read-cache per scope — no cross-workspace bleed" time="0.000459667">
+        <testcase classname="src/server-backend.test.ts" name="getFlag — configured (PostHog client mocked) &gt; falls back to the default when the client throws (fail-safe-closed)" time="0.000565952">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; getAllFlags overlays stored overrides onto defaults" time="0.000915517">
+        <testcase classname="src/server-backend.test.ts" name="getAllFlags — configured (PostHog client mocked) &gt; merges evaluated values over defaults and reports source=posthog" time="0.001213211">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; getAllFlags drops stored keys for RETIRED flags instead of leaking them into the payload" time="0.000649774">
+        <testcase classname="src/server-backend.test.ts" name="getAllFlags — configured (PostHog client mocked) &gt; a per-key evaluation throw degrades that key to its default, not a crash" time="0.001051399">
         </testcase>
-        <testcase classname="src/server-override.test.ts" name="flag override store &gt; a failing store falls back to defaults instead of throwing" time="0.000449738">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; returns flag-backend-not-configured when no config is set" time="0.000568406">
         </testcase>
-    </testsuite>
-    <testsuite name="src/server.test.ts" timestamp="2026-07-03T12:28:58.787Z" hostname="main-server-Precision-7865-Tower" tests="10" failures="0" errors="0" skipped="0" time="0.024300305">
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; returns FLAG_DEFAULTS when no backend is configured (V1 ship-state)" time="0.007346988">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; enable: PATCHes active=true + rollout 100 for the matched flag id" time="0.040306184">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; getFlag returns the default boolean per key" time="0.004016311">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; disable: PATCHes active=false + rollout 0" time="0.000833308">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_FLAG_&lt;KEY&gt; env override is reflected in getAllFlags (not just getFlag)" time="0.001142003">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports list:&lt;status&gt; when the list request is not ok" time="0.000497681">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_PLATFORM_MODE=off forces the platform-improvement flag OFF (P-070 release lever)" time="0.000623693">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports flag-not-found-in-posthog when no result matches the key" time="0.00061167">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_PLATFORM_MODE=on (or unset) leaves the platform-improvement flag at its default ON" time="0.000314547">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports patch:&lt;status&gt; when the patch request is not ok" time="0.000623132">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; the per-flag PAPERCUSP_FLAG_* override beats PAPERCUSP_PLATFORM_MODE=off (explicit owner opt-in)" time="0.000536516">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; captures a thrown fetch error as the failure reason" time="0.000408337">
         </testcase>
-        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; FLAG_DEFAULTS contains every FLAGS key (no drift)" time="0.004838528">
+        <testcase classname="src/server-backend.test.ts" name="setFlag — PostHog REST round-trip &gt; reports &quot;unknown&quot; when a non-Error value is thrown" time="0.000427986">
         </testcase>
-        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; overrides resolve to the supplied values, defaults fill the rest" time="0.000452914">
+        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; notifies a registered handler with the changed key, and null for a broad change" time="0.000444066">
         </testcase>
-        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; null override clears back to defaults" time="0.000770567">
+        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; stops notifying after the returned unsubscribe" time="0.000352239">
         </testcase>
-        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; partial overrides do not affect un-listed flags" time="0.002231016">
+        <testcase classname="src/server-backend.test.ts" name="onFlagChange / emitFlagChange &gt; swallows a throwing handler and still dispatches to the others" time="0.001017513">
         </testcase>
     </testsuite>
-    <testsuite name="src/types.test.ts" timestamp="2026-07-03T12:28:58.788Z" hostname="main-server-Precision-7865-Tower" tests="13" failures="0" errors="0" skipped="0" time="0.014635254">
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; ALL_FLAG_KEYS is exactly the FLAGS string values (no drift)" time="0.003518821">
+    <testsuite name="src/server-override.test.ts" timestamp="2026-07-03T12:35:30.897Z" hostname="main-server-Precision-7865-Tower" tests="12" failures="0" errors="0" skipped="0" time="0.011149925">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; without a store, behavior is unchanged (defaults)" time="0.003283455">
         </testcase>
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; every flag string value is unique" time="0.000667519">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; a stored override beats the default" time="0.000529071">
         </testcase>
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; every flag key uses the canonical `papercusp-` prefix" time="0.002126464">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; env var beats a stored override" time="0.000335627">
         </testcase>
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; FLAG_DEFAULTS has a boolean for exactly the FLAGS keys" time="0.002828358">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; test overrides beat a stored override" time="0.000298486">
         </testcase>
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; cut-for-V1 flags stay OFF by default (alpha policy: flags for shipped features default ON — CLAUDE.md &quot;Feature flags&quot;)" time="0.000392708">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; setFlagOverride writes through and is visible immediately (cache busted)" time="0.000804492">
         </testcase>
-        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; security flags stay OFF by default (deliberate exceptions to the alpha default-ON policy)" time="0.000210957">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; clearAllFlagOverrides removes every stored override (the leave-testing reset)" time="0.000625517">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; with an empty partial, returns a full copy of FLAG_DEFAULTS" time="0.000894466">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; clearAllFlagOverrides with no store configured is a safe no-op" time="0.000351258">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; applies supplied boolean overrides over the defaults" time="0.000297464">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; reads are TTL-cached — repeated getFlag calls do not re-hit the store" time="0.000424539">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; honours an explicit false override (not treated as &quot;unset&quot;)" time="0.000243069">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; partitions the read-cache per scope — no cross-workspace bleed" time="0.00052842">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; ignores non-boolean values (undefined / null / string) and keeps the default" time="0.000348062">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; getAllFlags overlays stored overrides onto defaults" time="0.001096867">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; ignores unknown keys not in ALL_FLAG_KEYS" time="0.000496708">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; getAllFlags drops stored keys for RETIRED flags instead of leaking them into the payload" time="0.000747392">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; does not mutate FLAG_DEFAULTS" time="0.000390223">
+        <testcase classname="src/server-override.test.ts" name="flag override store &gt; a failing store falls back to defaults instead of throwing" time="0.000544431">
         </testcase>
-        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; always resolves to the full key set, whatever the partial" time="0.000321771">
+    </testsuite>
+    <testsuite name="src/server.test.ts" timestamp="2026-07-03T12:35:30.899Z" hostname="main-server-Precision-7865-Tower" tests="10" failures="0" errors="0" skipped="0" time="0.023317353">
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; returns FLAG_DEFAULTS when no backend is configured (V1 ship-state)" time="0.007031768">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; getFlag returns the default boolean per key" time="0.003667216">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_FLAG_&lt;KEY&gt; env override is reflected in getAllFlags (not just getFlag)" time="0.001134089">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_PLATFORM_MODE=off forces the platform-improvement flag OFF (P-070 release lever)" time="0.000631979">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; PAPERCUSP_PLATFORM_MODE=on (or unset) leaves the platform-improvement flag at its default ON" time="0.000328163">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; the per-flag PAPERCUSP_FLAG_* override beats PAPERCUSP_PLATFORM_MODE=off (explicit owner opt-in)" time="0.000537187">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="flag backend in offline-only mode &gt; FLAG_DEFAULTS contains every FLAGS key (no drift)" time="0.005239009">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; overrides resolve to the supplied values, defaults fill the rest" time="0.000472001">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; null override clears back to defaults" time="0.000750018">
+        </testcase>
+        <testcase classname="src/server.test.ts" name="setFlagOverridesForTest &gt; partial overrides do not affect un-listed flags" time="0.001784875">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/types.test.ts" timestamp="2026-07-03T12:35:30.901Z" hostname="main-server-Precision-7865-Tower" tests="13" failures="0" errors="0" skipped="0" time="0.014103864">
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; ALL_FLAG_KEYS is exactly the FLAGS string values (no drift)" time="0.00339406">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; every flag string value is unique" time="0.000472642">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; every flag key uses the canonical `papercusp-` prefix" time="0.002117846">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; FLAG_DEFAULTS has a boolean for exactly the FLAGS keys" time="0.002738474">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; cut-for-V1 flags stay OFF by default (alpha policy: flags for shipped features default ON — CLAUDE.md &quot;Feature flags&quot;)" time="0.000350506">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="flag registry invariants &gt; security flags stay OFF by default (deliberate exceptions to the alpha default-ON policy)" time="0.000240655">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; with an empty partial, returns a full copy of FLAG_DEFAULTS" time="0.00083984">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; applies supplied boolean overrides over the defaults" time="0.000302233">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; honours an explicit false override (not treated as &quot;unset&quot;)" time="0.000296813">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; ignores non-boolean values (undefined / null / string) and keeps the default" time="0.000348653">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; ignores unknown keys not in ALL_FLAG_KEYS" time="0.000576382">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; does not mutate FLAG_DEFAULTS" time="0.000403118">
+        </testcase>
+        <testcase classname="src/types.test.ts" name="resolveWithDefaults &gt; always resolves to the full key set, whatever the partial" time="0.000345326">
         </testcase>
     </testsuite>
 </testsuites>

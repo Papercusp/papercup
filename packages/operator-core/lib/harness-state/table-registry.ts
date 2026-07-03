@@ -249,6 +249,15 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // (mig 468); projection 'p2p-receipts' (projections/p2p-receipts.ts), receiver-
   // enforced (author attestation == responder).
   'p2p_receipts',
+  // p2p-work-distribution-2026-07-02 (P-101 / D-006): the owner-SIGNED fleet
+  // directory record — keyed (workspace_id, harness_slug = the hive HOME,
+  // owner_github_user_id, fleet_slug) → workspace-owned + peer-log; federates so
+  // every member machine can browse the directory and resolve publisher sets.
+  // Producer = CDC capture (mig 476, key = the generated fleet_dir_fed_key);
+  // projection 'p2p-fleet-directory' (projections/fleet-directory.ts), which
+  // VERIFIES the device signature + device→owner attestation before applying
+  // (hive identity key honored only for archived=true — the H10 force-archive).
+  'p2p_fleet_directory',
   // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts federate
   // as hive state (mig 461 capture triggers, shareable=true rows only — D-006 privacy;
   // apply side partitions by receiver-stamped source_hive, H6). Keyed (workspace_id,

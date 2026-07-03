@@ -7,13 +7,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const listHiveMembersMock = vi.fn(async (): Promise<unknown[]> => []);
-const loadRevokedMock = vi.fn(async (): Promise<Set<string>> => new Set<string>());
+const listHiveMembersMock = vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []);
+const loadRevokedMock = vi.fn(async (..._args: unknown[]): Promise<Set<string>> => new Set<string>());
 vi.mock('../../../hive-membership-store', () => ({
   listHiveMembers: (...args: unknown[]) => listHiveMembersMock(...args),
   loadRevokedHivePubkeys: (...args: unknown[]) => loadRevokedMock(...args),
 }));
-const getHiveBySlugMock = vi.fn(async (): Promise<unknown> => null);
+const getHiveBySlugMock = vi.fn(async (..._args: unknown[]): Promise<unknown> => null);
 vi.mock('../../../hive-store', () => ({
   getHiveBySlug: (...args: unknown[]) => getHiveBySlugMock(...args),
 }));
@@ -32,7 +32,6 @@ import {
 import {
   generateEd25519KeypairDer,
   signWithPrivateKeyDer,
-  pubkeyBase64FromDer,
 } from '../../../identity/ed25519';
 
 const { composeKey, decodeValue, isFleetDirectoryRow, realVerifyFleetDirectory } = _testing;
@@ -42,9 +41,9 @@ const HIVE = 'hive-home';
 const OWNER = 279242982;
 
 const deviceKp = generateEd25519KeypairDer();
-const devicePubkey = pubkeyBase64FromDer(deviceKp.publicKeyDer);
+const devicePubkey = deviceKp.pubkeyBase64;
 const hiveKp = generateEd25519KeypairDer();
-const hivePubkey = pubkeyBase64FromDer(hiveKp.publicKeyDer);
+const hivePubkey = hiveKp.pubkeyBase64;
 
 const opts: FleetDirectoryProjectionOpts = { workspaceId: WS, harnessSlug: HIVE };
 

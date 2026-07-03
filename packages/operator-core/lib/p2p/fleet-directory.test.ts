@@ -8,8 +8,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type postgres from 'postgres';
 
-const listHiveMembersMock = vi.fn(async (): Promise<unknown[]> => []);
-const loadRevokedMock = vi.fn(async (): Promise<Set<string>> => new Set<string>());
+const listHiveMembersMock = vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []);
+const loadRevokedMock = vi.fn(async (..._args: unknown[]): Promise<Set<string>> => new Set<string>());
 vi.mock('../hive-membership-store', () => ({
   listHiveMembers: (...args: unknown[]) => listHiveMembersMock(...args),
   loadRevokedHivePubkeys: (...args: unknown[]) => loadRevokedMock(...args),
@@ -25,7 +25,6 @@ import {
 import {
   generateEd25519KeypairDer,
   signWithPrivateKeyDer,
-  pubkeyBase64FromDer,
   verifyEd25519,
 } from '../identity/ed25519';
 
@@ -35,7 +34,7 @@ const OWNER = 279242982;
 const PUB = 1567022;
 
 const kp = generateEd25519KeypairDer();
-const devicePubkey = pubkeyBase64FromDer(kp.publicKeyDer);
+const devicePubkey = kp.pubkeyBase64;
 const signer: FleetRecordSigner = {
   pubkey: devicePubkey,
   sign: async (bytes) => signWithPrivateKeyDer(kp.privateKeyDer, bytes),

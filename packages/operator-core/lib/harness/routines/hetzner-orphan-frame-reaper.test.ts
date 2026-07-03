@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   reapOrphanedHetznerFrames,
   matchesRigNaming,
+  isTransientNetworkError,
   OWNER_LABEL_KEY,
   DEFAULT_MIN_AGE_HOURS,
   type HetznerFrameInfo,
@@ -153,5 +154,62 @@ describe('reapOrphanedHetznerFrames', () => {
     const r = await reapOrphanedHetznerFrames(deps);
     expect(r.destroyed).toEqual([]);
     expect(resolveOwnerLiveness).not.toHaveBeenCalled();
+  });
+
+  // EI-6868: a transient Hetzner connectivity blip surfaced as `TypeError: fetch failed`
+  // and threw out of listFrames() every tick, wedging the routine (watchdog routine-failure).
+  it('a transient "fetch failed" from listFrames is a clean no-op — does not throw, does not wedge the routine', async () => {
+    const deps = makeDeps({ frames: [] });
+    deps.listFrames = async () => {
+      throw new TypeError('fetch failed');
+    };
+    const destroy = vi.spyOn(deps, 'destroy');
+    const r = await reapOrphanedHetznerFrames(deps);
+    expect(r.listError).toMatch(/fetch failed/);
+    expect(r.scanned).toBe(0);
+    expect(r.matchedRigNames).toBe(0);
+    expect(r.destroyed).toEqual([]);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it('a transient network error carried on cause.code is also a clean no-op', async () => {
+    const deps = makeDeps({ frames: [] });
+    deps.listFrames = async () => {
+      const e = new TypeError('fetch failed');
+      (e as unknown as { cause: { code: string } }).cause = { code: 'ECONNREFUSED' };
+      throw e;
+    };
+    const r = await reapOrphanedHetznerFrames(deps);
+    expect(r.listError).toBeTruthy();
+    expect(r.destroyed).toEqual([]);
+  });
+
+  it('a NON-transient listFrames error still propagates (surfaces a genuine failure)', async () => {
+    const deps = makeDeps({ frames: [] });
+    deps.listFrames = async () => {
+      throw new Error('Hetzner API listServers failed (HTTP 401): unauthorized');
+    };
+    await expect(reapOrphanedHetznerFrames(deps)).rejects.toThrow(/401/);
+  });
+});
+
+describe('isTransientNetworkError', () => {
+  it('classifies the fetch-failed / transport-error class as transient', () => {
+    expect(isTransientNetworkError(new TypeError('fetch failed'))).toBe(true);
+    const withCause = new TypeError('fetch failed');
+    (withCause as unknown as { cause: { code: string } }).cause = { code: 'ENOTFOUND' };
+    expect(isTransientNetworkError(withCause)).toBe(true);
+    const coded = new Error('connect ETIMEDOUT 1.2.3.4:443');
+    (coded as unknown as { code: string }).code = 'ETIMEDOUT';
+    expect(isTransientNetworkError(coded)).toBe(true);
+    expect(isTransientNetworkError({ name: 'AbortError', message: 'The operation was aborted' })).toBe(true);
+    expect(isTransientNetworkError(new Error('socket hang up'))).toBe(true);
+  });
+
+  it('does NOT classify a genuine/API/logic error as transient', () => {
+    expect(isTransientNetworkError(new Error('Hetzner API listServers failed (HTTP 401): unauthorized'))).toBe(false);
+    expect(isTransientNetworkError(new Error('unexpected boom'))).toBe(false);
+    expect(isTransientNetworkError(null)).toBe(false);
+    expect(isTransientNetworkError('fetch failed')).toBe(false); // a bare string, not an error object
   });
 });

@@ -54,6 +54,52 @@ export function matchesRigNaming(name: string, patterns: readonly RegExp[] = DEF
   return patterns.some((p) => p.test(name));
 }
 
+/** Node's global `fetch` wraps a transport failure (DNS, connect, reset, timeout)
+ *  as `TypeError: fetch failed` with a `cause.code`. These node error codes are the
+ *  transient-transport class. HTTP-status errors (a 401 bad token, a 5xx) are NOT
+ *  here on purpose — those are surfaced, not silently swallowed. */
+const TRANSIENT_NET_CODES: ReadonlySet<string> = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+/**
+ * True for a TRANSIENT network/transport error reaching an upstream (the `fetch
+ * failed` class), which a best-effort periodic sweep should skip-this-tick-and-retry
+ * rather than record as a routine failure (EI-6868: a Hetzner connectivity blip was
+ * wedging the `hetzner-orphan-frame-reaper` routine every tick with "fetch failed").
+ * Genuine failures — a bad token (HTTP 401), an unexpected logic error — return false
+ * so they still surface.
+ */
+export function isTransientNetworkError(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const err = e as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+  const name = typeof err.name === 'string' ? err.name : '';
+  const message = typeof err.message === 'string' ? err.message : '';
+  const code = typeof err.code === 'string' ? err.code : '';
+  const causeCode =
+    err.cause && typeof err.cause === 'object' && typeof (err.cause as { code?: unknown }).code === 'string'
+      ? (err.cause as { code: string }).code
+      : '';
+
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  if (TRANSIENT_NET_CODES.has(code) || TRANSIENT_NET_CODES.has(causeCode)) return true;
+  // Node global fetch surfaces transport failures as `TypeError: fetch failed`.
+  if (/fetch failed/i.test(message)) return true;
+  if (/\b(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up)\b/i.test(message)) return true;
+  return false;
+}
+
 export interface OwnerLiveness {
   ownerId: string;
   /** `ended` = confirmed dead (the only state this reaper acts on). Anything else
@@ -93,6 +139,10 @@ export interface ReapResult {
   skippedOwnerAlive: string[];
   skippedTooYoung: string[];
   errors: Array<{ id: string; error: string }>;
+  /** Set when `listFrames()` failed with a TRANSIENT network error — the sweep was
+   *  skipped cleanly this tick (nothing enumerated, nothing destroyed) instead of
+   *  throwing and wedging the routine. Absent on a normal run. */
+  listError?: string;
   dryRun: boolean;
 }
 
@@ -120,7 +170,19 @@ export async function reapOrphanedHetznerFrames(
     dryRun,
   };
 
-  const all = await deps.listFrames();
+  let all: HetznerFrameInfo[];
+  try {
+    all = await deps.listFrames();
+  } catch (e) {
+    // A transient network blip reaching the upstream (the `fetch failed` class) must
+    // NOT wedge this best-effort periodic sweep — skip the tick cleanly and let the
+    // next cadence retry. A genuine failure (bad token, logic bug) still propagates.
+    if (isTransientNetworkError(e)) {
+      out.listError = e instanceof Error ? e.message : String(e);
+      return out;
+    }
+    throw e;
+  }
   out.scanned = all.length;
   const candidates = all.filter((f) => matchesRigNaming(f.name, patterns));
   out.matchedRigNames = candidates.length;

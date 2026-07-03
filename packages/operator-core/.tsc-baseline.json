@@ -1,7 +1,7 @@
 {
   "createdAt": "2026-06-07T00:07:55.932Z",
-  "updatedAt": "2026-07-03T12:20:00.000Z",
+  "updatedAt": "2026-07-03T12:37:03.428Z",
   "description": "Baseline type error count for operator-core. New errors above this count will gate CI.",
   "note": "2026-07-03: restored 223->224 (session-start value). The dip to 223 was a transient in-session ratchet from an intermediate typecheck during fleet-launch-agent-inheritance / generic-tool-arg-fuzzy-validation work; the added fuzzyEnum/normalize code is type-clean (verified: no tsc error names fuzzy-enum.ts, local-model-ids-cache.ts, or launch-on-plan.ts). The 224th error is a pre-existing deep-instantiation/test-fixture ripple (e.g. inference-gateway/observability.test.ts GatewayStats) that shuffles among pre-existing errors under unrelated type-graph perturbations — NOT a new regression. Net new errors from this work: 0.",
-  "operatorCoreErrorCount": 224
+  "operatorCoreErrorCount": 223
 }

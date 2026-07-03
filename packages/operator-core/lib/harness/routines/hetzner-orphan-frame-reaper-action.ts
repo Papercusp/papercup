@@ -81,6 +81,14 @@ registerSystemAction('hetzner-orphan-frame-reaper', async (ctx: SystemActionCtx)
   };
 
   const result = await reapOrphanedHetznerFrames(deps, { dryRun, minAgeHours });
+  if (result.listError) {
+    // Transient upstream connectivity blip (e.g. "fetch failed") — the reaper skipped
+    // this tick cleanly rather than failing the routine (EI-6868). Retries next cadence.
+    console.log(
+      `[hetzner-orphan-frame-reaper] transient network error listing Hetzner servers (${result.listError}) — skipping this tick, will retry next cadence`,
+    );
+    return;
+  }
   console.log(
     `[hetzner-orphan-frame-reaper] scanned ${result.scanned} server(s), ${result.matchedRigNames} rig-named → ` +
       `${result.dryRun ? 'WOULD destroy' : 'destroyed'} ${result.destroyed.length}` +
