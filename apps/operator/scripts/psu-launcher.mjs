@@ -314,8 +314,20 @@ export function parseArgs(argv) {
 export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
   const args = [];
   if (model) {
-    if (agent === 'codex') args.push('-m', model);
-    else if (agent === 'claude') {
+    if (agent === 'codex') {
+      // codex's `-m` wants a BARE model id; reasoning effort is a CONFIG override
+      // (`-c model_reasoning_effort="high"`, `max` clamped to codex's `xhigh` —
+      // mirrors applyRoleModel in harness-invoke-once.ts). A verbatim suffixed
+      // spec (`gpt-5.5:high`) would set an unknown MODEL and silently drop the
+      // effort — the same effort-drop class the claude branch below fixed
+      // (2026-07-01), just never done for codex (found launching the
+      // backlog-clearance codex fleet, 2026-07-03).
+      const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
+      if (m) {
+        const codexEffort = m[2] === 'max' ? 'xhigh' : m[2];
+        args.push('-m', m[1], '-c', `model_reasoning_effort="${codexEffort}"`);
+      } else args.push('-m', model);
+    } else if (agent === 'claude') {
       // psu's model spec is `<model>[:<effort>]` (e.g. claude-sonnet-5:high), but the
       // claude CLI takes effort as its OWN flag — a verbatim suffixed spec sets the
       // model and silently DROPS the effort, so the session falls back to the box's

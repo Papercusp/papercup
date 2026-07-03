@@ -1554,6 +1554,18 @@ describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
     expect(suWrapperExtraArgs('omp', { model: 'opus:high' })).toEqual(['--model', 'opus:high']);
   });
 
+  // Same effort-drop class for codex (found 2026-07-03 launching the backlog-clearance
+  // codex fleet): codex's `-m` wants a bare id; effort is the config override
+  // `-c model_reasoning_effort="…"` with `max` clamped to codex's `xhigh` (mirrors
+  // applyRoleModel in harness-invoke-once.ts).
+  it('codex: splits a recognized `<model>:<effort>` spec into -m + -c model_reasoning_effort', () => {
+    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:high' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="high"']);
+    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:max' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="xhigh"']);
+    // bare id stays bare; a non-effort `:` segment passes through verbatim.
+    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5' })).toEqual(['-m', 'gpt-5.5']);
+    expect(suWrapperExtraArgs('codex', { model: 'weird:0' })).toEqual(['-m', 'weird:0']);
+  });
+
   it('emits nothing when neither model nor resume is set', () => {
     expect(suWrapperExtraArgs('omp', {})).toEqual([]);
     expect(suWrapperExtraArgs('omp')).toEqual([]);

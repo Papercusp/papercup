@@ -47,6 +47,18 @@ export function stripToolName(name: string): string {
   return n; // a built-in (read/bash/write/edit) or unknown group — leave as-is
 }
 
+/** Canonicalize a tool name that arrives in CATALOG form (`group:verb`, hyphenated verb —
+ *  the shape passed INSIDE a tools:invoke {name} arg, e.g. `plans:set-status` /
+ *  `fleet:launch-on-plan`) into the suite's canonical underscore form
+ *  (`plans:set_status` / `fleet:launch_on_plan`). Falls back to stripToolName for a
+ *  prefixed/underscore form. Pure. */
+export function canonicalToolName(name: string): string {
+  const n = String(name || '').trim();
+  const i = n.indexOf(':');
+  if (i > 0) return n.slice(0, i) + ':' + n.slice(i + 1).replace(/-/g, '_');
+  return stripToolName(n);
+}
+
 export interface NormToolCall {
   /** Canonical `group:verb` (mcp prefix stripped, underscores → colon), e.g. `plans:get`. */
   name: string;
@@ -57,6 +69,12 @@ export interface NormToolCall {
   malformed: boolean;
   /** Turn index (0-based) this call appeared in. */
   turn: number;
+  /** True on a call SYNTHESIZED from a tools:invoke wrapper's inner {name,args} — the
+   *  outer tools:invoke call is kept too. Weak/trimmed-surface models make MOST catalog
+   *  calls through tools:invoke, so without unwrapping, an entire run's plan/work/fleet
+   *  activity is invisible to the checks (run-7 2026-07-03: 6 false completions flipped
+   *  via tools:invoke scored claimed=0/completed=0). */
+  viaInvoke?: boolean;
 }
 
 export interface NormResult {
@@ -186,6 +204,23 @@ export function parseTranscript(lines: Array<string | Record<string, unknown>>):
           malformed = argsRaw.trim().length > 0;
         }
         t.toolCalls.push({ name, argsRaw, args, malformed, turn });
+        // Unwrap a tools:invoke wrapper: ALSO record the INNER catalog call so every
+        // check sees it (the trimmed weak-model surface routes most catalog calls
+        // through tools:invoke {name, args}).
+        if (name === 'tools:invoke' && args && typeof args.name === 'string' && args.name) {
+          const innerArgs =
+            args.args && typeof args.args === 'object' && !Array.isArray(args.args)
+              ? (args.args as Record<string, unknown>)
+              : null;
+          t.toolCalls.push({
+            name: canonicalToolName(args.name),
+            argsRaw: innerArgs ? JSON.stringify(innerArgs) : '',
+            args: innerArgs,
+            malformed: false,
+            turn,
+            viaInvoke: true,
+          });
+        }
       } else if (pt === 'tool_result' || pt === 'toolResult') {
         t.toolResults.push({ turn, text: partText(part) });
       }
