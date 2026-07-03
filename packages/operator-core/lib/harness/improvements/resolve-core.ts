@@ -37,6 +37,7 @@ import {
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload } from './lifecycle';
 import { closeDispatchesForItem } from './dispatch-ledger';
+import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
@@ -131,11 +132,19 @@ export async function resolveImprovement(
     }
   };
 
-  if (issue.state !== 'open' && input.outcome === 'fixed') {
-    // Idempotent: resolving an already-resolved item is a no-op success (a
-    // re-fired runner must not error out on the second resolve). Still close any
-    // open ledger rows — a manually-resolved item must not strand one for the
-    // orphan collector to false-positive on.
+  if (ISSUE_TERMINAL_STATUSES.has(issue.state) && input.outcome === 'fixed') {
+    // Idempotent: resolving an already-TERMINAL item (resolved|closed) is a no-op
+    // success (a re-fired runner must not error out on the second resolve). Still
+    // close any open ledger rows — a manually-resolved item must not strand one for
+    // the orphan collector to false-positive on.
+    //
+    // EI-6953/6954/6938: this guard MUST test terminal membership, NOT `!== 'open'`.
+    // engineer_issues is a view over work_items (status AS state), and issue-family
+    // items are minted with the work-item state `todo` (a NON-terminal, active state
+    // outside the canonical open|resolved|closed vocab that other readers normalize
+    // to `open`). The old `!== 'open'` guard treated `todo` (and wip/in_progress/…)
+    // as already-terminal → returned ok:true WITHOUT ever calling setIssueState, so
+    // ~450–650 todo-state items silently never resolved and re-dispatched forever.
     await closeLedger();
     return { ok: true, id: input.id, outcome: 'fixed', state: issue.state };
   }

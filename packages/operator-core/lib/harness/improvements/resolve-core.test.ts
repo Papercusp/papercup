@@ -101,6 +101,36 @@ describe('resolveImprovement — fixed (the verify-and-mark-done back-edge, clos
   });
 });
 
+describe('resolveImprovement — non-terminal states actually resolve (EI-6953/6954/6938 regression)', () => {
+  // engineer_issues is a VIEW over work_items (status AS state); issue-family items
+  // are minted with the work-item state `todo` (non-terminal, normalized to `open`
+  // by other readers — but resolve-core reads raw). The old `!== 'open'` idempotency
+  // guard treated todo/wip/in_progress/blocked as already-terminal and NO-OP'd, so
+  // ~450–650 items stayed stuck and re-dispatched forever. The guard must test
+  // TERMINAL membership (resolved|closed) so every non-terminal state resolves.
+  const NON_TERMINAL_STATES: string[] = ['todo', 'wip', 'in_progress', 'blocked', 'needs-human', 'open'];
+  for (const state of NON_TERMINAL_STATES) {
+    it(`fixed + evidence on a '${state}' (non-terminal) item ACTUALLY marks it resolved (not a silent no-op)`, async () => {
+      const d = deps(issue({ id: 'EI-drift', state: state as IssueState }));
+      const r = await resolveImprovement(
+        { id: 'EI-drift', outcome: 'fixed', summary: 'real fix landed', testsRun: 'vitest green' },
+        d,
+      );
+      expect(r).toMatchObject({ ok: true, outcome: 'fixed', state: 'resolved' });
+      expect(d.rec.states).toEqual([{ id: 'EI-drift', state: 'resolved' }]);
+      expect(d.rec.comments[0].body).toMatch(/vitest green/);
+    });
+  }
+
+  it("a 'closed' (terminal) item stays an idempotent no-op, like 'resolved'", async () => {
+    const d = deps(issue({ id: 'EI-closed', state: 'closed' }));
+    const r = await resolveImprovement({ id: 'EI-closed', outcome: 'fixed', summary: 'x', testsRun: 't' }, d);
+    expect(r).toMatchObject({ ok: true, state: 'closed' });
+    expect(d.rec.states).toHaveLength(0);
+    expect(d.rec.comments).toHaveLength(0);
+  });
+});
+
 describe('resolveImprovement — could-not-fix (retry path)', () => {
   it('releases the claim and stays open (a later run retries)', async () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 1 } }));
