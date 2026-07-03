@@ -197,6 +197,54 @@ describe('hive-epoch-op-gate', () => {
   });
 });
 
+// WI-2102: epoch 0 = the pre-re-key BASELINE (hive-epoch-state.ts BASELINE_EPOCH) —
+// content federates PLAINTEXT. Without the bypass, a never-rekeyed hive demanded an
+// epoch-0 key on every drain: a MEMBER threw EpochKeyUnavailableError forever (outbox
+// wedged — no epoch-0 wrapped row is ever distributed), an OWNER minted an epoch-0 key
+// only it holds and federated undecryptable content. Both directions dead = the P-059
+// signature, proven live on the gate rig 2026-07-03 (inst-a/b.log, 728+ drain failures).
+describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
+  it('epoch 0 ⇒ null (plaintext, no epoch stamp) and resolveKey is NEVER called', async () => {
+    const resolveKey = vi.fn(KEY_MISSING); // a member with NO key must still drain fine
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey,
+      hiveId: HIVE,
+      getCurrentEpoch: async () => 0,
+    });
+    await expect(cap.encryptOp(localOp())).resolves.toBeNull();
+    expect(resolveKey).not.toHaveBeenCalled();
+  });
+
+  it('epoch 1 (first re-key boundary) still encrypts + stamps', async () => {
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      hiveId: HIVE,
+      getCurrentEpoch: async () => 1,
+    });
+    const enc = await cap.encryptOp(localOp());
+    expect(enc).not.toBeNull();
+    expect(enc!.epoch).toBe(1);
+    expect((enc!.value as { __rekey?: string }).__rekey).toBeTypeOf('string');
+  });
+
+  it('baseline round-trip: a plaintext (null-encrypt) op passes the decrypt gate unchanged', async () => {
+    const pending = new PendingEpochContent();
+    // The drain leaves the op plaintext (no epoch stamp) on a null encrypt result —
+    // the receive side must apply it via the epoch-absent passthrough.
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_MISSING, hiveId: HIVE, pending });
+    let seen: OpEnvelope | null = null;
+    const out = await gate(async (op) => {
+      seen = op;
+      return true;
+    })({ type: 'put', table: 'harness-features', hbKey: 'F-base', value: { title: 'baseline' } } as OpEnvelope);
+    expect(out).toBe(true);
+    expect(seen!.value).toEqual({ title: 'baseline' });
+    expect(pending.size()).toBe(0); // nothing deferred — the epoch-0 wedge is gone
+  });
+});
+
 describe('buildEpochKeyResolver (owner|member dispatch)', () => {
   it('OWNER → deriveEpochKey (mints); never touches the provider', async () => {
     const derive = vi.fn(async () => 'OWNER' as unknown as EpochKey);

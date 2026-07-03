@@ -33,6 +33,7 @@ import {
   listUnplacedHiveFrontier,
   listNonTerminalPlacements,
 } from '../../hive/wake-frontier-guard';
+import { getHiveStarted } from '../../hive/started';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -107,6 +108,28 @@ export default defineTool({
       };
     }
     const { sql } = getOrgPg();
+
+    // WI-2012 (owner directive 2026-07-03): no started hives ⇒ the queen STAYS paused.
+    // hive:pause clears the pending time wake, but an IN-FLIGHT queen turn used to
+    // re-arm it right back through this tool — the self-perpetuating wake loop that
+    // kept a "paused" queen burning orient/survey churn for hours. When the queen
+    // loop is not started, refuse to arm anything; hive:start is the resume (it sets
+    // started=true BEFORE arming, so this gate can never strand resumption).
+    if (!(await getHiveStarted(workspaceId, installSlug))) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'hive_paused',
+              message:
+                'The queen loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; hive:start resumes autonomous wakes.',
+            }),
+          },
+        ],
+      };
+    }
 
     const wantsTime = args.at != null || args.inSeconds != null;
 

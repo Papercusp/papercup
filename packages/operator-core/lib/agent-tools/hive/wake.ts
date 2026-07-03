@@ -16,6 +16,7 @@ import {
   effectiveHiveWakeFloorSec,
   resolveHiveHomeSlug,
 } from '../../hive/wake';
+import { getHiveStarted } from '../../hive/started';
 import { getOrgPg } from '@papercusp/db-org';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -74,6 +75,22 @@ export default defineTool({
               error: 'no_home_harness',
               message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the hive launch is harness-scoped.',
             }),
+          },
+        ],
+      };
+    }
+
+    // WI-2012 (owner directive 2026-07-03): event-wake subscriptions PERSIST across
+    // hive:pause, so a reaction rule can fire long after the owner stopped the hive —
+    // an autonomous wake on a not-started queen loop is exactly the churn the pause
+    // exists to stop. Skip event-sourced wakes while paused; explicit user/manual
+    // wakes still fire (deliberate human intent — hive:start is the full resume).
+    if (args.source === 'event' && !(await getHiveStarted(workspaceId, installSlug))) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: true, fired: false, skipped: 'hive-paused' }),
           },
         ],
       };

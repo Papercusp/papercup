@@ -46,10 +46,34 @@ compaction**. Do not spend summary budget restating them. Keep only:
 (live / parked / ended) + `last_active_at`; `intentStale` = a claim not
 progressing.
 
-## Memory rule (this system — not the generic guidance)
-Durable facts go to `memory:remember` (the shared store). Do **not** instruct the
-reader to "add a pointer to MEMORY.md" — MEMORY.md is an auto-regenerated
-projection and must never be hand-edited.
+## Continuity tools — EXTERNALIZE state, then point (don't carry it in prose)
+This system has purpose-built carry surfaces that are RE-INJECTED automatically
+on the next turn / wake / spawn — state parked there survives compaction
+LOSSLESSLY, while summary prose degrades and goes stale. Compaction discipline
+is therefore two-phase:
+
+1. **Flush BEFORE you summarize** (a deliberate compaction — you can still call
+   tools; this is also the ~80%-context rule, so an AUTO-compaction you did not
+   trigger should find the state already parked):
+   - each held work-item's in-flight state → `work_items:checkpoint { id,
+     checkpoint }` (re-injected on the item's next invocation — yours or a
+     successor's);
+   - an armed loop's state → `loop:checkpoint { did, left, insight, next }`
+     (a cold wake reconstructs from it; mandatory on a cold loop);
+   - durable conclusions → `facts:assert` (scoped, TTL'd, folded VERBATIM into
+     every future brief/orient until retracted);
+   - fuzzy background knowledge → `memory:remember` (the ONE shared store —
+     never a client-local silo; MEMORY.md is an auto-regenerated projection and
+     must never be hand-edited, so never instruct the reader to append to it).
+2. **Then the summary carries POINTERS, not copies** — "in-flight state
+   checkpointed on WI-NNN", "loop carry-note current as of <ts>", "see fact
+   `<key>`". A checkpoint the successor is re-injected with beats a paragraph
+   it has to trust.
+
+If you are summarizing and the state was NOT flushed (an auto-compaction hit
+mid-task), preserve the in-flight detail verbatim in the summary AND open with
+an instruction to the successor to park it via the tools above on its first
+turn.
 
 ## Compress or drop
 Greetings, transient status chatter, superseded states, verbose tool output, and
