@@ -74,8 +74,13 @@ export interface WorkOffer {
   readonly publisherRef: string;
   /** Who pays (D-009 billing matrix) — a pool-id or host ref; routing/display here. */
   readonly billedTo: string;
-  /** P-207 model-class hint; a free string here (P-207 owns the vocabulary). */
+  /** P-207 model-class hint; a free string here (./model-class-routing owns the vocabulary + routing). */
   readonly modelClass: string;
+  /**
+   * P-207: the slowest indicative first-token latency (ms) the requester
+   * accepts. Absent/null = latency-tolerant bulk (donated-GPU eligible).
+   */
+  readonly latencyToleranceMs?: number | null;
   /** Higher = more urgent; the scheduler claims higher-priority offers first. */
   readonly priority: number;
   /** Isolation capabilities the host must satisfy to launch this (C5). */

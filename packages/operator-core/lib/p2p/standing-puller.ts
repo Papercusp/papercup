@@ -167,6 +167,8 @@ function validateOffer(v: unknown): WorkOffer | null {
   if (!isFiniteNumber(v.priority)) return null;
   if (!Array.isArray(v.isolationReqs) || !v.isolationReqs.every((r) => typeof r === 'string')) return null;
   if (v.minRuntimeVersion !== undefined && typeof v.minRuntimeVersion !== 'string') return null;
+  const lat = v.latencyToleranceMs;
+  if (lat !== undefined && lat !== null && (!isFiniteNumber(lat) || lat < 0)) return null;
   if (!isPlainObject(v.budget)) return null;
   const remote = validateAxisSlot(v.budget.remote);
   const local = validateAxisSlot(v.budget.local);
@@ -182,6 +184,7 @@ function validateOffer(v: unknown): WorkOffer | null {
     priority: v.priority,
     isolationReqs: [...(v.isolationReqs as string[])],
     ...(v.minRuntimeVersion !== undefined ? { minRuntimeVersion: v.minRuntimeVersion as string } : {}),
+    ...(lat !== undefined ? { latencyToleranceMs: lat as number | null } : {}),
     budget: { remote: remote.cap, local: local.cap },
     publishedAt: v.publishedAt,
     ttlMs: v.ttlMs,

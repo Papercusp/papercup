@@ -30,7 +30,9 @@ bound pool account's auth — so even when the org has disabled Claude
 
 The catch: the gateway env (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`) is
 applied **at the spawn chokepoint** — `operator-spawn.ts` merges
-`gatewaySpawnEnv(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))` into each
+`resolveSpawnGatewayEnv({ ownerId, account, role, model, … })` (the
+backend-aware wrapper in `inference-gateway/spawn-env.ts` that resolves the
+account/pin/priority and internally calls `gatewaySpawnEnv`) into each
 **spawned bee's** environment. An **in-process** LLM call never passes through
 that chokepoint, so it never receives the gateway env.
 
