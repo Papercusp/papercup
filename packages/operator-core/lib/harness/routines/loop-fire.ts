@@ -113,6 +113,16 @@ export function readLoopCostCapCents(payloadTemplate: Record<string, unknown> | 
   return typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : null;
 }
 
+/** Read the loop's carry MODE from payload_template (su-cold-auto-mode-2026-07-03 P-003).
+ *  'cold' = the opt-in fresh-context cold-auto lifecycle — a cold fire stamps a
+ *  {carry:'cold', wakeCount, harness} marker the wake-executor forks on (RESET-CONTEXT /
+ *  RECYCLE). Anything else, INCLUDING absent, is today's WARM loop (no payload marker,
+ *  byte-identical). The whole cold path is still dormant downstream until the P-007 master
+ *  gate (coldAutoEnabled) is wired on in Phase 3 — this only stamps the marker. */
+export function readLoopCarry(payloadTemplate: Record<string, unknown> | null): 'warm' | 'cold' {
+  return payloadTemplate?.carry === 'cold' ? 'cold' : 'warm';
+}
+
 /** Read a positive-number dead-man bound (`maxFires` / `maxDurationSec`) from payload_template. */
 export function readLoopPositiveBound(
   payloadTemplate: Record<string, unknown> | null,
@@ -134,6 +144,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   const costCap = deps.costCap ?? defaultCheckLoopCostCap;
   const deadMan = deps.deadMan ?? defaultCheckLoopDeadMan;
   const incrementFireCount = deps.incrementFireCount ?? defaultIncrementLoopFireCount;
+  const readFireCount = deps.readFireCount ?? defaultReadLoopFireCount;
   const deactivateLoop = deps.deactivateLoop ?? defaultDeactivateLoop;
 
   if (!input.targetOwnerId) {
@@ -194,8 +205,24 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // record the outcome.
   await recordFire(input.installSlug, input.routineName, 'firing', 'attempt').catch(() => {});
   const kickoff = readLoopKickoff(input.payloadTemplate) ?? defaultLoopKickoff(input.routineId);
+
+  // su-cold-auto P-003: a COLD loop stamps a marker on the wake DELIVERY so the wake-executor
+  // forks to a fresh-context RESET / periodic RECYCLE instead of the warm in-place turn.
+  // wakeCount = this fire's 1-based number (priorFires + 1) → the consumer HYBRID cadence
+  // recycles every Nth wake; `harness` (the loop's install_slug) is the carry-note scope key.
+  // A WARM loop stamps NO payload → byte-identical to today (the whole path is also dormant
+  // downstream until the P-007 gate is wired on in Phase 3). Fail-soft: a fire-count read miss
+  // ⇒ wakeCount 1 (a RESET), never a throw.
+  const carry = readLoopCarry(input.payloadTemplate);
+  let coldPayload: { carry: 'cold'; wakeCount: number; harness: string } | undefined;
+  if (carry === 'cold') {
+    const priorFires = await readFireCount(input.sql, input.routineId).catch(() => 0);
+    coldPayload = { carry: 'cold', wakeCount: priorFires + 1, harness: input.installSlug };
+  }
+
   const fan = await wake([input.targetOwnerId], {
     summary: kickoff,
+    ...(coldPayload ? { payload: coldPayload } : {}),
     source: `loop:${input.routineId}`,
     workspaceId: input.workspaceId,
   });
@@ -238,8 +265,10 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   ).catch(() => {});
 
   // P2a: bump the live fire counter so the dead-man `maxFires` bound can read it on the next
-  // fire. Only when a fire-count bound is configured (otherwise zero extra writes). Best-effort.
-  if (maxFires != null) {
+  // fire. Also bumped for a COLD loop (su-cold-auto P-003) so the cold wakeCount cadence
+  // advances monotonically across delivered wakes. Only incremented after a REACHED fire, so a
+  // non-delivered wake never consumes a wakeCount slot. Best-effort; single-flight per loop.
+  if (maxFires != null || carry === 'cold') {
     await incrementFireCount(input.sql ?? undefined, input.routineId).catch(() => {});
   }
 

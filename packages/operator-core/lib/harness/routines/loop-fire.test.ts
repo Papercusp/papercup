@@ -144,3 +144,74 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     expect(deps.wake).not.toHaveBeenCalled();
   });
 });
+
+describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)', () => {
+  it('a COLD loop stamps a {carry, wakeCount, harness} marker on the wake (wakeCount = priorFires+1) and advances the counter', async () => {
+    const readFireCount = vi.fn(async () => 7); // 7 prior fires → this is the 8th
+    const incrementFireCount = vi.fn(async () => {});
+    const deps = mkDeps({ readFireCount: readFireCount as never, incrementFireCount: incrementFireCount as never });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X', carry: 'cold' } }, deps);
+
+    expect(res).toMatchObject({ fired: true, woken: 1 });
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    // harness = the loop's install_slug (the carry-note scope key); wakeCount = 8 → the
+    // consumer's HYBRID cadence recycles this wake (8 % 8 === 0).
+    expect(opts.payload).toEqual({ carry: 'cold', wakeCount: 8, harness: 'papercusp' });
+    // Counter advances so the NEXT cold wake's wakeCount is monotonic.
+    expect(incrementFireCount).toHaveBeenCalledTimes(1);
+  });
+
+  it('the first cold fire (no prior fires) is wakeCount 1 (a RESET)', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 0) as never,
+      incrementFireCount: vi.fn(async () => {}) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({ carry: 'cold', wakeCount: 1 });
+  });
+
+  it('a fire-count read miss fails soft to wakeCount 1 — never a throw', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as never,
+      incrementFireCount: vi.fn(async () => {}) as never,
+    });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
+    expect(res).toMatchObject({ fired: true });
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toMatchObject({ carry: 'cold', wakeCount: 1 });
+  });
+
+  it('a WARM loop stamps NO payload marker (byte-identical to today) and never touches the fire counter', async () => {
+    const readFireCount = vi.fn(async () => 3);
+    const incrementFireCount = vi.fn(async () => {});
+    const deps = mkDeps({ readFireCount: readFireCount as never, incrementFireCount: incrementFireCount as never });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'x' } }, deps); // carry absent → warm
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.payload).toBeUndefined();
+    expect(readFireCount).not.toHaveBeenCalled();
+    expect(incrementFireCount).not.toHaveBeenCalled();
+  });
+
+  it('an explicit carry:"warm" is also treated as warm (no marker)', async () => {
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 5) as never,
+      incrementFireCount: vi.fn(async () => {}) as never,
+    });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'warm' } }, deps);
+    expect((deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].payload).toBeUndefined();
+  });
+
+  it('a COLD fire that does NOT reach a session does NOT advance the counter (no wakeCount slot consumed)', async () => {
+    const incrementFireCount = vi.fn(async () => {});
+    const deps = mkDeps({
+      wake: vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })) as never,
+      readFireCount: vi.fn(async () => 2) as never,
+      incrementFireCount: incrementFireCount as never,
+      deactivateLoop: vi.fn(async () => true) as never,
+    });
+    const res = await fireLoopWake({ ...baseInput, payloadTemplate: { carry: 'cold' } }, deps);
+    expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+    expect(incrementFireCount).not.toHaveBeenCalled();
+  });
+});

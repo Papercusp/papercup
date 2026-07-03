@@ -96,6 +96,12 @@ export default defineTool({
       .describe(
         'Advanced: a custom per-wake instruction, replacing the default "create + self-assign your work_items, work them, set_state" template. Most loops should omit this. Auto-truncated to 4000 chars if longer.',
       ),
+    carry: z
+      .enum(['warm', 'cold'])
+      .optional()
+      .describe(
+        "Loop lifecycle (su-cold-auto-mode-2026-07-03, D-001 opt-in). 'warm' (DEFAULT) = today's behaviour — each fire re-wakes THIS same warm session in place, context carried. 'cold' = the opt-in fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and stays inert until the cold-auto master gate is enabled (Phase 3). NEVER use 'cold' for an interactive/human-present session (D-005).",
+      ),
     costCapCents: z
       .number()
       .int()
@@ -186,6 +192,7 @@ export default defineTool({
       costCapCents: args.costCapCents ?? null,
       maxFires: args.maxFires ?? null,
       maxDurationSec: args.maxDurationSec ?? null,
+      carry: args.carry ?? 'warm',
     });
 
     // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
@@ -234,6 +241,7 @@ export default defineTool({
               harness,
               intervalSec: args.intervalSec,
               goal,
+              carry: args.carry ?? 'warm',
               costCapCents: args.costCapCents ?? null,
               firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
               customWakePrompt: wakePrompt != null,

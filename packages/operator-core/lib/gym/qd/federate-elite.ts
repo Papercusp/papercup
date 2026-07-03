@@ -23,6 +23,28 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveFederationWorkspace, federatableElite } from '../../agent-facts/store';
+import {
+  signEliteOutcome,
+  eliteOutcomeRecordId,
+  type EliteOutcomeBasis,
+} from './elite-outcome-record';
+
+/**
+ * F1-6 / P-014 (D-005 hole 3): the device-signing seam. When supplied,
+ * {@link markEliteFederatable} ALSO builds a device-signed EliteOutcomeRecord
+ * (elite-outcome-record.ts) and persists it into `gym_qd_archive.outcome_record`,
+ * so every receiver can verify the outcome claim OFFLINE (verifyEliteOutcomeForElite)
+ * instead of trusting the bare `federatable` boolean. The private key never leaves
+ * the identity layer — the caller passes a `sign` closure (signWithDeviceKey binding)
+ * + the matching device pubkey.
+ */
+export interface EliteOutcomeSigner {
+  /** The authoring device's raw-32 Ed25519 pubkey (base64) — stamped into the record
+   *  and re-derived by the receiver from the source log's admitted device (anti-lift). */
+  devicePubkeyBase64: string;
+  /** Sign the canonical outcome bytes with the device private key. */
+  sign: (bytes: Buffer) => Promise<Buffer>;
+}
 
 export interface MarkEliteFederatableArgs {
   /** The operator workspace the local archive row lives in. */
@@ -33,6 +55,14 @@ export interface MarkEliteFederatableArgs {
   nicheKey: string;
   /** D-002 eligibility inputs — outcome-verified or strongly graded only. */
   eligibility: { outcome?: string | null; grade?: number | null };
+  /**
+   * F1-6/P-014: when provided, ALSO sign a device-signed EliteOutcomeRecord over the
+   * stamped row's {niche, candidate, outcome, grade, fitness} and store it in
+   * `gym_qd_archive.outcome_record` — so the elite federates with its own verifiable
+   * proof. ABSENT ⇒ federatable-only stamp (tier-1 backward-compatible: the column
+   * stays NULL and the receiver treats the elite as outcome-UNVERIFIED, still admitted).
+   */
+  outcomeSigner?: EliteOutcomeSigner;
 }
 
 export interface MarkEliteFederatableResult {
@@ -40,6 +70,9 @@ export interface MarkEliteFederatableResult {
   federatable: boolean;
   /** 'stamped' | 'not-eligible' | 'no-row' — why the result is what it is. */
   reason: 'stamped' | 'not-eligible' | 'no-row';
+  /** F1-6/P-014: the content-address of the signed outcome record, when one was
+   *  produced (a signer was supplied AND the row existed). */
+  outcomeRecordId?: string;
 }
 
 /**

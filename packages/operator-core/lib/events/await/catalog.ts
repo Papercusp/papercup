@@ -4,42 +4,44 @@
  *
  * The plan's headline: the await primitive works, but agents don't FIND it — they
  * poll (`dev:pipeline_position`, `dev:build_status`) for things that already fire
- * an awaitable event. This registry is the fix's spine: ONE list of families that
+ * an awaitable event. This registry is the fix's spine: ONE list of key families that
  *   (a) the `events:catalog` tool renders — answers "what can I wait on?" in one call;
  *   (b) the poll-site tools read to advertise an `awaitable:` hint (P-001);
- *   (c) the sugar verbs (P-003) source their key-templates from — so a key SHAPE
- *       lives in exactly one place.
+ *   (c) the sugar verbs (P-003) source their key TEMPLATES from via `buildKey` — so a
+ *       key shape lives in exactly one place.
  *
  * D-005 (why the registry is load-bearing, not decoration): because BOTH the
  * poll-sites AND the sugar read this registry, a future Phase 4 (fold the await
- * primitive into the ECA reaction engine) is a FORM change — swap how the sugar
- * resolves a family — not a rebuild. Do not scatter key strings; add them here.
+ * primitive into the ECA reaction engine) is a FORM change — swap how a family
+ * resolves — not a rebuild. Do not scatter key strings; add them HERE.
  *
  * GROUNDED against the real emit sites (verified 2026-07-03), NOT the plan's prose:
  * the gate keys are the asymmetric `release:green` / `green-checkpoint:red`, and the
- * deploy key is a plain `release:deployed` (no `:<sha>` suffix in the global emit).
- * Normalizing that asymmetry behind named, discoverable sugar is exactly the point.
+ * deploy key is a plain `release:deployed` (no `:<sha>` in the GLOBAL emit; the
+ * per-sha `release:deployed:<sha>` is added by this plan's Phase 2). Every
+ * `exists:true` key was read off its emitter; every `exists:false` key is added by
+ * Phase 2 in the SAME session, so catalog and emitters agree by construction.
+ *
+ * MODEL: one entry = one key family (one `keyTemplate`). No implicit key-unions —
+ * a sugar verb that wants an either-way wait (deploy success|fail) awaits the two
+ * MUTUALLY-EXCLUSIVE keys explicitly; keys that CO-fire (e.g. the general
+ * `work-item:status` and the specific `work-item:done`) are never awaited together,
+ * so an agent is never double-woken for one transition.
  */
 
 /** A `<placeholder>` slot in a key template. */
 export interface EventKeyParam {
   /** Placeholder name as it appears in the template, e.g. 'id' for `work-item:done:<id>`. */
   name: string;
-  /** Must the caller supply it to build a concrete key? */
+  /** Must the caller supply it to build a concrete key? An omitted OPTIONAL param collapses its `:<name>` segment. */
   required: boolean;
   /** One line for the catalog + sugar arg docs. */
   describe: string;
 }
 
-/** A sibling outcome key of a dual/multi-outcome family (e.g. deploy failed). */
-export interface EventSibling {
-  key: string;
-  describe: string;
-}
-
 /** One awaitable event-key family. */
 export interface EventCatalogEntry {
-  /** Stable family id — the catalog lookup key and the sugar's resolution key. */
+  /** Stable family id — the catalog lookup key and `buildKey` handle. */
   family: string;
   /** Exact key TEMPLATE with `<param>` placeholders. A no-param family is a literal key. */
   keyTemplate: string;
@@ -53,44 +55,40 @@ export interface EventCatalogEntry {
   exists: boolean;
   /** The poll this replaces — surfaced so agents stop polling (D-001). */
   replacesPoll?: string;
-  /** The sugar verb that resolves to this family, if any (P-003). */
+  /** The sugar verb that primarily surfaces this family, if any (P-003). */
   sugar?: string;
   /**
-   * Additional outcome keys worth awaiting alongside the primary (e.g. a deploy
-   * FAILS on `release:deploy-failed`, not `release:deployed`). The dual-outcome
-   * sugar registers awaits on the primary AND every sibling so it wakes either way.
-   */
-  siblings?: EventSibling[];
-  /**
-   * KEY IS GLOBAL (no per-subject param) — a wake fires for EVERY occurrence, so
-   * the waiter must check the payload to confirm it's theirs. Set on families whose
-   * real emit carries the subject in the PAYLOAD, not the key (e.g. `release:deployed`
-   * fires once per deploy; `payload.sha` says which). The sugar echoes this caveat.
+   * KEY IS GLOBAL (no per-subject param) — a wake fires for EVERY occurrence, so the
+   * waiter must check the payload to confirm it's theirs. Set on families whose real
+   * emit carries the subject in the PAYLOAD, not the key (e.g. `release:green` fires
+   * once per checkpoint; `payload.sha` says which). The sugar echoes this caveat.
    */
   payloadFiltered?: boolean;
 }
 
 /**
- * THE registry. Order = catalog display order (existing/high-value first).
- * Every `exists: true` key was verified against its emit site on 2026-07-03;
- * every `exists: false` key is ADDED by this plan's Phase 2 in the same session,
- * so the catalog and the emitters agree by construction.
+ * THE registry. Order = catalog display order (highest-value / existing first).
  */
 export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   // ── Deploy / release pipeline ─────────────────────────────────────────────
   {
     family: 'deploy',
     keyTemplate: 'release:deployed:<sha>',
-    params: [{ name: 'sha', required: false, describe: 'the target sha; omit to wake on the NEXT deploy of any sha' }],
+    params: [{ name: 'sha', required: false, describe: 'the target sha; omit to wake on the NEXT deploy of any sha (global key)' }],
     describe: 'A staging sha reached the live GREEN :3070 operator (the deploy landed).',
     emitter: 'release-gate (apps/operator/lib/release/deploy.ts)',
-    exists: false, // per-sha key ADDED in Phase 2 (P-102) alongside the existing global `release:deployed`
-    replacesPoll: 'dev:pipeline_position (polling for "is my sha live on :3070")',
+    exists: false, // per-sha ADDED in Phase 2 (P-102); the global `release:deployed` (sha omitted) already fires
+    replacesPoll: 'dev:pipeline_position (polling "is my sha live on :3070")',
     sugar: 'deploy:await',
-    siblings: [
-      { key: 'release:deployed', describe: 'GLOBAL deploy-landed (any sha) — fired on every deploy; check payload.sha' },
-      { key: 'release:deploy-failed', describe: 'the deploy FAILED and rolled back' },
-    ],
+  },
+  {
+    family: 'deploy-failed',
+    keyTemplate: 'release:deploy-failed',
+    params: [],
+    describe: 'A deploy FAILED and rolled back (the mutually-exclusive counterpart of release:deployed).',
+    emitter: 'release-gate (apps/operator/lib/release/deploy.ts)',
+    exists: true,
+    payloadFiltered: true,
   },
   {
     family: 'checkpoint',
@@ -102,9 +100,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'dev:pipeline_position / dev:build_status (polling "did my change clear the gate?")',
     sugar: 'checkpoint:await',
     payloadFiltered: true,
-    siblings: [{ key: 'green-checkpoint:red', describe: 'the gate is HELD — candidate not green (payload.summary = failing-test tail)' }],
   },
-  // ── Locks / plan runs (already sugared / surfaced) ────────────────────────
+  {
+    family: 'checkpoint-red',
+    keyTemplate: 'green-checkpoint:red',
+    params: [],
+    describe: 'The green-checkpoint is HELD — candidate not green (payload.summary = failing-test tail).',
+    emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
+    exists: true,
+    payloadFiltered: true,
+  },
+  // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',
     keyTemplate: 'lock:grant:<ticket>',
@@ -112,7 +118,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe: 'A queued lock was GRANTED to you.',
     emitter: 'lock-grant-bridge (locks:*)',
     exists: true,
-    sugar: undefined, // already sugared via the locks:* tools — surfaced here for completeness
+    // already sugared via the locks:* tools — listed for completeness, no new verb
   },
   {
     family: 'plan-run',
@@ -128,17 +134,43 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'work-item',
     keyTemplate: 'work-item:status:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item id, e.g. WI-1234' }],
-    describe: 'ANY status transition of a work item (todo/wip/blocked/done/…). Wake on every change of WI-X.',
+    describe: 'ANY status transition of a work item (todo/wip/blocked/done/…) — wake on every change of WI-X.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts)',
-    exists: false, // P-101 adds the general per-transition emit; done/unblocked/claimed/blocked already exist as siblings
+    exists: false, // P-101 adds the general per-transition emit
     replacesPoll: 'polling work_items:get for a peer/dependency item',
     sugar: 'work-item:await',
-    siblings: [
-      { key: 'work-item:done:<id>', describe: 'the item SETTLED (feature→passed/deprecated, issue→resolved/closed)' },
-      { key: 'work-item:unblocked:<id>', describe: 'the item\'s LAST live blocker just cleared' },
-      { key: 'work-item:blocked:<id>', describe: 'the item transitioned INTO blocked' },
-      { key: 'work-item:claimed:<id>', describe: 'an agent claimed the item' },
-    ],
+  },
+  {
+    family: 'work-item-done',
+    keyTemplate: 'work-item:done:<id>',
+    params: [{ name: 'id', required: true, describe: 'the work-item id' }],
+    describe: 'A work item SETTLED (feature→passed/deprecated, issue→resolved/closed).',
+    emitter: 'work-items-events',
+    exists: true,
+  },
+  {
+    family: 'work-item-unblocked',
+    keyTemplate: 'work-item:unblocked:<id>',
+    params: [{ name: 'id', required: true, describe: 'the work-item id' }],
+    describe: 'A work item\'s LAST live blocker just cleared.',
+    emitter: 'work-items-events',
+    exists: true,
+  },
+  {
+    family: 'work-item-blocked',
+    keyTemplate: 'work-item:blocked:<id>',
+    params: [{ name: 'id', required: true, describe: 'the work-item id' }],
+    describe: 'A work item transitioned INTO blocked.',
+    emitter: 'work-items-events',
+    exists: true,
+  },
+  {
+    family: 'work-item-claimed',
+    keyTemplate: 'work-item:claimed:<id>',
+    params: [{ name: 'id', required: true, describe: 'the work-item id' }],
+    describe: 'An agent claimed a work item.',
+    emitter: 'work-items-events',
+    exists: true,
   },
   // ── git-sync / session / services (Phase 2 additions) ─────────────────────
   {
@@ -156,13 +188,12 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     family: 'session-compacted',
     keyTemplate: 'session:compacted:<owner>',
     params: [{ name: 'owner', required: true, describe: 'the ownerId whose compaction to wait on' }],
-    describe: 'A session finished a /compact (WI-1804 alt post-compaction wake; lets a leader await a member\'s compaction).',
+    describe: 'A session finished a /compact (WI-1804 alt post-compaction wake; a leader can await a member\'s compaction).',
     emitter: 'compaction path (Phase 2)',
     exists: false, // P-103
-    sugar: undefined,
   },
   {
-    family: 'service',
+    family: 'service-up',
     keyTemplate: 'service:up:<name>',
     params: [{ name: 'name', required: true, describe: 'the service name, e.g. inference-gateway / substrate-sidecar / git-sync' }],
     describe: 'A monitored service transitioned to HEALTHY (block-until-recovered instead of re-polling).',
@@ -170,7 +201,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: false, // P-104
     replacesPoll: 'dev:service_health re-polling for recovery',
     sugar: 'service:await-up',
-    siblings: [{ key: 'service:down:<name>', describe: 'the service transitioned to UNHEALTHY' }],
+  },
+  {
+    family: 'service-down',
+    keyTemplate: 'service:down:<name>',
+    params: [{ name: 'name', required: true, describe: 'the service name' }],
+    describe: 'A monitored service transitioned to UNHEALTHY.',
+    emitter: 'coord:conditions bridge (Phase 2)',
+    exists: false, // P-104
   },
   // ── Coordination / fleet (Phase 2 additions) ──────────────────────────────
   {
@@ -193,7 +231,6 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe: 'A claim was released (pick up orphaned/handed-back work the moment it frees).',
     emitter: 'work_items:release / claim reaper (Phase 2)',
     exists: false, // P-105
-    sugar: undefined,
   },
   {
     family: 'fleet-drained',
@@ -206,13 +243,20 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   },
   // ── Rate limits (already emit) ────────────────────────────────────────────
   {
-    family: 'rate-limit',
+    family: 'rate-limit-reset',
     keyTemplate: 'rate-limit:reset:<scope>',
     params: [{ name: 'scope', required: true, describe: 'the rate-limit scope, e.g. gym-judge' }],
-    describe: 'A rate-limit pause ended for a scope.',
+    describe: 'A rate-limit pause ENDED for a scope.',
     emitter: 'gym rate-pause-events (packages/operator-core/lib/gym/rate-pause-events.ts)',
     exists: true,
-    siblings: [{ key: 'rate-limit:paused:<scope>', describe: 'the scope entered a rate-limit pause' }],
+  },
+  {
+    family: 'rate-limit-paused',
+    keyTemplate: 'rate-limit:paused:<scope>',
+    params: [{ name: 'scope', required: true, describe: 'the rate-limit scope' }],
+    describe: 'A scope ENTERED a rate-limit pause.',
+    emitter: 'gym rate-pause-events',
+    exists: true,
   },
 ] as const;
 
@@ -221,18 +265,17 @@ export function catalogEntry(family: string): EventCatalogEntry | undefined {
   return EVENT_CATALOG.find((e) => e.family === family);
 }
 
-/** All families that carry a sugar verb (P-003 registers exactly these). */
+/** All families that carry a sugar verb (for the catalog + guidance cross-links). */
 export function sugaredFamilies(): EventCatalogEntry[] {
   return EVENT_CATALOG.filter((e) => e.sugar);
 }
 
 /**
- * Build a concrete event key from a family + params. Interpolates every
- * `<name>` placeholder; a MISSING required param throws (a sugar verb that can't
- * build its key must fail loudly, never register an await on a malformed key).
- * An OMITTED optional param collapses the whole `:<name>` segment away — so
- * `deploy` with no sha yields the global `release:deployed`, matching the real
- * global emit (D-005: one key shape, one place).
+ * Build a concrete event key from a family + params. Interpolates every `<name>`
+ * placeholder; a MISSING required param throws (a sugar verb that can't build its
+ * key must fail loudly, never register an await on a malformed key). An OMITTED
+ * optional param collapses its whole `:<name>` segment — so `buildKey('deploy', {})`
+ * yields the global `release:deployed`, matching the real global emit (D-005).
  */
 export function buildKey(family: string, params: Record<string, string | number | undefined> = {}): string {
   const entry = catalogEntry(family);
@@ -243,8 +286,7 @@ export function buildKey(family: string, params: Record<string, string | number 
     const has = raw !== undefined && raw !== null && String(raw).length > 0;
     if (!has) {
       if (p.required) throw new Error(`events:catalog — family '${family}' requires param '${p.name}'`);
-      // Optional + omitted: drop the ":<name>" segment (collapse to the global key).
-      key = key.replace(new RegExp(`:<${p.name}>`), '');
+      key = key.replace(`:<${p.name}>`, ''); // optional + omitted → collapse to the global key
       continue;
     }
     key = key.replace(`<${p.name}>`, String(raw));
@@ -252,44 +294,30 @@ export function buildKey(family: string, params: Record<string, string | number 
   return key;
 }
 
-/**
- * Concrete keys a sugar verb should register awaits on for a family + params:
- * the built primary key PLUS every sibling whose placeholders can be filled from
- * the same params (so a dual-outcome verb wakes on either outcome). A sibling
- * with an unfillable placeholder is skipped (never register a malformed key).
- */
-export function awaitKeysForFamily(
-  family: string,
-  params: Record<string, string | number | undefined> = {},
-): string[] {
-  const entry = catalogEntry(family);
-  if (!entry) throw new Error(`events:catalog — unknown family '${family}'`);
-  const keys = [buildKey(family, params)];
-  for (const sib of entry.siblings ?? []) {
-    const built = interpolateSibling(sib.key, params);
-    if (built && !keys.includes(built)) keys.push(built);
-  }
-  return keys;
+/** A render-ready row for the events:catalog tool (stable, JSON-friendly shape). */
+export interface CatalogRow {
+  family: string;
+  key: string;
+  awaitable_now: boolean;
+  await_example: string;
+  describe: string;
+  emitter: string;
+  replaces_poll?: string;
+  sugar?: string;
+  payload_filtered?: boolean;
 }
 
-/** Fill `<name>` placeholders in a sibling key from params; null if any remain. */
-function interpolateSibling(template: string, params: Record<string, string | number | undefined>): string | null {
-  let key = template;
-  const placeholders = template.match(/<([a-zA-Z0-9_]+)>/g) ?? [];
-  for (const ph of placeholders) {
-    const name = ph.slice(1, -1);
-    const raw = params[name];
-    if (raw === undefined || raw === null || String(raw).length === 0) {
-      // An optional placeholder we can't fill → collapse the segment (global sibling);
-      // a required one we can't fill → skip this sibling entirely.
-      const entry = catalogEntry(Object.keys(params).length ? '' : '');
-      void entry;
-      // Collapse ":<name>" when the primary family marks this param optional; else drop.
-      key = key.replace(new RegExp(`:${ph}`), '');
-      if (key.includes('<')) return null;
-      continue;
-    }
-    key = key.replace(ph, String(raw));
-  }
-  return key.includes('<') ? null : key;
+/** Project the whole catalog into render rows for the events:catalog tool. */
+export function renderCatalog(): CatalogRow[] {
+  return EVENT_CATALOG.map((e) => ({
+    family: e.family,
+    key: e.keyTemplate,
+    awaitable_now: e.exists,
+    await_example: `events:await { event: "${e.keyTemplate}" }`,
+    describe: e.describe,
+    emitter: e.emitter,
+    ...(e.replacesPoll ? { replaces_poll: e.replacesPoll } : {}),
+    ...(e.sugar ? { sugar: e.sugar } : {}),
+    ...(e.payloadFiltered ? { payload_filtered: true } : {}),
+  }));
 }

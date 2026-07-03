@@ -126,6 +126,12 @@ export interface MaterializeLoopInput {
    *  this many total fires / this many seconds since arm. Ride payload_template (no new columns). */
   maxFires?: number | null;
   maxDurationSec?: number | null;
+  /** Loop lifecycle (su-cold-auto-mode-2026-07-03 P-003 / D-001). 'warm' (default, absent) =
+   *  today's behaviour — each fire re-wakes the SAME warm session in place. 'cold' = the opt-in
+   *  fresh-context lifecycle: a cold fire stamps a {carry,wakeCount,harness} marker on the wake
+   *  so the wake-executor RESETs / periodically RECYCLEs instead of a warm turn. Rides
+   *  payload_template (no new column). Downstream stays dormant until the P-007 gate (Phase 3). */
+  carry?: 'warm' | 'cold';
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -162,6 +168,9 @@ export async function materializeLoop(
   if (input.costCapCents != null) payloadTemplate.costCapCents = input.costCapCents;
   if (input.maxFires != null) payloadTemplate.maxFires = input.maxFires;
   if (input.maxDurationSec != null) payloadTemplate.maxDurationSec = input.maxDurationSec;
+  // Only stamp a cold marker (su-cold-auto P-003); a warm loop leaves payload_template
+  // byte-identical to today, so an existing warm loop re-armed by an older client is unchanged.
+  if (input.carry === 'cold') payloadTemplate.carry = 'cold';
 
   const row = await upsertRoutine(
     sql,
