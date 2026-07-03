@@ -178,8 +178,20 @@ The complete enumeration behind the D-010 "the migs-144/150 triggers are a no-op
 invariant and the Track-B authority map above — every site that names the federation
 scope. It is the *evidence* that the re-key was a topic move, not a trigger rewrite:
 `harness_slug` is the **capture/demux column** everywhere, never the federation
-domain. Verified against live `staging` 2026-06-08. (Origin:
-`fleet-federation-reanchor-2026-06-06` P-003 — that plan is superseded by this one;
+domain. Verified against live `staging` 2026-06-08.
+
+> **Line numbers below have drifted (re-verified 2026-07-03) and are no longer
+> byte-exact** — this shared tree receives concurrent unrelated edits daily, so a
+> `:281`-style citation from 2026-06-08 can shift by dozens of lines within weeks
+> even when the function/table/gate it names is unchanged. Spot-checked
+> 2026-07-03: every function, table, tag, and gate named below still exists with
+> the described behavior (e.g. `lockAuthorityFor` now sits at line 314, not 281;
+> `queryPresenceRowsForHive` at 189, not 167; `NOTIFY_CHANNEL` at 73, not 54; the
+> `AuthorityOpEnvelope` interface is actually named `AuthorityRpcEnvelope`) — only
+> the exact line numbers are stale, not the structure. Treat every `:NNN` below as
+> "around there" and grep the symbol name to confirm, not as a pinned coordinate.
+
+(Origin: `fleet-federation-reanchor-2026-06-06` P-003 — that plan is superseded by this one;
 the inventory lives here because the surface it maps is live/shipped. Folded into the
 plan's D-009.)
 
@@ -260,7 +272,7 @@ harnessSlug"). The harness path and its Hive twin coexist:
 | `lock-authority.ts` | `lockAuthorityFor` :281, `routeToAuthority` :367, `queryPresenceRows`(harness_slug) :131 | `lockAuthorityForHive`, `routeToAuthorityForHive` :411, `queryPresenceRowsForHive`(hive_slug) :167 — shared core `selectAuthorityFromRows` :212 |
 | `remote-peers-cache.ts` | `hasRemotePeers` :43 | `hasRemoteHivePeers` :56 (key `hive:<slug>`) |
 | `file-lock-routing.ts` | `DomainToHarnessSlug` :49 | `HarnessToHiveSlug` :53 → `routeFileLockOp` picks `{kind:hive\|harness}` :133-151 |
-| `authority-op-registry.ts` | `AuthorityOpEnvelope.harnessSlug` :27, `verifyIsAuthority` :66/85 | same envelope; scope key carries either |
+| `authority-op-registry.ts` | `AuthorityRpcEnvelope.harnessSlug` (interface actually named `AuthorityRpcEnvelope`, not `AuthorityOpEnvelope`) :28, `verifyIsAuthority` opt :100, gated call :155/158 | same envelope; scope key carries either |
 | `hardened-authority.ts` | `resolveHardenedAuthority(harnessSlug)` :83, fetch/load/save :52-55 | generic — reused for hive |
 | `peer-rpc-transport.ts` | `PeerRpcRequest.harnessSlug` :28; `http-peer-rpc-transport.ts` serializes `{harnessSlug,…}` :91 | wire field carries the scope key |
 
