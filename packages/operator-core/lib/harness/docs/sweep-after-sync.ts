@@ -163,10 +163,15 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // A harness with no doc records (and none newly registered) can't have any drift.
   if (records.size === 0) return null;
 
-  // The NEWLY-drifted docs this sweep — the callbacks fire once per drift episode
-  // (sweepHarnessDocs gates them on !regenEnqueuedAt/!reverifyFlaggedAt), so this is a
-  // deduped batch for the doc-steward (P-008).
+  // Every retry-DUE drifted doc this sweep — new drift PLUS unhealed docs the retry clock
+  // re-fires (~30min backoff; freshness-sweep touchRegen/touchReverify). This is the batch
+  // the doc-steward (P-008) retries against.
   const staleDocs: DriftedDoc[] = [];
+  // WI-2007: docs that NEWLY transitioned into drift THIS sweep (fresh→review/stale) — a
+  // strict subset of staleDocs sharing the SAME object refs (so the attribution enrichment
+  // below mutates both). The '*' broadcast is EDGE-TRIGGERED off this, so a still-unhealed
+  // doc is announced once, not re-broadcast to every agent every 30min forever.
+  const newlyDrifted: DriftedDoc[] = [];
 
   const result = await sweepHarnessDocs({
     harnessSlug,
@@ -176,14 +181,18 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     changedPaths,
     submodulePaths,
     resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
-    // EI-2826: collect drifted docs into the batch; the coord broadcast is COALESCED into
-    // ONE digest after the sweep (below) instead of one-per-doc to `*` (which buried
-    // directed messages). The staleDocs batch already drives the doc-steward dispatch.
-    onRegenNeeded: (doc, detail) => {
-      staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
+    // EI-2826/WI-2007: collect every retry-due doc into staleDocs (drives the doc-steward),
+    // and the NEWLY-transitioned subset into newlyDrifted (drives the edge-triggered '*'
+    // broadcast below). Same object ref in both so attribution enrichment applies once.
+    onRegenNeeded: (doc, detail, becameDrifted) => {
+      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source };
+      staleDocs.push(d);
+      if (becameDrifted) newlyDrifted.push(d);
     },
-    onReverifyNeeded: (doc, detail) => {
-      staleDocs.push({ docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source });
+    onReverifyNeeded: (doc, detail, becameDrifted) => {
+      const d: DriftedDoc = { docId: doc.docId, anchorPaths: doc.anchorPaths, reason: detail ?? 'subject code changed', source: doc.source };
+      staleDocs.push(d);
+      if (becameDrifted) newlyDrifted.push(d);
     },
   });
 
@@ -208,10 +217,15 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
     }
   }
 
-  // EI-2826: ONE coalesced doc-drift broadcast per sweep (replaces the per-doc flood to `*`
-  // that buried directed coord messages). Sent AFTER attribution enrichment so the batch is
-  // final. Best-effort — a send failure must never break the sweep; null ⇒ nothing drifted.
-  const digest = buildDocDriftDigest(harnessSlug, staleDocs);
+  // EI-2826 + WI-2007: ONE coalesced doc-drift broadcast per sweep, EDGE-TRIGGERED — it names
+  // only docs that NEWLY drifted this sweep (fresh→review/stale), never the standing backlog.
+  // The retry clock re-fires an UNHEALED doc's callback every ~30min so the doc-steward keeps
+  // retrying, but attempts only bump on a CONFIRMED steward dispatch (WI-1661) — so with no/busy
+  // steward the backoff stays at 30min forever and the doc would otherwise re-broadcast to EVERY
+  // agent every 30min indefinitely (the 3686-msg flood that buried directed messages). Agents see
+  // a new drift once; the standing set stays discoverable via harness_docs:list. Sent AFTER
+  // attribution enrichment (shared refs). Best-effort — a send failure must never break the sweep.
+  const digest = buildDocDriftDigest(harnessSlug, newlyDrifted);
   if (digest) {
     await sendMessage(DOCS_IDENTITY, { to: ['*'], summary: digest, category: 'doc-drift' }).catch(() => {});
   }

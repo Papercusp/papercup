@@ -173,8 +173,12 @@ export interface SweepOpts extends DriftDeps {
   store?: DocStore;
   /** Close-the-loop hooks (D-004). Default: no-op (the status flip + the tab's
    *  regenerate/re-verify actions already drive the loop). */
-  onRegenNeeded?: (doc: HarnessDocRecord, detail: string | null) => Promise<void> | void;
-  onReverifyNeeded?: (doc: HarnessDocRecord, detail: string | null) => Promise<void> | void;
+  // `becameDrifted` (WI-2007): true iff the doc TRANSITIONED into drift this sweep
+  // (fresh→stale/review), false when it's a retry re-confirm of an already-drifted doc
+  // (the ~30min retry-clock re-fire). Lets a consumer edge-trigger a notification on new
+  // drift while still driving the steward retry off every due re-fire.
+  onRegenNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean) => Promise<void> | void;
+  onReverifyNeeded?: (doc: HarnessDocRecord, detail: string | null, becameDrifted: boolean) => Promise<void> | void;
   /** Wall-clock for the steward retry backoff (mig 386). Injectable for tests. */
   now?: number;
 }
@@ -261,7 +265,7 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
         // see the doc-comment above. The caller spends the attempt only once it
         // confirms a doc-steward actually launched.
         await store.touchRegen(doc.docId);
-        await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail);
+        await opts.onRegenNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameStale);
         result.regenEnqueued.push(doc.docId);
       }
     } else if (status === 'review') {
@@ -269,7 +273,7 @@ export async function sweepHarnessDocs(opts: SweepOpts): Promise<SweepResult> {
       if (due) {
         // Touch the retry-clock but do NOT bump reverify_attempts — see above.
         await store.touchReverify(doc.docId);
-        await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail);
+        await opts.onReverifyNeeded?.({ ...doc, status, statusDetail: detail }, detail, becameReview);
         result.reverifyFlagged.push(doc.docId);
       }
     } else {
