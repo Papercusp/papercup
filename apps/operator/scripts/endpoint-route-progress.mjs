@@ -42,17 +42,24 @@ const raw = execSync(`find "${API}" -name route.ts -not -path "*/.next*"`, { enc
   .filter((p) => !FLOOR.has(p));
 
 // Migrated endpoints = entries in the defineRoute registry barrel.
+// The barrel lives in packages/operator-core (it moved there from
+// apps/operator/lib in the operator-core extraction). Resolve it from
+// REPO so a future move fails loudly rather than silently reporting 0.
+const BARREL = join(REPO, 'packages/operator-core/lib/endpoint-route/routes/index.ts');
 let migratedCount = 0;
 try {
-  const barrel = readFileSync(
-    join(API, '../../lib/endpoint-route/routes/index.ts'),
-    'utf8',
-  );
+  const barrel = readFileSync(BARREL, 'utf8');
   // Each `import X from './fam/name'` line is one migrated route MODULE
   // (a module may export multiple operations). Count the import lines.
   migratedCount = (barrel.match(/^import .+ from '\.\//gm) ?? []).length;
-} catch {
-  /* barrel missing — migratedCount stays 0 */
+} catch (err) {
+  // Don't swallow silently — a stale path here reports "0 migrated"
+  // and masks the real state (this is exactly what happened when the
+  // barrel moved to packages/operator-core). Warn loudly.
+  console.warn(
+    `  WARNING: could not read defineRoute barrel at ${BARREL} ` +
+      `(${err.code ?? err.message}); migratedCount reported as 0.`,
+  );
 }
 
 const remaining = raw.length;
