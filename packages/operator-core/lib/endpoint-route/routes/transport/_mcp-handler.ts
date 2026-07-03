@@ -1653,8 +1653,8 @@ const handler = createMcpHandler(
           // synthesizes a principal + opens a workspace tx so those tools
           // run (a role-scoped caller is authenticated by its verified
           // signed URL). workspaceId='*' (no workspace chosen) still fails
-          // those tools — caller must pass ?workspace=X.
-          const needsTx = dispatchNeedsTx(dispatchSpawnCtx);
+          // those tools — caller must pass ?workspace=X. (dispatchWithSynthesizedTx
+          // below applies dispatchNeedsTx itself.)
           // Generic projected-dispatch → MCP-result mapping (P-031,
           // @papercusp/tooldef-mcp). Same shape/behavior as before: success →
           // { content }, failure → { isError, content:["<code>: <message>"] }.
@@ -1783,37 +1783,13 @@ const handler = createMcpHandler(
           // — harness resolution, not just the PG GUC `withWorkspace` sets — see
           // the CALLER's workspace, not the process-global `reg.current`. '*'
           // (superuser with no chosen workspace) stays unpinned.
-          // P-062 — crossWorkspace tools span workspaces: hand them the admin
-          // (rolbypassrls) handle, never a workspace-scoped harness_app tx, so
-          // RLS never hides another workspace's rows. Mirrors the HTTP catchall's
-          // chooseScopedHandle. Checked before needsTx so it also covers the
-          // superuser/'*' discovery case (e.g. papercusp:list_workspaces). Tools
-          // that read getOrgPg() directly are unaffected (they ignore ctx.tx).
-          if (projected.crossWorkspace === true) {
-            const { sql: adminTx } = getOrgPg();
-            const ctx: UnifiedToolContext = {
-              ...baseCtx,
-              tx: adminTx,
-              principal: await synthesizeDispatchPrincipal(adminTx, dispatchSpawnCtx),
-            };
-            return await runWithWorkspaceIfConcrete(dispatchSpawnCtx.workspaceId, () => runDispatch(ctx));
-          }
-          if (needsTx) {
-            const ctxWs = dispatchSpawnCtx.workspaceId;
-            return await runWithWorkspaceIfConcrete(ctxWs, () =>
-              withWorkspace(ctxWs, async (tx) => {
-                const ctx: UnifiedToolContext = {
-                  ...baseCtx,
-                  tx,
-                  principal: await synthesizeDispatchPrincipal(tx, dispatchSpawnCtx),
-                };
-                return await runDispatch(ctx);
-              }),
-            );
-          }
-          return await runWithWorkspaceIfConcrete(dispatchSpawnCtx.workspaceId, () =>
-            runDispatch(baseCtx),
-          );
+          // Bind the tx/principal the target needs (crossWorkspace → admin handle;
+          // needsTx → workspace tx) + run — the SAME helper the tools:invoke
+          // re-dispatch path (dispatchTool) uses, so the two can never drift
+          // (EI-6982). See dispatchWithSynthesizedTx for the P-062 crossWorkspace
+          // rationale (admin handle, checked before needsTx, covers the '*'
+          // discovery case).
+          return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, runDispatch);
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).

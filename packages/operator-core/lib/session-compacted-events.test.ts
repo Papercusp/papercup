@@ -68,7 +68,7 @@ describe('emitSessionCompactedEvent (P-103)', () => {
 describe('emitSessionCompactedEventAsync (the CLI-awaited core)', () => {
   it('RESOLVES only after the emit settles (the CLI must not exit before the fire commits)', async () => {
     let settled = false;
-    const emit = vi.fn(async () => {
+    const emit = vi.fn(async (_opts: EmitOpts) => {
       await new Promise((r) => setTimeout(r, 5));
       settled = true;
       return { ok: true as const, key: '', woken: 1, notified: [] as string[], msgId: null };

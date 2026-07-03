@@ -1145,7 +1145,7 @@ export function applyOmpMcpUrlParams(mcpJsonText, params) {
  * — no regression). Exported for tests.
  */
 export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir()) {
-  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null } = opts;
+  const { discoveryOff = false, toolsAllowlist = null, operatorUrl = OPERATOR_URL, model = null, clientId = null } = opts;
   try {
     if (!sessionId) return null;
     const srcAgent = join(home, '.omp', 'agent');
@@ -1179,7 +1179,15 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
       if (toolsAllowlist && toolsAllowlist.length) mcpText = applyOmpToolsAllowlist(mcpText, toolsAllowlist);
       // Stamp the caller's backend (always omp here) + resolved model so the operator can inherit
       // them for a fleet this session launches (fleet-launch-agent-inheritance-2026-07-03).
-      mcpText = applyOmpMcpUrlParams(mcpText, { agent: 'omp', model: model || undefined });
+      // WI-1866: ALSO stamp the per-session coord ownerId as `client=` — the user-level template
+      // bakes a single PER-MACHINE client id, and omp (unlike claude's ${PAPERCUSP_SID} url
+      // env-expansion) can't interpolate the SID at connect, so every omp session on the box
+      // collapsed into ONE in-band coord identity: shared claims (fleet:assignments showed one
+      // agent doing every member's work), void claim-conflict protection between members, and
+      // wakes to the transcript-visible identity black-holing (sessions 9980–9982, 2026-07-03).
+      // Overriding client= per-session is exactly how claude/codex thread identity (_mcp-handler
+      // resolution: x-papercusp-client header || mcp-session || ?client=).
+      mcpText = applyOmpMcpUrlParams(mcpText, { agent: 'omp', model: model || undefined, client: clientId || undefined });
       writeFileSync(join(dstAgent, 'mcp.json'), mcpText, { mode: 0o600 });
     }
     return rel;
@@ -3324,7 +3332,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
       // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
       // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null });
       if (ompPiConfigDir) console.error(`psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`);
       else console.error('psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.');
     } else {
@@ -3345,7 +3353,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (spine.length !== OMP_CORE_MCP_TOOL_NAMES.length) {
         console.error(`psu: PAPERCUSP_OMP_TOOLS_EXCLUDE — dropped ${OMP_CORE_MCP_TOOL_NAMES.length - spine.length} tool(s) from the advertised spine; still callable via tools:invoke.`);
       }
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel });
+      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, { discoveryOff: true, toolsAllowlist: spine, model: effectiveModel, clientId: res.envelopeEnv?.PAPERCUSP_SID || null });
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }

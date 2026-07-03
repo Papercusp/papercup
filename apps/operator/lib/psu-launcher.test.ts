@@ -297,6 +297,25 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(mcp.mcpServers['papercusp-su'].headers.Authorization).toBe('Bearer SECRET');
   });
 
+  it('WI-1866: clientId stamps the per-session coord ownerId as ?client=, overriding the baked per-machine id', () => {
+    // The user-level template bakes ONE per-machine client id, and omp cannot env-expand the
+    // SID at connect (unlike claude's ${PAPERCUSP_SID} url) — so without this override every
+    // omp session on the box collapsed into a single shared in-band coord identity (shared
+    // claims, void member-vs-member claim conflicts, wakes to the visible id black-holing).
+    const dir = writeOmpSessionConfigDir('sess1', { clientId: 'su-638fab72-65c7-4dec-b45b-3acb5552d350' }, home);
+    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
+    const url = new URL(mcp.mcpServers['papercusp-su'].url);
+    expect(url.searchParams.get('client')).toBe('su-638fab72-65c7-4dec-b45b-3acb5552d350');
+    expect(url.searchParams.get('superuser')).toBe('1'); // rest of the query survives
+  });
+
+  it('WI-1866: without clientId the baked client param is left untouched (no regression)', () => {
+    const dir = writeOmpSessionConfigDir('sess1', {}, home);
+    const mcp = JSON.parse(readFileSync(join(home, dir!, 'agent', 'mcp.json'), 'utf8'));
+    const url = new URL(mcp.mcpServers['papercusp-su'].url);
+    expect(url.searchParams.get('client')).toBe('abc');
+  });
+
   it('rewrites the papercusp server ORIGIN to the launcher-resolved operator URL (P-030)', () => {
     // The user-level mcp.json pins :3070; a session launched with
     // PAPERCUSP_OPERATOR_URL (or riding the resilient proxy) must have its COPY

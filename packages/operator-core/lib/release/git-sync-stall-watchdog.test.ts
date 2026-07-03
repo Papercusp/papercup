@@ -185,6 +185,28 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
     expect(v.stalled).toBe(true);
   });
 
+  it("lastStatus 'skipped' (eligibility-gated fire) never head-stalls — a vanished checkout is not stranding code (2026-07-03 lane-rig incident)", () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 60_000, headUnchangedMs: 61 * 3_600_000, lastError: null, lastStatus: 'skipped', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+  });
+
+  it("fire-stale / reap stalls still alarm on a 'skipped' routine (status-independent signals)", () => {
+    const fireStale = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 48 * 3_600_000, headUnchangedMs: 0, lastError: null, lastStatus: 'skipped', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(fireStale.stalled).toBe(true);
+    const reaped = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 60_000, headUnchangedMs: 0, lastError: null, lastStatus: 'skipped', watchdogAlerted: false, reapedCount: 3 },
+      NOW,
+    );
+    expect(reaped.stalled).toBe(true);
+  });
+
   it('fire-stale and error stalls are status-independent (a dead engine reports nothing)', () => {
     const v = evaluateGitSyncStall(
       { lastFiredMs: NOW - 48 * 3_600_000, headUnchangedMs: 0, lastError: null, lastStatus: 'nothing', watchdogAlerted: false, reapedCount: 0 },

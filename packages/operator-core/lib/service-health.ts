@@ -147,34 +147,36 @@ export const BG_HOST_HOT_PATHS = [
 
 /**
  * Pure verdict for bg-host CODE DRIFT (WI-1867), from the bg-host process start (ms)
- * + the newest hot-path commit (ms, sha). Unknown inputs ⇒ present:false (fail-soft,
- * never a fabricated verdict). Drift is reported `up:true` — the service WORKS, it
- * just behaves as-of an older commit — so it never fires a down-transition alarm or
- * nudges an auto-restart (EI-2186: a bg-host restart reclaims in-flight spawns; the
- * restart is a HUMAN/agent decision, this is the loud signal that it's due).
+ * + the newest hot-path ON-DISK CHANGE (ms; the bg-host tsx-loads the WORKING TREE at
+ * import, so file mtime — not commit time — is the honest "what code would a restart
+ * load" signal). Unknown inputs ⇒ present:false (fail-soft, never a fabricated
+ * verdict). Drift is reported `up:true` — the service WORKS, it just behaves as-of an
+ * older snapshot — so it never fires a down-transition alarm or nudges an auto-restart
+ * (EI-2186: a bg-host restart reclaims in-flight spawns; the restart is a HUMAN/agent
+ * decision, this is the loud signal that it's due).
  */
 export function evaluateBgHostCodeDrift(
   bootMs: number | null,
-  hotCommitMs: number | null,
-  hotCommitSha?: string | null,
+  hotChangeMs: number | null,
+  newestFile?: string | null,
 ): ProbeResult {
   const name = 'bg-host-code';
-  if (bootMs == null || hotCommitMs == null) {
-    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'bg-host code-drift unknown (boot time or hot-path commit unreadable)' };
+  if (bootMs == null || hotChangeMs == null) {
+    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)' };
   }
-  const drifted = hotCommitMs > bootMs;
+  const drifted = hotChangeMs > bootMs;
   if (!drifted) {
-    return { name, up: true, status: null, latencyMs: 0, note: 'bg-host code current (no routine hot-path commit since its boot)' };
+    return { name, up: true, status: null, latencyMs: 0, note: 'bg-host code current (no routine hot-path change on disk since its boot)' };
   }
-  const behindMin = Math.max(1, Math.round((hotCommitMs - bootMs) / 60_000));
-  const sha = hotCommitSha ? ` (${hotCommitSha.slice(0, 10)})` : '';
+  const behindMin = Math.max(1, Math.round((hotChangeMs - bootMs) / 60_000));
+  const which = newestFile ? ` (newest: ${newestFile})` : '';
   return {
     name,
     up: true,
     status: null,
     latencyMs: 0,
     note:
-      `⚠ bg-host CODE DRIFT: routine hot-path code landed${sha} ~${behindMin}m AFTER papercup-bg-host booted — ` +
+      `⚠ bg-host CODE DRIFT: routine hot-path code changed on disk${which} ~${behindMin}m AFTER papercup-bg-host booted — ` +
       `loop fires / scheduled routines / wake emits are running STALE code until ` +
       `\`systemctl --user restart papercup-bg-host.service\`. If you just landed routine-behavior code and it ` +
       `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
@@ -182,8 +184,10 @@ export function evaluateBgHostCodeDrift(
 }
 
 /** Probe bg-host code drift (WI-1867): unit MainPID elapsed-seconds vs the newest
- *  commit touching BG_HOST_HOT_PATHS in the integration tree. Fail-soft at every
- *  step (no systemd / no git / no unit ⇒ present:false, never a phantom drift). */
+ *  *.ts mtime under BG_HOST_HOT_PATHS in the integration tree (the working tree the
+ *  bg-host tsx-loads from — mtime, not commit time, is what a restart would pick up).
+ *  Fail-soft at every step (no systemd / no unit / no tree ⇒ present:false, never a
+ *  phantom drift). */
 export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
   const start = Date.now();
   try {
@@ -201,20 +205,29 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
     const { stdout: etimesOut } = await run('ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 3000 });
     const etimes = Number(etimesOut.trim());
     const bootMs = Number.isFinite(etimes) && etimes >= 0 ? now - etimes * 1000 : null;
-    // Newest hot-path commit in the integration tree (the tree the bg-host runs from).
+    // Newest hot-path *.ts mtime in the integration tree (the tree the bg-host runs from).
     let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
     if (!integrationRoot) {
       const { stdout } = await run('git', ['rev-parse', '--show-toplevel'], { timeout: 3000 });
       integrationRoot = stdout.trim();
     }
-    const { stdout: logOut } = await run(
-      'git',
-      ['-C', integrationRoot, 'log', '-1', '--format=%H %ct', '--', ...BG_HOST_HOT_PATHS],
-      { timeout: 5000 },
+    const { stdout: findOut } = await run(
+      'find',
+      [...BG_HOST_HOT_PATHS, '-name', '*.ts', '-not', '-name', '*.test.ts', '-printf', '%T@ %p\n'],
+      { timeout: 5000, cwd: integrationRoot, maxBuffer: 4 * 1024 * 1024 },
     );
-    const [sha, ct] = logOut.trim().split(/\s+/);
-    const hotCommitMs = ct && Number.isFinite(Number(ct)) ? Number(ct) * 1000 : null;
-    return { ...evaluateBgHostCodeDrift(bootMs, hotCommitMs, sha ?? null), latencyMs: Date.now() - start };
+    let hotChangeMs: number | null = null;
+    let newestFile: string | null = null;
+    for (const line of findOut.split('\n')) {
+      const sp = line.indexOf(' ');
+      if (sp <= 0) continue;
+      const t = Number(line.slice(0, sp)) * 1000;
+      if (Number.isFinite(t) && (hotChangeMs == null || t > hotChangeMs)) {
+        hotChangeMs = t;
+        newestFile = line.slice(sp + 1);
+      }
+    }
+    return { ...evaluateBgHostCodeDrift(bootMs, hotChangeMs, newestFile), latencyMs: Date.now() - start };
   } catch {
     return { name: 'bg-host-code', up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'bg-host code-drift unknown (probe failed)' };
   }

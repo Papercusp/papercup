@@ -52,7 +52,7 @@ For the common waits there's a thin named verb that **builds the key for you**
 
 | Want to wait for… | Sugar verb | Resolves to |
 | --- | --- | --- |
-| my sha live on `:3070` | `deploy:await { sha? }` | `release:deployed` (+ `release:deploy-failed`) |
+| my sha live on `:3070` | `deploy:await { sha? }` | `release:deployed:<sha>` (+ `release:deploy-failed`) |
 | the green gate's verdict | `checkpoint:await` | `release:green` (+ `green-checkpoint:red`) |
 | a work item to change / settle | `work-item:await { id, state? }` | `work-item:status:<id>` (or `:done` / `:blocked` / …) |
 | a service to recover | `service:await-up { name }` | `service:up:<name>` |

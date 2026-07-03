@@ -6,6 +6,7 @@ import {
   diffHealth,
   HEALTH_ENDPOINTS,
   evaluateBgHostTicker,
+  evaluateBgHostCodeDrift,
   BG_HOST_STALE_MS,
   type ProbeResult,
 } from './service-health';
@@ -92,6 +93,45 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
       ['code-server', 'operator', 'scout', 'vite'].sort(),
     );
+  });
+});
+
+describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('hot-path change YOUNGER than the bg-host boot → drift flagged: up stays true (no alarm), note names the restart + the stale symptom', () => {
+    const res = evaluateBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'packages/operator-core/lib/harness/routines/loop-fire.ts');
+    expect(res.name).toBe('bg-host-code');
+    expect(res.up).toBe(true); // drift is a WARNING, never a down-transition (EI-2186: restarts reclaim in-flight spawns)
+    expect(res.present).not.toBe(false);
+    expect(res.note).toMatch(/CODE DRIFT/);
+    expect(res.note).toMatch(/loop-fire\.ts/); // the newest changed file, so the reader sees WHAT drifted
+    expect(res.note).toMatch(/~50m AFTER/); // boot 60m ago, change 10m ago
+    expect(res.note).toMatch(/systemctl --user restart papercup-bg-host\.service/);
+    expect(res.note).toMatch(/doesn't take effect/); // the exact symptom an agent greps for
+  });
+
+  it('hot-path change OLDER than the boot → current, no drift language', () => {
+    const res = evaluateBgHostCodeDrift(NOW - 10 * 60_000, NOW - 60 * 60_000, 'x.ts');
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/code current/);
+    expect(res.note).not.toMatch(/DRIFT/);
+  });
+
+  it('unknown boot time or change time → present:false (fail-soft, never a fabricated drift)', () => {
+    expect(evaluateBgHostCodeDrift(null, NOW).present).toBe(false);
+    expect(evaluateBgHostCodeDrift(NOW, null).present).toBe(false);
+    expect(evaluateBgHostCodeDrift(null, null).note).toMatch(/unknown/);
+  });
+
+  it('a missing newest-file name still reports drift (the name is cosmetic)', () => {
+    const res = evaluateBgHostCodeDrift(NOW - 60_000, NOW, null);
+    expect(res.note).toMatch(/CODE DRIFT/);
+  });
+
+  it('drift is floored at ~1m so a seconds-level drift never rounds to "~0m"', () => {
+    const res = evaluateBgHostCodeDrift(NOW - 10_000, NOW - 5_000, 'abc');
+    expect(res.note).toMatch(/~1m AFTER/);
   });
 });
 

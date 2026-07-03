@@ -1158,3 +1158,60 @@ describe('cross-workspace-denial invariant (isolation-plan #4)', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden');
   });
 });
+
+/* ─── tools:invoke re-dispatch synthesizes the target's tx (EI-6982) ────── */
+
+describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less meta-tool ctx (EI-6982)', () => {
+  // Root cause: dispatchTool (the tools:invoke engine) reused the OUTER call's
+  // ctx — built for tools:invoke itself (requirePrincipal:false ⇒ NO tx). So a
+  // crossWorkspace/needsTx TARGET dispatched via tools:invoke saw ctx.tx ===
+  // undefined and its projected wrapper threw "requires a workspace-scoped call".
+  // Every memory:* / flags:set / harness:list call via tools:invoke from an
+  // unscoped psu/fleet session hit this. dispatchWithSynthesizedTx now binds the
+  // target's tx on BOTH the direct and the re-dispatch paths.
+
+  it('a REAL crossWorkspace tool (memory:search) via tools:invoke from an UNSCOPED superuser does NOT hit the workspace-tx gate', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'memory:search', args: { query: 'ei6982' } },
+      superuserExtra('&workspace=*'),
+    );
+    // The exact EI-6982 symptom string must be gone. (memory:search's handler may
+    // still error on the stubbed backend — irrelevant; the GATE is what regressed.)
+    expect(textOf(res)).not.toContain('requires a workspace-scoped call');
+    expect(textOf(res)).not.toContain('no workspace transaction');
+  });
+
+  it('routes the ADMIN handle to a crossWorkspace target (unscoped superuser)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:crossworkspace', args: {} },
+      superuserExtra('&workspace=*'),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).toContain('gatingtest:crossworkspace-ok');
+    // The INNER tool received the admin handle (getOrgPg().sql) + a synthesized
+    // principal — proof the crossWorkspace synthesis ran on the re-dispatch path.
+    const inner = seen.at(-1);
+    expect(inner?.tool).toBe('gatingtest:crossworkspace');
+    expect(inner?.ctx.tx).toBe(h.fakeSql);
+    expect(inner?.ctx.principal).toBeTruthy();
+  });
+
+  it('opens a WORKSPACE tx for a needsTx target dispatched via tools:invoke (scoped session)', async () => {
+    h.scopedClampFlag.value = false;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:engineer', args: {} },
+      superuserExtra('&workspace=ws-test'), // a scoped superuser session
+    );
+    expect(res.isError).not.toBe(true);
+    const inner = seen.at(-1);
+    expect(inner?.tool).toBe('gatingtest:engineer');
+    // A concrete workspace ⇒ the harness_app workspace tx (fakeTx), opened for ws-test.
+    expect(inner?.ctx.tx).toBe(h.fakeTx);
+    expect(h.withWorkspaceCalls).toContain('ws-test');
+  });
+});
