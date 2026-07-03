@@ -89,29 +89,36 @@ export async function resolveAdapter(
   };
 }
 
-const argsSchema = z
-  .object({
-    slugs: z
-      .array(z.string().min(1))
-      .min(1)
-      .max(10)
-      .describe('1–10 slugs from docs:outline.pages[].slug (e.g. ["endpoint-system/overview"]).'),
-    heading: z
-      .string()
-      .optional()
-      .describe('Heading anchor id (from docs:outline.pages[].headings[].id). Only honored when slugs.length === 1.'),
-    harness: z
-      .string()
-      .optional()
-      .describe(
-        "Harness slug whose docs to read. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
-          "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
-      ),
-  })
-  .refine((v) => !v.heading || v.slugs.length === 1, {
-    message: 'heading is only valid when slugs has exactly one entry',
-    path: ['heading'],
-  });
+const argsSchema = z.preprocess(
+  // WI-1985: be liberal — salvage a singular `slug` / string `slugs` into the
+  // array the schema wants (35% of calls 400ed on "slugs: expected array,
+  // received undefined"). Identity on a well-formed array, so the published
+  // tools/list schema (z.toJSONSchema of the OUTPUT object) is unchanged.
+  coerceDocsGetSlugs,
+  z
+    .object({
+      slugs: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(10)
+        .describe('1–10 slugs from docs:outline.pages[].slug (e.g. ["endpoint-system/overview"]).'),
+      heading: z
+        .string()
+        .optional()
+        .describe('Heading anchor id (from docs:outline.pages[].headings[].id). Only honored when slugs.length === 1.'),
+      harness: z
+        .string()
+        .optional()
+        .describe(
+          "Harness slug whose docs to read. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope). " +
+            "Omit only when the session is already scoped to a harness — otherwise you'll get harness_required.",
+        ),
+    })
+    .refine((v) => !v.heading || v.slugs.length === 1, {
+      message: 'heading is only valid when slugs has exactly one entry',
+      path: ['heading'],
+    }),
+);
 
 export default defineTool({
   name: 'docs:get',
