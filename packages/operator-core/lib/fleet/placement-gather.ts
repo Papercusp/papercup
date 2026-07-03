@@ -96,6 +96,11 @@ interface NurseryBeeRow {
   last_active_ms: string | null;
 }
 
+/** A just-spawned bee may not have written coord_presence yet; keep that short
+ * bootstrap path, but do not let old nursery rows with no presence survive a
+ * host restart as warm-injectable "alive" bees. */
+export const NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS = 2 * 60_000;
+
 /**
  * P-015 (presence-v2 D-003): the bee's RECENT-ACTIVITY timestamp for affinity
  * scoring — genuine work, NOT the keepalive heartbeat. Prefer the presence
@@ -112,6 +117,22 @@ export function pickBeeRecentActivityMs(
   if (Number.isFinite(presMs)) return presMs;
   if (nurseryMs != null && Number.isFinite(nurseryMs)) return nurseryMs;
   return null;
+}
+
+/**
+ * EI-3067: liveness for warm-inject/briefs must reconcile nursery rows against
+ * live coord_presence. A missing presence row is credible only during a short
+ * bootstrap grace for a newly-spawned child; after that it is treated as dead so
+ * post-restart/reaped rows do not render as `[alive]` or receive warm-injects.
+ */
+export function deriveBeeAliveFromPresence(
+  presenceStale: boolean | null | undefined,
+  nurseryActivityMs: number | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (presenceStale != null) return !presenceStale;
+  if (nurseryActivityMs == null || !Number.isFinite(nurseryActivityMs)) return false;
+  return nowMs - nurseryActivityMs <= NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS;
 }
 
 /**
@@ -155,14 +176,14 @@ export async function gatherLiveBees(workspaceId: string): Promise<PlacementBee[
     const ownerId = r.session_owner ?? r.spawn_id;
     const pres = presById.get(ownerId);
     const group = groupById.get(ownerId);
-    // A present-but-stale bee is wedged/dead — not a warm-inject target. With no
-    // presence row yet (just spawned) we still treat the running nursery row as
-    // live; the woken-check at execution is the real reachability gate.
-    const alive = pres ? !pres.stale : true;
-    // P-015 (presence-v2 D-003): RECENT ACTIVITY for affinity = genuine work via
-    // pres.lastActiveAt, never the keepalive heartbeat. Liveness (`alive`) still
-    // rides pres.stale — that's heartbeat-correct (process up ≠ recently active).
     const nurseryMs = r.last_active_ms != null ? Number(r.last_active_ms) : null;
+    // Present-but-stale is dead; missing presence is live only briefly after
+    // nursery spawn. This keeps just-spawned children usable without letting
+    // post-restart stale nursery rows poison the Queen's bee-load snapshot.
+    const alive = deriveBeeAliveFromPresence(pres?.stale, nurseryMs);
+    // P-015 (presence-v2 D-003): RECENT ACTIVITY for affinity = genuine work via
+    // pres.lastActiveAt, never the keepalive heartbeat. Liveness (`alive`) is the
+    // dispatchability signal above, not raw nursery status.
     const lastActiveMs = pickBeeRecentActivityMs(pres?.lastActiveAt, nurseryMs);
     const queuedHarnesses = group
       ? [...new Set((group.queued ?? []).map((q) => claimHarness.get(q.id) ?? null).filter((h): h is string => !!h))]

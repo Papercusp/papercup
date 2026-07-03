@@ -55,13 +55,13 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 # substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" <<'PYEOF'
 import json, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
+model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
 HTTP_TIMEOUT = 1.5
-OBJECTIVE_MAX = 60  # a window/tab title is short — clip a verbose objective.
 
 
 def call_glance():
@@ -100,6 +100,129 @@ def call_glance():
     return None
 
 
+# ── Title assembly — kept BYTE-IDENTICAL to statusline-fleet.sh's term_title so a codex/omp
+#    title and a Claude title render the SAME for the same glance + model (WI-1963 full title
+#    parity). Guarded by objective-title-parity.test.ts (a drift there fails CI). The Claude
+#    side sources the model from its LIVE stdin object; this side from the launch spec env —
+#    but the RENDER (term_title) is one shared shape. ──
+def self_short(owner):
+    owner = str(owner or '').strip()
+    if not owner or owner == 'fixture':
+        return ''
+    bits = owner.split('-')
+    if len(bits) >= 2 and bits[1]:
+        return f'{bits[0]}-{bits[1][:5]}'
+    return owner[:8]
+
+
+def fmt_interval(sec):
+    try:
+        s = int(sec)
+    except Exception:
+        return '?'
+    if s < 60:
+        return f'{s}s'
+    m = s // 60
+    if m < 60:
+        return f'{m}m'
+    h, rm = m // 60, m % 60
+    return f'{h}h' if rm == 0 else f'{h}h{rm}m'
+
+
+def fleets_part(g):
+    if not isinstance(g, dict):
+        return ''
+    fleets = (g.get('self') or {}).get('fleets')
+    if not isinstance(fleets, list) or not fleets:
+        return ''
+    chips = []
+    for f in fleets[:4]:
+        if not isinstance(f, dict):
+            continue
+        label = str(f.get('label') or f.get('slug') or '').strip()
+        if not label:
+            continue
+        if len(label) > 16:
+            label = label[:15] + '…'
+        glyph = '👑' if f.get('role') == 'leader' else '👤'
+        square = str(f.get('square') or '').strip()
+        chips.append(f'{glyph} {label}{(" " + square) if square else ""}')
+    if not chips:
+        return ''
+    seg = ' · '.join(chips)
+    more = len(fleets) - len(chips)
+    if more > 0:
+        seg += f' +{more}'
+    return seg
+
+
+def _compact_model(*names):
+    onem = False
+    fam = ''
+    for n in names:
+        s = str(n or '').lower()
+        if not s:
+            continue
+        if '1m' in s:
+            onem = True
+        if not fam:
+            for f in ('opus', 'sonnet', 'haiku', 'fable'):
+                if f in s:
+                    fam = f
+                    break
+    if not fam:
+        for n in names:
+            s = str(n or '').strip()
+            if s:
+                fam = s.split()[0].split('-')[0].lower()
+                break
+    return (fam + ('[1m]' if onem else '')) if fam else ''
+
+
+def model_title(label, effort):
+    return '/'.join(x for x in (label, effort) if x)
+
+
+def model_tag_from_spec(spec):
+    """Compact model tag ('opus[1m]/xhigh') from the psu --model SPEC (e.g. 'opus[1m]:xhigh').
+    Mirrors the Claude statusline's model_title(_compact_model(display_name/id), effort) so both
+    CLIs render the SAME tag — the Claude side sources the model from its live stdin object, the
+    codex/omp side from the launch spec env, but the model RENDER is identical."""
+    s = str(spec or '').strip()
+    if not s:
+        return ''
+    c = s.rfind(':')
+    effort = ''
+    base = s
+    if c > 0 and s[c + 1:] in ('low', 'medium', 'high', 'xhigh', 'max'):
+        effort = s[c + 1:]
+        base = s[:c]
+    return model_title(_compact_model(base), effort)
+
+
+def term_title(g, model_tag=''):
+    me_id = self_short(me)
+    bits = []
+    fl = fleets_part(g)
+    if fl:
+        bits.append(fl)
+    lp = (g.get('self') or {}).get('loop') if isinstance(g, dict) else None
+    if isinstance(lp, dict) and lp.get('active'):
+        tag = f'⟳{fmt_interval(lp.get("intervalSec"))}'
+        if lp.get('reachable') is False:
+            tag += '!'
+        bits.append(tag)
+    if model_tag:
+        bits.append(model_tag)
+    if me_id:
+        bits.append(me_id)
+    obj = (g.get('self') or {}).get('objective') if isinstance(g, dict) else None
+    if isinstance(obj, str) and obj.strip():
+        o = obj.strip()
+        bits.append(o[:40] + ('…' if len(o) > 40 else ''))
+    return ' · '.join(bits)
+
+
 try:
     glance = None
     try:
@@ -111,21 +234,10 @@ try:
     except Exception:
         glance = None
 
-    # The papercusp id of THIS agent ALWAYS leads the title (owner ask 2026-06-23) so a
-    # human can tell which session owns the terminal even before/without an objective.
-    # Short form mirrors the fleet statusline (su- + 5 hex, e.g. su-fcdb9).
-    me_short = ('su-' + me[3:].split('-', 1)[0][:5]) if me.startswith('su-') else me[:12]
-    # Objective (in-execution work-item title ?? declared intent) — appended AFTER the
-    # id when present; a missing/blank objective (or operator down) just leaves the id.
-    obj = None
-    if isinstance(glance, dict):
-        o = (glance.get('self') or {}).get('objective')
-        if isinstance(o, str) and o.strip():
-            o = o.strip()
-            if len(o) > OBJECTIVE_MAX:
-                o = o[:OBJECTIVE_MAX - 1].rstrip() + '…'
-            obj = o
-    title = me_short + (' · 🔭 ' + obj if obj else '')
+    # Full title = the SAME assembly the Claude statusline writes (fleets 👑/👤 + colour
+    # squares, loop chip, model·effort, id, objective) — WI-1963 title parity. The model
+    # comes from the launch spec env (codex/omp have no live model object like CC's stdin).
+    title = term_title(glance, model_tag_from_spec(model_spec))
     # Strip control chars that could break out of the OSC string (defensive).
     title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
     if not title:

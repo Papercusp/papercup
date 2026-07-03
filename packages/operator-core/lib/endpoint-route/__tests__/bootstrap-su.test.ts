@@ -932,4 +932,29 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
     expect(bare).toContain(AUTO_MODE_DIRECTIVE);
     expect(bare).not.toContain(LAUNCH_CONTEXT_KICKOFF);
   });
+
+  it('drain-mode P-003: DRAIN prepends the DRAIN activation and REPLACES the plain AUTO one', async () => {
+    const { deriveKickoffPrompt, DRAIN_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE } =
+      await import('../routes/agent-mcp/bootstrap-su');
+    // A drain launch is autoMode too (DRAIN implies AUTO server-side) — the DRAIN
+    // directive must still win, never both activations.
+    const bare = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: null, drainMode: true });
+    expect(bare).toContain(DRAIN_MODE_DIRECTIVE);
+    expect(bare).toContain(CONTEXT_DISCIPLINE_DIRECTIVE);
+    expect(bare).not.toContain(AUTO_MODE_DIRECTIVE);
+  });
+
+  it('drain-mode P-003: a plan-bound DRAIN launch keeps the canonical plan kickoff under the activation', async () => {
+    const { deriveKickoffPrompt, DRAIN_MODE_DIRECTIVE } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({ planSlug: 'p1', autoMode: true, launchContextPath: null, drainMode: true });
+    expect(k).toContain(DRAIN_MODE_DIRECTIVE);
+    expect(k).toContain('plans:get');
+  });
+
+  it('drain-mode P-003: omitting drainMode is byte-identical to the pre-drain behavior', async () => {
+    const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE } = await import('../routes/agent-mcp/bootstrap-su');
+    const auto = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: null });
+    expect(auto).toContain(AUTO_MODE_DIRECTIVE);
+    expect(deriveKickoffPrompt({ planSlug: null, autoMode: false, launchContextPath: null })).toBeNull();
+  });
 });

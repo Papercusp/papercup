@@ -471,6 +471,32 @@ export const AUTO_MODE_DIRECTIVE =
   'brakes still apply.)';
 
 /**
+ * drain-mode-2026-07-03 (P-003): the durable DRAIN-mode activation a `--mode=drain`
+ * launch bakes into the session — the owner's "drain the work queue to terminal"
+ * standing state. DRAIN IMPLIES AUTO (the server forces autoMode on), so this
+ * directive REPLACES the plain AUTO one (never both) — it carries the act-don't-ask
+ * posture itself plus the drain mission loop. Injected into the assembled system
+ * prompt (survives compaction) AND prepended to the seeded turn-1 kickoff, same
+ * dual delivery as AUTO_MODE_DIRECTIVE. The full operating clause lives in the
+ * persona (operating-modes-policy.ts renderModesPolicy, 'full' tier § DRAIN mode);
+ * this is the activation + a faithful compression of its 6-step loop.
+ */
+export const DRAIN_MODE_DIRECTIVE =
+  'DRAIN mode is ON for this session — DRAIN implies AUTO mode ON: act on your judgment, do ' +
+  'not stop to ask. Your mission is to drain the target work queue to TERMINAL, per the ' +
+  "persona's DRAIN-mode section (which governs): (1) TRIAGE + RANK the queue first — the " +
+  'ranking IS the batch plan, no hand-built batches; (2) CAPACITY PREFLIGHT before any fleet ' +
+  'launch (accounts:status + gateway headroom); (3) CANARY-FIRST bring-up — take fleet ' +
+  'leadership as your FIRST act, verify member first-turns via tool_invocations (join ≠ ' +
+  'liveness), then loop:arm; (4) FEED BY CLAIM-SPEC (scheduler:set_claim_spec revision bumps ' +
+  '+ member scheduler:get_next — never id-pins or hand-assignment); (5) run the lean LEADER ' +
+  'LOOP each wake (burn-down delta, member liveness, completion-integrity spot-audits, ' +
+  'orphan/stall reclaim, blocked triage); (6) WIND DOWN with loop:end + a final residue ' +
+  'report when only owner-gated/live-dep residue remains. NOT licensed: skipping ' +
+  'spawn-announcements (account + model), force-deploying past a red gate, or trading ' +
+  'completion integrity for speed.';
+
+/**
  * WI-1962: the turn-1 kickoff for a MISSION-BRIEF launch (`--launch-context` with
  * no plan bound). Without it a scripted solo launch boots to an interactive prompt
  * and PARKS FOREVER — claude sat 10+ minutes with a full mission in its system
@@ -494,15 +520,21 @@ export function deriveKickoffPrompt(opts: {
   planSlug: string | null;
   autoMode: boolean;
   launchContextPath: string | null;
+  /** drain-mode P-003: DRAIN launch — the DRAIN activation REPLACES the plain AUTO
+   *  one (DRAIN implies AUTO; the directive carries the posture itself). */
+  drainMode?: boolean;
 }): string | null {
   const base = opts.planSlug
     ? deriveLaunchPromptText(null, opts.autoMode)
     : opts.launchContextPath
       ? LAUNCH_CONTEXT_KICKOFF
       : null;
-  return opts.autoMode
-    ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, base].filter(Boolean).join('\n\n')
-    : base;
+  const activation = opts.drainMode
+    ? [DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
+    : opts.autoMode
+      ? [AUTO_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
+      : [];
+  return activation.length ? [...activation, base].filter(Boolean).join('\n\n') : base;
 }
 
 /**
@@ -770,6 +802,13 @@ const post = defineTool({
        *  `--auto`. When true, bake the durable AUTO directive into the system prompt
        *  and prepend the AUTO activation to the seeded kickoff. */
       auto?: boolean;
+      /** drain-mode-2026-07-03 P-003: named operating mode for this launch. The only
+       *  recognized value is 'drain' (`psu --mode=drain`) — start the session in DRAIN
+       *  mode (drain the target work queue to terminal; the persona's DRAIN-mode
+       *  section governs). DRAIN IMPLIES AUTO: it forces `autoMode` on and bakes the
+       *  DRAIN directive (instead of the plain AUTO one) into system prompt + kickoff.
+       *  Unknown values are refused loudly (400) — never silently ignored. */
+      mode?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -1078,7 +1117,18 @@ const post = defineTool({
     // mode. The launcher sends `auto` in the body; when set we (a) inject a DURABLE
     // AUTO directive into the assembled system prompt (survives compaction) and
     // (b) prepend the same activation to the seeded kickoff so turn 1 enters AUTO.
-    const autoMode = body.auto === true;
+    // drain-mode-2026-07-03 P-003: `--mode=drain` → DRAIN mode. Unknown mode values
+    // are refused loudly (a typo'd mode silently launching a plain session is the
+    // failure this guards). DRAIN IMPLIES AUTO — force autoMode on.
+    const modeRaw = body.mode?.trim() || null;
+    if (modeRaw && modeRaw !== 'drain') {
+      return jsonRes(
+        { status: 'error', error: `unknown mode '${modeRaw.slice(0, 32)}' — the only recognized value is 'drain' (psu --mode=drain)` },
+        400,
+      );
+    }
+    const drainMode = modeRaw === 'drain';
+    const autoMode = body.auto === true || drainMode;
 
     const launchContextPath = body.launch_context?.trim() || null;
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather
@@ -1146,7 +1196,12 @@ const post = defineTool({
     // system prompt so it survives compaction. promptText is the single source for
     // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
     // so injecting here covers all three.
-    if (autoMode) {
+    if (drainMode) {
+      // drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
+      // directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
+      // baking both would just double-print the activation.
+      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
+    } else if (autoMode) {
       promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${AUTO_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
     }
 
@@ -1279,7 +1334,7 @@ const post = defineTool({
     // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
     // pure + tested) — shared with plans:launch's headless kickoff via
     // ./launch-prompt, so the two never drift.
-    const kickoffPrompt = deriveKickoffPrompt({ planSlug, autoMode, launchContextPath });
+    const kickoffPrompt = deriveKickoffPrompt({ planSlug, autoMode, launchContextPath, drainMode });
 
     const result: BootstrapSuResult = {
       status: 'ok',

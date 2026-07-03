@@ -6,7 +6,13 @@
  * fallback harness parameter.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { workItemToTask, partitionTasksByReadiness, isPlacementHardBlocked } from './placement-gather';
+import {
+  workItemToTask,
+  partitionTasksByReadiness,
+  isPlacementHardBlocked,
+  deriveBeeAliveFromPresence,
+  NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS,
+} from './placement-gather';
 import type { PlacementTask } from './placement-affinity';
 
 describe('workItemToTask — harness backfill for EI items (F-FIX-033)', () => {
@@ -82,6 +88,31 @@ describe('isPlacementHardBlocked — WI-677 cursed-filter keys on genuine pathol
   it('honors a custom (lower) breaker threshold', () => {
     expect(isPlacementHardBlocked(1, 1)).toBe(true); // threshold 1 → first genuine failure blocks
     expect(isPlacementHardBlocked(0, 1)).toBe(false); // a fail_count-0 infra-curse is still re-placeable
+  });
+});
+
+describe('deriveBeeAliveFromPresence — EI-3067 no-presence nursery rows do not stay alive forever', () => {
+  const NOW = Date.parse('2026-07-03T12:00:00.000Z');
+
+  it('uses live presence when present', () => {
+    expect(deriveBeeAliveFromPresence(false, NOW - 60_000, NOW)).toBe(true);
+  });
+
+  it('uses stale presence as dead even when nursery activity is recent', () => {
+    expect(deriveBeeAliveFromPresence(true, NOW - 1_000, NOW)).toBe(false);
+  });
+
+  it('allows a just-spawned no-presence bee during the bootstrap grace', () => {
+    expect(deriveBeeAliveFromPresence(undefined, NOW - NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS + 1, NOW)).toBe(true);
+  });
+
+  it('marks an old no-presence nursery row dead so the Queen brief cannot render it as alive', () => {
+    expect(deriveBeeAliveFromPresence(undefined, NOW - NO_PRESENCE_BEE_BOOTSTRAP_GRACE_MS - 1, NOW)).toBe(false);
+  });
+
+  it('marks a no-presence row with no usable nursery timestamp dead', () => {
+    expect(deriveBeeAliveFromPresence(undefined, null, NOW)).toBe(false);
+    expect(deriveBeeAliveFromPresence(undefined, Number.NaN, NOW)).toBe(false);
   });
 });
 
