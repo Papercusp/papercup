@@ -26,6 +26,8 @@ const healthy: PerfRegressionMetrics = {
   dispatchOrphanRate: 0.05,
   dispatchSample: 100,
   coordOpenEscalations: 10,
+  advTabSwitchMedianMs: 253,
+  advFcpMs: 1923,
 };
 
 // ── pure core: each metric breaching warn + crit ─────────────────────────────
@@ -116,6 +118,46 @@ describe('evaluatePerfRegression — coord open-escalation backlog', () => {
     const { signals } = evaluatePerfRegression({ ...healthy, coordOpenEscalations: B.coordOpenEscalationsCrit });
     expect(signals).toHaveLength(1);
     expect(signals[0].severity).toBe('critical');
+  });
+});
+
+describe('evaluatePerfRegression — /adv UI perf budgets (EI-3034)', () => {
+  it('/adv tab-switch median warn band → major', () => {
+    const { signals, breaches } = evaluatePerfRegression({
+      ...healthy,
+      advTabSwitchMedianMs: B.advTabSwitchMedianWarnMs,
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      key: 'adv-tab-switch-median',
+      severity: 'major',
+      findingClass: 'perf-regression:adv-tab-switch-median',
+    });
+    expect(breaches).toEqual([
+      {
+        metric: 'adv-tab-switch-median',
+        value: B.advTabSwitchMedianWarnMs,
+        budget: B.advTabSwitchMedianWarnMs,
+        tier: 'warn',
+      },
+    ]);
+  });
+
+  it('/adv FCP crit band → critical', () => {
+    const { signals, breaches } = evaluatePerfRegression({
+      ...healthy,
+      advFcpMs: B.advFcpCritMs,
+    });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      key: 'adv-fcp',
+      severity: 'critical',
+      findingClass: 'perf-regression:adv-fcp',
+    });
+    expect(signals[0].body).toContain('/adv first-contentful-paint');
+    expect(breaches).toEqual([
+      { metric: 'adv-fcp', value: B.advFcpCritMs, budget: B.advFcpCritMs, tier: 'crit' },
+    ]);
   });
 });
 
@@ -249,6 +291,24 @@ describe('collectPerfRegressionSnapshot — healthy tick persists, emits nothing
     expect(out.signals).toEqual([]);
     expect(fake.inserts).toBe(1); // snapshot persisted
     expect(out.note).toBeUndefined();
+  });
+
+  it('includes optional /adv UI perf metrics when a sampler provides them', async () => {
+    const fake = fakeSql([
+      { match: /improvement_dispatches/i, rows: [{ total: 100, orphaned: 3 }] },
+      { match: /coord_open_escalations/i, rows: [{ n: 7 }] },
+    ]);
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({
+        sql: () => fake.sql,
+        readAdvTabSwitchMedianMs: () => Promise.resolve(B.advTabSwitchMedianWarnMs),
+        readAdvFcpMs: () => Promise.resolve(1923),
+      }),
+    );
+    expect(out.signals).toHaveLength(1);
+    expect(out.signals[0].key).toBe('adv-tab-switch-median');
+    expect(fake.inserts).toBe(1);
   });
 });
 

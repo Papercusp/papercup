@@ -102,6 +102,8 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     requeue_count integer NOT NULL DEFAULT 0,
     terminal_owner text,
     terminal_completion_ref text,
+    last_released_by text,
+    last_released_at timestamptz,
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||

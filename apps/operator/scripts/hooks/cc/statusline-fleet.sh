@@ -249,7 +249,7 @@ def _compact_model(*names):
         if '1m' in s:
             onem = True
         if not fam:
-            for f in ('opus', 'sonnet', 'haiku'):
+            for f in ('opus', 'sonnet', 'haiku', 'fable'):
                 if f in s:
                     fam = f
                     break
@@ -262,13 +262,36 @@ def _compact_model(*names):
     return (fam + ('[1m]' if onem else '')) if fam else ''
 
 
+def _same_family(spec, label):
+    """True when `spec` (a launch model spec) names the SAME family word as `label` (a compact
+    'opus' / 'opus[1m]' render). Gates the settings→live [1m] reinforcement so a stale spec can
+    never mark a DIFFERENT live family."""
+    fam = str(label or '').replace('[1m]', '').strip().lower()
+    return bool(fam) and fam in str(spec or '').lower()
+
+
 def model_bits(sj, settings):
-    """(label, effort): the compact model label + reasoning-effort setting the human asked to see.
-    Model from the live session JSON (model.display_name/id) with settings `model` as fallback; effort
-    from settings `effortLevel` (the /effort default) or a session-JSON `effort` if present. Either may
-    be '' (unknown) — fail-open."""
+    """(label, effort): the compact model label + reasoning-effort the human asked to see.
+
+    The LIVE session model (Claude's piped model.display_name/id) is AUTHORITATIVE — it changes
+    the instant you /model-switch — so family + the [1m] marker are derived from it ALONE. The
+    persisted launch spec (settings `model`) must NOT contaminate the live label: THAT was the
+    'often incorrect' bug (owner, 2026-07-03) — after switching e.g. opus→sonnet, the stale
+    launch `opus[1m]` both marked the live sonnet as [1m] and could override the family, so the
+    statusline showed a model you were no longer on. settings `model` is now consulted only to
+    (a) supply the WHOLE label when CC piped no model at all, or (b) REINFORCE [1m] when it names
+    the SAME family as the live model (a CLI whose display_name omits the 1M marker but was
+    launched --model <fam>[1m]). Effort: settings `effortLevel` (the /effort default) ?? a
+    session-JSON `effort`. Either bit may be '' (unknown) — fail-open."""
     m = sj.get('model') if isinstance(sj.get('model'), dict) else {}
-    label = _compact_model(m.get('display_name'), m.get('id'), settings.get('model'))
+    live = [x for x in (m.get('display_name'), m.get('id')) if str(x or '').strip()]
+    if live:
+        label = _compact_model(*live)  # live model wins ALONE — no stale-settings contamination
+        sm = str(settings.get('model') or '')
+        if label and '[1m]' not in label and _same_family(sm, label) and '1m' in sm.lower():
+            label += '[1m]'
+    else:
+        label = _compact_model(settings.get('model'))  # CC piped no model → fall back to the launch spec
     effort = str(settings.get('effortLevel') or sj.get('effort') or '').strip()
     return label, effort
 
@@ -371,12 +394,13 @@ def set_title(title):
 
 
 def lead():
-    """Line-1 prefix segments: 'papercusp', this agent's own ◇ id chip (◇ = self, paired with ◆ =
-    most-recent peer), and — when the gateway knows it — ⇢ <account>, the pool account that served this
-    session's most-recent turn. Both render paths share it. The 🔭 objective segment (objective_part) is
-    prepended by the caller ahead of these, so it leads line 1."""
+    """Line-1 prefix segments: this agent's own ◇ id chip (◇ = self, paired with ◆ = most-recent
+    peer), and — when the gateway knows it — ⇢ <account>, the pool account that served this session's
+    most-recent turn. Both render paths share it. The 🔭 objective segment (objective_part) is prepended
+    by the caller ahead of these, so it leads line 1. (The static 'papercusp' label was removed
+    2026-07-03 at owner request — it only ate line width; the ◇ id already identifies the pane.)"""
     me_id = self_short(me)
-    parts = ['papercusp', f'◇ {me_id}'] if me_id else ['papercusp']
+    parts = [f'◇ {me_id}'] if me_id else []
     acct = routed_account(me)
     if acct:
         parts.append(f'⇢ {acct}')
@@ -407,7 +431,17 @@ except Exception:
 # are read ONLY in a real session (gated off in fixture/test mode) so a dev's ~/.claude/settings.json
 # can't leak into the deterministic render tests; the model still comes from the piped session JSON
 # there. ADDITIVE + FAIL-OPEN: both bits unknown ⇒ no chip.
-_settings = _user_settings() if not fixture else {}
+# Settings source: a real session reads ~/.claude/settings.json; fixture/test mode reads an
+# optional inline-JSON seam (PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE) so the settings-fallback and
+# [1m]-reinforcement paths are deterministically testable without touching a dev's real file.
+if fixture:
+    try:
+        _sraw = os.environ.get('PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE')
+        _settings = json.loads(_sraw) if _sraw else {}
+    except Exception:
+        _settings = {}
+else:
+    _settings = _user_settings()
 _sj = _session_json(stdin_raw)
 _mlabel, _meffort = model_bits(_sj, _settings)
 mchip = model_chip(_mlabel, _meffort)
