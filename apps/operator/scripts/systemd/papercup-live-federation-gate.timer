@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly trigger for the live 2-peer federation gate (WI-261)
+
+[Timer]
+# HOURLY opportunistic firing (P-013): the old single 04:37 window sampled load ONCE per
+# day and skipped every night on the fleet-busy box — the gate never ran. Hourly + the
+# script's GREEN-freshness TTL (22h) = up to 24 load samples/day, at most ~1 real run/day,
+# fresh-exits cost ~0. The service's core-aware load gate still skips busy windows.
+OnCalendar=*-*-* *:37:00
+RandomizedDelaySec=600
+# No catch-up on missed windows: the next hourly fire covers it.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

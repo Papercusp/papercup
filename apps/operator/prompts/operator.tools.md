@@ -37,7 +37,7 @@ improvements backlog" below.)
 ### Delegate work to another agent
 
 For OPERATOR specifically: prefer the `<spawn role="..." harness="..." />`
-tag in your turn output over the `fleet_spawn` MCP tool. The tag routes
+tag in your turn output over the `bee_spawn` MCP tool. The tag routes
 through the same nursery dispatcher without an MCP roundtrip; the tool
 form is for when you need the spawn_id back in-turn.
 

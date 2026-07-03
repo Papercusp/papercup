@@ -42,6 +42,15 @@ import {
 } from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog } from './peer-log';
+// P-004 (WI-1840, WI-183 class): the replication-liveness registry — read-time
+// per-log verdicts (live/no_replicator/frozen/…) for the status surfaces + the
+// durable-EI escalation on a sustained stall. Fed once per admitted remote log
+// per merge pass, right next to the legacy checkReplicationStall sampling.
+import {
+  sampleReplicationLiveness,
+  dropReplicationLogState,
+  dropReplicationLiveness,
+} from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
 import {
@@ -1133,6 +1142,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (logKey) {
           admitted.delete(logKey);
           replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
+      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
+          dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
           pubkeyToLogKey.delete(pk);
           admittedIdentities.delete(logKey);
           recordBootEvent(
@@ -1288,6 +1299,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const identity = admittedIdentities.get(logKey);
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
+      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       admittedIdentities.delete(logKey);
       // Clean up the pubkey→logKey reverse mapping.
       if (identity?.devicePubkey) {
@@ -1728,6 +1740,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // block the merge pass it rides.
           try {
             checkReplicationStall(log);
+          } catch {
+            // diagnostic-only — swallow
+          }
+          // P-004 (WI-1840): feed the replication-liveness registry — the
+          // read-time verdict + durable-EI escalation layer over the edge-only
+          // boot event above. Adds the ATTACHED-BUT-FROZEN axis the peers-count
+          // check can't see: merge position vs the writer's known length
+          // (contiguousLength would false-alarm on snapshot-seeded sparse
+          // replicas — see replication-liveness.ts). Same best-effort posture.
+          try {
+            const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
+            sampleReplicationLiveness(
+              opts.workspaceId,
+              opts.harnessSlug,
+              {
+                keyHex: log.keyHex,
+                knownLength: log.length,
+                mergedPosition: mergeCursor.positions.get(log.keyHex) ?? 0,
+                peersCount:
+                  typeof maybePeers.peersCount === 'function'
+                    ? maybePeers.peersCount()
+                    : undefined,
+              },
+              { graceMs: REPLICATION_STALL_GRACE_MS },
+            );
           } catch {
             // diagnostic-only — swallow
           }
@@ -2525,6 +2562,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (logKey) {
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
+      dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       pubkeyToLogKey.delete(devicePubkey);
       admittedIdentities.delete(logKey);
       recordBootEvent(
@@ -3237,6 +3275,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     async close() {
       stopped = true;
+      // P-004 (WI-1840): drop this harness's replication-liveness tracking so a
+      // closed handle never reads as 'sampling_stale' on a status surface.
+      try {
+        dropReplicationLiveness(opts.workspaceId, opts.harnessSlug);
+      } catch {
+        /* best-effort */
+      }
       // Run teardown hooks (e.g. the Stage-5 outbox drain stopper) FIRST, before
       // the store/swarm tear down — a drain mid-flight should stop appending to
       // an about-to-close store. Best-effort: a throwing hook is logged, not

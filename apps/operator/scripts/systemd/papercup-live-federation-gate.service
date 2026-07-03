@@ -1,0 +1,18 @@
+[Unit]
+Description=Live 2-peer federation gate (WI-261) — runs the two-instance smokes against the real packaged binary; catches the green-rig/red-binary class the hermetic suite structurally cannot
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/marsh-office/papercupai-workspace/papercusp/papercusp-desktop
+# SKIP_FROMREPO=1: the from-repo leg is expected-RED while WI-971 is open (outbox drain
+# never wired for joined/created hive harnesses; WI-259 was closed as its duplicate,
+# WI-280 + WI-1666 are resolved) — running it would file a noise EI for a known-open bug.
+# Flip to 0 (or drop) when WI-971 lands; content-matrix + build are the reliable signal.
+# The script self-gates: core-aware load gate, GREEN-freshness TTL (hourly timer ⇒ ~daily
+# run), storm downgrade, staleness EI when no green for GATE_STALE_DAYS (P-013).
+Environment=SKIP_FROMREPO=1
+ExecStart=/usr/bin/env bash bin/live-federation-gate.sh
+# rebuild + repack + content-matrix with up to 3 discovery attempts ≈ 15-30 min
+TimeoutStartSec=2700
+Nice=10
+IOSchedulingClass=idle

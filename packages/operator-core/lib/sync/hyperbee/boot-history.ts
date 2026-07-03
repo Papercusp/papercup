@@ -44,6 +44,12 @@
  *                           resumed, so writes on the remote peer stop crossing —
  *                           with no error and a boot log that otherwise looks
  *                           healthy. See `checkReplicationStall` in boot.ts.
+ *   - 'replication_frozen' — P-004 (WI-183 class, attached-but-dead variant): an
+ *                           admitted REMOTE log HAS a live replicator session but
+ *                           its merge position hasn't advanced past the grace
+ *                           window while the writer is known ahead — replication
+ *                           attached but ingesting nothing. Emitted by
+ *                           replication-liveness.ts (which also files a durable EI).
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
  *   - 'announce_pending'  — an inbound announce returned a 'pending' binding result
@@ -88,6 +94,12 @@ export type BootHistoryKind =
   | 'peer_revoked'
   | 'peer_unrevoked'
   | 'replication_stalled'
+  // P-004 (WI-1840, WI-183 class): an admitted REMOTE log has a live replicator
+  // session attached (peers > 0) but the merge position has not advanced past
+  // the grace window while the writer is known to be ahead — attached-but-dead
+  // replication (blocks/ingest not flowing). Emitted edge-triggered by
+  // replication-liveness.ts; the durable escalation is the EI it also files.
+  | 'replication_frozen'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
