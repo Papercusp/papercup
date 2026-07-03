@@ -46,6 +46,8 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
+import { decideColdWake, readColdLoopMarker, type ColdWakeDecision } from '../../su-cold-loop';
+import { getLoopCarryNote } from '../../carry-note';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
 
@@ -541,6 +543,84 @@ export interface ExecuteWakeDeps {
    *  gate + fresh-bee spawn + stale-claim release). Injected for tests; defaults to
    *  the real bindings (flag OFF ⇒ never fires, legacy `--resume` carry preserved). */
   freshContext?: FreshContextDeps;
+  /** su-cold-auto-mode-2026-07-03 Phase 2 (P-005/P-006/P-007): the cold-auto MASTER
+   *  GATE, resolved by the caller (the P-007 flag lands Phase 3). DEFAULT ()=>false ⇒
+   *  the psu-host cold fork stays DORMANT — every loop wake injects the warm
+   *  `mode:'turn'` turn, byte-identical to today — until a real caller wires an enabled
+   *  gate. Read ONLY when a wake carries a `carry:'cold'` loop marker (never on the
+   *  warm hot path). */
+  coldAutoEnabled?: () => Promise<boolean>;
+  /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
+   *  RECYCLE reconstructs from. Injected for tests; defaults to the real
+   *  getLoopCarryNote (carry-note.ts). */
+  getLoopCarryNoteFn?: (ref: {
+    harness: string;
+    ownerId: string;
+    workspaceId?: string;
+  }) => Promise<string | null>;
+}
+
+/**
+ * Inject a wake into a live psu-pty host, forking WARM (default) vs COLD
+ * (su-cold-auto-mode-2026-07-03 Phase 2). Shared by BOTH executeWake psu-host inject
+ * branches (the handle-less always-armed path + the main adv-session path) so the
+ * cold fork can never be wired into one and missed in the other.
+ *
+ * DORMANT BY DEFAULT: the cold branch fires ONLY when decideColdWake says so — the
+ * loop was armed `carry:'cold'` (the payload marker), cold-auto is enabled
+ * (deps.coldAutoEnabled, DEFAULT ()=>false so nothing is cold until a caller wires the
+ * P-007 gate), AND a carry-note anchor EXISTS (P-006). On {cold:true} it injects the
+ * RESET-CONTEXT / RECYCLE control verb carrying the carry-note; otherwise the warm
+ * `mode:'turn'` inject, byte-identical to today. FAIL-SOFT end to end: a marker-parse /
+ * flag / carry-note error falls back to warm, and a failed COLD inject retries warm in
+ * place — the cold path never drops or corrupts a wake.
+ *
+ * Returns the delivered WakeOutcome on a clean inject, or null on a socket miss (the
+ * caller then falls through to the normal channels, exactly as before).
+ */
+async function injectPsuHostWake(
+  d: DeliveryWork,
+  sock: string,
+  warmText: string,
+  injectPsuHost: typeof injectIntoHost,
+  deps: ExecuteWakeDeps,
+): Promise<WakeOutcome | null> {
+  const injectWarm = async (): Promise<WakeOutcome | null> => {
+    const ok = await injectPsuHost(sock, { mode: 'turn', data: warmText });
+    return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
+  };
+
+  let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
+  try {
+    const marker = readColdLoopMarker(d.payload);
+    // Cheap short-circuit: only a cold-armed loop wake WITH a harness scope can go
+    // cold — otherwise resolve nothing (no flag read, no PG carry-note read) and warm.
+    if (marker?.carry === 'cold' && marker.harness) {
+      const coldEnabled = await (deps.coldAutoEnabled ?? (async () => false))();
+      const getNote = deps.getLoopCarryNoteFn ?? getLoopCarryNote;
+      // Only pay the carry-note read when the master gate is actually on (P-006's
+      // anchor is moot if cold-auto is disabled).
+      const carryNote = coldEnabled
+        ? await getNote({ harness: marker.harness, ownerId: d.subscriberId, workspaceId: d.workspaceId })
+        : null;
+      decision = decideColdWake({ payload: d.payload, coldEnabled, carryNote });
+    }
+  } catch {
+    // Any resolution failure ⇒ warm (never let the cold path drop a wake).
+    decision = { cold: false, reason: 'cold resolution threw — warm fallback' };
+  }
+
+  if (decision.cold) {
+    const ok = await injectPsuHost(sock, { mode: decision.mode, data: decision.carryNote });
+    if (ok) {
+      return {
+        kind: 'delivered',
+        channel: decision.mode === 'recycle' ? 'psu-socket-recycle' : 'psu-socket-reset',
+      };
+    }
+    // Cold inject missed → warm in place rather than drop the wake.
+  }
+  return injectWarm();
 }
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
@@ -566,8 +646,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const psuHost = findPsuHost(d.subscriberId);
       if (psuHost) {
-        const ok = await injectPsuHost(psuHost.sock, { mode: 'turn', data: wakeTurnText(d) });
-        if (ok) return { kind: 'delivered', channel: 'psu-socket-inject' };
+        const outcome = await injectPsuHostWake(d, psuHost.sock, wakeTurnText(d), injectPsuHost, deps);
+        if (outcome) return outcome;
       }
       // No injectable socket: presence fresh → the inbox nudge reaches it; gone → drop.
       const p = await presence(d.subscriberId).catch(() => null);
@@ -617,8 +697,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // through to the normal channels.
     const psuHost = findPsuHost(d.subscriberId);
     if (psuHost) {
-      const ok = await injectPsuHost(psuHost.sock, { mode: 'turn', data: text });
-      if (ok) return { kind: 'delivered', channel: 'psu-socket-inject' };
+      const outcome = await injectPsuHostWake(d, psuHost.sock, text, injectPsuHost, deps);
+      if (outcome) return outcome;
     }
 
     if (isAlive && pidKnown) {

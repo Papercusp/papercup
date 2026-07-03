@@ -502,6 +502,25 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     await rec.booted.revoke(p.devicePubkey);
     return { ok: true, revoked: true };
   }
+  // P-101 (fleet directory) over the relocated substrate: scoped-log participation
+  // runs where the swarm + scoped store live — HERE. The main-process
+  // RemoteBootedHarnessHandle forwards these two verbs; the real handle's
+  // ensureScopeParticipation unions into the boot's durable declared set and
+  // discloses via the live ScopeFederation (no-op until the scoped layer is up).
+  async function handleEnsureScopeParticipation(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string; scopes: unknown };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    await rec.booted.ensureScopeParticipation((Array.isArray(p.scopes) ? p.scopes : []) as never);
+    return { ok: true };
+  }
+  async function handleRediscloseScopes(params: unknown): Promise<unknown> {
+    const p = params as { storeId: string };
+    const rec = requireRecord(p.storeId);
+    if (!rec.booted) throw new RpcMethodError(-32000, 'Harness is not booted in the sidecar');
+    await rec.booted.rediscloseScopes();
+    return { ok: true };
+  }
   async function handleRekey(params: unknown): Promise<unknown> {
     const p = params as { storeId: string; binding: SwarmBinding };
     const rec = requireRecord(p.storeId);
@@ -638,6 +657,8 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     'substrate:getBootHistory': handleGetBootHistory,
     'substrate:revoke': handleRevoke,
     'substrate:rekey': handleRekey,
+    'substrate:ensureScopeParticipation': handleEnsureScopeParticipation,
+    'substrate:rediscloseScopes': handleRediscloseScopes,
     'substrate:prepareSocketHandoff': handlePrepareSocketHandoff,
     'substrate:attachSocket': handleAttachSocket,
     'substrate:getCoreInfo': handleGetCoreInfo,

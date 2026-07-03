@@ -336,7 +336,10 @@ export class PgFleetDirectory implements FleetDirectory {
   }
 
   private ws(): string | null {
-    return resolveP2pGrantWorkspace(this.deps.workspaceId);
+    // resolveP2pGrantWorkspace returns string | undefined; this contract is string | null and every caller
+    // treats both as "no workspace" (they guard with `if (!ws)`), so coalesce undefined → null (greens the
+    // shared tsc gate; no behavior change).
+    return resolveP2pGrantWorkspace(this.deps.workspaceId) ?? null;
   }
 
   /** scope-roster contract: member ids, or null when the directory has no live

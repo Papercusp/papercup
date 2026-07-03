@@ -145,12 +145,17 @@ export function listLiveHosts(dir: string = PSU_PTY_DIR): PsuPtyHost[] {
  * turn (idle-gated host-side, then submitted); `mode:'raw'` = verbatim +
  * IMMEDIATE (force-interrupt bytes: Ctrl-C '\x03' / Esc '\x1b'); `mode:'osc'` =
  * recolor escape bytes written to the host's STDOUT (the visible terminal), not
- * the agent's stdin — the fleet-recolor path. Resolves true on a clean write,
- * false on connect error / timeout. Mirrors psu-pty-host.mjs's v1 envelope.
+ * the agent's stdin — the fleet-recolor path. `mode:'compact'` (WI-1804) = /compact
+ * then a completion-gated carry-note continuation (uses `focus`). `mode:'reset'` /
+ * `mode:'recycle'` (su-cold-auto-mode-2026-07-03 Phase 2) = a COLD loop wake:
+ * RESET-CONTEXT (`/clear` in place, keep the MCP warm) or RECYCLE (kill+respawn the
+ * host), each carrying the carry-note as `data`; both are clean-boundary-gated
+ * host-side (deferred mid-turn, P-006). Resolves true on a clean write, false on
+ * connect error / timeout. Mirrors psu-pty-host.mjs's v1 envelope.
  */
 export function injectIntoHost(
   sock: string,
-  msg: { mode: 'turn' | 'raw' | 'osc' | 'compact'; data: string; focus?: string },
+  msg: { mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle'; data: string; focus?: string },
   timeoutMs = 2000,
 ): Promise<boolean> {
   return new Promise((resolve) => {

@@ -13,6 +13,8 @@ import {
   _testing,
   type GymQdEliteWireRow,
 } from './gym-qd-elites';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../../identity/ed25519';
+import { signEliteOutcome } from '../../../gym/qd/elite-outcome-record';
 
 const { composeKey, decodeValue } = _testing;
 
@@ -228,5 +230,89 @@ describe('onRefusedOp — per-source refused-op counter (F1-4 / P-012)', () => {
     expect(classifyEliteRefusal({ federatable: false })).toBe('malformed');
     expect(classifyEliteRefusal(null)).toBe('malformed');
     expect(classifyEliteRefusal({ niche_key: 'n', federatable: true })).toBe('malformed');
+  });
+});
+
+describe('writeToPg — P-014 device-signed outcome verification', () => {
+  const kp = generateEd25519KeypairDer();
+  const SRC_LOG = 'source-log-key-xyz';
+  const remote = { authorPubkey: SRC_LOG, origin: 'remote' as const, ts: 1_700_000_000_500 };
+
+  // The default row's niche_key/candidate_id — the record must bind to these.
+  async function signedRec(over: Record<string, unknown> = {}) {
+    return signEliteOutcome(
+      {
+        nicheKey: 'v1:loop/guard/r2/size-m',
+        candidateId: 'cand-42',
+        sourceHive: 'papercusp',
+        outcome: 'won',
+        grade: 0,
+        fitness: 0.87,
+        devicePubkeyBase64: kp.pubkeyBase64,
+        nowMs: 1_700_000_000_000,
+        ...over,
+      },
+      async (b) => signWithPrivateKeyDer(kp.privateKeyDer, b),
+    );
+  }
+  // Seams: the relaying source log resolves to kp's device, which is an admitted member.
+  const vopts = (sql: postgres.Sql) => ({
+    workspaceId: 'ws',
+    harnessSlug: 'papercusp',
+    sql,
+    resolveSignerDevice: (src: string) => (src === SRC_LOG ? kp.pubkeyBase64 : null),
+    isDeviceAdmitted: (d: string) => d === kp.pubkeyBase64,
+  });
+  // outcome_verified is the ONLY boolean interpolated into the INSERT (novelty_gift
+  // is a SQL NOT EXISTS subquery, not a param), so toContain(true/false) is exact.
+
+  it('a valid signed record from the relaying device, admitted ⇒ outcome_verified TRUE', async () => {
+    const { sql, calls } = fakeSql();
+    const rec = await signedRec();
+    await buildGymQdElitesProjection(vopts(sql)).writeToPg(row({ outcome_record: rec }), remote);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(true);
+  });
+
+  it('no outcome_record ⇒ FALSE (still admitted — "where verifiable")', async () => {
+    const { sql, calls } = fakeSql();
+    await buildGymQdElitesProjection(vopts(sql)).writeToPg(row(), remote);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(false);
+  });
+
+  it('ANTI-LIFT: signer device != the relaying-log device ⇒ FALSE', async () => {
+    const { sql, calls } = fakeSql();
+    const rec = await signedRec();
+    const opts = {
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      sql,
+      resolveSignerDevice: () => 'someone-elses-device',
+      isDeviceAdmitted: () => true,
+    };
+    await buildGymQdElitesProjection(opts).writeToPg(row({ outcome_record: rec }), remote);
+    expect(calls[0]).toContain(false);
+  });
+
+  it('MEMBERSHIP: signer not an admitted member ⇒ FALSE', async () => {
+    const { sql, calls } = fakeSql();
+    const rec = await signedRec();
+    const opts = {
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      sql,
+      resolveSignerDevice: () => kp.pubkeyBase64,
+      isDeviceAdmitted: () => false,
+    };
+    await buildGymQdElitesProjection(opts).writeToPg(row({ outcome_record: rec }), remote);
+    expect(calls[0]).toContain(false);
+  });
+
+  it('REPLAY: a record bound to a different niche ⇒ FALSE', async () => {
+    const { sql, calls } = fakeSql();
+    const rec = await signedRec({ nicheKey: 'v1:other/niche/r1/size-s' });
+    await buildGymQdElitesProjection(vopts(sql)).writeToPg(row({ outcome_record: rec }), remote);
+    expect(calls[0]).toContain(false);
   });
 });
