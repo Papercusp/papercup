@@ -156,12 +156,15 @@ export async function setResourceAllotment(
   const sql = sqlOverride ?? getOrgPg().sql;
   const status: AllotmentStatus = args.status ?? 'active';
   const sharePct = Math.round(args.sharePct);
+  // jsonb bind: getOrgPg's pooled sql THROWS on sql.json() (prepare:false mis-binds it —
+  // see agent-governor-pg-store.ts / the usage-events integration test). Bind the axis
+  // object as `${JSON.stringify(x)}::jsonb` instead. Do NOT "fix" this back to sql.json().
   const rows = (await sql`
     INSERT INTO harness_shared.resource_allotments
       (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, axis, status, created_by_github_user_id)
     VALUES
       (${ws}, ${args.fleetSlug}, ${args.resourceKind}, ${args.resourceRef}, ${sharePct},
-       ${sql.json(args.axis ?? {})}, ${status}, ${args.createdByGithubUserId ?? null})
+       ${JSON.stringify(args.axis ?? {})}::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
     ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref)
     DO UPDATE SET share_pct = EXCLUDED.share_pct,
                   axis = EXCLUDED.axis,

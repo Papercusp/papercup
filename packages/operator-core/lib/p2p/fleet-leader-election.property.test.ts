@@ -34,11 +34,10 @@ const input = (over: Partial<ElectFleetLeaderInput>): ElectFleetLeaderInput => (
   ...over,
 });
 
-/** Distinct device pubkeys. */
-const pubkeysArb = fc.uniqueArray(fc.hexaString({ minLength: 6, maxLength: 14 }), {
-  minLength: 1,
-  maxLength: 10,
-});
+/** Distinct device pubkeys (derived from unique integers — hex-ish, deterministic). */
+const pubkeysArb = fc
+  .uniqueArray(fc.integer({ min: 0, max: 1_000_000 }), { minLength: 1, maxLength: 10 })
+  .map((ns) => ns.map((n) => `dev-${n.toString(16)}-pub`));
 
 /** A set of LIVE member devices (all owned by OWNER, all fresh). */
 const liveMembersArb: fc.Arbitrary<FleetMemberDevice[]> = pubkeysArb.map((pubs) =>
