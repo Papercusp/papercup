@@ -357,6 +357,18 @@ A `ToolResponse.data` is no longer always `JSON.stringify`'d into `content[0].te
 
 MCP `tools/list` advertises a tool's `outputSchema` (spec-aligned) and a Papercusp `resultFormats` extension (its capability set) so a client knows what it may negotiate.
 
+## Freshness negotiation — `_meta.delta`
+
+Alongside `format`/`structured`/`idempotencyKey`, an MCP `tools/call` may carry a fourth
+`_meta` control: `delta` — a per-call value (`req.params._meta.delta`) that wins over a
+connection-level `?delta=` on the MCP URL, mirroring the `?format=` fallback. It lets a
+delta-capable tool answer `not_modified` (or a semantic `added`/`updated`/`removed` diff)
+instead of replaying an unchanged snapshot, mirroring HTTP `ETag`/`If-None-Match`. The
+**harness**, not the model, sets this and owns cursor storage + base-presence tracking —
+absent ⇒ no negotiation (serve `full`, today's behavior, byte-identical to a delta-unaware
+client). Full contract, cursor format, the base-presence rules, and the production
+flag/gate: [Tool result freshness: the delta base-presence contract](/internal/docs/agent-insights/tool-delta-base-presence-contract).
+
 ## The three context types
 
 The codebase has three context types floating around — same field set, different supersets. Knowing which is which helps when tracing types through the dispatcher and transport adapters.

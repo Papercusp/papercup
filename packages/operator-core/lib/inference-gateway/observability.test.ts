@@ -11,6 +11,9 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   inFlight: 2,
   queueDepth: 5,
   admission: { running: 2, queued: 5, maxConcurrent: 24, byPriority: [{ priority: 100, count: 1 }, { priority: 0, count: 4 }] },
+  // codexAdmission is a REQUIRED GatewayStats field — set it concretely (it previously came only from the
+  // `...over` spread, so `baseStats().codexAdmission` was silently undefined and tripped the assignability check).
+  codexAdmission: { running: 0, queued: 0, maxConcurrent: 4, byPriority: [] },
   upstream429: 0,
   queued429: 1,
   shed429: 0,
