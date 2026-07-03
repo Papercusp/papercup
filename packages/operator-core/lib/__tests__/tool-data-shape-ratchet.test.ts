@@ -73,7 +73,19 @@ for (const file of TOOL_FILES) {
 // the ceiling carries headroom so normal fleet churn never reds the gate on this
 // cosmetic nudge, while a large regression (a bad refactor adding many) trips it.
 // LOWER this as tools migrate to { data } (shrink-only).
-const BASELINE = 410;
+//
+// 2026-07-03 (WI-1860): 410 → 411. The 2026-06-22 headroom was consumed by normal
+// fleet churn; the count reached 411 when the new tool loop/checkpoint.ts
+// (su-cold-auto-mode-2026-07-03 P-002) shipped the legacy inline-JSON shape,
+// redding the shared release gate. Author-sanctioned bump ("if inline JSON is
+// genuinely needed, bump BASELINE with a note") — inline JSON is acceptable here
+// (both shapes reach the agent identically via P-002 re-encoding, and fully
+// migrating loop:checkpoint would force a throw-based error path onto a peer's
+// in-flight tool, out of scope). NOTE: headroom is now exhausted, so this gate will
+// re-red on the NEXT legacy-shape tool. The durable fix is the deferred owner-scoped
+// { data }-migration sweep (migrate a few mature tools, then LOWER this back down),
+// not repeated +1 bumps.
+const BASELINE = 411;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {
