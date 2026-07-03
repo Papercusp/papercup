@@ -27,7 +27,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { loadHarnessRegistry, saveHarnessRegistry } from '../../../harness-registry';
+import { loadHarnessRegistry, mutateHarnessRegistry } from '../../../harness-registry';
 import type { ProjectEntry } from '../../../harness-registry';
 import { scaffoldHarnessSchema } from '../../../scaffold-harness-schema';
 import { parseHarnessLink } from '../../../harness/url-scheme';
@@ -52,7 +52,10 @@ import type { JoinState } from '../../../harness/join-shared-harness';
 export interface JoinLinkDeps {
   resolveIdentity: (opts?: ResolveLocalGithubIdentityOpts) => Promise<LocalGithubIdentity>;
   loadRegistry: typeof loadHarnessRegistry;
-  saveRegistry: typeof saveHarnessRegistry;
+  /** EI-82 hardening (2026-07-03): registration is an ATOMIC upsert-or-enrich —
+   *  never a load→push→save whole-payload overwrite (which silently clobbered /
+   *  was clobbered by any concurrent registry writer). */
+  mutateRegistry: typeof mutateHarnessRegistry;
   joinHarness: (opts: Parameters<typeof joinSharedHarness>[0]) => Promise<JoinState>;
   scaffold: (slug: string) => Promise<void>;
   /** EI-382: seed the joined clone's git-sync routine (best-effort). */
@@ -154,7 +157,7 @@ async function defaultSeedOwnerBinding(
 export const realJoinLinkDeps: JoinLinkDeps = {
   resolveIdentity: resolveLocalGithubIdentity,
   loadRegistry: loadHarnessRegistry,
-  saveRegistry: saveHarnessRegistry,
+  mutateRegistry: mutateHarnessRegistry,
   joinHarness: joinSharedHarness,
   scaffold: scaffoldHarnessSchema,
   seedGitSync: (opts) => seedGitSyncRoutineForMember(opts),
