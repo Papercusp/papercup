@@ -42,6 +42,28 @@ export function chronicErrorThreshold(): number {
   return Number.isFinite(n) ? n : 6;
 }
 
+/**
+ * Staleness window (env-overridable). A `consecutive_errors` streak is only
+ * meaningfully "chronic" while the routine is still TRYING to fire — a row whose
+ * `last_fired_at` is older than this window is a FROZEN watermark, not a live
+ * failure, and must not re-escalate forever.
+ *
+ * EI-6765 (overwatch@papercup, red 6 consecutive fires yet `last_fired_at` was
+ * 8 DAYS stale): the active overwatch loop had moved to the `papercusp` home slug
+ * (which is `ok`), leaving an orphaned `papercup` row frozen at 6 errors. The
+ * pre-existing `routine_active = false` guard catches AUTO-PAUSED loops, but an
+ * ORPHANED slug (rename/migration/one-time misfire) never fires again, so its
+ * streak can NEVER reset — it re-escalated once every 24h debounce cycle in
+ * perpetuity. Default 6h = 6× the 1h fire-gate backoff cap
+ * (PAPERCUSP_AUTOLOOP_BACKOFF_CAP_SEC), so a genuinely-failing loop (which fires
+ * at least hourly even fully backed off) is NEVER suppressed. <=0 disables the
+ * staleness guard (fail-open — every breaching row escalates as before).
+ */
+export function staleWindowMs(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_STALE_MS ?? 6 * 60 * 60 * 1000);
+  return Number.isFinite(n) ? n : 6 * 60 * 60 * 1000;
+}
+
 export interface AutoloopStateRow {
   harness_slug: string;
   role: string;
@@ -52,26 +74,58 @@ export interface AutoloopStateRow {
    *  loop:arm-materialized routine). `false` is the ONLY value that suppresses escalation —
    *  the routine engine itself has already resolved this condition (auto-paused). */
   routine_active: boolean | null;
+  /** When this autoloop row last FIRED. A streak whose last fire is older than
+   *  `staleWindowMs()` is a frozen watermark (EI-6765) — the row stopped firing
+   *  (orphaned/renamed slug) so its error count can never reset. `null`/absent =
+   *  unknown → fail-OPEN (treated as live, never silently suppressed). */
+  last_fired_at?: string | Date | null;
+}
+
+/** PURE: is this row's error streak a FROZEN watermark rather than a live failure —
+ *  i.e. has it not fired within the staleness window? `null`/absent `last_fired_at`
+ *  (or an unparseable value) fails OPEN (returns false: treat as live), matching the
+ *  `routine_active: null` fail-open philosophy — never silently suppress on unknown. */
+export function isStaleWatermark(
+  row: Pick<AutoloopStateRow, 'last_fired_at'>,
+  now: number,
+  staleMs: number,
+): boolean {
+  if (staleMs <= 0) return false;
+  const raw = row.last_fired_at;
+  if (raw == null) return false;
+  const t = raw instanceof Date ? raw.getTime() : new Date(raw).getTime();
+  if (!Number.isFinite(t)) return false;
+  return now - t > staleMs;
 }
 
 /** PURE: which rows breach the threshold (highest streak first), EXCLUDING any row whose
  *  matching routine is already `active:false` (auto-paused — a resolved condition, not a
- *  live chronic failure; see this module's header comment). `routine_active: null` (no
- *  matching routine) is NOT excluded — fail-open, never silently suppress an unknown state. */
+ *  live chronic failure; see this module's header comment) OR whose streak is a FROZEN
+ *  watermark (EI-6765 — `last_fired_at` older than the staleness window; the row stopped
+ *  firing so its error count can never reset). `routine_active: null` / absent
+ *  `last_fired_at` are NOT excluded — fail-open, never silently suppress an unknown state. */
 export function selectChronicFailures(
   rows: readonly AutoloopStateRow[],
   threshold: number,
+  opts?: { now?: number; staleMs?: number },
 ): AutoloopStateRow[] {
   if (threshold <= 0) return [];
+  const now = opts?.now ?? Date.now();
+  const staleMs = opts?.staleMs ?? staleWindowMs();
   return rows
-    .filter((r) => r.consecutive_errors >= threshold && r.routine_active !== false)
+    .filter(
+      (r) =>
+        r.consecutive_errors >= threshold &&
+        r.routine_active !== false &&
+        !isStaleWatermark(r, now, staleMs),
+    )
     .sort((a, b) => b.consecutive_errors - a.consecutive_errors);
 }
 
 export interface ChronicFailureResult {
   harnessSlug: string;
   role: string;
-  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'error';
+  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'error';
   reason: string;
 }
 
@@ -86,20 +140,39 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
   try {
     const { sql } = getOrgPg();
     const workspaceId = activeWorkspaceId();
+    const now = Date.now();
+    const staleMs = staleWindowMs();
     const allRows = await sql<AutoloopStateRow[]>`
-      SELECT s.harness_slug, s.role, s.consecutive_errors, s.last_status, r.active AS routine_active
+      SELECT s.harness_slug, s.role, s.consecutive_errors, s.last_status, s.last_fired_at, r.active AS routine_active
         FROM harness_shared.autoloop_state s
    LEFT JOIN harness_shared.routines r
           ON r.name = s.role AND r.workspace_id = s.workspace_id
        WHERE s.consecutive_errors >= ${threshold}`;
     const pausedSkipped = allRows.filter((r) => r.consecutive_errors >= threshold && r.routine_active === false);
-    const breaches = selectChronicFailures(allRows, threshold);
+    // EI-6765: a breaching, non-paused row whose last fire is older than the staleness
+    // window is a FROZEN watermark (orphaned/renamed slug that stopped firing), not a
+    // live chronic failure — report it as skipped-stale for observability, never escalate.
+    const staleSkipped = allRows.filter(
+      (r) =>
+        r.consecutive_errors >= threshold &&
+        r.routine_active !== false &&
+        isStaleWatermark(r, now, staleMs),
+    );
+    const breaches = selectChronicFailures(allRows, threshold, { now, staleMs });
     for (const p of pausedSkipped) {
       results.push({
         harnessSlug: p.harness_slug,
         role: p.role,
         outcome: 'skipped-paused',
         reason: `routine already auto-paused (active:false) — resolved, not a live chronic failure`,
+      });
+    }
+    for (const s of staleSkipped) {
+      results.push({
+        harnessSlug: s.harness_slug,
+        role: s.role,
+        outcome: 'skipped-stale',
+        reason: `no fire within ${Math.round(staleMs / 3_600_000)}h (last_fired_at ${s.last_fired_at ?? 'null'}) — frozen watermark, not a live chronic failure`,
       });
     }
     for (const b of breaches) {
