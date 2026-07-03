@@ -186,8 +186,31 @@ export async function wirePresenceAnnounceForHarness(
             plan_slug: (r as { currentPlanSlug?: string | null }).currentPlanSlug ?? null,
             harness_slug: handle.harnessSlug,
             last_active_ms: nowMs,
+            fleet_slug: null as string | null,
+            fleet_role: null as string | null,
           }));
-        const hash = JSON.stringify(sessions.map((s) => [s.owner_id, s.intent, s.plan_slug]));
+        // P-301: stamp each announced session's named-fleet membership so a fleet
+        // spanning machines resolves `@fleet:<slug>` to its cross-machine members +
+        // leader. ONE batch read keyed by the announced ownerIds (constant, not N) —
+        // best-effort: a lookup error just leaves membership null (wire unchanged).
+        try {
+          const { fetchPresenceFleet } = await import(
+            '../../agent-tools/coordination/presence-fleet'
+          );
+          const fleetOf = await fetchPresenceFleet(sessions.map((s) => s.owner_id));
+          for (const s of sessions) {
+            const m = fleetOf.get(s.owner_id);
+            if (m?.fleetSlug) {
+              s.fleet_slug = m.fleetSlug;
+              s.fleet_role = m.fleetRole ?? null;
+            }
+          }
+        } catch {
+          /* membership enrichment is best-effort — never fails an announce */
+        }
+        const hash = JSON.stringify(
+          sessions.map((s) => [s.owner_id, s.intent, s.plan_slug, s.fleet_slug, s.fleet_role]),
+        );
         if (hash === lastHash && nowMs - lastSentMs < SESSION_ANNOUNCE_REFRESH_MS) return;
         const { broadcastSessions } = await import('./presence-gossip-wiring');
         if (await broadcastSessions(gossipTopicHex, sessions)) {

@@ -186,7 +186,9 @@ async function writeCachedIdentity(
 
 async function identityFromCache(
   path: string | false,
-  loadKeypair: (keychainId: string) => Promise<{ keychainId: string; pubkeyBase64: string }>,
+  // Load-only or load-or-generate — either shape is accepted; a null/throw result
+  // is treated as "no verifiable keypair" (returns null), never an error.
+  loadKeypair: (keychainId: string) => Promise<{ keychainId: string; pubkeyBase64: string } | null>,
 ): Promise<LocalAnnounceIdentity | null> {
   const cached = await readCachedIdentity(path);
   if (!cached) return null;
@@ -199,6 +201,29 @@ async function identityFromCache(
     githubLogin: cached.githubLogin,
     attestationGistId: cached.attestationGistId,
   };
+}
+
+/**
+ * Load THIS peer's announce identity from the persisted cache ONLY — never
+ * resolving gh / generating a key. Reads `~/.papercusp/local-announce-identity.json`
+ * (the artifact `resolveLocalAnnounceIdentity` writes once the substrate has booted +
+ * announced) and re-verifies it against the OS keychain: the cached
+ * `devicePubkeyBase64` must still match a key present under the cached `keychainId`.
+ *
+ * Returns null on a cold box (never announced), a cache/keychain mismatch (rotated
+ * key), or any read failure — the caller treats null as "no local device signer
+ * available" and degrades gracefully.
+ *
+ * This is the DECOUPLED reuse seam for the SAME device identity boot.ts signs
+ * announces with (F1-6/P-014 elite outcome-signing): any control-plane caller that
+ * needs to sign AS this peer (e.g. the gym cycle's elite-outcome signer) resolves it
+ * here without coupling to the live substrate object graph, and gets a pubkey a
+ * receiver's `resolveAuthorDevice(ourLog)` provably matches (anti-lift parity).
+ */
+export async function loadCachedLocalAnnounceIdentity(
+  cachePath: string | false = defaultCachePath(),
+): Promise<LocalAnnounceIdentity | null> {
+  return identityFromCache(cachePath, loadExistingDeviceKeypair);
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {

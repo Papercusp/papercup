@@ -4,7 +4,7 @@
  * (turn-lifecycle-control Phase 3, P-012/P-013). The real-pty round-trip
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   sanitizeKey,
   socketPathFor,
@@ -19,6 +19,8 @@ import {
   resetWritesForAgent,
   compactCommandForAgent,
   compactStartMs,
+  fireSessionCompactedEvent,
+  SESSION_COMPACTED_EMIT_ENTRY,
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
@@ -248,6 +250,57 @@ describe('compactStartMs (WI-1804 compaction START delay)', () => {
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '3500' })).toBe(3500);
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: 'nope' })).toBe(2000);
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '-5' })).toBe(2000);
+  });
+});
+
+describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bridge)', () => {
+  const okChild = () => ({ on: () => {}, unref: () => {} });
+
+  it('spawns the detached tsx emit CLI with owner + focus as argv when the entry exists', () => {
+    const spawnFn = vi.fn(() => okChild());
+    const child = fireSessionCompactedEvent('su-94b69', 'keep the plan', {
+      spawnFn,
+      existsFn: () => true,
+      entry: '/x/emit-session-compacted.ts',
+    });
+    expect(child).not.toBeNull();
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = spawnFn.mock.calls[0];
+    expect(cmd).toBe('npx');
+    expect(args).toEqual(['tsx', '/x/emit-session-compacted.ts', 'su-94b69', 'keep the plan']);
+    // detached + fully silenced so a spawn failure can never touch the live session
+    expect(opts).toMatchObject({ detached: true, stdio: 'ignore' });
+  });
+
+  it('is a NO-OP (never spawns) until the CLI entry exists — safe to ship the wire before the CLI', () => {
+    const spawnFn = vi.fn(() => okChild());
+    const out = fireSessionCompactedEvent('su-94b69', 'f', { spawnFn, existsFn: () => false });
+    expect(out).toBeNull();
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('no-ops on a missing ownerId (never emit an unkeyed event)', () => {
+    const spawnFn = vi.fn(() => okChild());
+    expect(fireSessionCompactedEvent('', 'f', { spawnFn, existsFn: () => true })).toBeNull();
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('coerces a null/undefined focus to an empty-string argv (never passes "undefined")', () => {
+    const spawnFn = vi.fn(() => okChild());
+    fireSessionCompactedEvent('su-x', undefined, { spawnFn, existsFn: () => true, entry: '/e.ts' });
+    expect(spawnFn.mock.calls[0][1]).toEqual(['tsx', '/e.ts', 'su-x', '']);
+  });
+
+  it('FAIL-SOFT: a spawn that throws is swallowed (returns null, never propagates into the session)', () => {
+    const spawnFn = vi.fn(() => {
+      throw new Error('npx not found');
+    });
+    expect(() => fireSessionCompactedEvent('su-x', 'f', { spawnFn, existsFn: () => true, entry: '/e.ts' })).not.toThrow();
+    expect(fireSessionCompactedEvent('su-x', 'f', { spawnFn, existsFn: () => true, entry: '/e.ts' })).toBeNull();
+  });
+
+  it('the default emit-CLI entry is a sibling .ts of the host script', () => {
+    expect(SESSION_COMPACTED_EMIT_ENTRY).toMatch(/scripts[/\\]emit-session-compacted\.ts$/);
   });
 });
 

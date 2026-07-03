@@ -120,7 +120,8 @@ export async function listLiveSessionPresence(
     Array<Omit<SessionPresenceRowOut, 'last_seen_ms'> & { last_seen_at: Date }>
   >`
     SELECT workspace_id, hive_slug, harness_slug, owner_id, kind, intent, plan_slug,
-           github_user_id, machine_label, device_pubkey, last_seen_at
+           github_user_id, machine_label, device_pubkey, last_seen_at,
+           fleet_slug, fleet_role
     FROM harness_shared.shared_session_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND last_seen_at > ${floor}
@@ -139,5 +140,40 @@ export async function listLiveSessionPresence(
     machine_label: r.machine_label,
     device_pubkey: r.device_pubkey,
     last_seen_ms: new Date(r.last_seen_at).getTime(),
+    fleet_slug: r.fleet_slug ?? null,
+    fleet_role: r.fleet_role ?? null,
   }));
+}
+
+/** A cross-machine fleet member as read from shared_session_presence (P-301). */
+export interface FederatedFleetMemberRow {
+  ownerId: string;
+  fleetRole: string | null;
+}
+
+/**
+ * The FEDERATED analogue of fleet-roster.liveFleetMemberIds: live remote sessions
+ * (within staleMs) carrying `fleet_slug` = the given fleet, with their advertised
+ * role (so the coord audience resolver can union cross-machine members AND derive a
+ * cross-machine leader). Returns [] when shared_session_presence is empty (single
+ * box) or on a query error — the local roster must always resolve regardless.
+ *
+ * `staleMs` is passed in (not imported) to keep this gossip-store module free of the
+ * coordination-layer PRESENCE_STALE_MS constant; the caller supplies it.
+ */
+export async function listFederatedFleetMembers(
+  opts: { workspaceId: string; fleetSlug: string; staleMs: number; nowMs?: number },
+  sqlIn?: postgres.Sql,
+): Promise<FederatedFleetMemberRow[]> {
+  const sql = sqlIn ?? getOrgPg().sql;
+  const now = opts.nowMs ?? Date.now();
+  const floor = new Date(now - opts.staleMs);
+  const rows = await sql<Array<{ owner_id: string; fleet_role: string | null }>>`
+    SELECT owner_id, fleet_role
+      FROM harness_shared.shared_session_presence
+     WHERE workspace_id = ${opts.workspaceId}
+       AND fleet_slug = ${opts.fleetSlug}
+       AND last_seen_at > ${floor}
+  `;
+  return rows.map((r) => ({ ownerId: r.owner_id, fleetRole: r.fleet_role ?? null }));
 }
