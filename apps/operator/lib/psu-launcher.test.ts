@@ -84,6 +84,9 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
+// WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
+// tool boundary carries its own copy). The parity suite below pins them value-for-value.
+import { validateCloudModelSpec } from '@papercusp/operator-core/lib/agent-config-constants';
 // weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
 // (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it drops the
 // manual granular lock tools and adds fleet:launch-on-plan (drift guard below).
@@ -1492,6 +1495,33 @@ describe('validateModelSpec + --model guard (WI-1979 — reject a malformed mode
   it('parseArgs is a no-op on VALID input — a good --model spec still normalizes', () => {
     expect(parseArgs(['--model=fable:xhigh']).model).toBe('fable[1m]:xhigh');
     expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
+  });
+});
+
+describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift guard)', () => {
+  // node exec's psu-launcher.mjs directly, so it cannot import the operator-core TS twin the
+  // fleet:launch-on-plan tool boundary uses (and vice-versa) — same constraint that keeps
+  // normalizeModelSpec / DEFAULT_1M_FAMILY_RE in lockstep by convention. This asserts the two
+  // copies agree VALUE-FOR-VALUE (ok AND the corrective message) so a change to one that is not
+  // mirrored in the other fails CI here, not silently in production.
+  const VECTORS = [
+    // valid
+    'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
+    'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
+    'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+    // plausible-unknown (pass)
+    'o3', 'gpt4', 'grok',
+    // rejected
+    'fabel5[1m]', 'fabel', 'sonet', 'sonnet5', 'opus4', 'opuss', 'fabel5:xhigh', 'opus[1m]x',
+  ];
+  it('the two copies return an identical { ok, message } for every spec', () => {
+    for (const s of VECTORS) {
+      const a = validateModelSpec(s);
+      const b = validateCloudModelSpec(s);
+      expect(b.ok, s).toBe(a.ok);
+      expect(b.message ?? null, s).toBe(a.message ?? null);
+    }
   });
 });
 

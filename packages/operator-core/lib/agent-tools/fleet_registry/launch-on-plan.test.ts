@@ -13,7 +13,7 @@
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
 import { describe, it, expect } from 'vitest';
-import {
+import launchOnPlan, {
   memberLaunchCommand,
   isOmpLocalModel,
   resolveFleetAgent,
@@ -149,3 +149,27 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
 // The P-005 idempotency guard moved to PG (agent_fleets.last_launch_at, migration 484) so it
 // holds across the multi-process :3070 worker pool — semantics are covered by
 // agent-fleets-store.integration.test.ts (claimFleetLaunchSlot / releaseFleetLaunchSlot).
+
+// WI-1993: the `model` arg rejects a malformed CLOUD spec at the TOOL BOUNDARY (before opening
+// any desktop windows), not just per-member at psu boot. Exercises the real zod schema via
+// `.args.parse` — the fuzzyEnum(local) leg fails open (empty local registry in the test env),
+// so this isolates the chained validateCloudModelSpec superRefine.
+describe('model arg — cloud model-spec validation at the tool boundary (WI-1993)', () => {
+  const parseModel = (model: string) =>
+    (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan', model });
+  it('rejects a hand-typed [1m] marker on a non-family alias (the fabel5[1m] incident)', () => {
+    expect(() => parseModel('fabel5[1m]')).toThrow(/fable/);
+  });
+  it('rejects a close-typo alias with a corrective suggestion', () => {
+    expect(() => parseModel('opuss')).toThrow(/opus/);
+    expect(() => parseModel('sonet')).toThrow(/sonnet/);
+  });
+  it('accepts valid cloud specs, full ids, plausible-unknown short ids, and local ornith ids', () => {
+    for (const m of [
+      'opus:high', 'fable:xhigh', 'sonnet', 'haiku', 'opus[1m]:max', 'claude-fable-5',
+      'o3', 'gpt4', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+    ]) {
+      expect(() => parseModel(m), m).not.toThrow();
+    }
+  });
+});

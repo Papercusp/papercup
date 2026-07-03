@@ -170,7 +170,10 @@ describe("coord:inbox handler (fold before the limit window)", () => {
     for (let m = 10; m < 40; m++) rows.push(broadcast(m, "git-sync STALLED on x"));
     M.readInbox.mockImplementation(async () => rows);
 
-    const out = await callInbox({ limit: 5 });
+    // The direct()/broadcast() helpers carry category "doc-drift", which is now
+    // AMBIENT-excluded by default (EI-2871); this test exercises the coalesce+window
+    // fold, so opt the ambient rows back in so they reach the fold.
+    const out = await callInbox({ limit: 5, include_ambient: true });
     // 33 raw rows → 4 coalesced (3 distinct + 1 ×30 representative); all fit.
     expect(out.summary).toMatchObject({
       total: 33,
@@ -212,5 +215,50 @@ describe("coord:inbox handler (fold before the limit window)", () => {
       resolved: true,
       resolved_at: at(9),
     });
+  });
+});
+
+describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => {
+  // A `system:doc-freshness` RE-VERIFY digest, broadcast to '*' every git-sync tick.
+  const docDrift = (m: number, summary: string) => ({
+    ts: at(m),
+    msg_id: `dd-${m}`,
+    from: "system:doc-freshness",
+    to: ["*"],
+    kind: "message",
+    category: "doc-drift",
+    summary,
+  });
+  // A DIRECTED peer message — no category, so never ambient-filtered.
+  const peerPing = (m: number, summary: string) => ({
+    ts: at(m),
+    msg_id: `p-${m}`,
+    from: "peer",
+    to: ["owner-a"],
+    kind: "message",
+    summary,
+  });
+
+  it("excludes doc-drift digests from the default read (unburying directed messages); include_ambient opts back in", async () => {
+    // The exact EI-2826 harm: a directed 'details inside' build-blocker drowned by
+    // a doc-drift flood. Distinct summaries so the two digests do NOT coalesce.
+    const rows = [
+      peerPing(1, "tree-dep build blocker, details inside"),
+      docDrift(2, "📄 papercusp: 3 doc(s) drifted — A"),
+      docDrift(3, "📄 papercusp: 5 doc(s) drifted — B"),
+    ];
+    M.readInbox.mockImplementation(async () => rows);
+
+    // DEFAULT: both doc-drift digests are excluded; only the directed message survives.
+    const def = await callInbox();
+    expect(def.summary).toMatchObject({ ambient_excluded: 2, total: 1 });
+    expect(def.entries).toHaveLength(1);
+    expect(def.entries[0]!.summary).toBe("tree-dep build blocker, details inside");
+    expect(def.entries.some((e) => e.category === "doc-drift")).toBe(false);
+
+    // OPT-IN: include_ambient surfaces the digests again (nothing is lost, just hidden).
+    const inc = await callInbox({ include_ambient: true });
+    expect(inc.summary).toMatchObject({ ambient_excluded: 0, total: 3 });
+    expect(inc.entries.filter((e) => e.category === "doc-drift")).toHaveLength(2);
   });
 });

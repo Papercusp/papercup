@@ -106,3 +106,45 @@ describe('clampCompactionLimit (the default is also the CEILING)', () => {
     expect(clampCompactionLimit(1_000, 'opus[1m]')).toBe(MIN_COMPACTION_LIMIT_TOKENS);
   });
 });
+
+// The TS twin of psu-launcher `validateModelSpec` (WI-1979 / WI-1993). Same vector
+// table the launcher's own suite pins — a divergence here (or there) is caught by
+// the parity test in apps/operator/lib/psu-launcher.test.ts, which asserts the two
+// functions agree value-for-value. This suite pins the CONTRACT (what passes / what
+// the corrective message says) independently of that cross-package guard.
+describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-1993)', () => {
+  it('KNOWN_CLOUD_ALIASES is the canonical short-alias set', () => {
+    expect([...KNOWN_CLOUD_ALIASES]).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
+  });
+  it('accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, local ids, and empty', () => {
+    for (const s of [
+      'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
+      'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
+      'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+    ]) {
+      expect(validateCloudModelSpec(s).ok, s).toBe(true);
+    }
+    expect(validateCloudModelSpec(null).ok).toBe(true);
+    expect(validateCloudModelSpec(undefined).ok).toBe(true);
+  });
+  it('accepts an unknown-but-plausible short id that is NOT a close typo (o3 / gpt4 / grok)', () => {
+    for (const s of ['o3', 'gpt4', 'grok']) expect(validateCloudModelSpec(s).ok, s).toBe(true);
+  });
+  it('rejects a hand-typed [1m] marker on a non-family base (the fabel5[1m] incident), with the marker tip + suggestion', () => {
+    const r = validateCloudModelSpec('fabel5[1m]');
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('do not type it');
+    expect(r.message).toContain('fable');
+  });
+  it('rejects a close-typo alias — incl. transpositions — with a "did you mean" suggestion', () => {
+    for (const [bad, want] of [
+      ['fabel', 'fable'], ['sonet', 'sonnet'], ['sonnet5', 'sonnet'],
+      ['opus4', 'opus'], ['opuss', 'opus'], ['fabel5:xhigh', 'fable'],
+    ] as const) {
+      const r = validateCloudModelSpec(bad);
+      expect(r.ok, bad).toBe(false);
+      expect(r.message, bad).toContain(want);
+    }
+  });
+});

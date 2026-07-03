@@ -230,12 +230,10 @@ describe('docs:get slug coercion (WI-1985)', () => {
       expect(coerceDocsGetSlugs(input)).toBe(input); // same reference, no clone
     });
 
-    it('maps a singular `slug` string → slugs:[…], dropping the bad key', () => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      return import('../get-coerce').then(({ coerceDocsGetSlugs }) => {
-        expect(coerceDocsGetSlugs({ slug: 'endpoint-system/overview' })).toEqual({
-          slugs: ['endpoint-system/overview'],
-        });
+    it('maps a singular `slug` string → slugs:[…], dropping the bad key', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slug: 'endpoint-system/overview' })).toEqual({
+        slugs: ['endpoint-system/overview'],
       });
     });
 
