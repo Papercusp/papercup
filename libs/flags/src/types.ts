@@ -1005,6 +1005,14 @@ export const FLAGS = {
   // defaults ON for fresh hosts (the derived FLAG_DEFAULTS inversion). OFF would make
   // loop:arm refuse (loop:end/loop:status always work); inert otherwise (no loop rows).
   LOOPS: "papercusp-loops",
+  // su-cold-auto-mode-2026-07-03 (P-007): the MASTER AVAILABILITY gate for su COLD-AUTO loops
+  // (a loop whose wakes RESET-CONTEXT / periodically RECYCLE to a carry-note instead of a warm
+  // in-place turn). DEFAULT ON (not dark) — owner-enabled 2026-07-03. Safe ON because it is only
+  // an availability switch: the REAL opt-in is per-loop (`loop:arm { carry:'cold' }`) AND a
+  // carry-note must exist (decideColdWake), so NOTHING goes cold until an operator explicitly
+  // arms a loop cold. OFF ⇒ every loop wake stays warm regardless of its carry marker. Read at
+  // the wake-executor call-site (engine.ts) as the injected coldAutoEnabled dep.
+  SU_COLD_AUTO: "papercusp-su-cold-auto",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for moving the
   // QUEEN + SCOUT (+ later OVERWATCH) from per-HIVE to WORKSPACE scope — ONE central brain per
   // workspace spanning all its hives (P-003 Queen re-key + P-002 Scout re-key both gate on THIS

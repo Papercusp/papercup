@@ -43,8 +43,19 @@ import {
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 
 const log = (msg: string) => console.warn(`[await-event] ${msg}`);
+
+/**
+ * su-cold-auto-mode-2026-07-03 P-007: the master availability gate the wake-executor cold-fork
+ * consults. Resolved HERE (the production wake pump) so wake-executor.ts stays a pure liveness
+ * module with no flag-system coupling. Only CONSULTED when a wake carries a `carry:'cold'` loop
+ * marker (a warm fleet never reads it), and even ON a loop goes cold only when armed
+ * `carry:'cold'` AND a carry-note exists (decideColdWake). Default ON (owner-enabled 2026-07-03).
+ */
+const defaultColdAutoEnabled = (): Promise<boolean> => getFlag(FLAGS.SU_COLD_AUTO, 'system');
 
 /** Resume-spawn cap per pump tick (a wake = a turn = tokens — pace mass unblocks). */
 function maxResumesPerTick(): number {
@@ -300,6 +311,9 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // P0a: observe the detached resume turn's eventual exit (the loop turn-outcome
         // handler registered the default). An explicit dep (tests) still wins.
         onResumeTurnExit: deps.onResumeTurnExit ?? resumeTurnOutcomeHandler ?? undefined,
+        // su-cold-auto P-007: the cold-auto master gate (default ON, owner-enabled) — only
+        // read when a wake carries a cold loop marker. An explicit dep (tests) still wins.
+        coldAutoEnabled: deps.coldAutoEnabled ?? defaultColdAutoEnabled,
       });
 
       if (outcome.kind === 'delivered') {
