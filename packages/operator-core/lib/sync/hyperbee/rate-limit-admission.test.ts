@@ -51,8 +51,10 @@ function harness(opts?: { caps?: RateCaps | null }): Harness & { wrapped: (op: O
     return true;
   });
   const limiter = new MemberRateLimiter();
+  const nicheLimiter = new EliteNicheRateLimiter();
   const wrapped = makeRateLimitedApply({
     limiter,
+    nicheLimiter,
     ownLogKeyHex: OWN,
     resolveAuthorId: (k) => authors.get(k) ?? null,
     currentCaps: () => caps.v,
@@ -60,6 +62,11 @@ function harness(opts?: { caps?: RateCaps | null }): Harness & { wrapped: (op: O
     onDrop: (info) => drops.push(info),
   });
   return { apply, applied, drops, caps, authors, wrapped };
+}
+
+/** Build a remote federated-elite put (op.table == the elite tag, op.hbKey == niche_key). */
+function elitePut(sourceLogKeyHex: string, nicheKey: string, ts: number): OpEnvelope {
+  return { type: 'put', table: GYM_QD_ELITES_TAG, hbKey: nicheKey, ts, value: { x: 1 }, sourceLogKeyHex };
 }
 
 describe('classifyOpRate', () => {
@@ -185,5 +192,88 @@ describe('makeRateLimitedApply — enforcement', () => {
     const open = harness({ caps: null });
     for (let i = 0; i < 10; i++) await open.wrapped(contentPut(PEER_A, `k${i}`, 1_000_000 + i));
     expect(open.applied).toHaveLength(10);
+  });
+});
+
+describe('capForNiche', () => {
+  it('resolves elitesPerNichePerHour; unset/negative/non-finite ⇒ undefined; 0 ⇒ block-all', () => {
+    expect(capForNiche(null)).toBeUndefined();
+    expect(capForNiche({})).toBeUndefined();
+    expect(capForNiche({ elitesPerNichePerHour: -1 })).toBeUndefined();
+    expect(capForNiche({ elitesPerNichePerHour: Number.NaN })).toBeUndefined();
+    expect(capForNiche({ elitesPerNichePerHour: 0 })).toBe(0);
+    expect(capForNiche({ elitesPerNichePerHour: 5 })).toBe(5);
+  });
+});
+
+describe('makeRateLimitedApply — per-source-per-niche elite cap (P-014)', () => {
+  const NICHE = 'v1:loop/guard/r2/size-m';
+  const NICHE2 = 'v1:ui/panel/r1/size-s';
+
+  it('admits the first `cap` elites to one niche, drops the rest (cls:niche)', async () => {
+    const h = harness({ caps: { elitesPerNichePerHour: 3 } });
+    for (let i = 0; i < 8; i++) await h.wrapped(elitePut(PEER_A, NICHE, 1_000_000 + i));
+    expect(h.applied).toHaveLength(3);
+    expect(h.drops).toHaveLength(5);
+    expect((h.drops[0] as { cls: string }).cls).toBe('niche');
+    expect((h.drops[0] as { cap: number }).cap).toBe(3);
+  });
+
+  it('each (author, niche) has an independent budget (niche + author isolation)', async () => {
+    const h = harness({ caps: { elitesPerNichePerHour: 2 } });
+    for (let i = 0; i < 3; i++) await h.wrapped(elitePut(PEER_A, NICHE, 1_000_000 + i)); // 2 admit, 1 drop
+    for (let i = 0; i < 3; i++) await h.wrapped(elitePut(PEER_A, NICHE2, 1_000_000 + i)); // fresh (other niche)
+    for (let i = 0; i < 3; i++) await h.wrapped(elitePut(PEER_B, NICHE, 1_000_000 + i)); // fresh (other author)
+    expect(h.applied).toHaveLength(6); // 2 + 2 + 2
+    expect(h.drops).toHaveLength(3); // 1 each
+  });
+
+  it('enforces the per-niche cap even when NO class (ops/rows) cap is set', async () => {
+    const h = harness({ caps: { elitesPerNichePerHour: 1 } });
+    await h.wrapped(elitePut(PEER_A, NICHE, 1_000_000));
+    await h.wrapped(elitePut(PEER_A, NICHE, 1_000_001));
+    expect(h.applied).toHaveLength(1);
+    expect(h.drops).toHaveLength(1);
+  });
+
+  it('a block-all per-niche cap (0) drops every elite put', async () => {
+    const h = harness({ caps: { elitesPerNichePerHour: 0 } });
+    await h.wrapped(elitePut(PEER_A, NICHE, 1_000_000));
+    await h.wrapped(elitePut(PEER_B, NICHE2, 1_000_000));
+    expect(h.applied).toHaveLength(0);
+    expect(h.drops).toHaveLength(2);
+  });
+
+  it('does NOT apply the per-niche cap to non-elite content puts', async () => {
+    const h = harness({ caps: { elitesPerNichePerHour: 1 } });
+    for (let i = 0; i < 5; i++) await h.wrapped(contentPut(PEER_A, `k${i}`, 1_000_000 + i));
+    expect(h.applied).toHaveLength(5);
+    expect(h.drops).toHaveLength(0);
+  });
+
+  it('with no nicheLimiter wired, elite puts are unaffected by an elitesPerNichePerHour cap', async () => {
+    const applied: OpEnvelope[] = [];
+    const wrapped = makeRateLimitedApply({
+      limiter: new MemberRateLimiter(),
+      // nicheLimiter omitted — tier-1 backward-compatible
+      ownLogKeyHex: OWN,
+      resolveAuthorId: () => 1001,
+      currentCaps: () => ({ elitesPerNichePerHour: 1 }),
+      apply: async (op) => {
+        applied.push(op);
+        return true;
+      },
+    });
+    for (let i = 0; i < 4; i++) await wrapped(elitePut(PEER_A, NICHE, 1_000_000 + i));
+    expect(applied).toHaveLength(4); // no per-niche enforcement without the limiter
+  });
+
+  it('class rowsPerHour and the per-niche cap compose (tightest wins)', async () => {
+    // rows/hour = 5 across ALL niches; per-niche = 2. PEER_A pushes 4 to one niche:
+    // first 2 admit (both caps ok), next 2 drop on the niche cap (rows still ≤ 5).
+    const h = harness({ caps: { rowsPerHour: 5, elitesPerNichePerHour: 2 } });
+    for (let i = 0; i < 4; i++) await h.wrapped(elitePut(PEER_A, NICHE, 1_000_000 + i));
+    expect(h.applied).toHaveLength(2);
+    expect(h.drops.filter((d) => (d as { cls: string }).cls === 'niche')).toHaveLength(2);
   });
 });

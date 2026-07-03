@@ -134,8 +134,20 @@ function main() {
       process.exit(1);
       break;
     case 'ok-ratchet':
-      // Ratchet-only-down: lock the improvement in (with or without --update).
-      writeBaseline(result.newBaseline, 'Ratcheted down');
+      // Ratchet-only-DOWN, but only on an explicit `--update` (a deliberate act) — NOT
+      // on a bare/CI run. In this multi-agent shared tree the count shuffles ±1 as peers
+      // edit the type-graph concurrently; auto-ratcheting on every bare run locked in a
+      // transient low, then false-RED the whole fleet on the next run where it reappeared
+      // (2026-07-03). A bare run now only CHECKS (pass at/below baseline); `--update` locks
+      // a genuine, verified improvement in.
+      if (updateFlag) {
+        writeBaseline(result.newBaseline, 'Ratcheted down (--update)');
+      } else {
+        console.log(
+          `✓ Below baseline (${errorCount} < ${baselineCount}) — run \`npm run lint:tsc -- --update\` to lock it in. ` +
+            `Bare runs no longer auto-ratchet (the count shuffles ±1 under concurrent fleet edits; auto-ratchet false-red the gate — see .tsc-baseline.json note).`,
+        );
+      }
       process.exit(0);
       break;
     default:
