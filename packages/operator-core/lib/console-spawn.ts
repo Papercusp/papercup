@@ -29,6 +29,7 @@ import { join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
 import type { ColorScheme } from './console-color-schemes';
+import { isWindowsDesktopHost } from './windows-desktop-windows';
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
@@ -262,13 +263,21 @@ export function spawnConsole(opts: SpawnConsoleOpts): SpawnConsoleResult {
     return spawnMacConsole(envelope, oneliner);
   }
 
-  // 4. Windows has no server-side path: the operator runs inside WSL and can't
-  //    spawn a Windows GUI terminal — the desktop shell does it Rust-side via
-  //    the Tauri `console_launch` command (returns 501 so the caller can defer).
-  if (process.platform !== 'linux') {
+  // 4. Windows has no server-side path: the operator runs inside the WSL2 distro,
+  //    so `process.platform` is 'linux' (NOT 'win32') — the ONLY reliable Windows
+  //    signal is isWindowsDesktopHost() (WSL2 /proc/version check). A window the
+  //    WSL operator spawns lands in Session 0 (invisible to the interactive
+  //    desktop, per D-002); so on Windows we MUST defer to the desktop shell's
+  //    Tauri `console_launch` command (spawn_windows_wsl_new_window, which spawns
+  //    the Session-1 wt.exe titled `Papercup — <id>`). Return 501 so the renderer
+  //    falls through to that path. WI-1882: without the isWindowsDesktopHost()
+  //    clause this fell into the Linux cascade below and died with "no terminal
+  //    emulator found" because process.platform==='linux' in WSL.
+  if (process.platform !== 'linux' || isWindowsDesktopHost()) {
     return {
       status: 'error',
-      error: 'server-side spawn implemented for Linux + macOS; Windows uses the Tauri console_launch path',
+      error:
+        'server-side spawn implemented for Linux + macOS; Windows (WSL2 operator) uses the Tauri console_launch path',
       code: 501,
     };
   }

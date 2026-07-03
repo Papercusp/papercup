@@ -1747,13 +1747,27 @@ DBOS attribution made this provable: `dbos.workflow_status` rows for `routineFir
 * Fix = `systemctl --user restart papercup-bg-host.service`. It is `Restart=always` and DBOS work is durable, but **a restart reclaims in-flight bee spawns** (EI-2186/EI-2434) — restart deliberately, not on a timer, and prefer a quiet moment.
 * Rule of thumb: **if your change touches how routines/loops/wakes FIRE, restarting `:3070` (or `:3170`) is not enough — the bg-host is the host that runs it.**
 
+## Corollary: the DELIVERING host matters too — the pump is a SKIP LOCKED race
+
+[Section titled “Corollary: the DELIVERING host matters too — the pump is a SKIP LOCKED race”](#corollary-the-delivering-host-matters-too--the-pump-is-a-skip-locked-race)
+
+Fixing the *emitting* host is not the whole story. A wake delivery row is claimed SKIP LOCKED by **whichever process pumps first** — the emitter’s in-process `setImmediate` kick (engine.ts `emitAwaitedEvent`) *usually* wins, but the periodic sweep on ANY other live operator host can steal it. **Each wake then executes the code vintage of its claiming host**, so behavior is nondeterministic across a deploy skew.
+
+Concrete continuation of the same incident (2026-07-03, root cause #3 of three): after the bg-host was restarted onto fixed code, delivery **#4963 still went WARM** — the `papercup-dev-api` (`:3070`, release checkout on `main`, which lacked the fix) journal had the `[await-event] wake #4963 delivered … via psu-socket-inject` line. Minutes later delivery **#4972 went COLD** (`psu-socket-reset`) — pumped 1.2s after fire by the bg-host kick. Same routine, same payload, opposite outcomes — decided purely by which host won the claim.
+
+Implications:
+
+* A wake-behavior fix is only **deterministically** live once it reaches EVERY host that can pump: the bg-host (restart it) AND `:3070` (reaches it only via the green-checkpoint → deploy pipeline — `dev:pipeline_position <sha>` tells you where your commit is). Until then expect *intermittent* old behavior, not consistent failure.
+* Attribution: grep ALL candidate journals for the delivery id (`journalctl --user -u papercup-{bg-host,dev-api,staging-api}.service | grep 'wake #<id>'`) — the `dbos.workflow_status` executor only names the EMITTING host.
+
 ## Diagnosing “my loop wake behaved wrong” in general
 
 [Section titled “Diagnosing “my loop wake behaved wrong” in general”](#diagnosing-my-loop-wake-behaved-wrong-in-general)
 
 1. `harness_shared.event_wake_deliveries` — the fire’s row: `source` = `loop:<routineId>` for a real loop fire (vs `coord:inbox-wake` message wakes — an agent cannot tell them apart from the inside!), `payload` = the marker the fire stamped, `channel` = what the wake-executor did (`psu-socket-inject` warm / `psu-socket-reset` / `psu-socket-recycle` cold).
 2. `dbos.workflow_status WHERE name='routineFire'` — `executor_id` tells you WHICH host ran the fire; check that host’s age vs your code.
-3. Only then read the code — it may be correct and simply not loaded.
+3. Grep the service journals for `wake #<delivery-id>` to find which host PUMPED the delivery (the SKIP LOCKED race above) — the fire host and the pump host can differ.
+4. Only then read the code — it may be correct and simply not loaded (or loaded on one host and not the other).
 
 # A 'freeze' watchdog that reads journald silence false-restarts a healthy host when journald itself wedges
 
@@ -3898,7 +3912,7 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 * **`pg_notify` is OK** for “wake up and re-read state” patterns — e.g., a UI subscribing to row changes. Not for command dispatch.
 * **If you find yourself writing a polling loop**, stop and ask whether the right answer is an HTTP call or an SSE subscription.
 
-**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `setPeerGrant`/`revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change.
+**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `store.setPeerGrant`/`store.revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change.
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
@@ -5889,7 +5903,7 @@ A **loop** is the engine-managed, tracked replacement for Claude Code’s built-
 
 This is **NOT** the autonomous queen/bee/scout loop. That is a separate system that already runs on its own machinery (`hive:declare-wake` / `overwatch:declare-wake`) and is explicitly out of scope — never `loop:arm` from an autonomous-fleet agent (plan `loop-routines-interval-recurrence-2026-06-20`, D-007).
 
-> Gated by the **`papercusp-loops`** flag (default OFF until the engine is verified green end-to-end). While OFF, `loop:arm` returns `loops_disabled`; `loop:end` / `loop:status` always work.
+> Gated by the **`papercusp-loops`** flag — **DEFAULT ON** (WI-612; owner-flipped live 2026-06-23, and NOT in `DARK_FLAGS`, so the derived `FLAG_DEFAULTS` inversion enables it for fresh hosts too — see `libs/flags/src/types.ts` `LOOPS`). Only if a host explicitly turns it OFF does `loop:arm` return `loops_disabled`; `loop:end` / `loop:status` always work.
 
 ## Three words: plan · schedule · loop
 
@@ -14592,6 +14606,89 @@ The test you write to verify the wiring will be the thing that catches this. A u
 * `packages/operator-core/lib/identity/octokit-client.ts` — the canonical wrapper in this repo. Uses both `before('request')` for auth and `wrap('request')` for 401-retry. Also wires a `makeTimeoutFetch` wrapper (default 20 s, tunable via `PAPERCUSP_GITHUB_TIMEOUT_MS` env or the `CreateOctokitOpts { timeoutMs?, fetch? }` arg to `createOctokit()`) into `Octokit`’s `request.fetch` option — the single app-wide guard against a stalled socket blocking the caller indefinitely (root cause: dogfood hive-join froze at 5% because `resolveLocalAnnounceIdentity`’s GitHub calls never resolved or rejected on a hung socket). The `fetch` option also lets tests inject a fake fetch for deterministic timeout coverage. (The repo now pins `@octokit/rest ^22`; the v7 `auth:`-shape break this page documents persists unchanged in v22, so the `before('request')` fix is still the right one.)
 * `packages/operator-core/lib/identity/gh-token.ts` — the token cache the Octokit wrapper consumes (see also [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) for the pattern of placing helpers ahead of their primary consumer).
 * [Octokit migration guide v6→v7](https://github.com/octokit/octokit.js/blob/main/CHANGELOG.md) — the upstream changelog.
+
+# OMP eval tool has no tools proxy — use mcp__papercusp_su_* directly
+
+> Why omp agents calling MCP tools via `tools.invoke()` in Python eval get NameError.
+
+
+# OMP eval tool has no `tools` proxy
+
+[Section titled “OMP eval tool has no tools proxy”](#omp-eval-tool-has-no-tools-proxy)
+
+When an OMP agent runs Python code via `mcp__papercusp_su_tools:invoke { name: "tools:invoke", args: { ... } }` in the eval context, the `tools` object is **not available** in that Python runtime.
+
+## Symptoms
+
+[Section titled “Symptoms”](#symptoms)
+
+* `NameError: name 'tools' is not defined`
+* Agent tries to call MCP tools (e.g. `tools.invoke()`, `tools.find()`) from inside a Python `eval`/`exec` block
+* Works fine from the OMP agent’s native prompt context, fails only inside eval
+
+## Root Cause
+
+[Section titled “Root Cause”](#root-cause)
+
+OMP’s `eval` tool runs Python code in an **isolated Python runtime** that has no access to:
+
+* The OMP agent’s `tools` proxy (the `mcp__papercusp_su_*` namespace)
+* Any Node.js/TypeScript objects
+* The agent’s call context (no `ctx`, no `tools`)
+
+The Python runtime is a **pure Python sandbox** — it can run any Python code, but it doesn’t have the MCP tool proxy available as a Python variable.
+
+## Fix
+
+[Section titled “Fix”](#fix)
+
+**Call MCP tools directly from the OMP agent’s native context, NOT from inside eval.**
+
+### Wrong: Inside eval
+
+[Section titled “Wrong: Inside eval”](#wrong-inside-eval)
+
+```python
+tools.invoke({ name: "tools:find", args: { query: "X" } })  # NameError
+```
+
+### Right: Native OMP context
+
+[Section titled “Right: Native OMP context”](#right-native-omp-context)
+
+```plaintext
+mcp__papercusp_su_tools:find { query: "X" }  # Works — native tool call
+```
+
+If you need to **pass Python results TO MCP tools**, capture them in a variable and use them as args:
+
+```python
+# In Python eval:
+result = some_python_computation()
+```
+
+Then call the MCP tool from OMP’s native context:
+
+```plaintext
+mcp__papercusp_su_tools:find { query: "X", extra_arg: result }
+```
+
+## Why This Exists
+
+[Section titled “Why This Exists”](#why-this-exists)
+
+The `tools` proxy lives in the **OMP agent’s TypeScript runtime**, not in the Python eval sandbox. They are separate execution contexts — Python eval cannot import or reference the agent’s tool namespace.
+
+## See Also
+
+[Section titled “See Also”](#see-also)
+
+* `agent-insights/tool-delta-base-presence-contract` — tool contract docs
+* `agent-insights/token-efficiency-production-scorecard` — when to use eval vs native tools
+
+***
+
+*Written 2026-07-03 by Ornith behaviour-test batch (P-011).*
 
 # OMP (pi) inference-gateway routing via a session models.yml
 

@@ -47,6 +47,33 @@ showed `executor_id = bg-host-3270` on all 11 fires.
 - Rule of thumb: **if your change touches how routines/loops/wakes FIRE, restarting
   `:3070` (or `:3170`) is not enough — the bg-host is the host that runs it.**
 
+## Corollary: the DELIVERING host matters too — the pump is a SKIP LOCKED race
+
+Fixing the *emitting* host is not the whole story. A wake delivery row is claimed
+SKIP LOCKED by **whichever process pumps first** — the emitter's in-process
+`setImmediate` kick (engine.ts `emitAwaitedEvent`) *usually* wins, but the periodic
+sweep on ANY other live operator host can steal it. **Each wake then executes the code
+vintage of its claiming host**, so behavior is nondeterministic across a deploy skew.
+
+Concrete continuation of the same incident (2026-07-03, root cause #3 of three): after
+the bg-host was restarted onto fixed code, delivery **#4963 still went WARM** — the
+`papercup-dev-api` (`:3070`, release checkout on `main`, which lacked the fix) journal
+had the `[await-event] wake #4963 delivered … via psu-socket-inject` line. Minutes
+later delivery **#4972 went COLD** (`psu-socket-reset`) — pumped 1.2s after fire by the
+bg-host kick. Same routine, same payload, opposite outcomes — decided purely by which
+host won the claim.
+
+Implications:
+
+- A wake-behavior fix is only **deterministically** live once it reaches EVERY host
+  that can pump: the bg-host (restart it) AND `:3070` (reaches it only via the
+  green-checkpoint → deploy pipeline — `dev:pipeline_position <sha>` tells you where
+  your commit is). Until then expect *intermittent* old behavior, not consistent
+  failure.
+- Attribution: grep ALL candidate journals for the delivery id
+  (`journalctl --user -u papercup-{bg-host,dev-api,staging-api}.service | grep 'wake #<id>'`)
+  — the `dbos.workflow_status` executor only names the EMITTING host.
+
 ## Diagnosing "my loop wake behaved wrong" in general
 
 1. `harness_shared.event_wake_deliveries` — the fire's row: `source` = `loop:<routineId>`
@@ -56,4 +83,7 @@ showed `executor_id = bg-host-3270` on all 11 fires.
    `psu-socket-recycle` cold).
 2. `dbos.workflow_status WHERE name='routineFire'` — `executor_id` tells you WHICH host
    ran the fire; check that host's age vs your code.
-3. Only then read the code — it may be correct and simply not loaded.
+3. Grep the service journals for `wake #<delivery-id>` to find which host PUMPED the
+   delivery (the SKIP LOCKED race above) — the fire host and the pump host can differ.
+4. Only then read the code — it may be correct and simply not loaded (or loaded on one
+   host and not the other).
