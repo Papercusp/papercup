@@ -438,17 +438,25 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     //      lock hook reads, so a shell's interactive calls + its hook share
     //      one owner (no manual-claim-vs-hook self-deadlock). Header-first
     //      so it overrides OMP's static per-machine `?client=`.
-    //   2. `Mcp-Session-Id` — the Streamable-HTTP transport's per-connection
-    //      id, if the server assigned one. Kept as a fallback, but it is
-    //      per-CONNECTION (interactive calls and the hook are separate
-    //      connections → different ids → would re-introduce the self-
-    //      deadlock), which is why the explicit SID header outranks it.
-    //   3. `?client=` — the per-machine baked id; also what the channel
+    //   2. `?client=` — the SID claude/codex bake into the url via env
+    //      expansion (`?client=${PAPERCUSP_SID}`), and what the channel
     //      hooks (one-shot POSTs, no MCP session) use to pass a per-session
-    //      id directly.
+    //      id directly. EXPLICIT-SID-BEFORE-TRANSPORT-ID (EI-7066,
+    //      2026-07-03): this used to rank BELOW Mcp-Session-Id, so a claude
+    //      session that reconnected mid-life (a cold-loop RECYCLE respawn, a
+    //      dropped MCP transport) silently swapped to a fresh per-connection
+    //      identity — loop:arm keyed one ownerId but the post-reconnect
+    //      loop:checkpoint keyed another, the carry-note anchored on the
+    //      wrong owner, and the cold loop silently stayed warm. An explicit
+    //      per-launch SID — header OR param — always outranks the transport id.
+    //   3. `Mcp-Session-Id` — the Streamable-HTTP transport's per-connection
+    //      id, if the server assigned one. LAST resort: it is per-CONNECTION
+    //      (interactive calls and the hook are separate connections →
+    //      different ids → the lock self-deadlock; reconnects → identity
+    //      fracture), so it only identifies callers that supplied no SID at all.
     const headerClient = (headers.get('x-papercusp-client') ?? '').trim();
     const mcpSessionId = (headers.get('mcp-session-id') ?? '').trim();
-    const suIdentity = headerClient || mcpSessionId || clientParam;
+    const suIdentity = headerClient || clientParam || mcpSessionId;
     // Workspace, in precedence order (psu-workspace-scoping fix — without
     // this, every claude/omp SU session ran as '*' and workspace-scoped
     // tools failed "no workspace transaction" regardless of the psu picker):

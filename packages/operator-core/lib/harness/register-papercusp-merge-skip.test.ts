@@ -9,13 +9,24 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  * papercup-to-papercusp-migration-2026-06-20 — Phase-6 removal of the old Pot
  * was owner-gated and never ran, so papercup lingered on pre-merge installs).
  *
- * `registerPapercupHarness` is the ONLY code that ever creates a `papercup`
- * project row (called solely by the manual run-dogfood-bootstrap.ts dev
- * script — NOT by any live boot path; host-bootstrap.ts boots via
- * startBootstrapPapercuspHive()). Its B-merge skip guard is what keeps a
- * post-merge boot from re-minting papercup. That guard previously had ZERO
- * coverage — this file locks it in so the merge can't silently regress and
- * resurrect papercup on the next from-source install.
+ * SCOPE — this file guards ONE of the two papercup-creating paths:
+ *   1. `registerPapercupHarness` (guarded here): pushes a `{slug,path}` project;
+ *      called solely by the manual run-dogfood-bootstrap.ts dev script — NOT by
+ *      any live boot path (host-bootstrap.ts boots via startBootstrapPapercuspHive()).
+ *      Its B-merge skip guard is what keeps that path from re-minting papercup;
+ *      the guard previously had ZERO coverage — this file locks it in.
+ *   2. Migration `295-wi148-workspace-identity-restamp.sql` step 2 (NOT guarded
+ *      here — it is a historical DB migration): unconditionally SEEDS a
+ *      `proj-papercup-wi148` projects row on every fresh-migrated DB. This is the
+ *      PRIMARY reason a fresh install still shows `papercup` (written 2026-06-16,
+ *      four days before the papercup→papercusp rename, and never neutralized — the
+ *      concrete rename error). The durable fix is a new cleanup migration that
+ *      removes the row + retires the seed, GATED behind the compat-shim removal
+ *      (P-006 of papercup-to-papercusp-migration-2026-06-20): the seed + the
+ *      RETIRED_HARNESS_SLUG_ALIASES fallback are the same "papercup fallback" that
+ *      must stay until nothing resolves to papercup, else the workspace-identity
+ *      split 295 fixed re-opens. So this test does NOT (and cannot) assert a
+ *      migrated DB has no papercup row — that awaits the owner-window fix.
  *
  * All external deps are mocked (hoisted registry state) so this is a pure,
  * fast unit test of the guard's control flow — no PG, no real registry.

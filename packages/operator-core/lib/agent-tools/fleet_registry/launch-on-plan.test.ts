@@ -17,7 +17,6 @@ import launchOnPlan, {
   memberLaunchCommand,
   isOmpLocalModel,
   resolveFleetAgent,
-  shouldSuppressRelaunch,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 

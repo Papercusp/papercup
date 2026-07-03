@@ -1215,3 +1215,45 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     expect(h.withWorkspaceCalls).toContain('ws-test');
   });
 });
+
+/* ─── su identity precedence (EI-7066 — explicit SID outranks the transport id) ─── */
+
+describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)', () => {
+  it('?client= (the per-launch PAPERCUSP_SID) outranks a per-connection Mcp-Session-Id', async () => {
+    // The regression: a claude session that reconnects mid-life (cold-loop recycle,
+    // transport drop) presents a fresh Mcp-Session-Id. Identity must STAY the SID.
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&client=su-stable-sid', { 'mcp-session-id': 'transport-conn-1' }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx.uiClientId).toBe('su-stable-sid');
+  });
+
+  it('x-papercusp-client header outranks both ?client= and Mcp-Session-Id', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&client=su-machine-static', {
+        'x-papercusp-client': 'su-header-sid',
+        'mcp-session-id': 'transport-conn-2',
+      }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx.uiClientId).toBe('su-header-sid');
+  });
+
+  it('Mcp-Session-Id still identifies a caller that supplied NO SID at all', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('', { 'mcp-session-id': 'transport-only-id' }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx.uiClientId).toBe('transport-only-id');
+  });
+});
