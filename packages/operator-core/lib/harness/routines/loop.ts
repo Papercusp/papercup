@@ -97,17 +97,40 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   'To stop: `loop:end`. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',
 ].join('\n');
 
-/** Interpolate the default wakeup prompt with this loop's specifics. */
+/**
+ * COLD-loop bootstrap addendum (su-cold-auto-mode-2026-07-03 P-002 producer). Appended
+ * to the wake prompt only for a `carry:'cold'` loop. Until the FIRST carry-note exists,
+ * decideColdWake's P-006 no-anchor guard keeps the loop WARM, so these early wakes inject
+ * THIS kickoff — which is exactly where the agent is told to write its first
+ * loop:checkpoint. Once a carry-note exists, subsequent wakes go cold and the carry-note
+ * (wrapped by renderColdWakeInjection) carries the same mandate. So this bootstraps the
+ * anchor and the cold injection sustains it.
+ */
+export const COLD_LOOP_WAKE_ADDENDUM = [
+  '',
+  "❄️ This is a COLD loop (carry:'cold'): once a carry-note anchor exists, each wake RESETS your context",
+  '(a periodic RECYCLE) to that note instead of carrying this transcript — so your transcript will NOT persist.',
+  'Therefore, before you END this turn you MUST write/refresh your carry-note so the next (cold) wake can continue:',
+  '    loop:checkpoint { did, left, insight, next }   (compressed facts — what you did, what is left, the key',
+  '    non-obvious insight, and the single next action). This is REQUIRED on a cold loop: with no carry-note the',
+  '    loop silently stays warm (and grows unbounded); a stale note makes the next wake repeat work.',
+].join('\n');
+
+/** Interpolate the default wakeup prompt with this loop's specifics. For a cold loop
+ *  (`carry:'cold'`) the COLD_LOOP_WAKE_ADDENDUM is appended so the pre-anchor warm wakes
+ *  bootstrap the first carry-note. A warm loop is byte-identical to before. */
 export function buildLoopWakePrompt(opts: {
   ownerId: string;
   intervalSec: number;
   harness: string;
   goal: string;
+  carry?: 'warm' | 'cold';
 }): string {
-  return DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
+  const base = DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
     .replace(/\{harness\}/g, opts.harness)
     .replace(/\{ownerId\}/g, opts.ownerId)
     .replace(/\{goal\}/g, opts.goal);
+  return opts.carry === 'cold' ? base + COLD_LOOP_WAKE_ADDENDUM : base;
 }
 
 export interface MaterializeLoopInput {

@@ -18,6 +18,7 @@ import {
   type ExecuteWakeDeps,
 } from './wake-executor';
 import { PtyError } from '../../pty-bridge';
+import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
 
 // A per-session codex home (session-42) with two rollouts; the newer UUID wins.
@@ -900,7 +901,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
       ...over,
     });
 
-  it('cold-armed + enabled + carry-note → RESET-CONTEXT inject (channel psu-socket-reset, data = the carry-note not the warm turn)', async () => {
+  it('cold-armed + enabled + carry-note → RESET-CONTEXT inject (channel psu-socket-reset, data = the carry-note WRAPPED with the re-checkpoint mandate, not the warm turn)', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const out = await executeWake(
       work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
@@ -910,7 +911,12 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     const [sock, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
     expect(sock).toBe('/tmp/psu-pty/cold.sock');
     expect(msg.mode).toBe('reset');
-    expect(msg.data).toBe('## Next action\nresume the wiring');
+    // P-002 producer: the injected text is the carry-note wrapped by renderColdWakeInjection —
+    // it carries the note verbatim AND the standing "refresh via loop:checkpoint" mandate so the
+    // cold anchor stays fresh across wakes.
+    expect(msg.data).toBe(renderColdWakeInjection('## Next action\nresume the wiring'));
+    expect(msg.data).toContain('## Next action\nresume the wiring');
+    expect(msg.data).toContain('loop:checkpoint');
   });
 
   it('the HYBRID cadence recycles every Nth wake (wakeCount 8 → RECYCLE, channel psu-socket-recycle)', async () => {

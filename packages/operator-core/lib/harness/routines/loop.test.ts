@@ -87,6 +87,25 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     // every placeholder was substituted
     expect(p).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
   });
+
+  it('a WARM loop (default / absent carry) is byte-identical — no cold addendum (su-cold-auto P-002)', () => {
+    const warmDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
+    const warmExplicit = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm' });
+    expect(warmExplicit).toBe(warmDefault); // explicit warm == absent
+    expect(warmDefault).not.toContain('loop:checkpoint');
+    expect(warmDefault).not.toContain('COLD loop');
+  });
+
+  it("a COLD loop appends the bootstrap addendum instructing loop:checkpoint (so pre-anchor warm wakes seed the first carry-note)", () => {
+    const warm = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm' });
+    const cold = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold' });
+    // the cold prompt is the warm one PLUS the addendum (superset, no base text lost)
+    expect(cold.startsWith(warm)).toBe(true);
+    expect(cold.length).toBeGreaterThan(warm.length);
+    expect(cold).toContain('loop:checkpoint');
+    for (const f of ['did', 'left', 'insight', 'next']) expect(cold).toContain(f);
+    expect(cold).toContain('COLD loop');
+  });
 });
 
 describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fire)', () => {

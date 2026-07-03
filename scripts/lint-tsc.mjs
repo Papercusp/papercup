@@ -65,13 +65,21 @@ export function syntaxBrokenFiles(errors) {
 }
 
 /**
- * Pure gate decision.
- * @returns {{ verdict: 'fail-syntax'|'fail-exceeds'|'ok-ratchet'|'ok', newBaseline?: number, brokenFiles?: string[] }}
+ * Pure gate decision — the ONE place the --update-only ratchet policy lives, so it
+ * is unit-testable (EI-104). Below baseline, the baseline LOWERS only on `--update`
+ * (`ok-ratchet`); a bare run is check-only (`ok-below`) and main() never writes for
+ * it. Auto-ratcheting a bare run locks in the min of this tree's ±1-flapping count
+ * and then false-reds the whole fleet when it shuffles back up.
+ * @returns {{ verdict: 'fail-syntax'|'fail-exceeds'|'ok-ratchet'|'ok-below'|'ok', newBaseline?: number, belowBy?: number, brokenFiles?: string[] }}
  */
-export function decide({ errorCount, baselineCount, brokenFiles }) {
+export function decide({ errorCount, baselineCount, brokenFiles, updateFlag = false }) {
   if (brokenFiles.length > 0) return { verdict: 'fail-syntax', brokenFiles };
   if (errorCount > baselineCount) return { verdict: 'fail-exceeds' };
-  if (errorCount < baselineCount) return { verdict: 'ok-ratchet', newBaseline: errorCount };
+  if (errorCount < baselineCount) {
+    return updateFlag
+      ? { verdict: 'ok-ratchet', newBaseline: errorCount }
+      : { verdict: 'ok-below', belowBy: baselineCount - errorCount };
+  }
   return { verdict: 'ok' };
 }
 
@@ -119,7 +127,7 @@ function main() {
     console.log(`✓ ${why}: baseline → ${count} errors`);
   };
 
-  const result = decide({ errorCount, baselineCount, brokenFiles });
+  const result = decide({ errorCount, baselineCount, brokenFiles, updateFlag });
 
   switch (result.verdict) {
     case 'fail-syntax':

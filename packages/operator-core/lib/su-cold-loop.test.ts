@@ -7,6 +7,7 @@ import {
   readColdLoopMarker,
   coldWakeMode,
   decideColdWake,
+  renderColdWakeInjection,
   DEFAULT_COLD_LOOP_CAPS,
 } from './su-cold-loop';
 
@@ -104,5 +105,37 @@ describe('decideColdWake — the three-gate cold precondition', () => {
     expect(decideColdWake({ payload: { carry: 'warm', wakeCount: 1 }, coldEnabled: true, carryNote: 'n' }).cold).toBe(false);
     expect(decideColdWake({ payload: coldPayload(1), coldEnabled: false, carryNote: 'n' }).cold).toBe(false);
     expect(decideColdWake({ payload: coldPayload(1), coldEnabled: true, carryNote: '' }).cold).toBe(false);
+  });
+});
+
+describe('renderColdWakeInjection — the cold-wake injected text (P-002 producer)', () => {
+  it('carries the carry-note verbatim', () => {
+    const note = '## Did\nwired the producer\n\n## Next action\nrun the tests';
+    expect(renderColdWakeInjection(note)).toContain(note);
+  });
+
+  it('frames the note as the working continuity (transcript is gone)', () => {
+    const out = renderColdWakeInjection('some note');
+    expect(out).toContain('COLD LOOP WAKE');
+    expect(out.toLowerCase()).toContain('transcript');
+    expect(out).toContain('Next action');
+  });
+
+  it('appends the STANDING re-checkpoint mandate so the next cold wake has a fresh anchor', () => {
+    const out = renderColdWakeInjection('note');
+    // the exact tool + the structured shape the agent must re-write
+    expect(out).toContain('loop:checkpoint');
+    for (const f of ['did', 'left', 'insight', 'next']) expect(out).toContain(f);
+    // and the escape hatch when there is nothing left to do
+    expect(out).toContain('loop:end');
+  });
+
+  it('trims surrounding whitespace on the note (a padded note injects clean)', () => {
+    expect(renderColdWakeInjection('   padded   ')).toContain('\npadded\n');
+  });
+
+  it('tolerates an empty note without throwing (the P-006 guard means this is unreachable in practice, but stays safe)', () => {
+    expect(() => renderColdWakeInjection('')).not.toThrow();
+    expect(renderColdWakeInjection('')).toContain('loop:checkpoint');
   });
 });

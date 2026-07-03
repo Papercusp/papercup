@@ -424,3 +424,45 @@ modules: foreign-workspaces.ts store + foreign-clone.ts + spawn plumbing + steer
 Read P-104 item text + grep lib/p2p/{foreign-workspaces,foreign-clone,offer-budget,claim-authority,
 revocation-reaper}.ts before designing. P-105 (isolation epic, X1 loopback boundary) stays open after —
 likely needs owner input on the OS-user/netns tier.
+
+### P-104 GROUNDED DESIGN — 2026-07-03 ~14:50Z (wake #4825; surfaces read, BUILD next wake)
+Composition surfaces confirmed (lib/p2p/): foreign-workspaces.ts registerForeignWorkspace /
+getForeignWorkspaceByOffer / ForeignWorkspaceState + listLiveForeignRoots; foreign-clone.ts
+provisionForeignClone(ProvisionInput)→ProvisionResult + privateOdbViolation; offer-budget.ts WorkOffer
++ clampEnvelopeToLocal + createLedger/reserve/commit/release + resolveOfferLiveness (H12) +
+decideWindDown (X8) + isOfferExpired/recordAndCheckPublisherRate (H16); claim-authority.ts
+evaluateClaimAuthority(offer, HostAvailability) + buildClaimLedgers + claimRefusalToReceiptFields;
+revocation-reaper.ts REAPABLE_STATES + reapForeignSessionsForRevocation(ReapArgs, ReaperDeps) — its
+ReaperDeps is the DI template to mirror. C2 envelope: lib/capability-envelope-overrides.ts (+
+agent-tools envelope-set-role/grant-role).
+BUILD (2 modules + tests, DI everywhere, no scope-*.ts edits):
+1. lib/p2p/offer-executor.ts — executeClaimedOffer(deps, {offer, selfHostRef}): (a) H9 epoch fence:
+   deps.currentGrantorEpoch(owner) vs offer's stamped epoch → stale = refuse + P-004 receipt
+   (claimRefusalToReceiptFields pattern); (b) evaluateClaimAuthority gate → refusal receipt;
+   (c) registerForeignWorkspace + provisionForeignClone (X4); (d) C2: deps.applyCapabilityEnvelope
+   (role='foreign-session' — envelope machinery landed, just referenced); (e) deps.launchSession
+   (SEAM — the host supervisor; unit tests stub it; production wiring = fleet/psu spawn, may defer
+   to a follow-up note if the spawn surface is gnarly); (f) buildClaimLedgers reservations attached.
+   NEVER launched by remote peer: executeClaimedOffer is only callable host-side (no MCP tool).
+2. lib/p2p/foreign-supervision.ts — superviseForeignSessions(deps): sweep live foreign workspaces →
+   resolveOfferLiveness (H12 cancel/TTL) + H13 origin-unreachable-for-T (deps.originLastSeenAt) →
+   decideWindDown → state transition + wind-down receipt; reuses reaper state machinery. Schedule:
+   tier:ephemeral blueprint triggers.schedule (deterministic system:<action>) per repo scheduling
+   rules — NOT a bare setInterval.
+3. Tests colocated: offer-executor.test.ts (fence-stale refusal, no-headroom refusal, happy path
+   provisions+launches with stubbed deps, remote-caller-impossible is structural) +
+   foreign-supervision.test.ts (cancel→wind-down, TTL-expiry, origin-unreachable T, receipt emitted).
+Then: tsc slice + vitest; flip P-104 done + WI (mirror WI-1735? verify id via claimable/orient) —
+note P-107's deferred 'executor/scheduler wiring' + H12 'cancel delivery' land HERE.
+API DETAILS READ (wake #4826, save a re-read): provisionForeignClone(ProvisionInput) ALREADY calls
+registerForeignWorkspace internally (register/park/recordBaseSha are injectable seams + runGit) —
+executor step (c) is ONE provisionForeignClone call, NOT register+provision. ProvisionInput needs
+{sourceRepoPath, workspaceId, offerId, fleetSlug, originGithubUserId, executorDevice, rootPath,
+branch?, executionEpoch?}. State machine: provisioning→active→winding-down→parked→reaped
+(REAPABLE_STATES in revocation-reaper). ForeignWorkspace has sessionId (null until launch) +
+executionEpoch + baseSha. Receipts: emitP2pReceipt(EmitP2pReceiptArgs) kinds 'refusal'|'excused-breach'
+(receipts.ts:139); refusal receipt pattern in claim-authority.claimRefusalToReceiptFields.
+Executor must setForeignWorkspaceBaseSha? no — recordBaseSha seam handles it; but needs a
+setState/attachSession helper — check foreign-workspaces.ts for a state-transition fn (saw
+setForeignWorkspaceBaseSha only; may need to ADD attachForeignSession(offerId, sessionId,
+state:'active') — small store addition, fine).

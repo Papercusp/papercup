@@ -181,7 +181,7 @@ export default defineTool({
     const wakePrompt = clampText(args.wakePrompt, 4000);
     const kickoff =
       wakePrompt ??
-      buildLoopWakePrompt({ ownerId, intervalSec: args.intervalSec, harness, goal });
+      buildLoopWakePrompt({ ownerId, intervalSec: args.intervalSec, harness, goal, carry: args.carry ?? 'warm' });
 
     const loop = await materializeLoop({
       workspaceId,
