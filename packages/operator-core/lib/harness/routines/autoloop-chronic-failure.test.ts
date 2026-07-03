@@ -30,6 +30,15 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6)).toEqual([]);
   });
 
+  it("EI-6769 boundary: a paused routine at EXACTLY the threshold (streak == threshold) is still skipped, not escalated", () => {
+    // EI-6769 (loop-su-cea4c674…) was auto-filed at streak==6 (the exact threshold)
+    // while its routine was already active:false, ~15min before the routine_active
+    // skip-filter landed. Pin the threshold-boundary so a >= vs > slip can never
+    // re-open that pre-fix escalation of an already-resolved (paused) condition.
+    const rows = [row({ role: 'loop-su-cea4c674-d05a-49df-9748-62a6702753d3', consecutive_errors: 6, routine_active: false })];
+    expect(selectChronicFailures(rows, 6)).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
