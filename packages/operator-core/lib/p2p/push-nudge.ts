@@ -34,8 +34,13 @@
  * (nowMs injected); the rate limiter uses its own clock by design.
  */
 
-import { createRateLimiter, type RateLimiter, type SoftBucketConfig } from '@papercusp/rate-limit';
-import { createInMemoryBucketStore } from '../sync/hyperbee/swarm-guard';
+import {
+  createRateLimiter,
+  type RateLimiter,
+  type SoftBucketConfig,
+  type BucketStore,
+  type BucketPayload,
+} from '@papercusp/rate-limit';
 
 /** Emitted by a publisher host when a fleet gains a claimable offer. */
 export interface OfferAvailableSignal {
@@ -94,11 +99,35 @@ export function nudgeRateCapKey(grantorRef: string): string {
   return `nudge:${grantorRef}`;
 }
 
-/** A nudge rate limiter over an in-process store (default) — the hot wake path
- *  must not touch PG (cf. swarm-guard's per-connection limiter, D-004). Inject a
- *  store to share/federate the cap. */
+/** A minimal in-process {@link BucketStore} for the nudge cap — the hot wake path
+ *  must not touch PG (cf. swarm-guard's per-connection limiter, D-004). Tracks a
+ *  `touched` ms per key so `gcStale` can drop idle grantors. Self-contained (no
+ *  transport-layer coupling); pass a custom store to share/federate the cap. */
+export function createInMemoryNudgeStore(): BucketStore {
+  const m = new Map<string, { payload: BucketPayload; touched: number }>();
+  return {
+    async read(key) {
+      return m.get(key)?.payload ?? null;
+    },
+    async write(key, payload) {
+      m.set(key, { payload, touched: Date.now() });
+    },
+    async delete(key) {
+      m.delete(key);
+    },
+    async gcStale(olderThanMs) {
+      for (const [k, v] of m) if (v.touched < olderThanMs) m.delete(k);
+    },
+    async clearPrefix(prefix) {
+      for (const k of m.keys()) if (k.startsWith(prefix)) m.delete(k);
+    },
+  };
+}
+
+/** A nudge rate limiter over an in-process store (default). Inject a store to
+ *  share/federate the cap across a host's publishers. */
 export function createNudgeRateLimiter(cap: SoftBucketConfig = DEFAULT_NUDGE_RATE_CAP): RateLimiter {
-  return createRateLimiter({ store: createInMemoryBucketStore(), soft: cap });
+  return createRateLimiter({ store: createInMemoryNudgeStore(), soft: cap });
 }
 
 // ── per-fleet coalescing (pure, nowMs-injected) ─────────────────────────────

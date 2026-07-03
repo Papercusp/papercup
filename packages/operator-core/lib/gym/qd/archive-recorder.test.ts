@@ -120,4 +120,30 @@ describe('makeLoopQdSeams — federateAcceptedElite (F1-4/P-014 elite publisher)
     await seams.recordArchive(rec('cand-1', WORKER_OVERLAY, EMPTY_OVERLAY, 7.5));
     await expect(seams.federateAcceptedElite('cand-1', { outcome: 'won' })).rejects.toThrow(/WI-1564/);
   });
+
+  it('device-signs an outcome record when an outcomeSigner is threaded (F1-6/P-014 SEND signing)', async () => {
+    const archive = new QdArchive(new InMemoryArchiveStore());
+    // The signing path RETURNs candidate_id/fitness/updated_at from its first UPDATE.
+    const { sql, calls } = fakeSql([{ candidate_id: 'cand-1', fitness: 7.5, updated_at: 1000 }]);
+    const outcomeSigner = {
+      devicePubkeyBase64: 'DPUB==',
+      sign: async (b: Buffer) => Buffer.concat([Buffer.from('sig'), b.subarray(0, 1)]),
+    };
+    const seams = makeLoopQdSeams(
+      sql,
+      { workspaceId: 'papercusp-workspace', harnessSlug: 'h' },
+      { archive, outcomeSigner },
+    );
+    await seams.recordArchive(rec('cand-1', WORKER_OVERLAY, EMPTY_OVERLAY, 7.5));
+    await seams.federateAcceptedElite('cand-1', { outcome: 'won' });
+    // Signing path = TWO sql calls (vs the no-signer path's single UPDATE): (1) UPDATE …
+    // RETURNING candidate_id/fitness/updated_at, (2) UPDATE … SET outcome_record.
+    expect(calls).toHaveLength(2);
+    // The 2nd UPDATE binds the serialized signed record, which carries the signer device pubkey.
+    const recordJson = calls[1].find(
+      (v): v is string => typeof v === 'string' && v.includes('DPUB=='),
+    );
+    expect(recordJson).toBeDefined();
+    expect(recordJson).toContain('"device_pubkey":"DPUB=="');
+  });
 });
