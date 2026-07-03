@@ -316,9 +316,20 @@ export async function runOneAutoloopCycle(
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
     const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
     const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: WS });
+    // F1-6/P-014 (D-005 hole 3): resolve THIS peer's announce device key as the elite-outcome
+    // signer, so an accepted champion federates with a device-signed outcome proof
+    // (outcome-VERIFIED on receivers that resolve our device — anti-lift parity) rather than
+    // the bare federatable boolean. Best-effort + cache-first (no network in the cycle): a cold
+    // box / non-federating env yields undefined → tier-1 unsigned federation (still admitted).
+    // Skipped in FAKE assembly mode (no keychain touch; that workspace never federates anyway).
+    const eliteOutcomeSigner = FAKE ? undefined : await resolveLocalEliteOutcomeSigner();
+    if (eliteOutcomeSigner) {
+      log(`elite outcome-signing ON (device ${eliteOutcomeSigner.devicePubkeyBase64.slice(0, 8)}…)`);
+    }
+    report.eliteOutcomeSigning = Boolean(eliteOutcomeSigner);
     // P-010/P-011 (D-008): the QD record + novelty seams over ONE live archive (+ a shared
     // variantId→descriptor cache), so noveltyForVariant's reads see recordArchive's writes.
-    const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: WS, harnessSlug: slug });
+    const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: WS, harnessSlug: slug }, { outcomeSigner: eliteOutcomeSigner });
     // P-030 (B-09): measured post-acceptance outcomes of past champions prime the
     // proposer. Defensive — a read failure yields [] and the cycle proceeds.
     const championOutcomes = await gatherChampionOutcomeEntries(controlSql, { workspaceId: WS, harnessSlug: slug });

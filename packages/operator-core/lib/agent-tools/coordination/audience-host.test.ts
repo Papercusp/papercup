@@ -28,6 +28,11 @@ vi.mock('./fleet-delivery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./fleet-delivery')>()),
   getFleetDeliveryOverrides: vi.fn(async () => new Map()),
 }));
+vi.mock('../../sync/hyperbee/session-presence-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../sync/hyperbee/session-presence-store')>()),
+  // Default: no federated peers (single box). Federated tests override per-case.
+  listFederatedFleetMembers: vi.fn(async () => []),
+}));
 
 import {
   audienceMode,
@@ -39,6 +44,7 @@ import { listPresence } from './presence';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
+import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
 
 const mockListPresence = listPresence as unknown as ReturnType<typeof vi.fn>;
 
@@ -175,5 +181,47 @@ describe('hostAudienceResolvers.listFleetMembers — multi-fleet leader union (m
     vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'su-multi-leader' } as never);
     vi.mocked(getFleetDeliveryOverrides).mockResolvedValue(new Map([['su-multi-leader', 'muted']]) as never);
     expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['lane-a']);
+  });
+});
+
+describe('hostAudienceResolvers — federated (cross-machine) fleet view (P-301)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('unions FEDERATED members (remote sessions carrying this fleet_slug) into the @fleet audience', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['local-a']);
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'local-a' } as never);
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([
+      { ownerId: 'remote-b', fleetRole: 'member' },
+      { ownerId: 'local-a', fleetRole: 'leader' }, // dedupes against the local member
+    ] as never);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['local-a', 'remote-b']);
+  });
+
+  it('derives a CROSS-MACHINE leader when the durable registry row lives on another machine', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['local-a']);
+    vi.mocked(getFleet).mockResolvedValue(null as never); // agent_fleets row is not on THIS machine
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([
+      { ownerId: 'remote-lead', fleetRole: 'leader' },
+    ] as never);
+    // the member audience folds in the cross-machine leader…
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['local-a', 'remote-lead']);
+    // …and listFleetLeader resolves it from the federated fleet_role='leader' signal.
+    expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual(['remote-lead']);
+  });
+
+  it('listFleetLeader prefers the durable LOCAL registry leader over any federated signal', async () => {
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'local-lead' } as never);
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([
+      { ownerId: 'remote-lead', fleetRole: 'leader' },
+    ] as never);
+    expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual(['local-lead']);
+  });
+
+  it('collapses to today\'s local-only behavior with no federated peers', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['local-a', 'local-b']);
+    vi.mocked(getFleet).mockResolvedValue(null as never);
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([] as never);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['local-a', 'local-b']);
+    expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual([]);
   });
 });
