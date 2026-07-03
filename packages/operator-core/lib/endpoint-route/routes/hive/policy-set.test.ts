@@ -91,3 +91,63 @@ describe('runSetPolicy claim gate (S0 authority)', () => {
     expect(d.author).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * WI-1918: the topic-fallback claim gate. A from-repo Hive's binding rows are
+ * keyed by MEMBER slug (hive-publish-from-repo step 6), so the home-slug lookup
+ * misses and — before the fallback — the gate returned null forever
+ * (hive_unclaimed 403 even after a legitimate claimBinding). The fallback
+ * resolves the hive pubkey → federation topic → accepts CLAIMED member bindings
+ * on that topic (claimants = union). TEETH: the member-claimed case asserts a
+ * claimed gate, and the same setup with no claimed member rows asserts null —
+ * removing the fallback flips the first test RED.
+ */
+import { readClaimGateWithTopicFallback, type ClaimGateReadSeams } from './policy-set';
+
+describe('readClaimGateWithTopicFallback (WI-1918)', () => {
+  const PK = 'cHVia2V5LWJ5dGVzLWZvci10ZXN0LW9ubHk='; // any base64 — topic derivation just needs bytes
+
+  function seams(over: Partial<ClaimGateReadSeams> = {}): ClaimGateReadSeams {
+    return {
+      querySlugRow: vi.fn(async () => null),
+      queryClaimedTopicRows: vi.fn(async () => [
+        { claimStatus: 'claimed' as const, claimedGithubUserIds: [1, 2] },
+        { claimStatus: 'claimed' as const, claimedGithubUserIds: [2, 3] },
+      ]),
+      loadPubkey: vi.fn(async () => PK),
+      ...over,
+    };
+  }
+
+  it('direct slug row wins — no fallback consulted', async () => {
+    const s = seams({
+      querySlugRow: vi.fn(async () => ({ claimStatus: 'claimed' as const, claimedGithubUserIds: [7] })),
+    });
+    const gate = await readClaimGateWithTopicFallback(WS, HOME, s);
+    expect(gate).toEqual({ claimStatus: 'claimed', claimedGithubUserIds: [7] });
+    expect(s.loadPubkey).not.toHaveBeenCalled();
+  });
+
+  it('member-slug-keyed rows (from-repo hive): claimed member bindings on the hive topic pass the gate, claimants unioned', async () => {
+    const s = seams();
+    const gate = await readClaimGateWithTopicFallback(WS, HOME, s);
+    expect(gate).toEqual({ claimStatus: 'claimed', claimedGithubUserIds: [1, 2, 3] });
+    expect(s.queryClaimedTopicRows).toHaveBeenCalledTimes(1);
+  });
+
+  it('no claimed member rows ⇒ null (unclaimed 403 semantics preserved)', async () => {
+    const s = seams({ queryClaimedTopicRows: vi.fn(async () => []) });
+    expect(await readClaimGateWithTopicFallback(WS, HOME, s)).toBeNull();
+  });
+
+  it('no hive pubkey (not the owner swarm / unknown hive) ⇒ null, topic query never runs', async () => {
+    const s = seams({ loadPubkey: vi.fn(async () => null) });
+    expect(await readClaimGateWithTopicFallback(WS, HOME, s)).toBeNull();
+    expect(s.queryClaimedTopicRows).not.toHaveBeenCalled();
+  });
+
+  it('pubkey loader throwing ⇒ null, never a 500 path', async () => {
+    const s = seams({ loadPubkey: vi.fn(async () => { throw new Error('keychain sealed'); }) });
+    expect(await readClaimGateWithTopicFallback(WS, HOME, s)).toBeNull();
+  });
+});
