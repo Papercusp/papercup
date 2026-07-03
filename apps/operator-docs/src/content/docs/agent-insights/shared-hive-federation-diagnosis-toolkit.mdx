@@ -217,6 +217,12 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
   hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go
   back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is
   the #1 silent-local-only cause after a VM reset).
+- `peer_unrevoked` — WI-193 "G8": a REFRESH-sourced revocation (the pubkey was
+  never named in a live `handle.revoke()` call) dropped out of the freshly-loaded
+  published `revoked_pubkeys` set, so `applyRevocationRefresh` reconciled it back
+  out of `revoked` — the peer is admissible again on its next announce. See
+  `substrate-revocation-model` for the full un-revoke story (still partial: an
+  explicit live `revoke()` call is never undone by this path).
 - `merge_error`, `rekey_grant_*`, `rekey_boundary_skipped` — apply/re-key layer.
 - `epoch_gate_built` — the decrypt gate **IS** installed for this harness (non-null `rekeyDeps`);
   carries `hiveHomeSlug` = the AAD hiveId. Absence means encrypted ops are applied raw, unchecked.
@@ -233,6 +239,23 @@ The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06-25): previously
 all four non-success paths were **silent** (`return false`), leaving a federated op that never
 landed with no diagnostic signal at all.
+
+> **GOTCHA (as of 2026-07-03) — a `?kinds=` filter can silently eat the exact
+> kinds this doc tells you to look for.** The route
+> (`dogfood-substrate-boot-history.ts`) filters `?kinds=` against its own
+> hand-maintained `VALID_KINDS` array, not the full `BootHistoryKind` union —
+> and that array is currently STALE: it is missing `peer_cap_near`,
+> `peer_unrevoked`, `announce_clock_skew`, `replication_stalled`,
+> `replication_frozen`, and all six `epoch_*` kinds documented above. Passing
+> any of those in `kinds=` gets them silently dropped (bogus values are
+> filtered, not rejected), so `fed.sh b api GET
+> '…&kinds=epoch_gate_seen,epoch_decrypt_fail'` comes back empty even when
+> those events fired — indistinguishable from "never happened." **Workaround:
+> omit `kinds=` entirely (or pass no filter) when hunting an `epoch_*` /
+> `peer_unrevoked` / `replication_*` / `announce_clock_skew` event**, and read
+> the `kind` column yourself. This is a genuine code staleness, not intended
+> behavior — flagged for a fix that derives `VALID_KINDS` from `BootHistoryKind`
+> (or drops the allow-list in favor of the union) so it can't drift again.
 
 ## The diagnostic ladder (use this order)
 

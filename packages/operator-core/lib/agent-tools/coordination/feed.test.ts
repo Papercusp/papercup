@@ -154,6 +154,32 @@ describe('filters', () => {
     expect(rows.map((r) => r.msg_id).sort()).toEqual(['bcast', 'fromZoe', 'toZoe']);
   });
 
+  it('from filter is STRICT sender-only — matches from===this, NOT recipients or broadcasts-by-others (EI-7018)', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'fromZoe', from: 'zoe', to: ['x'] }), // zoe SENT it → included
+        env({ msg_id: 'toZoe', from: 'x', to: ['zoe'] }), // zoe is a RECIPIENT → excluded (unlike owner)
+        env({ msg_id: 'bcastX', from: 'x', to: ['*'] }), // broadcast by someone else → excluded (unlike owner)
+        env({ msg_id: 'zoeBcast', from: 'zoe', to: ['*'] }), // zoe's OWN broadcast → included
+      ],
+    });
+    const { rows, total } = await readCoordFeed({ from: 'zoe' });
+    expect(rows.map((r) => r.msg_id).sort()).toEqual(['fromZoe', 'zoeBcast']);
+    expect(total).toBe(2); // the summary/histogram is scoped to the filter, not the raw stream
+  });
+
+  it('from + owner compose (AND) — sender is zoe AND the envelope involves bob', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'zoe_to_bob', from: 'zoe', to: ['bob'] }), // from zoe, involves bob → kept
+        env({ msg_id: 'zoe_to_cat', from: 'zoe', to: ['cat'] }), // from zoe, not bob → dropped by owner
+        env({ msg_id: 'ann_to_bob', from: 'ann', to: ['bob'] }), // involves bob, not from zoe → dropped by from
+      ],
+    });
+    const { rows } = await readCoordFeed({ from: 'zoe', owner: 'bob' });
+    expect(rows.map((r) => r.msg_id)).toEqual(['zoe_to_bob']);
+  });
+
   it('plan_slug filter is exact-match', async () => {
     setSurfaces({
       messages: [
