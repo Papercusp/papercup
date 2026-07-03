@@ -88,11 +88,18 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // peer-log (projections/p2p-peer-grants.ts → p2p_peer_grants; mig 463). Hive-home-
   // grained; the projection RECEIVER-ENFORCES author-attestation == grantor (M6/L9).
   'p2p-peer-grants': 'p2p_peer_grants',
+  // p2p-work-distribution-2026-07-02 P-004: loud-refusal receipt facts (INSERT-only)
+  // federate over the peer-log (projections/p2p-receipts.ts → p2p_receipts; mig 468).
+  'p2p-receipts': 'p2p_receipts',
   // federated-scout-gym-learning-2026-07-02 F1-1: shareable standing facts federate
   // over the peer-log (projections/agent-facts.ts → agent_facts; mig 461/462).
   // [Added by Lane A su-71623 with the table-registry entry to green the drift
   // guards; flagged to the F1-1 owner su-29e3d.]
   'agent-facts-by-key': 'agent_facts',
+  // federated-scout-gym-learning-2026-07-02 F1-2/F1-5: federatable QD elites
+  // federate over the peer-log (projections/gym-qd-elites.ts → gym_qd_archive
+  // sender / gym_qd_foreign_elites receiver; migs 464/465).
+  'gym-qd-elites-by-niche': 'gym_qd_archive',
 };
 
 export interface PeerLogConsistency {

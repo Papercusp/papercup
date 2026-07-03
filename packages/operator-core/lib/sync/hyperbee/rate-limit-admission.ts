@@ -67,6 +67,9 @@ export const CONTENT_TABLE_TAGS: ReadonlySet<string> = new Set([
   // F1-1/F1-6 (federated-scout-gym): shareable standing facts are agent-authored
   // CONTENT — a fact-flood is exactly the rowsPerHour spam vector the caps target.
   'agent-facts-by-key',
+  // F1-2/F1-6 (federated-scout-gym): foreign QD elites are agent-authored CONTENT
+  // too — per-source rowsPerHour caps are the anti-spam floor for elite floods.
+  'gym-qd-elites-by-niche',
 ]);
 
 /**

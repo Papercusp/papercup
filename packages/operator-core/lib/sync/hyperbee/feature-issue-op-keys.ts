@@ -47,6 +47,7 @@ import type { HiveEpochKeyRow } from './projections/hive-epoch-keys';
 import type { EngineerIssueRow } from './projections/engineer-issues';
 import type { PlanPartWireRow } from './projections/harness-plan-parts';
 import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
+import type { P2pReceiptWireRow } from './projections/p2p-receipts';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -90,6 +91,15 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // Epoch-ENCRYPTED content (deliberately NOT in REKEY_PLAINTEXT_TAGS: fact
   // bodies must not be readable by non-members on the wire — D-006 privacy).
   agent_facts: 'agent-facts-by-key',
+  // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): FEDERATABLE QD elites
+  // (mig 464 capture triggers gate on the D-002 eligibility stamp; wire key ==
+  // niche_key ⇒ latest-per-niche-per-source on the wire). Receive side writes
+  // gym_qd_foreign_elites ONLY (mig 465 own-table redesign — provenance in the
+  // PK, local archive untouchable by peers). Projection 'gym-qd-elites-by-niche'
+  // (projections/gym-qd-elites.ts). Epoch-ENCRYPTED content (deliberately NOT in
+  // REKEY_PLAINTEXT_TAGS — descriptors/rationales unreadable to non-members on
+  // the wire, D-006).
+  gym_qd_archive: 'gym-qd-elites-by-niche',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): per-bee claim specs.
   // Projection 'bee-claim-specs' (projections/bee-claim-spec.ts); key == bee_id.
   bee_claim_specs: 'bee-claim-specs',
@@ -135,6 +145,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // key == '<grantor_ghid>:<grantee_kind>:<grantee_ref>' (the generated grant_fed_key
   // column, mig 463).
   p2p_peer_grants: 'p2p-peer-grants',
+  // p2p-work-distribution-2026-07-02 (P-004): loud-refusal receipt FACTS — immutable,
+  // INSERT-only (gate_verdicts pattern), hive-home-scoped, M21 offer_id threaded.
+  // Projection 'p2p-receipts' (projections/p2p-receipts.ts); key == receipt_id (mig 468).
+  p2p_receipts: 'p2p-receipts',
 };
 
 /**
@@ -687,6 +701,30 @@ function toP2pPeerGrantValue(row: Record<string, unknown>): P2pPeerGrantWireRow 
   };
 }
 
+/** Map an outbox `row` jsonb to the `P2pReceiptWireRow` the p2p-receipts projection
+ *  consumes (P-004, mig 468) — the federated subset. BIGINTs (user ids, receipt_ts)
+ *  render as numbers via to_jsonb; created_at is machine-local (not federated);
+ *  origin/author_pubkey/fed_ts/fed_hlc ride the op provenance. */
+function toP2pReceiptValue(row: Record<string, unknown>): P2pReceiptWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    receipt_id: String(row.receipt_id ?? ''),
+    kind: String(row.kind ?? ''),
+    offer_id: strOrNull(row.offer_id),
+    action: String(row.action ?? ''),
+    refusal_code: strOrNull(row.refusal_code),
+    missing_capability: strOrNull(row.missing_capability),
+    budget_axis: strOrNull(row.budget_axis),
+    detail: typeof row.detail === 'string' ? row.detail : '',
+    requester_kind: strOrNull(row.requester_kind),
+    requester_ref: strOrNull(row.requester_ref),
+    requester_github_user_id: numOrNull(row.requester_github_user_id),
+    responder_github_user_id: numOrZero(row.responder_github_user_id),
+    responder_device_pubkey: strOrNull(row.responder_device_pubkey),
+    receipt_ts: numOrZero(row.receipt_ts),
+  };
+}
+
 /**
  * Thrown when an outbox row names a `table_name` this build has no mapper for.
  * This is BOTH a programming error (a new trigger shipped without its mapper) AND
@@ -754,7 +792,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | HiveEpochKeyRow
     | EngineerIssueRow
     | PlanPartWireRow
-    | P2pPeerGrantWireRow;
+    | P2pPeerGrantWireRow
+    | P2pReceiptWireRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -812,6 +851,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'p2p_peer_grants':
       value = toP2pPeerGrantValue(row);
+      break;
+    case 'p2p_receipts':
+      value = toP2pReceiptValue(row);
       break;
     default:
       value = toIssueValue(row);

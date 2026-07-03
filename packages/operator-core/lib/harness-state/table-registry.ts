@@ -242,6 +242,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // CDC capture (mig 463); projection 'p2p-peer-grants' (projections/p2p-peer-grants.ts),
   // which RECEIVER-ENFORCES author-attestation == grantor before applying (M6/L9).
   'p2p_peer_grants',
+  // p2p-work-distribution-2026-07-02 (P-004): loud-refusal receipt FACTS — immutable
+  // INSERT-only rows (gate_verdicts pattern), keyed (workspace_id, harness_slug = the
+  // hive HOME, receipt_id). Federate so the REQUESTER's machines receive their receipt
+  // and p2p:trace assembles the cross-machine timeline (M21). Producer = CDC capture
+  // (mig 468); projection 'p2p-receipts' (projections/p2p-receipts.ts), receiver-
+  // enforced (author attestation == responder).
+  'p2p_receipts',
   // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts federate
   // as hive state (mig 461 capture triggers, shareable=true rows only — D-006 privacy;
   // apply side partitions by receiver-stamped source_hive, H6). Keyed (workspace_id,
@@ -251,6 +258,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // landed without this classification, which red-pinned checkSubstrateCaptureCoverage
   // for every table — flagged to the F1-1 owner su-29e3d.]
   'agent_facts',
+  // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): the gym QD archive's
+  // FEDERATABLE elites (D-002: outcome=won OR grade>=4) federate as hive state.
+  // Producer = CDC capture (mig 464, gated WHEN federatable); receive side writes
+  // ONLY harness_shared.gym_qd_foreign_elites (mig 465 — provenance in the PK, so
+  // a peer's op can never touch a local archive row). Projection
+  // 'gym-qd-elites-by-niche' (projections/gym-qd-elites.ts).
+  'gym_qd_archive',
 ];
 
 /**
@@ -273,6 +287,9 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // receiver derives it from ops it has APPLIED, so a peer cannot lower another
   // machine's fence by federating a row.
   'p2p_grantor_epochs',
+  // p2p-work-distribution-2026-07-02 (P-004 / M15): refused-op counters for
+  // UNAUTHENTICATED failure paths. LOCAL-ONLY metrics — never federated.
+  'p2p_refused_op_counters',
 ];
 
 /**

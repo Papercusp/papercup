@@ -45,12 +45,15 @@ import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 // F1-1 (federated-scout-gym-learning-2026-07-02): shareable standing facts.
 import { buildAgentFactsProjection } from './agent-facts';
+// F1-2/F1-5 (federated-scout-gym-learning-2026-07-02): foreign QD elites.
+import { buildGymQdElitesProjection } from './gym-qd-elites';
 import { buildBeeClaimSpecProjection } from './bee-claim-spec';
 import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildP2pPeerGrantsProjection } from './p2p-peer-grants';
+import { buildP2pReceiptsProjection } from './p2p-receipts';
 import { buildHiveMembersProjection } from './hive-members';
 import { buildHiveEpochKeysProjection } from './hive-epoch-keys';
 import { buildEngineerIssuesProjection } from './engineer-issues';
@@ -161,6 +164,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // federated-scout-gym-learning-2026-07-02 (F1-1): shareable standing facts —
   // hive-home-grained, epoch-encrypted content, source-partitioned on apply (H6).
   'agent-facts-by-key',
+  // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): foreign QD elites —
+  // hive-home-grained, epoch-encrypted content; receive side writes ONLY the
+  // provenance-keyed gym_qd_foreign_elites (mig 465), never the local archive.
+  'gym-qd-elites-by-niche',
   'bee-claim-specs',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
   // test gate's device-signed verdict facts — hive-home-grained, content-addressed,
@@ -192,6 +199,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // p2p-work-distribution-2026-07-02 P-001: P2P capability grants — hive-home-grained,
   // receiver-enforced (author attestation == grantor). Inert until grants are authored.
   'p2p-peer-grants',
+  // p2p-work-distribution-2026-07-02 P-004: loud-refusal receipt facts — hive-home-
+  // grained, INSERT-only, receiver-enforced (author attestation == responder).
+  'p2p-receipts',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -243,6 +253,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // F1-1 (federated-scout-gym): SHAREABLE standing facts, hive-home-grained
     // like hive_settings (the fact's harness_slug carries the hive home slug).
     buildAgentFactsProjection(hiveScoped),
+    // F1-2/F1-5 (federated-scout-gym): foreign QD elites, hive-home-grained too
+    // (the elite's harness_slug carries the hive home slug — mig 465 demux).
+    buildGymQdElitesProjection(hiveScoped),
     buildBeeClaimSpecProjection(hiveScoped),
     // P-044 DG-1: verdict facts are hive-home-grained (the gate is a hive-wide
     // aggregate) — scope like hive_settings so a joiner receives + verifies them.
@@ -272,6 +285,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // identity == the row's grantor (M6/L9) before applying. Inert until grants are
     // authored (zero/empty by default — the P-005 structural-inertness pattern).
     buildP2pPeerGrantsProjection(hiveScoped),
+    // P-004: receipts are hive-home-grained like grants (the requester's machines
+    // must receive them) — scope to hiveScoped.
+    buildP2pReceiptsProjection(hiveScoped),
   ] as TableProjection<unknown>[];
 }
 

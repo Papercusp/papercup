@@ -713,6 +713,8 @@ import './work_items/observe';
 // floors (the richer sibling of claim_next); the Queen steers via scheduler:set_claim_spec.
 import './scheduler/get_next';
 import './scheduler/set_claim_spec';
+// p2p-work-distribution-2026-07-02 P-004: the cross-machine refusal-receipt timeline.
+import './p2p/trace';
 // The live-execution view (P-001): in-flight claims + the spec revision each bee runs under.
 import './scheduler/running';
 // The Queen's co-location lever (hive-coordination-model P-002): stamp a work-item's

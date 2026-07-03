@@ -84,6 +84,11 @@ export interface HiveMembersProjectionOpts {
    *  waiting on this member's device pubkeys (the onMemberApplied hook). Undefined ⇒ no drain
    *  (buffer not wired / non-hive). Threaded via RegisterAllOpts (the `hiveScoped` spread). */
   pendingMemberContent?: PendingMembershipContent;
+  /** WI-259 P-002 admission map (sourceLogKeyHex → verified device pubkey), threaded via
+   *  RegisterAllOpts (the `hiveScoped` spread). Used by the F1-5 revocation purge to cover
+   *  the DEVICE grain (revoked_pubkeys hold device keys; foreign-elite rows are keyed by
+   *  source-log key). Undefined ⇒ log-grain-only purge. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
 }
 
 /** Within a Hive's peer-log the member key is `<github_user_id>` (the Hive is
@@ -168,6 +173,27 @@ async function writeToPg(
     const devices = memberDevicePubkeys(row);
     if (devices.size > 0) {
       await reapplyDrainedMemberContent(opts.pendingMemberContent.drainForDevices(devices, Date.now()));
+    }
+  }
+  // F1-5 revocation cleanup (federated-scout-gym-learning-2026-07-02 D-005): a
+  // membership apply may carry NEW revoked_pubkeys — purge every foreign QD elite
+  // contributed by a now-revoked source so a revoked peer's artifacts stop priming
+  // ideation. Covers both grains: source-log keys directly in the blocklist, and
+  // device pubkeys resolved via the admission map (opts.resolveAuthorDevice).
+  // DYNAMIC import (avoids widening the static projection graph); best-effort — a
+  // purge failure must not abort the member apply (rows re-purge on the next one).
+  if (row.revoked_pubkeys.length > 0) {
+    try {
+      const { purgeRevokedForeignElites } = await import('./gym-qd-elites');
+      await purgeRevokedForeignElites({
+        workspaceId: opts.workspaceId,
+        hiveHomeSlug: opts.harnessSlug,
+        revokedPubkeys: row.revoked_pubkeys,
+        resolveAuthorDevice: opts.resolveAuthorDevice,
+        sql: opts.sql,
+      });
+    } catch {
+      /* best-effort — never fail the member apply on an elite-purge hiccup */
     }
   }
   // WI-887 self-heal epoch-key distribution (the onMemberApplied hook). A membership change can

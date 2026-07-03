@@ -121,7 +121,7 @@ export async function registerForeignWorkspace(
     workspaceRoot?: string;
     canonicalTree?: string;
   },
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<RegisterResult> {
   const workspaceRoot =
     input.workspaceRoot ??
@@ -160,7 +160,7 @@ export async function registerForeignWorkspace(
 export async function getForeignWorkspace(
   workspaceId: string,
   offerId: string,
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace | null> {
   const rows = (await sql`
     SELECT * FROM harness_shared.p2p_foreign_workspaces
@@ -172,7 +172,7 @@ export async function getForeignWorkspace(
 /** Resolve the workspace a SESSION is bound to (guard leg i; null → deny-all). */
 export async function getForeignWorkspaceForSession(
   sessionId: string,
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace | null> {
   const rows = (await sql`
     SELECT * FROM harness_shared.p2p_foreign_workspaces
@@ -186,7 +186,7 @@ export async function getForeignWorkspaceForSession(
 export async function listForeignWorkspaces(
   workspaceId: string,
   opts: { state?: ForeignWorkspaceState } = {},
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace[]> {
   const rows = (opts.state
     ? await sql`
@@ -205,7 +205,7 @@ export async function bindForeignSession(
   workspaceId: string,
   offerId: string,
   sessionId: string,
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace | null> {
   const rows = (await sql`
     UPDATE harness_shared.p2p_foreign_workspaces
@@ -224,7 +224,7 @@ export async function setForeignWorkspaceState(
   offerId: string,
   state: ForeignWorkspaceState,
   opts: { parkReason?: string } = {},
-  sql: OrgSql = getOrgPg(),
+  sql: OrgSql = getOrgPg().sql,
 ): Promise<ForeignWorkspace | null> {
   const rows = (await sql`
     UPDATE harness_shared.p2p_foreign_workspaces

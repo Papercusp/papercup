@@ -26,6 +26,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { advanceGrantorHighWater } from '../../../p2p/grant-store';
+import { bumpRefusedOpCounter } from '../../../p2p/receipts';
 
 /** Wire-shape of a federated p2p_peer_grants row. Defensive on every field. */
 export interface P2pPeerGrantWireRow {
@@ -97,13 +98,19 @@ function refuse(
     opts.onRefusedApply(reason, row);
     return;
   }
-  // M15: an UNAUTHENTICATED failure path gets a COUNTER-style loud line, not a
-  // receipt (there is no verified requester to receipt). p2p:trace (P-004)
-  // assembles these into the cross-machine timeline.
+  // M15 (P-004): an UNAUTHENTICATED failure path gets a COUNTER + a loud line,
+  // not a receipt (there is no verified requester to receipt). p2p:trace reads
+  // the counters alongside the receipt timeline.
   console.warn(
     `[p2p-peer-grants] REFUSED inbound grant op (${reason}): grantor=${row.grantor_github_user_id} ` +
       `grantee=${row.grantee_kind}:${row.grantee_ref} hive=${row.harness_slug}`,
   );
+  void bumpRefusedOpCounter(
+    { workspaceId: opts.workspaceId, hiveSlug: row.harness_slug, reason: `grant-apply:${reason}` },
+    opts.sql as Parameters<typeof bumpRefusedOpCounter>[1],
+  ).catch(() => {
+    /* counter is advisory; never break the apply loop */
+  });
 }
 
 async function writeToPg(
