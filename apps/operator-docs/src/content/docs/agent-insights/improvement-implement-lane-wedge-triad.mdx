@@ -194,3 +194,26 @@ hive launches record their own queen/bee rows and would otherwise double-count i
 fleet:tree. Close criterion (re-verify post-deploy): the next durably-fired
 implement worker shows a `spawned_agents` row (child_role=worker,
 parent_role=operator, item_id=EI-NNN) and appears in `fleet:tree`.
+
+## Close criterion met (current code, verified 2026-07-03)
+
+`durableSpawnFireImpl` (`packages/operator-core/lib/dbos/durable-spawn.ts`) now
+takes the opt-in `input.spawnRecord` and, when present, records the durable
+launch via `recordDurableSpawnAdmission`/`recordSpawn` before firing and
+`finishSpawn`s it after — the same `parentRole: input.parent?.role ??
+'operator'` fallback the fire-and-forget path used (never a bare
+`parentRole: undefined` that would violate the `spawned_agents.parent_role`
+NOT NULL constraint from item 3 of the original triad). `buildLaunchSpawnRequest`
+(`packages/operator-core/lib/blueprint/launch-blueprint.ts`) — the implement
+seam — passes `spawnRecord`, while the general-purpose `defaultFire` durable
+branch deliberately does not (hive launches record their own queen/bee rows
+and would double-count in `fleet:tree` otherwise). So: durably-fired implement
+workers are now visible in `spawned_agents` / `fleet:tree`, and the
+`assigned_at`-wedge fix (item 1) has since hardened further —
+`releaseIssue` (`issues-engineer.ts`) now clears **both** `assignee` and
+`assigned_at` (EI-6480), so the round-2 caveat above ("`releaseIssue` clears
+`assigned_at` but leaves `assignee` set, so a resolved-by-runner issue is
+legitimately dateless") no longer applies verbatim — a resolved issue is
+fully unassigned, not just date-less. The dateless-claim invariant can be
+checked simply as `assignee='improvement-runner' AND assigned_at IS NULL`
+(no need to additionally exclude resolved/closed state).
