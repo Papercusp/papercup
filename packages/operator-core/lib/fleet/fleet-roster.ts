@@ -282,9 +282,10 @@ export interface AvailableFleet extends AgentFleetRecord {
    *  PRESENCE_STALE_MS), agent_role != 'bee'. >=1 ⇒ the fleet is AVAILABLE for routing
    *  (D-003) — a live desktop DRIVER a plan can be handed to (a bee cannot). */
   liveMemberCount: number;
-  /** BACKGROUND autonomous-loop bees that joined this fleet (agent_role = 'bee'). A fleet
-   *  with 0 members but a nonzero beeCount is the WI-1764 substrate mismatch — bees were
-   *  spawned where visible desktop members were meant. */
+  /** BACKGROUND autonomous-loop bees spawned INTO this fleet — counted from the nursery
+   *  fleet_slug (WI-1813, running/restarting, child_role='bee'), reliable + presence-
+   *  independent. A fleet with 0 members but a nonzero beeCount is the WI-1764 substrate
+   *  mismatch — bees were spawned where visible desktop members were meant. */
   beeCount: number;
 }
 

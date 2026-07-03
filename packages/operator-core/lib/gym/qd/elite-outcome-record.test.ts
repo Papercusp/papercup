@@ -27,7 +27,7 @@ const baseFields = {
   nicheKey: 'v1:loop/guard/r2/size-m',
   candidateId: 'cand-42',
   sourceHive: 'papercusp',
-  outcome: 'won' as const,
+  outcome: 'won' as EliteOutcomeBasis,
   grade: 0,
   fitness: 0.87,
   devicePubkeyBase64: kp.pubkeyBase64,

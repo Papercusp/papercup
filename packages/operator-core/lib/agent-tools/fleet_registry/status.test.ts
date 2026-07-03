@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
   listFleetRoster: vi.fn(),
   countRunningWorkspaceBees: vi.fn(),
+  countRunningFleetBees: vi.fn(),
   getCompletionIntegrityStats: vi.fn(),
   resolveAgentIdentity: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock('../../fleet/fleet-roster', async () => {
     splitFleetRosterCounts: actual.splitFleetRosterCounts,
     listFleetRoster: (...a: unknown[]) => h.listFleetRoster(...a),
     countRunningWorkspaceBees: (...a: unknown[]) => h.countRunningWorkspaceBees(...a),
+    countRunningFleetBees: (...a: unknown[]) => h.countRunningFleetBees(...a),
   };
 });
 vi.mock('../../work-items', () => ({
@@ -70,6 +72,7 @@ beforeEach(() => {
     },
   ]);
   h.countRunningWorkspaceBees.mockResolvedValue(0);
+  h.countRunningFleetBees.mockResolvedValue(0);
   h.getCompletionIntegrityStats.mockResolvedValue({
     harness: 'papercusp',
     terminalTotal: 10,
@@ -86,17 +89,21 @@ describe('fleet:status', () => {
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
   });
 
-  it('splits the roster into memberCount vs beeCount and reports workspace runningBees (WI-1764 #4)', async () => {
+  it('reports memberCount from the roster (presence) and beeCount from the nursery, plus workspace runningBees (WI-1764 #4 / WI-1813)', async () => {
     h.listFleetRoster.mockResolvedValueOnce([
       { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true },
       { agentId: 'su-m2', agentRole: 'su', fleetRole: 'member', alive: true },
       { agentId: 's-bee1', agentRole: 'bee', fleetRole: 'member', alive: true },
     ]);
     h.countRunningWorkspaceBees.mockResolvedValueOnce(4);
+    // WI-1813: beeCount is the nursery-authoritative per-fleet count, NOT the roster's
+    // presence-labeled bee (the roster has 1 bee; the nursery reports 3 — beeCount = 3).
+    h.countRunningFleetBees.mockResolvedValueOnce(3);
     const out = parse(await invoke({ fleet: 'rocket' }));
-    expect(out.memberCount).toBe(2);
-    expect(out.beeCount).toBe(1);
+    expect(out.memberCount).toBe(2); // su-leader + su-m2 (roster split, presence)
+    expect(out.beeCount).toBe(3); // from countRunningFleetBees, not the 1 presence-labeled bee
     expect(out.runningBees).toBe(4);
+    expect(h.countRunningFleetBees).toHaveBeenCalledWith('rocket', 'ws');
     // full roster still returned regardless of the split
     expect(out.members).toHaveLength(3);
   });
