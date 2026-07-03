@@ -879,3 +879,127 @@ describe('codex home + rollout recovery (P-009/P-010)', () => {
     expect(findCodexRolloutSessionId(join(CODEX_HOMES_DIR, 'session-nope'))).toBeNull();
   });
 });
+
+describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 Phase 2)', () => {
+  // A cold loop-wake payload marker (loop-fire stamps carry/wakeCount/harness).
+  const coldPayload = (over: Record<string, unknown> = {}) => ({
+    carry: 'cold',
+    wakeCount: 1,
+    harness: 'papercusp',
+    ...over,
+  });
+
+  // deps with a LIVE psu-host socket + the cold fork wired ON (master gate true,
+  // a carry-note present). Individual cases override to exercise each gate.
+  const coldDeps = (over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps =>
+    deps({
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/cold.sock' })) as never,
+      injectPsuHost: vi.fn(async () => true) as never,
+      coldAutoEnabled: vi.fn(async () => true),
+      getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume the wiring'),
+      ...over,
+    });
+
+  it('cold-armed + enabled + carry-note → RESET-CONTEXT inject (channel psu-socket-reset, data = the carry-note not the warm turn)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({ injectPsuHost: injectPsuHost as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    const [sock, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    expect(sock).toBe('/tmp/psu-pty/cold.sock');
+    expect(msg.mode).toBe('reset');
+    expect(msg.data).toBe('## Next action\nresume the wiring');
+  });
+
+  it('the HYBRID cadence recycles every Nth wake (wakeCount 8 → RECYCLE, channel psu-socket-recycle)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 8 }) }),
+      coldDeps({ injectPsuHost: injectPsuHost as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string }])[1].mode).toBe('recycle');
+  });
+
+  it('the handle-less always-armed branch forks cold too (both inject sites wired, not just the main one)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: null, payload: coldPayload() }),
+      coldDeps(),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+  });
+
+  it('DORMANT by default: a cold-armed wake with cold-auto DISABLED (no gate dep) stays WARM (mode turn) and never reads the carry-note', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const getLoopCarryNoteFn = vi.fn(async () => 'note');
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      // NO coldAutoEnabled → defaults to ()=>false ⇒ the whole fork is inert.
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/cold.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        getLoopCarryNoteFn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string }])[1].mode).toBe('turn');
+    expect(getLoopCarryNoteFn).not.toHaveBeenCalled();
+  });
+
+  it('P-006 guard: cold + enabled but NO carry-note anchor → stays WARM (never cold-start with nothing to rebuild from)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      coldDeps({ getLoopCarryNoteFn: vi.fn(async () => null) as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+  });
+
+  it('a cold marker with NO harness scope → WARM, short-circuited before the flag read', async () => {
+    const coldAutoEnabled = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1 } }),
+      coldDeps({ coldAutoEnabled }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(coldAutoEnabled).not.toHaveBeenCalled();
+  });
+
+  it('a WARM loop wake (carry!=="cold") never touches the cold path — gate + note untouched', async () => {
+    const coldAutoEnabled = vi.fn(async () => true);
+    const getLoopCarryNoteFn = vi.fn(async () => 'note');
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'warm', wakeCount: 3, harness: 'papercusp' } }),
+      coldDeps({ coldAutoEnabled, getLoopCarryNoteFn }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(coldAutoEnabled).not.toHaveBeenCalled();
+    expect(getLoopCarryNoteFn).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a COLD inject that misses falls back to a WARM inject in place (never drops the wake)', async () => {
+    let call = 0;
+    const injectPsuHost = vi.fn(async () => call++ !== 0); // 1st (cold reset) misses, 2nd (warm) lands
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      coldDeps({ injectPsuHost: injectPsuHost as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(injectPsuHost).toHaveBeenCalledTimes(2);
+    expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string }])[1].mode).toBe('reset');
+    expect((injectPsuHost.mock.calls[1] as unknown as [string, { mode: string }])[1].mode).toBe('turn');
+  });
+
+  it('FAIL-SOFT: a carry-note read that THROWS falls back to WARM (a cold-path fault never drops a wake)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload() }),
+      coldDeps({
+        getLoopCarryNoteFn: vi.fn(async () => {
+          throw new Error('pg down');
+        }) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+  });
+});

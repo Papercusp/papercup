@@ -133,6 +133,23 @@ and in the commit, and `memory:remember` the learning. The unclaimable-but-fixed
 item resolves when a peer or the issues-engine notices the fix; the small
 duplication risk is cheaper than a token/config rewrite at 4am.
 
+> **Superseded (fixed since discovery, EI-2127/EI-334):** the hard failure above no
+> longer reproduces. `resolveAgentIdentity`'s superuser branch used to **throw** on a
+> missing `uiClientId`; it now resolves a stable fallback id
+> (`SUPERUSER_FALLBACK_CLIENT_ID = 'su-loopback'`,
+> `packages/operator-core/lib/agent-tools/coordination/identity.ts`) instead of
+> throwing — and the JSON-HTTP transport layer
+> (`libs/generic/tooldef-http/src/http-projection.ts`) already defaults a missing
+> `uiClientId` to `'su-http-loopback'` before identity resolution even runs. So an
+> externally-launched session hitting the bridge with **no** `?client=` now
+> resolves to one of those fallback ids instead of failing — `coord:whoami`,
+> `coord:declare-intent`, `issues:*`, and `work_items:claim`/`:comment`/`:complete`/
+> `:set_state` all work, just attributed to the shared fallback identity rather
+> than a per-session one. The symptom, the `EI-NNNN` error text, and the
+> workaround above are kept as a record of what the gap looked like and how to
+> route around a **similar** future gap — don't expect to hit this exact error
+> anymore.
+
 ## When to use vs. wait
 
 Don't burn a loop idling on reconnection. If `/api/health` is green, switch to

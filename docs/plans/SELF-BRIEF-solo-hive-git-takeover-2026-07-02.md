@@ -330,3 +330,52 @@ VERIFY: npx tsc --noEmit -p packages/operator-core (grep MY files only, ~333 bas
 tools-md-sync NOT needed (no tool added). DONE-CHECK vs item text: H5 structural ✓, H10 successor field
 + force-archive ✓, H16 rate-cap/TTL fields ✓, owner-signed publisher set ✓, hive-browsable card
 (listFleetRecords) ✓, billing default ✓. Then plans_set-status P-101 done + WI-1732 complete + notify fleet.
+
+### LEDGER UPDATE — 2026-07-03 ~12:45Z (steps 5–7 DONE, step 8 half-done)
+Steps 5, 6, 7 are FULLY WRITTEN (unverified beyond one tsc slice):
+5 ✅ feature-issue-op-keys.ts: map entry + toFleetDirectoryValue (archived: `row.archived === true`)
+  + switch case + FleetDirectoryRow import + **added FleetDirectoryRow to the `let value:` union
+  (~line 854)** — that union was the one tsc error; fixed, NOT re-tsc'd yet.
+6 ✅ register-all.ts: import + 'p2p-fleet-directory' in REGISTERED_PROJECTION_TAGS +
+  buildFleetDirectoryProjection(hiveScoped) last in buildHarnessProjections. NOTE: there may be a
+  registry-coverage/tags test asserting the tag list — if a test fails on projection count, that's why.
+7 ✅ boot.ts: PgFleetDirectory import; in joinForBinding — fleetDirectory built with
+  {workspaceId: opts.workspaceId, hiveSlug: rosterHiveSlug}, injected as `directory:` into
+  getScopeRoster deps, and directory-derived scopes unioned into participatingScopes (best-effort
+  .catch → []) BEFORE ensureOwnScopes. sidecar-host: handleEnsureScopeParticipation +
+  handleRediscloseScopes + registered 'substrate:ensureScopeParticipation'/'substrate:rediscloseScopes';
+  remote-booted-harness.ts: both proxies now forward via this.client.call (no-ops replaced).
+  fake-booted-handle.ts already had vi.fn stubs — untouched, fine.
+8 ◐ lib/p2p/fleet-directory-schema.test.ts WRITTEN (pure; coerce/canonical/signed-bytes/parse/fedKey).
+  ⚠ One ugly line in the 'signed bytes bind…' test does an inline double-coerce cast — simplify to
+  `const c = coerceFleetDirectoryRecord(minimal); if (!c.ok) throw...; const json = canonicalFleetRecordJson(c.record)`.
+  STILL TO WRITE: (a) lib/p2p/fleet-directory.test.ts — fake sql = `{ unsafe: async (q, params) => rows }`
+  (store uses pg(sql).unsafe(q, params) everywhere; SELECT → existing rows, INSERT/UPDATE → RETURNING row).
+  Cover: putFleetRecord non-owner refusal / stale-version refusal (existing v3, put v3) / happy path with
+  REAL ed25519 (generateEd25519KeypairDer + signWithPrivateKeyDer + pubkeyBase64FromDer from
+  lib/identity/ed25519.ts) then verifyEd25519 over fleetDirectorySignedBytes green; PgFleetDirectory
+  scopeMembers (null absent/archived; owner∪pubs else — dedupe if owner listed); resolvePublisherSet
+  (vi.mock '../hive-membership-store' → listHiveMembers/loadRevokedHivePubkeys; refused on absent record;
+  valid path ownerAnchored+ownerSignatureValid true; revoked signer ⇒ sigValid false);
+  listParticipatingScopes (owner or publisher rows only); widening: GrantBackedScopeRoster({directory}) →
+  members = owner ∪ pubs, isMember publisher true / stranger false / owner-always-true.
+  NOTE resolveP2pGrantWorkspace('ws-1')='ws-1' (only '*'/default-coord-ws/empty → undefined).
+  (b) projections/fleet-directory.test.ts — pure composeKey/decode/isFleetDirectoryRow (mirror
+  hive-policy.test.ts) PLUS: vi.mock '../../../hive-membership-store' + '../../../hive-store';
+  realVerifyFleetDirectory: valid attested-device row true; forged sig false; cuckoo (record owner≠row col)
+  false; version/archived col mismatch false; revoked signer false; H10 hive-key(getHiveBySlug pubkeyBase64)
+  + archived:true → true, hive-key + live record → false. TEETH: buildFleetDirectoryProjection with fake
+  sql tag (template-call recorder: `(strings, ...vals) => { calls.push(...); return Promise.resolve([]) }`)
+  — writeToPg uses sql`...` TEMPLATE (not unsafe) — neutered verifyRecord (async () => true) ⇒ forged row
+  INSERTs (calls.length 1); default verify + empty mocks ⇒ drop (calls 0). Demux: row.harness_slug ≠
+  opts.harnessSlug dropped even neutered. deleteFromPg: junk key (no '/', owner≤0) → no call; good key →
+  DELETE call.
+tsc slice from mid-build run: ONLY 2 errors — the union (FIXED in 5 above) and fleet-directory.ts ws()
+`?? null` which is ALREADY in-tree (peer tsc-gate fixer raced the snapshot) ⇒ expect clean; re-run + grep
+my 8 files: p2p/fleet-directory{,-schema}{,.test}, projections/fleet-directory{,.test}, feature-issue-op-keys,
+projections/register-all, hyperbee/boot.ts, substrate-sidecar-host, remote-booted-harness.
+Then: vitest run the 3 test files → db:migrate 476 (confirm:true; needs PAPERCUSP_ALLOW_DB_MIGRATE=1 env on
+the tool host — it's the MCP tool's requirement, tool handles the lock/drain) → pull-schema.mjs → done-check
+→ flip P-101 done + WI-1732 complete (work_items_complete with migrations:['476'] etc) + fleet notify.
+Fleet delta: 6e3f9 finished P-103 standing puller (45/45) and is pulling the next p2p item — member lane
+near-dry; d1985 done P-102/203/205/304. 35c3b still owes P-201/206 signal.
