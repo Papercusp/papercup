@@ -1476,6 +1476,101 @@ export async function buildToolFindRedirect(
   return formatToolFindRedirect(query, hits);
 }
 
+// ── Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092) ────
+// A weak/local model (ornith IQ3_M) can wedge in a degenerate tool loop, calling
+// the SAME tool with the SAME args over and over without ever reading the result.
+// Observed twice on 2026-07-03: a fleet LEADER burned 66 identical `resolve` calls
+// and never read its plan (EI-7076); a MEMBER burned 132 bash `find` calls,
+// re-running the same empty search (EI-7092). Prompt-level "don't loop" guidance
+// does not reach a model already IN the loop — this is the deterministic backstop.
+// After N CONSECUTIVE identical (toolName+args) calls the guard BLOCKS further
+// repeats with a steer that names the repetition and points at the right approach.
+// In-process is sufficient: one omp child = one process (unlike the multi-worker
+// :3070 MCP pool), so a module-scoped counter — like `acquiredLocks` — is correct.
+// Gated on the agent-session marker; owner sessions are never throttled (D-003).
+// It counts CONSECUTIVE identical calls, reset at each turn_start (a doom-loop is
+// intra-turn — the model emits the whole burst inside one turn), so a legitimate
+// re-call across two separate turns never trips it, and a legit FORCED `resolve`
+// (each resolves a DISTINCT pending action and returns a real result, so it never
+// repeats identically) cannot trip it either.
+
+/** After this many CONSECUTIVE identical (toolName+args) calls in one turn, the
+ *  loop-breaker blocks further identical repeats. Two identical calls pass; the
+ *  third is blocked. Chosen to catch BOTH observed loops (the member find-flail
+ *  had a 3× identical tail; the leader resolve-loop was 66×) while leaving a
+ *  legitimate double-call (e.g. a retry) untouched. */
+export const IDENTICAL_CALL_LOOP_LIMIT = 3;
+
+interface RepeatRun {
+  key: string;
+  count: number;
+}
+let _repeatRun: RepeatRun | undefined;
+
+/** Stable, bounded key for loop detection: lowercased toolName + sorted-key JSON
+ *  of the input, capped so a huge arg blob cannot blow memory. Never throws (an
+ *  unserializable input degrades to a constant marker, which still detects a
+ *  repeat of that same input). Pure. */
+export function toolCallLoopKey(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): string {
+  let argsPart: string;
+  try {
+    argsPart = JSON.stringify(input ?? {}, Object.keys(input ?? {}).sort()).slice(0, 2000);
+  } catch {
+    argsPart = '<unserializable>';
+  }
+  return `${toolName.toLowerCase()} ${argsPart}`;
+}
+
+/** Record a tool call under `key` and return the new CONSECUTIVE run length (1 =
+ *  first occurrence, or the run just changed). Mutates module state. */
+export function noteToolCallRepeat(key: string): number {
+  if (_repeatRun && _repeatRun.key === key) {
+    _repeatRun.count += 1;
+  } else {
+    _repeatRun = { key, count: 1 };
+  }
+  return _repeatRun.count;
+}
+
+/** Reset the loop-detection run. Called at every turn_start (so a repeat run is
+ *  scoped to one turn) and exported as a test seam. */
+export function resetToolCallLoopState(): void {
+  _repeatRun = undefined;
+}
+
+/** The steer returned when the loop-breaker trips — names the repeated tool and
+ *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
+export function loopBreakReason(toolName: string, count: number): string {
+  const t = toolName.toLowerCase();
+  const head =
+    `loop-breaker: you have called \`${toolName}\` ${count} times in a row with identical ` +
+    'arguments and it is not making progress — STOP repeating it. ';
+  if (t === 'resolve') {
+    return (
+      head +
+      'The `resolve` tool only applies a PENDING preview action; you have none, so it is a ' +
+      'no-op every time. To read a plan call `plans:get {slug, harness}` directly; to call any ' +
+      'other tool use `tools:invoke {name, args}`. Do NOT call `resolve` again.'
+    );
+  }
+  if (t.startsWith('bash') || t === 'shell') {
+    return (
+      head +
+      'Re-running the same shell command returns the same result. To find a file use the `read` / ' +
+      '`grep` / `ls` file tools (or `docs:search` for docs), not a repeated `find`. If the file ' +
+      'genuinely is not there, change your approach or report the blocker — do not loop.'
+    );
+  }
+  return (
+    head +
+    'Read the previous result and change your approach: a different tool, different arguments, or ' +
+    'report the blocker. Repeating the identical call will keep failing.'
+  );
+}
+
 export async function onToolCall(
   event: ToolCallEvent,
 ): Promise<{ block?: boolean; reason?: string }> {
@@ -1532,6 +1627,19 @@ export async function onToolCall(
   // gets its answer this turn. Gated on the agent-session marker (owner sessions unrestricted, D-003).
   if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isNativeToolSearch(event.toolName)) {
     return { block: true, reason: await buildToolFindRedirect(event.input) };
+  }
+
+  // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the
+  // Nth CONSECUTIVE identical (toolName+args) call from an agent session — the
+  // deterministic backstop against a weak model wedging in a degenerate tool loop.
+  // Placed AFTER the specific bash/tool-search guards so their (more precise) refusal
+  // wins at call #1; this generic backstop only fires once a call has repeated
+  // identically IDENTICAL_CALL_LOOP_LIMIT times. Owner sessions unrestricted (D-003).
+  if (process.env.PAPERCUSP_AGENT_SESSION === '1') {
+    const runLen = noteToolCallRepeat(toolCallLoopKey(event.toolName, event.input));
+    if (runLen >= IDENTICAL_CALL_LOOP_LIMIT) {
+      return { block: true, reason: loopBreakReason(event.toolName, runLen) };
+    }
   }
 
   // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui
@@ -1809,6 +1917,9 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_start', async (_event, ctx) => {
+    // Scope the doom-loop breaker's consecutive-repeat run to this turn (a loop is
+    // emitted inside one turn; a legit re-call across two turns must not accrue).
+    resetToolCallLoopState();
     // Per-turn objective title (session-objective-display-2026-06-22, P-004):
     // set the terminal title to coord:glance self.objective. Fire-and-forget —
     // it never gates the reminder and swallows its own errors.
