@@ -147,3 +147,36 @@ describe('behaviour checks — catches every real bug we hit', () => {
     expect(byId(t, ORNITH_CTX)['routing-gate'].passed).toBe(false);
   });
 });
+
+describe('routing-gate is N/A for an AUTO-on fleet MEMBER (WI-1848 / WI-1849)', () => {
+  // A fleet member in AUTO correctly does NOT present the A/B/C route menu — it just
+  // orients, claims its lane, and works. That (correctly) trips the routing-gate check,
+  // which is the AUTO-off / leader posture; the autoFleetMember flag marks it N/A instead
+  // of a false fail.
+  const memberRun = parseTranscript([
+    modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
+    userMsg('You are a fleet MEMBER. AUTO mode is ON. Continue where you left off.'),
+    toolCall('coord_orient', { intent: 'pull next shared-floor item' }),
+    toolCall('work_items_claim', { ids: ['WI-1'] }),
+    toolCall('work_items_set_state', { items: [{ id: 'WI-1', state: 'in_progress' }] }),
+    toolCall('work_items_complete', { items: [{ id: 'WI-1', completion: { summary: 'built + tested green' } }] }),
+  ]);
+
+  it('is N/A (not a fail) when ctx.autoFleetMember is set', () => {
+    const c = byId(memberRun, { ...ORNITH_CTX, autoFleetMember: true })['routing-gate'];
+    expect(c.na).toBe(true);
+    expect(c.passed).toBe(true);
+  });
+
+  it('is EXCLUDED from the verdict, so a clean member run still passes overall', () => {
+    const report = buildReport(runChecks(memberRun, { ...ORNITH_CTX, autoFleetMember: true }));
+    expect(report.verdict).toBe('pass');
+    expect(report.criticalFailures).not.toContain('routing-gate');
+  });
+
+  it('WITHOUT the flag the same no-menu run trips routing-gate — proving the flag is what excuses it', () => {
+    const c = byId(memberRun, ORNITH_CTX)['routing-gate'];
+    expect(c.na).toBeFalsy();
+    expect(c.passed).toBe(false);
+  });
+});
