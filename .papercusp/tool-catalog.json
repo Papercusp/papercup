@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 549,
+  "count": 579,
   "tools": [
     {
       "name": "ablation:report",
@@ -2451,6 +2451,72 @@
       }
     },
     {
+      "name": "cert:catalog",
+      "http": {
+        "path": "/api/agent-tools/cert/catalog",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read CERTIFIED_CATALOG (provisioner/catalog.ts) — the provisioner wizard's certified/provisional combo catalog. Each entry carries its `status` ('provisional' = grounded in a real running config but not yet battery-certified; 'certified' = passed cert:run, with the `certification` evidence stamp attached). Pass `id` to fetch one entry; omit for the full catalog. Returns {ok, catalog} or {ok, entry} / {ok:false, error} if `id` is unknown.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Checking what's already certified before running cert:run again (avoid a redundant re-cert), or reading a specific entry's certification evidence (verdict/ranAt/manglingRate/summary).",
+        "notWhen": "Certifying a NEW combo — that is cert:run. This tool never mutates the catalog (a certified verdict is hand-promoted into provisioner/catalog.ts per D-005, never written by an agent tool).",
+        "chaining": "cert:catalog → (a combo is missing or provisional) → cert:run to certify it → hand-add/flip the CERTIFIED_CATALOG entry in code."
+      }
+    },
+    {
+      "name": "cert:run",
+      "http": {
+        "path": "/api/agent-tools/cert/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run the P-006 model-certification battery (behavior · trimmed-shape · comms · mangling-rate — a deterministic, no-LLM-judge harness, coordination-eval.ts D-002) LIVE against a served OpenAI-compatible backend, and return the CertReport (per-probe pass/fail + the aggregate mangling rate + a `certified`/`failed` verdict). Resolve the target EITHER by `backendId` (looked up in the local-backend registry — gateway:local_backend_list) OR an explicit `baseUrl` + `backend` kind. This is the on-demand re-cert surface for certifying additional models/configs beyond CERTIFIED_CATALOG entry #1 — it does NOT itself write a catalog entry; a human/agent promotes a `certified` verdict into provisioner/catalog.ts CERTIFIED_CATALOG by hand (per D-005, \"never a parallel catalog\"). Returns {ok, report}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Certifying a NEW (model, quant, num_ctx, parallel, backend) combo before adding it to CERTIFIED_CATALOG, or re-certifying an existing one after a config/prompt change. Pass `backendId` when the backend is already registered (gateway:local_backend_list); otherwise pass `baseUrl` + `backend` directly.",
+        "notWhen": "Reading already-certified entries — cert:catalog. Certifying a CLOUD (Claude/Codex) account — this battery is for the LOCAL inference-backend pool only. Scoring one gym run's subjective quality — gym:judge.",
+        "chaining": "gateway:local_backend_list (find backendId) → cert:run { backendId, model } → on a `certified` verdict, hand-add the entry to provisioner/catalog.ts CERTIFIED_CATALOG."
+      }
+    },
+    {
       "name": "change_ledger:calendar",
       "http": {
         "path": "/api/agent-tools/change_ledger/calendar",
@@ -2871,6 +2937,136 @@
         "when": "Roll back runtime-config changes to baked defaults — a single concern after a bad tune, or everything at once during an incident (\"reset all overrides\").",
         "notWhen": "To SEE what's overridden first, use config:list-overrides. To change one value, use that concern's set tool.",
         "chaining": "config:list-overrides before to see what will reset, and after to confirm it cleared."
+      }
+    },
+    {
+      "name": "config:set-compaction-limit",
+      "http": {
+        "path": "/api/agent-tools/config/set-compaction-limit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set THIS session's soft compaction limit (tokens) — a target below your model window; near it, reach a stopping point and call session:request_compaction. Persisted per session; visible in coord:presence.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "Tune how large your context grows before you self-compact — raise it for wide-context work, lower it to stay sharp on a tight task.",
+        "notWhen": "To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`."
+      }
+    },
+    {
+      "name": "config:tiers-get",
+      "http": {
+        "path": "/api/agent-tools/config/tiers-get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the model-tier menu (stored, else the committed defaults) with each tier’s effective soft compaction limit — explicit per-tier value, else the model-derived default floor((window − margin) / 1.2). Also returns the per-role tier ceilings.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a fleet:spawn tier.",
+        "notWhen": "To change YOUR OWN session’s limit — config:set-compaction-limit. To edit the menu — config:tiers-set."
+      }
+    },
+    {
+      "name": "config:tiers-set",
+      "http": {
+        "path": "/api/agent-tools/config/tiers-set",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Replace the model-tier menu wholesale (names, specs, backends, when-guidance, per-tier soft compaction limits). Invalid rows are dropped and limits clamped to each spec’s model-derived ceiling (limit × 1.2 ≤ window − margin). Pass tiers: [] to revert to the committed defaults.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Editing the tier menu — adding a tier, changing a spec, or setting a per-tier compaction limit the fleet seeds sessions with.",
+        "notWhen": "To change YOUR OWN session’s limit — config:set-compaction-limit. To read the menu — config:tiers-get.",
+        "chaining": "config:tiers-get first to see the current menu; edit; write back the full array."
       }
     },
     {
@@ -3311,6 +3507,38 @@
       }
     },
     {
+      "name": "coord:conditions",
+      "http": {
+        "path": "/api/agent-tools/coord/conditions",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The live \"what is wrong RIGHT NOW\" view: folds condition-keyed severe-event broadcasts (git-sync stalls, green-gate freezes, …) into per-condition STATE instead of message history. Returns open conditions first (latest alarm newer than any resolution) with first_seen/last_seen/alarm_count/latest_summary, then recently-resolved ones (resolved_at + resolved_summary). An OPEN condition is claimable work; a resolved one needs no action.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Orienting on current system health — \"is anything wrong right now?\" — before claiming a stall/red-gate broadcast, or when an old severe-event alarm in your inbox needs a live open/resolved verdict.",
+        "notWhen": "For your addressed mail use coord:inbox (stale alarms there already carry resolved:true). For human-facing escalations use coord:escalations. For agent liveness use coord:presence."
+      }
+    },
+    {
       "name": "coord:declare-intent",
       "http": {
         "path": "/api/agent-tools/coord/declare-intent",
@@ -3675,7 +3903,7 @@
           "POST"
         ]
       },
-      "description": "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses) are excluded by default — pass include_ambient to see them. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds.",
+      "description": "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses) are excluded by default — pass include_ambient to see them. Repeated categorized system broadcasts collapse to one row with `repeat_count` + `first_seen_ts`; a stale severe-event alarm whose condition later cleared carries `resolved:true` + `resolved_at` — do not investigate a resolved condition. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
       "capabilities": [
         "coord:read"
       ],
@@ -3696,7 +3924,7 @@
       ],
       "guidance": {
         "when": "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
-        "notWhen": "For agent-presence (\"who is active?\") — use coord:presence. For file locks — use locks:queue."
+        "notWhen": "For agent-presence (\"who is active?\") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a since_ts poll (see the WI-1600 CAUTION)."
       }
     },
     {
@@ -3805,7 +4033,7 @@
           "POST"
         ]
       },
-      "description": "List coordination agents + whether each can TAKE WORK. Top-level `self`=your ownerId; your own row has `isSelf:true` (no coord:whoami needed). Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable=the dispatch target · ended=needs relaunch, NOT wake), and `onDesktop`/`viewerAttached` (a human is watching RIGHT NOW — a live OS window / the operator PTY panel — so it is hard-exempt from the idle-session reaper + the \"assign to the agent on screen\" target). Read `summary.wakeable`, not raw `active` (a fresh heartbeat can be ended). `intentStale:true` ⇒ declared intent/claims not progressing → its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen. Stale (>10min) rows summarised unless include_stale.",
+      "description": "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen.",
       "capabilities": [
         "coord:read"
       ],
@@ -3825,9 +4053,9 @@
         "overwatch"
       ],
       "guidance": {
-        "when": "Before dispatch/handoff: \"who can take work now, and on what?\" Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. For the agent on your screen, filter `onDesktop`/`viewerAttached`.",
-        "notWhen": "A specific file's freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion; tail those.",
-        "chaining": "Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions. lastActiveSecAgo is point-in-time at as_of; the baseline re-injects after compaction."
+        "when": "Before dispatch/handoff: who can take work now, and on what? Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. Pass `owner:<id>` to inspect/wake a specific dead agent.",
+        "notWhen": "A specific file's freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).",
+        "chaining": "Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions."
       }
     },
     {
@@ -3863,6 +4091,39 @@
       }
     },
     {
+      "name": "coord:roster",
+      "http": {
+        "path": "/api/agent-tools/coord/roster",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "ONE read door with an explicit lens: view=live (in-a-turn presence), members (fleet/hive membership), claims (who-on-what-item), history (who-was-ever-here). Same underlying model; coord:presence / fleet:status / fleet:assignments / coord:glance become thin aliases (or deprecate). Kills \"which of 5 tools do I call\".",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who's on plan P (view=claims)? Historical who-was-ever-here (view=history).",
+        "notWhen": "Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status).",
+        "chaining": "coord:roster { view } → read ONCE per turn; tail [coord+N] deltas for transitions. For history, use coord:catch-up after to refine by topic/plan."
+      }
+    },
+    {
       "name": "coord:send",
       "http": {
         "path": "/api/agent-tools/coord/send",
@@ -3870,7 +4131,7 @@
           "POST"
         ]
       },
-      "description": "Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; [\"*\"] broadcasts, [\"human\"] surfaces to the user. Default: INJECTED — lands in the recipient's inbox, seen next turn (cheap). `wake` ALSO re-invokes a sleeping recipient now ('required' → a miss returns recipient_absent:true; 'optimistic' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. By default a DIRECTED send sets `wakeOnReply` — when a peer REPLIES (their related_msg_id = your msg_id) YOU are auto-woken so you re-invoke the moment the reply lands (set wakeOnReply:false to opt out; broadcasts default off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.",
+      "description": "Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; [\"*\"] broadcasts, [\"human\"] surfaces to the user. In a fleet, a bare [\"*\"] auto-scopes to your fleet (reported `scopedBroadcast`); pass allHive:true for a genuine hive-wide notice. Default INJECTED — lands in the recipient's inbox, seen next turn. `wake` ALSO re-invokes a sleeping recipient now ('required' → a miss returns recipient_absent:true; 'optimistic' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. A DIRECTED send defaults `wakeOnReply` — you're auto-woken when a peer replies (set false to opt out; broadcasts off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -5260,7 +5521,7 @@
           "POST"
         ]
       },
-      "description": "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. The cheap shape-read before decision_ledger:list. Read-only.",
+      "description": "Roll-up of the Queen decision ledger: total + counts by layer (action/disposition), posture (auto/proposed/gated/rejected), category, and disposition verb, over a time window. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The cheap shape-read before decision_ledger:list. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -5722,6 +5983,76 @@
       "profile": "engineer"
     },
     {
+      "name": "dev:limit_failure_rate",
+      "http": {
+        "path": "/api/agent-tools/dev/limit_failure_rate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Tool-arg limit-rejection failure rate: too-long-string validation failures by tool over the last N days (measuring-code-run-adoption.mdx metric #1) — a fleet total, per-tool breakdown, and a graded rating.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking whether a string/advisory-field cap fix landed (should trend toward 0), or which tool is currently rejecting long args most often.",
+        "notWhen": "Raw per-tool call counts (dev:telemetry); code:run adoption (dev:code_run_adoption)."
+      }
+    },
+    {
       "name": "dev:omp_session",
       "http": {
         "path": "/api/agent-tools/dev/omp_session",
@@ -5743,6 +6074,76 @@
       "guidance": {
         "when": "Inspect an OMP CLI session's state — useful when debugging long-running CLI flows.",
         "notWhen": "For PRODUCTION agent runs, the orchestrator owns sessions. dev:omp_session is the CLI-tool inspector."
+      }
+    },
+    {
+      "name": "dev:orient_dedup_rate",
+      "http": {
+        "path": "/api/agent-tools/dev/orient_dedup_rate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "coord:orient redundant-recall rate: of spawns that called coord:orient, how many ALSO re-called a tool orient already subsumed (plan-events/memory:search/inbox/declare-intent) — a fleet rollup + graded rating.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking whether the orient-dedup guidance is landing (pctRedundant should trend down from the ~100% baseline).",
+        "notWhen": "Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence)."
       }
     },
     {
@@ -6628,6 +7029,216 @@
       }
     },
     {
+      "name": "facts:assert",
+      "http": {
+        "path": "/api/agent-tools/facts/assert",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "You reached a durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"plan Y stalls on Z\", \"this harness's tests need Docker\". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.",
+        "notWhen": "Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — 500-char cap, per-scope cap 50, TTL mandatory.",
+        "chaining": "facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none."
+      }
+    },
+    {
+      "name": "facts:list",
+      "http": {
+        "path": "/api/agent-tools/facts/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List live (unexpired, unretracted) standing facts for one scope — the exact set future briefs/dossiers/orients will fold. workspace scope takes no scopeRef.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "Before asserting (avoid duplicates — re-assert the same key to refresh instead), when auditing what a role/harness is being told every turn, or when hunting a stale fact to retract.",
+        "notWhen": "Semantic search over background knowledge — that is memory:search.",
+        "chaining": "facts:list → facts:assert (refresh) / facts:retract (stale)."
+      }
+    },
+    {
+      "name": "facts:retract",
+      "http": {
+        "path": "/api/agent-tools/facts/retract",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retract a standing fact by (scope, scopeRef, key) — it immediately stops folding into briefs/dossiers/orients. Soft-delete (audit trail kept 30d).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "A previously-asserted fact is no longer true (the residue cleared, the plan unstalled, the workaround shipped). Retract PROMPTLY — facts fold verbatim, so a stale one actively misleads every future turn.",
+        "notWhen": "To update/replace the conclusion — facts:assert with the same key overwrites in place.",
+        "chaining": "facts:list { scope } → facts:retract { scope, scopeRef, key }."
+      }
+    },
+    {
       "name": "features:get",
       "http": {
         "path": "/api/agent-tools/features/get",
@@ -6962,7 +7573,7 @@
           "POST"
         ]
       },
-      "description": "Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet's leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal).",
+      "description": "Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet's leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal). Pass `count` when you want a non-blocking sizing advisory for a planned multi-member launch.",
       "capabilities": [
         "fleet:create"
       ],
@@ -7026,7 +7637,7 @@
           "POST"
         ]
       },
-      "description": "Signal one OR many running bees to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure never fails the rest.",
+      "description": "Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don't count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -7047,8 +7658,8 @@
       ],
       "guidance": {
         "when": "You (the Queen) want to reclaim bee slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each bee a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
-        "notWhen": "The bee is actively running a high-priority task (let it finish naturally). Or if immediate slot reclaim is critical (use fleet:cancel). Or if the bee is unresponsive (use fleet:cancel after a timeout).",
-        "chaining": "fleet:drain { bee_id } | { bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure never fails the rest."
+        "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the Hive Queen ≠ drain your fleet-leader peers).",
+        "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → fleet:spawn fresh. Bulk: correlate by bee_id, not position; one failure never fails the rest."
       }
     },
     {
@@ -7123,7 +7734,7 @@
           "POST"
         ]
       },
-      "description": "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu launch flags thread onto every member — account (pin the fleet's model load to a chosen gateway pool account), workspace, role, model, feature, launch-context, profile, brain, add-dir, plus an `extraArgs` escape hatch for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start); this tool launches the workers. Linux + macOS only.",
+      "description": "Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu flags thread onto every member — account, workspace, role, model, feature, launch-context, profile, context-size, brain, add-dir, allowSubagents (subagents DENIED BY DEFAULT), plus `extraArgs` for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start). Linux + macOS only.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -7143,7 +7754,7 @@
       "guidance": {
         "when": "Routing option (3) — \"spawn a new desktop fleet to work a plan\" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user's desktop and start working immediately.",
         "notWhen": "You only need worker windows with no fleet/plan → capability:terminal. You only need to register a fleet (no terminals) → fleet:create. Authoring or starting the plan → plans:apply-plan-block / plans:start (do that FIRST; this tool does not create or start plans).",
-        "chaining": "plans:apply-plan-block (or plans:new + plans:add-item) → plans:start (optional, for Queen visibility) → fleet:launch-on-plan { name, plan, count }. As leader you then monitor via fleet:assignments + coord:presence."
+        "chaining": "plans:apply-plan-block (or plans:new + plans:add-item) → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a LEAN monitor (per-wake dev:pg_query burn-down + coord:inbox); don't poll full fleet:assignments/coord:presence every wake (blows leader context)."
       }
     },
     {
@@ -7400,7 +8011,7 @@
           "POST"
         ]
       },
-      "description": "Show one fleet's identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now. The per-fleet analog of coord:presence.",
+      "description": "Show one fleet's identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.",
       "capabilities": [
         "fleet:status"
       ],
@@ -7519,6 +8130,171 @@
       "guidance": {
         "when": "Before fleet:cancel (see what would be torn down) or before completing a nursery (the completion gate refuses while a child lives).",
         "chaining": "fleet:tree → fleet:cancel { spawn_id }."
+      }
+    },
+    {
+      "name": "gateway:egress_mode",
+      "http": {
+        "path": "/api/agent-tools/gateway/egress_mode",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or flip the inference gateway's EGRESS MODE live (GET/POST :8788/admin/egress-mode) — gateway-rayobyte-hardening. `proxy:'off'` ⇒ box-ip-only: drop the datacenter (Rayobyte squid) proxy egress and route ALL upstream through the box's own IP — the kill-switch when the proxies are flapping (transport `fetch failed` / stream stalls, NOT 429s). `proxy:'on'` ⇒ restore each account's proxy pool. Omit `proxy` to just read the current mode. LIVE, no restart. NOTE: this flip does NOT survive a gateway restart — the boot default is the PAPERCUSP_GATEWAY_DISABLE_PROXY_EGRESS service env; to make it durable, also set that drop-in. Returns {ok, proxyEgressDisabled, mode}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Egress proxies are flapping — agents get 'upstream stream stalled (aborted)' / 'paced/paused' on QUIET accounts (transport failures, not usage). Flip proxy:'off' to route direct through the box IP; flip back on once the proxies recover.",
+        "notWhen": "A real per-account 429/usage cap (util5h≥1.0) — that's account budget, not egress; box-ip-only won't help. Check gateway:owner_report / the [429-shape=…] journal suffix first.",
+        "chaining": "gateway:owner_report / gateway:status (confirm the failures are transport, not 429) → gateway:egress_mode { proxy:'off' } → (once proxies recover) gateway:egress_mode { proxy:'on' }."
+      }
+    },
+    {
+      "name": "gateway:local_backend_list",
+      "http": {
+        "path": "/api/agent-tools/gateway/local_backend_list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List registered local inference backends (the DURABLE registry — for LIVE health + in-flight, hit GET :8788/admin/local-backends via gateway:status's sibling route, or fetch it directly). Returns {ok, backends}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Checking what's registered before register/remove, or confirming a register/remove landed.",
+        "notWhen": "You need LIVE health/in-flight — that is process state on the running gateway, not this durable list.",
+        "chaining": "gateway:local_backend_list → gateway:local_backend_register / gateway:local_backend_remove."
+      }
+    },
+    {
+      "name": "gateway:local_backend_register",
+      "http": {
+        "path": "/api/agent-tools/gateway/local_backend_register",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Register (or update) a LOCAL inference backend — llama-server/vllm/ollama — in the durable registry, then hot-apply it to the running gateway (POST :8788/admin/reload). An OpenAI-compatible request to the gateway's `/v1/chat/completions` whose `model` matches one of `models` routes to this backend (least-loaded across backends serving that model). Upserts by `id`. Returns {ok, backend, appliedLive}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Standing up (or re-pointing / re-tuning) a local llama-server/vllm/ollama backend so the gateway can route to it (local-concurrent-inference-2026-07-02 D-002).",
+        "notWhen": "Registering a Claude/Codex cloud account — that is accounts:register (a different pool).",
+        "chaining": "gateway:local_backend_register → gateway:local_backend_list (confirm) → gateway:status / GET :8788/admin/local-backends (confirm health)."
+      }
+    },
+    {
+      "name": "gateway:local_backend_remove",
+      "http": {
+        "path": "/api/agent-tools/gateway/local_backend_remove",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a local inference backend from the durable registry, then hot-apply the removal to the running gateway (POST :8788/admin/reload). To take a backend OUT of rotation without deleting it (e.g. swapping ollama↔llama-server), prefer gateway:local_backend_register with `enabled:false`. Returns {ok, removed, appliedLive}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Decommissioning a local backend that no longer exists / should never be routed to again.",
+        "notWhen": "Temporarily pausing it — gateway:local_backend_register { id, enabled:false } keeps the registration for later.",
+        "chaining": "gateway:local_backend_list (find the id) → gateway:local_backend_remove."
+      }
+    },
+    {
+      "name": "gateway:owner_report",
+      "http": {
+        "path": "/api/agent-tools/gateway/owner_report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin. Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm.",
+        "notWhen": "Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.",
+        "chaining": "gateway:owner_report { agent } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom."
       }
     },
     {
@@ -7766,6 +8542,40 @@
         "when": "Scoring a gym run's deterministic guardrails — the optimizer can't game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's gym.signals by name; set loadDrillOutcomes to pull the live red-queen sandbox corpus for the drill signals.",
         "notWhen": "Subjective quality scoring — that is the frozen judge (gym:judge). Running the pipeline — the gym runner.",
         "chaining": "gym runner → collect run inputs (tests/output) → gym:signals (loadDrillOutcomes for drill targets) → proposer + trace summary."
+      }
+    },
+    {
+      "name": "harness:configure",
+      "http": {
+        "path": "/api/agent-tools/harness/configure",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Set per-instance config overrides (maxCostUsd, parallelWorkers, …) on an EXISTING non-hive harness — merges into the registry's configOverrides, the same knob residue hive:update writes for hives. Root-only. Rejects a hive slug (use hive:update there).",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Changing a non-hive harness's per-instance blueprint-knob overrides (budget/parallelism/etc) after it already exists.",
+        "notWhen": "Scaffolding a NEW harness — harness:create (which takes its own initial configOverrides). A hive's config — hive:update. Its typed instance fields (phase/dept) aren't touched here — those ride the same registry entry but via their own setters.",
+        "chaining": "harness:overview or harness:health to see current state; harness:create for a brand-new harness."
       }
     },
     {
@@ -9310,6 +10120,28 @@
         "when": "The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).",
         "notWhen": "To schedule a future wake — that is hive:declare-wake.",
         "chaining": "hive:status to see the last/next wake; hive:declare-wake to schedule."
+      }
+    },
+    {
+      "name": "hive_git:integration_requests",
+      "http": {
+        "path": "/api/agent-tools/hive_git/integration_requests",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Owner: the multi-owner integration-requests queue — below-steer-tier member heads the integrator queued instead of auto-merging (the code-plane twin of the coord quarantine). Actions: list {hiveSlug?, repoKey?, devicePubkey?, state?, limit?} (default state omitted = all) | ratify {hiveSlug, repoKey, devicePubkey, headSha} — the ONE call that marks a queued head ratified so the NEXT integrator pass merges it. Ratification is PER-SHA (a newer head from the same below-tier device queues again — you ratify the code you saw, not the author's future pushes). Local-only, never federated: this is the receiving owner's own trust judgment about the sender, not a peer-influenced decision.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
+        "notWhen": "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (hive:set-steering / the hive policy) instead of a one-off per-SHA ratify.",
+        "chaining": "{action:'list', state:'pending'} → review the head → {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it."
       }
     },
     {
@@ -10903,7 +11735,7 @@
           "POST"
         ]
       },
-      "description": "Arm an engine-managed LOOP on your own session — the tracked replacement for Claude /loop. Each fire re-wakes THIS warm session ~intervalSec after your previous turn SETTLES (a warm coord wake, not a fresh run), so your context carries across iterations. The loop survives restarts, is observable (loop:status / fleet:assignments / fire-history), and inherits guardrails (failure-streak fire-gate + an optional cost-cap). End it with loop:end.",
+      "description": "Arm an engine-managed LOOP on your own session (or another's, via `ownerId`) — the tracked replacement for Claude /loop. Each fire re-wakes that warm session ~intervalSec after its prior turn settles (context carries across iterations, not a fresh run). Survives restarts, is observable (loop:status / fleet:assignments), and inherits guardrails (failure-streak gate, optional cost-cap). End with loop:end.",
       "capabilities": [
         "routines:write"
       ],
@@ -10924,9 +11756,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You (an su/interactive agent working directly with a user) agree to \"put this on a loop\" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before you end your turn.",
-        "notWhen": "Wall-clock recurrence (a fixed time each day) — that is a SCHEDULE (plans:set-schedule). A single future wake — events:await / a one-shot. The autonomous queen/bee/scout loop — that is its OWN system (hive:declare-wake / overwatch:declare-wake); never loop:arm from an autonomous-fleet agent. Do NOT self-pace with Claude's native /loop — declare an engine loop here instead (it is tracked + pauseable).",
-        "chaining": "loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration with the wakeup prompt (create + self-assign your work_items, work them, set_state) → loop:end to stop. loop:status to inspect."
+        "when": "You (an su/interactive agent) agree to \"put this on a loop\" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before ending your turn. Pass `ownerId` to arm a loop FOR another already-running, wake-reachable session (e.g. a fleet leader arming a member's monitor loop) instead of your own — without it, a caller with no per-session id silently binds to the non-wake-reachable `su-loopback` fallback.",
+        "notWhen": "Wall-clock recurrence (a fixed daily time) — use a SCHEDULE (plans:set-schedule) instead. A single future wake — events:await. The autonomous queen/bee/scout loop is its OWN system (hive:declare-wake / overwatch:declare-wake) — never loop:arm from an autonomous-fleet agent. Don't self-pace with Claude's native /loop — this engine loop is tracked + pauseable.",
+        "chaining": "loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration (create + self-assign work_items, work them, set_state) → loop:end to stop; loop:status to inspect."
       }
     },
     {
@@ -10961,6 +11793,40 @@
         "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Better to loop:end than burn empty wakes spinning.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is hive:pause.",
         "chaining": "loop:arm to start; loop:status to check; loop:end to stop."
+      }
+    },
+    {
+      "name": "loop:soak-report",
+      "http": {
+        "path": "/api/agent-tools/loop/soak-report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the machine-checkable production-readiness gate for one hive over a rolling 12–24h window: bg-host stability, infra-curse rate, bee/queen/overwatch turn success, escalation backlog, green-checkpoint ratio, deploy latency, plus a READY/NOT-READY verdict with reasons.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need one deterministic \"is this hive production-ready yet?\" verdict backed by concrete operational metrics instead of a judgment call.",
+        "notWhen": "You only need the next wake / subscriptions / placements summary — that is hive:status. Per-session loop state is loop:status.",
+        "chaining": "Use with hive:status for the live wake/placements view, or the Learning tab panel for the same verdict in the UI."
       }
     },
     {
@@ -15449,6 +16315,138 @@
       }
     },
     {
+      "name": "provisioner:detect_hardware",
+      "http": {
+        "path": "/api/agent-tools/provisioner/detect_hardware",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Probe this machine's GPU vendor/VRAM and platform (nvidia-smi / rocm-smi / sysctl — all read-only, never touches a GPU's resident memory). Returns {ok, hardware:{platform,arch,ramGB,gpu,notes}}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "First-run provisioning, or re-checking hardware after a driver/GPU change.",
+        "notWhen": "You already have a recent detectHardware() result and just need a recommendation — that's provisioner:recommend, which detects internally.",
+        "chaining": "provisioner:detect_hardware → provisioner:recommend (or call recommend directly, it re-detects) → provisioner:plan_install → provisioner:install."
+      }
+    },
+    {
+      "name": "provisioner:install",
+      "http": {
+        "path": "/api/agent-tools/provisioner/install",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Plan + apply the provisioner flow: write the recommended backend's systemd user-unit + register it in the gateway's local-backend pool. Default: no start, no GPU touch — pass `start:true` to enable+start + health-check it (loads the model onto the GPU). `provisionBinary:true` (WI-1617) resolves a real `llama-server` binary first; `pullVllmImage:true` (WI-1618, vLLM combos only) pulls the pinned vLLM image first; `pullWeights:true` pulls missing llama-server weights first — each can take real minutes and fails the call outright rather than silently falling back. Returns {ok, plan, result:{wroteUnit,registered,started}}; `plan.blocked` non-null refuses the apply with `result.error`.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Actually provisioning a local inference backend after reviewing provisioner:plan_install's output.",
+        "notWhen": "A GPU-resident process may already be running — check coord:presence / coord:ask before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.",
+        "chaining": "provisioner:plan_install (review) → provisioner:install (start:false default; add provisionBinary:true / pullVllmImage:true on first run) → once verified idle, provisioner:install again with start:true, or start the unit manually."
+      }
+    },
+    {
+      "name": "provisioner:plan_install",
+      "http": {
+        "path": "/api/agent-tools/provisioner/plan_install",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Dry-run the full provisioner flow: detect hardware → recommend a combo → resolve its weights against the local ollama blob store → render its backend config. Performs NO writes (not the systemd unit, not the gateway registry) — this is provisioner:install's plan, without applying it. Returns {ok, plan:{hardware,recommendation,weights,unitFileContent,unitFilePath,gatewayRegisterInput,blocked}}. `blocked` non-null means it cannot be applied as-is yet (no combo fits, or weights need `ollama pull` first).",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Previewing exactly what provisioner:install would write, before committing.",
+        "notWhen": "You just want the recommendation without the weights/config detail — that's provisioner:recommend (cheaper, no filesystem probe).",
+        "chaining": "provisioner:plan_install → (if blocked is null) provisioner:install."
+      }
+    },
+    {
+      "name": "provisioner:recommend",
+      "http": {
+        "path": "/api/agent-tools/provisioner/recommend",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Detect this machine's hardware and recommend a catalog combo for it (D-005 catalog — entries may be `status:'provisional'` until the P-006/P-007 certification battery lands). Returns {ok, hardware, recommendation:{entry,tier,reason}}. `entry:null` means no local combo fits (surfaced in `reason`, e.g. no GPU → cloud gateway).",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "guidance": {
+        "when": "Deciding what to install before committing to a plan/apply.",
+        "notWhen": "You're ready to actually write config — that's provisioner:plan_install (does the same detect+recommend, plus weights resolution + rendered config).",
+        "chaining": "provisioner:recommend → provisioner:plan_install → provisioner:install."
+      }
+    },
+    {
       "name": "quota:set_tool",
       "http": {
         "path": "/api/agent-tools/quota/set_tool",
@@ -15983,6 +16981,37 @@
         "when": "Tune the release pipeline live — e.g. shorten deployBackoffMs to re-deploy a fixed target sooner during an incident, or raise stallReds/stallAgeMs to quiet a noisy stall alert.",
         "notWhen": "For the placement watchdog use hive:control_policy; for migrations use db:migrate-policy. vitest forks / suite-timeout (green-checkpoint.ts) and the health-probe timing are not covered here (separate consumers — follow-up).",
         "chaining": "/admin/git shows the pipeline; config:list-overrides shows the active override; config:reset-overrides reverts it."
+      }
+    },
+    {
+      "name": "release:checkpoint-run",
+      "http": {
+        "path": "/api/agent-tools/release/checkpoint-run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "FIRE the green-checkpoint NOW — run the full gate suite against current staging on demand (instead of waiting for the hourly cron tick), and if it's green, advance the green pin so release:deploy can ship it. The gate's VERDICT producer had no manual lever (only routines:set cron/pause) — the same gap git-sync:run closed for the commit routine. Use it after you've fixed or quarantined the reds to force a fresh verdict instead of waiting up to an hour. Detached (the suite runs up to ~55 min) + self-locked against a concurrent tick (won't OOM). Watch /admin/git for the verdict, then release:deploy { op:status } → op:trigger.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You've fixed or quarantined the reds and want a FRESH green verdict now rather than waiting for the next hourly green-checkpoint. Or the gate looks stale and you want to re-run the suite on demand.",
+        "notWhen": "To retune/pause the checkpoint cadence use routines:set. To SHIP an already-green pin use release:deploy op:trigger (checkpoint-run produces green; it does not deploy). To force an UN-green deploy use release:deploy op:force.",
+        "chaining": "fix/quarantine reds → release:checkpoint-run → (watch /admin/git for advanced/green) → release:deploy { op:status } → op:trigger { confirm:true }."
       }
     },
     {
@@ -16759,6 +17788,75 @@
       "profile": "engineer"
     },
     {
+      "name": "session:request-compaction",
+      "http": {
+        "path": "/api/agent-tools/session/request-compaction",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Compact THIS session now, at a clean stopping point (near your soft compaction limit). The harness types /compact into your own TUI; it runs after this turn ends. Pass focus to name what to preserve this compaction.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "You are near your compaction limit AND at a clean stopping point (a finished unit of work — tests green, an edit landed, a decision logged).",
+        "notWhen": "Mid-task — reach a stopping point first. To change WHEN this fires — config:set-compaction-limit."
+      }
+    },
+    {
       "name": "slash:dispatch",
       "http": {
         "path": "/api/agent-tools/slash/dispatch",
@@ -16975,7 +18073,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with descriptions. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). In omp, a returned tool is hidden behind discovery: load it with search_tool_bm25(\"<exact name>\") before calling.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic) AND activate the matches for your session so you can call them. Returns the best-matching tool names with descriptions. Use when you need a capability that is not in your core toolset — e.g. tools:find(\"feature flag\") or tools:find(\"spawn a worker\"). On a seeded (small-surface) session the matched tools are added to your live tool list on the fly, so after this call you can call the one you want directly.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -17033,8 +18131,78 @@
       ],
       "guidance": {
         "when": "You need a tool that is not in your loaded/core set and you do not know its exact name — search by what you want to DO (\"set a feature flag\", \"list open plans\", \"spawn a worker bee\"). The intent-aware replacement for guessing names.",
-        "notWhen": "When the tool is already in your core set or you know its exact name — just call it (in omp, search_tool_bm25(\"<name>\") then call). For a full permission-annotated dump use agent_tools:list.",
-        "chaining": "tools:find(\"<intent>\") → take the top tool name → (omp) search_tool_bm25(\"<name>\") to load it → call it."
+        "notWhen": "When the tool is already in your core set or you know its exact name — just call it (in omp, if a direct call reports not-found, tools:invoke {name, args} runs it server-side). For a full permission-annotated dump use agent_tools:list.",
+        "chaining": "tools:find(\"<intent>\") activates the matches for your session → call the top tool directly. If the direct call errors \"tool not found\", do NOT guess name variants: call tools:invoke {name:\"<tool>\", args:{...}} — it runs any catalog tool without loading. tools:invoke works on every client (claude/codex/omp) and never needs a separate load step."
+      }
+    },
+    {
+      "name": "tools:invoke",
+      "http": {
+        "path": "/api/agent-tools/tools/invoke",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. Pass the exact tool name (colon form, e.g. \"flags:set\") and its arguments object. The call is dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: tools:find(\"<intent>\") to get the name + arg schema, then tools:invoke({ name, args }) to run it. Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.",
+      "capabilities": [
+        "agent_tools:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "bee",
+        "queen",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "sentinel",
+        "overwatch",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor"
+      ],
+      "guidance": {
+        "when": "You know (or just discovered via tools:find) the exact name of a tool that is NOT in your loaded set and you want to call it once — the universal way to reach the long tail of the catalog.",
+        "notWhen": "When the tool IS already in your loaded set / core spine — call it directly (lower overhead, the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a direct call whenever the tool is reachable.",
+        "chaining": "tools:find(\"<intent>\") → take the top hit's name + argSchema → tools:invoke({ name, args: {…} })."
       }
     },
     {
@@ -17358,6 +18526,28 @@
       }
     },
     {
+      "name": "trust:comms",
+      "http": {
+        "path": "/api/agent-tools/trust/comms",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Owner: per-user COMMS-TRUST tiers (observe<message<wake<steer) — what a hive member's agents may do to YOUR agents across machines. Below 'message': quarantined; below 'wake': delivered but never re-invoked; 'steer': unlocks handoffs. Actions: set{githubUserId,tier,note?,expiresAtMs?} | remove | list | gate{githubUserId,granted} (DG-4 gate-trust, separable) | requests{githubUserId?} (quarantined messages) | grant{githubUserId,tier?} (one-call: raise tier + clear backlog). Local-only, never federated, audited; overrides hive policy comms.defaultTier per user.",
+      "capabilities": [
+        "audit:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Granting/downgrading a member's reach: 'wake' lets their queen re-invoke your bees; 'steer' for handoffs; 'observe' mutes a noisy member below the policy default. expiresAtMs makes a grant probationary. action:'gate' (P-047) grants/revokes gate-trust (do their shard verdicts count toward green?) — separable from steer. action:'requests' surfaces a below-tier member's quarantined messages; action:'grant' is the one-call approve for that queue.",
+        "notWhen": "Auto-RUN of their verified work — trust:add. The hive-wide DEFAULT tier — author comms.defaultTier. A plain tier bump with no backlog to clear — action:'set' suffices; 'grant' only helps when there IS a quarantine backlog to drain.",
+        "chaining": "{action:'requests'} → {action:'grant', githubUserId, tier:'message'} (or {action:'set', tier:'wake'} to bump only) — picked up within ~30s. {action:'gate', granted:true} → DG-5 counts their verdicts next round."
+      }
+    },
+    {
       "name": "trust:list",
       "http": {
         "path": "/api/agent-tools/trust/list",
@@ -17599,6 +18789,29 @@
         "when": "Manage the voice-channel registry — list what channels exist, create one before joining it, or remove a stale one.",
         "notWhen": "To enter/exit a channel use `voice:join` / `voice:leave`; for who's in a channel right now use `voice:status`.",
         "chaining": "voice:channels {op:'create'} → voice:join {channel} → voice:status."
+      }
+    },
+    {
+      "name": "voice:delegate_deep",
+      "http": {
+        "path": "/api/agent-tools/voice/delegate_deep",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Delegate a HARD-THINKING question (analysis/research/deep comparison) to an ephemeral background agent. The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "sentinel",
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user asked something that needs REAL investigation (minutes of reading code/state/docs) and expects an ANSWER back in conversation. Delegate it, voice:say a short ack (\"digging into that — I'll come back to you\"), and stay responsive. When the [deep-answer WI-NNN] message arrives in your pane, present it: voice:say the speakable core + show the detail.",
+        "notWhen": "Trivia you can answer now (just answer). Buildable WORK (\"build X\", \"fix Y\") — that's a Queen handoff, not a deep dive. More than 2 in flight — the tool refuses; tell the user one is already cooking.",
+        "chaining": "voice:delegate_deep { question } → voice:say the ack → (later) the [deep-answer] arrives as pane input → voice:say the answer. Check progress via work_items:get on the returned workItemId."
       }
     },
     {
@@ -17888,7 +19101,7 @@
           "POST"
         ]
       },
-      "description": "Self-select: atomically claim the OLDEST unclaimed work-item in a harness (tuple-space `in` via SKIP LOCKED + work-stealing). Competing agents never double-claim. Returns the claimed item or null.",
+      "description": "Self-select: atomically claim the OLDEST unclaimed work-item in a harness (tuple-space `in` via SKIP LOCKED + work-stealing). Competing agents never double-claim. Returns the claimed item, or on a miss a SELF-DESCRIBING result: `{ ok:false, drained, pendingUnclaimed, readyUnclaimed, error }`. drained:true ⇒ the queue is genuinely empty (idle is correct); drained:false ⇒ unclaimed items EXIST but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-raced) — do NOT idle.",
       "capabilities": [
         "work_items:write"
       ],
@@ -17910,8 +19123,8 @@
       "profile": "engineer",
       "guidance": {
         "when": "You are an idle agent picking up work — prefer this self-selection over waiting to be assigned. Returns the oldest claimable feature-family item, now yours.",
-        "notWhen": "When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception).",
-        "chaining": "work_items:claim_next → work_items:set_state → work_items:release."
+        "notWhen": "When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).",
+        "chaining": "work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained."
       }
     },
     {
@@ -18045,9 +19258,42 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. Finish several at once via items:[…].",
-        "notWhen": "For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
-        "chaining": "work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read each returned `reflect` step (self-learning loop): if any friction marker bit you, file it once via improvements:capture — else capture nothing."
+        "when": "You finished work-item(s) / plan-item(s) / brief(s). Fill the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it. To CLOSE the item, pass a terminal top-level `state` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') — `completion.status` alone records the completion but does NOT change state, so the item stays claimable + reclaimable (you get a `stateWarning` when it does). Finish several at once via items:[…].",
+        "notWhen": "For a contextual aside (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
+        "chaining": "work_items:claim → … → work_items:complete { id, completion }. Auto-emits to coord:inbox (no coord:send needed). Read the returned `reflect` step (self-learning loop): file a friction marker via improvements:capture if one bit you, else nothing."
+      }
+    },
+    {
+      "name": "work_items:completion_stats",
+      "http": {
+        "path": "/api/agent-tools/work_items/completion_stats",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Genuine-completions metric for one harness: terminalTotal (every done/closed work-item, both families) vs genuineCompletions (terminal AND carrying both an owner and a completion_ref — the only rows the completion-integrity gate would accept without a skip) vs dedupOrUnverified (the difference — watchdog/hygiene/revert dedup flips, or pre-gate historical rows).",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Reporting progress on a harness and the question is \"how much REAL work landed\", not just the raw done/closed count — a watchdog dedup sweep or hygiene close inflates the raw terminal count without any owner doing the work.",
+        "notWhen": "Per-item detail — that is work_items:get. A live roster of who is doing what — that is fleet:status / fleet:assignments."
       }
     },
     {
@@ -18593,7 +19839,7 @@
           "POST"
         ]
       },
-      "description": "The Queen's steer-don't-dispatch lever: set one OR many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }. Many: items:[{ workItem, priority?, position?, harness?, decision? }]. Each item: set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder (one bee's already-claimed work-list). Returns { ok, results:[{ ok, workItem, mode, … | error }], counts } — correlate by workItem.",
+      "description": "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal or issue-family item returns ok:true but writes nothing. ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -18614,9 +19860,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are the Queen steering the SHARED backlog (read curation:change-feed + work_items:list): promote/demote what the fleet claims next — position:'top'/'bottom' for most/least urgent, or an explicit integer; reprioritize several at once via items:[…]. In a multi-Swarm Hive only the steering-lease holder commits; a non-holder's set returns proposed:true (recorded for the holding Queen to dispose; local placement is unaffected).",
-        "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only.",
-        "chaining": "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first."
+        "when": "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
+        "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only. To DEPRIORITIZE, don't use this — see the EI-6835 warning above.",
+        "chaining": "work_items:list (the backlog) → set_priority { workItem, position:'top' } → the next claim_next pulls it first."
       }
     },
     {
