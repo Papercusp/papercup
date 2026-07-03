@@ -182,10 +182,23 @@ export function verifyEliteOutcome(record: EliteOutcomeRecord): boolean {
  *   1. shape + signature valid (`verifyEliteOutcome`);
  *   2. the SIGNED outcome clears the D-002 bar (`federatableOutcome`);
  *   3. the record BINDS to this elite: niche_key + candidate_id match;
- *   4. ANTI-SPOOF: the signer device == the receiver-stamped source of the
- *      federating log (`expectedDevicePubkey`) — so a record cannot be lifted off
- *      one peer's elite and replayed by another. When the caller cannot supply the
- *      source device (diagnostics), pass undefined to skip only check 4.
+ *   4. ANTI-SPOOF (anti-lift): the signer device == the DEVICE that owns the
+ *      relaying source log — so a record cannot be lifted off one peer's elite
+ *      and replayed by another;
+ *   5. MEMBERSHIP (optional seam, mirrors projections/gate-verdicts.ts): the
+ *      signer device is an ADMITTED hive member — a valid signature from an
+ *      un-admitted device is NOT eligibility.
+ *
+ * IDENTITY NOTE — the wiring MUST resolve the device, not pass the log key. The
+ * substrate stamps a remote op's `provenance.authorPubkey` with the receiver-side
+ * SOURCE LOG KEY (`sourceLogKeyHex`), which is the hypercore LOG key, NOT a device
+ * identity. Resolve the signer device via boot.ts `admittedIdentities`:
+ *   `expectedSignerDevice = admittedIdentities.get(sourceLogKeyHex)?.devicePubkey`
+ * and pass THAT (the device that owns the relaying log). Passing the raw
+ * `provenance.authorPubkey` (a log key) would compare a device key to a log key
+ * and always fail. When the caller cannot resolve the device (diagnostics), omit
+ * `expectedSignerDevice` to skip only check 4.
+ *
  * Returns true ⇒ this elite's outcome is DEVICE-VERIFIED eligible.
  */
 export function verifyEliteOutcomeForElite(
@@ -193,8 +206,20 @@ export function verifyEliteOutcomeForElite(
   expected: {
     nicheKey: string;
     candidateId: string;
-    /** The receiver-stamped source device (provenance.authorPubkey). */
-    expectedDevicePubkey?: string;
+    /**
+     * The DEVICE pubkey that owns the relaying source log — resolved via
+     * `admittedIdentities.get(sourceLogKeyHex).devicePubkey`, NOT the raw
+     * `provenance.authorPubkey` (which is the LOG key). Omit to skip the anti-lift
+     * check (diagnostics only).
+     */
+    expectedSignerDevice?: string;
+    /**
+     * Membership seam (mirrors gate-verdicts' `resolveMembership`): returns true
+     * iff the signer device is an admitted hive member. When provided, a
+     * non-member signer fails. Omit to skip the membership check (e.g. tier-1
+     * pre-admission diagnostics).
+     */
+    isSignerAdmitted?: (devicePubkey: string) => boolean;
   },
 ): boolean {
   if (!isEliteOutcomeRecord(record)) return false;
@@ -202,7 +227,10 @@ export function verifyEliteOutcomeForElite(
   if (!federatableOutcome(record)) return false;
   if (record.niche_key !== expected.nicheKey) return false;
   if (record.candidate_id !== expected.candidateId) return false;
-  if (expected.expectedDevicePubkey !== undefined && record.device_pubkey !== expected.expectedDevicePubkey) {
+  if (expected.expectedSignerDevice !== undefined && record.device_pubkey !== expected.expectedSignerDevice) {
+    return false;
+  }
+  if (expected.isSignerAdmitted !== undefined && !expected.isSignerAdmitted(record.device_pubkey)) {
     return false;
   }
   return true;

@@ -101,7 +101,6 @@ async function main() {
   }
   const slug = slugify(args.name);
   const reservedBy = args.by || process.env.USER || process.env.LOGNAME || 'cli';
-  const fsMax = maxNumberOnDisk(SCAN_DIRS);
 
   const postgres = (await import('postgres')).default;
   const sql = postgres(resolvePgUrl(), {
@@ -114,6 +113,13 @@ async function main() {
   try {
     const allocated = await sql.begin(async (tx) => {
       await tx`SELECT pg_advisory_xact_lock(${ALLOC_ADVISORY_KEY})`;
+      // EI-6852: scan the filesystem max INSIDE the advisory lock, immediately
+      // before the reservation insert — NOT before acquiring the lock. Reading
+      // fsMax outside the lock left a TOCTOU window during which a concurrent
+      // agent could write a higher-numbered NNN-*.sql to disk; the stale fsMax
+      // then failed to fold it in and the CLI handed out an already-used
+      // number. Mirrors the fix in next_migration.ts (the shared contract).
+      const fsMax = maxNumberOnDisk(SCAN_DIRS);
       const rows = await tx`
         SELECT GREATEST(
                  ${fsMax},

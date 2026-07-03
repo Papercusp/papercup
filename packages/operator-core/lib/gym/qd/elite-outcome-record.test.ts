@@ -110,7 +110,7 @@ describe('verifyEliteOutcomeForElite — receive-side binding + anti-spoof', () 
 
   it('a valid record bound to its elite + signed by the source device is verified', async () => {
     const rec = await mkRecord();
-    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedDevicePubkey: kp.pubkeyBase64 })).toBe(true);
+    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedSignerDevice: kp.pubkeyBase64 })).toBe(true);
   });
 
   it('rejects a record whose niche/candidate does not match the elite (replay guard)', async () => {
@@ -119,20 +119,30 @@ describe('verifyEliteOutcomeForElite — receive-side binding + anti-spoof', () 
     expect(verifyEliteOutcomeForElite(rec, { nicheKey: bind.nicheKey, candidateId: 'cand-other' })).toBe(false);
   });
 
-  it('ANTI-SPOOF: rejects when the signer device != the receiver-stamped source', async () => {
+  it('ANTI-SPOOF: rejects when the signer device != the relaying-log device', async () => {
     const rec = await mkRecord();
-    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedDevicePubkey: 'some-other-source-device' })).toBe(false);
+    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedSignerDevice: 'some-other-source-device' })).toBe(false);
   });
 
-  it('skips the anti-spoof check only when no source device is supplied', async () => {
+  it('skips the anti-spoof check only when no signer device is supplied', async () => {
     const rec = await mkRecord();
     expect(verifyEliteOutcomeForElite(rec, bind)).toBe(true);
+  });
+
+  it('MEMBERSHIP seam: rejects a valid signature from an UN-ADMITTED device; calls it with the signer', async () => {
+    const rec = await mkRecord();
+    const seen: string[] = [];
+    expect(
+      verifyEliteOutcomeForElite(rec, { ...bind, isSignerAdmitted: (d) => (seen.push(d), true) }),
+    ).toBe(true);
+    expect(seen).toEqual([kp.pubkeyBase64]);
+    expect(verifyEliteOutcomeForElite(rec, { ...bind, isSignerAdmitted: () => false })).toBe(false);
   });
 
   it('rejects a signed-but-INELIGIBLE outcome (device signed graded:2)', async () => {
     const rec = await mkRecord({ outcome: 'graded', grade: 2 });
     expect(verifyEliteOutcome(rec)).toBe(true); // the signature itself is valid
-    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedDevicePubkey: kp.pubkeyBase64 })).toBe(false); // but not eligible
+    expect(verifyEliteOutcomeForElite(rec, { ...bind, expectedSignerDevice: kp.pubkeyBase64 })).toBe(false); // but not eligible
   });
 
   it('rejects a non-record / bad signature', async () => {

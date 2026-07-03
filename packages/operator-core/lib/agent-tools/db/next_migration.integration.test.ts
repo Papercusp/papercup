@@ -63,7 +63,7 @@ vi.mock('../../migration-drift', async () => {
 });
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
-const { default: tool } = await import('./next_migration');
+const { default: tool, ALLOC_ADVISORY_KEY } = await import('./next_migration');
 
 // Superuser ctx so resolveAgentIdentity attributes the reservation without mocking.
 const CTX = { isSuperuser: true, uiClientId: 'a1-alloc-test-client' } as never;
@@ -195,5 +195,53 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(typeof out.number).toBe('number');
     // Attributed to the superuser fallback identity, not an anonymous/empty owner.
     expect(out.reserved_by).toMatch(/^su · /);
+  });
+
+  it('EI-6852: the filesystem max is read INSIDE the advisory lock — a peer file written DURING the lock window is still respected (no stale-fsMax TOCTOU collision)', async () => {
+    // Reproduce the reported race: a concurrent agent writes a higher-numbered
+    // NNN-*.sql AFTER this call would have read its fsMax but BEFORE it inserts
+    // its reservation. We force that window by holding the allocator's advisory
+    // lock on a side connection while the tool is mid-call, writing a late file,
+    // then releasing.
+    //   Pre-fix: fsMax was read synchronously BEFORE `sql.begin` (before the
+    //   lock), so it was stale by the time the reservation landed and the tool
+    //   handed out an already-used-on-disk number (503 here — missing the 900).
+    //   Post-fix: fsMax is scanned UNDER the lock, immediately before the
+    //   insert, so the late 900 file is folded in → 901.
+    let releaseLock!: () => void;
+    const lockReleased = new Promise<void>((r) => {
+      releaseLock = r;
+    });
+    let markAcquired!: () => void;
+    const lockAcquired = new Promise<void>((r) => {
+      markAcquired = r;
+    });
+    // Hold the allocator advisory lock on a side connection — a stand-in for a
+    // peer allocation that is mid-reservation. The xact lock is held until the
+    // begin() callback resolves (i.e. until we release it below).
+    const holderDone = rootSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(${ALLOC_ADVISORY_KEY})`;
+      markAcquired();
+      await lockReleased;
+    });
+    await lockAcquired;
+
+    // Start the allocation — it blocks on the advisory lock. (Pre-fix it has
+    // already captured its stale fsMax synchronously before this point.)
+    const toolPromise = allocate();
+    // Give the tool time to reach and block on the lock.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // A peer writes a much-higher-numbered migration DURING the lock window —
+    // after the tool started, before its reservation lands.
+    writeFileSync(join(h.sqlDir, '900-written-during-lock.sql'), '-- late peer file');
+
+    // Release the held lock → the tool proceeds and must now observe the 900 file.
+    releaseLock();
+    await holderDone;
+
+    const r = await toolPromise;
+    expect(r.ok).toBe(true);
+    expect(r.number).toBe(901); // GREATEST(fsMax 900 via the late file, reserved 502, applied 400) + 1
   });
 });

@@ -31,7 +31,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 
 // Fixed advisory-lock key for migration-number allocation — serialises
 // concurrent db:next-migration calls across connections/processes.
-const ALLOC_ADVISORY_KEY = 873_135;
+// Exported so the regression test can hold it to reproduce the fsMax TOCTOU
+// window (EI-6852). Must match scripts/next-migration.mjs.
+export const ALLOC_ADVISORY_KEY = 873_135;
 
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -111,15 +113,24 @@ export default defineTool({
     if (sqlDirs.length === 0)
       return json({ ok: false, error: 'sql dir (libs/papercusp/libs/db/sql) not found' });
 
-    const fsMax = maxNumberOnDisk(sqlDirs);
     const { ownerLabel } = resolveAgentIdentity(ctx);
     const slug = slugify(args.name ?? '');
     const { sql } = getOrgPg();
 
     const allocated = await sql.begin(async (tx) => {
       // Serialise concurrent allocations — the advisory lock is held for the
-      // txn, so the read-compute-insert below is atomic across callers.
+      // txn, so the scan-read-compute-insert below is atomic across callers.
       await tx`SELECT pg_advisory_xact_lock(${ALLOC_ADVISORY_KEY})`;
+      // EI-6852: scan the filesystem max INSIDE the advisory lock, immediately
+      // before the reservation insert — NOT before acquiring the lock. Reading
+      // fsMax before `sql.begin` left a TOCTOU window (the whole pooled-
+      // connection-acquire + advisory-lock-wait duration, which is seconds
+      // under a busy fleet) during which a concurrent agent could write a
+      // higher-numbered NNN-*.sql to disk; the stale fsMax then failed to fold
+      // it in and the tool handed out an already-used number. maxReserved /
+      // maxApplied were already computed under the lock — this closes the last
+      // (filesystem) leg so all three GREATEST inputs are read atomically.
+      const fsMax = maxNumberOnDisk(sqlDirs);
       const rows = await tx<{ next: number }[]>`
         SELECT GREATEST(
                  ${fsMax},

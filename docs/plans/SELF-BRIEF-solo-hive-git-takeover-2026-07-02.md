@@ -283,3 +283,50 @@ widening test against GrantBackedScopeRoster.
 
 Discipline: tsc grep MY files only (~333 baseline); no git ops; migration via db:migrate
 runner; tests colocated `<name>.test.ts` vitest.
+
+## P-101 BUILD LEDGER — 2026-07-03 ~12:15Z (su-16e4c, modules 1–4 of 8 DONE)
+Design section above is the spec. **Migration is 476 NOT 475** (475-spawned-agents-fleet-slug
+got taken). WRITTEN so far (none verified yet — no tsc, no tests, migration NOT applied):
+1. ✅ `libs/papercusp/libs/db/sql/476-p2p-fleet-directory.sql` — table + PK(ws,hive,owner,slug)
+   + generated `fleet_dir_fed_key` + INSERT/DELETE capture('fleet_dir_fed_key') + content-gated
+   UPDATE capture + stamp trigger + RLS (mig-317 shape).
+2. ✅ `packages/operator-core/lib/p2p/fleet-directory-schema.ts` — FleetDirectoryRecord (closed
+   schema, coerceFleetDirectoryRecord), FLEET_DIRECTORY_SIG_DOMAIN='papercusp-fleet-directory-v1',
+   canonicalFleetRecordJson (authority canonicalJson), fleetDirectorySignedBytes (domain\nws\nhive\nversion\njson),
+   parseFleetRecordJson (fail-closed), fleetDirFedKey, DEFAULT_FLEET_BILLING='host-pays'.
+3. ✅ `packages/operator-core/lib/p2p/fleet-directory.ts` — getFleetRecord/listFleetRecords,
+   putFleetRecord (self=owner gate + monotone recordVersion + injected FleetRecordSigner{pubkey,sign}),
+   forceArchiveFleet (hive signer, H10), PgFleetDirectory (scopeMembers null-when-absent/archived,
+   resolvePublisherSet → P-102 PublisherSet w/ re-verify + revoked-skip + ownerAnchored,
+   listParticipatingScopes). Uses resolveP2pGrantWorkspace, listHiveMembers, loadRevokedHivePubkeys.
+4. ✅ `packages/operator-core/lib/sync/hyperbee/projections/fleet-directory.ts` — tableTag
+   'p2p-fleet-directory', skipOwnOps, realVerifyFleetDirectory (no-cuckoo check + attested-device
+   path + H10 hive-key-only-if-archived path, fresh membership reads), injectable verifyRecord,
+   LWW put/delete guards, _testing export. composeKey = fleetDirFedKey.
+
+REMAINING (5–8 + verify):
+5. feature-issue-op-keys.ts: table map entry `p2p_fleet_directory: 'p2p-fleet-directory'`
+   (~line 95-135) + `toFleetDirectoryValue(row)` near toHivePolicyValue (~547) + switch case
+   (~870-905, copy hive_policy case). Wire row fields: harness_slug, owner_github_user_id (Number()),
+   fleet_slug, record_json, signer_device_pubkey, signature, record_version (Number()), archived (bool).
+6. register-all.ts: import buildFleetDirectoryProjection (~line 52 area), add to hiveScoped list
+   (entry 'p2p-fleet-directory', mirror 'hive-policy' entry line ~179 + spread ~220/~250-263).
+7. boot.ts driver ~2871: before `ensureOwnScopes([...participatingScopes.values()])`, best-effort
+   union PgFleetDirectory({workspaceId, hiveSlug: rosterHiveSlug}).listParticipatingScopes(identity
+   githubUserId) into participatingScopes (key = formatScopeId). rosterHiveSlug = hiveHomeProjectionSlug
+   ?? opts.harnessSlug (already computed ~2849 for getScopeRoster). Also wire directory: getScopeRoster({...,
+   directory: new PgFleetDirectory(...)}). Sidecar RPC: substrate:ensureScopeParticipation +
+   substrate:rediscloseScopes handlers in substrate-sidecar-host.ts → real handle methods (boot.ts
+   3068-3076); remote-booted-harness.ts:207-229 proxy forwards instead of no-op (79eda msg mr4v35od);
+   also fake-booted-handle.ts if it has the no-ops.
+8. Tests (colocated vitest): fleet-directory-schema.test.ts (pure); fleet-directory.test.ts
+   (sqlOverride fake-sql or skip store, focus PgFleetDirectory logic w/ stubbed sql);
+   projections/fleet-directory.test.ts MIRROR projections/hive-policy.test.ts (read it first!) —
+   teeth test (neutered verifier applies forged = proves gate load-bearing), forged-signer drop,
+   wrong-owner/cuckoo drop, hive-owner-archive accept + hive-owner-LIVE-record REFUSE, LWW guards.
+   Widening test: GrantBackedScopeRoster + PgFleetDirectory (mock sql) → members = owner ∪ publishers.
+VERIFY: npx tsc --noEmit -p packages/operator-core (grep MY files only, ~333 baseline); npx vitest run
+<my test files>; db:migrate MCP tool (applies 476) THEN node libs/papercusp/libs/db/scripts/pull-schema.mjs;
+tools-md-sync NOT needed (no tool added). DONE-CHECK vs item text: H5 structural ✓, H10 successor field
++ force-archive ✓, H16 rate-cap/TTL fields ✓, owner-signed publisher set ✓, hive-browsable card
+(listFleetRecords) ✓, billing default ✓. Then plans_set-status P-101 done + WI-1732 complete + notify fleet.
