@@ -111,10 +111,26 @@ describe('loop surface round-trip (real PG)', () => {
       intervalSec: 300,
       parked: false,
       costCapCents: 1000,
+      carry: 'warm', // default lifecycle (su-cold-auto P-008)
+      fireCount: 0, // never fired
     });
     expect(status!.nextFireAt).toBe(new Date(now.getTime() + 300_000).toISOString());
 
     expect(await getLoopStatus('su-nobody', { sql })).toBeNull();
+  });
+
+  it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      carry: 'cold',
+      sql,
+    });
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status).toMatchObject({ carry: 'cold', fireCount: 0 });
   });
 
   it("getLoopStatus reports parked=true (and nextFireAt=null) when the loop is in-flight ('infinity')", async () => {

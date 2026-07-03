@@ -21,6 +21,15 @@ export interface HivePolicyRate {
   opsPerMin?: number;
   rowsPerHour?: number;
   prsPerDay?: number;
+  /**
+   * F1-6/P-014 (federated-scout-gym, D-005 hole 3): max federated QD elite puts one
+   * source may land in ONE niche per hour. The per-niche axis the `rowsPerHour` cap
+   * can't express — it bounds a source's TOTAL elite volume, not concentration on a
+   * single locally-empty niche (the novelty-gift FARM vector, since descriptor/niche
+   * classification is author-side). Enforced by EliteNicheRateLimiter. Absent ⇒ no
+   * per-niche cap (tier-1 backward-compatible).
+   */
+  elitesPerNichePerHour?: number;
 }
 
 /** Membership admission mode (EN-3 P-MEMBER). Absent ⇒ 'open' (today's behavior). */
@@ -187,7 +196,7 @@ export function coerceHivePolicyInput(
       return { ok: false, error: 'policy.rate must be an object' };
     }
     const r = p.rate as Record<string, unknown>;
-    for (const k of ['opsPerMin', 'rowsPerHour', 'prsPerDay'] as const) {
+    for (const k of ['opsPerMin', 'rowsPerHour', 'prsPerDay', 'elitesPerNichePerHour'] as const) {
       if (r[k] !== undefined && (typeof r[k] !== 'number' || !Number.isFinite(r[k]) || (r[k] as number) < 0)) {
         return { ok: false, error: `policy.rate.${k} must be a non-negative number` };
       }

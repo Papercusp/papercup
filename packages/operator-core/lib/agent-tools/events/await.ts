@@ -25,12 +25,14 @@ export default defineTool({
   description:
     'Register a one-shot WAKE subscription on an exact event key (e.g. lock:grant:<ticket>, plan-run:finished:<id>, or any key a source/peer will events:emit) — the named sugar for watch(key,{wake:true,once:true}). When it fires you are re-invoked — a live managed-pty session gets the wake injected as a turn; an exited session is resumed with the wake reason as the prompt; an open terminal we cannot inject gets an inbox nudge and is resumed when it exits. Then END YOUR TURN — do not poll or hold the connection.',
   guidance: {
-    when: 'You need X-to-happen-before-you-proceed and X is announced as an event: a lock grant, a plan-run finishing, a peer answering, CI/deploy landing, a custom key a collaborator will emit. Register, optionally tell the emitter the key, then end your turn and sleep.',
+    when: 'You need X-to-happen-before-you-proceed and X is announced as an event: a lock grant, a plan-run finishing, a peer answering, CI/deploy landing, a custom key a collaborator will emit. If you catch yourself about to POLL (dev:pipeline_position, dev:build_status, re-reading a peer\'s status) — STOP and check events:catalog first: the thing you\'re polling for almost certainly already fires an awaitable key. Register, optionally tell the emitter the key, then end your turn and sleep.',
     notWhen:
-      'Ambient interest in an area — that is topics:subscribe (notify; never wakes). Sub-minute waits inside one turn — just do the bounded blocking call. Recurring schedules — the pot/routines own time-based wakes; an await is ONE-shot.',
+      'Ambient interest in an area — that is topics:subscribe (notify; never wakes). Sub-minute waits inside one turn — just do the bounded blocking call. Recurring schedules — the pot/routines own time-based wakes; an await is ONE-shot. For the COMMON waits there is a named sugar verb that builds the key for you — prefer it: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining:
-      'events:await { event } → end your turn. On wake, the turn text carries the event + payload — continue the blocked work. events:cancel to retract; events:status to inspect your active awaits + recent wakes.',
+      'events:catalog (find the key) → events:await { event } (or a sugar verb) → end your turn. On wake, the turn text carries the event + payload — continue the blocked work. events:cancel to retract; events:status to inspect your active awaits + recent wakes.',
     seeAlso: [
+      'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',
+      'deploy:await / work-item:await / … (named sugar for the common waits — build the key for you)',
       'events:emit (the counterpart — fire the event a peer awaits)',
       'events:cancel (retract a pending await)',
       'watch:create (a standing watch instead of a one-shot await)',

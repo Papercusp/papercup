@@ -21,7 +21,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES, type ToolContext } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
@@ -47,7 +47,7 @@ const timeoutArg = z
  * the same primitive. Returns the registered keys + a resume advice line.
  */
 async function armAwaits(
-  ctx: ToolContext,
+  ctx: Parameters<typeof resolveAgentIdentity>[0],
   keys: string[],
   note: string,
   timeoutSec: number | undefined,

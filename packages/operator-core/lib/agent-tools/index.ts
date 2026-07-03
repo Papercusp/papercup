@@ -967,6 +967,10 @@ import './events/status';
 // catalog ("what can I wait on instead of polling?"), rendered from the SSOT
 // registry events/await/catalog.ts.
 import './events/catalog';
+// P-003 — thin named sugar verbs (deploy:await / checkpoint:await / work-item:await
+// / service:await-up / git-sync:await / plan-item:await / fleet:await-drained) that
+// resolve to events:await, sourcing key shapes from the catalog (D-002/D-005).
+import './events/sugar';
 
 // event-reaction-system-2026-06-04 — the declarative "when tool X settles, fire
 // tool Y" layer over the dispatcher. Importing this registers the built-in
