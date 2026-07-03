@@ -119,7 +119,7 @@ export default defineTool({
   // definePrincipalGatedTool drops them (never copied to the def, never
   // enforced); the all-roles lists + quotas formerly here were dead inputs
   // (memory-taxonomy-and-debt-followups P-004).
-  // WI-…: normalise a mis-used `kind` (a legacy kind, a free-form label, or missing)
+  // WI-1982: normalise a mis-used `kind` (a legacy kind, a free-form label, or missing)
   // to the closest valid enum member BEFORE validation, so a durable fact is never
   // rejected+LOST on the enum. `content` is untouched (a genuinely-missing fact must
   // still fail — the double-encoded-args class is a separate dispatch-layer fix).

@@ -250,6 +250,7 @@ beforeEach(() => {
   shortcutHandlers.clear();
   localStorage.clear();
   invalidateSpy.mockClear();
+  hiveShareMeta = null;
   stubProjects();
 });
 
@@ -419,6 +420,17 @@ describe('AdvShell — selector + actions', () => {
     await renderShell();
     expect(screen.getByText('Shared')).toBeTruthy();
     // Per-harness sharing is retired: a non-hive pot gets no Share button.
+    expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
+  });
+
+  it('swaps the Share button for a Shared badge once a hive pot is shared to the directory', async () => {
+    // pot-a is a hive; a public directory listing means it is already shared, so
+    // the header shows a passive Shared badge instead of the Share button
+    // (comb-hive-native-sharing — the badge reads the discovery meta, not the
+    // legacy `is_shared`/shared.json).
+    hiveShareMeta = { found: true, visibility: 'public' };
+    await renderShell();
+    await waitFor(() => expect(screen.getByText('Shared')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
   });
 

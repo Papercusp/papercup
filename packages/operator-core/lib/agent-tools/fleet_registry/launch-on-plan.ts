@@ -89,6 +89,10 @@ export interface MemberLaunchOpts {
    *  DENIED BY DEFAULT for every psu launch (su + role), so a desktop fleet member cannot
    *  fan out unless this is set true. */
   allowSubagents?: boolean;
+  /** P-005 launch-from-seats: the delegated agent_slot template this member
+   *  consumes ('<model>:<effort>:<account>'). Emits `--seat=<ref>`, which the
+   *  psu launcher threads to bootstrap-su for the consumption ledger (mig 487). */
+  seat?: string;
   extraArgs?: string[];
 }
 
@@ -192,6 +196,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
   if (opts.brain) parts.push('--brain');
   if (opts.allowSubagents) parts.push('--allow-subagents');
+  if (opts.seat) parts.push(`--seat=${shq(opts.seat)}`);
   for (const d of opts.addDir ?? []) if (d) parts.push(`--add-dir=${shq(d)}`);
   for (const a of opts.extraArgs ?? []) if (a) parts.push(shq(a));
   return parts.join(' ');
@@ -419,6 +424,18 @@ export default defineTool({
       .describe(
         "psu --allow-subagents (default OFF): opt every member's su session back IN to its own built-in subagent-launch (Task/Agent) tool. Subagents are DENIED BY DEFAULT for every psu launch (owner mandate 2026-07-02), so members CANNOT fan out unless this is true.",
       ),
+    fromSeats: z
+      .boolean()
+      .optional()
+      .describe(
+        "P-005 launch-from-seats (agent-allocation-framework): spawn members that CONSUME the fleet's delegated agent_slot seats (resource:delegate / the /res Agent-seats group). The slot pins model+effort+account (D-002/D-003) — so `model`/`account` must be OMITTED — and the seat COUNT cap is enforced (count > free seats is refused; the N+1th spawn is refused at boot too). Implied by `seat`.",
+      ),
+    seat: z
+      .string()
+      .optional()
+      .describe(
+        "Which delegated slot template to launch from, as its ref '<model>:<effort>:<account>' (e.g. 'opus:xhigh:AUTO'). Required only when the fleet has MORE THAN ONE delegated template; a single template is picked automatically with `fromSeats: true`.",
+      ),
     extraArgs: z
       .array(z.string())
       .optional()
@@ -452,6 +469,16 @@ export default defineTool({
     if ('error' in agentResolution) return err(agentResolution.error);
     const { agent, model: memberModel } = agentResolution;
     const count = args.count ?? 1;
+
+    // P-005 launch-from-seats: the delegated slot pins model+effort+account (D-002/
+    // D-003) — an explicit model/account alongside it would silently contradict the
+    // delegation, so refuse the combination outright.
+    const seatsRequested = Boolean(args.fromSeats || args.seat?.trim());
+    if (seatsRequested && (args.model || args.account)) {
+      return err(
+        'launch-from-seats derives model+effort+account FROM the delegated slot (D-002/D-003) — drop the explicit `model`/`account` args; pass `seat` to pick a template when several are delegated.',
+      );
+    }
 
     // Harness scope: explicit arg, else the session's scope (never the '*' wildcard).
     const ctxSlug = (ctx as { harnessSlug?: string | null }).harnessSlug;
@@ -552,6 +579,41 @@ export default defineTool({
     // launch of this fleet won the window, no-op with a notice instead of spawning again. This
     // covers the BOOT GAP: members just spawned are not yet in presence, so the deficit guard
     // above cannot see them for the first ~1-3 min.
+    // P-005 launch-from-seats: resolve + ENFORCE the delegated seat cap and pin the
+    // member launch to the slot's model:effort + gateway account (D-002/D-003). Placed
+    // BEFORE the launch-slot claim so a seat refusal never burns the relaunch window.
+    // Boot-time consumption (bootstrap-su → consumeSeatAtBoot, mig 487) is the durable
+    // backstop that also refuses the N+1th member mid-race (P-006).
+    let effAgent = agent;
+    let effModel = memberModel;
+    let effAccount = args.account?.trim() || undefined;
+    let seatPin: { ref: string; delegated: number; consumedBefore: number; availableBefore: number } | null = null;
+    if (seatsRequested) {
+      let seatResolution;
+      try {
+        const availability = await seatAvailabilityForFleet({ workspaceId, fleetSlug });
+        seatResolution = resolveSeatLaunch({ availability, count, seatRef: args.seat });
+      } catch (e: any) {
+        return err(`Failed to read fleet \`${fleetSlug}\`'s delegated seats: ${e?.message ?? e}`);
+      }
+      if (!seatResolution.ok) {
+        return err(`[${seatResolution.refusal.code}] ${seatResolution.refusal.detail}`);
+      }
+      // The slot's model rides the SAME agent/model coupling as an explicit arg (a
+      // local/gateway slot model implies the omp backend, etc.).
+      const re = resolveFleetAgent({ argAgent: args.agent, argModel: seatResolution.launch.model, callerAgent, callerModel });
+      if ('error' in re) return err(re.error);
+      effAgent = re.agent;
+      effModel = re.model;
+      effAccount = seatResolution.launch.account;
+      seatPin = {
+        ref: seatResolution.slot.ref,
+        delegated: seatResolution.slot.quantity,
+        consumedBefore: seatResolution.slot.consumed,
+        availableBefore: seatResolution.slot.available,
+      };
+    }
+
     let slot;
     try {
       slot = await claimFleetLaunchSlot({
@@ -581,8 +643,9 @@ export default defineTool({
         leaderRole,
         plan: args.plan,
         harness,
-        agent,
-        account: args.account?.trim() || null,
+        agent: effAgent,
+        account: effAccount ?? null,
+        seats: seatPin ? { ...seatPin, requested: count } : null,
         requested: count,
         sizingAdvisory: null,
         memberBaselineApplied: false,
@@ -653,13 +716,14 @@ export default defineTool({
 
     const command = memberLaunchCommand({
       fleetSlug,
-      agent,
+      agent: effAgent,
       harness,
       plan: args.plan,
-      account: args.account?.trim() || undefined,
+      account: effAccount,
       workspace: args.workspace?.trim() || undefined,
       role: args.role?.trim() || undefined,
-      model: memberModel,
+      model: effModel,
+      seat: seatPin?.ref,
       feature: args.feature?.trim() || undefined,
       launchContext: effectiveLaunchContext,
       profile: args.profile?.trim() || undefined,
@@ -726,6 +790,11 @@ export default defineTool({
       }
     }
     if (opened.length) {
+      if (seatPin) {
+        lines.push(
+          `Seats (P-005): ${opened.length} member${opened.length === 1 ? '' : 's'} launched FROM slot \`${seatPin.ref}\` — ${seatPin.consumedBefore} of ${seatPin.delegated} seat${seatPin.delegated === 1 ? '' : 's'} were already consumed; each member consumes one at boot (the cap re-checks there too).`,
+        );
+      }
       lines.push(
         `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Do NOT ` +
           `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
@@ -758,8 +827,10 @@ export default defineTool({
         autoModeEntered: opened.length > 0,
         plan: args.plan,
         harness,
-        agent,
-        account: args.account?.trim() || null,
+        agent: effAgent,
+        account: effAccount ?? null,
+        // P-005: the seat pin this wave launched from (null = a plain, non-seat launch).
+        seats: seatPin ? { ...seatPin, requested: count, launched: opened.length } : null,
         requested: count,
         sizingAdvisory,
         memberBaselineApplied: baselineApplied,

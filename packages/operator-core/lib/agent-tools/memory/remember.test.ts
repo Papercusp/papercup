@@ -593,14 +593,14 @@ describe('memory:remember — scope isolation (GAP 8)', () => {
 });
 
 /**
- * WI-… — memory:remember rejected ~21% of calls (34/161 in 24h); ~12 were a valid fact
+ * WI-1982 — memory:remember rejected ~21% of calls (34/161 in 24h); ~12 were a valid fact
  * (content present) LOST purely because `kind` was a legacy value (identity/preference/
  * correction), a free-form label (fact/note/technical/…), or missing. We coerce `kind`
  * to the closest valid enum member BEFORE validation so durable knowledge is never
  * dropped on the enum. `content` is deliberately untouched (a genuinely-missing fact
  * still fails — the double-encoded-args class is a separate dispatch-layer fix).
  */
-describe('memory:remember kind coercion (WI-…)', () => {
+describe('memory:remember kind coercion (WI-1982)', () => {
   const parse = (x: unknown) => (remember.args as { parse: (v: unknown) => Record<string, unknown> }).parse(x);
 
   describe('normalizeMemoryKind / coerceMemoryKind (unit)', () => {

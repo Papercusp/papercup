@@ -261,6 +261,58 @@ describe('resource_allotments store (real PG, mig 473)', () => {
     expect(await listResourceAllotments({ workspaceId: 'ws-alloc-m11-empty' }, db.adminSql)).toEqual([]);
   });
 
+  it('agent_slot (mig 486, D-002): set → list round-trips quantity + the DERIVED ref + the axis trio; share-capped rows stay quantity:null', async () => {
+    const workspaceId = 'ws-alloc-slot';
+    const w = await setResourceAllotment(
+      {
+        workspaceId,
+        fleetSlug: 'seat-fleet',
+        resourceKind: 'agent_slot',
+        quantity: 5,
+        axis: { model: 'opus', effort: 'xhigh', account: 'AUTO' },
+        createdByGithubUserId: 4242,
+      },
+      db.adminSql,
+    );
+    expect(w.ok).toBe(true);
+    if (!w.ok) return;
+    // The ref is DERIVED from the trio — a caller never has to (and can't) set it.
+    expect(w.allotment.resourceRef).toBe('opus:xhigh:AUTO');
+    expect(w.allotment.quantity).toBe(5);
+    expect(w.allotment.sharePct).toBe(0); // count-capped, not share-capped
+
+    // Alongside a share-capped account row: quantity stays NULL there (DB CHECK).
+    await setResourceAllotment(spec({ workspaceId, fleetSlug: 'seat-fleet' }), db.adminSql);
+    const rows = await listResourceAllotments({ workspaceId }, db.adminSql);
+    expect(rows).toHaveLength(2);
+    const slot = rows.find((r) => r.resourceKind === 'agent_slot');
+    const acct = rows.find((r) => r.resourceKind === 'account');
+    expect(slot?.quantity).toBe(5);
+    expect(typeof slot?.quantity).toBe('number'); // not the pg int-as-string
+    expect(axisObj(slot?.axis)).toEqual({ model: 'opus', effort: 'xhigh', account: 'AUTO' });
+    expect(acct?.quantity).toBeNull();
+  });
+
+  it('agent_slot upsert: re-delegating the same slot template updates the COUNT in place (one row, D-002)', async () => {
+    const workspaceId = 'ws-alloc-slot-upsert';
+    const slotArgs = {
+      workspaceId,
+      fleetSlug: 'seat-fleet',
+      resourceKind: 'agent_slot' as const,
+      axis: { model: 'sonnet', effort: 'high', account: 'pool-main' },
+    };
+    await setResourceAllotment({ ...slotArgs, quantity: 3 }, db.adminSql);
+    const bumped = await setResourceAllotment({ ...slotArgs, quantity: 9 }, db.adminSql);
+    expect(bumped.ok).toBe(true);
+    if (!bumped.ok) return;
+    expect(bumped.allotment.quantity).toBe(9);
+
+    const rows = await listResourceAllotments({ workspaceId }, db.adminSql);
+    expect(rows).toHaveLength(1); // upsert on the derived (kind, ref) PK — never a second row
+    expect(rows[0].resourceRef).toBe('sonnet:high:pool-main');
+    expect(rows[0].quantity).toBe(9);
+  });
+
   it('list ordering is stable: (fleet_slug, resource_kind, resource_ref)', async () => {
     const workspaceId = 'ws-alloc-order';
     // Insert deliberately out of final order.

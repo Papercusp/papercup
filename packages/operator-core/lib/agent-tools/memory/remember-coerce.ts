@@ -1,5 +1,5 @@
 /**
- * remember-coerce.ts — WI-…: be liberal about memory:remember's `kind`.
+ * remember-coerce.ts — WI-1982: be liberal about memory:remember's `kind`.
  *
  * memory:remember failed ~21% of calls (34/161 in 24h). ~12 of those were a valid
  * fact (content present) REJECTED purely because `kind` was missing or outside the

@@ -30,7 +30,9 @@ interface Body {
   resourceKind?: unknown;
   resourceRef?: unknown;
   sharePct?: unknown;
-  /** agent_slot seats (D-002 count cap) — forwarded as the core's `count`. */
+  /** agent_slot seats (D-002 count cap) — the P-003 UI POSTs `quantity` (the store
+   *  column name); `count` (the D-004 tool arg name) is accepted as an alias. */
+  quantity?: unknown;
   count?: unknown;
   /** agent_slot trio — explicit fields win over axis-carried values in the core. */
   model?: unknown;
@@ -90,7 +92,12 @@ export default defineTool({
         ref: str(body.resourceRef),
         // NaN when absent/non-numeric → the store's invalid_share_pct refusal (account/gpu).
         sharePct: typeof body.sharePct === 'number' ? body.sharePct : undefined,
-        count: typeof body.count === 'number' ? body.count : undefined,
+        count:
+          typeof body.quantity === 'number'
+            ? body.quantity
+            : typeof body.count === 'number'
+              ? body.count
+              : undefined,
         model: str(body.model),
         effort: str(body.effort),
         account: str(body.account),
