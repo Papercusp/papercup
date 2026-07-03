@@ -496,15 +496,34 @@ export default defineTool({
     if (shouldSuppressRelaunch(recentFleetLaunches.get(launchKey), Date.now(), RELAUNCH_SUPPRESS_MS)) {
       const prior = recentFleetLaunches.get(launchKey)!;
       const agoS = Math.max(1, Math.round((Date.now() - prior.at) / 1000));
+      const lines = [
+        `You already lead \`${fleetSlug}\` — ${prior.count} member${prior.count === 1 ? '' : 's'} opened ${agoS}s ago.`,
+        'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
+        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+      ];
+      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      lines.push(
+        'Those members were launched with this MEMBER OPERATING BASELINE (do NOT re-issue or contradict it; a later custom brief still layers below it):',
+      );
+      MEMBER_BASELINE_RULES.forEach((rule, i) => lines.push(`  ${i + 1}. ${rule.head}`));
       return json({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
+        plan: args.plan,
+        harness,
+        agent,
+        account: args.account?.trim() || null,
+        requested: count,
+        sizingAdvisory: null,
+        memberBaselineApplied: false,
+        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
+        memberLaunchContextPath: null,
+        briefReadError: null,
+        opened: [],
+        failed: [],
         relaunchSuppressed: true,
-        message:
-          `You already lead \`${fleetSlug}\` — ${prior.count} member${prior.count === 1 ? '' : 's'} opened ${agoS}s ago. ` +
-          `You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — ` +
-          `re-call only to add another wave once the current members have drained.`,
+        message: lines.join('\n'),
       });
     }
 
@@ -607,7 +626,7 @@ export default defineTool({
     let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
     try {
       const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), { clampArmed: false });
-      sizingAdvisory = buildFleetSizingAdvisory(count, capacity);
+      sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
     } catch {
       sizingAdvisory = null;
     }
