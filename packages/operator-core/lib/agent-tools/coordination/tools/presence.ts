@@ -23,12 +23,12 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen.",
+    "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen. Re-poll cheaply with `since:<etag>` (the `etag` from your last read) — an unchanged roster returns ~100B.",
   guidance: {
     when: 'Before dispatch/handoff: who can take work now, and on what? Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. Pass `owner:<id>` to inspect/wake a specific dead agent.',
     notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).',
     chaining:
-      'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions.',
+      'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions. If you MUST re-poll (no delta channel available), pass since:<the etag from your last read> — an unchanged roster comes back as ~100B { unchanged:true } instead of the full ~20KB payload.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -82,6 +82,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('P-011 Tier-2/3 detail: add each agent\'s `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.'),
+    since: z
+      .string()
+      .optional()
+      .describe('CHEAP UNCHANGED-READ (poll-storm guard): pass the `etag` from your PRIOR coord:presence read. If the roster\'s identity+state (intent / plan / claimed lane / await / fleet membership — NOT liveness) is unchanged, you get back a ~100B `{ unchanged:true, etag, as_of }` instead of the full 20KB roster. Read once, then re-read with `since:<etag>` and only pay the full payload when it actually changed. Liveness (live↔parked, lastActiveSecAgo) is deliberately NOT tracked by the etag — re-read WITHOUT `since:` right before you actually dispatch.'),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
   // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
@@ -120,6 +124,23 @@ export default defineTool({
       ...(args.owner ? { owner: args.owner } : {}),
       ...(detail ? { detail } : {}),
     });
+    // P-006 `since:` short-circuit — if the caller passes the etag from its prior read
+    // and the delta-eligible roster (identity+state) is byte-identical, return a ~100B
+    // stub instead of the full payload. Liveness churn (heartbeat / live↔parked) is
+    // deliberately excluded from the etag (D-005/D-006), so a poll that only wants "did
+    // anything actionable change" stays cheap; a caller about to DISPATCH re-reads
+    // without `since:` to get fresh liveness. An `owner`-targeted read still honors it.
+    if (args.since && args.since === snapshot.etag) {
+      return {
+        data: {
+          unchanged: true,
+          etag: snapshot.etag,
+          as_of: snapshot.as_of,
+          scope: snapshot.scope,
+          note: 'roster identity+state unchanged since your etag; liveness (live↔parked) is not tracked here — re-read without since: before you dispatch',
+        },
+      };
+    }
     // Self-identification overlay (caller-dependent, so applied HERE, after the
     // shared/byte-stable snapshot — never inside it; see self-marker.ts): a
     // top-level `self` names the caller's own ownerId, and `isSelf:true` is

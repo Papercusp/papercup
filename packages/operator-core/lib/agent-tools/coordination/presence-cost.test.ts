@@ -131,6 +131,7 @@ describe('hive-scale snapshot cost (P-012 inline-glance budget)', () => {
       hive: 'papercup-hive',
       summary: { active: rows.length, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 } },
       active: rows.map(toStableRosterRow),
+      etag: 'test-etag',
     };
     const cost = presenceSnapshotCost(snapshot);
     expect(cost.tokens).toBeLessThan(PRESENCE_INLINE_GLANCE_TOKEN_BUDGET);

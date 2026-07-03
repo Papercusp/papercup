@@ -32,6 +32,21 @@ function storagePath(opts: HarnessStoreOpts): string {
   return join(opts.workspaceRoot, '.papercusp', opts.harnessSlug, 'hyperbee');
 }
 
+/**
+ * P-006 §5.1/§5.3: the SCOPED store lives in a SEPARATE Corestore at a sibling
+ * path (`hyperbee-scoped/`), NOT a `.namespace()` of the main store. This is
+ * load-bearing for the fail-closed serve gate: `store.replicate(socket)` serves
+ * every core in ITS OWN `this.cores`/storage via the lazy `ondiscoverykey`
+ * path, so a scoped core sharing the main store would be served to any peer
+ * that knows its key (fail-OPEN). A distinct instance keeps scoped cores out of
+ * the main store's replicate scope entirely — they are served ONLY by the
+ * explicit per-core×connection attach in scope-cores.ts. This store is NEVER
+ * `.replicate()`d.
+ */
+function scopedStoragePath(opts: HarnessStoreOpts): string {
+  return join(opts.workspaceRoot, '.papercusp', opts.harnessSlug, 'hyperbee-scoped');
+}
+
 function cacheKey(opts: HarnessStoreOpts): string {
   return `${opts.workspaceRoot}::${opts.harnessSlug}`;
 }
@@ -88,9 +103,42 @@ export async function closeHarnessStore(opts: HarnessStoreOpts): Promise<void> {
   await store.close();
 }
 
+const scopedStores = new Map<string, Promise<Corestore>>();
+
+/**
+ * The per-harness SCOPED Corestore (P-006 §5.1) — a distinct instance from
+ * {@link getHarnessStore}, lazily created + cached, NEVER `.replicate()`d. See
+ * {@link scopedStoragePath} for why this must not be a namespace of the main
+ * store.
+ */
+export async function getHarnessScopedStore(opts: HarnessStoreOpts): Promise<Corestore> {
+  const key = cacheKey(opts);
+  const cached = scopedStores.get(key);
+  if (cached) return cached;
+  const path = scopedStoragePath(opts);
+  const pending = (async () => {
+    await mkdir(path, { recursive: true });
+    const store = new Corestore(path, { cache: resolveCacheBlocks() });
+    await store.ready();
+    return store;
+  })();
+  scopedStores.set(key, pending);
+  return pending;
+}
+
+export async function closeHarnessScopedStore(opts: HarnessStoreOpts): Promise<void> {
+  const key = cacheKey(opts);
+  const cached = scopedStores.get(key);
+  if (!cached) return;
+  scopedStores.delete(key);
+  const store = await cached;
+  await store.close();
+}
+
 /** For tests: forget all cached stores without closing them. */
 export function _resetCacheForTests(): void {
   stores.clear();
+  scopedStores.clear();
 }
 
 /**

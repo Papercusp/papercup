@@ -5,7 +5,68 @@
  * live-verify (the store is a thin tagged-template layer over one table).
  */
 import { describe, expect, it } from 'vitest';
-import { renderFactsFold, validateFactScope, type AgentFact } from './store';
+import type { Sql } from 'postgres';
+import {
+  assertFact,
+  renderFactsFold,
+  resolveFederationWorkspace,
+  validateFactScope,
+  type AgentFact,
+} from './store';
+
+describe('resolveFederationWorkspace (F1-4 / WI-1564)', () => {
+  it('returns the workspace when it federates', () => {
+    expect(resolveFederationWorkspace('papercusp-workspace')).toBe('papercusp-workspace');
+    expect(resolveFederationWorkspace('  oddsmith-ws  ')).toBe('oddsmith-ws');
+  });
+
+  it('returns undefined for the non-federating coordination / wildcard / empty partitions', () => {
+    expect(resolveFederationWorkspace('default')).toBeUndefined(); // DEFAULT_COORD_WORKSPACE
+    expect(resolveFederationWorkspace('*')).toBeUndefined();
+    expect(resolveFederationWorkspace('')).toBeUndefined();
+    expect(resolveFederationWorkspace('   ')).toBeUndefined();
+    expect(resolveFederationWorkspace(null)).toBeUndefined();
+    expect(resolveFederationWorkspace(undefined)).toBeUndefined();
+  });
+});
+
+describe('assertFact WI-1564 stranding guard (F1-4)', () => {
+  // A stub that throws if the SQL layer is ever reached — proves whether the
+  // guard refuses BEFORE any write (a refused shareable assert must never touch
+  // the table) vs. lets a private assert through to SQL.
+  const failSql = (() => {
+    throw new Error('SQL SHOULD NOT BE REACHED — the WI-1564 guard must refuse first');
+  }) as unknown as Sql;
+
+  it('refuses a SHAREABLE fact on the non-federating coordination partition (loud, not stranded)', async () => {
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', shareable: true, workspaceId: 'default' },
+        failSql,
+      ),
+    ).rejects.toThrow(/WI-1564/);
+  });
+
+  it('refuses a shareable fact whose workspace resolves to the wildcard partition', async () => {
+    await expect(
+      assertFact(
+        { scope: 'role', scopeRef: 'queen', key: 'k', body: 'b', createdBy: 'su-test', shareable: true, workspaceId: '*' },
+        failSql,
+      ),
+    ).rejects.toThrow(/never federates/);
+  });
+
+  it('lets a hive-PRIVATE fact through the guard on any partition (reaches SQL)', async () => {
+    // shareable !== true ⇒ never rides the wire ⇒ the coordination partition is
+    // fine; the assert must get PAST the guard (and hit the failSql stub).
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'default' },
+        failSql,
+      ),
+    ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
+  });
+});
 
 describe('validateFactScope (D-001 scoping)', () => {
   it('workspace scope is global — carries NO ref', () => {

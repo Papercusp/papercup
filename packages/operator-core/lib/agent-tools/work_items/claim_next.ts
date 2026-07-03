@@ -67,6 +67,13 @@ export default defineTool({
     // Swarms via work_items:claim_replica, not an exactly-once claim. Flag OFF ⇒ omitted.
     const excludeRedundant = workItemRedundancyEnabled();
 
+    // EI-6480: when claimOne claims a row locally but LOSES the per-Hive authority lease, the
+    // item is released back to the pool yet the lease-arbitration loss is invisible to the miss
+    // diagnosis — which then misreports it as a peer race ("retry"). A stale lease surviving a
+    // non-terminal release (the reaper / issue-requeue path) keeps the item reading as unclaimed
+    // while it fails arbitration for everyone but its dead prior owner. Capture the last such loss
+    // so missResult can name it truthfully. Observability ONLY — no claim/release-semantics change.
+    let lastLeaseLoss: { id: string } | null = null;
     /** One race-free claim (the existing path) incl. the cross-Swarm lease arbitration.
      *  Returns the claimed item, or null when nothing was (or could be) claimed. */
     const claimOne = async () => {
@@ -87,6 +94,7 @@ export default defineTool({
         const leased = await leaseClaimedWorkItem({ harness: args.harness, workItemId: wi.id, owner: assignee });
         if (!leased) {
           await releaseWorkItem(wi.id, { harness: args.harness });
+          lastLeaseLoss = { id: wi.id }; // EI-6480: record the arbitration loss for a truthful miss
           return null;
         }
       }
@@ -109,6 +117,26 @@ export default defineTool({
         swarmId,
         excludeRedundant,
       });
+      // EI-6480: a lease-ARBITRATION loss is NOT a peer race. When claimOne claimed a row
+      // locally but lost the per-Hive authority lease, the misleading 'retry' hint sent callers
+      // into a busy-idle against an item that keeps reading unclaimed until the stale lease is
+      // cleaned up (the reaper/issue-requeue lease-cleanup fix) or lapses. Name it truthfully so
+      // the miss is DISTINGUISHABLE from a genuine race.
+      if (lastLeaseLoss) {
+        return {
+          ok: false as const,
+          error:
+            `no claimable work-item RIGHT NOW: you claimed item ${lastLeaseLoss.id} locally but LOST the ` +
+            `per-Hive authority-lease ARBITRATION for it (held by another owner's unexpired lease — the ` +
+            `EI-6480 stale-lease class). It will keep reading as unclaimed until that lease is cleaned up ` +
+            `or lapses, so a blind retry may not help. ${diag.readyUnclaimed} ready / ${diag.pendingUnclaimed} ` +
+            `unclaimed pending — NOT a peer race and NOT drained; surface this rather than spin.`,
+          drained: diag.drained,
+          pendingUnclaimed: diag.pendingUnclaimed,
+          readyUnclaimed: diag.readyUnclaimed,
+          leaseArbitrationLoss: true as const,
+        };
+      }
       const error = diag.drained
         ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct'
         : `no claimable work-item RIGHT NOW: ${diag.pendingUnclaimed} unclaimed item(s) exist but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-claimed)${diag.readyUnclaimed > 0 ? ` — ${diag.readyUnclaimed} are ready but a peer likely raced you (retry)` : ''}. The queue is NOT drained — do NOT idle; re-check shortly or unblock the backlog.`;

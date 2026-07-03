@@ -39,6 +39,18 @@ import type { PresenceTier1Joins } from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
 
 /**
+ * The self-referential placeholder a presence declare writes when an agent is
+ * live but has declared no real intent (see the coord-hook + locks/enrich-busy).
+ * It is a NON-signal on the roster — "(active — see coord:presence…)" read AS an
+ * intent is circular and misleads the Queen/peers into thinking a real intent
+ * exists. `toStableRosterRow` normalizes it to `null` on the READ side (P-004) so
+ * the roster shows an honest "no declared intent" without touching the write path
+ * (enrich-busy still relies on the written sentinel to detect the no-intent case).
+ * Canonical here so every reader shares ONE string (was duplicated in enrich-busy).
+ */
+export const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
+
+/**
  * A coord:presence roster row at the point it is emitted: the unified
  * local+federated record, plus the derived `lastActiveSecAgo`, the coordinator
  * wakeability signals (`sessionState` / `wakeable`, P-001), and the (local-only)
@@ -206,7 +218,7 @@ export function deltaEligibleProjection(row: RosterRow): Partial<RosterRow> {
  */
 export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
   const { identity, state, liveness } = partitionPresenceRow(row);
-  return {
+  const out: Record<string, unknown> = {
     ...identity,
     ...state,
     lastActiveSecAgo: (liveness.lastActiveSecAgo as number | null | undefined) ?? null,
@@ -227,4 +239,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // when un-derived, e.g. a federated row), so a reader can always filter it.
     viewerAttached: (liveness.viewerAttached as boolean | null | undefined) ?? null,
   };
+  // P-004: the self-referential placeholder intent is a non-signal — normalize it to
+  // null so a reader (and the Queen) never mistakes it for a real declared intent.
+  if (out.intent === PLACEHOLDER_INTENT) out.intent = null;
+  return out;
 }

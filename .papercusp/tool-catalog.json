@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 579,
+  "count": 581,
   "tools": [
     {
       "name": "ablation:report",
@@ -4033,7 +4033,7 @@
           "POST"
         ]
       },
-      "description": "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen.",
+      "description": "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen. Re-poll cheaply with `since:<etag>` (the `etag` from your last read) — an unchanged roster returns ~100B.",
       "capabilities": [
         "coord:read"
       ],
@@ -4055,7 +4055,7 @@
       "guidance": {
         "when": "Before dispatch/handoff: who can take work now, and on what? Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. Pass `owner:<id>` to inspect/wake a specific dead agent.",
         "notWhen": "A specific file's freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).",
-        "chaining": "Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions."
+        "chaining": "Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions. If you MUST re-poll (no delta channel available), pass since:<the etag from your last read> — an unchanged roster comes back as ~100B { unchanged:true } instead of the full ~20KB payload."
       }
     },
     {
@@ -11024,9 +11024,9 @@
         "monitor"
       ],
       "guidance": {
-        "when": "A directory/subtree refactor (mode X on the dir), reading a whole subtree (S), or coordinating file-vs-harness-level work the per-edit lock is too fine for. Use \"\" as the path to take/contend the harness root.",
-        "notWhen": "A single-file edit — rely on the per-edit hook when diagnostics show it is active, or use locks:acquire for that file if hooks are unavailable. Cross-resource coordination (dev-server / db-schema) — use locks:acquire_resource.",
-        "chaining": "locks:acquire_granular { path, mode:\"X\" } → on ok do the work → locks:release_granular { lock_id }. On conflict, inspect the returned conflicts and pivot/retry."
+        "when": "A directory/subtree refactor (X on a dir), reading a whole subtree (S), or coordinating file-vs-harness-level work when a single-file lock is too narrow. Use \"\" for the harness root.",
+        "notWhen": "A single-file edit: rely on the per-edit hook or use locks:acquire. Cross-resource coordination (dev server, DB schema): use locks:acquire_resource. Not as a mutex for non-file operations like fleet setup or work-item/plan changes.",
+        "chaining": "locks:acquire_granular → do the work → locks:release_granular. On conflict, inspect conflicts and pivot/retry."
       }
     },
     {
@@ -13063,6 +13063,40 @@
         "when": "The user clicks Start Overwatch / asks to boot the system-health supervisor, or you are bringing a paused overwatch back to autonomous operation.",
         "notWhen": "To start the Queen / colony — hive:start (distinct loop). To start one plan — plans:start. The overwatch nudges + observes; it never places work.",
         "chaining": "overwatch:pause to suspend. The papercusp-overwatch flag (/admin/features) must be ON for the loop to actually run (B-04 gate)."
+      }
+    },
+    {
+      "name": "p2p:trace",
+      "http": {
+        "path": "/api/agent-tools/p2p/trace",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Assemble the cross-machine P2P timeline for a hive (optionally one offer): loud-refusal receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Receipts with kind='excused-breach' are preemption-class interruptions (X8) — excluded from reliability signals.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "queen",
+        "sentinel",
+        "overwatch"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Debugging a refused/silent-looking cross-peer action (\"why did my offer/wake/spawn not run on peer X?\"): pass the hive (and offerId when you have one) to see every receipt both sides produced, ordered by event time, plus the unauthenticated-refusal counters. The receipt names the EXACT missing capability/budget.",
+        "notWhen": "Inspecting grant STATE (who may do what right now) — read the grants surface / checkP2pCapability instead; trace is the event TIMELINE, not the authorization table. General coord message history — coord:feed / coord:catch-up.",
+        "chaining": "p2p:trace (you) → fix the named gap (grant a capability, raise a cap, re-attest a device) → retry the action."
       }
     },
     {
@@ -17496,7 +17530,7 @@
           "POST"
         ]
       },
-      "description": "Bee self-select via your Queen-issued claim SPEC: atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ the default ordering (== work_items:claim_next). Returns the claimed item + the spec revision that selected it, or null.",
+      "description": "Self-select via your claim SPEC (issued by your queen or fleet leader): atomically claim the next eligible work-item — the global floors (ready/blocking, lease, admission, dedup) AND your spec.view.filter, ordered by spec.rank, SKIP LOCKED. No spec set ⇒ the default ordering (== work_items:claim_next). Returns the claimed item + the spec revision that selected it, or null.",
       "capabilities": [
         "work_items:write"
       ],
@@ -17517,9 +17551,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You are a coding-HIVE bee (role=\"bee\") picking up your next item — call this instead of scanning the raw frontier or self-prioritizing. Scheduling is your Queen's judgment expressed as your claim spec; the pickup is yours. The coding hive = a queen + self-pulling bees (claim-spec / get_next). NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is role=\"bee\", NOT scoper; only a bee/queen self-pulls here.",
-        "notWhen": "You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-bee spec — work_items:claim_next.",
-        "chaining": "scheduler:get_next → work_items:set_state (progress) → work_items:release. Your Queen re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next)."
+        "when": "You are a SELF-PULLING agent picking up your next item — a coding-hive bee (role=\"bee\"), or an su fleet MEMBER pulling its lane (su-loop-capability-parity). Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your queen's / fleet leader's judgment expressed as your claim spec; the pickup is yours. NOTE the contrast: the coding-FACTORY is a different model — a scoper→architect→worker PUSH pipeline whose roles are HANDED a FEATURE_ID and never call get_next. So a claim-spec self-pulling worker is a bee or an su fleet member, NOT a scoper.",
+        "notWhen": "You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-agent spec — work_items:claim_next.",
+        "chaining": "scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next)."
       }
     },
     {
@@ -17564,7 +17598,7 @@
           "POST"
         ]
       },
-      "description": "Queen: set/replace a bee's versioned claim spec (view.filter + rank). The bee's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running bee by setting a new spec (the revision bumps; the bee picks it up on its next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
+      "description": "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
       "capabilities": [
         "work_items:write"
       ],
@@ -17585,9 +17619,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "THE dispatch surface for a SELF-PULLING coding-HIVE worker (role=\"bee\", or the queen) that calls scheduler:get_next — not micro-dispatch. coding-FACTORY roles (scoper/architect/worker) are PUSHED a FEATURE_ID and never self-pull, so a spec on them is INERT — spawn role=\"bee\" for a self-puller. Encode a scoped VIEW (filter) + ORDERING (rank) over the work-item DAG: a property filter (plan/paths/tags/priority) for a standing, auto-inflowing, steal-able lane; `id in [...]` ONLY to pin a STATIC wave (hotfix/cutover — no auto-inflow, no stealing). Re-steer by setting a NEW spec (revision bumps; the bee picks it up on its next get_next), never by re-dispatching.",
-        "notWhen": "A coding-FACTORY role (scoper/architect/worker/validator) — PUSHED a FEATURE_ID, never calls get_next, so a spec is INERT; push the FEATURE_ID. Micro-dispatching hand-picked items, or selecting on `id` ALONE for a STANDING lane (hand-listing in disguise) — write a property filter. Global floors (blocked/ready/dedup/cursed) are always resolver-enforced, not set here.",
-        "chaining": "scheduler:set_claim_spec (you) → the bee's scheduler:get_next pulls per the spec."
+        "when": "Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.",
+        "notWhen": "A coding-FACTORY push role (scoper/architect/worker/validator): it is handed a FEATURE_ID and never calls get_next, so a spec is inert. Not for hand-picked micro-dispatch, or for overriding global floors (blocked/ready/dedup/cursed) — the resolver enforces those.",
+        "chaining": "scheduler:set_claim_spec → the puller applies it on the next scheduler:get_next."
       }
     },
     {
@@ -17686,6 +17720,36 @@
         "when": "You want to score a routed Scout idea 1–5 (optional one-line critique) so Scout learns which lenses to favor. Key by ideaId (Scout view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Queen's triage path: grade each ungraded routed draft).",
         "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Queen vs owner surface).",
         "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Queen regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
+      }
+    },
+    {
+      "name": "scout:ideation-feedback",
+      "http": {
+        "path": "/api/agent-tools/scout/ideation-feedback",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Your IDEATE-pass read of your OWN past graded proposals: the owner/Queen grades + critiques on features you filed (improvements:capture kind:'feature'), formatted as a grader-feedback priming block (newest-first; owner grades outrank Queen volume grades). Read-only; su-ideate origin only — never touches Scout's lens-weight learning.",
+      "capabilities": [
+        "curation:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "queen",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded, so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-hive + rubrics:list + scorecards:freshness as the IDEATE grounding reads.",
+        "notWhen": "Grading an idea — that is scout:grade-idea. Reading Scout's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
+        "chaining": "curation:state-of-hive + rubrics:list + scorecards:freshness + scout:ideation-feedback → your IDEATE pass, grounded."
       }
     },
     {

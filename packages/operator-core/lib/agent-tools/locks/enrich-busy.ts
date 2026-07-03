@@ -8,6 +8,7 @@
  */
 
 import { getPresence } from '../coordination/presence';
+import { PLACEHOLDER_INTENT } from '../coordination/presence-payload';
 import type { AcquireBusy } from './su-lock-store';
 
 export interface BusyJson {
@@ -38,7 +39,8 @@ export function busyToJson(b: AcquireBusy): BusyJson {
 
 /** The OMP turn-start hook heartbeats this exact intent every turn, so treat it
  *  as "nothing meaningful declared" rather than surfacing it. */
-const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
+// PLACEHOLDER_INTENT is imported from coordination/presence-payload (canonical —
+// one string shared by the read-side normalization + this busy-holder detection).
 
 /**
  * Enrich busy rows with the holder's declared coord intent (presence).

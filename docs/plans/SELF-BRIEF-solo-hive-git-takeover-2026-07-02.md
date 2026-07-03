@@ -6,10 +6,18 @@
 > from the canonical tree.
 
 ## Identity + mode
-- **su-id:** su-16e4c274-8451-41b6-9480-bf758a7bf628 · no fleet · harness papercusp
-- **AUTO MODE ON** (owner-granted, standing, whole session). Route = **solo** (owner
-  explicitly chose: "finish implementing what's left across all the plans entirely
-  yourself" — no fleet, no queen). Route is STICKY.
+- **su-id:** su-16e4c274-8451-41b6-9480-bf758a7bf628 · LEADS fleet **p2p-hive-git** · harness papercusp
+- **AUTO MODE ON** (owner-granted, standing, whole session).
+- **ROUTE CHANGED 2026-07-03 → FLEET-PARALLEL** (owner reversed the earlier solo/no-fleet
+  directive, interactive session: "can you parallelize?" → "spawn a small fleet",
+  "use opus xhigh agents"). I LEAD fleet p2p-hive-git; bees run **opus:xhigh**.
+  - **Bee `s-1783051060233`** → Phase 0 remainder: P-002 (settings Tauri live-verify +
+    render test; m24 P-104-gated) + P-005 (rollout tiers/flag GITHUB_BRIDGE pattern, FS-D5).
+  - **Bee `s-1783051087196`** → P-059 LIVE-1 cross-machine drill (unblocks p2p P-003).
+  - **su-ac95e67e** (owner-spawned, NOT my fleet) → per-hive-git-and-release-gate close-out.
+  - **I KEEP (solo, serial on boot.ts):** P-108 finish → P-101, then Phase 2/3 waves as
+    P-101 unblocks them. Wave-2 bees spawn once P-101 lands.
+  - Released my (stale) claims on P-002/P-005/P-059 so bees claim freely.
 - Prior driver: su-3700bc41 (dead) led fleets p2p-dist + git-plan; all 4 p2p-dist
   lanes dead (`recorded`). Takeover note sent to su-3700bc41's inbox.
 - Owner: aviynw2@gmail.com. Loop: `loop:arm { intervalSec:60 }` when idle-risk.

@@ -86,6 +86,7 @@ describe('renderPresenceRebootstrapBlock', () => {
         { ownerLabel: 'su · a', agentRole: 'su', intent: 'reviewing the fold', currentPlanSlug: 'presence-v2-2026-06-14' },
         { ownerLabel: 'fed:42@box', intent: 'remote work' }, // no role/plan
       ],
+      etag: 'test-etag',
     };
     const block = renderPresenceRebootstrapBlock(snap);
     expect(block).toContain('[presence ⟲ 2]');
@@ -105,6 +106,7 @@ describe('renderPresenceRebootstrapBlock', () => {
       scope: 'workspace',
       summary: { active: 45, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 } },
       active,
+      etag: 'test-etag',
     });
     const lines = block.split('\n');
     // header + 40 rows + 1 overflow line

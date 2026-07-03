@@ -22,6 +22,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from '../workspace-registry';
 
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
@@ -85,6 +86,24 @@ function sqlOf(inject?: Sql): Sql {
   return inject ?? getOrgPg().sql;
 }
 
+/**
+ * F1-4 / WI-1564: resolve the workspace partition a FEDERATED (shareable)
+ * fact/elite write must land in. The coordination partition
+ * (`DEFAULT_COORD_WORKSPACE` = 'default') and the `'*'` wildcard NEVER federate
+ * — a shareable write there is captured by the mig-461/462 triggers then
+ * stranded (never routed to a peer, the WI-1564 137-stranded-row class, the
+ * writer-side twin of the harness_slug drop D-007 fixed). Returns the workspace
+ * when it federates, else `undefined` so the writer refuses LOUDLY instead of
+ * silently stranding. Shared by the fact writer ({@link assertFact}) and the
+ * gym-elite writer so both strand-or-federate identically — the WI-1564
+ * "resolver shared by writer + reader" invariant (mirrors
+ * p2p/grant-store.ts `resolveP2pGrantWorkspace`).
+ */
+export function resolveFederationWorkspace(ws: string | null | undefined): string | undefined {
+  const w = ws?.trim();
+  return w && w !== '*' && w !== DEFAULT_COORD_WORKSPACE ? w : undefined;
+}
+
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
  *  the per-scope cap by evicting the oldest-updated live facts past the cap. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AgentFact> {
@@ -99,6 +118,19 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   }
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
+  // F1-4 / WI-1564: a SHAREABLE fact MUST land in a real federating partition.
+  // If the resolved workspace is the non-federating coordination/'*' partition,
+  // the capture triggers fire but route nowhere, so the fact is captured then
+  // stranded (dropped on every peer). Refuse LOUDLY rather than silently strand
+  // — a hive-PRIVATE fact (shareable !== true) is unaffected (it never rides the
+  // wire, so any partition is fine).
+  if (input.shareable === true && !resolveFederationWorkspace(ws)) {
+    throw new Error(
+      `facts:assert — a shareable fact cannot use the '${ws}' workspace partition ` +
+        `(WI-1564): the coordination/'*' partition never federates, so the fact would ` +
+        `be captured then stranded on every peer. Assert from a hive-scoped workspace.`,
+    );
+  }
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
   const ttl = input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_DEFAULT_TTL_SEC;
   // The arbiter is mig 461's 5-column identity (per-source partitioning, H6):

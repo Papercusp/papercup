@@ -24,7 +24,8 @@ import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
 import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
-import { toStableRosterRow, type RosterRow } from './presence-payload';
+import { createHash } from 'node:crypto';
+import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
 import { fetchWakeability, deriveSessionState, type WakeabilitySignals } from './presence-wakeability';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
@@ -82,6 +83,40 @@ export interface PresenceSnapshot {
    *  wake one dead agent" path). Counts for the excluded `ended` rows still live
    *  in `summary.byState.ended`. */
   active: Record<string, unknown>[];
+  /** Content ETag over the DELTA-ELIGIBLE projection (identity+state) of the
+   *  returned roster — the byte-stable half (D-006), EXCLUDING liveness churn
+   *  (heartbeat / lastActiveSecAgo / live↔parked) and `as_of`. Stable across reads
+   *  of an unchanged roster. A caller passes it back as `since:` to get a ~100B
+   *  `{ unchanged: true }` short-circuit when nothing actionable has changed —
+   *  the structural defense against re-polling a 20KB snapshot every turn. */
+  etag: string;
+}
+
+/**
+ * Pure: the content ETag for a roster's DELTA-ELIGIBLE projection (P-006 /
+ * presence-tool-hardening). Hashes the identity+state of each row (via
+ * `deltaEligibleProjection` — the SAME projection the [coord+N] delta channel
+ * diffs, so liveness churn is excluded by construction) plus the scope + hive, so
+ * two reads of an unchanged roster produce the SAME etag while ANY identity/state
+ * change (intent, plan, claimed lane, await, a row added/removed, a re-host)
+ * produces a different one. Rows are already ownerId-sorted by `selectRosterRows`;
+ * we sort defensively so the etag is order-independent regardless of caller.
+ */
+export function computeRosterEtag(
+  rows: RosterRow[],
+  scope: string,
+  hiveId: string | null,
+): string {
+  const projected = rows
+    .map((r) => deltaEligibleProjection(r))
+    .sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
+  const h = createHash('sha1');
+  h.update(scope);
+  h.update('\0');
+  h.update(hiveId ?? '');
+  h.update('\0');
+  h.update(JSON.stringify(projected));
+  return h.digest('hex').slice(0, 16);
 }
 
 /**
@@ -310,6 +345,9 @@ export async function assemblePresenceSnapshot(
   // Ordered by ownerId so the emitted list stays byte-stable (D-006).
   const fullEnriched = [...activeEnriched, ...staleEnriched];
   const selected = selectRosterRows(fullEnriched, opts.owner);
+  // P-006: the delta-eligible ETag (identity+state) for the `since:` short-circuit,
+  // computed from the SELECTED rows so it matches EXACTLY what this read returns.
+  const etag = computeRosterEtag(selected, scope, hiveId);
   let activeRows = selected.map(toStableRosterRow);
 
   // P-011 include_detail: the heavy Tier-2/3 field — held files — lives in the
@@ -359,6 +397,7 @@ export async function assemblePresenceSnapshot(
       byState,
     },
     active: activeRows,
+    etag,
   };
 }
 

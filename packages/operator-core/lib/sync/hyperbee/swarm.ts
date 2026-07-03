@@ -142,7 +142,10 @@ export interface JoinHarnessSwarmOpts {
    * and triggers a merge (boot.ts wires this to its `onAnnounce`). Required for
    * the announce exchange to do anything; omit alongside `ourAnnounce`.
    */
-  onAnnounce?: (frame: SignedAnnounce) => Promise<AdmissionResult> | void;
+  onAnnounce?: (
+    frame: SignedAnnounce,
+    ctx?: AnnounceConnectionContext,
+  ) => Promise<AdmissionResult> | void;
   /**
    * SUBSTRATE_SIDECAR Option B (WI-604) replication-offload seam. When supplied,
    * the connection handler calls this with each accepted peer socket INSTEAD of
@@ -169,6 +172,24 @@ export interface JoinHarnessSwarmOpts {
   /** Steady-state keepalive cadence once the fast window lapses (ms).
    *  Default `DEFAULT_SUBSTRATE_SLOW_REFRESH_MS`. */
   slowRefreshMs?: number;
+}
+
+/**
+ * Per-connection context handed to `onAnnounce` alongside each inbound frame
+ * (P-006 §5.2/§5.3). Lets the admission layer act on THIS specific connection:
+ *   - `send` a DIRECTED follow-up announce back to only this peer (the scoped-
+ *     log disclosure rides a follow-up frame after the peer's identity is known,
+ *     since the first announce is identity-blind);
+ *   - `muxer` is the shared Protomux for this connection — the object scoped
+ *     cores attach to (`session.replicate(muxer)`) so the §5.3 serve gate serves
+ *     a scope on exactly the connections whose peer is in its roster.
+ * OPTIONAL 2nd arg: pre-§5.2 `onAnnounce` implementations ignore it, unchanged.
+ */
+export interface AnnounceConnectionContext {
+  /** Send a signed frame to THIS peer on the announce channel (directed). */
+  send(frame: SignedAnnounce): void;
+  /** The shared Protomux muxer for this connection (scoped-core attach target). */
+  muxer: object;
 }
 
 /** Announce-channel opts for one hive on one peer connection. */
@@ -411,11 +432,26 @@ function createAnnounceChannel(
       );
       // A-003 (a′): deliver an inbound announce to EVERY local harness that
       // admits on this topic (send-only harnesses register no onAnnounce).
+      // P-006 §5.2/§5.3: hand each a per-connection context — `send` for a
+      // DIRECTED scoped-log follow-up back to this peer, `muxer` for the
+      // scoped-core serve gate. `mux` is the shared Protomux for this
+      // connection; `state.message` is this (muxer,topic) channel's sink, so a
+      // send reaches ONLY this peer.
+      const ctx: AnnounceConnectionContext = {
+        muxer: mux as object,
+        send: (f: SignedAnnounce) => {
+          try {
+            state.message?.send(f);
+          } catch {
+            // best-effort — replication still proceeds if a follow-up drops
+          }
+        },
+      };
       for (const entry of state.entries.values()) {
         if (!entry.onAnnounce) continue;
         try {
           // onAnnounce may be async; never let a rejection crash the muxer.
-          void Promise.resolve(entry.onAnnounce(frame)).catch(() => {});
+          void Promise.resolve(entry.onAnnounce(frame, ctx)).catch(() => {});
         } catch {
           // synchronous throw — swallow
         }
