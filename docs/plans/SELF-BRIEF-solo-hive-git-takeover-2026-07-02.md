@@ -82,6 +82,18 @@
 - Work-item ledger: plan-item claims held via plans:set-status wip (auto-claim).
 
 ## PROGRESS LOG (update each unit)
+- 2026-07-03 ~10:45Z CHECKPOINT (su-16e4c274 turn, context-overflow end): scope-cores.ts
+  10/10 unit tests GREEN + tsc clean. Tree ALSO now holds lib/p2p/scope-roster.ts(+test)
+  and lib/sync/hyperbee/scope-federation.ts(+test) written ~03:46–03:59Z (successor turn
+  or peer — VERIFY authorship/tests before extending; they are steps 2–3 of the build
+  order). NEXT WAKE: (1) coord:whoami FIRST (brief says live id = su-35c3bac0 but wakes
+  still fire su-16e4c274 — reconcile before any coord write; claim-discipline nag says
+  plan-item claims LAPSED — re-claim P-108 lane); (2) run scope-roster + scope-federation
+  tests + tsc; (3) READ INBOX wakes #4736/#4743: a peer claims owner has them "leading
+  p2p" + is taking a "P-108 VM→owner merge/admission fix" (LIVE issue: owner→VM
+  work_items stuck 573/2074) and asks me to flag collisions on scope-*.ts — ANSWER them
+  (scope-*.ts files are MY lane) + reconcile who leads p2p; (4) then boot.ts wiring per
+  § P-108 GROUNDED SERVE-GATE DESIGN.
 - 2026-07-02 ~22:50 EDT: **P-109 DONE** (all 4 legs; see plan item note for the
   full manifest). New files: lib/p2p/foreign-git-sync.ts+test, foreign-guard.ts+test,
   routines/foreign-git-sync-action.ts, endpoint-route/routes/su-locks/foreign-guard.ts,
