@@ -11,6 +11,8 @@ import {
   makeCredentialResolver,
   makeBearerCredentialResolver,
   credentialRefSupportsOpenAiBearer,
+  normalizeBearerToken,
+  scrubSecrets,
   type ClaudeCredentialBundle,
 } from './credential-store';
 import {
@@ -303,4 +305,50 @@ test('bundleTokenStorage — update clears expiresAt on a non-number value, leav
   await store.update('inference-gateway', path, { access: 'AT3' });
   after = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
   assert.equal(after.claudeAiOauth.expiresAt, 5000, 'absent expires_at key leaves the field unchanged');
+});
+
+// ---------------------------------------------------------------------------
+// Whitespace-corrupted credentials (WI-1919, 2026-07-03): a hand-pasted token wrapped by a
+// terminal carries an EMBEDDED newline `trim()` cannot see — injected into the Authorization
+// header it kills every request on the account with `Headers.append: invalid header value`.
+// Every read path must collapse ALL whitespace, not just trim the ends.
+// ---------------------------------------------------------------------------
+
+test('normalizeBearerToken — strips embedded newlines/CR/tabs/spaces, not just the ends', () => {
+  assert.equal(normalizeBearerToken('sk-ant-oat01-abc\ndef\r\n'), 'sk-ant-oat01-abcdef');
+  assert.equal(normalizeBearerToken('  sk-ant-oat01-x\ty  '), 'sk-ant-oat01-xy');
+  assert.equal(normalizeBearerToken('\n \r'), '');
+});
+
+test('makeCredentialResolver — token: file with a MID-TOKEN newline serves a header-safe bearer', async () => {
+  const path = join(dir, 'wrapped-token');
+  // The exact 2026-07-03 corruption shape: the paste wrapped mid-token.
+  await fs.writeFile(path, 'sk-ant-oat01-first-half\nsecond-half\n');
+  const r = makeCredentialResolver(`token:${path}`);
+  const token = await r.current();
+  assert.equal(token, 'sk-ant-oat01-first-halfsecond-half');
+  assert.ok(!/\s/.test(token), 'no whitespace may survive into the Authorization header');
+});
+
+test('makeBearerCredentialResolver — file + env bearers are whitespace-collapsed too', async () => {
+  const path = join(dir, 'wrapped-bearer');
+  await fs.writeFile(path, 'sk-live-abc\ndef');
+  assert.equal(await makeBearerCredentialResolver(`token:${path}`).current(), 'sk-live-abcdef');
+  process.env.IG_TEST_WRAPPED = 'tok\nen-value';
+  try {
+    assert.equal(await makeBearerCredentialResolver('env:IG_TEST_WRAPPED').current(), 'token-value');
+  } finally {
+    delete process.env.IG_TEST_WRAPPED;
+  }
+});
+
+test('scrubSecrets — redacts sk-ant tokens and generic Bearer values, keeps an identifying prefix', () => {
+  const leak = 'Headers.append: "Bearer sk-ant-oat01-dYS9il_gckQSlXtFsyt70QyVa6omAniJ" is an invalid header value';
+  const scrubbed = scrubSecrets(leak);
+  assert.ok(!scrubbed.includes('dYS9il_gckQSlXtFsyt70QyVa6omAniJ'), 'token body must not survive');
+  assert.ok(scrubbed.includes('sk-ant-oat01…[redacted]'), 'keeps the identifying prefix');
+  // Generic (non-anthropic) bearer values are redacted too.
+  assert.equal(scrubSecrets('Bearer abcdefghijklmnopqrstuvwx failed'), 'Bearer [redacted] failed');
+  // Non-secret text passes through untouched.
+  assert.equal(scrubSecrets('plain error, no secrets'), 'plain error, no secrets');
 });

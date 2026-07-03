@@ -73,6 +73,12 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'operator:converse', // the Herald brain (role='sentinel' persona)
     'operator:read', // voice:status / voice:transcript
     'operator:write', // voice:join / voice:leave / voice:channels / voice:agent
+    // code-run-self-state-adoption-2026-07-03 P-003: her coord:orient bootstrap dispatches
+    // memory:search (mem0 recall) + recipes:search (reuse-at-orient) internally — both were
+    // denied (8× / 7× over 14d), silently nulling those orient sections every wake. READ
+    // caps only; the read-mostly design (no fs-write/bash, no memory:write) is unchanged.
+    'memory:read',
+    'intel:read',
   ],
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).
@@ -103,6 +109,10 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'activity:read',
     'search:read',
     'messages:write', // messages:send — forward a directive to a specific agent
+    // code-run-self-state-adoption-2026-07-03 P-003: coord:orient's internal mem0 recall was
+    // denied 32×/14d (role-not-allowed) — the system-health supervisor woke blind to its own
+    // memory every cycle. Read cap only; the no-write/no-exec design is unchanged.
+    'memory:read',
   ],
   // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
   // D-001/D-003): the `pot` launch blueprint wakes the `operator` role to
@@ -167,6 +177,23 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'coord:write',
     'plans:read',
     'routines:write',
+    // code-run-self-state-adoption-2026-07-03 P-003 — the caps had drifted BEHIND the queen's
+    // own seeded kit (QUEEN_MCP_TOOL_NAMES advertises tools these caps denied), measured over
+    // 14d of role-not-allowed telemetry: memory:search 106× (her coord:orient mem0 recall
+    // failed EVERY wake), recipes:search 59× (orient's reuse-at-orient dead), plans:set-status
+    // 6× / add-decision 2× (kit-advertised plan writes), capability:bash 7× / git 8× /
+    // read 4× / fetch 2× / write 1× (her ENTIRE kit-advertised capability:* write/exec
+    // surface). "Her caps mirror the operator's" (above) had stopped being true — the
+    // operator got the memory/plans parity fixes (EI-2048) and the queen didn't.
+    'memory:read',
+    'memory:write',
+    'intel:read', // recipes:search/candidates (graduation duty), dev:rate_governor_status
+    'plans:write',
+    'capability:bash', // code:run / recipes:run / capability:bash — the batching + exec surface her kit advertises
+    'capability:fs-write',
+    'capability:fs-read',
+    'capability:git',
+    'capability:net',
   ],
   // The generic Hive worker (local-hive-orchestration D-003 / P-011; expanded by
   // bee-capability-expansion-2026-06-08): a plain implementation agent the Queen
@@ -251,6 +278,16 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // (fs-read / code-inspect already resolve — the bee reads + diagnoses today.)
     'capability:fs-write',
     'capability:bash',
+    // code-run-self-state-adoption-2026-07-03 P-003: the comment above ("fs-read /
+    // code-inspect already resolve") had stopped being true — 14d of role-not-allowed
+    // telemetry showed bees denied on their OWN kit's tools: capability:git 82×,
+    // capability:read (fs-read) 55×, capability:fetch (net) 11×, capability:inspect
+    // (code-inspect) 11×. A kit-advertised tool whose cap is missing is a dead tool;
+    // grant the four so the kit and the gate agree.
+    'capability:fs-read',
+    'capability:git',
+    'capability:net',
+    'capability:code-inspect',
   ],
 };
 

@@ -46,9 +46,13 @@ import {
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { resolveAccountPin, resolveFleet, reconstructPsuLaunchArgv } from './bootstrap-su';
+import {
+  resolveAccountPin,
+  resolveFleet,
+  reconstructPsuLaunchArgv,
+  stampFleetMembershipAtBoot,
+} from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
-import { setPendingFleet } from '../../../agent-tools/coordination/presence';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -308,16 +312,28 @@ const post = defineTool({
         409,
       );
     }
-    // WI-1408 (psu-fleet-presence, extended to the role path — bootstrap-su's WI-1343
-    // fix was never mirrored here): the env-fold in writePresence (deriveFleetMembership)
-    // reads the OPERATOR's process.env, not this launched agent's — so a role session's
-    // `PAPERCUSP_FLEET_SLUG` (folded into envelopeEnv below, on the AGENT's process) never
-    // reaches it, and the agent would register presence with fleet_slug=null — INVISIBLE
-    // to fleet:assignments (the exact "colour-only, membership forgotten" bug). Register a
-    // PENDING placement keyed by this session's coord owner id (sid); the agent's first
-    // presence write applies it as an authoritative hard-set (writePresence → takePendingFleet).
+    // WI-1893 (cluster-safe fleet stamp, mirrors bootstrap-su): append the DURABLE
+    // membership fact at boot instead of the old in-memory setPendingFleet placement —
+    // the pending map lived in ONE cluster worker and was lost when the agent's first
+    // presence write landed on another (:3070 is node:cluster + SO_REUSEPORT), leaving
+    // the agent fleet_slug=null and invisible to fleet:assignments. The fact + mig-430
+    // triggers cover fact-first AND row-first ordering; fail LOUD per WI-1408.
     if (fleetPin.fleetSlug) {
-      setPendingFleet(sid, fleetPin.fleetSlug, fleetPin.fleetRole ?? 'member');
+      const stampErr = await stampFleetMembershipAtBoot({
+        workspaceId: workspace,
+        ownerId: sid,
+        fleetSlug: fleetPin.fleetSlug,
+        fleetRole: fleetPin.fleetRole,
+      });
+      if (stampErr) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: `fleet membership stamp failed: ${stampErr} — refusing to launch a member that would be invisible to its fleet (WI-1893).`,
+          },
+          409,
+        );
+      }
     }
 
     // Forced native session UUID for EXACT resumability (claude --session-id;

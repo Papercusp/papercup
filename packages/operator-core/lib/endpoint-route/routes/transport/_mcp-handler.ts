@@ -72,7 +72,8 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
-import { maybeBatchNudge, maybeOrientDedupNudge, CODE_RUN_CAPABLE_ROLES } from '../../../code-run-batch-nudge';
+import { maybeBatchNudge, maybeOrientDedupNudge, canRoleActOnCodeRun } from '../../../code-run-batch-nudge';
+import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
@@ -1717,12 +1718,23 @@ const handler = createMcpHandler(
                 // Only attach the advisory nudges to PLAIN-TEXT results.
                 const canAttachAdvisory = (result._meta as Record<string, unknown> | undefined)?.delta == null;
                 try {
+                  // SURFACE-AWARE (code-run-self-state-adoption-2026-07-03 P-004): the old check was
+                  // role-membership only, so envelope-denied roles (overwatch/sentinel) and seeded
+                  // sessions whose surface lacked code:run were nudged — escalating banners included —
+                  // toward a tool they could not call. canRoleActOnCodeRun folds in the envelope deny;
+                  // codeRunInSurface switches the hint to the activate-first path (tools:find /
+                  // tools:invoke) when the live surface lacks the tool.
+                  const nudgeSurface = getSessionSurface(
+                    dispatchSpawnCtx.uiClientId ?? null,
+                    parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools')),
+                  );
                   const hint = maybeBatchNudge({
                     sessionKey: replayOwnerKey,
                     toolName,
                     canCodeRun:
                       dispatchSpawnCtx.isSuperuser === true ||
-                      CODE_RUN_CAPABLE_ROLES.has(dispatchSpawnCtx.role),
+                      canRoleActOnCodeRun(dispatchSpawnCtx.role),
+                    codeRunInSurface: !nudgeSurface || nudgeSurface.has('code:run'),
                   });
                   // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE, the newer
                   // fan-out trigger under its own CODE_RUN_FANOUT_NUDGE so it is an independent A/B
@@ -1735,6 +1747,15 @@ const handler = createMcpHandler(
                         ...result.content,
                         { type: 'text' as const, text: `\n[batch-hint] ${hint.text}` },
                       ];
+                      // P-005: record the fire (best-effort, fire-and-forget) so nudge→conversion
+                      // is finally measurable — the A/B flags existed but fires were invisible.
+                      recordBatchNudgeFire({
+                        sessionKey: replayOwnerKey,
+                        role: dispatchSpawnCtx.role,
+                        kind: hint.kind,
+                        toolName,
+                        workspaceId: dispatchSpawnCtx.workspaceId,
+                      });
                     }
                   }
                 } catch {

@@ -426,6 +426,31 @@ export async function joinHiveAsView(
     deps.rekeyHarness ??
     (async (ws: string, slug: string) =>
       (await import('../sync/hyperbee/boot-all')).rekeyHarness(ws, slug));
+  // 2c′ — WI-971 (joiner home-VIEW drain): boot/rekey the remote-hive VIEW home
+  //      itself, not just the members. The view is registered (step 2) + its Hive
+  //      identity materialized (step 2b), but NOTHING boots its substrate at
+  //      runtime — boot-all's D-057 hive-kind boot only covers it on the NEXT
+  //      process restart. Until then any write captured under the home-view slug
+  //      (the joiner's own hive_epoch_keys writes, hive-scoped settings/roster
+  //      edits) sits in substrate_outbox UNDRAINED — peer_connected but never
+  //      federating (pinned live 2026-07-03 on the two-instance content-matrix
+  //      pair: B's `default::hello-world-hive` hive_epoch_keys rows undrained
+  //      while every member-scope row drained). `rekeyHarness` on the unbooted
+  //      view falls back to a fresh `bootSingleHarness`, which resolves the
+  //      hive-pubkey binding (2b landed it) and wires the outbox drain +
+  //      presence announce via ensureSendSideWired. This is the exact joiner
+  //      mirror of the owner-side hive-home re-key in publishCreatedHive step 7
+  //      (A-003 a′). Best-effort: a failure must NEVER fail the join — but say
+  //      so loudly (same posture as the member-rekey swallow below).
+  try {
+    await rekeyHarness(opts.workspaceId, hiveSlug);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[join-hive] 2c′ home-view boot/rekey FAILED for ${hiveSlug} — the joiner's hive-home ` +
+        `outbox stays undrained until restart: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   for (const m of members) {
     if (!m.ok || !m.slug) continue;
     try {

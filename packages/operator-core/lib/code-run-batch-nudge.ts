@@ -43,6 +43,7 @@
  * per-call cost stays the ring push.
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { ROLE_ENVELOPES, matchesAny } from './capability-envelope/policy';
 
 /** Same tool this many times inside the window → the same-tool nudge is a candidate. Lowered 3→2
  *  (code-run-adoption directive 2026-06-29): the 2nd identical round-trip already IS the loop — by
@@ -71,6 +72,19 @@ const MAX_TRACKED_SESSIONS = 4000;
  *  universe — keep this in lockstep with code:run's gate. A superuser caller also qualifies
  *  (handled at the call site via isSuperuser). */
 export const CODE_RUN_CAPABLE_ROLES: ReadonlySet<string> = new Set<string>([...AGENT_ROLES]);
+
+/**
+ * Can this caller ACT on a "use code:run" nudge? (code-run-self-state-adoption-2026-07-03 P-004.)
+ * The old role-membership check alone was dishonest: overwatch/sentinel are envelope-DENIED
+ * capability:bash (code:run's gate), so they were nudged — escalating banners included — toward a
+ * tool every attempt at which would be refused. Role must be capable AND the role's envelope must
+ * not deny the bash capability code:run requires. Superuser is handled by the caller.
+ */
+export function canRoleActOnCodeRun(role: string): boolean {
+  if (!CODE_RUN_CAPABLE_ROLES.has(role)) return false;
+  const deny = ROLE_ENVELOPES[role]?.denyCapabilities;
+  return !deny || !matchesAny('capability:bash', deny);
+}
 
 /** Normalized names of the batch/reuse tools themselves — never nudge these (you don't tell a
  *  `code:run` call to "use code:run"), and never count them toward the fan-out tally. Normalization
@@ -233,11 +247,24 @@ export interface BatchNudgeInput {
   sessionKey: string;
   /** The tool just called (MCP or verb form). */
   toolName: string;
-  /** Whether the caller can actually run code:run (role ∈ CODE_RUN_CAPABLE_ROLES OR superuser). */
+  /** Whether the caller can actually run code:run (canRoleActOnCodeRun(role) OR superuser). */
   canCodeRun: boolean;
+  /**
+   * Whether code:run is in the session's LIVE advertised tool surface (P-004). A seeded session
+   * whose surface lacks it can still act — via tools:find activation or tools:invoke — but the
+   * hint must TEACH that path instead of advising a tool the client can't call directly.
+   * Default true (full-catalog sessions).
+   */
+  codeRunInSurface?: boolean;
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: number;
 }
+
+/** The activate-first path appended when code:run is not in the caller's live surface (P-004). */
+const ACTIVATE_PATH_NOTE =
+  `\nNote: code:run is not in your loaded tool list yet — activate it first with ` +
+  `tools:find("code:run") (adds it to your surface), or run the same script without loading via ` +
+  `tools:invoke { name: "code:run", args: { script } }.`;
 
 /**
  * Record a tool call in the session's sliding window and, when a same-tool or fan-out burst is
@@ -292,13 +319,14 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
 
   const windowS = Math.round(NUDGE_WINDOW_MS / 1000);
   const banner = escalationPrefix(st.nudgeCount);
+  const activate = input.codeRunInSurface === false ? ACTIVATE_PATH_NOTE : '';
   if (kind === 'same-tool') {
     const burst = totalRecent > sameToolCount ? ` (${totalRecent} tool calls total this burst)` : '';
     const text =
       `${banner}you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
       `${sameToolCount} separate round-trips, each re-reading your whole context. If these are ` +
       `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton ` +
-      `(fill \`inputs\` with the per-call args):\n${sameToolSkeleton(toolName)}\n${TRAILER}`;
+      `(fill \`inputs\` with the per-call args):\n${sameToolSkeleton(toolName)}\n${TRAILER}${activate}`;
     return { text, kind };
   }
   // fan-out
@@ -306,7 +334,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
     `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. This is an ` +
     `independent fan-out: collapse it into ONE code:run with Promise.all — ready-to-paste skeleton ` +
-    `(fill the args):\n${fanoutSkeleton(distinctOrder)}\n${TRAILER}`;
+    `(fill the args):\n${fanoutSkeleton(distinctOrder)}\n${TRAILER}${activate}`;
   return { text, kind };
 }
 

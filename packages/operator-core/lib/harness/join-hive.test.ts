@@ -4,7 +4,7 @@
  * Per-link join + registry + git-sync seams injected — no PG, git, swarm, or
  * GitHub.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { joinHiveAsView, type JoinHiveDeps } from './join-hive';
 import type { SeedGitSyncRoutineOpts } from './git-sync/git-sync-routine';
 import type { HarnessRegistry } from '../harness-registry';
@@ -439,5 +439,68 @@ describe('verified hive identity coords stamped on the view (owner-bootstrap adm
     const view = calls.registry.find((p) => p.slug === 'shop-hive')!;
     expect(view.hive_pubkey).toBeUndefined();
     expect(view.owner_device_pubkey).toBeUndefined();
+  });
+});
+
+describe("2c′ home-view boot/rekey (WI-971: the joiner's hive-home drain)", () => {
+  it('rekeys the HOME VIEW slug in addition to every joined member', async () => {
+    const { deps } = fakes();
+    const rekeyed: string[] = [];
+    deps.rekeyHarness = async (_ws, slug) => {
+      rekeyed.push(slug);
+    };
+    const res = await joinHiveAsView(
+      { hiveId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    // Home view FIRST (its identity/binding gates the members' hive-topic
+    // resolution on a fresh boot), then each joined member.
+    expect(rekeyed).toEqual(['shop-hive', 'shop', 'docs']);
+  });
+
+  it('a home-view rekey failure never fails the join and never skips the member rekeys', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { deps } = fakes();
+      const rekeyed: string[] = [];
+      deps.rekeyHarness = async (_ws, slug) => {
+        if (slug === 'shop-hive') throw new Error('corestore locked');
+        rekeyed.push(slug);
+      };
+      const res = await joinHiveAsView(
+        { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(rekeyed).toEqual(['shop']);
+      // The member's detail is untouched by the home-view failure.
+      expect(res.members[0]!.detail).toContain('joined');
+      expect(res.members[0]!.detail).not.toContain('rekey:failed');
+      // The failure is LOUD (never a silent swallow — WI-1544 defect-E posture).
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining("2c′ home-view boot/rekey FAILED"),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a member rekey failure still stamps rekey:failed (unchanged 2c contract)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { deps } = fakes();
+      deps.rekeyHarness = async (_ws, slug) => {
+        if (slug === 'shop') throw new Error('boom');
+      };
+      const res = await joinHiveAsView(
+        { hiveId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(res.members[0]!.detail).toContain('rekey:failed');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

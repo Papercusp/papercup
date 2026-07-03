@@ -140,7 +140,28 @@ export async function setClaimSpec(
   return { ok: true, errors: [], revision: rows[0]?.revision, ...(strandWarning ? { warning: strandWarning } : {}) };
 }
 
-/** Load a bee's claim spec, or DEFAULT_CLAIM_SPEC when none is set / a stored spec is invalid. */
+/**
+ * The sentinel `bee_id` a FLEET-level claim spec is stored under (fleet-scheduler-
+ * hardening-2026-07-03 P-002). Reuses `bee_claim_specs` unchanged — the sentinel can
+ * never collide with a real session/owner id (those are `su-<uuid>`/spawn ids) and
+ * never claims anything (it is only ever a spec KEY, not a `taken_by`).
+ */
+export function fleetSpecBeeKey(fleetSlug: string): string {
+  return `fleet:${fleetSlug}`;
+}
+
+/**
+ * Load a bee's claim spec, or DEFAULT_CLAIM_SPEC when none is set / a stored spec is
+ * invalid.
+ *
+ * Fleet inheritance (fleet-scheduler-hardening-2026-07-03 P-002): when the bee has NO
+ * per-bee spec, fall back to its FLEET's spec (the `fleet:<slug>` sentinel row) via the
+ * durable membership fact (fleet_membership_events — stamped at boot by bootstrap-su,
+ * WI-1893). This is what makes a fleet RELAUNCH work without the leader hand-authoring
+ * N per-bee specs: fresh ownerIds inherit the lane the moment they join the fleet.
+ * Resolution order: bee spec → fleet spec → DEFAULT_CLAIM_SPEC. A per-bee spec always
+ * WINS over the fleet spec (the leader's targeted re-steer of one member sticks).
+ */
 export async function getClaimSpec(
   args: { beeId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
@@ -150,9 +171,32 @@ export async function getClaimSpec(
   const rows = (await sql`
     SELECT spec FROM harness_shared.bee_claim_specs
      WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as { spec: unknown }[];
-  if (rows.length === 0) return DEFAULT_CLAIM_SPEC;
-  const v = validateClaimSpec(rows[0]!.spec);
-  return v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC;
+  if (rows.length > 0) {
+    const v = validateClaimSpec(rows[0]!.spec);
+    return v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC;
+  }
+  // No per-bee spec — inherit the fleet's, when the bee belongs to one. Best-effort:
+  // any hiccup here degrades to DEFAULT_CLAIM_SPEC (== claim_next ordering), never a
+  // wedged bee. NOTE the partition rule (WI-1564): membership facts and spec rows are
+  // both read under the SAME caller-resolved workspace (resolveClaimSpecWorkspace).
+  try {
+    const { latestFleetMembership } = await import('../fleet-membership-store');
+    const membership = await latestFleetMembership(ws, args.beeId);
+    if (membership?.fleetSlug) {
+      const frows = (await sql`
+        SELECT spec FROM harness_shared.bee_claim_specs
+         WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as {
+        spec: unknown;
+      }[];
+      if (frows.length > 0) {
+        const fv = validateClaimSpec(frows[0]!.spec);
+        if (fv.ok && fv.spec) return fv.spec;
+      }
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  return DEFAULT_CLAIM_SPEC;
 }
 
 /** The bee's get_next: claim the next work-item per the bee's stored spec (the global floors always apply). */

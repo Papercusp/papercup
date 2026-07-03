@@ -17,6 +17,13 @@ import { reconcileLoopRoutines } from './reconcile-loop-routines';
  *  stuck-backstop re-arm behavior (WI-1399 added a guard check ahead of every stuck-backstop
  *  re-arm — these tests pin it to "no breach" so the original re-arm assertions still hold). */
 const NEVER_BREACH_GUARD = vi.fn(async () => ({ breach: false }) as { breach: boolean; reason?: string });
+
+/** HERMETIC wrapper — do NOT call reconcileLoopRoutines bare. fakeSql intercepts the SQL,
+ *  but the DEFAULT recordFire/readFireState bind getOrgPg() — the LIVE dev database — so a
+ *  bare call leaks fire-state writes into dev PG (the EI-7006 time-bomb flake, 2026-07-03).
+ *  Explicit injections in `o` still win (spread order). */
+const reconcile = (o: NonNullable<Parameters<typeof reconcileLoopRoutines>[0]>) =>
+  reconcileLoopRoutines({ recordFire: async () => {}, readFireState: async () => null, ...o });
 /** No prior error streak, by default, for tests that don't care about the stuck-fire count. */
 const NO_PRIOR_ERRORS = vi.fn(async () => null);
 
@@ -60,7 +67,7 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
       updates,
     );
     const recordFire = vi.fn(async () => {});
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000, recordFire });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000, recordFire });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id: 'rt-1', via: 'lifecycle' });
     expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 60_000); // completed + interval, from the string ts
@@ -88,7 +95,7 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 70_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 70_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
   });
@@ -126,7 +133,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect(updates).toHaveLength(0); // no re-arm UPDATE — the loop stays parked until the cold turn settles
   });
@@ -143,7 +150,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       updates,
     );
     const recordFire = vi.fn(async () => {});
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 95_000, recordFire });
+    const res = await reconcile({ sql, nowMs: T0 + 95_000, recordFire });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('lifecycle');
     expect(res.loops[0].nextFireAt).toBe(T0 + 90_000 + 60_000); // completed + interval, off the REAL settle
@@ -161,7 +168,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('lifecycle');
   });
@@ -180,7 +187,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 50_000 });
+    const res = await reconcile({ sql, nowMs: T0 + 50_000 });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('note-refresh');
     expect(res.loops[0].nextFireAt).toBe(T0 + 45_000 + 60_000);
@@ -202,7 +209,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 100_000 }); // 95s quiet — old code re-fired here
+    const res = await reconcile({ sql, nowMs: T0 + 100_000 }); // 95s quiet — old code re-fired here
     expect(res.rearmed).toBe(0);
     expect(updates).toHaveLength(0); // parked until real evidence (or the stuck-park backstop retries)
   });
@@ -220,7 +227,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 100_000 }); // 70s quiet
+    const res = await reconcile({ sql, nowMs: T0 + 100_000 }); // 70s quiet
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
   });
@@ -285,7 +292,7 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
       ],
       updates,
     );
-    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 5_000, recordFire });
+    const res = await reconcile({ sql, nowMs: T0 + 5_000, recordFire });
     expect(res.rearmed).toBe(0);
     expect(recordFire).not.toHaveBeenCalled();
   });

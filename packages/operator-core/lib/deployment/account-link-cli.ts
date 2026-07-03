@@ -173,9 +173,13 @@ export interface StartCliLinkInput {
 export type StartCliLinkResult =
   | { ok: true; authorizeUrl: string; linkId: string; provider: AccountProvider; userCode?: string }
   | { ok: false; error: string };
+export interface StartCliLinkDeps {
+  /** Override the wait for the CLI's authorize URL (ms). Tests inject a small value. */
+  startTimeoutMs?: number;
+}
 
 /** Spawn the provider CLI and capture the browser-login URL it prints; hold the process. */
-export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLinkResult> {
+export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkDeps = {}): Promise<StartCliLinkResult> {
   const accountId = input.accountId?.trim();
   if (!accountId || !ID_RE.test(accountId)) {
     return { ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' };
@@ -222,9 +226,10 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
   };
   links.set(linkId, entry);
 
+  const startTimeoutMs = deps.startTimeoutMs ?? START_TIMEOUT_MS;
   const url = await readUntil(pty, () => entry.buf, (d) => {
     entry.buf += d;
-  }, provider === 'codex' ? CODEX_URL_RE : URL_RE, START_TIMEOUT_MS);
+  }, provider === 'codex' ? CODEX_URL_RE : URL_RE, startTimeoutMs);
 
   if (!url) {
     // Surface WHY: the CLI's own output tail (a real failure explains itself), or — when the pty
@@ -241,7 +246,7 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
   if (provider === 'codex') {
     const userCode = await readUntil(pty, () => entry.buf, (d) => {
       entry.buf += d;
-    }, CODEX_USER_CODE_RE, START_TIMEOUT_MS);
+    }, CODEX_USER_CODE_RE, startTimeoutMs);
     if (!userCode) {
       cleanup(linkId);
       return { ok: false, error: 'the Codex CLI did not produce a device code' };

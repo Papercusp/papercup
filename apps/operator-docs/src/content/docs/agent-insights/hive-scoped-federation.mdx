@@ -96,6 +96,21 @@ harness, and the `harness:create { hive }` create-time path
 (`agent-tools/harness/create-hive-membership.ts`). Until something sets
 `hive_slug`, a Hive has only its home and no members.
 
+**Boot-storm robustness (2026-07-03, WI-1892/P-059).** `boot-all.ts`'s
+`bootSingleHarness` races each harness's boot against a timeout (default 30s, now
+operator-tunable via `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`) — but a timed-out race
+does NOT unwind the underlying `bootHarness`: it keeps running detached, holding
+the corestore lock and (once it gets there) the joined swarm topic with no
+registered handle, so peers see a zombie endpoint that answers announces but never
+drains/replicates. Live-observed on a 35-substrate boot storm: 16/35 harnesses on
+one bg-host stuck this way. Until true cancellation lands, the raced boot promise
+is now retained and, if it settles AFTER the timeout, **adopted** — the handle is
+registered and the send-side wired exactly as the happy path would — unless a
+newer boot for the same key already won, in which case the late one is closed to
+release its corestore. Relevant here because this is the same boot path the
+per-Hive admission union (above) runs inside; a zombied boot under a large Hive
+(many member harnesses booting at once) is exactly the failure mode this guards.
+
 ## Track A — coord content + presence
 
 - **Content (messages / conversations / threads / work / plans / settings)** rides
@@ -111,6 +126,14 @@ harness, and the `harness:create { hive }` create-time path
   `hive_slug`** (resolved once via `hiveHomeSlugForHarness`) and projected into
   `shared_presence.hive_slug` (mig 187) — which is exactly what the Hive lock
   authority elects over.
+  - **2026-07-03 (P-301):** each announced session is now also stamped with
+    `fleet_slug`/`fleet_role`, batch-resolved via `fetchPresenceFleet(ownerIds)`
+    (one lookup for the whole announce, not N) and folded into the dedup hash
+    alongside `owner_id`/`intent`/`plan_slug`. This is what lets `@fleet:<slug>`
+    pattern-awaits and fleet-membership lookups resolve a fleet's members **across
+    machines** over the same Hive-federated presence channel — best-effort (a
+    lookup failure just leaves `fleet_slug`/`fleet_role` null; it never fails the
+    announce).
 
 ## Track B — lock authority is the HIVE's (P-009)
 

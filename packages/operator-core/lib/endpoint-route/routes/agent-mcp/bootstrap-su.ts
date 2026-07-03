@@ -26,7 +26,6 @@ import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspa
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { markAdvSessionEnded, reactivateAdvSession, recordAdvSession } from '../../../adv-sessions';
-import { setPendingFleet } from '../../../agent-tools/coordination/presence';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -411,6 +410,46 @@ export async function resolveFleet(
     };
   } catch (e: any) {
     return { env: {}, notice: `fleet selection skipped (${e?.message ?? e}).`, fleetSlug: null, fleetRole: null };
+  }
+}
+
+/**
+ * WI-1893 (cluster-safe fleet stamp): append the launched agent's fleet-membership
+ * FACT at boot — durable (harness_shared.fleet_membership_events, WI-1345),
+ * worker-agnostic. The prior mechanism (`setPendingFleet`, WI-1343) registered an
+ * IN-MEMORY pending placement in whichever cluster worker served bootstrap; the
+ * member's first presence write usually lands on a DIFFERENT worker (:3070 is
+ * node:cluster + SO_REUSEPORT), so the placement was silently lost and the member
+ * registered presence with fleet_slug=null — the 2026-07-03 backlog-clearance batch
+ * lost ALL 10 members this way despite `--fleet=<slug>` on every argv. The durable
+ * fact + the mig-430 triggers cover both orders: fact-first (materialize_presence_
+ * fleet_trg fires on the presence-row INSERT) and row-first (project_fleet_
+ * membership_trg fires on the fact INSERT). Populate-once (IfAbsent) so a re-POSTed
+ * bootstrap (psu --resume) never clobbers a leadership promotion recorded since.
+ *
+ * Returns null on success, or the error message — the caller decides loud vs soft
+ * (both bootstrap routes fail LOUD when a fleet was explicitly requested, per the
+ * WI-1408 no-ghost-member rule).
+ */
+export async function stampFleetMembershipAtBoot(opts: {
+  workspaceId: string;
+  ownerId: string;
+  ownerLabel?: string | null;
+  fleetSlug: string;
+  fleetRole?: string | null;
+}): Promise<string | null> {
+  try {
+    const { appendFleetMembershipIfAbsent } = await import('../../../fleet-membership-store');
+    await appendFleetMembershipIfAbsent({
+      workspaceId: opts.workspaceId,
+      ownerId: opts.ownerId,
+      ownerLabel: opts.ownerLabel ?? null,
+      fleetSlug: opts.fleetSlug,
+      fleetRole: opts.fleetRole ?? 'member',
+    });
+    return null;
+  } catch (e: any) {
+    return e?.message ?? String(e);
   }
 }
 
@@ -886,6 +925,30 @@ const post = defineTool({
       );
     }
 
+    // WI-1893 (cluster-safe fleet stamp): append the DURABLE membership fact NOW —
+    // before any bookkeeping (recordAdvSession/armInboxWake), same no-ghost ordering
+    // as the WI-1408 guard above. Replaces the in-memory setPendingFleet placement
+    // (WI-1343), which lived in ONE cluster worker and was lost when the member's
+    // first presence write landed on another — see stampFleetMembershipAtBoot.
+    if (fleetPin.fleetSlug) {
+      const stampErr = await stampFleetMembershipAtBoot({
+        workspaceId: workspace,
+        ownerId: sid,
+        ownerLabel: body.label?.trim() || null,
+        fleetSlug: fleetPin.fleetSlug,
+        fleetRole: fleetPin.fleetRole,
+      });
+      if (stampErr) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: `fleet membership stamp failed: ${stampErr} — refusing to launch a member that would be invisible to its fleet (WI-1893).`,
+          },
+          409,
+        );
+      }
+    }
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
@@ -923,19 +986,9 @@ const post = defineTool({
     // explicitly chose this account, so route there with no failover (stricter than the bees' soft pins).
     const accountPin = await resolveAccountPin(workspace, body.account, agent, sid, true);
 
-    // WI-1343 (psu-fleet-presence): STAMP the fleet membership onto coord_presence
-    // at boot. The env-fold in writePresence (deriveFleetMembership) reads the
-    // OPERATOR's process.env — NOT the agent's — so a psu `--fleet=<slug>` launch
-    // (which pins PAPERCUSP_FLEET_SLUG on the AGENT's process) never reached it, and
-    // the agent registered presence with fleet_slug=null → INVISIBLE to fleet:status
-    // (the "lost batch" bug). Register a PENDING placement keyed by this session's
-    // coord owner id (sid == coord_presence.owner_id), in this SAME operator process:
-    // the agent's FIRST presence write (coord:orient/declare-intent) applies it as an
-    // authoritative hard-set — the exact mechanism headless bees use (bee:spawn),
-    // and the same effect as the agent running fleet:join. Best-effort + one-shot.
-    if (fleetPin.fleetSlug) {
-      setPendingFleet(sid, fleetPin.fleetSlug, fleetPin.fleetRole ?? 'member');
-    }
+    // WI-1343's in-memory setPendingFleet placement used to live here; replaced by the
+    // durable membership-fact stamp above (WI-1893 — the map was per-cluster-worker and
+    // lost placements when the member's first presence write hit another worker).
 
     // Fleet-launched agents start AUTONOMOUS (WI-1356): a fleet member has no human
     // at its keyboard, so `--fleet` (or an explicit `--auto`) launches it in AUTO

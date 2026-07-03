@@ -11,7 +11,7 @@ const h = vi.hoisted(() => {
     written: [] as string[],
     killed: 0,
     outcome: 'token' as 'token' | 'reject',
-    mode: 'claude' as 'claude' | 'codex',
+    mode: 'claude' as 'claude' | 'codex' | 'no-url',
   };
   const makePty = () => ({
     onData: (cb: (d: string) => void) => {
@@ -41,7 +41,9 @@ const h = vi.hoisted(() => {
     setTimeout(() => state.dataCbs.forEach((cb) => cb(
       state.mode === 'codex'
         ? 'Open this link:\r\nhttps://auth.openai.com/codex/device\r\nEnter this one-time code\r\nABCD-12345\r\n'
-        : 'Open this URL:\r\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=X&scope=user:inference&state=s\r\nPaste code: ',
+        : state.mode === 'no-url'
+          ? '\x1b[31mError: unable to reach claude.ai (proxy refused)\x1b[0m\r\n'
+          : 'Open this URL:\r\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=X&scope=user:inference&state=s\r\nPaste code: ',
     )), 0);
     return p;
   });
@@ -82,7 +84,7 @@ vi.mock('./account-pool', () => ({
 }));
 vi.mock('./account-pool-store', () => ({ updateAccountPool: h.updateAccountPool, accountStatus: h.accountStatus }));
 
-import { startCliLink, completeCliLink, __resetCliLinksForTest } from './account-link-cli';
+import { startCliLink, completeCliLink, resolveCliBin, __resetCliLinksForTest } from './account-link-cli';
 
 afterEach(() => {
   __resetCliLinksForTest();
@@ -190,5 +192,46 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     const r = await startCliLink({ accountId: 'bad id!' });
     expect(r.ok).toBe(false);
     expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  // WI-1917 (2026-07-03): the no-URL failure used to swallow the CLI's output and blame PATH
+  // unconditionally — the error must carry what the CLI ACTUALLY said so the next incident
+  // self-explains instead of costing another spelunk.
+  it('startCliLink surfaces the CLI output tail when no authorize URL appears', async () => {
+    h.state.mode = 'no-url';
+    const r = await startCliLink({ accountId: 'acme' }, { startTimeoutMs: 50 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('did not produce an authorize URL');
+    expect(r.error).toContain('unable to reach claude.ai (proxy refused)');
+  });
+});
+
+describe('resolveCliBin — CLI binary resolution for stripped-PATH operator hosts (WI-1917)', () => {
+  it('an explicit env override wins verbatim, no existence check', () => {
+    expect(resolveCliBin('claude', { CLAUDE_BIN: '/custom/claude' })).toBe('/custom/claude');
+    expect(resolveCliBin('codex', { CODEX_BIN: '/custom/codex' })).toBe('/custom/codex');
+  });
+
+  it('finds the binary on a PATH entry', async () => {
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'clibin-'));
+    try {
+      writeFileSync(join(dir, 'claude'), '#!/bin/sh\n');
+      chmodSync(join(dir, 'claude'), 0o755);
+      expect(resolveCliBin('claude', { PATH: `/does-not-exist-xyz:${dir}` })).toBe(join(dir, 'claude'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back past a claude-less PATH instead of failing (well-known dirs, else the bare name)', () => {
+    // The 2026-07-03 staging incident: a stale systemd env whose PATH lacked ~/.local/bin. The
+    // resolver must keep going — a well-known install dir when one exists on the host, the bare
+    // name at worst — never silently pin the failure on the empty PATH alone.
+    const resolved = resolveCliBin('claude', { PATH: '/does-not-exist-xyz' });
+    expect(resolved.endsWith('/claude') || resolved === 'claude').toBe(true);
   });
 });

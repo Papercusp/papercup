@@ -106,16 +106,55 @@ export default defineTool({
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
-    beeId: z.string().min(1).describe('the bee to steer (its session/owner id)'),
-    spec: z
-      .record(z.string(), z.unknown())
-      .describe(
-        'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits? } — validated by validateClaimSpec',
-      ),
-  }),
+  args: z
+    .object({
+      beeId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('the bee to steer (its session/owner id) — exactly one of beeId | fleet'),
+      fleet: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'a FLEET slug to steer as a whole (fleet-scheduler-hardening P-002): stores the spec under the fleet:<slug> sentinel; every member WITHOUT a per-bee spec inherits it on their next get_next (bee spec → fleet spec → default). The standing-lane lever for fleet relaunches — fresh members inherit the lane with no per-bee re-authoring. A per-bee spec always wins over the fleet spec.',
+        ),
+      spec: z
+        .record(z.string(), z.unknown())
+        .describe(
+          'the claim spec: { specVersion, specId, revision, view:{ filter }, rank:{ mode, terms }, limits? } — validated by validateClaimSpec',
+        ),
+    })
+    .refine((a) => Boolean(a.beeId) !== Boolean(a.fleet), {
+      message: 'pass exactly ONE of beeId (steer one bee) or fleet (steer the whole fleet via inheritance)',
+    }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // Fleet target (P-002): validate the fleet exists (mirrors WI-1408 — a typo'd slug
+    // must fail loud, not store a spec no member will ever inherit), then store under
+    // the sentinel key. Membership-spec resolution happens bee-side in getClaimSpec.
+    let targetBeeId = args.beeId as string;
+    if (args.fleet) {
+      const fleetSlug = args.fleet.trim();
+      const wsForFleet =
+        ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined;
+      const { getFleet } = await import('../../agent-fleets-store');
+      const { activeWorkspaceId } = await import('../../workspace-registry');
+      const record = await getFleet(wsForFleet ?? activeWorkspaceId(), fleetSlug);
+      if (!record) {
+        return {
+          data: {
+            ok: false,
+            errors: [
+              `fleet \`${fleetSlug}\` does not exist in this workspace — a fleet-level spec for it would never be inherited (check the slug, or create the fleet first)`,
+            ],
+          },
+        };
+      }
+      const { fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
+      targetBeeId = fleetSpecBeeKey(fleetSlug);
+    }
     // P-016 (cross-machine-coord-parity): federate the spec when the queen is in a
     // single shared-hive workspace, so a bee pulling on ANOTHER machine sees it.
     // ctx harness wins (a harness-scoped queen); else the workspace's one shared
@@ -141,7 +180,7 @@ export default defineTool({
     // outbox handle no drain serves, so a hive-scoped spec NEVER federated.
     // The reader (scheduler:get_next) resolves through the SAME helper.
     const res = await setClaimSpec({
-      beeId: args.beeId,
+      beeId: targetBeeId,
       workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
       spec: args.spec,
       updatedBy: ident.ownerId,
@@ -156,9 +195,10 @@ export default defineTool({
     // factory push-role, attach a prominent `warning`. Advisory ONLY (not a hard reject): the beeId
     // may be a session id with no nursery row, a queen, or an su fleet member — none of which warn
     // (su-loop-capability-parity P-003: no false-positive on every SU fleet member).
-    const spawnedRole = await lookupSpawnedRole(args.beeId);
+    // (Skipped for a FLEET target — the sentinel key is not a spawned agent.)
+    const spawnedRole = args.fleet ? null : await lookupSpawnedRole(targetBeeId);
     const out: Record<string, unknown> = { ...res };
-    const roleWarning = claimSpecInertWarning(args.beeId, spawnedRole);
+    const roleWarning = args.fleet ? null : claimSpecInertWarning(targetBeeId, spawnedRole);
     if (roleWarning) {
       // Append — never clobber the store's WI-1564 strand warning.
       out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;

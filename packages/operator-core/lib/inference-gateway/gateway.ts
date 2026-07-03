@@ -1839,7 +1839,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   function sendJson(res: http.ServerResponse, status: number, body: unknown, extra?: Record<string, string>) {
     res.writeHead(status, { 'content-type': 'application/json', ...extra });
-    res.end(JSON.stringify(body));
+    // Scrub the SERIALIZED body: error messages built from upstream/runtime exceptions can embed a
+    // live credential (the 2026-07-03 invalid-header 502 echoed a full sk-ant-oat token to every
+    // caller's terminal). sendJson only carries gateway-authored error/status/admin bodies — never
+    // proxied model output — so a blanket scrub here is safe and covers every call site at once.
+    res.end(scrubSecrets(JSON.stringify(body)));
   }
 
   /** Max distinct local backends to try for one incoming request before giving up (in-request
