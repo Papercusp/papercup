@@ -180,3 +180,36 @@ describe('routing-gate is N/A for an AUTO-on fleet MEMBER (WI-1848 / WI-1849)', 
     expect(c.passed).toBe(false);
   });
 });
+
+describe('plan-execution delegationSatisfied — delegating LEADER via fleet:launch-on-plan (WI-1850)', () => {
+  // A leader who cleanly launches a fleet (delegates execution) should pass plan-execution
+  // even without any work_items_claim or work_items_complete calls.
+  const t = parseTranscript([
+    modelChange('maxwell1500/ornith-35b:IQ3_M'),
+    toolCall('fleet_launch_on_plan', { name: 'test-fleet', plan: 'p', count: 2, agent: 'omp' }),
+  ]);
+
+  it('PASSES plan-execution when fleet:launch-on-plan is called cleanly (delegation path)', () => {
+    const c = byId(t, ORNITH_CTX)['plan-execution'];
+    expect(c.passed).toBe(true);
+    expect(c.metrics.delegationPath).toBe(true);
+  });
+
+  it('overall verdict passes with delegation path (no traditional claim/complete needed)', () => {
+    const report = buildReport(runChecks(t, ORNITH_CTX));
+    expect(report.verdict).toBe('pass');
+    expect(report.criticalFailures).not.toContain('plan-execution');
+  });
+
+  it('TRADITIONAL path still passes — claim + in_progress + complete still works', () => {
+    const t = parseTranscript([
+      modelChange('maxwell1500/ornith-35b:IQ3_M'),
+      toolCall('work_items_claim', { ids: ['WI-1'] }),
+      toolCall('work_items_set_state', { items: [{ id: 'WI-1', state: 'in_progress' }] }),
+      toolCall('work_items_complete', { items: [{ id: 'WI-1', completion: { summary: 'done' } }] }),
+    ]);
+    const c = byId(t, ORNITH_CTX)['plan-execution'];
+    expect(c.passed).toBe(true);
+    expect(c.metrics.delegationPath).not.toBe(true);
+  });
+});
