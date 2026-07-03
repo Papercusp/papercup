@@ -83,7 +83,7 @@ export default defineTool({
       .optional()
       .describe('SESSION override of the model-tier menu (weakest→strongest) for the running fleet (D-006). null / [] clears it (use the workspace default).'),
     tierCeilings: z
-      .record(z.string().max(60))
+      .record(z.string(), z.string().max(60))
       .nullable()
       .optional()
       .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"bee":"opus:xhigh"} pins every bee.'),
@@ -120,7 +120,7 @@ export default defineTool({
       .optional()
       .describe('P-009 (ADVISORY): decomposition-aggressiveness hint the Queen reads in her wake brief — serial ↔ balanced ↔ max-parallel lanes. null clears it (Queen\'s own judgement).'),
     modelOverrides: z
-      .record(z.string().max(120))
+      .record(z.string(), z.string().max(120))
       .nullable()
       .optional()
       .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the fleet:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),

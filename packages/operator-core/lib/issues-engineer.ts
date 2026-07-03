@@ -540,12 +540,32 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
 
 export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
+  const ws = issuesScopeWorkspace();
+  // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
+  // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
+  // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
+  const prev = await sql<{ assignee: string | null }[]>`
+    SELECT assignee FROM harness_shared.engineer_issues WHERE workspace_id = ${ws} AND issue_id = ${id}`;
+  const formerAssignee = prev[0]?.assignee ?? null;
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+     WHERE workspace_id = ${ws} AND issue_id = ${id}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
+  // EI-6480: harness-agnostic (issue ids are globally unique), flag-gated, best-effort lease
+  // cleanup so the released issue is IMMEDIATELY re-claimable, not lease-poisoned until TTL.
+  // Covers every voluntary release path (work_items:release + the improvement resolve-core
+  // paths) and every scope (operator-scope issues, whose bare harness releaseWorkItem can't
+  // recover, are the confirmed-failing case). Dynamic import avoids a static cycle.
+  if (formerAssignee) {
+    // Workspace defaults to activeWorkspaceId() inside releaseIssueClaimLease — the workspace
+    // leaseClaimedWorkItem keyed the lease under at acquire (which is NOT necessarily the
+    // issue's scope-workspace `ws`); passing `ws` here would miss the lease if they diverge.
+    void import('./work-item-claim-lease-wiring')
+      .then((m) => m.releaseIssueClaimLease({ workItemId: id, owner: formerAssignee }))
+      .catch(() => {});
+  }
   await deliver(issue, 'updated', `issue ${id} released (unassigned)`);
   return issue;
 }

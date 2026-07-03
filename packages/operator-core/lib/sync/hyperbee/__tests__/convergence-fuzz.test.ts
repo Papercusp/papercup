@@ -164,20 +164,30 @@ describe('WI-1672 — exact fed_hlc ties under the PRODUCTION topology (skipOwnO
   });
 });
 
-describe('WI-1684 — local-del resurrection under skipOwnOps (no tombstone): a SEPARATE open gap', () => {
-  // Found while fixing WI-1672: an author DELETES a row locally (trigger path —
-  // row gone, NO tombstone) and its own del is skipOwnOps-excluded from its own
-  // fold. A CONCURRENT foreign put with a LOWER hlc then wins the author's fold
-  // among foreign ops alone and hits the projection's no-row insert path, which
-  // has nothing to arbitrate against → the row is resurrected on the author
-  // peer ONLY. Every other peer folds del + put together, the del wins, the row
-  // stays deleted: split-brain on row PRESENCE. Node ids (migration 459) cannot
-  // fix this — it is a missing-tombstone gap, not an ordering tie.
-  // CHARACTERISATION/TEETH: pins that the gap exists TODAY. Flip to a
-  // convergence assertion when WI-1684 lands a fix (tombstones, or folding own
-  // ops into the winners map).
-  it('TEETH: dels + production topology diverge on row presence even WITH node ids', async () => {
-    let diverged = 0;
+describe('WI-1684 — local-del resurrection under skipOwnOps (candidate b: own del envelopes join the winners map)', () => {
+  // The bug (found while fixing WI-1672): an author DELETES a row locally (trigger
+  // path — row gone, NO tombstone) and, pre-fix, its own del was skipOwnOps-
+  // excluded from its own fold ENTIRELY. A CONCURRENT foreign put with a LOWER
+  // hlc then won the author's fold among foreign ops alone and hit the
+  // projection's no-row INSERT path, which has nothing to arbitrate against → the
+  // row was resurrected on the author peer ONLY. Every other peer folds del + put
+  // together, the del wins, the row stays deleted: silent split-brain on row
+  // PRESENCE. Node ids (migration 459) cannot fix this — the store never gets to
+  // make the comparison (no row to guard against).
+  //
+  // FIX (candidate b, DEL-ONLY): the author's own DEL envelopes now participate in
+  // `cursor.winners` for ORDERING (mirroring how the merge core keeps a del
+  // envelope in the winners map), while the APPLY of own ops stays skipped
+  // (skipOwnOps — already materialised locally). The winning del is now in the
+  // winners map before a foreign op folds, so a lower-hlc foreign put is gated
+  // before it can reach the no-row insert path. Own PUTS remain guard-arbitrated
+  // (WI-1672's node-id total order handles put-vs-put), so this fix is orthogonal
+  // to — and does not disturb — the WI-1672 characterisation above (delProb:0).
+  // RELEASE INVARIANT: the SAME production topology (skipOwnOps + lockstep + node
+  // ids) that split-brained on row presence pre-fix now FULLY CONVERGES on every
+  // seed, dels included.
+  it(`FIXED: dels + production topology converge on row presence — all ${SWEEP} seeds`, async () => {
+    const failures: Array<{ seed: number; distinct: string[] }> = [];
     for (let seed = 1; seed <= SWEEP; seed++) {
       const r = await runConvergenceFuzz({
         seed,
@@ -187,11 +197,11 @@ describe('WI-1684 — local-del resurrection under skipOwnOps (no tombstone): a 
         regime: 'monotone',
         lockstep: true,
         localAuthorApply: true,
-        nodeIds: true, // the WI-1672 fix is ON — and does not help here
+        nodeIds: true,
         delProb: 0.12,
       });
-      if (!r.converged) diverged++;
+      if (!r.converged) failures.push({ seed, distinct: r.distinct });
     }
-    expect(diverged).toBeGreaterThan(0);
+    expect(failures).toEqual([]);
   });
 });

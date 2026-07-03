@@ -132,13 +132,14 @@ export async function releaseIssueClaimLease(opts: {
   workItemId: string;
   owner: string | null | undefined;
   workspaceId?: string;
-}): Promise<void> {
-  if (!claimLeaseOn || !opts.owner) return;
+}): Promise<boolean> {
+  if (!claimLeaseOn || !opts.owner) return false;
   try {
     const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-    await releaseClaimForItemByOwnerLocal({ workspaceId, workItemId: opts.workItemId, owner: opts.owner });
+    return await releaseClaimForItemByOwnerLocal({ workspaceId, workItemId: opts.workItemId, owner: opts.owner });
   } catch {
     // best-effort — see releaseWorkItemLease's doc comment (a stale lease is a DX papercut).
+    return false;
   }
 }
 

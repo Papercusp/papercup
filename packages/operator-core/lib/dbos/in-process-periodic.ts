@@ -398,6 +398,14 @@ const staleClaimSweepCheck: PeriodicCheck = {
           ir.released.map((c) => `${c.issue_id}[${c.kind}]<-${c.former_assignee}`).join(', '),
       );
     }
+    // EI-6480: the sweep also cleared orphaned per-Hive claim leases (stale leases surviving a
+    // taken_by-clear that made an unclaimed issue fail lease arbitration for every new claimer).
+    if (ir.orphanLeasesCleared > 0) {
+      console.warn(
+        `[stale-claims] cleared ${ir.orphanLeasesCleared} orphaned issue-family claim lease(s) ` +
+          `(EI-6480 stale-lease class — item was unclaimed yet lease-poisoned)`,
+      );
+    }
 
     // The PLAN-ITEM analog (EI-179): delete claims whose lease lapsed past grace AND
     // whose holder is gone. The durable ASSIGNMENT (mig 140) is untouched HERE — the

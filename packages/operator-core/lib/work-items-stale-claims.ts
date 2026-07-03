@@ -328,6 +328,9 @@ export interface ReleasedIssueClaim {
 
 export interface StaleIssueSweepResult {
   released: ReleasedIssueClaim[];
+  /** EI-6480: how many stale per-Hive claim leases the sweep cleared (per-row + orphan-GC).
+   *  0 when the WORKITEM_CLAIM_LEASE flag is off (nothing to clean up). */
+  orphanLeasesCleared: number;
 }
 
 /**
@@ -366,5 +369,38 @@ export async function reclaimStaleIssueClaims(
       FROM dead d
      WHERE e.workspace_id = d.workspace_id AND e.issue_id = d.issue_id
     RETURNING d.workspace_id, d.issue_id, d.kind, d.former_assignee, d.assigned_by`;
-  return { released };
+  // EI-6480: clear the stale per-Hive claim LEASE for every issue this sweep just returned to
+  // the OPEN pool. Unlike the feature reaper (whose work_items.harness_slug IS the bare lease
+  // key), an issue lease is keyed on the claiming agent's bare harness which engineer_issues
+  // can't reconstruct — so we key on owner+item (issue ids are globally unique). We ALSO run a
+  // bounded orphan-GC pass so the historical backlog AND any other taken_by-clearing path that
+  // skipped cleanup are healed (the durable class-killer). Gated + best-effort; a no-op — and a
+  // byte-identical sweep — when WORKITEM_CLAIM_LEASE is off. Dynamic import keeps the lease
+  // wiring off this module's static graph.
+  let orphanLeasesCleared = 0;
+  try {
+    const { workItemClaimLeaseEnabled, releaseIssueClaimLease, gcOrphanIssueLeases } = await import(
+      './work-item-claim-lease-wiring'
+    );
+    if (workItemClaimLeaseEnabled()) {
+      // Precise, immediate cleanup for the rows JUST reaped (owner+item, workspace defaulted to
+      // the lease's activeWorkspaceId() — symmetric with leaseClaimedWorkItem's acquire key).
+      for (const r of released) {
+        try {
+          if (await releaseIssueClaimLease({ workItemId: r.issue_id, owner: r.former_assignee })) {
+            orphanLeasesCleared += 1;
+          }
+        } catch {
+          // best-effort — a stale-lease cleanup miss must never fail the reap sweep
+        }
+      }
+      // Self-healing safety net: sweep any stale claim_next lease on an unclaimed non-terminal
+      // issue (historical orphans + any path that skipped the per-row cleanup). Counts leases the
+      // per-row pass didn't already remove.
+      orphanLeasesCleared += await gcOrphanIssueLeases();
+    }
+  } catch {
+    // best-effort — lease cleanup must never fail the reap sweep
+  }
+  return { released, orphanLeasesCleared };
 }
