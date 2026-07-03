@@ -21,6 +21,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 // --- Mock the docs-engine so no real fs/content tree is read. ----------------
 // Each engine fn returns a recognizable payload; adapter factories return an

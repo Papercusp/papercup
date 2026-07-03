@@ -32,6 +32,10 @@ import {
   noteToolCallRepeat,
   resetToolCallLoopState,
   loopBreakReason,
+  SHELL_CALLS_PER_TURN_LIMIT,
+  isShellTool,
+  noteShellCall,
+  shellBudgetReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -352,6 +356,84 @@ describe('onToolCall doom-loop breaker (agent sessions only)', () => {
     });
     expect(r.block).toBe(true);
     expect(r.reason).toContain('shared-tree guard'); // git message, not the loop message
+  });
+});
+
+describe('isShellTool + shellBudgetReason (per-turn shell budget)', () => {
+  it('recognizes bash/shell (case-insensitive), not other tools', () => {
+    expect(isShellTool('bash')).toBe(true);
+    expect(isShellTool('Bash')).toBe(true);
+    expect(isShellTool('shell')).toBe(true);
+    expect(isShellTool('read')).toBe(false);
+    expect(isShellTool('resolve')).toBe(false);
+  });
+  it('the steer says converge-or-report and keeps non-shell tools open', () => {
+    const r = shellBudgetReason(41);
+    expect(r).toContain('41 shell commands');
+    expect(r).toMatch(/converg|report/i);
+    expect(r).toContain('Non-shell tools remain available');
+  });
+});
+
+describe('onToolCall shell budget (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+    resetToolCallLoopState();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  // A distinct bash command each call, so the identical-repeat breaker never fires
+  // and we isolate the budget (the EI-7092 wandering-search shape).
+  const wanderingBash = (n: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: `b${n}`,
+      input: { command: `grep -rn "sym_${n}" /repo` },
+    });
+
+  it('allows shell calls up to the budget, blocks the one past it with a converge steer', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let n = 1; n <= SHELL_CALLS_PER_TURN_LIMIT; n++) {
+      expect((await wanderingBash(n)).block).toBeUndefined();
+    }
+    const over = await wanderingBash(SHELL_CALLS_PER_TURN_LIMIT + 1);
+    expect(over.block).toBe(true);
+    expect(over.reason).toContain('shell-budget');
+  });
+
+  it('non-shell tools stay OPEN after the budget is spent (so the model can still report/finish)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let n = 1; n <= SHELL_CALLS_PER_TURN_LIMIT + 3; n++) await wanderingBash(n);
+    const read = await onToolCall({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'r',
+      input: { path: 'a.ts' },
+    });
+    expect(read.block).toBeUndefined();
+  });
+
+  it('resets per turn — a fresh turn restores the full shell budget', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let n = 1; n <= SHELL_CALLS_PER_TURN_LIMIT + 1; n++) await wanderingBash(n);
+    resetToolCallLoopState(); // turn_start
+    expect((await wanderingBash(999)).block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    for (let n = 1; n <= SHELL_CALLS_PER_TURN_LIMIT + 5; n++) {
+      expect((await wanderingBash(n)).block).toBeUndefined();
+    }
   });
 });
 

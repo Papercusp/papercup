@@ -1677,6 +1677,14 @@ export async function onToolCall(
     if (runLen >= IDENTICAL_CALL_LOOP_LIMIT) {
       return { block: true, reason: loopBreakReason(event.toolName, runLen) };
     }
+    // Per-turn shell budget (EI-7092 wandering-search half): once an agent session
+    // has spent its shell budget this turn, block further `bash`/`shell` calls with a
+    // converge-or-report steer. Only shell is throttled — read/grep/tools:invoke/
+    // coord:send stay open so the model can still finish or report. Placed after the
+    // specific bash guards (git/scheduler) so those still win at call #1.
+    if (isShellTool(event.toolName) && noteShellCall() > SHELL_CALLS_PER_TURN_LIMIT) {
+      return { block: true, reason: shellBudgetReason(_shellCallsThisTurn) };
+    }
   }
 
   // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui
