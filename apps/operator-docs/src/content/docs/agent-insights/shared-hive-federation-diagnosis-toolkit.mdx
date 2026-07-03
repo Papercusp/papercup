@@ -309,3 +309,42 @@ landed with no diagnostic signal at all.
   not merely-rostered ones.
 - `dogfood-substrate-boot-history` (verified-admin) is the admission ledger; read its
   `kind`/`message` to place the failure on the ladder before touching code.
+
+## Multi-process split-brain: the corestore-lock race + timeout-zombie ladder (P-059, 2026-07-03)
+
+When tower↔peer replication is dead BOTH directions with healthy transport, suspect the
+**tower's own process topology** before any protocol layer. On a dev box, several processes
+can host a workspace's substrate (bg-host boot-all, the dev-api cluster primary's
+shared-hive layer) and they RACE for the same corestore RocksDB lock — whoever wins decides
+which process (and therefore which **DHT config**) federates that hive. Ladder:
+
+1. **Find the corestore holder by fd, not by assumption:**
+   `for P in $(ls /proc | grep -E '^[0-9]+$'); do C=$(ls -l /proc/$P/fd 2>/dev/null | grep -c '<ws>/.papercusp/<harness>/hyperbee'); [ "$C" -gt 0 ] && echo "$P ($C)"; done`
+   The holder may be a deep descendant (sidecar), not the service MainPID.
+2. **Check each candidate host's DHT env** (`PAPERCUSP_DHT_BOOTSTRAP` / `PAPERCUSP_DHT_HOST`
+   in `/proc/<pid>/environ`). A holder on the isolated DHT is INVISIBLE to a peer on the
+   public DHT and vice versa — the outage flip-flops with every restart race.
+   ⚠ `PAPERCUSP_DHT_HOST` pins the UDP socket to one iface AND **leaks into spawned
+   shells** from a systemd drop-in — inside a container/other netns it makes the node
+   announce an undialable address ("joins succeed, neither ever dials", WI-1910 class).
+3. **The timeout-zombie (WI-1892):** `bootSingleHarness` races the boot against a timeout
+   (default 30s, env `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`). Under a 35-substrate boot storm
+   the timeout fires but the DETACHED boot keeps running: corestore locked + topic joined,
+   **no registered handle → outbox drain never wired**. Signature: `[hyperbee-substrate]
+   (<ws>::<slug>) failed: boot timeout` in the journal while the pid still holds hyperbee
+   fds and `[swarm] joined topic` fired; `substrate_outbox` rows pile up `drained_at IS NULL`.
+   Since 2026-07-03 a late-completing boot is ADOPTED (registered + wired) — a healthy boot
+   logs `late boot ADOPTED` instead of zombifying (regression tests in `boot-all.test.ts`).
+4. **Decode `[announce-debug]`** (`PAPERCUSP_ANNOUNCE_DEBUG=1`, swarm.ts): per connection you
+   want `mux → defer-open → create → open-request → open → recv/sent`. `create→open-request→
+   close` with **no `open`/`pair`** = the announce handshake never paired (zombie endpoint,
+   or the peer isn't a real substrate for that topic). `recv topic=… log=…` names the exact
+   remote log announced — verify it's the peer you think it is (a local sibling's log looks
+   identical at a glance).
+5. **A peer's registry decides what re-boots after ITS restart.** A joined-hive harness that
+   was never persisted (WI-971 class) silently vanishes on reboot: the peer reconnects, its
+   OTHER hives announce, and the one you're probing is simply absent — check the peer's
+   boot ring for `boot_start` of the specific (workspace::harness) before debugging admission.
+6. **Journal times are LOCAL (EDT here), not UTC** — `journalctl --since "16:45"` when you
+   mean 16:45Z silently returns nothing. Use direction-unique probe keys per attempt
+   (`p059:v2t:wakeN-<agent>`), never reuse a name in both directions (grep false-positives).
