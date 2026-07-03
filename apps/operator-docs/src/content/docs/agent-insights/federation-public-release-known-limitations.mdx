@@ -380,6 +380,32 @@ slug-filter frames while the hive-home projection slug is unresolved
 FIRST poll across all 8 scenarios — no restart, no adaptive re-fold rescue
 needed. This limitation is closed.
 
+### 10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)
+
+The post-min-bar backlog was given explicit verdicts under
+`shared-hive-p2p-release-readiness-2026-07-03` P-011 (full table:
+`shared-hive-release-testing/RELEASE-READINESS.md`). The standing
+ship-with-limitation rows, each with an accountable tracker:
+
+- **No un-revoke path (G8, WI-1855)** — revocation is one-way; un-banning a member
+  has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must
+  NOT retro-grant cut epochs).
+- **Membership teardown doesn't federate (G24/G27, WI-1857)** — dissolve publishes no
+  membership tombstone (peers' rows orphan out by TTL) and a leaver's `hive_members`
+  row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`;
+  the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap,
+  not a security hole.
+- **revoke() Hypercore session leak (G9, WI-1856)** — revoked members' core sessions
+  are not verifiably closed on the owner; unbounded only on long-lived owners with
+  many revokes.
+- **Usage-events metering is machine-local (G2, WI-1858)** — the
+  `contributor_usage_events` capture trigger is deliberately deferred to the GA
+  migration (completeness-guard exemption until then).
+- **From-repo joiner incremental federation (WI-971, OPEN)** — the outbox drain is
+  never wired for joined/created hive harnesses (WI-259 was closed as its duplicate).
+  If from-repo joins are v1 public scope this is release-critical, not a limitation
+  row — P-014 makes that scope call.
+
 ---
 
 ## Public-release checklist

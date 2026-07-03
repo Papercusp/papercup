@@ -31,6 +31,10 @@ import {
   type WorkspaceSubstrateSummary,
 } from './summary';
 import { collectSubstrateLogStats, type HarnessLogStats } from './log-stats';
+import {
+  getReplicationLiveness,
+  type HarnessReplicationLiveness,
+} from './replication-liveness';
 
 export interface InProcessHarnessHealth {
   workspaceId: string;
@@ -65,6 +69,16 @@ export interface InProcessSubstrateStatus {
    * harness is booted.
    */
   logStats: HarnessLogStats[];
+  /**
+   * P-004 (WI-1840, WI-183 class): per-harness replication-liveness snapshot —
+   * per admitted remote log, is replication actually ALIVE (replicator attached
+   * + ingest progressing), or connected-but-dead (`no_replicator` / `frozen`)?
+   * Also feeds each harness's health verdict (any stalled log ⇒ 'unhealthy').
+   * Empty when nothing is tracked (no remote logs sampled yet). NB: registry is
+   * process-local — under SUBSTRATE_SIDECAR mode the authoritative copy lives in
+   * the sidecar (read it via the `getReplicationLiveness` RPC method there).
+   */
+  replicationLiveness: HarnessReplicationLiveness[];
 }
 
 export interface GetInProcessStatusOpts {
@@ -136,6 +150,13 @@ export function getInProcessSubstrateStatus(
   // WI-899 (A): resolved ONCE per call (process-wide, not per-harness — see the
   // opt's doc comment) rather than re-probing per booted harness.
   const sidecarLive = resolveSidecarLive();
+  // P-004 (WI-1840): read-time replication-liveness snapshot, resolved once and
+  // joined per-harness below (feeds the health verdict + the status payload).
+  const replicationLiveness = getReplicationLiveness();
+  const livenessByKey = new Map<string, HarnessReplicationLiveness>();
+  for (const l of replicationLiveness) {
+    livenessByKey.set(`${l.workspaceId}::${l.harnessSlug}`, l);
+  }
 
   const harnesses: InProcessHarnessHealth[] = booted.map((h) => {
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
@@ -153,6 +174,17 @@ export function getInProcessSubstrateStatus(
       bootstrapProgress: bp ?? null,
       // EI-1618: a stalled outbox flips the verdict off 'healthy'.
       drainStats: drain,
+      // P-004 (WI-1840): connected-but-dead replication flips to 'unhealthy'.
+      replicationLiveness: (() => {
+        const l = livenessByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
+        return l
+          ? {
+              noReplicator: l.counts.noReplicator,
+              frozen: l.counts.frozen,
+              samplingStale: l.counts.samplingStale,
+            }
+          : undefined;
+      })(),
       // WI-899 (A): a confirmed-dead sidecar overrides everything above.
       sidecarLive,
     });
@@ -174,5 +206,7 @@ export function getInProcessSubstrateStatus(
     harnesses,
     // P-001/P-002: read-only per-harness log-growth + replay-cost snapshot.
     logStats: collectSubstrateLogStats(),
+    // P-004 (WI-1840): per-log replication-liveness verdicts.
+    replicationLiveness,
   };
 }

@@ -75,6 +75,22 @@ export interface SubstrateHealthInputs {
    * effect (never fabricates a verdict for a harness that boots in-process).
    */
   sidecarLive?: boolean | null;
+  /**
+   * P-004 (WI-1840, WI-183 class): per-harness replication-liveness rollup
+   * (from `getReplicationLiveness()` counts). A `noReplicator` or `frozen`
+   * admitted remote log means writes on that peer are SILENTLY diverging while
+   * everything else here can read "healthy" — the exact connected-but-dead
+   * failure class this input closes. Omitted/undefined = not measured (never
+   * fabricates a verdict).
+   */
+  replicationLiveness?: {
+    /** Logs that WERE replicating and have held 0 replicator peers past grace. */
+    noReplicator: number;
+    /** Logs with a replicator attached but ingest frozen past grace. */
+    frozen: number;
+    /** Logs the merge loop hasn't sampled recently (detector dead-man). */
+    samplingStale?: number;
+  };
   /** Override for tests; defaults to Date.now(). */
   nowMs?: number;
   /** mergedOps lagging highestSeen for this long → unhealthy. Default 5m. */
@@ -164,6 +180,31 @@ export function assessHarnessSubstrateHealth(
     } else if (ageMs >= drainStalled) {
       if (verdict === 'healthy') verdict = 'degraded';
       reasons.push(`outbox lagging: ${n} row(s) undrained for ${ageS}s`);
+    }
+  }
+
+  // P-004 (WI-1840): connected-but-dead replication. A stalled/frozen admitted
+  // remote log means that peer's writes are silently diverging RIGHT NOW —
+  // at least as severe as a stalled bootstrap, so worst-wins to 'unhealthy'.
+  // A merely-stale sampler (merge loop not feeding the registry) degrades:
+  // the detector itself is blind, which is a real signal but not proof of
+  // divergence.
+  if (inputs.replicationLiveness) {
+    const { noReplicator, frozen, samplingStale } = inputs.replicationLiveness;
+    if (noReplicator > 0 || frozen > 0) {
+      verdict = 'unhealthy';
+      const parts: string[] = [];
+      if (noReplicator > 0) parts.push(`${noReplicator} with no live replicator`);
+      if (frozen > 0) parts.push(`${frozen} attached-but-frozen`);
+      reasons.push(
+        `replication stalled on ${parts.join(' + ')} admitted remote log(s) — ` +
+          `peer writes silently diverging (WI-183 class)`,
+      );
+    } else if ((samplingStale ?? 0) > 0) {
+      if (verdict === 'healthy') verdict = 'degraded';
+      reasons.push(
+        `replication-liveness sampler stale for ${samplingStale} log(s) — merge loop may be wedged`,
+      );
     }
   }
 

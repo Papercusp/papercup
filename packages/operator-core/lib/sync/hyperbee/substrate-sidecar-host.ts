@@ -50,6 +50,7 @@ import type { SwarmBinding } from './derive-swarm-topic';
 import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { listBootHistory, bootHistoryDepth, type ListBootHistoryOpts } from './boot-history';
+import { getReplicationLiveness } from './replication-liveness';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -495,6 +496,19 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     const opts = (params ?? {}) as ListBootHistoryOpts;
     return { entries: listBootHistory(opts), depth: bootHistoryDepth() };
   }
+  // P-004 (WI-1840, WI-183 class): the replication-liveness registry is fed by
+  // the merge loop, which runs HERE under the sidecar flag — so this process
+  // holds the authoritative per-log liveness verdicts. Additive read-only RPC;
+  // same params shape as getReplicationLiveness's filter.
+  function handleGetReplicationLiveness(params: unknown): unknown {
+    const p = (params ?? {}) as { workspaceId?: string; harnessSlug?: string };
+    return {
+      harnesses: getReplicationLiveness({
+        workspaceId: p.workspaceId,
+        harnessSlug: p.harnessSlug,
+      }),
+    };
+  }
   async function handleRevoke(params: unknown): Promise<unknown> {
     const p = params as { storeId: string; devicePubkey: string };
     const rec = requireRecord(p.storeId);
@@ -655,6 +669,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     'substrate:getMergeStatus': handleGetMergeStatus,
     'substrate:getAdmittedLogs': handleGetAdmittedLogs,
     'substrate:getBootHistory': handleGetBootHistory,
+    'substrate:getReplicationLiveness': handleGetReplicationLiveness,
     'substrate:revoke': handleRevoke,
     'substrate:rekey': handleRekey,
     'substrate:ensureScopeParticipation': handleEnsureScopeParticipation,
