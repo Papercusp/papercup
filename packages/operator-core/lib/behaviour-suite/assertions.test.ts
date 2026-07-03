@@ -52,6 +52,75 @@ describe('behaviour-suite transcript parser', () => {
     expect(t.toolCalls[0].malformed).toBe(true);
     expect(t.toolCalls[0].args).toBeNull();
   });
+
+  // tools:invoke unwrap (run-7 2026-07-03: a weak-model leader made ALL its catalog calls
+  // through tools:invoke — the suite scored claimed=0/completed=0 because nothing unwrapped).
+  it('unwraps a tools:invoke wrapper into a visible inner catalog call (canonical underscore form)', () => {
+    const t = parseTranscript([
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', item: 'P-003', status: 'done' } }),
+    ]);
+    expect(t.toolCalls.map((c) => c.name)).toEqual(['tools:invoke', 'plans:set_status']);
+    const inner = t.toolCalls[1];
+    expect(inner.viaInvoke).toBe(true);
+    expect(inner.args).toEqual({ slug: 'p', item: 'P-003', status: 'done' });
+    expect(inner.argsRaw).toContain('"status":"done"');
+  });
+
+  it('unwrapped fleet:launch-on-plan satisfies the delegation path end-to-end', () => {
+    const t = parseTranscript([
+      userMsg('You have been handed this plan.'),
+      toolCall('plans_get', { slug: 'p' }),
+      asstText('Options: (A) myself (B) queen (C) launch a fleet — I recommend (C).'),
+      toolCall('tools_invoke', { name: 'fleet:launch-on-plan', args: { name: 'f', plan: 'p', count: 2 } }),
+    ]);
+    const checks = byId(t, { expectedModelSubstr: 'ornith' });
+    expect(checks['plan-execution'].passed).toBe(true);
+    expect(checks['plan-execution'].metrics?.delegationPath).toBe(true);
+  });
+
+  it('leaves a tools:invoke with a missing/malformed inner name un-unwrapped', () => {
+    const t = parseTranscript([
+      toolCall('tools_invoke', { args: { slug: 'p' } }),
+      toolCall('tools_invoke', { name: '', args: {} }),
+    ]);
+    expect(t.toolCalls.every((c) => c.name === 'tools:invoke')).toBe(true);
+  });
+});
+
+describe('completion-evidence catches bare plans:set-status done flips (run-7 false completions)', () => {
+  it('FAILS a run that flips items done via tools:invoke with no evidence and no edits', () => {
+    const t = parseTranscript([
+      userMsg('You have been handed this plan.'),
+      toolCall('plans_get', { slug: 'p' }),
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', item: 'P-003', status: 'done' } }),
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', item: 'P-009', status: 'done' } }),
+    ]);
+    const checks = byId(t, { expectedModelSubstr: 'ornith' });
+    expect(checks['completion-evidence'].na).toBeUndefined();
+    expect(checks['completion-evidence'].passed).toBe(false);
+    expect(checks['completion-evidence'].metrics?.planDoneFlips).toBe(2);
+    // and the run still fails overall via the critical plan-execution check
+    expect(buildReport(runChecks(t, { expectedModelSubstr: 'ornith' })).verdict).toBe('fail');
+  });
+
+  it('PASSES a done flip that carries verification evidence in its note', () => {
+    const t = parseTranscript([
+      toolCall('tools_invoke', {
+        name: 'plans:set-status',
+        args: { slug: 'p', item: 'P-003', status: 'done', note: 'verified in sync against sync-resolver/index.ts, no drift' },
+      }),
+    ]);
+    const checks = byId(t, { expectedModelSubstr: 'ornith' });
+    expect(checks['completion-evidence'].passed).toBe(true);
+  });
+
+  it('a non-done plans:set-status (wip) is NOT treated as a completion', () => {
+    const t = parseTranscript([
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', item: 'P-003', status: 'wip' } }),
+    ]);
+    const checks = byId(t, { expectedModelSubstr: 'ornith' });
+    expect(checks['completion-evidence'].na).toBe(true);
+  });
 });
 
 describe('behaviour checks — a clean ornith run passes', () => {

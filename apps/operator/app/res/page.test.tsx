@@ -34,6 +34,56 @@ vi.mock('nuqs', () => ({
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
+/* The account chip select is the Radix-based harness <Select> (page.tsx migrated off the
+ * native <select>). Mock @radix-ui/react-select to inert passthroughs — same approach as
+ * app/harness/Select.test.tsx — so items render inline (no portal / jsdom open-state
+ * flake): the Root stamps data-select-root + data-value (the selected value), each Item
+ * is role="option" with data-value, and CLICKING an item fires onValueChange (the real
+ * selection gesture). React.createElement (not JSX) because vi.mock factories hoist
+ * above the JSX runtime import. */
+vi.mock('@radix-ui/react-select', async () => {
+  const React = await import('react');
+  const Ctx = React.createContext<{ onValueChange?: (v: string) => void }>({});
+  const h = React.createElement;
+  type AnyProps = Record<string, unknown> & { children?: React.ReactNode };
+  return {
+    Root: ({ children, value, onValueChange, disabled }: AnyProps & { onValueChange?: (v: string) => void }) =>
+      h(
+        Ctx.Provider,
+        { value: { onValueChange } },
+        h('div', { 'data-select-root': '', 'data-value': value, 'data-disabled': disabled || undefined }, children),
+      ),
+    Trigger: ({ children, ...rest }: AnyProps) =>
+      h(
+        'button',
+        { type: 'button', 'aria-label': rest['aria-label'], 'data-testid': rest['data-testid'], id: rest.id },
+        children,
+      ),
+    Value: ({ placeholder }: AnyProps) => h('span', null, (placeholder as string) ?? null),
+    Icon: ({ children }: AnyProps) => h(React.Fragment, null, children),
+    Portal: ({ children }: AnyProps) => h(React.Fragment, null, children),
+    Content: ({ children }: AnyProps) => h('div', null, children),
+    Viewport: ({ children }: AnyProps) => h('div', null, children),
+    Group: ({ children }: AnyProps) => h('div', { role: 'group' }, children),
+    Label: ({ children }: AnyProps) => h('div', null, children),
+    Item: ({ children, value, disabled }: AnyProps) => {
+      const { onValueChange } = React.useContext(Ctx);
+      return h(
+        'div',
+        {
+          role: 'option',
+          'data-value': value,
+          'aria-disabled': disabled || undefined,
+          onClick: () => onValueChange?.(value as string),
+        },
+        children,
+      );
+    },
+    ItemText: ({ children }: AnyProps) => h(React.Fragment, null, children),
+    ItemIndicator: () => null,
+  };
+});
+
 import ResourcesPage from './page';
 
 const SLOT_REF = 'opus[1m]:xhigh:AUTO';
@@ -97,9 +147,12 @@ describe('/res Agent-seats group (P-003)', () => {
 
   it('the chip account select offers AUTO + only the fleet-allocated accounts', () => {
     render(<ResourcesPage />);
-    const select = screen.getByLabelText('opus[1m]·xhigh seats gateway account') as HTMLSelectElement;
-    expect(select.value).toBe('AUTO');
-    const opts = Array.from(select.options).map((o) => o.value);
+    // Radix Select (mocked inert above): the trigger carries the aria-label; the
+    // selected value is stamped on the mock Root; options render inline.
+    const trigger = screen.getByLabelText('opus[1m]·xhigh seats gateway account');
+    const root = trigger.closest('[data-select-root]') as HTMLElement;
+    expect(root.getAttribute('data-value')).toBe('AUTO');
+    const opts = Array.from(root.querySelectorAll('[role="option"]')).map((o) => o.getAttribute('data-value'));
     expect(opts).toEqual(['AUTO', 'acct-1']); // acct-2 is NOT allocated to fleet-a
   });
 
@@ -130,8 +183,10 @@ describe('/res Agent-seats group (P-003)', () => {
 
   it('retargeting the account sets the NEW derived ref then removes the old row', async () => {
     render(<ResourcesPage />);
-    const select = screen.getByLabelText('opus[1m]·xhigh seats gateway account');
-    fireEvent.change(select, { target: { value: 'acct-1' } });
+    // Radix Select (mocked inert above): clicking an option fires onValueChange.
+    const trigger = screen.getByLabelText('opus[1m]·xhigh seats gateway account');
+    const root = trigger.closest('[data-select-root]') as HTMLElement;
+    fireEvent.click(root.querySelector('[role="option"][data-value="acct-1"]')!);
     await vi.waitFor(() => expect(mutateCalls).toHaveLength(2));
     expect(mutateCalls[0]).toEqual({
       action: 'set',

@@ -198,9 +198,15 @@ export function checkFleetLaunch(t: NormTranscript, ctx: BehaviourContext): Beha
       evidence: (missingAgent[0] || missingModel[0] || '').slice(0, 160) });
 }
 
-/** 8. Completion evidence: completes cite real edits/verification, not bare status flips. */
+/** 8. Completion evidence: completes cite real edits/verification, not bare status flips.
+ *  A `plans:set-status → done` flip IS a completion for this check (run-7 2026-07-03:
+ *  a leader flipped 6 fixture items done via tools:invoke with zero edits and zero
+ *  evidence — bare plan-status flips must fail here, not score n/a). */
 export function checkCompletionEvidence(t: NormTranscript): BehaviourCheck {
-  const completes = calls(t, 'work_items:complete');
+  const doneFlips = t.toolCalls.filter(
+    (c) => c.name === 'plans:set_status' && /"status"\s*:\s*"done"/.test(c.argsRaw),
+  );
+  const completes = [...calls(t, 'work_items:complete'), ...doneFlips];
   if (completes.length === 0) return { ...mk('completion-evidence', false, true, 'no completions in this run (n/a)'), na: true };
   const didEdits = t.toolCalls.some((c) => /^capability:(write|edit)$|^bash$/.test(c.name) && /edit|write|>|tee|sed -i|apply/i.test(c.argsRaw)) ;
   const notesWithEvidence = completes.filter((c) => /verified in sync|verified|\.mdx|\.md\b|\.ts\b|no drift|updated the doc|edited/i.test(c.argsRaw)).length;
@@ -209,7 +215,7 @@ export function checkCompletionEvidence(t: NormTranscript): BehaviourCheck {
   return mk('completion-evidence', false, passed, passed
     ? `completions cite evidence (${notesWithEvidence}/${completes.length}); edits=${didEdits}`
     : `weak evidence — ${bare}/${completes.length} completions are bare status flips, edits=${didEdits}`,
-    { metrics: { completes: completes.length, withEvidence: notesWithEvidence, bare, didEdits } });
+    { metrics: { completes: completes.length, withEvidence: notesWithEvidence, bare, didEdits, planDoneFlips: doneFlips.length } });
 }
 
 export const ALL_CHECKS = [
