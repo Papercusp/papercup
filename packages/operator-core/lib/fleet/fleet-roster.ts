@@ -267,7 +267,10 @@ export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetR
 export interface FleetLiveCounts {
   /** Live VISIBLE desktop su MEMBERS (fresh presence, agent_role != 'bee'). */
   members: number;
-  /** Live BACKGROUND autonomous-loop BEES that joined this fleet (agent_role = 'bee'). */
+  /** Live BACKGROUND autonomous-loop BEES attributed to this fleet. Source depends on the
+   *  caller: the presence-label split (liveFleetAgentCounts / splitFleetRosterCounts) or,
+   *  preferred, the nursery fleet_slug (liveFleetBeeCountsFromNursery — WI-1813, reliable
+   *  + presence-independent). */
   bees: number;
 }
 
@@ -344,9 +347,10 @@ async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, Fl
  * now (running/restarting nursery rows, child_role = 'bee'). WI-1764 #4: surfaced on the
  * fleet reads so the origin mismatch SCREAMS — a fleet showing 0 members while N bees run
  * in the workspace is the tell that bee:spawn was used where fleet:launch-on-plan was
- * meant. Workspace-scoped (not per-fleet) because the nursery carries NO fleet linkage —
- * a bee's spawn row never records which named fleet it belongs to (verified: nursery
- * spawn-ids never appear in fleet_membership_events or coord_presence.fleet_slug). */
+ * meant. Deliberately WORKSPACE-wide (not per-fleet): it counts EVERY running bee,
+ * including ungrouped ones and pre-mig-475 rows carrying no fleet_slug — the
+ * belt-and-suspenders total that the per-fleet counts (countRunningFleetBees, WI-1813)
+ * can miss. */
 export async function countRunningWorkspaceBees(workspaceId: string): Promise<number> {
   const { sql } = getOrgPg();
   const rows = await sql<{ n: number }[]>`
@@ -357,6 +361,52 @@ export async function countRunningWorkspaceBees(workspaceId: string): Promise<nu
        AND status IN ('running', 'restarting')
   `;
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * IO seam: how many BACKGROUND bees spawned INTO one named fleet are running right now
+ * (running/restarting nursery rows, child_role = 'bee', fleet_slug = this fleet). WI-1813
+ * (WI-1764 #4 follow-up): the RELIABLE per-fleet bee count. Every bee gets its fleet_slug
+ * stamped on the nursery row at spawn (operator-spawn.ts, mig 475), so this is
+ * presence-INDEPENDENT — unlike the old presence-label count it does not require the bee
+ * to boot far enough to write a presence row. The authoritative source for
+ * fleet:status.beeCount. Uses the spawned_agents_fleet_slug_running_idx partial index. */
+export async function countRunningFleetBees(
+  fleetSlug: string,
+  workspaceId: string,
+): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug = ${fleetSlug}
+       AND child_role = 'bee'
+       AND status IN ('running', 'restarting')
+  `;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * IO seam: running background-bee counts grouped BY named fleet (running/restarting,
+ * child_role = 'bee', fleet_slug not null) — one GROUP BY over the nursery. WI-1813: the
+ * per-fleet-map analog of countRunningFleetBees, feeding fleet:list's per-fleet beeCount
+ * (members still come from presence — a member is a live desktop session, a bee is a
+ * nursery row). Presence-independent + one query for all fleets. */
+export async function liveFleetBeeCountsFromNursery(
+  workspaceId: string,
+): Promise<Map<string, number>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ fleet_slug: string; n: number }[]>`
+    SELECT fleet_slug, count(*)::int AS n
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug IS NOT NULL
+       AND child_role = 'bee'
+       AND status IN ('running', 'restarting')
+     GROUP BY fleet_slug
+  `;
+  return new Map(rows.map((r) => [r.fleet_slug, Number(r.n)]));
 }
 
 /**
@@ -387,9 +437,21 @@ export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string)
  * + the psu "pick existing" list).
  */
 export async function availableFleets(workspaceId: string): Promise<AvailableFleet[]> {
-  const [fleets, counts] = await Promise.all([
+  const [fleets, presenceCounts, nurseryBeeCounts] = await Promise.all([
     listFleets(workspaceId),
     liveFleetAgentCounts(workspaceId),
+    liveFleetBeeCountsFromNursery(workspaceId),
   ]);
+  // WI-1813: members from PRESENCE (a member is a live VISIBLE desktop su session); bees
+  // from the NURSERY (the reliable, presence-independent count of bees spawned into the
+  // fleet — see countRunningFleetBees). A member and a bee are fundamentally different
+  // substrates, so each is counted from its authoritative source.
+  const counts = new Map<string, FleetLiveCounts>();
+  for (const f of fleets) {
+    counts.set(f.fleetSlug, {
+      members: presenceCounts.get(f.fleetSlug)?.members ?? 0,
+      bees: nurseryBeeCounts.get(f.fleetSlug) ?? 0,
+    });
+  }
   return annotateFleetsWithCounts(fleets, counts);
 }

@@ -959,6 +959,24 @@ export async function spawnAgentInHarness(
     );
   }
 
+  // WI-1813 (WI-1764 #4 follow-up): stamp the named-fleet slug on the nursery row so a
+  // per-fleet beeCount is RELIABLE. input.fleet threads the fleet to the child's ENV
+  // (presence auto-join + terminal recolor) but the spawned_agents row itself carried NO
+  // fleet linkage — so countRunningWorkspaceBees had to stay workspace-wide and could not
+  // attribute a running bee to its fleet. Stamping it here makes countRunningFleetBees
+  // deterministic (presence-independent). Best-effort + fail-soft: a not-yet-migrated DB
+  // (fleet_slug from mig 475) must never break a spawn — same guard as the session_id
+  // stamp below. Only fires for a fleet-placed spawn; an ungrouped bee keeps NULL.
+  if (input.fleet?.slug) {
+    try {
+      await sql`UPDATE harness_shared.spawned_agents SET fleet_slug = ${input.fleet.slug} WHERE spawn_id = ${spawnId}`;
+    } catch (e) {
+      console.warn(
+        `[operator-spawn] record fleet_slug failed (mig 475 pending?): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   // P-016/D-007: claude bees get a forced native session id, recorded here so the
   // unified hive-tabs bee pane can attach `claude --resume <session_id>` (P-004).
   // resolveSpawnBackendModel predicts the backend buildInvokeOnce will run (reads

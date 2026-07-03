@@ -9,7 +9,12 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
-import { listFleetRoster, splitFleetRosterCounts, countRunningWorkspaceBees } from '../../fleet/fleet-roster';
+import {
+  listFleetRoster,
+  splitFleetRosterCounts,
+  countRunningFleetBees,
+  countRunningWorkspaceBees,
+} from '../../fleet/fleet-roster';
 import { getCompletionIntegrityStats } from '../../work-items';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
@@ -70,14 +75,18 @@ export default defineTool({
         true,
       );
     }
-    const [roster, completionStats, runningBees] = await Promise.all([
+    const [roster, completionStats, runningBees, beeCount] = await Promise.all([
       listFleetRoster({ fleetSlug: args.fleet, workspaceId }),
       args.harness ? getCompletionIntegrityStats(args.harness) : Promise.resolve(null),
       countRunningWorkspaceBees(workspaceId),
+      countRunningFleetBees(args.fleet, workspaceId),
     ]);
-    // WI-1764 #4: split the roster into VISIBLE desktop members vs BACKGROUND bees so a
-    // substrate mismatch is legible; `memberCount` is now members-only (was roster.length).
-    const { members: memberCount, bees: beeCount } = splitFleetRosterCounts(roster);
+    // WI-1764 #4 / WI-1813: `memberCount` = VISIBLE desktop su members from the roster
+    // (presence — members-only, was roster.length). `beeCount` = BACKGROUND bees spawned
+    // INTO this fleet, from the nursery (countRunningFleetBees — reliable + presence-
+    // independent) rather than the roster's presence-labeled split, which under-counted a
+    // bee that had not yet written its presence fleet label.
+    const { members: memberCount } = splitFleetRosterCounts(roster);
     return json({
       ok: true,
       slug: fleet.fleetSlug,

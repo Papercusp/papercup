@@ -81,11 +81,15 @@ describe('tui:dispatch handler (PG)', () => {
     ]);
     expect(JSON.parse(res.content[0]!.text)).toMatchObject({ status: 'done', result: { opened: true } });
     expect(res.isError).toBeFalsy();
-    const row = (await rootSql<{ typ: string; pane: string; requested_by: string }[]>`
-      SELECT jsonb_typeof(args) AS typ, args->>'pane' AS pane, requested_by FROM harness_shared.tui_intents`)[0]!;
+    const row = (await rootSql<{ typ: string; pane: string; requested_by: string; workspace_id: string | null }[]>`
+      SELECT jsonb_typeof(args) AS typ, args->>'pane' AS pane, requested_by, workspace_id FROM harness_shared.tui_intents`)[0]!;
     expect(row.typ).toBe('object'); // args is a real jsonb object (::text::jsonb), not a string scalar
     expect(row.pane).toBe('logs');
     expect(row.requested_by).toBe('tester'); // principal.slug
+    // Regression (EI-6861 twin): the insert stamps a non-null workspace_id via
+    // activeWorkspaceId(). If a refactor drops the column the NOT NULL insert throws.
+    expect(row.workspace_id).toBeTruthy();
+    expect(typeof row.workspace_id).toBe('string');
   });
 
   it('times out when no client answers: row → status=timeout, isError returned', async () => {

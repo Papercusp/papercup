@@ -106,7 +106,7 @@ export interface CoordLineSource {
  * else the default. The ONE place a line's glyph is decided — both the wire and
  * the legend route through `COORD_LEGEND`, so they can't disagree.
  */
-export function glyphFor(entry: Pick<CoordLineSource, 'kind' | 'lifecycle'>): string {
+export function glyphFor(entry: Pick<CoordLineSource, 'kind' | 'lifecycle' | 'category'>): string {
   if (entry.lifecycle && LIFECYCLE_SET.has(entry.lifecycle)) {
     return COORD_LEGEND[entry.lifecycle]?.glyph ?? DEFAULT_GLYPH;
   }
