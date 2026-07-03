@@ -21,6 +21,28 @@ import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-s
 /** The blueprint-schedule routine-name prefix `materializeBlueprintTriggers` seeds. */
 const BP_SCHEDULE_PREFIX = 'bp-schedule-';
 
+/** The workspace-wide install_slug that `loop:arm` loops (the `loop-su-` /
+ *  `loop-role-` roles) record their fire-gate under
+ *  (loop-fire.ts `checkFireGate(installSlug, …)`). */
+const LOOP_ARM_SCOPE = '*';
+
+/**
+ * PURE: which autoloop_state harness scopes a `reset-errors` op must clear.
+ *
+ * The per-harness brain scopes ([workspaceId, slug]) never include the `'*'`
+ * workspace-wide scope, but `loop:arm` loops (the `loop-su-` / `loop-role-` roles)
+ * record their fire-gate under install_slug='*'. So a ROLE-scoped reset must also clear `'*'` —
+ * otherwise the remediation the chronic-failure watchdog explicitly prescribes
+ * ("then autoloop:control reset-errors") can NEVER reach a loop-su-*@* row, and the
+ * exact class of loops that triggers it stays un-resettable (EI-6753). A role-LESS
+ * reset stays per-harness (never adds '*') so it can't silently wipe every
+ * warm-session loop's counter across the workspace. Deduped, order-stable.
+ */
+export function resetErrorScopes(brainScopes: readonly string[], role: string | undefined): string[] {
+  const scopes = role ? [...brainScopes, LOOP_ARM_SCOPE] : [...brainScopes];
+  return [...new Set(scopes)];
+}
+
 export default defineTool({
   name: 'autoloop:control',
   profile: 'engineer',
@@ -73,17 +95,10 @@ export default defineTool({
           ? ctx.workspaceId.trim()
           : activeWorkspaceId();
       const brainScopes = workspaceBrainReadKeys(workspaceId, slug, await isWorkspaceCoordinationOn());
-      // loop:arm loops (loop-su-*/loop-role-*) record their fire-gate under
-      // install_slug='*' (workspace-wide warm-session loops — see loop-fire.ts
-      // `checkFireGate(input.installSlug, …)` / `recordFire`). The per-harness brain
-      // scopes ([workspaceId, slug]) never include '*', so a role-scoped reset must
-      // also clear the '*' scope — otherwise the remediation the chronic-failure
-      // watchdog explicitly prescribes ("then autoloop:control reset-errors") can
-      // NEVER reach a loop-su-*@* autoloop_state row, and the exact class of loops
-      // that triggers it stays un-resettable (EI-6753). Only when a `role` is given
-      // (always the loop:arm case) — a role-less reset stays per-harness so it can't
-      // silently wipe every warm-session loop's counter across the workspace.
-      const scopes = args.role ? [...new Set([...brainScopes, '*'])] : brainScopes;
+      // A role-scoped reset also clears the '*' (loop:arm) scope so the watchdog's
+      // prescribed remediation actually reaches a loop-su-*@* row (EI-6753). See
+      // `resetErrorScopes`.
+      const scopes = resetErrorScopes(brainScopes, args.role);
       const results = [];
       for (const scope of scopes) {
         results.push({ harness: scope, rowsReset: await resetFireErrors(scope, args.role) });

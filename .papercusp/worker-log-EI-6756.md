@@ -48,3 +48,32 @@ routines scheduler — a design decision on STOP-list surfaces. Captured once as
 - The `c25e5372` `autoloop_state` row stays `consecutive_errors=0` / routine `active=false` (no
   re-fire, no re-escalation).
 - No code changed in this EI; the only write is the single-row error-counter reset (data hygiene).
+
+---
+## Addendum — independent confirmation (run 1783098098-worker, 2026-07-03 ~13:36 EDT)
+
+Concurrent re-dispatch of the same auto-implement task. On entry EI-6756 read `state=todo`;
+by the time I finished verifying it was already `state=resolved` (ideaLifecycle `applied`) — the
+prior run (1783096590) resolved it. My independent investigation corroborates the resolution and
+adds one finding the prior log did not name explicitly:
+
+- **The durable class-fix is already LANDED in the tree, not just filed.** The mass cohort
+  termination at 07:39:38 was driven by **EI-7006 (Route A/C)** — the circuit-open fast path in
+  `loop-unreachable-guard.ts` `evaluateUnreachableTerminalGuard({ circuitOpen })`, wired through
+  `reconcile-loop-routines.ts` (~L300-352: `circuitOpen = consecutiveErrors >= circuitThreshold()`
+  → guard, dwell window decoupled). This is the exact "terminal window unreachable because the
+  stuck-park re-arm keeps resetting last_fired" bug the earlier needs-human workers (EI-6471/6509/
+  6256) diagnosed — now fixed and live. EI-7016 (open, human-gated) covers the SEPARATE residual:
+  the watchdog escalator still mints an EI per dead-owner loop in the ~window before termination.
+- Re-ran the affected tests on the current tree:
+  `cd packages/operator-core && npx vitest run lib/harness/routines/loop-unreachable-guard.test.ts
+  lib/harness/routines/reconcile-loop-routines.test.ts lib/harness/routines/autoloop-chronic-failure.test.ts`
+  → **53 passed (3 files)** (grew from the prior run's 40 — the EI-7006 circuit-open regression
+  block is present and green).
+- Confirmed no re-fire: `loop-su-c25e5372-…` routine `active=false` / `next_fire_at=NULL`, owner
+  session dead (2026-07-01 18:11), `autoloop_state.consecutive_errors=0`.
+
+Did NOT re-call `improvements:resolve` (item already terminal — resolved/applied; a second
+terminal transition would be a spurious no-op/error). Did NOT change any code — the durable fix
+pre-existed and touching the routines/DBOS scheduler was neither needed nor in the implement STOP
+gate. Loop closed.
