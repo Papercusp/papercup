@@ -7,8 +7,10 @@ status: active
 documents:
   - packages/operator-core/lib/work-item-checkpoint.ts
   - packages/operator-core/lib/agent-tools/work_items/checkpoint.ts
+  - packages/operator-core/lib/carry-note.ts
 plans:
   - bee-context-efficiency-2026-06-14
+  - su-cold-auto-mode-2026-07-03
 ---
 
 A feature can be **fully built on the storage + read side and still do nothing**
@@ -82,3 +84,39 @@ fully wired, no drift reintroduced:
   `bee.base.md` (the live Hive bee persona, extended per-domain by
   `blueprints/{coding,work}/prompts/bee.md`) still names the real tool + the
   real heading — the persona-drift this insight is about has not recurred.
+
+## Still live (2026-07-03) — storage converged, contract unchanged
+
+`work-item-checkpoint.ts` was refactored (su-cold-auto-mode-2026-07-03 P-001)
+into a thin **adapter** over one new shared substrate: `carry-note.ts` (PG table
+`harness_shared.carry_notes`, migration 472). The bee checkpoint, the Queen
+carry-journal, and the su AUTO loop's cold-wake carry-note are now the SAME
+store + shape, keyed by a role-discriminated `scope` string —
+`setWorkItemCheckpoint`/`getWorkItemCheckpoint` now call `setCarryNote`/
+`getCarryNote` under `workItemScope(harness, workItemId)` instead of querying
+their own `work_item_checkpoints` table directly.
+
+This is a storage-layer convergence, not a contract change — re-verified that
+nothing this insight depends on moved:
+
+- **Public signatures are unchanged.** `setWorkItemCheckpoint` /
+  `getWorkItemCheckpoint` keep the same params and return shape, so
+  `work_items:checkpoint` (`agent-tools/work_items/checkpoint.ts`) needed no
+  edit at all — still the one and only write path, still bulk-by-default.
+- **The P-008 progress-bump still fires** (checkpointing still counts as
+  progress against `last_progress_at`) — it now runs as a best-effort follow-up
+  after a non-null `setCarryNote` write instead of inline after the old raw
+  `INSERT ... ON CONFLICT`.
+- **Semantics are preserved**: `setCarryNote` is called with `{ journal: false }`
+  for the bee scope specifically so the checkpoint stays a pure note (no
+  trajectory ring) and a clear still **deletes** the row — byte-identical
+  behavior to the pre-P-001 store, just routed through the shared function.
+- The re-inject seam (`spawn-hydration.ts` → `### Carry-note (your last
+  checkpoint)`) reads via `getWorkItemCheckpoint`, so it is untouched by the
+  swap underneath it.
+
+Net: the write → store → read → inject loop this insight is about is still
+fully wired after the storage convergence — the lesson (verify a persona's
+claims against live code, not its prose) continues to hold, and there is
+nothing here for a persona to drift against, since no agent-facing surface
+changed.
