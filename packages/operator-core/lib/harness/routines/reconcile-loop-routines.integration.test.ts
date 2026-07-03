@@ -175,7 +175,7 @@ describe('reconcileLoopRoutines — robustness layers', () => {
 
   it('BACKSTOP: re-arms a loop parked long past the fire with no signal at all', async () => {
     // The backstop logs a warning (intended visibility for a wedged loop) — mock + assert it.
-    const warn = vi.spyOn(console, 'warn').mockImplementation((...a) => process.stderr.write('[DBG-WARN] ' + a.join(' ') + '\n'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const interval = 60;
     // No lifecycle, no presence — a dead/undelivered fire.
     const { id } = await seedLoop({ ownerId: 'o-9', intervalSec: interval, lastFiredAtMs: T0, parked: true });

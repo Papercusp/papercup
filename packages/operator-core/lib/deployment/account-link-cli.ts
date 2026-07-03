@@ -24,6 +24,8 @@
  */
 import { spawn, type IPty } from '@lydell/node-pty';
 import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
+import { accessSync, constants } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
@@ -50,6 +52,40 @@ const LINK_TTL_MS = 10 * 60 * 1000; // how long a started link waits for the own
 // submitted (the "Linking…" stall). The Enter must be its OWN write, sent AFTER the
 // paste settles. Proven against claude CLI v2.1.181.
 const SUBMIT_ENTER_DELAY_MS = 300;
+
+/**
+ * Resolve the provider CLI to a runnable path. A pty spawn of a missing binary does NOT throw a
+ * catchable ENOENT — the pty just exits instantly with no output, which used to surface as the
+ * misleading "did not produce an authorize URL (is `claude` installed + on PATH?)" even though
+ * the real fault was the OPERATOR's environment. Operator hosts routinely run with a stripped
+ * PATH (a systemd unit whose env predates a daemon-reload — the 2026-07-03 staging-api incident —
+ * or a bundled desktop sidecar whose PATH starts at its own bin dir), so resolve explicitly:
+ * env override verbatim → each PATH entry → well-known install dirs.
+ */
+export function resolveCliBin(provider: AccountProvider, env: NodeJS.ProcessEnv = process.env): string {
+  const name = provider === 'codex' ? 'codex' : 'claude';
+  const override = provider === 'codex' ? env.CODEX_BIN : env.CLAUDE_BIN;
+  if (override) return override; // explicit operator override — trust it verbatim
+  const home = homedir();
+  const candidates = [
+    ...(env.PATH ?? '').split(':').filter(Boolean).map((d) => `${d}/${name}`),
+    `${home}/.local/bin/${name}`,
+    `${home}/.claude/local/${name}`,
+    `${home}/.bun/bin/${name}`,
+    `${home}/.npm-global/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    `/home/linuxbrew/.linuxbrew/bin/${name}`,
+  ];
+  for (const c of candidates) {
+    try {
+      accessSync(c, constants.X_OK);
+      return c;
+    } catch {
+      /* not here — next candidate */
+    }
+  }
+  return name; // nothing found — let the pty try bare PATH lookup; the no-URL error will say so
+}
 
 function stripAnsi(s: string): string {
   // CSI sequences + OSC sequences — Ink colors its output; the URL/token would otherwise
@@ -152,17 +188,18 @@ export async function startCliLink(input: StartCliLinkInput): Promise<StartCliLi
       : `.setup-${accountId}-${randomBytes(4).toString('hex')}`,
   );
   await mkdir(configDir, { recursive: true });
+  const bin = resolveCliBin(provider);
   let pty: IPty;
   try {
     pty = provider === 'codex'
-      ? spawn(process.env.CODEX_BIN || 'codex', ['login', '--device-auth'], {
+      ? spawn(bin, ['login', '--device-auth'], {
         name: 'xterm-256color',
         cols: 4000,
         rows: 50,
         cwd: configDir,
         env: { ...process.env, CODEX_HOME: configDir },
       })
-      : spawn(process.env.CLAUDE_BIN || 'claude', ['setup-token'], {
+      : spawn(bin, ['setup-token'], {
       name: 'xterm-256color',
       cols: 4000, // ultra-wide → the long URL + token never wrap (a wrapped line breaks the regex)
       rows: 50,
