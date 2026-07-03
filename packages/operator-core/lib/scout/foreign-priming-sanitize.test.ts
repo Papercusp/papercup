@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  REDACTED_FOREIGN_LINE,
-  redactSecretsForForeignPublish,
-  sanitizeForeignPriming,
-} from './foreign-priming-sanitize';
+import { sanitizeForeignPriming } from './foreign-priming-sanitize';
 
 describe('sanitizeForeignPriming', () => {
   it('quotes inert foreign text and strips prompt-injection marker lines', () => {
@@ -29,23 +25,5 @@ describe('sanitizeForeignPriming', () => {
     expect(out).toContain('> beta');
     expect(out).toContain('[truncated]');
     expect(out).not.toContain('gamma');
-  });
-});
-
-describe('redactSecretsForForeignPublish', () => {
-  it('reuses secrets-guard findings to redact secret-bearing lines wholesale', () => {
-    const out = redactSecretsForForeignPublish([
-      'keep this line',
-      'AWS_KEY=AKIA1234567890ABCDEF',
-      'and keep this one too',
-    ].join('\n'));
-
-    expect(out.redacted).toBe(true);
-    expect(out.findings.length).toBe(1);
-    expect(out.content).toContain('keep this line');
-    expect(out.content).toContain('and keep this one too');
-    expect(out.content).toContain(REDACTED_FOREIGN_LINE);
-    expect(out.content).toContain('aws-access-key-id');
-    expect(out.content).not.toContain('AKIA1234567890ABCDEF');
   });
 });

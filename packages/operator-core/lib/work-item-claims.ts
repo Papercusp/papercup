@@ -334,6 +334,69 @@ export async function releaseClaimForItemLocal(p: ReleaseClaimForItemParams): Pr
   return rows.length > 0;
 }
 
+/**
+ * EI-6480: release the lease on ONE item held by `owner`, keyed on (workspace_id,
+ * work_item_id, owner) — IGNORING harness_slug. The issue-family stale-claim paths
+ * (reclaimStaleIssueClaims / releaseIssue) free an item whose lease was acquired under the
+ * CLAIMING AGENT's BARE harness (claim_next's `args.harness`), but `engineer_issues` has no
+ * harness_slug and an `operator:<ws>`-scope issue can't recover it (harnessOfScope → null).
+ * The exact-key {@link releaseClaimForItemLocal} therefore misses and the lease orphans —
+ * the item reads unclaimed yet fails lease arbitration for every new claimer until the TTL
+ * (the reported "ready but raced" miss). Issue ids are GLOBALLY UNIQUE, so owner+item+
+ * workspace targets exactly the freed owner's lease with no cross-harness over-delete
+ * (a feature id, harness-scoped, could collide across harnesses — do NOT use this for
+ * feature-family, which already keys on its bare, correct harness_slug). Local-only,
+ * best-effort. Returns whether a row was deleted.
+ */
+export async function releaseClaimForItemByOwnerLocal(p: {
+  workspaceId: string;
+  workItemId: string;
+  owner: string;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ work_item_id: string }[]>`
+    DELETE FROM harness_shared.work_item_claims
+     WHERE workspace_id = ${p.workspaceId} AND work_item_id = ${p.workItemId} AND owner = ${p.owner}
+    RETURNING work_item_id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * EI-6480 orphan-lease GC (issue-family). A DEFINITIVELY-stale claim lease is one whose
+ * ISSUE is currently UNCLAIMED (assignee cleared) yet NON-TERMINAL — the item reads
+ * claimable but every new claimer loses lease arbitration to this leftover, so claim_next
+ * "misses" ready work until the TTL lapses. Any issue-family taken_by-clearing path that
+ * forgets lease cleanup (the reaper, releaseIssue, or a future path) leaves exactly this
+ * shape; one bounded sweep heals them all AND the historical backlog — harness-agnostic
+ * because issue ids are GLOBALLY UNIQUE.
+ *
+ * SAFETY — this can NEVER delete a lease that matters:
+ *   - scoped to `intent = 'work-stealing claim (claim_next)'`, so the executor dispatch
+ *     lease (leaseFeatureForExecutor — a 2h FEATURE lease NOT tied to assignee) is untouched;
+ *   - joined to an UNCLAIMED (assignee NULL/'') issue, so a live claim (assignee is set the
+ *     instant BEFORE the lease is acquired, and stays set) is never a target;
+ *   - NON-terminal only (a resolved/closed issue isn't claimable — nothing to un-poison);
+ *   - feature claim_next leases are excluded naturally: a feature id never equals a
+ *     globally-unique issue id, so the join finds no engineer_issues row.
+ * Workspace equality (c.workspace_id = e.workspace_id) holds on every observed config (the
+ * lease and the issue share the workspace). Local-only, best-effort. Returns the count cleared.
+ */
+export async function gcOrphanIssueClaimsLocal(): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ work_item_id: string }[]>`
+    DELETE FROM harness_shared.work_item_claims c
+     USING harness_shared.engineer_issues e
+     WHERE c.work_item_id = e.issue_id
+       AND c.workspace_id = e.workspace_id
+       AND c.intent = 'work-stealing claim (claim_next)'
+       AND (e.assignee IS NULL OR e.assignee = '')
+       AND e.state NOT IN ('resolved', 'closed')   -- = ISSUE_TERMINAL_STATUSES (work-item-blocking.ts)
+    RETURNING c.work_item_id
+  `;
+  return rows.length;
+}
+
 /** Release every claim held by a session owner (session-end cleanup). Returns count. Local-only. */
 export async function releaseAllClaimsForOwner(workspaceId: string, owner: string): Promise<number> {
   const { sql } = getOrgPg();

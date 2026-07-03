@@ -33,6 +33,7 @@ import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
+import { redactContentOpValueForEgress } from './content-op-egress-guard';
 
 /**
  * The projection tableTag for federated plans (harness-plans.ts:199 — the value
@@ -240,6 +241,24 @@ export async function drainOutboxOnce(
         continue;
       }
       throw e;
+    }
+
+    // P-015 (federated-scout-gym D-006): EGRESS secrets-guard. A shareable fact
+    // (body) / federatable elite (rationale) carries agent-authored free text that
+    // could embed a credential — redact secret-bearing lines from the WIRE copy
+    // HERE, before epoch-encryption + append, so a secret never leaves the hive.
+    // Keeps the local PG row intact (only op.value is scrubbed). Fail-soft:
+    // redactContentOpValueForEgress returns the value unchanged on any fault /
+    // non-content tag / no-secret, so the drain can never break on redaction.
+    if (op.type === 'put' && op.value !== undefined) {
+      const guarded = redactContentOpValueForEgress(op.table, op.value);
+      if (guarded.redacted) {
+        op = { ...op, value: guarded.value };
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[outbox-drain] egress secrets-guard redacted a secret-bearing '${op.table}' op before federation`,
+        );
+      }
     }
 
     // Re-key encrypt-on-capture (C-001, shared-hive-rekey-2026-06-19): when the

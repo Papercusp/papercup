@@ -12,7 +12,9 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { checkScorecardFreshness } from '../../scorecard-freshness';
+import { checkScorecardFreshness, interpretOverwatchEmission } from '../../scorecard-freshness';
+import { COORDINATION_RUBRIC_REF } from '../../overwatch/scorecard-backstop';
+import { getOverwatchLiveness } from '../../overwatch/snapshot';
 
 export default defineTool({
   name: 'scorecards:freshness',
@@ -57,8 +59,46 @@ export default defineTool({
       since: args.since,
       lookbackMs: args.lookbackMs,
     });
+    const out: {
+      ok: true;
+      freshness: typeof freshness;
+      overwatch?: {
+        flagEnabled: boolean;
+        started: boolean;
+        loopAlive: boolean;
+        loopStale: boolean;
+        lastRunAt: string | null;
+        cadenceSec: number;
+      };
+      interpretation?: ReturnType<typeof interpretOverwatchEmission>;
+    } = { ok: true, freshness };
+    // WI-1724 (monitor-the-monitor is silent): a bare `stale`/`partial-only` verdict for the
+    // Overwatch's OWN rubric is ambiguous — disabled (ignore) vs paused/not-started (ignore) vs
+    // a DEAD wake-loop (revive) vs a live-loop-but-skipping AGENT (fix the turn) all read the
+    // same. Cross-reference the live overwatch liveness so the verdict self-interprets. Only for
+    // the coordination rubric (the Overwatch's mandate); fail-soft — a degraded liveness read
+    // just omits the enrichment rather than erroring the freshness check.
+    if (args.rubricRef === COORDINATION_RUBRIC_REF) {
+      try {
+        const liveness = await getOverwatchLiveness(
+          args.sourceHive ? { hiveSlug: args.sourceHive } : undefined,
+        );
+        const overwatch = {
+          flagEnabled: liveness.flagEnabled,
+          started: liveness.started,
+          loopAlive: liveness.alive,
+          loopStale: liveness.stale,
+          lastRunAt: liveness.lastRunAt,
+          cadenceSec: liveness.cadenceSec,
+        };
+        out.overwatch = overwatch;
+        out.interpretation = interpretOverwatchEmission(freshness.status, overwatch);
+      } catch {
+        // fail-soft — omit the enrichment; the raw freshness still returns.
+      }
+    }
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, freshness }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(out) }],
     };
   },
 });

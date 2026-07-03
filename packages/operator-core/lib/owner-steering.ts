@@ -151,7 +151,7 @@ export interface OwnerSteering {
   modelOverrides?: Record<string, string> | null;
   /** SESSION federated Scout priming override — nearby foreign elites plus
    *  crowded/empty niche-map counts. null ⇒ blueprint default. */
-  federatedPriming?: FederatedPrimingConfig | null;
+  federatedPriming?: Partial<FederatedPrimingConfig> | null;
 }
 
 export const DEFAULT_OWNER_STEERING: OwnerSteering = {
@@ -249,7 +249,7 @@ function asDecomposition(v: unknown): DecompositionMode | null {
     : null;
 }
 
-function asFederatedPriming(v: unknown): FederatedPrimingConfig | null {
+function asFederatedPriming(v: unknown): Partial<FederatedPrimingConfig> | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const src = v as Record<string, unknown>;
   const coerce = (n: unknown): number | null =>
@@ -259,9 +259,9 @@ function asFederatedPriming(v: unknown): FederatedPrimingConfig | null {
   const empty = coerce(src.empty);
   if (foreignElites == null && crowded == null && empty == null) return null;
   return {
-    foreignElites: foreignElites ?? 0,
-    crowded: crowded ?? 0,
-    empty: empty ?? 0,
+    ...(foreignElites != null ? { foreignElites } : {}),
+    ...(crowded != null ? { crowded } : {}),
+    ...(empty != null ? { empty } : {}),
   };
 }
 
@@ -326,7 +326,7 @@ export interface OwnerSteeringPatch {
    *  clears them. Merge-semantics are the caller's job: pass the full desired map. */
   modelOverrides?: Record<string, string> | null;
   /** Session federated Scout priming override; null / {} clears it. */
-  federatedPriming?: FederatedPrimingConfig | null;
+  federatedPriming?: Partial<FederatedPrimingConfig> | null;
   /** Wipe ALL steering keys back to {@link DEFAULT_OWNER_STEERING}. */
   clear?: boolean;
 }

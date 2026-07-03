@@ -204,7 +204,19 @@ describe('runScoutCycle — provenance (P-013)', () => {
     const ideas = fixtureIdeasAllLenses().map((idea, index) =>
       index === 0 ? { ...idea, seededByRefs: ['elite:peer-a:module|sync|low:c1'] } : idea,
     );
-    const { deps } = makeDeps({ ideas });
+    const { deps } = makeDeps({
+      ideas,
+      proposals: (scored) => [
+        proposalFrom('P-1', scored.map((s) => s.idea.id), {
+          seededByRefs: ['elite:peer-a:module|sync|low:c1'],
+        }),
+      ],
+      routed: (proposals) =>
+        proposals.map((p) => ({
+          ...decisionFor(p, 'plan'),
+          seededByRefs: [...(p.seededByRefs ?? [])],
+        })),
+    });
     const r = await runScoutCycle(deps);
     expect(r.provenance[0]?.addressesPatternRefs).toContain('seededBy:elite:peer-a:module|sync|low:c1');
     expect(r.proposals[0]?.addressesPatternRefs).toEqual([FIXTURE_PATTERN_REFS[4]]);

@@ -1,20 +1,21 @@
 /**
- * foreign-priming-sanitize.ts — D-006 transport-safety seam for federated Scout/gym content.
+ * foreign-priming-sanitize.ts — D-006 INGRESS transport-safety seam for federated
+ * Scout/gym content (P-015 / F2-4).
  *
- * Two distinct boundaries share one small helper module:
- *   - EGRESS: anything we publish outward must pass the existing secrets-guard.
- *     We REUSE the guard by detecting secret-bearing lines and redacting those lines
- *     wholesale instead of re-implementing secret matching here.
- *   - INGRESS: foreign text that enters an ideator prompt must be bounded, quoted as
- *     inert data, stripped of control characters, and have obvious prompt-injection
- *     marker lines dropped before it can reach the model.
+ * INGRESS boundary: foreign text that enters an ideator prompt must be bounded,
+ * quoted as inert data, stripped of control characters, and have obvious
+ * prompt-injection marker lines dropped before it can reach the model.
+ *
+ * The EGRESS counterpart ("redact secrets from anything we publish") lives in the
+ * SUBSTRATE layer — sync/hyperbee/content-op-egress-guard.ts, wired into the
+ * outbox drain — where every federated fact/elite op passes through in plaintext
+ * before epoch-encryption. Egress belongs there (not scout) to cover every content
+ * table from one choke, keep the local row intact, and avoid inverting the
+ * substrate→scout layer dependency.
  */
-
-import { scanTextForSecrets, type SecretFinding } from '../sync/hive-git/secrets-guard';
 
 export const DEFAULT_FOREIGN_PRIMING_MAX_CHARS = 1200;
 export const DEFAULT_FOREIGN_PRIMING_MAX_LINES = 16;
-export const REDACTED_FOREIGN_LINE = '[REDACTED secret-bearing foreign content]';
 
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const PROMPT_INJECTION_LINE_RE =
@@ -25,43 +26,12 @@ export interface ForeignPrimingSanitizeOptions {
   maxLines?: number;
 }
 
-export interface ForeignPublishRedactionResult {
-  content: string;
-  findings: SecretFinding[];
-  redacted: boolean;
-}
-
 function normalizeForeignText(content: string): string {
   return content.replace(/\r\n?/g, '\n').replace(CONTROL_CHARS_RE, '');
 }
 
 function escapeQuotedForeignLine(line: string): string {
   return line.replace(/\\/g, '\\\\').replace(/[`<>]/g, '\\$&');
-}
-
-export function redactSecretsForForeignPublish(
-  content: string,
-  opts: { path?: string } = {},
-): ForeignPublishRedactionResult {
-  const normalized = normalizeForeignText(content);
-  const findings = scanTextForSecrets(opts.path ?? 'foreign-priming.txt', normalized);
-  if (findings.length === 0) return { content: normalized, findings, redacted: false };
-
-  const redactedLines = new Map<number, Set<string>>();
-  for (const finding of findings) {
-    const lineNo = Math.max(0, finding.line - 1);
-    const rules = redactedLines.get(lineNo) ?? new Set<string>();
-    rules.add(finding.rule);
-    redactedLines.set(lineNo, rules);
-  }
-
-  const lines = normalized.split('\n');
-  for (const [lineNo, rules] of redactedLines) {
-    if (lineNo >= lines.length) continue;
-    const suffix = [...rules].sort().join(', ');
-    lines[lineNo] = `${REDACTED_FOREIGN_LINE}${suffix ? ` (${suffix})` : ''}`;
-  }
-  return { content: lines.join('\n'), findings, redacted: true };
 }
 
 /**

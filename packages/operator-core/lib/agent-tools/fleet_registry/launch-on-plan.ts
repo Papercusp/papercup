@@ -94,6 +94,19 @@ function shq(v: string): string {
   return /^[A-Za-z0-9_.:=/+@-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`;
 }
 
+/** A model routed through the LOCAL inference gateway / ollama (e.g. `ollama-cc/…ornith`)
+ *  runs ONLY on the `omp` backend — the `claude`/`codex` CLIs cannot load an ollama model id.
+ *  `agent` and `model` are therefore COUPLED. Used to (a) infer agent:'omp' when only such a
+ *  model is given, and (b) reject an explicit claude/codex + local-model pairing that would
+ *  otherwise launch the WRONG backend nominally `--model`-set to an unrunnable id — and since
+ *  the fleet-status echoes the model string (not the agent), it LOOKS like ornith while the
+ *  members are really claude. That exact trap spawned 4 claude members mislabelled ornith on
+ *  2026-07-03 (a leader relaunched with `model: ollama-cc/…ornith` but no `agent: omp`). */
+export function isOmpLocalModel(model: string | undefined): boolean {
+  if (!model) return false;
+  return /^ollama(-cc)?\//i.test(model.trim()) || /\bornith\b/i.test(model);
+}
+
 /**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +
  * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
@@ -264,7 +277,9 @@ export default defineTool({
     agent: z
       .enum(['claude', 'omp', 'codex'])
       .optional()
-      .describe('Backend each member runs (default claude).'),
+      .describe(
+        'Backend each member runs. Default `claude` — EXCEPT it auto-becomes `omp` when `model` is a local/gateway model (ollama-cc/…, ornith), which only omp can run. To launch an ORNITH fleet, set `agent: "omp"` (with or without an ornith `model`); passing only `model: ollama-cc/…ornith` also works. An explicit `claude`/`codex` + a local model is REJECTED (that pairing silently launches the wrong backend labelled with the ornith model).',
+      ),
     count: z
       .number()
       .int()
@@ -329,7 +344,19 @@ export default defineTool({
     // member; otherwise the launch session's workspace (never the '*' wildcard).
     const workspaceId =
       args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
-    const agent = args.agent ?? 'claude'; // constrained to claude|omp|codex by the arg enum
+    // `agent` and `model` are COUPLED: a local/gateway model (ollama-cc/…ornith) only runs on
+    // the omp backend. Infer omp from such a model when agent is unspecified, and reject an
+    // explicit claude/codex pairing outright — otherwise psu launches that backend with an
+    // unrunnable --model and the fleet-status (which shows model, not agent) reads as ornith
+    // while the members are really claude (the 2026-07-03 "thought ornith, got claude" bug).
+    const localModel = isOmpLocalModel(args.model);
+    if (args.agent && args.agent !== 'omp' && localModel) {
+      return err(
+        `model \`${args.model}\` is a local/gateway model that only the \`omp\` backend can run — ` +
+          `pass \`agent: "omp"\` (not \`agent: "${args.agent}"\`). The claude/codex CLIs cannot load an ollama model id.`,
+      );
+    }
+    const agent = args.agent ?? (localModel ? 'omp' : 'claude'); // constrained to claude|omp|codex by the arg enum
     const count = args.count ?? 1;
 
     // Harness scope: explicit arg, else the session's scope (never the '*' wildcard).

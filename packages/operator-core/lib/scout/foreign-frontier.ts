@@ -158,3 +158,41 @@ export function partitionEmptyNichesForHive(
     .filter((niche) => partitionNicheKeyByHive(niche, hiveIds) === hiveId)
     .sort();
 }
+
+/**
+ * Pure core of the empty-frontier pipeline: from the merged frontier elites
+ * (local ∪ foreign), subtract occupied niches from the vocabulary, then return
+ * THIS hive's HRW-assigned DISJOINT slice of the empty frontier. Every hive in
+ * `hiveIds` running this over the SAME frontier gets a non-overlapping partition
+ * whose union is the whole empty set — so peers explore disjoint empty regions
+ * instead of piling into the same niche. Include `hiveId` in `hiveIds`.
+ */
+export function hiveEmptyFrontierFromElites(
+  frontierElites: readonly { nicheKey: string }[],
+  hiveIds: readonly string[],
+  hiveId: string,
+  domains: readonly string[] = DOMAIN_VOCAB,
+): string[] {
+  const empty = computeEmptyNicheKeys(
+    frontierElites.map((e) => e.nicheKey),
+    domains,
+  );
+  return partitionEmptyNichesForHive(empty, hiveIds, hiveId);
+}
+
+/**
+ * The full empty-frontier pipeline for ONE hive (the seam P-006's map lane calls):
+ * read the merged frontier (gym_qd_archive ∪ gym_qd_foreign_elites), then return
+ * this hive's disjoint HRW slice of the empty niches. Reads the DB; a read error
+ * propagates (the caller decides fail-soft).
+ */
+export async function computeHiveEmptyFrontier(
+  sql: Sql,
+  scope: FrontierScope,
+  hiveIds: readonly string[],
+  hiveId: string,
+  domains: readonly string[] = DOMAIN_VOCAB,
+): Promise<string[]> {
+  const frontier = await listFrontierElites(sql, scope);
+  return hiveEmptyFrontierFromElites(frontier, hiveIds, hiveId, domains);
+}

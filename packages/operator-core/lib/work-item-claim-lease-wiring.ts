@@ -26,7 +26,7 @@ import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
 import { hiveHomeSlugForHarness } from './hive-federation';
-import { acquireClaim, releaseClaimForItem } from './work-item-claims';
+import { acquireClaim, releaseClaimForItem, releaseClaimForItemByOwnerLocal, gcOrphanIssueClaimsLocal } from './work-item-claims';
 import { getBootedHarness } from './sync/hyperbee/boot-all';
 import { resolveMyPubkey } from './orchestrator/distributed-claim';
 
@@ -113,6 +113,48 @@ export async function releaseWorkItemLease(opts: { harness: string; workItemId: 
   } catch {
     // best-effort — a stale lease that outlives its TTL is a temporary DX papercut,
     // never worth risking the caller's actual release for.
+  }
+}
+
+/**
+ * EI-6480: harness-agnostic lease cleanup for an ISSUE-FAMILY item returning to the pool
+ * (reclaimStaleIssueClaims / releaseIssue). Unlike {@link releaseWorkItemLease} — which keys
+ * on the item's harness_slug (correct for the feature family, whose slug is bare) — an issue
+ * lease is acquired under the CLAIMING AGENT's bare harness, and `engineer_issues` has no
+ * harness_slug to reconstruct it (an `operator:<ws>`-scope issue can't recover it at all). So
+ * this keys on (workspace_id, work_item_id, owner) — safe because issue ids are globally
+ * unique. The workspace is the LEASE's workspace = activeWorkspaceId() (what
+ * leaseClaimedWorkItem used at acquire), NOT the issue's scope-workspace. No-op when the
+ * lease flag is off or `owner` is empty; NEVER throws (a leftover lease is a temporary DX
+ * papercut — never worth failing the caller's release/reap).
+ */
+export async function releaseIssueClaimLease(opts: {
+  workItemId: string;
+  owner: string | null | undefined;
+  workspaceId?: string;
+}): Promise<void> {
+  if (!claimLeaseOn || !opts.owner) return;
+  try {
+    const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+    await releaseClaimForItemByOwnerLocal({ workspaceId, workItemId: opts.workItemId, owner: opts.owner });
+  } catch {
+    // best-effort — see releaseWorkItemLease's doc comment (a stale lease is a DX papercut).
+  }
+}
+
+/**
+ * EI-6480 orphan-lease GC (issue-family) — flag-gated wrapper over
+ * {@link gcOrphanIssueClaimsLocal}. Self-heals any stale claim_next lease left on an
+ * unclaimed, non-terminal issue by ANY taken_by-clearing path (present or future), plus the
+ * historical backlog. No-op returning 0 when the lease flag is off; never throws. Returns the
+ * number of orphan leases cleared (for the reaper's observability + the integration test).
+ */
+export async function gcOrphanIssueLeases(): Promise<number> {
+  if (!claimLeaseOn) return 0;
+  try {
+    return await gcOrphanIssueClaimsLocal();
+  } catch {
+    return 0;
   }
 }
 

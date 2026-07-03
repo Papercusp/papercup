@@ -13,7 +13,7 @@
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
 import { describe, it, expect } from 'vitest';
-import { memberLaunchCommand, type MemberLaunchOpts } from './launch-on-plan';
+import { memberLaunchCommand, isOmpLocalModel, type MemberLaunchOpts } from './launch-on-plan';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -63,5 +63,24 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
     expect(memberLaunchCommand(base)).not.toContain('--allow-subagents');
     expect(memberLaunchCommand({ ...base, allowSubagents: true }).split(' ')).toContain('--allow-subagents');
     expect(memberLaunchCommand({ ...base, allowSubagents: false })).not.toContain('--allow-subagents');
+  });
+});
+
+describe('isOmpLocalModel (agent/model coupling — "thought ornith, got claude" guard, 2026-07-03)', () => {
+  it('flags local/gateway models that ONLY the omp backend can run', () => {
+    expect(isOmpLocalModel('ollama-cc/maxwell1500/ornith-35b:IQ3_M')).toBe(true); // the exact id the leader passed
+    expect(isOmpLocalModel('ollama/llama3')).toBe(true);
+    expect(isOmpLocalModel('ornith:35b')).toBe(true);
+    expect(isOmpLocalModel('ornith:fast')).toBe(true);
+    expect(isOmpLocalModel('  ollama-cc/x ')).toBe(true); // tolerant of surrounding space
+  });
+
+  it('does NOT flag claude/codex model ids (they stay on their default backend)', () => {
+    expect(isOmpLocalModel('opus:high')).toBe(false);
+    expect(isOmpLocalModel('opus[1m]')).toBe(false);
+    expect(isOmpLocalModel('claude-sonnet-4-6')).toBe(false);
+    expect(isOmpLocalModel('gpt-4o')).toBe(false);
+    expect(isOmpLocalModel(undefined)).toBe(false);
+    expect(isOmpLocalModel('')).toBe(false);
   });
 });

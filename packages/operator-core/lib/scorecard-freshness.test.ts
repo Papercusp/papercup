@@ -7,7 +7,11 @@
  * without PG. The underlying read has its own suite.
  */
 import { describe, it, expect } from 'vitest';
-import { checkScorecardFreshness } from './scorecard-freshness';
+import {
+  checkScorecardFreshness,
+  interpretOverwatchEmission,
+  type OverwatchEmissionContext,
+} from './scorecard-freshness';
 import type { ScorecardRow, ListScorecardsFilter } from './scorecards';
 
 function row(p: Partial<ScorecardRow> & { issueId: string; createdAt: string }): ScorecardRow {
@@ -140,5 +144,98 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     );
     expect(typeof r.since).toBe('string');
     expect(r.status).toBe('stale');
+  });
+});
+
+describe('interpretOverwatchEmission — WI-1724 self-interpreting freshness verdict', () => {
+  // A live, started, currently-firing loop (the "should be emitting" baseline).
+  const liveLoop: OverwatchEmissionContext = {
+    flagEnabled: true,
+    started: true,
+    loopAlive: true,
+    loopStale: false,
+    lastRunAt: '2026-07-03T04:00:00.000Z',
+  };
+
+  it('FRESH ⇒ verdict fresh, non-actionable (regardless of loop state)', () => {
+    const r = interpretOverwatchEmission('fresh', liveLoop);
+    expect(r.verdict).toBe('fresh');
+    expect(r.actionable).toBe(false);
+  });
+
+  it('stale + flag OFF ⇒ overwatch-disabled, NON-actionable (staleness expected — the false-alarm case)', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: false,
+      started: false,
+      loopAlive: false,
+      loopStale: false,
+      lastRunAt: null,
+    });
+    expect(r.verdict).toBe('overwatch-disabled');
+    expect(r.actionable).toBe(false);
+  });
+
+  it('stale + enabled but NOT started ⇒ overwatch-not-started, NON-actionable', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: true,
+      started: false,
+      loopAlive: false,
+      loopStale: false,
+      lastRunAt: null,
+    });
+    expect(r.verdict).toBe('overwatch-not-started');
+    expect(r.actionable).toBe(false);
+  });
+
+  it('stale + started+enabled + loop STALE ⇒ loop-dead, ACTIONABLE (revive the loop — the WI-1724 root case)', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: true,
+      started: true,
+      loopAlive: false,
+      loopStale: true,
+      lastRunAt: '2026-07-02T21:07:19.000Z',
+    });
+    expect(r.verdict).toBe('loop-dead');
+    expect(r.actionable).toBe(true);
+    expect(r.note).toContain('2026-07-02T21:07:19.000Z'); // surfaces the last-run time
+  });
+
+  it('stale + started+enabled + loop never fired ⇒ loop-dead (lastRunAt null renders "never")', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: true,
+      started: true,
+      loopAlive: false,
+      loopStale: false, // neither alive nor stale (defensive) still reads as a dead loop
+      lastRunAt: null,
+    });
+    expect(r.verdict).toBe('loop-dead');
+    expect(r.actionable).toBe(true);
+    expect(r.note).toContain('never');
+  });
+
+  it('stale + live loop ⇒ agent-skipping, ACTIONABLE (loop fires but agent emits nothing — D-005)', () => {
+    const r = interpretOverwatchEmission('stale', liveLoop);
+    expect(r.verdict).toBe('agent-skipping');
+    expect(r.actionable).toBe(true);
+    expect(r.note).toContain('SKIPPING');
+  });
+
+  it('partial-only + live loop ⇒ agent-skipping with the TRUNCATION note', () => {
+    const r = interpretOverwatchEmission('partial-only', liveLoop);
+    expect(r.verdict).toBe('agent-skipping');
+    expect(r.actionable).toBe(true);
+    expect(r.note).toContain('TRUNCATING');
+  });
+
+  it('precedence: a disabled flag wins even if the loop looks stale', () => {
+    const r = interpretOverwatchEmission('stale', {
+      flagEnabled: false,
+      started: true,
+      loopAlive: false,
+      loopStale: true,
+      lastRunAt: '2026-07-02T21:07:19.000Z',
+    });
+    expect(r.verdict).toBe('overwatch-disabled');
+    expect(r.actionable).toBe(false);
   });
 });

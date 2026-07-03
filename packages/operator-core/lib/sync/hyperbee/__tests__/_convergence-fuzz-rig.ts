@@ -289,32 +289,59 @@ export async function runConvergenceFuzz(opts: FuzzOptions): Promise<FuzzResult>
     const store = new FedTsGuardedStore(opts.guardOrder ?? 'fed_hlc');
     const cursor = createMergeCursor();
     // Production topology (skipOwnOps): this peer's OWN writes land via the
-    // unguarded LOCAL path, in author order, and are EXCLUDED from its fold —
-    // so the PG guard alone arbitrates local-vs-remote (the WI-1672 surface).
-    let folded = ops;
+    // unguarded LOCAL path (trigger-stamped row write), in author order.
+    let ownLogs: AdmittedLog[] = [];
+    let foreignGen = ops;
     if (opts.localAuthorApply) {
       const own = ops.filter((g) => (g.op.value as { author: number }).author === p);
       for (const g of own) store.applyLocal(g.op);
-      folded = ops.filter((g) => (g.op.value as { author: number }).author !== p);
+      // WI-1684 FIX (candidate b): the author's OWN ops STILL participate in the
+      // merge's winners map (ORDERING) — mirroring production, where
+      // `applyRecordingWinner` records an own op's winner even though the apply
+      // sink SKIPS its PG re-apply (`skipOwnOps`). Only the APPLY of own ops is
+      // skipped (the author already materialised them via `applyLocal`). Own log
+      // FIRST — production seeds `admitted` with `ownLog` before any remote, so
+      // the own del/put is in `cursor.winners` before a foreign op folds → a
+      // LOWER-hlc foreign put can never reach the projection's no-row insert path
+      // and resurrect a locally-deleted row. Pre-fix this rig EXCLUDED own ops
+      // from the fold entirely, which is the WI-1684 split-brain: the own del was
+      // never in the winners map, so the losing foreign put applied into a void.
+      ownLogs = own.map((g) => singleOpLog(g.sourceLogKeyHex, g.op));
+      foreignGen = ops.filter((g) => (g.op.value as { author: number }).author !== p);
     }
+    // The apply sink mirrors production's SINGLE `applyImpl`: SKIP the PG apply for
+    // this peer's OWN ops (skipOwnOps — already materialised via `applyLocal`),
+    // else run the fed-guarded store apply. `applyRecordingWinner` records the
+    // winner on the no-throw path regardless, so an own op establishes its winner
+    // for ordering while its re-apply is skipped — exactly candidate (b).
+    const applyImpl = async (op: OpEnvelope): Promise<boolean> => {
+      if (opts.localAuthorApply && (op.value as { author?: number } | undefined)?.author === p) {
+        return false; // skipOwnOps: record the winner (ordering), skip the PG re-apply
+      }
+      return store.apply(op);
+    };
     // This peer eventually receives EVERY op (the post-heal fixed point) but in
     // its OWN seeded fold order — one stable AdmittedLog per origin op (keyHex =
     // its peer-stable sourceLogKeyHex, the merge's deterministic same-clock
-    // tiebreak). Shuffling the log array models arbitrary partition/reorder
+    // tiebreak). The own log(s) fold FIRST (local source of truth, admitted first
+    // in prod); shuffling only the FOREIGN tail models arbitrary partition/reorder
     // delivery: the winners-fold is order-independent, but the apply-to-PG (the
-    // fed_ts guard) is NOT — that interaction is exactly what D-001 exposes.
-    const logs = shuffle(folded, rng).map((g) => singleOpLog(g.sourceLogKeyHex, g.op));
+    // fed_ts guard) is NOT — that interaction is exactly what D-001/WI-1684 expose.
+    const logs = [
+      ...ownLogs,
+      ...shuffle(foreignGen, rng).map((g) => singleOpLog(g.sourceLogKeyHex, g.op)),
+    ];
     // Fold in chunks so the cursor advances across multiple passes (exercises
     // the cross-pass winners-fold persistence, not just one monolithic pass).
     const CHUNK = 7;
     for (let i = 0; i < logs.length; i += CHUNK) {
       await mergeAdmittedLogsIncremental(logs.slice(0, i + CHUNK), cursor, {
-        applyImpl: store.apply,
+        applyImpl,
         getTimeoutMs: 0,
       });
     }
     // Idempotence: one more full pass must apply nothing new (re-delivery is safe).
-    await mergeAdmittedLogsIncremental(logs, cursor, { applyImpl: store.apply, getTimeoutMs: 0 });
+    await mergeAdmittedLogsIncremental(logs, cursor, { applyImpl, getTimeoutMs: 0 });
     digests.push(store.digest());
   }
   const distinct = [...new Set(digests)];
