@@ -118,7 +118,7 @@ export default defineTool({
     force: z.boolean().optional().describe('bypass the soft semantic-dedup gate (declare even when a similar datatype exists)'),
   }),
   async handler(args, ctx) {
-    const reply = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
+    const reply = (obj: unknown) => ({ data: obj });
     const ident = resolveAgentIdentity(ctx);
     const sql = getOrgPg().sql;
     const workspaceId = ctx.workspaceId;

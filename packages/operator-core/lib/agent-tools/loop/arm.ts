@@ -52,13 +52,13 @@ export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
   description:
-    "Arm an engine-managed LOOP on your own session (or another's, via `ownerId`) — the tracked replacement for Claude /loop. Each fire re-wakes that warm session ~intervalSec after its prior turn settles (context carries across iterations, not a fresh run). Survives restarts, is observable (loop:status / fleet:assignments), and inherits guardrails (failure-streak gate, optional cost-cap). IN AUTO MODE the DEFAULT intervalSec is 60 (a 1-minute cadence) unless the owner specifies otherwise — a longer interval is only for work genuinely blocked on a slower-moving dependency, and restore 1m once it clears. End with loop:end.",
+    'Arm the tracked engine loop for your session (or another ownerId) — the durable replacement for Claude /loop. Each fire re-wakes that warm session after its prior turn settles; context carries across iterations. Observable via loop:status / fleet:assignments and stoppable with loop:end.',
   guidance: {
-    when: 'You (an su/interactive agent) agree to "put this on a loop" — keep advancing a plan/goal WARM on a recurring cadence. Arm it as the LAST thing before ending your turn. Pass `ownerId` to arm a loop FOR another already-running, wake-reachable session (e.g. a fleet leader arming a member\'s monitor loop) instead of your own — without it, a caller with no per-session id silently binds to the non-wake-reachable `su-loopback` fallback.',
+    when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      "Wall-clock recurrence (a fixed daily time) — use a SCHEDULE (plans:set-schedule) instead. A single future wake — events:await. The autonomous queen/bee/scout loop is its OWN system (hive:declare-wake / overwatch:declare-wake) — never loop:arm from an autonomous-fleet agent. Don't self-pace with Claude's native /loop — this engine loop is tracked + pauseable.",
+      'Not for wall-clock schedules (plans:set-schedule), one-off wakes (events:await), or autonomous queen/bee/scout loops (hive:declare-wake / overwatch:declare-wake). Do not use Claude /loop instead.',
     chaining:
-      'loop:arm { intervalSec, goal, costCapCents? } → end your turn → the engine re-wakes you each iteration (create + self-assign work_items, work them, set_state) → loop:end to stop; loop:status to inspect.',
+      'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [
       'loop:end (stop the loop — also takes ownerId)',
       'loop:status (inspect it — also takes ownerId)',

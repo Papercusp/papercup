@@ -39,7 +39,7 @@ export default defineTool({
     id: z.string().min(1).max(120).describe('the datatype id/slug to publish (from datatypes:list / datatypes:get)'),
   }),
   async handler(args, ctx) {
-    const reply = (obj: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(obj) }] });
+    const reply = (obj: unknown) => ({ data: obj });
     const sql = getOrgPg().sql;
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) {

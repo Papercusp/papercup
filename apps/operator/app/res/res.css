@@ -22,7 +22,7 @@
   margin: 0;
   font-size: 22px;
   font-weight: 660;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--fg, #e7f7ff);
   text-wrap: balance;
 }
@@ -46,7 +46,7 @@
 }
 .res-ws .k {
   font-size: 10.5px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #7f9bb4);
   font-weight: 700;
@@ -78,7 +78,7 @@
   margin: 0;
   font-size: 12px;
   font-weight: 680;
-  letter-spacing: 0.07em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--fg-mute, #7f9bb4);
 }

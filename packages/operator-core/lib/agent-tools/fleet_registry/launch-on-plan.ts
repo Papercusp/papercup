@@ -254,13 +254,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Opens VISIBLE desktop su member terminals on a plan — THIS is what \"launch a fleet\" means. For a BACKGROUND autonomous-loop bee (queen↔bee nursery worker, not a desktop agent) → fleet:spawn instead. Stand up a desktop fleet ON a plan in ONE call: ensure the named fleet (you become its leader), then open N visible member terminals each running a scripted psu launch on the plan. The members AUTO-START working the plan on boot (no manual kickoff wake). Optional psu flags thread onto every member — account, workspace, role, model, feature, launch-context, profile, context-size, brain, add-dir, allowSubagents (subagents DENIED BY DEFAULT), plus `extraArgs` for any other psu flag. Author + start the plan first (plans:apply-plan-block / plans:start). Linux + macOS only.",
+    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use fleet:spawn for background bees. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first; Linux and macOS only.',
   guidance: {
-    when: 'Routing option (3) — "spawn a new desktop fleet to work a plan" — in ONE call instead of fleet:create + capability:terminal + a manual kickoff. Pass the plan slug + a fleet name; members open on the user\'s desktop and start working immediately.',
+    when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
     notWhen:
-      'You want BACKGROUND autonomous-loop bees (invisible queen↔bee workers) rather than visible desktop terminals → fleet:spawn. You only need worker windows with no fleet/plan → capability:terminal. You only need to register a fleet (no terminals) → fleet:create. Authoring or starting the plan → plans:apply-plan-block / plans:start (do that FIRST; this tool does not create or start plans).',
+      'Not for background bees (fleet:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself.',
     chaining:
-      'plans:apply-plan-block (or plans:new + plans:add-item) → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a LEAN monitor (per-wake dev:pg_query burn-down + coord:inbox); don\'t poll full fleet:assignments/coord:presence every wake (blows leader context).',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',

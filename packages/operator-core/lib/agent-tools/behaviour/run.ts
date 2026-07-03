@@ -57,14 +57,14 @@ function ctxFromArgs(a: { expectedModelSubstr?: string; expectedWorkItemIds?: st
 export const behaviourRunTool = defineTool({
   name: 'behaviour:run',
   description:
-    'Score a REAL agent run against the desktop behaviour standard (8 checks: model-routing · context-fit · routing-gate · plan-execution · scope-adherence · lock-discipline · fleet-launch · completion-evidence — deterministic, no LLM judge, mirroring cert:run\'s ethos). Two modes. mode:"score" (default) reads an ALREADY-CAPTURED omp session transcript — pass `sessionId` (…/su-omp-homes/session-<id>/…) or an explicit `transcriptPath` — and returns the BehaviourReport (per-check pass/fail + evidence + a pass/fail verdict). mode:"launch" fires a REAL visible agent on the fixture `planSlug`, waits (bounded) for the session it creates, captures + scores it, and tears down. Returns {ok, report, sessionId?, transcriptPath?, captureOutcome?}.',
+    'Score a real desktop-agent run against the 8-check behaviour standard. mode:"score" reads an existing transcript by sessionId or transcriptPath; mode:"launch" runs a visible agent on a fixture plan, captures the transcript, and scores it. Returns the behaviour report plus session/transcript metadata.',
   guidance: {
     when:
-      'Checking how a su/ornith agent BEHAVED on a plan run (did it route to the local model, gate before editing, execute the plan correctly, stay in scope, launch a fleet cleanly?). Use mode:"score" with a `sessionId` to grade a run that already happened; mode:"launch" to run + grade a fresh one against a fixture plan.',
+      'Use when you need to grade how a desktop agent behaved on a plan run: routing, gating, scope, execution, launch discipline, and completion evidence. score grades an existing run; launch runs and grades a fresh fixture.',
     notWhen:
-      'Certifying a model/quant/ctx combo\'s raw inference quality (mangling rate, trimmed-shape) — that is the headless cert:run. Grading one gym run\'s subjective quality — gym:judge. Reading plan/work-item state — plans:get / work_items:list.',
+      'Not for raw model certification (cert:run), subjective gym scoring (gym:judge), or reading plan/work-item state (plans:get / work_items:list).',
     chaining:
-      'omp:sessions / dev:sessions (find a sessionId) → behaviour:run { mode:"score", sessionId } → read the failing checks. Or: plans:new (mint a fixture) → behaviour:run { mode:"launch", planSlug, model } → read the scorecard.',
+      'omp:sessions or dev:sessions → behaviour:run { mode:"score", sessionId }. Or create/pick a fixture plan → behaviour:run { mode:"launch", planSlug, model }.',
     seeAlso: ['behaviour:catalog (the 8 checks + what each catches)', 'cert:run (headless model-cert battery)', 'omp:sessions'],
   },
   capability: 'harness:read',

@@ -23,12 +23,12 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List coordination agents + whether each can TAKE WORK. `active` is the ACTIONABLE roster — live/parked/recorded rows only; DEAD (`ended`) rows are excluded (count in `summary.byState.ended`). Pass `owner:<id>` for a targeted lookup that DOES return an ended row. `self`=your ownerId; your row has `isSelf:true`. Per row: `wakeable` (a live inbox-wake await), `sessionState` (live=in a turn · parked=idle-but-wakeable, the dispatch target · ended=needs relaunch, NOT wake), `onDesktop`/`viewerAttached` (a human is watching NOW — hard-exempt from the idle-session reaper + the on-screen target). Read `summary.wakeable`, not raw `active`. `intentStale:true` ⇒ its items are fair to pick up. Defaults to your HIVE; scope=workspace|all for admin/Queen. Re-poll cheaply with `since:<etag>` (the `etag` from your last read) — an unchanged roster returns ~100B.",
+    'List coordination agents and whether each can take work now. Active rows are the actionable roster; ended rows are excluded except in an owner-targeted lookup. Read summary.wakeable plus each row\'s sessionState and wakeable before dispatching. Defaults to your hive; admins/queen may widen scope. Re-poll cheaply with since:<etag>.',
   guidance: {
-    when: 'Before dispatch/handoff: who can take work now, and on what? Read `sessionState`/`wakeable` + `summary.wakeable`, not raw `active`. Dispatch a lane to a `parked` agent via coord:dispatch; an `ended` target needs relaunch. Pass `owner:<id>` to inspect/wake a specific dead agent.',
-    notWhen: 'A specific file\'s freedom — use locks:queue. Re-reading every turn — the [coord+N] deltas already carry intent/claim/completion. The full ended-agent list is not returned (use `owner:<id>`, or `summary.byState.ended` for the count).',
+    when: 'Use before dispatch or handoff to see who is live, parked, wakeable, and already occupied. Parked + wakeable is the normal dispatch target; ended needs relaunch. Pass owner:<id> for one specific agent.',
+    notWhen: 'Not for file freedom (locks:queue), not as a default every-turn poll when coord deltas already cover changes, and not for a full historical ended-agent dump.',
     chaining:
-      'Read-once + tail: the snapshot is byte-stable — read it ONCE, then tail [coord+N] deltas for peer transitions. If you MUST re-poll (no delta channel available), pass since:<the etag from your last read> — an unchanged roster comes back as ~100B { unchanged:true } instead of the full ~20KB payload.',
+      'Read once, then follow coord deltas. If you must re-poll, pass since:<etag>; unchanged state returns a tiny stub instead of the full roster.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always

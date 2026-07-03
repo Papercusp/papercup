@@ -91,6 +91,7 @@ describe('getOwnerSteering — decode + defaults', () => {
       autoScaleOut: null,
       decomposition: null,
       modelOverrides: null,
+      federatedPriming: null,
     } satisfies OwnerSteering);
   });
 

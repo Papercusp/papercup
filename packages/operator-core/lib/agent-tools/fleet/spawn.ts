@@ -26,10 +26,10 @@ export default defineTool({
   name: 'fleet:spawn',
   profile: 'engineer',
   description:
-    'Spawns a BEE — a background worker inside the queen↔bee AUTONOMOUS loop, NOT a visible desktop agent. For visible desktop su member terminals on a plan (what "launch a fleet" usually means) → fleet:launch-on-plan instead. Spawns one agent of a role into a registered harness (project); returns a spawn_id immediately; the run is tracked durably in the nursery — watch it with fleet:tree, stop it with fleet:cancel. role="worker" requires chunk.',
+    'Spawn one background agent into a harness and return its spawn_id immediately. This is for autonomous-loop workers, not visible desktop terminals; use fleet:launch-on-plan for a desktop fleet on a plan. The run is tracked durably in the nursery, visible in fleet:tree, and stoppable with fleet:cancel. role="worker" requires chunk.',
   guidance: {
-    when: 'The user asks to launch a BACKGROUND autonomous-loop worker on work — "spawn a validator in <harness>", "put a worker on <feature>", "have a scoper break down X". (For VISIBLE desktop su members on a plan → fleet:launch-on-plan, not this.) CHOOSE THE RIGHT UNIT: a coding-HIVE `bee` self-pulls via a claim-spec (scheduler:set_claim_spec + get_next) — for a self-pulling worker spawn role="bee", NOT scoper; coding-FACTORY roles (scoper→architect→worker) are HANDED a FEATURE_ID (worker also a chunk) and never self-pull. The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later. Pick a `tier` per task (quick/standard/deep/max — see the arg rubric); omit it for routine work at the role default.',
-    notWhen: 'To open VISIBLE desktop su member terminals on a plan — that is what "launch a fleet" means → fleet:launch-on-plan, NOT this (this spawns invisible background bees in the queen↔bee nursery loop). For answering a question you already know — spawning is for new work, not lookups. For the durable feature pipeline, file a work_item and let the harness autoloop dispatch it. (A claim-spec set on a factory role is INERT — for a self-pulling claim-spec worker use role="bee".)',
+    when: 'Use to place a background autonomous worker on new work: a bee, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="bee" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
+    notWhen: 'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline.',
     chaining: 'fleet:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',

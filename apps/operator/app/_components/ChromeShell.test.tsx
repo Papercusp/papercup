@@ -41,7 +41,7 @@ vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({
 }));
 
 /* ── Child component stubs (render nothing / a marker) ──────────────── */
-vi.mock('./ChromeNavMarks', () => ({ BrainMark: () => null }));
+vi.mock('./ChromeNavMarks', () => ({ BrainMark: () => null, ResMark: () => null }));
 vi.mock('./voice/AriaLiveRegions', () => ({ AriaLiveRegions: () => null }));
 vi.mock('./voice/VoiceLeaderBootstrap', () => ({ VoiceLeaderBootstrap: () => null }));
 vi.mock('./HostCheckBanner', () => ({ HostCheckBanner: () => null }));
