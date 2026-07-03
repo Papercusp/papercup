@@ -1090,6 +1090,36 @@ export function applyOmpOperatorOrigin(mcpJsonText, operatorUrl) {
   }
 }
 
+/** Stamp fixed query params (`agent`, `model`) onto every papercusp `/api/mcp` server URL in an
+ *  OMP mcp.json, so the operator learns the CALLING agent's backend + model PER REQUEST. This is
+ *  the "current calling agent" signal fleet:launch-on-plan reads to default a spawned fleet's
+ *  backend/model to the caller's own (fleet-launch-agent-inheritance-2026-07-03) — an omp/ornith
+ *  leader that omits `agent` then spawns omp members, not the historical claude default. Because
+ *  psu REWRITES this per-session copy each launch (unlike the static user-level file), the value is
+ *  the CURRENT process's backend/model, not a session-start constant (a resume re-stamps). Pure
+ *  string→string; returns the input unchanged on any parse failure. Exported for tests. */
+export function applyOmpMcpUrlParams(mcpJsonText, params) {
+  try {
+    const obj = JSON.parse(mcpJsonText);
+    const servers = obj?.mcpServers;
+    if (servers && typeof servers === 'object' && params && typeof params === 'object') {
+      for (const key of Object.keys(servers)) {
+        const srv = servers[key];
+        if (srv && typeof srv.url === 'string' && /\/api\/mcp(\?|$)/.test(srv.url)) {
+          const u = new URL(srv.url);
+          for (const [k, v] of Object.entries(params)) {
+            if (v != null && String(v).length > 0) u.searchParams.set(k, String(v));
+          }
+          srv.url = u.toString();
+        }
+      }
+    }
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return mcpJsonText;
+  }
+}
+
 /**
  * su-context-size-variants + weak-model-tool-tier: materialize a per-session OMP config dir
  * and return the value to export as PI_CONFIG_DIR.

@@ -35,6 +35,8 @@ import type { SwarmHandle } from './swarm';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 import type { SwarmBinding } from './derive-swarm-topic';
+import type { ScopeId } from '../hive-git/scope-repo';
+import type { ScopeFederation } from './scope-federation';
 
 /** The subset of the IPC client this proxy needs (injectable for tests). */
 export interface SubstrateRpcCaller {
@@ -194,6 +196,36 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
 
   async rekey(binding: SwarmBinding): Promise<void> {
     await this.client.call('substrate:rekey', { storeId: this.storeId, binding });
+  }
+
+  /**
+   * Scoped-log participation (P-006 §5.1 / P-101 fleet directory) runs where the
+   * swarm + scoped store live — the SIDECAR, after the store relocation. The
+   * main-process proxy holds no scoped store, so this is a best-effort no-op
+   * (mirrors `reverifyAdmitted` / `onAdmitted` / `swarm`, all sidecar-internal).
+   * This is CONSISTENT with the interface's structural-inertness contract (a boot
+   * that discloses/serves nothing is valid). It is inert, NOT a functional path:
+   * once a harness is sidecar-relocated, driving scope participation from the main
+   * process needs a `substrate:ensureScopeParticipation` RPC forwarding to the
+   * sidecar's real handle — that RPC is not wired yet (owned by the P-101 fleet-
+   * directory work over the relocated substrate). No live caller drives this on a
+   * remote handle today (P-101's driver is not yet built), so a no-op breaks
+   * nothing; a throw here would instead crash that driver the moment it lands.
+   */
+  async ensureScopeParticipation(_scopes: readonly ScopeId[]): Promise<void> {
+    // sidecar-internal — see note above.
+  }
+
+  /** The immediate redisclosure edge (D-017 n1) also runs in the sidecar's swarm.
+   *  Best-effort no-op on the main side until the sidecar RPC is wired (see
+   *  `ensureScopeParticipation`). */
+  async rediscloseScopes(): Promise<void> {
+    // sidecar-internal — see `ensureScopeParticipation`.
+  }
+
+  /** The scoped-log coordinator lives in the sidecar (like `swarm`). */
+  get scopeFederation(): ScopeFederation | null {
+    return null;
   }
 
   registerCloseHook(hook: () => void | Promise<void>): () => void {

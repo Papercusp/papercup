@@ -124,6 +124,20 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
           }
         : {};
 
+  // DAG-filter frontier (includeDag, EI-6949): the caller opted in, so NEVER
+  // silently drop it. Standard/full carry the full frontier; trimmed collapses to
+  // the counts + a visible note (the item list can be large), mirroring coverage.
+  const dag = (d as { dag?: unknown }).dag;
+  const dagOut =
+    dag && typeof dag === "object"
+      ? tier === "standard"
+        ? { dag }
+        : {
+            dag_counts: (dag as { counts?: unknown }).counts ?? null,
+            dag_note: `dag frontier items omitted at trimmed tier — payloadTier:"standard"/"full"`,
+          }
+      : {};
+
   return {
     ok: d.ok ?? true,
     ...(d.self !== undefined ? { self: d.self } : {}),
@@ -135,6 +149,7 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(collisions.rows.length ? { coverage_collisions: collisions.rows } : {}),
     ...(collisions.note ? { coverage_collisions_note: collisions.note } : {}),
     ...coverageOut,
+    ...dagOut,
     agents,
   };
 }

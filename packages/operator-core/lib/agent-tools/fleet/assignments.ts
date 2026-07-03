@@ -30,6 +30,9 @@ import {
 } from '../../plan-item-coverage';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
+import { getPlanRow, planItemsForRow } from '../plans/source';
+import { resolveEffectiveStatusForItems } from '../plans/effective-status';
+import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
 
 /** Coverage levels most-covered → least, for sorting the rollup. */
 const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
@@ -96,6 +99,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Include lapsed (expired, unreclaimed) plan-item leases. Default false.'),
+    includeDag: z
+      .boolean()
+      .optional()
+      .describe(
+        'Also return the plan\'s DAG-filter frontier (EI-6949): every item the fleet\'s dependency DAG selects, with per-item status (ready|blocked|claimed|wip|done|dropped) + blockedBy/unresolvedBlockers/claimedBy/files + counts. Reuses the SAME plan-item DAG state the spawner admits from, so `ready` = what would be placed next. Requires `plan`; off by default (the frontier is fleet-level, kept off the per-agent presence path). Opt-in so the default read stays lean.',
+      ),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get the placement
   // decision core (summary + reclaimables + compact agent rows — see
@@ -160,8 +169,11 @@ export default defineTool({
     }[] = [];
     let coverageTruncated = false;
     let collisions: CoverageCollision[] = [];
+    // Hoisted so the DAG-frontier block (includeDag) reuses the SAME fused
+    // coverage map for its claims — one getAllPlanItemCoverage() call, not two.
+    let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null = null;
     try {
-      const covMap = await getAllPlanItemCoverage();
+      covMap = await getAllPlanItemCoverage();
       // Scope to the queried plan (when set) the same way coverage is, so a
       // { plan } filter narrows both the coverage rollup AND the collision list.
       const inScope = (ref: string): boolean => {
@@ -190,6 +202,26 @@ export default defineTool({
       });
     } catch {
       // Non-fatal — omit the coverage section.
+    }
+    // DAG-filter frontier (EI-6949, includeDag): the whole set of items the plan's
+    // dependency DAG selects, each with its disposition — a FLEET-level work-graph
+    // view surfaced ONLY on request (never on the per-agent presence path, which
+    // would duplicate this list across every agent's row). Reuses the SAME plan-item
+    // DAG state the spawner admits from (effectiveStatus + unresolvedBlockers) + the
+    // coverage map for claims, so `ready` is exactly what would be placed next.
+    // Requires a plan; non-fatal (a read hiccup just omits the section).
+    let dagView: DagFrontierView | null = null;
+    if (args.includeDag && args.plan) {
+      try {
+        const row = await getPlanRow(args.plan, { workspaceId });
+        if (row) {
+          const items = resolveEffectiveStatusForItems(planItemsForRow(row)).items;
+          const claims = covMap ? claimsFromCoverage(covMap.values(), args.plan) : {};
+          dagView = shapeDagFrontier(items, claims);
+        }
+      } catch {
+        // Non-fatal — omit the dag section.
+      }
     }
     // Summary is computed over the FULL agent set so the counts stay accurate even
     // when the returned `agents` array is bounded below.
@@ -245,6 +277,8 @@ export default defineTool({
                 : {}),
             }
           : {}),
+        // DAG-filter frontier (includeDag) — omitted unless requested (+ a plan).
+        ...(dagView ? { dag: dagView } : {}),
         agents: selfMarkedAgents,
         ...(agentsTruncated
           ? {

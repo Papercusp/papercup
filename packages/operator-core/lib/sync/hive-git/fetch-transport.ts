@@ -36,6 +36,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Duplex } from 'node:stream';
 import { deviceNamespaceKey, hiveGitRoot } from './storage';
+import { isScopeRepoFamilyPath } from './scope-repo';
+import { type ScopeRepoServeGrant, isIssuedScopeServeGrant } from './scope-serve-gate';
 
 /** The ext:: bridge helper git execs on the client (a real on-disk node script). */
 const EXT_BRIDGE_PATH = join(dirname(fileURLToPath(import.meta.url)), 'git-ext-bridge.mjs');
@@ -68,6 +70,21 @@ function assertServeableRepo(repoPath: string): void {
   }
 }
 
+/** §5.3 fail-closed serve gate for the per-scope repo family (P-108 / D-018
+ *  option b): any path inside `<root>/<hive>/scopes/` is UNSERVABLE without a
+ *  roster-verified grant from `authorizeScopeRepoServe`, bound to this exact
+ *  path — so future serve wiring structurally cannot skip the membership
+ *  check. Checked regardless of `allowOutsideRoot` (an out-of-root test path
+ *  is not in the family, so tests are unaffected). */
+function assertScopeServeAuthorized(repoPath: string, grant?: ScopeRepoServeGrant): void {
+  if (!isScopeRepoFamilyPath(repoPath)) return;
+  if (!grant || !isIssuedScopeServeGrant(grant) || grant.repoPath !== repoPath) {
+    throw new Error(
+      `hive-git: refusing to serve scope repo without a roster-verified serve grant: ${repoPath}`,
+    );
+  }
+}
+
 /**
  * SERVER half — serve `git upload-pack` (protocol v2) for `repoPath` over
  * `duplex`, piping duplex↔child both ways. Ends `duplex` when upload-pack exits
@@ -77,7 +94,12 @@ function assertServeableRepo(repoPath: string): void {
 export function serveUploadPack(
   repoPath: string,
   duplex: Duplex,
-  opts: { timeoutMs?: number; allowOutsideRoot?: boolean } = {},
+  opts: {
+    timeoutMs?: number;
+    allowOutsideRoot?: boolean;
+    /** REQUIRED for any repo in the scopes/ family (§5.3 roster serve gate). */
+    scopeServeGrant?: ScopeRepoServeGrant;
+  } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
     let stderr = '';
@@ -92,6 +114,7 @@ export function serveUploadPack(
     };
     try {
       if (!opts.allowOutsideRoot) assertServeableRepo(repoPath);
+      assertScopeServeAuthorized(repoPath, opts.scopeServeGrant);
     } catch (e) {
       stderr += e instanceof Error ? e.message : String(e);
       try {

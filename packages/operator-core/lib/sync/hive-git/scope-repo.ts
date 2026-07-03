@@ -33,7 +33,7 @@
  * against a real temp bare repo (the storage.ts pattern).
  */
 
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { mkdir, access } from 'node:fs/promises';
 import { type RunGit, defaultRunGit, hiveGitRoot } from './storage';
 
@@ -121,6 +121,53 @@ export function scopeRepoPath(hiveHomeSlug: string, scope: ScopeId): string {
   assertSafeComponent(owner, 'scope owner');
   assertSafeComponent(scope.slug, 'scope slug');
   return join(hiveGitRoot(), hiveHomeSlug, 'scopes', owner, `${scope.slug}.git`);
+}
+
+/** `repoPath` relative to `hiveGitRoot()` as clean components, or null when the
+ *  path escapes the root (the family checks below are prefix-anchored). */
+function rootRelativeComponents(repoPath: string): string[] | null {
+  const rel = relative(hiveGitRoot(), repoPath);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+  return rel.split(sep);
+}
+
+/**
+ * True when `repoPath` sits anywhere inside a `scopes/` family under
+ * `hiveGitRoot()` (`<root>/<hive>/scopes/...`) — the GATE TRIGGER for scope-repo
+ * serving. Deliberately BROADER than {@link parseScopeRepoPath}: a malformed
+ * path inside the family must still trip the serve gate (and then can never be
+ * granted, because the strict parse fails) — fail-closed, never dodged by
+ * malformation.
+ */
+export function isScopeRepoFamilyPath(repoPath: string): boolean {
+  const parts = rootRelativeComponents(repoPath);
+  return parts !== null && parts.length >= 2 && parts[1] === 'scopes';
+}
+
+const OWNER_DIR_RE = /^fleet-([1-9][0-9]{0,18})$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Strict inverse of {@link scopeRepoPath}: parse
+ * `<root>/<hive>/scopes/fleet-<uid>/<slug>.git` back to its hive home slug +
+ * ScopeId. Returns null on ANY malformation — enforcement callers (the §5.3
+ * serve gate) must treat null as a refusal, never a fallback.
+ */
+export function parseScopeRepoPath(
+  repoPath: string,
+): { hiveHomeSlug: string; scope: ScopeId } | null {
+  const parts = rootRelativeComponents(repoPath);
+  if (!parts || parts.length !== 4 || parts[1] !== 'scopes') return null;
+  const [hiveHomeSlug, , ownerDir, repoFile] = parts;
+  if (!hiveHomeSlug || hiveHomeSlug.includes('..') || hiveHomeSlug.includes('\0')) return null;
+  const m = OWNER_DIR_RE.exec(ownerDir);
+  if (!m) return null;
+  const uid = Number(m[1]);
+  if (!Number.isSafeInteger(uid) || uid <= 0) return null;
+  if (!repoFile.endsWith('.git')) return null;
+  const slug = repoFile.slice(0, -'.git'.length);
+  if (!slug || slug.length > SLUG_MAX || !SLUG_RE.test(slug)) return null;
+  return { hiveHomeSlug, scope: { kind: 'fleet', ownerGithubUserId: uid, slug } };
 }
 
 async function pathExists(p: string): Promise<boolean> {

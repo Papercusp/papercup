@@ -39,7 +39,7 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
   it('invokes the hook with the raw value + resolved REMOTE provenance, returns false', async () => {
     const seen: Array<{ raw: unknown; prov: ProvenanceContext | undefined }> = [];
     const p = proj({ onRefusedOp: (raw, prov) => void seen.push({ raw, prov }) });
-    const applied = await applyOpVia(() => p, remotePut({ bad: true }), applyOpts);
+    const applied = await applyOpVia(() => p as TableProjection<unknown>, remotePut({ bad: true }), applyOpts);
     expect(applied).toBe(false);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.raw).toEqual({ bad: true });
@@ -51,7 +51,7 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
     const onRefusedOp = vi.fn();
     const writeToPg = vi.fn(async () => {});
     const p = proj({ onRefusedOp, writeToPg });
-    const applied = await applyOpVia(() => p, remotePut({ good: true }), applyOpts);
+    const applied = await applyOpVia(() => p as TableProjection<unknown>, remotePut({ good: true }), applyOpts);
     expect(applied).toBe(true);
     expect(onRefusedOp).not.toHaveBeenCalled();
     expect(writeToPg).toHaveBeenCalledTimes(1);
@@ -63,11 +63,11 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
         throw new Error('counter exploded');
       },
     });
-    await expect(applyOpVia(() => p, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
+    await expect(applyOpVia(() => p as TableProjection<unknown>, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
   });
 
   it('a projection WITHOUT the hook still drops a declined op cleanly', async () => {
     const p = proj(); // no onRefusedOp
-    await expect(applyOpVia(() => p, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
+    await expect(applyOpVia(() => p as TableProjection<unknown>, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
   });
 });

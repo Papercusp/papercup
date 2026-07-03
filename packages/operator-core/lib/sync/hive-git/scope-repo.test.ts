@@ -7,8 +7,10 @@ import { describe, expect, it, afterEach } from 'vitest';
 import { join } from 'node:path';
 import {
   formatScopeId,
+  isScopeRepoFamilyPath,
   parseScopeId,
   parseScopeRefSegment,
+  parseScopeRepoPath,
   scopeForeignRef,
   scopeRefSegment,
   scopeRepoPath,
@@ -94,5 +96,59 @@ describe('scopeRepoPath', () => {
 
   it('rejects a traversal-shaped hive slug', () => {
     expect(() => scopeRepoPath('../etc', SCOPE)).toThrow(/unsafe/);
+  });
+});
+
+describe('isScopeRepoFamilyPath / parseScopeRepoPath (§5.3 gate encodings)', () => {
+  const OLD_ROOT = process.env.PAPERCUSP_HIVE_GIT_ROOT;
+  afterEach(() => {
+    if (OLD_ROOT === undefined) delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    else process.env.PAPERCUSP_HIVE_GIT_ROOT = OLD_ROOT;
+  });
+
+  it('round-trips scopeRepoPath', () => {
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
+    const p = scopeRepoPath('my-hive', SCOPE);
+    expect(isScopeRepoFamilyPath(p)).toBe(true);
+    expect(parseScopeRepoPath(p)).toEqual({ hiveHomeSlug: 'my-hive', scope: SCOPE });
+  });
+
+  it('family check is BROADER than the strict parse (malformed inside scopes/ still trips the gate)', () => {
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
+    const malformed = join(hiveGitRoot(), 'my-hive', 'scopes', 'not-a-fleet-dir', 'x.git');
+    expect(isScopeRepoFamilyPath(malformed)).toBe(true);
+    expect(parseScopeRepoPath(malformed)).toBeNull();
+  });
+
+  it.each([
+    ['hive repo itself', () => join(hiveGitRoot(), 'my-hive', 'repo.git')],
+    ['outside the root', () => '/somewhere/else/my-hive/scopes/fleet-1/x.git'],
+    ['root itself', () => hiveGitRoot()],
+    ['scopes as hive name (depth 1)', () => join(hiveGitRoot(), 'scopes')],
+  ])('not in the family: %s', (_name, mk) => {
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
+    expect(isScopeRepoFamilyPath(mk())).toBe(false);
+    expect(parseScopeRepoPath(mk())).toBeNull();
+  });
+
+  it.each([
+    ['login-keyed owner dir', 'my-hive/scopes/fleet-aviynw/x.git'],
+    ['zero uid', 'my-hive/scopes/fleet-0/x.git'],
+    ['leading-zero uid', 'my-hive/scopes/fleet-0123/x.git'],
+    ['missing .git suffix', 'my-hive/scopes/fleet-9/x'],
+    ['empty slug', 'my-hive/scopes/fleet-9/.git'],
+    ['uppercase slug', 'my-hive/scopes/fleet-9/Bad.git'],
+    ['extra depth', 'my-hive/scopes/fleet-9/nested/x.git'],
+    ['missing repo file', 'my-hive/scopes/fleet-9'],
+  ])('strict parse refuses %s', (_name, rel) => {
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
+    expect(parseScopeRepoPath(join(hiveGitRoot(), rel))).toBeNull();
+  });
+
+  it('escape via .. resolves out of the family', () => {
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-gate-root';
+    const escapee = join(hiveGitRoot(), 'my-hive', 'scopes', '..', '..', 'other', 'repo.git');
+    expect(isScopeRepoFamilyPath(escapee)).toBe(false);
+    expect(parseScopeRepoPath(escapee)).toBeNull();
   });
 });
