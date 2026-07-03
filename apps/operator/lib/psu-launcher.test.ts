@@ -77,6 +77,7 @@ import {
   preflightWindowGuard,
   runLaunchPreflight,
   normalizeModelSpec,
+  validateModelSpec,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -1451,6 +1452,45 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
     expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
     expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
     expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet[1m]:high');
+  });
+});
+
+describe('validateModelSpec + --model guard (WI-1979 — reject a malformed model spec at parse)', () => {
+  it('accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, and local ids', () => {
+    for (const s of [
+      'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
+      'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
+      'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+    ]) {
+      expect(validateModelSpec(s).ok, s).toBe(true);
+    }
+  });
+  it('accepts an unknown-but-plausible short id that is NOT a close typo (o3 / gpt4 / grok)', () => {
+    for (const s of ['o3', 'gpt4', 'grok']) expect(validateModelSpec(s).ok, s).toBe(true);
+  });
+  it('rejects a hand-typed [1m] marker on a non-family base (the fabel5[1m] incident), with the marker tip + suggestion', () => {
+    const r = validateModelSpec('fabel5[1m]');
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('do not type it'); // the "[1m] is auto-appended" tip
+    expect(r.message).toContain('fable'); // corrective suggestion (Damerau catches the transposition)
+  });
+  it('rejects a close-typo alias — incl. transpositions — with a "did you mean" suggestion', () => {
+    for (const [bad, want] of [
+      ['fabel', 'fable'], ['sonet', 'sonnet'], ['sonnet5', 'sonnet'],
+      ['opus4', 'opus'], ['opuss', 'opus'], ['fabel5:xhigh', 'fable'],
+    ] as const) {
+      const r = validateModelSpec(bad);
+      expect(r.ok, bad).toBe(false);
+      expect(r.message, bad).toContain(want);
+    }
+  });
+  it('parseArgs THROWS the corrective error for --model=fabel5[1m] (covers every launch path)', () => {
+    expect(() => parseArgs(['--model=fabel5[1m]'])).toThrow(/fable/);
+  });
+  it('parseArgs is a no-op on VALID input — a good --model spec still normalizes', () => {
+    expect(parseArgs(['--model=fable:xhigh']).model).toBe('fable[1m]:xhigh');
+    expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
   });
 });
 

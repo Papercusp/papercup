@@ -236,7 +236,17 @@ export function parseArgs(argv) {
     // P-032 omp-convergence passthroughs: a model fuzzy-match, resume of a
     // specific recorded session, and a kickoff/launch-context file the server
     // pre-generated (fed to the *-su wrapper as its launch-context).
-    else if (a.startsWith('--model=')) out.model = normalizeModelSpec(a.slice('--model='.length));
+    else if (a.startsWith('--model=')) {
+      // Guard a malformed model spec (WI-1979) — a hand-typed `[1m]` marker / misspelled alias
+      // (`fabel5[1m]`) is rejected HERE with a corrective suggestion, so it never reaches the CLI
+      // as an unrunnable model that fails the launch silently. throw → the top-level main().catch
+      // prints `psu: <message>` + exits. Covers EVERY launch path (raw psu, capability:terminal,
+      // fleet:launch-on-plan) since all --model input funnels through parseArgs.
+      const rawModel = a.slice('--model='.length);
+      const v = validateModelSpec(rawModel);
+      if (!v.ok) throw new Error(v.message);
+      out.model = normalizeModelSpec(rawModel);
+    }
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
     // solo-launch-provenance: the ownerId of the agent that launched this session
@@ -1782,6 +1792,106 @@ export function normalizeModelSpec(spec) {
   const suffix = c > 0 ? spec.slice(c + 1) : '';
   if (c > 0 && /^(low|medium|high|xhigh|max)$/i.test(suffix)) return `${spec.slice(0, c)}[1m]${spec.slice(c)}`;
   return `${spec}[1m]`;
+}
+
+/** The canonical BARE cloud model aliases psu recognizes. Short + lowercase. The CLI/gateway own
+ *  the full OPEN set of ids, so this list is used ONLY to spot an obviously-misspelled short alias
+ *  (validateModelSpec) — never to gate full/provider ids. */
+export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/** Damerau optimal-string-alignment distance: Levenshtein PLUS adjacent transpositions as a single
+ *  edit — so a swap typo (`fabel`↔`fable`) is distance 1, without widening the substitution radius
+ *  (`o3`/`gpt4`/`grok` stay far from every alias). Tiny; only ever run over the ~4 known aliases. */
+function damerauDistance(a, b) {
+  const al = a.length;
+  const bl = b.length;
+  if (!al) return bl;
+  if (!bl) return al;
+  const d = Array.from({ length: al + 1 }, () => new Array(bl + 1).fill(0));
+  for (let i = 0; i <= al; i++) d[i][0] = i;
+  for (let j = 0; j <= bl; j++) d[0][j] = j;
+  for (let i = 1; i <= al; i++) {
+    for (let j = 1; j <= bl; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1); // adjacent transposition
+      }
+    }
+  }
+  return d[al][bl];
+}
+
+/** Nearest known cloud alias to a (letters-only) token, with its Damerau distance. */
+function nearestCloudAlias(letters) {
+  const t = String(letters || '').toLowerCase();
+  let alias = null;
+  let dist = Infinity;
+  for (const a of KNOWN_CLOUD_ALIASES) {
+    const d = damerauDistance(t, a);
+    if (d < dist) {
+      dist = d;
+      alias = a;
+    }
+  }
+  return { alias, dist };
+}
+
+/**
+ * Validate a hand-typed `--model` spec, catching the two malformed-alias classes that otherwise
+ * reach the CLI as an unrunnable model and fail the launch with NO useful hint (WI-1979):
+ *   (1) a psu-INTERNAL `[1m]` 1M-window marker typed as INPUT on a bare non-family alias
+ *       (`fabel5[1m]`) — psu APPENDS `[1m]` (see normalizeModelSpec); it is never something you type;
+ *   (2) a bare short cloud alias that is a CLOSE misspelling of a known one (`fabel`→fable, `sonet`,
+ *       `sonnet5`, `opus4`).
+ * Deliberately LENIENT — cloud model ids are an OPEN set (the CLI/gateway own the canonical list).
+ * It only inspects values that unambiguously look like a bare short alias (pure letters, or
+ * letters+digits). A dashed/dotted/slashed/versioned id (`claude-fable-5`, `anthropic.claude-3-5-…`,
+ * a future `claude-newfam-6`, and legit `[1m]` round-trips like `claude-fable-5[1m]`) is a plausible
+ * full id and PASSES UNCHECKED; so does a plausible non-alias short id (`o3`, `gpt4`) that is NOT a
+ * close typo of a known alias, and any local/ollama id (validated separately by fuzzyEnum). Returns
+ * { ok:true } | { ok:false, message }. Pure + exported. NO leading 'psu:' in the message — the
+ * top-level launch catch prepends it.
+ */
+export function validateModelSpec(spec) {
+  if (!spec) return { ok: true };
+  const s = String(spec).trim();
+  if (!s) return { ok: true };
+  if (/^ollama(-cc)?\//i.test(s) || /\bornith\b/i.test(s)) return { ok: true }; // local — not ours to check
+  // Peel a recognized :effort tail so we inspect the model BASE (an unrecognized ':x' — bedrock's
+  // '…-v2:0' — stays on the base, which then contains ':' → not alias-shaped → passes below).
+  const c = s.lastIndexOf(':');
+  const effort = c > 0 && /^(low|medium|high|xhigh|max)$/i.test(s.slice(c + 1)) ? s.slice(c + 1) : null;
+  const base = effort ? s.slice(0, c) : s;
+  // Peel a trailing [..] window marker: 'fable[1m]' → core 'fable', hadMarker true.
+  const mk = base.match(/^(.*?)(\[[^\]]*\])$/);
+  const core = mk ? mk[1] : base;
+  const hadMarker = !!mk;
+  const isPure = /^[a-z]+$/i.test(core); // opus, fabel
+  const isLettersDigits = /^[a-z]+[0-9]+$/i.test(core); // fabel5, sonnet5, o3
+  if (isPure && KNOWN_CLOUD_ALIASES.includes(core.toLowerCase())) return { ok: true }; // opus / fable / fable[1m]
+  // A full/provider id (dashes/dots/slashes/version) is NOT alias-shaped → open set, pass — including
+  // a legit '[1m]' round-trip on a full id (e.g. 'claude-fable-5[1m]').
+  if (!isPure && !isLettersDigits) return { ok: true };
+  // Bare short token that is NOT a known alias (fabel / fabel5 / o3 / grok). Reject only when it is
+  // either wearing a [1m] marker (never valid on a non-family bare token) OR a CLOSE typo (Damerau
+  // distance ≤ 1) of a known alias — so genuinely-unknown ids like `o3` / `gpt4` pass untouched.
+  const near = nearestCloudAlias(core.replace(/[0-9]+$/, ''));
+  const closeTypo = near.alias != null && near.dist <= 1;
+  if (!hadMarker && !closeTypo) return { ok: true };
+  const suggestion = closeTypo
+    ? ` Did you mean \`${effort ? `${near.alias}:${effort}` : `${near.alias}:xhigh`}\`?`
+    : '';
+  const markerTip = hadMarker
+    ? ' The `[1m]` 1M-context marker is appended AUTOMATICALLY by psu — do not type it.'
+    : '';
+  return {
+    ok: false,
+    message:
+      `\`${s}\` is not a recognized model spec.${suggestion}${markerTip} ` +
+      `Cloud models: \`<alias>[:<effort>]\` — aliases ${KNOWN_CLOUD_ALIASES.join('/')}, ` +
+      `effort low|medium|high|xhigh|max (e.g. \`fable:xhigh\`) — or a full id (e.g. claude-fable-5, anthropic.claude-…).`,
+  };
 }
 
 /**
