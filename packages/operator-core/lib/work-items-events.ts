@@ -92,6 +92,30 @@ export function emitWorkItemClaimedEvent(
 }
 
 /**
+ * `claim:released:<id>` — fired when a work-item's claim is RELEASED and it returns
+ * to the claimable pool (event-await-discoverability-and-coverage-2026-07-03 P-105).
+ * The counterpart of `work-item:claimed:<id>`: an agent waiting to pick up a specific
+ * orphaned / handed-back item awaits this and is WOKEN the moment it frees, instead of
+ * polling. Fires from `releaseWorkItem` — the ONE path both `work_items:release` (voluntary)
+ * AND the stale-claim reaper route through — so a reaper-freed item wakes waiters too.
+ * Awaiter-only (no `to` push): the audience is whoever registered interest in this id.
+ * Fire-and-forget; never throws.
+ */
+export function emitClaimReleasedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: `claim:released:${wi.id}`,
+        summary: `${wi.id} claim released — back to the pool: ${wi.title}`,
+        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`claim-released-event for ${wi.id}`, e));
+}
+
+/**
  * `work-item:blocked:<id>` — fired when an item transitions INTO `blocked`
  * (the durable "I can't proceed" record — see the repo guide's don't-silently-
  * defer rule). The delegator (assignedBy) is notified so blocked work is never

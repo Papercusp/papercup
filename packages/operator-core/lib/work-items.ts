@@ -1906,14 +1906,30 @@ export async function observeWorkItem(id: string, opts: { harness?: string } = {
 export async function releaseWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  // Only a release of an actually-CLAIMED item is a `claim:released` transition —
+  // releasing an already-free row is a no-op and must not wake pool-waiters.
+  const wasClaimed = Boolean(wi.assignee);
   // EI-6832: this item is about to RETURN to the unclaimed pool — clear any lease a
   // prior claim_next left on it under the WORKITEM_CLAIM_LEASE flag, so it doesn't sit
   // visibly-unclaimed-yet-lease-poisoned for up to the lease TTL (fire-and-forget,
   // never blocks the release itself; see releaseWorkItemLease's doc comment).
   if (wi.harness) void releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
+  // P-105: claim:released:<id> — wake anyone awaiting this item's claim to free, the
+  // moment it returns to the pool (both the voluntary work_items:release tool AND the
+  // stale-claim reaper route through here). Fire-and-forget + lazy import (work-items-
+  // events imports THIS module statically — the lazy import breaks the cycle).
+  const emitReleased = (released: WorkItem | null): void => {
+    if (released && wasClaimed) {
+      void import('./work-items-events')
+        .then((m) => m.emitClaimReleasedEvent(released))
+        .catch(() => {});
+    }
+  };
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id);
-    return updated ? issueToWorkItem(updated) : null;
+    const released = updated ? issueToWorkItem(updated) : null;
+    emitReleased(released);
+    return released;
   }
   const { sql } = getOrgPg();
   // P-003 / D-002: a VOLUNTARY release mirrors the reaper — a freed mid-flight
@@ -1933,7 +1949,9 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
            updated_ts = ${Date.now()}
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  emitReleased(released);
+  return released;
 }
 
 /* ── Co-location affinity (hive-coordination-model P-002) ──────────────────────────
