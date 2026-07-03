@@ -289,6 +289,45 @@ describe('joinHarnessSwarm — shared-swarm late join (existing sockets)', () =>
     const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
     expect(h.connectionCount).toBe(0);
   });
+
+  // WI-1840/WI-183 (rig run m1783120511): liveConnectionCount must read the
+  // shared swarm's OWN live socket set, not a per-join counter. A per-join
+  // counter misses any socket whose 'connection' event pre-dated this join's
+  // registration (shared-swarm dedup across topics; rekey() replaces the
+  // handle with a zero counter) — which read swarmConnections=0 on live rigs
+  // and silently disarmed the connected_never_replicated axis in exactly the
+  // zombie-connection scenario it exists to catch.
+  it('liveConnectionCount reads the shared swarm live socket set (Set fast path)', async () => {
+    const { swarm } = fakeSwarm();
+    const { store } = fakeStore();
+    const live = new Set<unknown>([{ pipe: vi.fn() }, { pipe: vi.fn() }]);
+    (swarm as { connections?: Iterable<unknown> }).connections = live;
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    expect(h.liveConnectionCount).toBe(2); // pre-existing sockets, no events fired
+    live.add({ pipe: vi.fn() });
+    expect(h.liveConnectionCount).toBe(3); // tracks the LIVE set, not join-time
+  });
+
+  it('liveConnectionCount counts a non-Set iterable connections surface', async () => {
+    const { swarm } = fakeSwarm();
+    const { store } = fakeStore();
+    (swarm as { connections?: Iterable<unknown> }).connections = [
+      { pipe: vi.fn() },
+      { pipe: vi.fn() },
+    ];
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    expect(h.liveConnectionCount).toBe(2);
+  });
+
+  it('liveConnectionCount falls back to the per-join counter without connections', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    expect(h.liveConnectionCount).toBe(0);
+    emit('connection', { pipe: vi.fn() });
+    emit('connection', { pipe: vi.fn() });
+    expect(h.liveConnectionCount).toBe(2);
+  });
 });
 
 describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {

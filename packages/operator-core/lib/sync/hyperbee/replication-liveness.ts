@@ -121,6 +121,14 @@ export interface ReplicationLogLiveness {
   msSinceIngestProgress: number | null;
   /** ms since this log was last sampled (merge-loop dead-man input). */
   msSinceSampled: number;
+  /**
+   * The swarmConnections value the LAST sample carried — what the
+   * connected_never_replicated axis actually sees. null = the sampler never
+   * passed one (axis disabled at the source). Diagnostics: the m1783120511
+   * silent-detector incident was only diagnosable by rebuilding with this
+   * field — keep it so the next "axis never fired" is one RPC read.
+   */
+  lastSwarmConnections: number | null;
 }
 
 /** Read-time view of one harness's replication liveness. */
@@ -162,6 +170,8 @@ interface LogState {
    * the clock and the detector would stay silent in exactly the zombie case.
    */
   lastSwarmSeenMs: number | null;
+  /** Verbatim swarmConnections from the last sample (null = not passed). */
+  lastSwarmConnections: number | null;
   alarmedNoReplicator: boolean;
   alarmedFrozen: boolean;
   alarmedConnectedNever: boolean;
@@ -310,6 +320,7 @@ export function sampleReplicationLiveness(
       lastIngestProgressMs: sample.mergedPosition !== undefined ? now : null,
       connectedNeverReplSinceMs: null,
       lastSwarmSeenMs: null,
+      lastSwarmConnections: null,
       alarmedNoReplicator: false,
       alarmedFrozen: false,
       alarmedConnectedNever: false,
@@ -325,6 +336,7 @@ export function sampleReplicationLiveness(
     st.mergedPosition !== null && st.knownLength > st.mergedPosition;
   st.lastSampleMs = now;
   st.knownLength = sample.knownLength;
+  st.lastSwarmConnections = sample.swarmConnections ?? null;
 
   // ── peers-count axis (no_replicator) ──
   if (sample.peersCount !== undefined) {
@@ -516,6 +528,7 @@ export function getReplicationLiveness(
         msSinceIngestProgress:
           st.lastIngestProgressMs === null ? null : now - st.lastIngestProgressMs,
         msSinceSampled: now - st.lastSampleMs,
+        lastSwarmConnections: st.lastSwarmConnections,
       });
     }
     out.push({ workspaceId, harnessSlug, logs: rows, counts });

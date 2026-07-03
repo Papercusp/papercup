@@ -129,6 +129,19 @@ async function seedSpawn(
             now() - interval '20 minutes', now() - make_interval(mins => ${finishedAgoMin}))`;
 }
 
+/**
+ * WI-1999: mark a holder as locally KNOWN but not live — a STALE presence row
+ * (heartbeat 1h ago, far past the 10-min grace). The DEAD leg only reaps holders
+ * this node has EVER seen (work_items federate, presence does not — a never-seen
+ * holder is possibly a live agent on another hive node). Tests that mean
+ * "a local bee that died" seed this; tests that mean "never seen here" don't.
+ */
+async function markKnown(alias: string): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.coord_presence VALUES (${alias}, now() - interval '1 hour')
+    ON CONFLICT (owner_id) DO NOTHING`;
+}
+
 async function statusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
   const [row] = await sql<{ status: string; requeue_count: number; taken_by: string | null }[]>`
     SELECT status, requeue_count, taken_by
@@ -144,8 +157,9 @@ async function workItemStatusOf(featureId: string): Promise<{ status: string; re
 }
 
 describe('reclaimStaleWorkItemClaims', () => {
-  it('releases a claim whose holder has no presence and no nursery row (the dead-bee case)', async () => {
+  it('releases a claim whose holder has a stale presence row and no nursery row (the dead-bee case)', async () => {
     await seedItem('F-001', 'opspawn-dead-123', 30);
+    await markKnown('opspawn-dead-123'); // WI-1999: locally KNOWN (stale) — a never-seen holder is skipped
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released).toHaveLength(1);
     expect(r.released[0]).toMatchObject({
@@ -206,6 +220,7 @@ describe('reclaimStaleWorkItemClaims', () => {
   // A NULL taken_at must count as past grace: the dead-holder signal alone frees it.
   it('a dead-holder claim with NULL taken_at is freed (EI-2534 strand class)', async () => {
     await seedItem('F-014', 'su-dead-noanchor', 30);
+    await markKnown('su-dead-noanchor');
     // Strip the claim-time anchor — taken_by stays set (the orphaned-but-no-anchor row).
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL WHERE feature_id = 'F-014'`;
@@ -222,6 +237,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('releases orphaned task work-items from the canonical work_items table', async () => {
     await seedTaskItem('WI-TASK-1', 'su-dead-task-holder', 30);
+    await markKnown('su-dead-task-holder');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released).toHaveLength(1);
     expect(r.released[0]).toMatchObject({
@@ -236,6 +252,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('requeues mid-flight task work-items, bounded by the same cap', async () => {
     await seedTaskItem('WI-TASK-2', 'su-dead-task-holder-2', 30, 'wip');
+    await markKnown('su-dead-task-holder-2');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'WI-TASK-2',
@@ -250,6 +267,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('frees terminal task work-items without requeueing them', async () => {
     await seedTaskItem('WI-TASK-3', 'su-dead-task-holder-3', 30, 'done');
+    await markKnown('su-dead-task-holder-3');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'WI-TASK-3',
@@ -263,6 +281,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('a mid-flight NULL-taken_at dead-holder claim is requeued → todo (EI-2534)', async () => {
     await seedItem('F-015', 'su-dead-noanchor2', 30, 'in_progress');
+    await markKnown('su-dead-noanchor2');
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL WHERE feature_id = 'F-015'`;
     const r = await reclaimStaleWorkItemClaims(sql);
@@ -282,6 +301,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('a mid-flight (in_progress) row is REQUEUED → todo and re-enters the pool (GAP 1, P-001)', async () => {
     await seedItem('F-007', 'opspawn-dead-mid', 30, 'in_progress');
+    await markKnown('opspawn-dead-mid');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'F-007',
@@ -295,6 +315,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('a `validating` row is also requeued (any non-terminal, non-blocked state)', async () => {
     await seedItem('F-007b', 'opspawn-dead-val', 30, 'validating');
+    await markKnown('opspawn-dead-val');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({ former_status: 'validating', new_status: 'todo', action: 'requeued' });
   });
@@ -303,6 +324,7 @@ describe('reclaimStaleWorkItemClaims', () => {
     // Seed already at cap-1 (default cap 3 → requeue_count 2): the next reclaim is
     // the 3rd, which exhausts the cap and parks the poison item in `blocked`.
     await seedItem('F-010', 'opspawn-dead-poison', 30, 'in_progress', 2);
+    await markKnown('opspawn-dead-poison');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'F-010',
@@ -316,6 +338,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('honors a custom requeueCap option', async () => {
     await seedItem('F-011', 'opspawn-dead-cap1', 30, 'in_progress', 0);
+    await markKnown('opspawn-dead-cap1');
     const r = await reclaimStaleWorkItemClaims(sql, { requeueCap: 1 });
     // cap 1 → first reclaim already exhausts it.
     expect(r.released[0]).toMatchObject({ new_status: 'blocked', action: 'dead-lettered', requeue_count: 1 });
@@ -323,6 +346,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('a TERMINAL (passed) row is freed but NOT requeued or re-broadcast (the F-FIX-038 fix)', async () => {
     await seedItem('F-012', 'opspawn-dead-done', 30, 'passed', 0);
+    await markKnown('opspawn-dead-done');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({ former_status: 'passed', new_status: 'passed', action: 'freed-terminal' });
     expect(await statusOf('F-012')).toMatchObject({ status: 'passed', taken_by: null });
@@ -330,12 +354,14 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('a `deprecated` row is freed but kept terminal', async () => {
     await seedItem('F-012b', 'opspawn-dead-dep', 30, 'deprecated', 0);
+    await markKnown('opspawn-dead-dep');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({ former_status: 'deprecated', new_status: 'deprecated', action: 'freed-terminal' });
   });
 
   it('a `blocked` row is freed but kept blocked (its own delegator-notify signal path)', async () => {
     await seedItem('F-013', 'opspawn-dead-blk', 30, 'blocked', 1);
+    await markKnown('opspawn-dead-blk');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({ former_status: 'blocked', new_status: 'blocked', action: 'freed-blocked' });
     // requeue_count untouched for a blocked freed row.
@@ -350,6 +376,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 
   it('the freed item is immediately claimable again by a live agent', async () => {
     await seedItem('F-009', 'opspawn-dead-9', 30);
+    await markKnown('opspawn-dead-9');
     await reclaimStaleWorkItemClaims(sql);
     const updated = await sql<{ feature_id: string }[]>`
       UPDATE harness_shared.harness_features_consolidated
@@ -438,6 +465,7 @@ describe('reclaimStaleWorkItemClaims', () => {
 describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)', () => {
   it('a dead-holder OPEN bug → assignee cleared, returned to the open pool', async () => {
     await seedIssue('EI-1', 'bug', 'opspawn-dead-bug', 30);
+    await markKnown('opspawn-dead-bug');
     const r = await reclaimStaleIssueClaims(sql);
     expect(r.released).toHaveLength(1);
     expect(r.released[0]).toMatchObject({ issue_id: 'EI-1', kind: 'bug', former_assignee: 'opspawn-dead-bug' });
@@ -446,6 +474,7 @@ describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)',
 
   it('a dead-holder OPEN change → assignee cleared', async () => {
     await seedIssue('EI-2', 'change', 'opspawn-dead-chg', 30);
+    await markKnown('opspawn-dead-chg');
     const r = await reclaimStaleIssueClaims(sql);
     expect(r.released.map((c) => c.issue_id)).toEqual(['EI-2']);
     expect(await assigneeOf('EI-2')).toBeNull();
@@ -488,5 +517,57 @@ describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)',
     await seedIssue('EI-9', 'bug', null, 0);
     const r = await reclaimStaleIssueClaims(sql);
     expect(r.released).toHaveLength(0);
+  });
+});
+
+// ── WI-1999: the remote-holder guard (federated items, local-only presence) ──
+// The 2026-07-03 incident: work_items rows FEDERATE across the hive but
+// coord_presence is LOCAL-BY-DESIGN, so another node's sweep saw every tower
+// holder as "not alive" and shredded LIVE claims (WI-1964 dead-lettered 5x while
+// actively driven; WI-1910 requeued 5x). The DEAD leg must only reap holders
+// this node has EVER seen; a never-seen-here holder skips until the long-horizon
+// fallback (anchored on COALESCE(taken_at, updated_ts)) lapses.
+describe('WI-1999 remote-holder guard', () => {
+  it('a NEVER-seen-here holder is SKIPPED past grace (possibly a live remote agent)', async () => {
+    await seedItem('F-RH1', 'su-remote-node-holder', 30, 'in_progress'); // past grace, no local rows
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-RH1')).taken_by).toBe('su-remote-node-holder');
+  });
+
+  it('the SAME holder with a stale local presence row (a dead local bee) IS reaped', async () => {
+    await seedItem('F-RH2', 'su-known-dead-bee', 30, 'in_progress');
+    await markKnown('su-known-dead-bee');
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-RH2', reason: 'dead', action: 'requeued' });
+  });
+
+  it('a never-seen holder DOES free once the long-horizon fallback lapses (anchored on taken_at)', async () => {
+    await seedItem('F-RH3', 'su-remote-abandoned', 30, 'in_progress'); // taken 30 min ago
+    // Fallback shrunk to 15 min → the 30-min-old anchor is past it: truly-abandoned rows still free.
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-RH3', reason: 'dead' });
+  });
+
+  it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {
+    await seedItem('F-RH4', 'su-remote-noanchor', 30, 'in_progress');
+    await sql`UPDATE harness_shared.harness_features_consolidated
+                 SET taken_at = NULL, updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH4'`;
+    // Fresh-updated row is skipped…
+    expect((await reclaimStaleWorkItemClaims(sql)).released).toHaveLength(0);
+    // …but frees once updated_ts is older than the fallback.
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-RH4', reason: 'dead' });
+  });
+
+  it('issue reaper parity: a never-seen assignee is SKIPPED, then frees past the fallback', async () => {
+    // engineer_issues is not truncated per-test, so assert on EI-RH1 specifically
+    // (earlier tests' never-seen assignees legitimately free in the fallback sweep too).
+    await seedIssue('EI-RH1', 'bug', 'su-remote-issue-holder', 30);
+    expect((await reclaimStaleIssueClaims(sql)).released.map((c) => c.issue_id)).not.toContain('EI-RH1');
+    expect(await assigneeOf('EI-RH1')).toBe('su-remote-issue-holder');
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((c) => c.issue_id)).toContain('EI-RH1');
+    expect(await assigneeOf('EI-RH1')).toBeNull();
   });
 });

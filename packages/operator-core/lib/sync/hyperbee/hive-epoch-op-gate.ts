@@ -26,6 +26,7 @@ import type { EpochEncryptCapability } from './outbox-drain';
 import type { PendingEpochContent } from './pending-epoch-content';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
+import { BASELINE_EPOCH } from './hive-epoch-state';
 
 /** Resolve the epoch key for `(hiveId, epoch)` on THIS peer: owner derives, member
  *  unwraps. Rejects (EpochKeyUnavailableError) on a member whose wrapped row hasn't
@@ -94,6 +95,17 @@ export function buildEpochEncryptCapability(
   return {
     async encryptOp(op: LocalWriteOp): Promise<{ epoch: number; value: unknown } | null> {
       const epoch = await deps.getCurrentEpoch();
+      // WI-2102: epoch 0 = the PRE-re-key BASELINE (hive-epoch-state.ts) — content
+      // federates PLAINTEXT (today's path), exactly as the decrypt gate's
+      // `op.epoch == null` passthrough expects. Without this bypass a never-rekeyed
+      // hive demanded an epoch-0 key on every drain: a MEMBER box threw
+      // EpochKeyUnavailableError forever (no epoch-0 wrapped row is ever distributed
+      // — epoch 0 predates distribution) wedging its whole outbox, and an OWNER box
+      // minted a fresh-random epoch-0 key only IT holds and federated content no
+      // member could ever decrypt (deferred forever at the decrypt gate). Net effect
+      // on a 2-box pair: replication dead BOTH directions (the P-059 signature;
+      // proven live on the gate rig 2026-07-03, inst-a/b.log 728+ drain failures).
+      if (epoch === BASELINE_EPOCH) return null; // plaintext — no epoch stamp
       const key = await deps.resolveKey(deps.hiveId, epoch);
       // OpIdentity (object) — encryptOpPayload derives the opId internally via buildOpAAD.
       const id = { tableTag: op.table, rowKey: op.hbKey, authorPubkey: op.writerPubkey ?? '' };

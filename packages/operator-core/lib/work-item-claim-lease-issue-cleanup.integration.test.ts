@@ -149,9 +149,12 @@ describe('EI-6480 — issue-family stale-lease cleanup (WORKITEM_CLAIM_LEASE on)
   });
 
   it('reclaimStaleIssueClaims frees a dead holder AND clears its orphaned lease (the core fix)', async () => {
-    // Operator-scope issue held by a DEAD holder (no presence/spawn row), claimed long enough
-    // ago to be past the 10-min grace — exactly the shape that orphaned leases in prod.
+    // Operator-scope issue held by a DEAD holder (STALE presence row — locally known but not
+    // live, WI-1999), claimed long enough ago to be past the 10-min grace — exactly the shape
+    // that orphaned leases in prod.
     await seedIssue('EI-1', 'change', 'dead-holder', 30, 'open');
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('dead-holder', now() - interval '1 hour')
+              ON CONFLICT (owner_id) DO NOTHING`;
     await seedLease('EI-1', 'dead-holder');
 
     const r = await reclaimStaleIssueClaims(sql);
@@ -220,6 +223,8 @@ describe('EI-6480 — issue-family stale-lease cleanup (WORKITEM_CLAIM_LEASE on)
   it('flag OFF → reclaimStaleIssueClaims still reaps but leaves the lease untouched (gated, byte-identical)', async () => {
     await setLeaseFlag(false);
     await seedIssue('EI-7', 'change', 'dead-holder', 30, 'open');
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('dead-holder', now() - interval '1 hour')
+              ON CONFLICT (owner_id) DO NOTHING`;
     await seedLease('EI-7', 'dead-holder');
 
     const r = await reclaimStaleIssueClaims(sql);

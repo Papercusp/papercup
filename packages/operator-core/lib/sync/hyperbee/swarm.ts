@@ -967,6 +967,26 @@ export async function joinHarnessSwarm(
       return connectionCount;
     },
     get liveConnectionCount() {
+      // Prefer the shared swarm's OWN live socket set (real Hyperswarm exposes
+      // a Set). The per-join counter below only sees 'connection' events fired
+      // AFTER this join registered — a socket that pre-dates the join is
+      // INVISIBLE to it (the shared swarm dedups one socket per peer across
+      // topics, and rekey() replaces the handle with a fresh zero counter), so
+      // the counter read 0 on live rigs while a peer was demonstrably
+      // replicating, silently disarming the connected_never_replicated axis on
+      // exactly the WI-183 zombie class it exists for (rig run m1783120511:
+      // registry sampling every ~1s, axis silent for 20min). The swarm's set
+      // has no such blind spot. Counter kept as the fallback for minimal test
+      // fakes that don't expose `connections`.
+      const set = opts.swarm.connections;
+      if (set) {
+        const size = (set as { size?: number }).size;
+        if (typeof size === 'number') return size;
+        let n = 0;
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for (const _ of set) n++;
+        return n;
+      }
       return liveConnectionCount;
     },
     async close() {

@@ -547,11 +547,12 @@ hive pause you happened to read.
   GitHub issues — early when the surprise is sharp, at latest after ~3 failed
   fixes on one error class.
 
-## Memory and live context (facts / mem0 / coord / insights)
+## Memory and live context (facts / checkpoints / mem0 / coord / insights)
 
-Four layers, four jobs. **facts = standing conclusions (deterministic delivery);
-mem0 = what I know (fuzzy recall); coord = what's happening; insights = how
-things work** (spec: `papercusp-su-memory-2026-05-25` + queen-memory-hybrid L1b).
+Five layers, five jobs. **facts = standing conclusions (deterministic delivery);
+checkpoints = in-flight continuity (re-injected on resume); mem0 = what I know
+(fuzzy recall); coord = what's happening; insights = how things work** (spec:
+`papercusp-su-memory-2026-05-25` + queen-memory-hybrid L1b).
 
 - **facts** — `facts:assert/retract/list` (queen-memory-hybrid-2026-07-02): a
   scoped, TTL'd conclusion delivered VERBATIM into every relevant brief/dossier/
@@ -561,6 +562,18 @@ things work** (spec: `papercusp-su-memory-2026-05-25` + queen-memory-hybrid L1b)
   scope as narrowly as true (workspace | role | owner | harness | work_item —
   harness/work_item optional per D-001). Retract promptly when it stops being
   true: a stale fact folded verbatim misleads every reader.
+- **checkpoints — in-flight continuity** (`carry_notes`, mig 472): your
+  transcript does NOT survive a compaction, a cold wake, or a re-spawn — the
+  checkpoint is what does. `work_items:checkpoint { id, checkpoint }` parks a
+  compressed digest of an item's in-flight state (done / left / approach /
+  gotchas) ON the item, re-injected on its next invocation — yours or a
+  successor's; write it at every task boundary, on graceful eviction, and at
+  ~80% context BEFORE requesting compaction. `loop:checkpoint { did, left,
+  insight, next }` is the same for an armed AUTO loop (MANDATORY every turn on
+  a `carry:'cold'` loop — without it the next wake repeats work). These are not
+  cold-loop-only tools: ANY state a future you (or a peer) must resume from
+  belongs in a checkpoint, never in prose that scrolls away. Standing
+  conclusions go in facts; in-flight progress goes in checkpoints — don't mix.
 
 > **✅ `memory:*` is LIVE + POPULATED — use it, NOT your client's built-in
 > memory.** It is the ONE shared canonical store every client (Claude / Codex /

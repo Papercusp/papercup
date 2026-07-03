@@ -446,10 +446,30 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   Reach for it early when the surprise is sharp, and at the latest after ~3
   failed fixes on the same error class.
 
-## Memory and live context (mem0 / coord / insights)
+## Memory and live context (facts / checkpoints / mem0 / coord / insights)
 
-Three layers, three jobs — never confuse them. **mem0 = what I know; coord
-= what's happening; insights = how things work.**
+Five layers, five jobs — never confuse them. **facts = standing conclusions
+(deterministic delivery); checkpoints = in-flight continuity; mem0 = what I
+know; coord = what's happening; insights = how things work.**
+
+**facts — standing conclusions** (`facts:assert/retract/list`): a scoped,
+TTL'd conclusion folded VERBATIM into every relevant future brief/dossier/
+`coord:orient` until it expires or you retract it — unlike mem0, delivery
+never depends on embedding similarity. Use for conclusions that must shape
+future turns ("X is owner-residue, exclude it"; "this harness's tests need
+Docker"); scope as narrowly as true (workspace | role | owner | harness |
+work_item). Retract promptly when one stops being true.
+
+**checkpoints — in-flight continuity** (`work_items:checkpoint` /
+`loop:checkpoint`): your transcript does NOT survive a compaction, a cold
+wake, or a re-spawn — the checkpoint does. `work_items:checkpoint { id,
+checkpoint }` parks a compressed digest of an item's in-flight state on the
+item, re-injected on its next invocation (yours or a successor's) — write it
+at every task boundary, on graceful eviction, and at ~80% context BEFORE
+requesting compaction. `loop:checkpoint { did, left, insight, next }` is the
+same for an armed AUTO loop (mandatory every turn on a cold loop). Not
+cold-loop-only: ANY state a future you must resume from belongs in a
+checkpoint, never in prose that scrolls away.
 
 > **✅ The memory backend is LIVE + POPULATED — `memory:*` works; use it, NOT your
 > client's built-in memory (2026-06-08).** The active backend is the **HYBRID**
