@@ -618,6 +618,13 @@ export function hostThroughPty(o) {
     env = process.env,
     ownerId,
     advSessionId = null,
+    // WI-1980: injected by the launcher so the host stays launcher-agnostic
+    // (launcher imports host → importing back would cycle). `mintRecycleArgs`
+    // rewrites the argv for a RECYCLE respawn (fresh --session-id); `onRespawn`
+    // re-anchors that fresh native id → coord ownerId. Defaults keep the
+    // standalone host + existing tests behavior-identical (same args, no anchor).
+    mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
+    onRespawn = () => {},
   } = o;
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
@@ -653,8 +660,8 @@ export function hostThroughPty(o) {
    *  (su-cold-auto-mode P-004b): same command/args/cwd/env means PAPERCUSP_SID,
    *  locks, hooks, and the control socket all survive — only the process is new.
    *  Reads the CURRENT terminal size each spawn. */
-  const spawnChild = () =>
-    pty.spawn(command, args, {
+  const spawnChild = (spawnArgs = args) =>
+    pty.spawn(command, spawnArgs, {
       name: ptyName,
       cols: stdout.columns || 80,
       rows: stdout.rows || 24,
@@ -997,7 +1004,22 @@ export function hostThroughPty(o) {
           /* already gone */
         }
         await Promise.race([dead, new Promise((r) => setTimeout(r, RECYCLE_KILL_TIMEOUT_MS))]);
-        child = spawnChild();
+        // WI-1980: a RECYCLE is a HARD cold reset — mint a FRESH --session-id so
+        // we don't re-declare the prior child's already-on-disk id (which claude
+        // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord
+        // identity / locks / socket all survive; only the native claude id rotates.
+        const { args: recycleArgs, nativeId } = mintRecycleArgs(args);
+        child = spawnChild(recycleArgs);
+        // Re-anchor the fresh native id → coord ownerId so a LATER untracked
+        // resume still recovers this identity (else the 2026-07-02 orphaning bug
+        // recurs). Fail-soft: onRespawn (recordSessionOwner) never throws.
+        if (nativeId) {
+          try {
+            onRespawn(nativeId);
+          } catch {
+            /* anchoring is best-effort — never let it break the respawn */
+          }
+        }
         baseMeta.ptyPid = child.pid;
         writeMeta();
         wireChildData();

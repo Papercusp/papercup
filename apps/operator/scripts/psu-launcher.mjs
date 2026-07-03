@@ -866,6 +866,56 @@ export function nativeSessionIdFromLaunchArgs(args = []) {
 }
 
 /**
+ * WI-1980: build the argv for a cold-loop RECYCLE respawn.
+ *
+ * The initial launch forces the launched session's OWN id via `--session-id
+ * <uuid>` (not resume — it DECLARES the id, see nativeSessionIdFromLaunchArgs).
+ * The recycle host reused that argv verbatim, so every respawn re-declared the
+ * SAME id whose transcript already existed on disk from the first boot → claude
+ * refused to create an already-existing session → boot-error → supervisor
+ * respawn → boot-retry storm (4× in 31s at wake 8, su-8ab32510 repro).
+ *
+ * A RECYCLE is a HARD cold reset — its intent IS a clean conversation, so we
+ * mint a FRESH `--session-id` and strip any warm-resume flags
+ * (`--resume`/`--continue`/`--fork-session`). The coord identity (PAPERCUSP_SID
+ * in `env`) is deliberately UNCHANGED (D-003) — only the native claude id
+ * rotates. Returns { args, nativeId } where nativeId is the fresh id (so the
+ * caller can re-anchor native→coord via recordSessionOwner), or null when the
+ * argv carries no `--session-id` (e.g. omp launches) — then args is returned
+ * untouched and the respawn is a no-op change.
+ *
+ * Pure — exported for tests. `mintId` is injectable for deterministic tests.
+ */
+export function mintRecycleArgs(args = [], { mintId = () => randomUUID() } = {}) {
+  const src = args.map((a) => String(a ?? ''));
+  const hasSessionId = src.some((a) => a === '--session-id' || a.startsWith('--session-id='));
+  if (!hasSessionId) return { args, nativeId: null };
+  const freshId = mintId();
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    const a = src[i];
+    if (a === '--session-id') {
+      out.push('--session-id', freshId);
+      i++; // consume the stale id token
+      continue;
+    }
+    if (a.startsWith('--session-id=')) {
+      out.push(`--session-id=${freshId}`);
+      continue;
+    }
+    // A recycle is a clean boot — drop every warm-resume flag (and its value).
+    if (a === '--resume') {
+      i++; // consume the resumed-session id token
+      continue;
+    }
+    if (a.startsWith('--resume=')) continue;
+    if (a === '--continue' || a === '--fork-session') continue;
+    out.push(a);
+  }
+  return { args: out, nativeId: freshId };
+}
+
+/**
  * Does claude's OWN store hold a transcript for this session id? A tracked
  * adv row alone doesn't prove resumability: a launch that died before its
  * first persisted turn leaves the adv row behind with NO
@@ -2593,6 +2643,12 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
         env,
         ownerId,
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+        // WI-1980: a cold-loop RECYCLE must respawn with a FRESH --session-id
+        // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
+        // + native→coord re-anchor here so the host stays launcher-agnostic.
+        mintRecycleArgs,
+        onRespawn: (freshId) =>
+          recordSessionOwner(freshId, ownerId, { advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null }),
         onExit: (code) => {
           void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() =>
             process.exit(code ?? 0),

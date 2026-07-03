@@ -45,6 +45,7 @@ import {
   recordSessionOwner,
   recoverSessionOwner,
   nativeSessionIdFromLaunchArgs,
+  mintRecycleArgs,
   claudeStoreHasSession,
   sessionHasTranscript,
   reportSessionEnded,
@@ -1658,6 +1659,69 @@ describe('session-owner index (identity-split fix 2026-07-02 — untracked resum
     const born = recoverSessionOwner(untracked.sessionId, { home });
     if (born) (untracked as { coordOwnerId?: string }).coordOwnerId = born;
     expect(resumeEnvFor(untracked, { mintSid: () => 'su-freshly-minted' }).PAPERCUSP_SID).toBe('su-born');
+  });
+});
+
+describe('mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH --session-id)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+  const mintId = () => FRESH;
+
+  it('replaces the --session-id VALUE (space form) with a fresh id, preserving everything else', () => {
+    const { args, nativeId } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'],
+      { mintId },
+    );
+    expect(nativeId).toBe(FRESH);
+    expect(args).toEqual([
+      'claude', '--session-id', FRESH, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+    ]);
+    // The old id must be gone (that collision is the whole bug).
+    expect(args).not.toContain(UUID);
+  });
+
+  it('replaces the --session-id=<uuid> (equals form) too', () => {
+    const { args, nativeId } = mintRecycleArgs(['claude', `--session-id=${UUID}`, '--foo'], { mintId });
+    expect(nativeId).toBe(FRESH);
+    expect(args).toEqual(['claude', `--session-id=${FRESH}`, '--foo']);
+  });
+
+  it('strips warm-resume flags (--resume/--continue/--fork-session) — a recycle is a clean boot', () => {
+    // A tracked-fork argv shape carries resume + fork alongside the forced id.
+    const { args, nativeId } = mintRecycleArgs(
+      ['claude', '--resume', UUID, '--fork-session', '--session-id', UUID, '--add-dir=/d'],
+      { mintId },
+    );
+    expect(nativeId).toBe(FRESH);
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--add-dir=/d']);
+    expect(args).not.toContain('--resume');
+    expect(args).not.toContain('--fork-session');
+    // The consumed --resume VALUE token is gone too (no dangling uuid).
+    expect(args.filter((a) => a === UUID)).toEqual([]);
+  });
+
+  it('strips --continue and the --resume=<uuid> equals form', () => {
+    const { args } = mintRecycleArgs(['claude', '--continue', `--resume=${UUID}`, '--session-id', UUID], { mintId });
+    expect(args).toEqual(['claude', '--session-id', FRESH]);
+  });
+
+  it('is a NO-OP (same array ref, nativeId null) when the argv carries no --session-id (e.g. omp)', () => {
+    const src = ['omp', '--approval-mode', 'yolo'];
+    const out = mintRecycleArgs(src, { mintId });
+    expect(out.nativeId).toBeNull();
+    expect(out.args).toBe(src); // identity — nothing to rotate, respawn is byte-identical
+  });
+
+  it('defaults to a real randomUUID when no mintId is injected (fresh, well-formed, ≠ the old id)', () => {
+    const { args, nativeId } = mintRecycleArgs(['claude', '--session-id', UUID]);
+    expect(nativeId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(nativeId).not.toBe(UUID);
+    expect(args).toEqual(['claude', '--session-id', nativeId]);
+  });
+
+  it('tolerates empty / missing argv', () => {
+    expect(mintRecycleArgs([], { mintId })).toEqual({ args: [], nativeId: null });
+    expect(mintRecycleArgs(undefined, { mintId })).toEqual({ args: [], nativeId: null });
   });
 });
 
