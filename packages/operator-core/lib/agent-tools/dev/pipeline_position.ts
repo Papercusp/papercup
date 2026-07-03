@@ -43,7 +43,7 @@ export default defineTool({
   }),
   async handler(args) {
     if (!args.path && !args.sha) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Provide a path or a sha.' }) }] };
+      return { data: { error: 'Provide a path or a sha.' } };
     }
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha });
     // event-await-discoverability P-001: this is the #1 poll site the leader hit
@@ -59,6 +59,6 @@ export default defineTool({
           event: buildKey('deploy'), // global `release:deployed` — check payload.sha on wake
           sugar: 'deploy:await',
         };
-    return { content: [{ type: 'text', text: JSON.stringify({ ...result, ...(awaitable ? { awaitable } : {}) }) }] };
+    return { data: { ...result, ...(awaitable ? { awaitable } : {}) } };
   },
 });

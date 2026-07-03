@@ -365,6 +365,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
+    console.log('LAUNCH_PAYLOAD', payload);
     expect(payload.ok).toBe(true);
     // The leader always learns, structurally, what members were told.
     expect(payload.memberBaselineHeadlines).toHaveLength(MEMBER_BASELINE_RULES.length);

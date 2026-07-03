@@ -21,8 +21,9 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   } as never);
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+function parsePayload(result: { data?: Record<string, unknown>; content?: Array<{ text: string }> }): Record<string, unknown> {
+  if (result.data) return result.data;
+  return JSON.parse(result.content![0].text);
 }
 
 beforeEach(() => {
@@ -78,6 +79,11 @@ describe('dev:build_status', () => {
       prodLogTail: null,
       dev3055Reachable: true,
       prod3070Reachable: true,
+      awaitable: {
+        hint: 'Waiting on a build/deploy? Don\'t re-poll — events:await the deploy or the gate (or use deploy:await / checkpoint:await), then END YOUR TURN. Full list: events:catalog.',
+        events: ['release:deployed', 'release:green'],
+        sugar: ['deploy:await', 'checkpoint:await'],
+      },
     };
     vi.doMock('../../../dev-data', () => ({ buildStatus: vi.fn(async () => data) }));
     const { default: tool } = await import('../build_status');

@@ -35,6 +35,6 @@ export default defineTool({
       events: [buildKey('deploy'), buildKey('checkpoint')],
       sugar: ['deploy:await', 'checkpoint:await'],
     };
-    return { content: [{ type: 'text', text: JSON.stringify({ ...result, awaitable }) }] };
+    return { data: { ...result, awaitable } };
   },
 });

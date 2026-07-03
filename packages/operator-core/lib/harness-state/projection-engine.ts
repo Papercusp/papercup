@@ -91,6 +91,10 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // p2p-work-distribution-2026-07-02 P-004: loud-refusal receipt facts (INSERT-only)
   // federate over the peer-log (projections/p2p-receipts.ts → p2p_receipts; mig 468).
   'p2p-receipts': 'p2p_receipts',
+  // p2p-work-distribution-2026-07-02 P-101 / D-006: owner-signed fleet-directory
+  // records federate over the peer-log (projections/fleet-directory.ts →
+  // p2p_fleet_directory; mig 476).
+  'p2p-fleet-directory': 'p2p_fleet_directory',
   // federated-scout-gym-learning-2026-07-02 F1-1: shareable standing facts federate
   // over the peer-log (projections/agent-facts.ts → agent_facts; mig 461/462).
   // [Added by Lane A su-71623 with the table-registry entry to green the drift
