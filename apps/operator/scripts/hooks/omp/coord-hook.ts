@@ -1535,10 +1535,47 @@ export function noteToolCallRepeat(key: string): number {
   return _repeatRun.count;
 }
 
-/** Reset the loop-detection run. Called at every turn_start (so a repeat run is
- *  scoped to one turn) and exported as a test seam. */
+/** Per-turn shell-call budget for agent sessions (ornith-reliability-2026-07-03 /
+ *  EI-7092 wandering-search half). A weak model (ornith IQ3_M) can grind dozens of
+ *  DIFFERENT `bash` greps/finds in a single turn without converging — and drift
+ *  off-scope while doing it — which the identical-repeat breaker cannot catch
+ *  (each call is distinct, so its run length stays 1). Observed live in run-7: a
+ *  leader ran 56+ distinct greps on one plan item, wandering into unrelated code.
+ *  After this many shell calls in one turn, further shell calls are blocked with a
+ *  "converge or report" steer; every NON-shell tool (read, grep, tools:invoke,
+ *  coord:send, status writes) stays open so the model can still finish or report.
+ *  Reset at turn_start. High enough that an ordinary heavy turn (<10 shell calls)
+ *  never trips it — only a genuine runaway wander. */
+export const SHELL_CALLS_PER_TURN_LIMIT = 40;
+let _shellCallsThisTurn = 0;
+
+/** True for OMP's shell tool (bash / shell). Pure. */
+export function isShellTool(toolName: string): boolean {
+  const t = toolName.toLowerCase();
+  return t.startsWith('bash') || t === 'shell';
+}
+
+/** Count a shell call in the current turn; returns the new per-turn total. */
+export function noteShellCall(): number {
+  return ++_shellCallsThisTurn;
+}
+
+/** The "converge or report" steer returned once the per-turn shell budget is spent. Pure. */
+export function shellBudgetReason(count: number): string {
+  return (
+    `shell-budget: you have run ${count} shell commands this turn without converging — STOP ` +
+    'running more `bash`. You have gathered plenty of output already; read what you have and ' +
+    'either state your finding / verdict NOW, or if you are genuinely stuck, report the blocker ' +
+    '(coord:send to your leader) or mark the item and move on. For one more targeted lookup use ' +
+    'the `read` / `grep` file tools, not another shell command. Non-shell tools remain available.'
+  );
+}
+
+/** Reset the per-turn loop-detection run AND the shell-call budget. Called at every
+ *  turn_start (both counters are turn-scoped) and exported as a test seam. */
 export function resetToolCallLoopState(): void {
   _repeatRun = undefined;
+  _shellCallsThisTurn = 0;
 }
 
 /** The steer returned when the loop-breaker trips — names the repeated tool and
