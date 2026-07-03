@@ -16,6 +16,15 @@ import { coordWorkspaceId } from './log';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
+import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import {
+  listFederatedFleetMembers,
+  type FederatedFleetMemberRow,
+} from '../../sync/hyperbee/session-presence-store';
+import {
+  resolveFederatedFleetLeader,
+  unionFederatedFleetMembers,
+} from '../../fleet/federated-fleet-registry';
 import type { ActivePresence, AudienceMode, AudienceResolvers } from './audience';
 
 const storeOpts = {

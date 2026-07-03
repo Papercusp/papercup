@@ -76,7 +76,7 @@ export default defineTool({
         // The /res board reads `p2p.allotments` with NO args → name-only invalidate
         // (an args-scoped emit would never match — the adding-a-sync-query gotcha).
         await notifySyncInvalidate('p2p.allotments').catch(() => {});
-        return Response.json({ ok: true, workspaceId: ws, action, ...removed });
+        return Response.json({ ok: true, workspaceId: ws, action, removed: removed.removed });
       }
 
       // action === 'set' — resolve the setting host's numeric GitHub id (X9:

@@ -22,7 +22,7 @@ import type { Sql } from 'postgres';
 import { describeBehavior, nicheKey, type ArchiveCandidateRecord, type BehaviorDescriptor } from './niche';
 import { QdArchive, type ArchiveAPI } from './archive';
 import { PgArchiveStore } from './archive-store-pg';
-import { markEliteFederatable } from './federate-elite';
+import { markEliteFederatable, type EliteOutcomeSigner } from './federate-elite';
 
 /** Scope + clock for the live archive seams. */
 export interface LoopQdScope {
@@ -44,9 +44,10 @@ export interface LoopQdSeams {
    * shareable facts federate via assertFact. The variant's descriptor is looked up from the
    * warm record cache (it was recorded before it could be accepted), so this needs only the
    * variantId + the D-002 eligibility (the loop passes `outcome:'won'` on a gate accept).
-   * NO device signer here (tier-1): the device-signed EliteOutcomeRecord (P-014) layers on
-   * later when the substrate device key is threaded into the loop; until then the elite
-   * federates outcome-UNVERIFIED (still admitted). CAN THROW (markEliteFederatable's WI-1564
+   * When an `outcomeSigner` was supplied to {@link makeLoopQdSeams} (the cycle resolves it
+   * from this peer's announce device key), the published elite ALSO carries a device-signed
+   * EliteOutcomeRecord so receivers can verify the outcome OFFLINE (outcome-VERIFIED);
+   * ABSENT ⇒ tier-1 federatable-only stamp (outcome-UNVERIFIED, still admitted). CAN THROW (markEliteFederatable's WI-1564
    * strand-guard refuses LOUDLY under a non-federating workspace) — the loop calls it
    * best-effort so a refuse never aborts the optimizer.
    */
