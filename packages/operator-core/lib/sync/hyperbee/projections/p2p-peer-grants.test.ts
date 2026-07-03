@@ -151,7 +151,7 @@ describe('outbox mapper (drain side)', () => {
     expect(isP2pPeerGrantWireRow(v)).toBe(true);
     expect(v.grantor_epoch).toBe(2);
     expect(v.wake_rate_cap_per_hour).toBe(30);
-    expect((v as Record<string, unknown>).created_at).toBeUndefined();
+    expect((v as unknown as Record<string, unknown>).created_at).toBeUndefined();
   });
 
   it('a del op carries only the key', () => {

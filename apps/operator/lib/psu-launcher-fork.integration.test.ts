@@ -44,7 +44,7 @@ import {
 } from '../scripts/psu-launcher.mjs';
 
 // The REAL adv-sessions store (imported after the db-org mock is registered).
-const { recordAdvSession, getAdvSession, listResumableSessions, markAdvSessionEnded } =
+const { recordAdvSession, listResumableSessions, markAdvSessionEnded } =
   await import('@papercusp/operator-core/lib/adv-sessions');
 
 // Every row this file writes is namespaced to a unique workspace so it never
@@ -117,6 +117,28 @@ async function mintFork(original: { id: number; coordOwnerId: string; nativeId: 
   return { id: forkRowId as number, sid: forkSid, nativeId: forkNativeId, body, source };
 }
 
+/**
+ * Read a row back by id, isolated. (getAdvSession scopes to activeWorkspaceId(),
+ * which isn't this file's namespaced WS — the real resume picker reads the
+ * UNSCOPED listResumableSessions, which the enumeration test exercises directly.)
+ */
+async function readRow(id: number) {
+  const rows = await h.sql<
+    Array<{
+      id: string;
+      coord_owner_id: string | null;
+      session_id: string | null;
+      workspace_id: string;
+      plan_slug: string | null;
+      agent: string | null;
+      cwd: string | null;
+      ended_at: Date | null;
+    }>
+  >`SELECT id, coord_owner_id, session_id, workspace_id, plan_slug, agent, cwd, ended_at
+      FROM harness_shared.adv_sessions WHERE id = ${id} LIMIT 1`;
+  return rows[0] ?? null;
+}
+
 describe('psu --resume --fork — server-side fork identity model (real PG)', () => {
   it('forkBootstrapBody carries workspace + plan + cwd, drops harness scope, pins agent=claude', () => {
     const body = forkBootstrapBody({
@@ -142,29 +164,29 @@ describe('psu --resume --fork — server-side fork identity model (real PG)', ()
     const original = await recordOriginal();
     const fork = await mintFork(original);
 
-    const forkRow = await getAdvSession(fork.id);
-    const origRow = await getAdvSession(original.id);
+    const forkRow = await readRow(fork.id);
+    const origRow = await readRow(original.id);
     expect(forkRow).not.toBeNull();
     expect(origRow).not.toBeNull();
 
     // Distinct persisted identity — the guarantee that makes a fork safe to run
     // alongside the still-live original (no shared coord owner / native id / row).
-    expect(forkRow!.id).not.toBe(original.id);
-    expect(forkRow!.coordOwnerId).toBe(fork.sid);
-    expect(forkRow!.coordOwnerId).not.toBe(original.coordOwnerId);
-    expect(forkRow!.sessionId).toBe(fork.nativeId);
-    expect(forkRow!.sessionId).not.toBe(original.nativeId);
+    expect(String(forkRow!.id)).not.toBe(String(original.id));
+    expect(forkRow!.coord_owner_id).toBe(fork.sid);
+    expect(forkRow!.coord_owner_id).not.toBe(original.coordOwnerId);
+    expect(forkRow!.session_id).toBe(fork.nativeId);
+    expect(forkRow!.session_id).not.toBe(original.nativeId);
 
     // Context carried, live, and forkable (agent + cwd present → resumable).
-    expect(forkRow!.workspaceId).toBe(WS);
-    expect(forkRow!.planSlug).toBe('my-plan-2026-07-02');
+    expect(forkRow!.workspace_id).toBe(WS);
+    expect(forkRow!.plan_slug).toBe('my-plan-2026-07-02');
     expect(forkRow!.agent).toBe('claude');
-    expect(forkRow!.endedAt).toBeNull();
+    expect(forkRow!.ended_at).toBeNull();
 
     // The original row is byte-for-byte its old self — forking mutates nothing on it.
-    expect(origRow!.coordOwnerId).toBe(original.coordOwnerId);
-    expect(origRow!.sessionId).toBe(original.nativeId);
-    expect(origRow!.endedAt).toBeNull();
+    expect(origRow!.coord_owner_id).toBe(original.coordOwnerId);
+    expect(origRow!.session_id).toBe(original.nativeId);
+    expect(origRow!.ended_at).toBeNull();
   });
 
   it('N forks of ONE original yield N distinct identities (concurrency-safe)', async () => {
@@ -204,9 +226,9 @@ describe('psu --resume --fork — server-side fork identity model (real PG)', ()
 
     await markAdvSessionEnded(fork.id, 0);
 
-    expect((await getAdvSession(fork.id))!.endedAt).not.toBeNull();
+    expect((await readRow(fork.id))!.ended_at).not.toBeNull();
     // The original keeps running — a fork's exit stamps only the fork's own row.
-    expect((await getAdvSession(original.id))!.endedAt).toBeNull();
+    expect((await readRow(original.id))!.ended_at).toBeNull();
   });
 
   it('the fork argv names the FORK id as its own session, and its env takes a fresh, unlinked identity', () => {

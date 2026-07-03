@@ -2,7 +2,7 @@
 title: "psu --resume \"No conversation found\": ghost adv rows, not broken resume plumbing"
 description: "An adv_sessions row is recorded at LAUNCH, but an agent only persists its transcript on the FIRST MESSAGE — so launches that die or get closed at the prompt leave permanent unresumable ghost rows (~50% of recent rows by 2026-06-12). Fixed: the picker filters by sessionHasTranscript and psu stamps ended_at via bootstrap-su/session-ended. Diagnosis recipe inside."
 discovered: 2026-06-12
-tags: [psu, resume, adv-sessions, claude, transcripts, session-claude, ei-155, ended-at, session-dir-gc]
+tags: [psu, resume, fork, fork-session, adv-sessions, claude, transcripts, session-claude, ei-155, ended-at, session-dir-gc]
 status: active
 documents:
   - apps/operator/scripts/psu-launcher.mjs
@@ -10,6 +10,7 @@ documents:
   - packages/operator-core/lib/adv-sessions.ts
   - packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts
   - packages/operator-core/lib/agent-tools/coordination/recorded-sessions.ts
+  - apps/operator/lib/psu-launcher-fork.integration.test.ts
 ---
 
 ## The trap

@@ -14,6 +14,7 @@ const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/autonomy':   FLAGS.QUEEN_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
   '/settings/hive-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
+  '/settings/p2p':        FLAGS.P2P,
 };
 
 interface SettingsLink {
@@ -52,6 +53,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'queen', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
       { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'bee', 'overwatch', 'su', 'tuning', 'per-hive', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },
+      { href: '/settings/p2p', label: 'P2P work sharing', keywords: ['p2p', 'peers', 'work sharing', 'foreign work', 'grants', 'capability', 'opt-in', 'kill switch', 'kill-switch', 'attestation', 'device', 'fleet', 'budgets', 'allotment', 'delegate', 'observer', 'collaborator', 'operator grant'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
     ],
   },
@@ -130,6 +132,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const autonomySettingsEnabled = useFlag(FLAGS.QUEEN_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
   const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
+  const p2pEnabled = useFlag(FLAGS.P2P);
 
   // Keys are FlagKey values; this is the subset of flags that gate a settings path
   // (SETTINGS_PATH_FLAGS), not an exhaustive map — so `Record<string, boolean>`, not
@@ -141,6 +144,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     [FLAGS.QUEEN_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
+    [FLAGS.P2P]: p2pEnabled,
     [FLAGS.HARNESS_PHASES]: true,
   };
 

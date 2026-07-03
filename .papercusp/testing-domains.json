@@ -1465,7 +1465,7 @@
     {
       "id": "rust",
       "label": "Rust (Cargo)",
-      "description": "First-party Rust crates: the pui/TUI workbench, the pui companion proto + zellij plugin, and the papercusp-desktop Tauri shell. Run via `cargo test` (shell runners — the repo has no root Cargo workspace). The desktop crate needs the Tauri system deps (webkit2gtk/gtk) installed to build.",
+      "description": "First-party Rust crates: the pui/TUI workbench, the pui companion proto + zellij plugin, and the papercusp-desktop Tauri shell. Run via `cargo test --manifest-path` (the repo has no root Cargo workspace, so each crate is targeted by its own manifest). The desktop crate needs the Tauri system deps (webkit2gtk/gtk) installed to build.",
       "tier": "project",
       "sections": [
         {
@@ -1474,13 +1474,9 @@
           "description": "The Rust TUI / pui workbench (cargo pkg `pui`) — 35 files carry #[cfg(test)] modules.",
           "runners": [
             {
-              "kind": "shell",
-              "cmd": "bash",
-              "args": [
-                "-c",
-                "cd apps/tui && cargo test"
-              ],
-              "label": "cargo test (pui)"
+              "kind": "cargo",
+              "crate": "pui",
+              "manifestPath": "apps/tui/Cargo.toml"
             }
           ]
         },
@@ -1490,13 +1486,9 @@
           "description": "The pui companion wire-protocol crate.",
           "runners": [
             {
-              "kind": "shell",
-              "cmd": "bash",
-              "args": [
-                "-c",
-                "cd apps/pui-companion-proto && cargo test"
-              ],
-              "label": "cargo test (pui-companion-proto)"
+              "kind": "cargo",
+              "crate": "pui-companion-proto",
+              "manifestPath": "apps/pui-companion-proto/Cargo.toml"
             }
           ]
         },
@@ -1506,13 +1498,9 @@
           "description": "The zellij companion plugin crate (cargo pkg `pui-companion`, dir apps/pui-zellij-plugin).",
           "runners": [
             {
-              "kind": "shell",
-              "cmd": "bash",
-              "args": [
-                "-c",
-                "cd apps/pui-zellij-plugin && cargo test"
-              ],
-              "label": "cargo test (pui-companion)"
+              "kind": "cargo",
+              "crate": "pui-companion",
+              "manifestPath": "apps/pui-zellij-plugin/Cargo.toml"
             }
           ]
         },
@@ -1522,13 +1510,9 @@
           "description": "The Tauri desktop shell (papercusp-desktop/src-tauri) — 11 files carry #[cfg(test)] modules. Needs the Tauri system deps to build.",
           "runners": [
             {
-              "kind": "shell",
-              "cmd": "bash",
-              "args": [
-                "-c",
-                "cd papercusp-desktop/src-tauri && cargo test"
-              ],
-              "label": "cargo test (papercusp-desktop)"
+              "kind": "cargo",
+              "crate": "papercusp-desktop",
+              "manifestPath": "papercusp-desktop/src-tauri/Cargo.toml"
             }
           ]
         }
@@ -1869,6 +1853,14 @@
             "packages/operator-core/lib/events/await/wake-resume-isolation.test.ts",
             "libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts",
             "packages/operator-core/lib/interactive-claude-config.test.ts"
+          ]
+        },
+        {
+          "id": "fork-identity",
+          "label": "C5 fork identity (psu --resume --fork)",
+          "description": "psu --resume --fork mints a genuinely fresh, PERSISTED adv_sessions identity (distinct coord owner id + forced native id) that branches the original’s history and runs concurrently WITHOUT mutating the original — proven against real PG (real recordAdvSession / listResumableSessions / markAdvSessionEnded + the real launcher fork fns: forkBootstrapBody / resumeArgsFor / resumeEnvFor / nativeSessionIdFromLaunchArgs).",
+          "globs": [
+            "apps/operator/lib/psu-launcher-fork.integration.test.ts"
           ]
         },
         {

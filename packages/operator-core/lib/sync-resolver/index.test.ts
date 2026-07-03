@@ -434,7 +434,7 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
 
 describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)', () => {
   it('registers the P2P settings-surface queries in knownQueryNamesV2', () => {
-    for (const expected of ['p2p.settings', 'p2p.devices', 'p2p.audit']) {
+    for (const expected of ['p2p.settings', 'p2p.devices', 'p2p.grants', 'p2p.audit']) {
       expect(knownQueryNamesV2()).toContain(expected);
     }
   });

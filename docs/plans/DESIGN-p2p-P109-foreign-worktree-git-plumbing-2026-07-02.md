@@ -135,11 +135,28 @@ mirror is a NEW lane with an inverted direction and a quarantine:
    quarantine — a spoofed identity is refused HERE, loudly, before the ref
    ever federates (M15: early receipts beat late surprises). This call is
    advisory-early; the merge-time call (below) is the invariant.
-4. **Publish under the foreign-marked family** with the executor's signature
-   carrying the ORIGIN CLAIM (C8). Ref shape awaits P-108 (a)/(b) — this lane
-   is shape-agnostic because P-110's `isForeignMarkedRef` already matches
-   both. Proposed sigref mechanism (open question 2): bump
-   `SIGREFS_SCHEMA_VERSION` and add an optional per-entry
+4. **Publish into the results channel** with the executor's signature
+   carrying the ORIGIN CLAIM (C8). **LANE-C INTERLOCK (2026-07-03 amendment,
+   su-c88ac's DESIGN-P-006 FS-D3 + DESIGN-P-108 RC-D1, both pending the same
+   ratification):** if option (b) ratifies, the publish TARGET is the
+   per-scope bare repo (`<hive-git-root>/<hive>/scopes/<scope_id>/repo.git`),
+   NOT a marked namespace inside the hive-wide repo — M14/H16 then hold by
+   construction and the C8 sigref extension confines to scope repos. This
+   lane composes cleanly with either outcome:
+   - **Under (b)**: mirror lane quarantine-fetches from the foreign clone and
+     pushes to the LOCAL scope repo (RC-2 admission = this lane's caps+scan;
+     repo-local per RC-D3, so it need not wait for P-006's federation half).
+     When the ORIGIN later merges a result into canonical staging, it first
+     fetches the result commit into the canonical repo's ODB under a LOCAL
+     TRACKING REF named in the foreign-marked family
+     (`refs/foreign/<scope>/…`) — so P-110's `isForeignMarkedRef` contract
+     holds unchanged and RC-4's "provenance marker" is realized as the
+     tracking-ref name at the only place path-parsing still occurs.
+   - **Under (a)** (rejected by lane C, kept for completeness): publish under
+     `refs/namespaces/<executor-hex>/refs/foreign/<fleet>/…` — P-110 already
+     matches this shape natively.
+   Proposed sigref mechanism (open question 2, unchanged but (b)-confined):
+   bump `SIGREFS_SCHEMA_VERSION` and add an optional per-entry
    `originClaim {offerId, originGithubUserId, executionEpoch}` — the host
    signs AS EXECUTOR (its device key) while the claim names the author it did
    NOT author. Extends the existing sigref surface rather than growing a
@@ -185,6 +202,11 @@ the refusal leg end-to-end (P-305: `--author=<owner>` refused at the boundary).
 4. **Host-side fetch (pull)** into quarantine (recommended) vs foreign-side push?
 5. **`git clone --no-local` full clone** as the X4 resolution (recommended) —
    confirm; blobless-clone optimization explicitly post-v1.
+6. *(added 2026-07-03)* **Lane-C interlock**: ratify §4's composition with
+   FS-D3/RC-D1(b) — mirror lane publishes to the per-scope repo; canonical
+   merges import via a `refs/foreign/<scope>/…` local tracking ref so the
+   landed P-110 gate anchors on BOTH structural provenance (scope repo) and
+   the in-repo marker. (If (b) is rejected, §4's (a) path stands as written.)
 
 No build starts until 1–5 are ratified; the `p2p_foreign_workspaces` migration
 sketch and the guard policy changes are drafted but unlanded.

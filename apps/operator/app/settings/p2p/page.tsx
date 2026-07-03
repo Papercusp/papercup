@@ -25,8 +25,8 @@
  * FLAGS.P2P (default ON — the fleet kill-switch; inertness is structural:
  * opt-in off + zero grants by default).
  */
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useCallback, useMemo, useState, type CSSProperties } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { Select } from '../../harness/Select';
@@ -77,6 +77,54 @@ type DeviceRow =
       isThisDevice: boolean;
     }
   | { kind: 'missing'; hiveHomeSlug: string };
+
+/* Wire type — mirrors PeerGrant (operator-core/lib/p2p/grant-store.ts), kept
+ * local per the client wire-type decoupling convention. */
+interface PeerGrant {
+  hiveSlug: string;
+  grantorGithubUserId: number;
+  grantorLogin: string | null;
+  granteeKind: 'fleet' | 'pool';
+  granteeRef: string;
+  capabilities: string[];
+  preset: string | null;
+  status: 'active' | 'revoked';
+  grantorEpoch: number;
+  wakeRateCapPerHour: number | null;
+  excludedDevicePubkeys: string[];
+  note: string | null;
+}
+
+/** Preset labels mirror P2P_PRESETS (operator-core/lib/p2p/capabilities.ts);
+ *  the route expands them server-side so stored capabilities never drift. */
+const GRANT_PRESETS = ['Observer', 'Collaborator', 'Delegate', 'Operator'] as const;
+
+interface GrantSetArgs {
+  action: 'set' | 'revoke';
+  hiveSlug: string;
+  granteeKind: 'fleet' | 'pool';
+  granteeRef: string;
+  preset?: string | null;
+  note?: string | null;
+}
+
+/** REST fallback for grant writes (desktop SSE → the loopback route). */
+async function p2pGrantSetRest(args: GrantSetArgs): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch('/api/agent-mcp/p2p-grant-set', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  const text = await r.text();
+  let data: { ok?: boolean; error?: string; detail?: string } = {};
+  try {
+    data = JSON.parse(text) as typeof data;
+  } catch {
+    /* non-JSON */
+  }
+  if (!r.ok || data.ok === false) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`);
+  return { ok: true };
+}
 
 interface AuditRow {
   id: string;
@@ -312,6 +360,71 @@ function OptInEditor({
   );
 }
 
+/* ── Add-grant form (mid-edit drafts → useState per the state policy) ── */
+function AddGrantForm({
+  hive,
+  busy,
+  onAdd,
+}: {
+  hive: string;
+  busy: boolean;
+  onAdd: (args: GrantSetArgs) => Promise<void>;
+}) {
+  const [kind, setKind] = useState<'fleet' | 'pool'>('fleet');
+  const [ref, setRef] = useState('');
+  const [preset, setPreset] = useState<string>('Delegate');
+  const [note, setNote] = useState('');
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+      <Select
+        value={kind}
+        onChange={(v) => setKind(v as 'fleet' | 'pool')}
+        ariaLabel="Grantee kind"
+        options={[
+          { value: 'fleet', label: 'fleet' },
+          { value: 'pool', label: 'pool' },
+        ]}
+      />
+      <input
+        type="text"
+        value={ref}
+        onChange={(e) => setRef(e.target.value)}
+        placeholder={kind === 'fleet' ? 'fleet slug' : 'pool id'}
+        style={inputStyle}
+        aria-label="Grantee reference"
+      />
+      <Select
+        value={preset}
+        onChange={setPreset}
+        ariaLabel="Capability preset"
+        options={GRANT_PRESETS.map((p) => ({ value: p, label: p }))}
+      />
+      <input
+        type="text"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="note (optional)"
+        style={{ ...inputStyle, flex: '1 1 160px' }}
+        aria-label="Grant note"
+      />
+      <button
+        type="button"
+        disabled={busy || ref.trim().length === 0}
+        style={{ ...btnStyle, fontWeight: 600 }}
+        onClick={() =>
+          void onAdd({ action: 'set', hiveSlug: hive, granteeKind: kind, granteeRef: ref.trim(), preset, note: note.trim() || null }).then(() => {
+            setRef('');
+            setNote('');
+          })
+        }
+      >
+        Grant
+      </button>
+    </div>
+  );
+}
+
 export default function P2pSettingsPage() {
   const { data: settingsData, error: settingsError } = useSyncQuery<P2pSettingsLayers>({
     queryName: 'p2p.settings',
@@ -324,12 +437,26 @@ export default function P2pSettingsPage() {
   const { data: auditData } = useSyncQuery<AuditRow>({ queryName: 'p2p.audit', args: { limit: 50 } });
   const auditRows = useMemo<AuditRow[]>(() => auditData ?? [], [auditData]);
 
-  // Peers matrix — Lane A's P-001 grants store. Until its resolver registers,
-  // this query errors and the section renders the LOUD pending state below.
-  const { data: grantsData, error: grantsError } = useSyncQuery<Record<string, unknown>>({
+  // Hive selector for the Peers matrix — grants federate per hive home slug.
+  // Options derive from this identity's hive memberships (the devices read).
+  const hiveOptions = useMemo(() => {
+    const slugs = new Set<string>();
+    for (const r of deviceRows) {
+      if (r.kind === 'device' || r.kind === 'missing') slugs.add(r.hiveHomeSlug);
+    }
+    return [...slugs].sort();
+  }, [deviceRows]);
+  const [hiveParam, setHiveParam] = useQueryState('hive', parseAsString);
+  const hive = hiveParam ?? hiveOptions[0] ?? null;
+
+  // Peers matrix — the P-001 grant store (mig 463). Args-scoped subscription:
+  // the grant-set route re-invalidates with the SAME {hiveSlug} args.
+  const { data: grantsData, error: grantsError } = useSyncQuery<PeerGrant>({
     queryName: 'p2p.grants',
+    args: { hiveSlug: hive ?? '' },
   });
-  const grantRows = useMemo(() => grantsData ?? [], [grantsData]);
+  const grantRows = useMemo<PeerGrant[]>(() => (hive ? (grantsData ?? []) : []), [grantsData, hive]);
+  const setGrant = useSyncMutate<GrantSetArgs, { ok: boolean; error?: string }>('p2p.grantSet', p2pGrantSetRest);
 
   const [layer, setLayer] = useQueryState(
     'layer',
@@ -501,21 +628,110 @@ export default function P2pSettingsPage() {
 
       {/* ── Peers (capability matrix — P-001 store) ── */}
       <section className="pc-settings-section" aria-label="Peers" style={sectionStyle}>
-        <h2 style={h2Style}>Peers — capability grants</h2>
-        {grantsError || grantRows.length === 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+          <h2 style={{ ...h2Style, margin: 0 }}>Peers — capability grants</h2>
+          {hiveOptions.length > 0 && (
+            <Select
+              value={hive ?? ''}
+              onChange={(v) => void setHiveParam(v || null)}
+              ariaLabel="Hive for grants"
+              options={hiveOptions.map((s) => ({ value: s, label: s }))}
+            />
+          )}
+        </div>
+        <p style={{ ...muteStyle, margin: '0 0 10px' }}>
+          Grants are issued by YOU (your numeric GitHub id), keyed per hive, resolved only through
+          attested devices. Presets: Observer (chat) · Collaborator (+steer) · Delegate (+work-offer,
+          wake) · Operator (+spawn). A capability downgrade is revocation-class and bumps your
+          grantor epoch.
+        </p>
+        {!hive ? (
           <div style={pendingNote} role="status">
-            {grantsError
-              ? 'The capability-grant store (plan item P-001) has not landed on this build yet — grants you issue will appear here the moment its p2p.grants read goes live. Nothing is granted meanwhile (structurally inert).'
-              : 'No capability grants issued. Grants are keyed by GitHub user id, resolved only through attested devices, with presets Observer (chat) / Collaborator (+steer) / Delegate (+work-offer, wake) / Operator (+spawn).'}
+            No hive memberships resolved for this identity — join or create a hive first; grants
+            attach to a hive.
+          </div>
+        ) : grantsError ? (
+          <div style={pendingNote} role="alert">
+            Couldn&apos;t read grants for hive {hive}: {grantsError.message} — nothing is granted while
+            this read is unavailable (structurally inert).
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            {grantRows.map((g, i) => (
-              <pre key={i} style={{ fontSize: 11.5, margin: '4px 0', background: 'var(--bg-2)', padding: 8, borderRadius: 6 }}>
-                {JSON.stringify(g)}
-              </pre>
-            ))}
-          </div>
+          <>
+            {grantRows.length === 0 ? (
+              <p style={muteStyle}>No capability grants on hive {hive} yet.</p>
+            ) : (
+              <div style={{ overflowX: 'auto', marginBottom: 10 }}>
+                <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 560 }}>
+                  <thead>
+                    <tr>
+                      {['grantee', 'preset', 'capabilities', 'epoch', 'wake cap/h', 'status', ''].map((h, i) => (
+                        <th key={i} style={{ textAlign: 'left', padding: '4px 10px', color: 'var(--fg-mute)', fontWeight: 600 }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grantRows.map((g) => (
+                      <tr key={`${g.granteeKind}:${g.granteeRef}:${g.grantorGithubUserId}`} style={{ borderTop: '1px solid var(--border)', opacity: g.status === 'revoked' ? 0.55 : 1 }}>
+                        <td style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}>
+                          {g.granteeKind}:<strong>{g.granteeRef}</strong>
+                        </td>
+                        <td style={{ padding: '4px 10px' }}>{g.preset ?? '—'}</td>
+                        <td style={{ padding: '4px 10px' }}>
+                          <code style={{ fontSize: 11 }}>{g.capabilities.join(', ')}</code>
+                        </td>
+                        <td style={{ padding: '4px 10px', fontVariantNumeric: 'tabular-nums' }}>{g.grantorEpoch}</td>
+                        <td style={{ padding: '4px 10px' }}>{g.wakeRateCapPerHour ?? '—'}</td>
+                        <td style={{ padding: '4px 10px' }}>
+                          {g.status === 'revoked' ? <span style={redBadge}>revoked</span> : <span style={okBadge}>active</span>}
+                        </td>
+                        <td style={{ padding: '4px 10px' }}>
+                          {g.status === 'active' && (
+                            <button
+                              type="button"
+                              style={btnStyle}
+                              disabled={busy}
+                              onClick={() =>
+                                toast(`Revoke ${g.granteeKind}:${g.granteeRef}? In-flight foreign work winds down (M16).`, {
+                                  action: {
+                                    label: 'Revoke',
+                                    onClick: () =>
+                                      void (async () => {
+                                        try {
+                                          await setGrant({ action: 'revoke', hiveSlug: hive, granteeKind: g.granteeKind, granteeRef: g.granteeRef });
+                                          toast.success(`Revoked ${g.granteeRef}.`);
+                                        } catch (e) {
+                                          toast.error(`Couldn't revoke: ${e instanceof Error ? e.message : 'failed'}`);
+                                        }
+                                      })(),
+                                  },
+                                })
+                              }
+                            >
+                              Revoke
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <AddGrantForm
+              hive={hive}
+              busy={busy}
+              onAdd={async (args) => {
+                try {
+                  await setGrant(args);
+                  toast.success(`Granted ${args.preset} to ${args.granteeKind}:${args.granteeRef}.`);
+                } catch (e) {
+                  toast.error(`Couldn't grant: ${e instanceof Error ? e.message : 'failed'}`);
+                }
+              }}
+            />
+          </>
         )}
       </section>
 

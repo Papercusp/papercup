@@ -3233,6 +3233,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // `p2p.grants` — the Peers capability matrix (P-002 UI over Lane A's P-001
+  // grant store). Hive-scoped (grants federate per hive home slug); includes
+  // revoked rows so the matrix can show revocation state — the client filters.
+  // Writes go through the p2p-grant-set loopback route, which re-invalidates
+  // with the SAME {hiveSlug} args (args-scoped subscription → args-scoped emit).
+  'p2p.grants': {
+    argsSchema: z.object({ hiveSlug: z.string().min(1).max(120) }),
+    resolve: async (args) => {
+      const { hiveSlug } = args as { hiveSlug: string };
+      try {
+        const { listPeerGrants } = await import('../p2p/grant-store');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return await listPeerGrants({ workspaceId: activeWorkspaceId(), hiveSlug, includeRevoked: true });
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
+          console.warn('[p2p.grants] read failed:', msg);
+        }
+        return []; // pre-migration-463 degrades to the empty matrix, never a 500
+      }
+    },
+  },
+
   // `p2p.audit` — the P-002 Audit section: p2p:*-prefixed audit_log rows
   // (kill-switch flips + starter-profile applies now; grant changes + refusal
   // receipts join as P-001/P-004 land — same prefix convention).

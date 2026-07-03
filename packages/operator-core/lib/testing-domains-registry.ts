@@ -1431,6 +1431,13 @@ defineTestDomain({
       ],
     },
     {
+      id: 'fork-identity',
+      label: 'C5 fork identity (psu --resume --fork)',
+      description:
+        'psu --resume --fork mints a genuinely fresh, PERSISTED adv_sessions identity (distinct coord owner id + forced native id) that branches the original’s history and runs concurrently WITHOUT mutating the original — proven against real PG (real recordAdvSession / listResumableSessions / markAdvSessionEnded + the real launcher fork fns: forkBootstrapBody / resumeArgsFor / resumeEnvFor / nativeSessionIdFromLaunchArgs).',
+      globs: ['apps/operator/lib/psu-launcher-fork.integration.test.ts'],
+    },
+    {
       id: 'resume-live',
       label: 'C5 real resume spawn (live)',
       description: 'LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.',

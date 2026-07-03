@@ -34,7 +34,9 @@ double-UUID, and the per-block header.
 - **`COORD_LEGEND`** — `lineType → { glyph, name }`, keyed by the lifecycle
   category (`intent`/`completion`/`claim`/`window`/`handoff`/`finding`) plus the
   base `CoordKind`s. Glyphs are **1-token ASCII** (`>` `*` `+` `#` `<` `!` `-`
-  `^` `=` `.` `~`) — emoji (`▶ ↪ ⚠`) tokenize to 2–3 tokens, pure waste here.
+  `^` `=` `.` `~` `|`) — emoji (`▶ ↪ ⚠`) tokenize to 2–3 tokens, pure waste here.
+  (`|` is `yield` — turn-lifecycle-control Phase 4/P-019: a peer asking you to
+  wrap up at a safe checkpoint and end your turn, i.e. `turn:interrupt`.)
 - **`glyphFor(entry)`** — the glyph for one entry: its lifecycle category if it
   has one (keyed on the **`lifecycle`** envelope field that `coord:emit` stamps —
   NOT `category`, which is reserved for ambient tags), else its `kind`.
@@ -64,6 +66,25 @@ self-correct a schema mismatch (no inline header), so this is load-bearing.
    (Claude `additionalContext` / OMP `<system-reminder type="coord">`) and
    advances the cursor from `summary.newest_ts`. All formatting/capping/collapse
    is server-side — one edit re-tunes every client.
+
+## Control-cue authority tag (queen-fleet-authority-boundary P-003)
+
+A CONTROL cue (a hive-wide Queen pause, a fleet leader's drain/steer) can carry a
+structured `cueAuthority` stamp (`{ authority, authorityRef, scope, scopeRef? }`)
+on the coord envelope — set by the emit site via `sendMessage.extra`, read back
+with `readCueAuthority`/`renderCueAuthorityTag` (`agent-tools/coordination/cue-authority`).
+When present and well-formed, `renderInjection` prefixes the line with a scope
+tag so the reader can tell a hive-wide directive from a narrower one at a
+glance, e.g.:
+
+```
+# ab533 [hive-queen(papercusp)→hive-wide] the hive is being paused
+# lead1 [fleet-leader(windows-parity)→fleet-members(windows-parity)] release your slot
+```
+
+A missing or malformed stamp (an unrecognized `authority`, a forged value) is
+simply **ignored** — `readCueAuthority` validates it, so a legacy or forged cue
+renders untagged rather than throwing or misrepresenting its scope.
 
 ## Rules when you touch this
 

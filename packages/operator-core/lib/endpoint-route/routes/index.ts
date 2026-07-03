@@ -255,6 +255,7 @@ import agentMcp_storagePrune from './agent-mcp/storage-prune';
 import agentMcp_autonomyTripwireRevert from './agent-mcp/autonomy-tripwire-revert';
 import agentMcp_trustSet from './agent-mcp/trust-set';
 import agentMcp_p2pSettingsSet from './agent-mcp/p2p-settings-set';
+import agentMcp_p2pGrantSet from './agent-mcp/p2p-grant-set';
 import agentMcp_hiveOverrideSet from './agent-mcp/hive-override-set';
 import agentMcp_spawnPi from './agent-mcp/spawn-pi';
 import agentMcp_voiceDebug from './agent-mcp/voice-debug';
@@ -513,6 +514,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_autonomyTripwireRevert as AnyRoute),
   ...flatten(agentMcp_trustSet as AnyRoute),
   ...flatten(agentMcp_p2pSettingsSet as AnyRoute),
+  ...flatten(agentMcp_p2pGrantSet as AnyRoute),
   ...flatten(agentMcp_hiveOverrideSet as AnyRoute),
   ...flatten(agentMcp_spawnPi as AnyRoute),
   ...flatten(agentMcp_voiceDebug as AnyRoute[]),
