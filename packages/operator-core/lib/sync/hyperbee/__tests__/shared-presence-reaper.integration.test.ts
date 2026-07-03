@@ -21,6 +21,11 @@ import { reapStaleSharedPresence } from '../shared-presence-reaper';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIG_434 = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql/434-shared-session-presence.sql');
+// P-301: keep the test schema column-complete with the fleet-membership columns.
+const MIG_479 = resolve(
+  HERE,
+  '../../../../../../libs/papercusp/libs/db/sql/479-shared-session-presence-fleet-slug.sql',
+);
 
 function stripMeta(sql: string): string {
   return sql
@@ -60,6 +65,7 @@ describe('shared-presence-reaper (real PG)', () => {
       )`);
     // shared_session_presence — mig 434 verbatim.
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
+    await db.sql.unsafe(stripMeta(readFileSync(MIG_479, 'utf8')));
   }, 90_000);
 
   afterAll(async () => {
