@@ -92,6 +92,96 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
   });
 });
 
+describe('reconcileLoopRoutines — cold reset-boundary guard (su-cold-auto 2026-07-03)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+  const coldRow = (over: Record<string, unknown>) => ({
+    id: 'rt-1',
+    target_owner_id: 'su-test',
+    interval_sec: 60,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-test',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    presence_last_active_at: null,
+    ...over,
+  });
+
+  it("the reset boundary (ended→started back-to-back at delivery) is NOT a settle — the 'ended' is the DYING session, not the woken turn finishing", async () => {
+    // Live repro (fire #4972 → overlap #4979): cold delivery at T0+1s restarts the session —
+    // old process emits 'ended' (+1000ms), new process 'started' (+1250ms). The cold turn is
+    // STILL RUNNING; re-arming off that 'ended' fires the next wake mid-turn.
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          lifecycle_completed_at: pgString(T0 + 1_000),
+          lifecycle_started_at: pgString(T0 + 1_250), // newest marker is 'started' → session RUNNING
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0); // no re-arm UPDATE — the loop stays parked until the cold turn settles
+  });
+
+  it("the cold turn's OWN Stop-hook 'ended' (newer than the boundary 'started') IS the settle", async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          lifecycle_completed_at: pgString(T0 + 90_000), // the cold turn finished at +90s
+          lifecycle_started_at: pgString(T0 + 1_250), // the boundary 'started' is older
+        }),
+      ],
+      updates,
+    );
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 95_000, recordFire });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('lifecycle');
+    expect(res.loops[0].nextFireAt).toBe(T0 + 90_000 + 60_000); // completed + interval, off the REAL settle
+  });
+
+  it("a warm loop (no post-fire 'started' — process boot precedes the fire) settles exactly as before", async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          lifecycle_completed_at: pgString(T0 + 5_000),
+          lifecycle_started_at: null, // warm: 'started' fired at boot, outside the > last_fired window
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('lifecycle');
+  });
+
+  it('while the reset boundary suppresses the lifecycle settle, presence-quiescence still recovers a genuinely-idle session', async () => {
+    // The cold turn did work (presence advanced past the fire) then idled ≥60s but its Stop
+    // report was DROPPED: the fallback must still re-arm — the boundary guard only suppresses
+    // the PRIMARY signal, it must not wedge the loop.
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          lifecycle_completed_at: pgString(T0 + 1_000),
+          lifecycle_started_at: pgString(T0 + 1_250),
+          presence_last_active_at: pgString(T0 + 30_000), // worked until +30s, then quiet
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 100_000 }); // 70s quiet
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+});
+
 describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustness P0b)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
@@ -272,5 +362,123 @@ describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => 
 
     expect(res.rearmed).toBe(1);
     expect(checkUnreachableTerminalGuard).toHaveBeenCalledWith(expect.objectContaining({ stuckFireCount: 1 }));
+  });
+});
+
+describe('reconcileLoopRoutines — circuit-open fast path (EI-7006)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  function parkedRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rt-dead',
+      target_owner_id: 'su-permanently-gone',
+      interval_sec: 120, // stuckParkMs = max(30min, 4×120s=8min) = 30min
+      parked: true,
+      install_slug: 'papercusp',
+      name: 'loop-su-gone',
+      routine_workspace_id: 'ws-papercusp',
+      last_fired_at: pgString(T0),
+      lifecycle_completed_at: null,
+      presence_last_active_at: null,
+      ...overrides,
+    };
+  }
+
+  it('PROPERTY (dead-owner terminates fast): a CIRCUIT-OPEN loop is routed to the guard BEFORE the stuck-park dwell elapses, and TERMINATES', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 12 })); // ≥8 → circuit OPEN
+    const guard = vi.fn(async () => ({ breach: true, reason: 'dead-owner circuit-open, WI-1399 / EI-7006' }));
+
+    // nowMs is only 2 min past the fire — WELL UNDER stuckParkMs(120s)=30min. The OLD code would
+    // never consult the guard here (stuck-park branch not entered); the fix routes it via circuitOpen.
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 2 * 60_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.terminated).toEqual([
+      { id: 'rt-dead', targetOwnerId: 'su-permanently-gone', reason: 'dead-owner circuit-open, WI-1399 / EI-7006' },
+    ]);
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0); // never re-armed — the guard's own autoPause deactivated it
+    // Routed WITH the circuit-open flag + stuckFireCount == consecutiveErrors (NOT +1).
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ circuitOpen: true, stuckFireCount: 12 }));
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-gone', 'loop-terminal-unreachable', 'error');
+  });
+
+  it('a CIRCUIT-OPEN but still-REACHABLE loop (guard declines) is neither terminated nor re-armed — the fire-gate owns cadence', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 12 }));
+    const guard = vi.fn(async () => ({ breach: false })); // reachable → guard declines
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 2 * 60_000, // under the stuck-park dwell
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0); // NOT stuck-park-elapsed → NOT re-armed (don't fight the circuit backoff)
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled(); // no error recorded — left to the fire-gate
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ circuitOpen: true }));
+  });
+
+  it('PROPERTY (healthy long turn NEVER terminates): a loop with activity AFTER the fire — even past the stuck-park dwell — is skipped for free (guard + fire-state never consulted)', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    // Would be circuit-open (99≥8) and would breach IF consulted — proving the pre-filter, not the guard, protects it.
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 99 }));
+    const guard = vi.fn(async () => ({ breach: true, reason: 'should-not-be-called' }));
+    // Active 40min AFTER the fire (past the 30min dwell); nowMs only 30s later, so NOT presence-quiescent yet.
+    const sql = fakeSql([parkedRow({ presence_last_active_at: pgString(T0 + 40 * 60_000) })], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 40 * 60_000 + 30_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.terminated).toEqual([]);
+    expect(res.rearmed).toBe(0);
+    expect(guard).not.toHaveBeenCalled(); // never consulted — the loop looks alive
+    expect(readFireState).not.toHaveBeenCalled(); // cheap pre-filter: no fire-state read for a live loop
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('a stuck-park loop that is ALSO circuit-open still terminates (both triggers true, circuitOpen wins the fast path)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 40 }));
+    const guard = vi.fn(async () => ({ breach: true, reason: 'dead-owner, EI-7006' }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000, // BOTH stuck-park-elapsed AND circuit-open
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.terminated).toHaveLength(1);
+    expect(res.rearmed).toBe(0);
+    // circuit-open takes precedence → stuckFireCount is the raw streak (40), not streak+1.
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ circuitOpen: true, stuckFireCount: 40 }));
   });
 });

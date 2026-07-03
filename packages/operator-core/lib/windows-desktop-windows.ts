@@ -110,41 +110,6 @@ export const WINDOW_TITLE_PREFIX = 'Papercup — ';
 /** A hung/absent powershell must never wedge the caller (presence read / reaper sweep). */
 const PS_TIMEOUT_MS = 2000;
 
-/** PowerShell script: enumerate visible top-level windows as `hwnd|pid|title` lines. */
-const LIST_WINDOWS_SCRIPT = `
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public class PapercuspWin32 {
-  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
-  [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-}
-"@
-$results = New-Object System.Collections.Generic.List[string]
-$callback = {
-  param($hWnd, $lParam)
-  if ([PapercuspWin32]::IsWindowVisible($hWnd)) {
-    $len = [PapercuspWin32]::GetWindowTextLength($hWnd)
-    if ($len -gt 0) {
-      $sb = New-Object System.Text.StringBuilder ($len + 1)
-      [PapercuspWin32]::GetWindowText($hWnd, $sb, $sb.Capacity) | Out-Null
-      $title = $sb.ToString()
-      $procId = 0
-      [PapercuspWin32]::GetWindowThreadProcessId($hWnd, [ref]$procId) | Out-Null
-      $results.Add("$hWnd|$procId|$title")
-    }
-  }
-  return $true
-}
-[PapercuspWin32]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-$results | ForEach-Object { Write-Output $_ }
-`.trim();
-
 /**
  * Leader VM finding (2026-07-02): `powershell.exe` is deliberately NOT on the
  * `papercup-runtime` WSL PATH, so a bare `powershell.exe` fails with
@@ -166,58 +131,57 @@ async function execPowershell(bin: string, script: string): Promise<string> {
   return typeof stdout === 'string' ? stdout : '';
 }
 
-async function runPowershell(script: string): Promise<string | null> {
-  try {
-    return await execPowershell(POWERSHELL_ABS_PATH, script);
-  } catch {
-    try {
-      return await execPowershell('powershell.exe', script); // PATH-forwarding fallback
-    } catch {
-      return null; // absolute path missing (non-standard drive) AND not on PATH / timeout / spawn error
-    }
-  }
-}
 
 /**
- * PURE: parse the `hwnd|pid|title` lines emitted by LIST_WINDOWS_SCRIPT. A line
- * missing either separator, or with a non-numeric pid, is skipped. The title is
- * everything after the SECOND `|` (rejoined, so a title containing `|` survives).
+ * D-002 / WI-1675 — the renderer-pushed on-desktop window cache.
+ *
+ * The operator runs inside the WSL2 distro, and a `powershell.exe` it spawns via
+ * interop lands in SESSION 0 (the services window-station), blind to the
+ * interactive desktop (D-001 — VM-verified: it enumerates 0 windows). So window
+ * enumeration CANNOT happen operator-side. Instead the Session-1 Tauri renderer
+ * enumerates natively (the `list_windows_by_title` Rust command) and POSTs the
+ * list to `/api/adv/on-desktop-windows` on a timer; that route calls
+ * `setOnDesktopWindowsCache`, and `listWindowsByTitle` below reads it.
+ *
+ * Ephemeral BY DESIGN — live desktop state re-pushed every ~20s, never durable,
+ * so an in-process cache (not Postgres) is correct: a restart re-seeds within one
+ * push interval. The TTL makes a closed/backgrounded GUI (renderer not pushing)
+ * read as "no data" rather than a silently-stale list.
  */
-export function parseWindowListOutput(stdout: string): WindowsDesktopWindow[] {
-  const out: WindowsDesktopWindow[] = [];
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx1 = trimmed.indexOf('|');
-    if (idx1 < 0) continue;
-    const idx2 = trimmed.indexOf('|', idx1 + 1);
-    if (idx2 < 0) continue;
-    const hwnd = trimmed.slice(0, idx1).trim();
-    const pid = Number(trimmed.slice(idx1 + 1, idx2).trim());
-    const title = trimmed.slice(idx2 + 1);
-    if (!hwnd || !Number.isFinite(pid) || pid <= 0) continue;
-    out.push({ hwnd, pid, title });
-  }
-  return out;
+const ON_DESKTOP_WINDOWS_TTL_MS = 60_000;
+let onDesktopWindowsCache: { at: number; windows: WindowsDesktopWindow[] } | null = null;
+
+/** Store the renderer's push. Called by the /api/adv/on-desktop-windows route. */
+export function setOnDesktopWindowsCache(windows: WindowsDesktopWindow[], now = Date.now()): void {
+  onDesktopWindowsCache = { at: now, windows };
 }
 
 /**
- * Enumerate top-level Windows windows, optionally filtered to titles starting
- * with `prefix` (pass WINDOW_TITLE_PREFIX to get only Papercup session
- * terminals). Best-effort: not a Windows desktop host, no powershell.exe, or a
- * parse miss all yield `[]` — mirrors listOpenWindows' wmctrl fail-soft
- * contract so a caller (desktop-window-liveness.ts) never has to special-case
- * this platform.
+ * The freshest renderer-pushed window list, or `null` if never pushed or stale
+ * (older than the TTL). `null` (vs `[]`) lets a caller distinguish "no info" from
+ * "definitely no windows" — the reaper uses that to stay conservative.
+ */
+export function getOnDesktopWindowsCache(now = Date.now()): WindowsDesktopWindow[] | null {
+  if (!onDesktopWindowsCache) return null;
+  if (now - onDesktopWindowsCache.at > ON_DESKTOP_WINDOWS_TTL_MS) return null;
+  return onDesktopWindowsCache.windows;
+}
+
+/**
+ * The on-desktop Papercup session windows, optionally filtered to titles
+ * starting with `prefix` (pass WINDOW_TITLE_PREFIX for only session terminals).
+ *
+ * D-002/WI-1675: reads the renderer-pushed cache (see above) — NOT powershell,
+ * which is Session-0-blind on Windows. Best-effort: not a Windows desktop host,
+ * or an absent/stale cache (GUI closed → renderer not pushing) both yield `[]`,
+ * mirroring the wmctrl path's fail-soft contract so desktop-window-liveness.ts
+ * never special-cases this platform.
  */
 export async function listWindowsByTitle(prefix?: string): Promise<WindowsDesktopWindow[]> {
   if (!isWindowsDesktopHost()) return [];
-  try {
-    const stdout = await runPowershell(LIST_WINDOWS_SCRIPT);
-    const windows = stdout ? parseWindowListOutput(stdout) : [];
-    return prefix ? windows.filter((w) => w.title.startsWith(prefix)) : windows;
-  } catch {
-    return [];
-  }
+  const windows = getOnDesktopWindowsCache();
+  if (!windows) return [];
+  return prefix ? windows.filter((w) => w.title.startsWith(prefix)) : windows;
 }
 
 /**

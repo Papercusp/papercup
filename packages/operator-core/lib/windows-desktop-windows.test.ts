@@ -9,12 +9,13 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  parseWindowListOutput,
   parseSessionIdFromWindowTitle,
   listWindowsByTitle,
   focusWindowByTitle,
   isWindowsDesktopHost,
   __resetIsWindowsDesktopHostCache,
+  setOnDesktopWindowsCache,
+  getOnDesktopWindowsCache,
   WINDOW_TITLE_PREFIX,
   type WindowsDesktopWindow,
 } from './windows-desktop-windows';
@@ -45,32 +46,36 @@ afterEach(() => {
   readFileSyncMock.mockReset();
 });
 
-describe('parseWindowListOutput (pure hwnd|pid|title parser)', () => {
-  it('parses well-formed lines', () => {
-    const stdout = ['0x1a2b3c|4321|Papercup — abc-123', '0x9|555|Untitled - Notepad'].join('\n');
-    expect(parseWindowListOutput(stdout)).toEqual<WindowsDesktopWindow[]>([
-      { hwnd: '0x1a2b3c', pid: 4321, title: 'Papercup — abc-123' },
-      { hwnd: '0x9', pid: 555, title: 'Untitled - Notepad' },
-    ]);
+describe('on-desktop window cache (WI-1675 renderer push)', () => {
+  const w: WindowsDesktopWindow[] = [
+    { hwnd: '0x1', pid: 100, title: `${WINDOW_TITLE_PREFIX}s1` },
+    { hwnd: '0x2', pid: 200, title: 'Untitled - Notepad' },
+  ];
+
+  it('set → get returns the pushed windows within the TTL', () => {
+    setOnDesktopWindowsCache(w, 1_000);
+    expect(getOnDesktopWindowsCache(1_000)).toEqual(w);
+    expect(getOnDesktopWindowsCache(1_000 + 59_000)).toEqual(w); // still inside the 60s TTL
   });
 
-  it('skips blank lines and lines missing either separator', () => {
-    const stdout = ['', '   ', 'no separators at all', '0x1|123'].join('\n');
-    expect(parseWindowListOutput(stdout)).toEqual([]);
+  it('get returns null once the push is older than the TTL (closed/backgrounded GUI)', () => {
+    setOnDesktopWindowsCache(w, 1_000);
+    expect(getOnDesktopWindowsCache(1_000 + 60_001)).toBeNull();
   });
 
-  it('skips a non-numeric or non-positive pid', () => {
-    const stdout = ['0x1|notapid|title', '0x2|0|title', '0x3|-5|title'].join('\n');
-    expect(parseWindowListOutput(stdout)).toEqual([]);
+  it('listWindowsByTitle reads the cache (not powershell) on a Windows desktop host, filtering by prefix', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    setOnDesktopWindowsCache(w);
+    expect(await listWindowsByTitle()).toEqual(w);
+    expect(await listWindowsByTitle(WINDOW_TITLE_PREFIX)).toEqual(w.slice(0, 1));
   });
 
-  it('preserves a title containing a literal | (rejoins after the SECOND separator)', () => {
-    const out = parseWindowListOutput('0x1|100|a|b|c');
-    expect(out).toEqual([{ hwnd: '0x1', pid: 100, title: 'a|b|c' }]);
-  });
-
-  it('skips a line with an empty hwnd', () => {
-    expect(parseWindowListOutput('|100|title')).toEqual([]);
+  it('listWindowsByTitle returns [] on a Windows desktop host with no cache yet (GUI not pushed)', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    setOnDesktopWindowsCache(w, 1_000); // push far in the past → stale → treated as no data
+    expect(await listWindowsByTitle(undefined)).toEqual([]);
   });
 });
 

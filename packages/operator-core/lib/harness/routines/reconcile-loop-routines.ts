@@ -30,7 +30,10 @@
  * ended" — picks the end marker exactly, since "started" has no "end".)
  *
  * ## Robustness (3 layers, each cheap)
- *  1. PRIMARY — the lifecycle 'ended' marker (above).
+ *  1. PRIMARY — the lifecycle 'ended' marker (above). COLD caveat: a cold reset/recycle
+ *     wake restarts the session at delivery, emitting ended→started back-to-back; an
+ *     'ended' older than the newest post-fire 'started' is that boundary, not a settle
+ *     (see completionSignal's guard).
  *  2. FALLBACK — the lifecycle report is a DETACHED, fail-open POST (it CAN be lost). If
  *     no 'ended' marker exists after the fire but `coord_presence.last_active_at`
  *     advanced past last_fired_at AND has since gone quiet (≥ FALLBACK_QUIET_MS), the
@@ -151,6 +154,9 @@ interface LoopRow {
   last_fired_at: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'ended' marker after the fire. */
   lifecycle_completed_at: Date | string | null;
+  /** max(agent_activity.created_at) for a kind='lifecycle' 'started' marker after the fire —
+   *  the cold reset-boundary guard (see completionSignal). */
+  lifecycle_started_at: Date | string | null;
   /** The session's most-recent genuine-activity timestamp (presence-v2, mig 277). */
   presence_last_active_at: Date | string | null;
 }
@@ -166,9 +172,20 @@ function completionSignal(
   nowMs: number,
 ): { completedAt: number; via: Exclude<RebaseVia, 'stuck-backstop'> } | null {
   // 1. PRIMARY: the Stop-hook lifecycle 'ended' marker (already filtered > last_fired by
-  //    the SQL window, so any value here is a genuine post-fire turn completion).
+  //    the SQL window). COLD-RESET-BOUNDARY GUARD (su-cold-auto 2026-07-03): a COLD
+  //    reset/recycle wake restarts the session AT delivery — the dying process emits
+  //    '■ session ended' and the fresh one '▶ session started' back-to-back (~250ms apart),
+  //    so an 'ended' marker OLDER than the newest post-fire 'started' is the reset boundary,
+  //    NOT the woken turn settling. Treating it as a settle re-armed the loop ~interval
+  //    after DELIVERY and the next fire landed mid-turn (observed live: fire #4979
+  //    overlapped the still-running turn of fire #4972). A settle requires the newest
+  //    post-fire lifecycle marker to be the 'ended' one; while a fresh 'started' is newest,
+  //    the session is RUNNING → not settled (the cold turn's own Stop hook emits the real
+  //    'ended' when it finishes). Warm loops are unaffected: 'started' fires only at process
+  //    boot, which precedes last_fired and falls outside the SQL window.
   const lc = tsMs(row.lifecycle_completed_at);
-  if (lc != null) {
+  const ls = tsMs(row.lifecycle_started_at);
+  if (lc != null && (ls == null || ls < lc)) {
     return { completedAt: lc, via: 'lifecycle' };
   }
   // 2. FALLBACK: a dropped lifecycle report — the session did genuine work after the fire
@@ -226,6 +243,12 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary ILIKE '%end%'
                AND a.created_at > r.last_fired_at) AS lifecycle_completed_at,
+           (SELECT max(a.created_at)
+              FROM harness_shared.agent_activity a
+             WHERE a.owner_id = r.target_owner_id
+               AND a.kind = 'lifecycle'
+               AND a.summary ILIKE '%start%'
+               AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
            (SELECT max(p.last_active_at)
               FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at

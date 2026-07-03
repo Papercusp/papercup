@@ -176,6 +176,18 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
     expect(autoPause).not.toHaveBeenCalled();
   });
 
+  it('circuit-open path (EI-7006): auto-pauses an unreachable owner even UNDER the dwell window', async () => {
+    const autoPause = vi.fn(async () => {});
+    const probeReachability = vi.fn(async () => verdict(false));
+    const res = await checkUnreachableTerminalGuard(
+      { ...input, parkedForMs: 1000, circuitOpen: true },
+      { autoPause, probeReachability },
+    );
+    expect(res.breach).toBe(true);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(autoPause).toHaveBeenCalledWith(input.sql, 'rt-1', expect.stringContaining('circuit-open'));
+  });
+
   it('fail-soft: a reachability probe error never throws and never pauses', async () => {
     const autoPause = vi.fn(async () => {});
     const probeReachability = vi.fn(async () => {

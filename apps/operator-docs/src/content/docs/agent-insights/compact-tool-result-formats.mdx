@@ -33,9 +33,9 @@ TOON** (in "The lossless guarantee", below) is now **false**:
   compact mode it self-presents as **headerless CSV** — `format: csv\n[N]\n…rows`
   — not TOON.
 - The Tier-3 read path **takes precedence** over the generic TOON-auto path:
-  `libs/generic/tooldef/src/serialize-result.ts:191`
+  `libs/generic/tooldef/src/serialize-result.ts:280`
   (`const chosen = tier3 ? { ...tier3, fallback: false } : chooseFormat(data, opts);`),
-  where `tryTier3Read` (lines 151–168) returns `format: 'csv'` for a registry
+  where `tryTier3Read` (lines 198–215) returns `format: 'csv'` for a registry
   tool whose `readPrePromptFormat` is `'csv'` once the request resolves to
   compact.
 

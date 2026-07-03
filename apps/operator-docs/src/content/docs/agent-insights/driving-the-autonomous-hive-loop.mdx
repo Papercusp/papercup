@@ -195,3 +195,21 @@ export DATABASE_URL=$(tr '\0' '\n' < /proc/$(systemctl --user show papercup-bg-h
 - **The recorded error is authoritative — read it first.** `autoloop_state.last_status` (and
   the work-item's error) already carries the verbatim failure. Don't go log-spelunking `.out`
   files (often stale / wrong-tree) before reading the recorded status (audit W3).
+- **A `CHRONIC autoloop failure: loop-su-…` EI is usually ALREADY self-resolved by the time you
+  read it.** These are auto-filed by the chronic-failure escalator (`autoloop-chronic-failure.ts`)
+  at `consecutive_errors >= 6`. The common cause is a **dead-owner loop** — the pinned warm
+  su-session died, so every fire stuck-backstops. The WI-1399 dead-owner terminal guard
+  (`loop-unreachable-guard.ts`) then auto-pauses the routine (`routines.active=false`,
+  `last_status='loop-terminal-unreachable'`), but only after its ~4h window — *later* than the
+  escalator's ~3h fire, so the EI is filed in the pre-termination window and self-resolves. **Before
+  touching anything, verify it's already dead:** (1) the routine `active=false`
+  (`SELECT active FROM harness_shared.routines WHERE name=<role> AND workspace_id=<ws>`), and (2)
+  the owner `adv_session` actually `ended_at` and never restarted (confirms the terminal-unreachable
+  verdict was correct, not a false kill). If both hold, the reported live-failure condition is GONE
+  — a dead-owner loop *should* be dead. Close the hygiene with `autoloop:control reset-errors` (or a
+  targeted single-row `consecutive_errors=0` UPDATE for a `*`-scoped brain row the tool can't
+  target). Once `active=false`, the (twice-hardened) watchdog already **skips** the row
+  (skipped-paused), so it will NOT re-escalate. The **durable class fix** (stop the escalator firing
+  for a dead-owner loop the terminal guard is about to own) touches the self-improvement watchdog +
+  routines scheduler = protected surface — it is tracked as a `change` (EI-7016), not an
+  auto-implement; don't re-file per-loop dupes.
