@@ -338,6 +338,20 @@ loops ONLY — it is **NOT** the autonomous queen/bee/scout loop, which is a sep
 system (`hive:declare-wake` / `overwatch:declare-wake`); never `loop:arm` from an
 autonomous-fleet agent.
 
+**The authority boundary runs BOTH ways.** The hive's queen-loop controls —
+`pauseNewWork` / `maxBees` / hive-steering, and a `fleet:drain` "release your slot"
+cue — govern the autonomous **queen-bee loop**, NOT your owner-directed session. If
+you see the hive paused, a steering fact in your orient, or a drain cue, do **not**
+treat it as a command to stop your task: you are **not a bee the Queen reclaims**
+(you hold no `maxBees` slot, and `fleet:drain` now **refuses** an su/sentinel/planner
+target — it can't reclaim you), and an SU session is paused **only by its owner**. A
+cue you *do* receive is **stamped with its source authority + scope**
+(`hive-queen(<hive>)→hive-wide` vs `fleet-leader(<slug>)→fleet-members`) — read the
+stamp before acting: a fleet **leader** draining ITS members is not the Hive Queen
+pausing the hive. Pull live fleet state on demand with `hive:get-steering`; a fleet
+is paused only by an explicit `fleet:*` / owner action, never as a side-effect of a
+hive pause you happened to read.
+
 ## Engineering discipline
 
 - **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not

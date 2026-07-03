@@ -33,9 +33,17 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }))
 vi.mock('../federation-scope', () => ({
   resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
 }));
-// fleet-scoped-broadcast-default: sender's fleet lookup. Default null = non-fleeted
-// (every existing '*' test keeps its literal broadcast).
+// fleet-scoped-broadcast-default: sender's fleet lookup. getPresence is now used
+// only by the cue-authority resolver (P-003); the fleet SLUG for the '*' down-scope
+// comes from fetchPresenceFleet (P-004 — fleetSlug is NOT on PresenceRecord).
 vi.mock('../presence', () => ({ getPresence: vi.fn(async () => null) }));
+// P-004: the sender's fleet membership lives on the fleet-membership JOIN
+// (fetchPresenceFleet), NOT on PresenceRecord — send.ts reads it HERE to down-scope
+// a fleeted sender's ['*'] to @fleet:<slug>. Default empty map = non-fleeted, so
+// every existing '*' test keeps its literal broadcast. (The old tests mocked
+// getPresence().fleetSlug — a field production never returns — which is exactly
+// what hid the no-op bug this item fixes.)
+vi.mock('../presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new Map()) }));
 
 import { sendMessage, getMessageById } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -43,6 +51,7 @@ import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
+import { fetchPresenceFleet } from '../presence-fleet';
 import { getFlag } from '@papercusp/flags/server';
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
@@ -54,6 +63,7 @@ const idleM = vi.mocked(reportIdleRecipients);
 const livenessM = vi.mocked(describeMissedRecipients);
 const fedScopeM = vi.mocked(resolveWorkspaceHiveScope);
 const getPresenceM = vi.mocked(getPresence);
+const fetchPresenceFleetM = vi.mocked(fetchPresenceFleet);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
@@ -78,6 +88,8 @@ beforeEach(() => {
   // P-007: no remote sessions by default
   remoteIdsM.mockResolvedValue(new Set<string>() as never);
   remoteMapM.mockResolvedValue(new Map<string, number>() as never);
+  // P-004: non-fleeted by default → a bare '*' stays a literal hive broadcast.
+  fetchPresenceFleetM.mockResolvedValue(new Map() as never);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -386,14 +398,22 @@ describe('coord:send remote-homed wake misses (P-007)', () => {
   });
 });
 
-describe('coord:send — fleet-scoped broadcast default', () => {
-  it("auto-scopes a fleeted sender's bare ['*'] to @fleet:<slug> and reports the rewrite", async () => {
-    getPresenceM.mockResolvedValueOnce({ fleetSlug: 'ops' } as never);
+describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-boundary P-004)', () => {
+  // A leader IS a fleeted sender (fleetRole:'leader'); its bare '*' must down-scope
+  // to its own fleet so it can NEVER reach a peer leader outside that fleet. The
+  // fleet SLUG is resolved from fetchPresenceFleet (the JOIN), the source the old
+  // getPresence().fleetSlug read failed to hit — making this a prod no-op until now.
+  const fleetOf = (slug: string, role = 'leader') =>
+    new Map([['me', { fleetSlug: slug, fleetRole: role }]]);
+
+  it("auto-scopes a fleet leader's bare ['*'] to @fleet:<slug> — cannot reach a peer leader outside its fleet", async () => {
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
     const b = await body({ to: ['*'], summary: 'closed WI-123' });
     expect(b.counts).toEqual({ ok: 1, failed: 0 });
-    // the '*' was rewritten before send → the message went to the fleet audience
+    // the '*' was rewritten before send → the message went to the fleet audience ONLY
     expect(b.results[0].to).toEqual(['@fleet:ops']);
     expect(sendM.mock.calls[0][1].to).toEqual(['@fleet:ops']);
+    expect(sendM.mock.calls[0][1].to).not.toContain('*'); // never a hive-wide blast
     // the rewrite is surfaced (transparent, teaches the override)
     expect(b.results[0].scopedBroadcast).toMatchObject({ from: '*', to: '@fleet:ops' });
     expect(b.results[0].scopedBroadcast.reason).toContain('allHive:true');
@@ -401,7 +421,7 @@ describe('coord:send — fleet-scoped broadcast default', () => {
   });
 
   it("honors ['*'] verbatim when a fleeted sender passes allHive:true, and flags it", async () => {
-    getPresenceM.mockResolvedValueOnce({ fleetSlug: 'ops' } as never);
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
     const b = await body({ to: ['*'], summary: 'HIVE-WIDE: PG lock stampede', allHive: true });
     expect(b.results[0].to).toEqual(['*']);
     expect(sendM.mock.calls[0][1].to).toEqual(['*']);
@@ -409,17 +429,18 @@ describe('coord:send — fleet-scoped broadcast default', () => {
     expect(b.results[0].scopedBroadcast).toBeUndefined();
   });
 
-  it("leaves a non-fleeted sender's ['*'] as a literal hive broadcast (getPresence → null)", async () => {
-    // default mock returns null → no fleet → no scoping
+  it("leaves a non-fleeted sender's ['*'] as a literal hive broadcast (no fleet to scope to)", async () => {
+    // default mock returns an empty fleet map → no fleet → no scoping
     const b = await body({ to: ['*'], summary: 'system notice' });
     expect(b.results[0].to).toEqual(['*']);
     expect(b.results[0].scopedBroadcast).toBeUndefined();
     expect(b.results[0].allHiveBroadcast).toBeUndefined();
   });
 
-  it('does not read presence for a purely directed send (no wildcard → no lookup)', async () => {
+  it('does not read presence/fleet for a purely directed send (no wildcard → no lookup)', async () => {
     const b = await body({ to: ['bee-1'], summary: 'hi' });
     expect(b.results[0].to).toEqual(['bee-1']);
-    expect(getPresenceM).not.toHaveBeenCalled();
+    expect(fetchPresenceFleetM).not.toHaveBeenCalled();
+    expect(getPresenceM).not.toHaveBeenCalled(); // nor the cue-authority resolver's read
   });
 });

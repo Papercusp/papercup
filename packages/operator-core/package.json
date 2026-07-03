@@ -14,7 +14,8 @@
   },
   "scripts": {
     "test": "vitest run --passWithNoTests",
-    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
     "@papercusp/activity-bridge": "*",

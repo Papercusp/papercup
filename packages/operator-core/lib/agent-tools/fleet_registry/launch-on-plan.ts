@@ -158,6 +158,10 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     head: 'Edit only the staging tree; git-sync owns commit + push',
     body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around the lock.',
   },
+  {
+    head: 'A hive pause is a Queen-loop signal, not a self-drain order',
+    body: '`pauseNewWork` / `maxBees` / a hive-steering fact you merely SEE in your orient governs the autonomous queen-bee loop — do NOT stop your claimed work on it. Wind down only on a graceful-drain cue ADDRESSED to you: read its authority+scope stamp (`hive-queen(<hive>)→hive-wide` is the Queen pausing the hive; a `fleet-leader(<other>)→fleet-members` cue is a DIFFERENT fleet\'s business, ignore it), or an explicit `fleet:*` / owner action. Unsure? Ask your leader — never self-drain on an observed pause.',
+  },
 ];
 
 /** Render the full member-facing baseline markdown (the numbered rules with a
@@ -471,6 +475,9 @@ export default defineTool({
       );
       lines.push(
         '  5. Right-size + wind down: relaunch a wave (this tool again) if workers thin out while claimable work remains; when only owner-gated/blocked/other-fleet residue is left OR the Queen issues graceful-drain cues, loop:end and report the outcome to the owner. Do not spin empty wakes.',
+      );
+      lines.push(
+        "  6. Pausing the Hive Queen is NOT a 'drain your fleet' order. A hive pause / `pauseNewWork` / `maxBees` / a steering fact you SEE in orient governs the autonomous queen-bee loop, not your fleet — a fleet is drained ONLY by an explicit owner / `fleet:*` action or a graceful-drain cue ADDRESSED to you, never as a side-effect of a hive pause you happened to read. Check a drain cue's authority+scope stamp before acting: `hive-queen(<hive>)→hive-wide` is the Queen; a `fleet-leader(<other>)→fleet-members` cue is a PEER draining ITS members — not a command to you or your fleet. And never drain a peer fleet-leader or another fleet's members; if a hive pause has you unsure, `hive:get-steering` + ask the owner rather than self-draining.",
       );
       if (baselineApplied) {
         lines.push(
