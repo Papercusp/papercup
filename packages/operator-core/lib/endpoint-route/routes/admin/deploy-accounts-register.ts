@@ -63,8 +63,18 @@ export default defineTool({
             return Response.json({ ok: false, error: 'value looked like JSON but failed to parse' }, { status: 400 });
           }
         } else if (!value.startsWith('sk-ant-oat')) {
+          // A `code#state` paste is the OAuth authorization CODE from claude.ai's callback page —
+          // owners land here when the one-click flow showed them a code and they reach for the
+          // manual tab instead (2026-07-03). Name the mistake precisely; a code is useless here
+          // (its PKCE verifier lives in the CLI process that requested it).
+          const looksLikeOAuthCode = /^[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}$/.test(value);
           return Response.json(
-            { ok: false, error: "value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…})" },
+            {
+              ok: false,
+              error: looksLikeOAuthCode
+                ? 'that looks like the OAuth code from claude.ai (code#state), not a token — paste it in the browser-login flow’s "code" box (step 3) instead. To use THIS tab, run `claude setup-token` and paste the sk-ant-oat… token it mints.'
+                : 'value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…})',
+            },
             { status: 400 },
           );
         }

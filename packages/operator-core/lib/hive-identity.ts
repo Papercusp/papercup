@@ -11,7 +11,11 @@
  * `resolveHive` (lazy-backfill of a pre-existing hive) call: it mints-or-loads the
  * keypair and get-or-creates the hives row, returning the Hive's public identity.
  */
-import { loadOrGenerateHiveKeypair, HIVE_KEYPAIR_SERVICE } from './identity/hive-keypair';
+import {
+  loadOrGenerateHiveKeypair,
+  loadHivePubkey,
+  HIVE_KEYPAIR_SERVICE,
+} from './identity/hive-keypair';
 import { keychainLoad } from './identity/keychain';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
 import { getHiveBySlug, insertHiveIfAbsent, type HiveRecord } from './hive-store';
@@ -132,6 +136,69 @@ export async function resolveHivePubkey(
     );
     return undefined;
   }
+}
+
+/**
+ * WI-1981 wake-#5515 follow-up (the epoch-poison pivot): is THIS box the hive's
+ * CANONICAL owner — i.e. does it hold a private key whose pubkey MATCHES the
+ * hive's canonical identity? `loadHivePubkey != null` ("do I hold ANY key") is
+ * NOT ownership: a stale/divergent local key — e.g. one that survived a partial
+ * keychain delete in the encrypted-FILE tier (keychainDelete unlinks only the
+ * primary identity dir while fileLoad also reads the legacy
+ * ~/.papercusp/identity dir; a headless box with no libsecret stores EVERYTHING
+ * in the file tier) — made a JOINER box resolve `isOwner=true` in the epoch-key
+ * resolver and MINT fresh-random epoch keys instead of unwrapping the true
+ * owner's wrapped rows → permanent mutual epoch_decrypt_fail with NO re-mint at
+ * all (proven live tower↔VM 2026-07-03: hives row correct, keychain-delete
+ * done, poison continued — the WI-1981 counter-evidence).
+ *
+ * Canonical identity, in precedence order: the hives row pubkey, then the
+ * joined view's verified `hive_pubkey` (stamped by joinHiveAsView). A joined
+ * `remote_hive` view is NEVER owned here. With a held key but NO readable
+ * canonical record, fall back to the legacy held-key heuristic (fail-open for
+ * a true owner's cold start / transient PG failure — WI-755 posture).
+ *
+ * On a detected MISMATCH this fires the deduped divergent-key health signal
+ * (best-effort) — the recurrence guard for this class — and reports NOT-owner
+ * so no authority gate treats the divergent key as ownership.
+ */
+export async function isCanonicalHiveOwner(
+  workspaceId: string,
+  homeSlug: string,
+): Promise<boolean> {
+  const held = await loadHivePubkey(workspaceId, homeSlug).catch(() => null);
+  if (held === null) return false;
+  let canonical: string | null = null;
+  try {
+    const row = await getHiveBySlug(workspaceId, homeSlug);
+    if (row?.pubkeyBase64) canonical = row.pubkeyBase64;
+  } catch {
+    /* PG unreadable — try the registry view next */
+  }
+  if (canonical === null) {
+    const view = await remoteHiveView(workspaceId, homeSlug);
+    if (view) {
+      if (!view.hive_pubkey) return false; // a joined view is a PEER — never owner
+      canonical = view.hive_pubkey;
+    }
+  }
+  if (canonical === null) return true; // held key + no canonical record → legacy heuristic
+  if (canonical === held) return true;
+  // Divergent local identity — the epoch-poison class. Signal loudly (deduped,
+  // best-effort) and report NOT-owner.
+  const canonicalPk = canonical;
+  void import('./hive-owner-key-health')
+    .then((m) =>
+      m.signalHiveKeyDivergent({
+        workspaceId,
+        hiveSlug: homeSlug,
+        context: 'isCanonicalHiveOwner',
+        heldPubkey: held,
+        canonicalPubkey: canonicalPk,
+      }),
+    )
+    .catch(() => {});
+  return false;
 }
 
 /** Hex-rendered federation topic for a Hive pubkey — surfaced in hive:get + logs.

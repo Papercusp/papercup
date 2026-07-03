@@ -188,6 +188,50 @@ export async function signalOwnedHiveKeyMissing(
   return true;
 }
 
+export interface HiveKeyDivergentRef extends OwnedHiveKeyMissingRef {
+  /** The pubkey of the key this box actually holds (the divergent one). */
+  heldPubkey: string;
+  /** The hive's canonical identity (hives row / verified registry view). */
+  canonicalPubkey: string;
+}
+
+/**
+ * WI-1981 / wake-#5515 recurrence guard: this box holds a hive identity key
+ * whose pubkey does NOT match the hive's canonical identity. A divergent key is
+ * the epoch-poison class — every `loadHivePubkey != null` authority gate
+ * (epoch-key resolver, owner admission, …) would treat this box as the owner
+ * and mint/admit under the WRONG identity (permanent mutual epoch_decrypt_fail,
+ * proven live tower↔VM 2026-07-03). Deduped per (workspace, hive) within a
+ * process, same singleton as the missing-key signal. Best-effort; never throws.
+ */
+export async function signalHiveKeyDivergent(
+  ref: HiveKeyDivergentRef,
+  deps: Partial<OwnerKeyHealthDeps> = {},
+): Promise<boolean> {
+  const d = { ...defaultDeps, ...deps };
+  const k = 'divergent::' + dedupKey(ref.workspaceId, ref.hiveSlug);
+  if (signaled.has(k)) return false;
+  signaled.add(k);
+  const summary =
+    `🔴 hive identity key DIVERGENT for ${ref.workspaceId}/${ref.hiveSlug} (${ref.context}) — ` +
+    `this box holds ${ref.heldPubkey.slice(0, 12)}… but the hive's canonical identity is ` +
+    `${ref.canonicalPubkey.slice(0, 12)}…. This is the WI-1981 epoch-poison class: delete the ` +
+    `divergent key from EVERY keychain tier (OS keychain AND the encrypted-file dirs — ` +
+    `PAPERCUSP_IDENTITY_DIR and legacy ~/.papercusp/identity), remove any ` +
+    `papercusp-hive-epoch-key entries it minted, then restart the operator.`;
+  try {
+    d.warn(`[hive-owner-key-health] ${summary}`);
+  } catch {
+    /* a logger that throws must not break the caller */
+  }
+  try {
+    await d.escalate(ref, summary);
+  } catch {
+    /* best-effort: an escalation failure never throws into the caller */
+  }
+  return true;
+}
+
 /**
  * Recovery edge: the owner key loaded for this hive again. Clears the dedup entry
  * so a FUTURE loss re-alerts. Call on the success path (a non-null pubkey).

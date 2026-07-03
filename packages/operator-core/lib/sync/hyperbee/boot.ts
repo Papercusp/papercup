@@ -2238,14 +2238,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // D-023 BUG C owner-gate: on a membership MISS, am I the OWNER of this hive (hold its private
     // key)? The owner must ADMIT a verified brand-new joiner (whose member slug is out of our
     // home-slug scope) instead of buffering it, else admitAnnouncedPeerAsOwner (the upsert seam)
-    // never runs and the open-mode auto-admission deadlocks. loadHivePubkey is the SAME owner
-    // self-gate admitAnnouncedPeerAsOwner uses, so admit-here ⇒ upsert-there agree. Resolved ONLY
+    // never runs and the open-mode auto-admission deadlocks. Resolved ONLY
     // on a miss (skip the keychain read on the common already-a-member path).
+    // WI-1981 wake-#5515: canonical ownership (held key MATCHES the hives-row / registry
+    // pubkey), not mere key presence — a divergent local key must not make this box
+    // admit joiners as if it were the owner.
     const isOwner =
       !isKnownMember &&
-      !!(await import('../../identity/hive-keypair')
-        .then((m) => m.loadHivePubkey(opts.workspaceId, myHiveHome))
-        .catch(() => null));
+      (await import('../../hive-identity')
+        .then((m) => m.isCanonicalHiveOwner(opts.workspaceId, myHiveHome))
+        .catch(() => false));
     const decision = classifySameHiveMember({
       originSlug,
       ownSlug: slug,

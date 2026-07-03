@@ -998,6 +998,40 @@ const post = defineTool({
       }
     }
 
+    // agent-allocation P-005 (launch-from-seats): record the seat consumption NOW —
+    // same no-ghost ordering as the WI-1893 fleet stamp above (before any
+    // bookkeeping), and the boot-time CAP backstop: consumeSeatAtBoot's atomic
+    // conditional insert refuses the over-cap member even when concurrent launches
+    // raced past the fleet:launch-on-plan gate (the P-006 "N+1th spawn refused").
+    const seatRef = body.seat?.trim() || null;
+    if (seatRef) {
+      if (!fleetPin.fleetSlug) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: '`--seat` requires a fleet: a seat is delegated TO a fleet (agent-allocation P-005) — pass `--fleet=<slug>` with it.',
+          },
+          409,
+        );
+      }
+      const { consumeSeatAtBoot } = await import('../../../fleet/seat-accounting');
+      const seatRes = await consumeSeatAtBoot({
+        workspaceId: workspace,
+        fleetSlug: fleetPin.fleetSlug,
+        seatRef,
+        ownerId: sid,
+      });
+      if (!seatRes.ok) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: `seat consumption refused [${seatRes.refusal.code}]: ${seatRes.refusal.detail}`,
+          },
+          409,
+        );
+      }
+    }
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,

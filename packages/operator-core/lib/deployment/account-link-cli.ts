@@ -153,6 +153,66 @@ interface PendingCliLink {
    * harvests that mint here; completeCliLink and getCliLinkStatus report it.
    */
   done?: { ok: true; account: AccountStatusRow | null } | { ok: false; error: string };
+  /** In-flight finalization (serializes the watcher vs an explicit completeCliLink race). */
+  finalizing?: Promise<CompleteCliLinkResult>;
+}
+
+/** How long a FINALIZED link entry stays queryable (getCliLinkStatus / a late complete click). */
+const DONE_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Persist + register a minted claude token for a held link — the SINGLE finalization path for
+ * both the pasted-code flow and the ≥2.1.200 auto-callback mint. Idempotent: concurrent callers
+ * share one finalizing promise. Releases the pty + isolated config dir immediately but KEEPS the
+ * map entry for DONE_GRACE_MS so the UI/agent can still read the outcome.
+ */
+function finalizeClaudeToken(
+  linkId: string,
+  l: PendingCliLink,
+  token: string,
+  workspace: string | undefined,
+  deps: CompleteCliLinkDeps,
+): Promise<CompleteCliLinkResult> {
+  if (l.done) return Promise.resolve(l.done);
+  l.finalizing ??= (async () => {
+    try {
+      const credPath = papercuspPath('deploy-credentials', l.accountId);
+      await mkdir(dirname(credPath), { recursive: true });
+      await writeFile(credPath, token, { mode: 0o600 });
+      await chmod(credPath, 0o600);
+      const credentialRef = `token:${credPath}`;
+      await updateAccountPool((p) => registerAccount(p, { id: l.accountId, credentialRef, label: l.label }, Date.now()), workspace);
+      const account = (await accountStatus(workspace)).find((a) => a.id === l.accountId) ?? null;
+      l.done = { ok: true, account };
+    } catch (e) {
+      l.done = { ok: false, error: `register failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
+    }
+    clearTimeout(l.reaper);
+    if (l.enterTimer) clearTimeout(l.enterTimer);
+    try {
+      l.pty.kill();
+    } catch {
+      /* already exited */
+    }
+    void rm(l.configDir, { recursive: true, force: true }).catch(() => {});
+    l.reaper = setTimeout(() => links.delete(linkId), DONE_GRACE_MS);
+    (deps.notify ?? defaultNotify)();
+    return l.done;
+  })();
+  return l.finalizing;
+}
+
+/** The link's current state — the UI polls this while the owner approves in the browser. */
+export type CliLinkStatus =
+  | { status: 'pending' }
+  | { status: 'completed'; account: AccountStatusRow | null }
+  | { status: 'failed'; error: string }
+  | { status: 'unknown' };
+export function getCliLinkStatus(linkId: string): CliLinkStatus {
+  const l = links.get(linkId);
+  if (!l) return { status: 'unknown' };
+  if (!l.done) return { status: 'pending' };
+  return l.done.ok ? { status: 'completed', account: l.done.account } : { status: 'failed', error: l.done.error };
 }
 
 type G = typeof globalThis & { __papercuspCliLinks?: Map<string, PendingCliLink> };
@@ -356,25 +416,41 @@ async function completeCodexCliLink(
 export async function completeCliLink(input: CompleteCliLinkInput, deps: CompleteCliLinkDeps = {}): Promise<CompleteCliLinkResult> {
   const l = links.get(input.linkId);
   if (!l) return { ok: false, error: 'link expired or unknown — restart the add-account flow' };
+  if (l.done) {
+    // The ≥2.1.200 auto-callback already finalized this link (no code ever shown to the owner).
+    const done = l.done;
+    clearTimeout(l.reaper);
+    links.delete(input.linkId);
+    return done;
+  }
   if (l.provider === 'codex') return completeCodexCliLink(input.linkId, l, input, deps);
   const code = input.code?.trim();
-  if (!code) return { ok: false, error: 'code required (paste the value claude.ai showed)' };
+  if (!code) {
+    return {
+      ok: false,
+      error:
+        'code required — paste the value claude.ai showed. (If claude said "You\'re all set up" with NO code, the link completes automatically: give it a few seconds and check the account list.)',
+    };
+  }
 
-  l.buf = ''; // capture only post-code output
-  // Register the listener, paste the code, THEN press Enter as a SEPARATE write after a
-  // short settle (the Ink TUI swallows a CR appended to the paste — see SUBMIT_ENTER_DELAY_MS).
-  // Settle on the token OR a rejection line (OUTCOME_RE) so a bad code fails fast.
+  // Do NOT reset l.buf here: with the ≥2.1.200 auto-callback the minted token may ALREADY be in
+  // the buffer, and OUTCOME_RE matching it immediately is exactly right. Register the listener,
+  // paste the code, THEN press Enter as a SEPARATE write after a short settle (the Ink TUI
+  // swallows a CR appended to the paste — see SUBMIT_ENTER_DELAY_MS). Settle on the token OR a
+  // rejection line (OUTCOME_RE) so a bad code fails fast.
   const enterDelay = deps.enterDelayMs ?? SUBMIT_ENTER_DELAY_MS;
   const matched = await readUntil(
     l.pty,
     () => l.buf,
-    (d) => {
-      l.buf += d;
-    },
+    () => {},
     OUTCOME_RE,
     COMPLETE_TIMEOUT_MS,
     () => {
-      l.pty.write(code);
+      try {
+        l.pty.write(code);
+      } catch {
+        /* pty already gone (auto-mint exited it) — the buffer check above still settles */
+      }
       l.enterTimer = setTimeout(() => {
         try {
           l.pty.write('\r');
@@ -387,6 +463,13 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
   const token = matched && TOKEN_RE.test(matched) ? (matched.match(TOKEN_RE)?.[0] ?? null) : null;
 
   if (!token) {
+    // The background watcher may have finalized while we waited — report THAT, not a failure.
+    if (l.done) {
+      const done = l.done;
+      clearTimeout(l.reaper);
+      links.delete(input.linkId);
+      return done;
+    }
     const tail = stripAnsi(l.buf).replace(/\s+/g, ' ').trim().slice(-180);
     cleanup(input.linkId);
     const said = tail ? ` — claude said: "${tail}"` : '';
@@ -398,21 +481,14 @@ export async function completeCliLink(input: CompleteCliLinkInput, deps: Complet
     };
   }
 
-  try {
-    const credPath = papercuspPath('deploy-credentials', l.accountId);
-    await mkdir(dirname(credPath), { recursive: true });
-    await writeFile(credPath, token, { mode: 0o600 });
-    await chmod(credPath, 0o600);
-    const credentialRef = `token:${credPath}`;
-    await updateAccountPool((p) => registerAccount(p, { id: l.accountId, credentialRef, label: l.label }, Date.now()), input.workspace);
-    const account = (await accountStatus(input.workspace)).find((a) => a.id === l.accountId) ?? null;
-    cleanup(input.linkId);
-    (deps.notify ?? defaultNotify)();
-    return { ok: true, account };
-  } catch (e) {
-    cleanup(input.linkId);
-    return { ok: false, error: `register failed: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}` };
+  const result = await finalizeClaudeToken(input.linkId, l, token, input.workspace, deps);
+  // Explicit completion — the caller has the outcome; no grace window needed.
+  const still = links.get(input.linkId);
+  if (still) {
+    clearTimeout(still.reaper);
+    links.delete(input.linkId);
   }
+  return result;
 }
 
 /** Test-only: drop all held links (kills the ptys). */

@@ -25,7 +25,7 @@ import { createPgWrappedKeyLoader } from './hive-epoch-keys-store';
 import { resolveHiveEpochCrypto } from './hive-epoch-serving';
 import { getHiveEpoch } from './hive-epoch-state';
 import { PendingEpochContent } from './pending-epoch-content';
-import { loadHivePubkey } from '../../identity/hive-keypair';
+import { isCanonicalHiveOwner } from '../../hive-identity';
 import { hiveHomeSlugForHarness } from '../../hive-federation';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
@@ -89,7 +89,12 @@ export async function buildHiveRekeyBootDeps(opts: {
     const resolveKey = buildEpochKeyResolver({
       crypto,
       provider,
-      isOwner: () => loadHivePubkey(opts.workspaceId, hiveHomeSlug).then((pk) => pk !== null),
+      // WI-1981 wake-#5515: ownership = the held key MATCHES the hive's canonical
+      // identity — never mere key presence. A stale divergent file-tier key made a
+      // JOINER resolve isOwner=true here and MINT fresh-random epoch keys instead of
+      // unwrapping the owner's wrapped rows → permanent mutual epoch_decrypt_fail
+      // (proven live tower↔VM 2026-07-03, with NO re-mint of the hive key).
+      isOwner: () => isCanonicalHiveOwner(opts.workspaceId, hiveHomeSlug),
     });
     const pending = new PendingEpochContent();
     const epochGate = buildEpochDecryptGate({
