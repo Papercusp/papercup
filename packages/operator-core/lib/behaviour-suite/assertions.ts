@@ -119,7 +119,8 @@ export function checkRoutingGate(t: NormTranscript, ctx: BehaviourContext = {}):
       evidence: (gateTurn >= 0 ? t.assistantTexts[gateTurn] : '').slice(0, 200) });
 }
 
-/** 4. Correct plan execution: item→work-item, claim→in_progress→complete; NOT set_state 'passed' direct. */
+/** 4. Correct plan execution: item→work-item, claim→in_progress→complete; NOT set_state 'passed' direct.
+ *  Also: a cleanly-launched fleet satisfies execution for a delegating LEADER (WI-1850). */
 export function checkPlanExecution(t: NormTranscript): BehaviourCheck {
   const claimed = calls(t, 'work_items:claim').length + calls(t, 'work_items:claim_next').length;
   const toInProgress = t.toolCalls.filter((c) => c.name === 'work_items:set_state' && /in_progress|wip/.test(c.argsRaw)).length;
@@ -127,11 +128,21 @@ export function checkPlanExecution(t: NormTranscript): BehaviourCheck {
   // the anti-pattern: set_state directly to a terminal 'passed' (completion-integrity rejects it)
   const passedDirect = t.toolCalls.filter((c) => c.name === 'work_items:set_state' && /"state"\s*:\s*"passed"|passed/.test(c.argsRaw)).length;
   const rejected = t.toolResults.some((r) => /completion-integrity.*terminal transition rejected|→ 'passed' rejected/i.test(r.text));
-  const passed = claimed > 0 && completed > 0 && passedDirect === 0;
+  
+  // Delegating LEADER: a clean fleet launch satisfies plan-execution
+  const fleetLaunchOnPlan = calls(t, 'fleet:launch_on_plan').length > 0;
+  const delegationSatisfied = fleetLaunchOnPlan && completed === 0 && claimed === 0;
+  
+  // Traditional path: claimed + completed, no direct set_state passed
+  const traditionalSatisfied = claimed > 0 && completed > 0 && passedDirect === 0;
+  
+  const passed = traditionalSatisfied || delegationSatisfied;
   return mk('plan-execution', true, passed, passed
-    ? `claim(${claimed}) → in_progress(${toInProgress}) → complete(${completed}), no direct set_state passed`
+    ? delegationSatisfied 
+      ? `delegated execution via fleet:launch-on-plan (claimed=${claimed} completed=${completed})`
+      : `claim(${claimed}) → in_progress(${toInProgress}) → complete(${completed}), no direct set_state passed`
     : `execution fumble — claimed=${claimed} completed=${completed} setStatePassedDirect=${passedDirect} integrityRejected=${rejected}`,
-    { metrics: { claimed, toInProgress, completed, passedDirect, integrityRejected: rejected } });
+    { metrics: { claimed, toInProgress, completed, passedDirect, integrityRejected: rejected, delegationPath: delegationSatisfied } });
 }
 
 /** 5. Scope adherence: work ONLY the plan's items; no invented "Phase 2" / unrelated backlog. */
