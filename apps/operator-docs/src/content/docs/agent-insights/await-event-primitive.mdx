@@ -9,11 +9,14 @@ documents:
   - packages/operator-core/lib/events/await/engine.ts
   - packages/operator-core/lib/events/await/wake-executor.ts
   - packages/operator-core/lib/events/await/handle.ts
+  - packages/operator-core/lib/events/await/catalog.ts
   - packages/operator-core/lib/agent-tools/events/await.ts
   - packages/operator-core/lib/agent-tools/events/emit.ts
   - packages/operator-core/lib/agent-tools/events/cancel.ts
   - packages/operator-core/lib/agent-tools/events/status.ts
   - packages/operator-core/lib/agent-tools/events/watch.ts
+  - packages/operator-core/lib/agent-tools/events/catalog.ts
+  - packages/operator-core/lib/agent-tools/events/sugar.ts
   - packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts
   - packages/operator-core/lib/agent-tools/locks/acquire.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/send.ts
@@ -22,6 +25,7 @@ plans:
   - await-event-primitive-2026-06-05
   - directed-wake-honesty-and-spawn-handoff-2026-06-14
   - turn-lifecycle-control-2026-06-08
+  - event-await-discoverability-and-coverage-2026-07-03
 ---
 
 :::caution[Superseded — codex now resumes, not parks]
@@ -90,6 +94,31 @@ Delivery is durable (PG queue, at-least-once + idempotent wake): a host
 restart re-claims stuck deliveries; a missed lock-grant NOTIFY is re-derived
 from waiter-table truth each 30s sweep.
 
+## Finding the key — `events:catalog` + sugar verbs (2026-07-03)
+
+The primitive's remaining friction was **discoverability**, not mechanics: agents kept
+polling (`dev:pipeline_position`, `dev:build_status`, re-reading a peer's status) because
+they never found the event key that already fires. `event-await-discoverability-and-coverage-2026-07-03`
+closes that gap with two additions layered on top of the same `registerAwait` path — neither
+is a second subscription system:
+
+- **`events:catalog`** renders the awaitable-key registry
+  (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each
+  row names the family, the key template + a ready `events:await` example, who emits it,
+  whether it fires **today** (`awaitable_now` — some Phase-2 keys are catalogued but not yet
+  wired), the poll it replaces, and its sugar verb. Check it *before* you poll.
+- **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) —
+  `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`,
+  `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers
+  that build the correctly-shaped key from the catalog and then call the exact same
+  `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy,
+  checkpoint) arm both the success and failure keys at once since the two are mutually
+  exclusive, so the agent wakes either way with no double-wake risk.
+
+Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your
+turn. This does not change the delivery ladder or cost discipline below — it's purely a
+findability layer over the same primitive.
+
 ## The patterns
 
 - **Blocked on a file lock:** `locks:acquire { paths, intent, wake_on_grant: true }`
@@ -108,9 +137,13 @@ from waiter-table truth each 30s sweep.
   that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
   a loud miss to act on (they're not running: spawn fresh or pick another addressee), not
   a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey,
-  the inbox itself) catches a miss — then a miss is silent by design. Legacy `wake:true`
-  coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable).
-  (directed-wake-honesty-2026-06-14)
+  the inbox itself) catches a miss — and **name that backstop via the `backstop` arg**
+  (e.g. `backstop: 'queen-survey re-dispatches'`). Without a declared `backstop`, an
+  optimistic miss is now reported just as loudly as a required one (`recipient_absent` +
+  the missed agents' fresh `sessionState`) — silence must be consciously claimed, never a
+  default; don't pass a fake backstop just to silence the warning, that recreates the
+  dead-drop trap. Legacy `wake:true` coerces to `'required'`; broadcast (`*`/`human`) is
+  exempt (never wakeable). (directed-wake-honesty-2026-06-14, FF#1)
 - **`events:emit` is honest, not strict (D-001):** emit is fire-and-forget
   broadcast — a fact-announcer (`release:green`, `work-item:done:<id>`) doesn't
   know who's listening, so "nobody awaiting" is the normal, correct case. It
@@ -145,5 +178,7 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
 - **Exact-key match, no globs.** `events:await` matches the literal string.
 - The store + engine live at
   `packages/operator-core/lib/events/await/` (migration 163:
-  `event_awaits` + `event_wake_deliveries`); the lock bridge at
+  `event_awaits` + `event_wake_deliveries`); the awaitable-key registry is
+  `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
+  every sugar verb read from); the lock bridge at
   `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
