@@ -107,6 +107,67 @@ export function isOmpLocalModel(model: string | undefined): boolean {
   return /^ollama(-cc)?\//i.test(model.trim()) || /\bornith\b/i.test(model);
 }
 
+/** The three fleet-member backends (psu `--agent`). Guards an inherited caller backend. */
+const FLEET_BACKENDS = new Set(['claude', 'omp', 'codex']);
+
+export type FleetAgentResolution =
+  | { agent: 'claude' | 'omp' | 'codex'; model: string | undefined }
+  | { error: string };
+
+/**
+ * PURE (fleet-launch-agent-inheritance-2026-07-03): resolve a fleet member's backend + model from
+ * the launch args and the CURRENT calling agent's stamped backend/model. Precedence:
+ *   agent = explicit `args.agent` → omp (inferred from a local/ollama model) → the CALLER's own
+ *           backend (`ctx.callerAgent`, so an omp/ornith leader that omits `agent` spawns omp
+ *           members, not the historical claude default) → 'claude' (last-resort fallback).
+ *   model = explicit `args.model` → the CALLER's model, but ONLY when the backend was ALSO
+ *           inherited (never cross a claude model onto an omp member) → the backend default.
+ * Rejects an explicit claude/codex + local-model pairing (the "thought ornith, got claude" trap).
+ * Unit-tested without PG.
+ */
+export function resolveFleetAgent(opts: {
+  argAgent?: 'claude' | 'omp' | 'codex';
+  argModel?: string;
+  callerAgent?: string | null;
+  callerModel?: string | null;
+}): FleetAgentResolution {
+  const argModel = opts.argModel?.trim() || undefined;
+  const localModel = isOmpLocalModel(argModel);
+  if (opts.argAgent && opts.argAgent !== 'omp' && localModel) {
+    return {
+      error:
+        `model \`${argModel}\` is a local/gateway model that only the \`omp\` backend can run — ` +
+        `pass \`agent: "omp"\` (not \`agent: "${opts.argAgent}"\`). The claude/codex CLIs cannot load an ollama model id.`,
+    };
+  }
+  const inherited =
+    opts.callerAgent && FLEET_BACKENDS.has(opts.callerAgent)
+      ? (opts.callerAgent as 'claude' | 'omp' | 'codex')
+      : null;
+  const agent = opts.argAgent ?? (localModel ? 'omp' : inherited ?? 'claude');
+  // Inherit the caller's model ONLY when we also inherited its backend (no explicit agent) — else
+  // an omp member would launch on omp's default, not the ornith the leader is actually running.
+  const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
+  const model = argModel ?? (inheritedBackend && opts.callerModel ? opts.callerModel : undefined);
+  return { agent, model };
+}
+
+/** PURE: suppress a rapid duplicate launch (the "take leadership" fumble) from the SAME leader —
+ *  true iff a prior launch of this (workspace, fleet, owner) landed within the window. */
+export function shouldSuppressRelaunch(
+  prior: { at: number } | undefined,
+  now: number,
+  windowMs: number,
+): boolean {
+  return !!prior && now - prior.at < windowMs;
+}
+
+/** In-process record of the last launch per (workspace, fleet, owner) for the idempotency guard
+ *  (P-005). Per-worker: a rapid same-session re-fire rides one MCP connection → one worker, the
+ *  exact fumble this catches; a cross-worker duplicate is rare and capped at one extra wave. */
+const RELAUNCH_SUPPRESS_MS = 60_000;
+const recentFleetLaunches = new Map<string, { at: number; count: number }>();
+
 /**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +
  * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
@@ -351,14 +412,20 @@ export default defineTool({
     // explicit claude/codex pairing outright — otherwise psu launches that backend with an
     // unrunnable --model and the fleet-status (which shows model, not agent) reads as ornith
     // while the members are really claude (the 2026-07-03 "thought ornith, got claude" bug).
-    const localModel = isOmpLocalModel(args.model);
-    if (args.agent && args.agent !== 'omp' && localModel) {
-      return err(
-        `model \`${args.model}\` is a local/gateway model that only the \`omp\` backend can run — ` +
-          `pass \`agent: "omp"\` (not \`agent: "${args.agent}"\`). The claude/codex CLIs cannot load an ollama model id.`,
-      );
-    }
-    const agent = args.agent ?? (localModel ? 'omp' : 'claude'); // constrained to claude|omp|codex by the arg enum
+    // `agent` + `model` resolution: explicit arg → omp (inferred from a local model) → the CURRENT
+    // calling agent's backend (ctx.callerAgent, stamped by psu into the MCP URL) → claude. Also
+    // inherits the caller's model when the backend is inherited, so an omp/ornith leader that omits
+    // both spawns omp + ornith members — not the historical claude default (the 2026-07-03 leak).
+    const callerAgent = (ctx as { callerAgent?: string | null }).callerAgent ?? null;
+    const callerModel = (ctx as { callerModel?: string | null }).callerModel ?? null;
+    const agentResolution = resolveFleetAgent({
+      argAgent: args.agent,
+      argModel: args.model,
+      callerAgent,
+      callerModel,
+    });
+    if ('error' in agentResolution) return err(agentResolution.error);
+    const { agent, model: memberModel } = agentResolution;
     const count = args.count ?? 1;
 
     // Harness scope: explicit arg, else the session's scope (never the '*' wildcard).
@@ -409,6 +476,25 @@ export default defineTool({
       await recolorCallerTerminal(ownerId, record);
     } catch (e: any) {
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
+    }
+
+    // Idempotency guard (P-005): a weak model that re-fires launch-on-plan (the 9896 "take
+    // leadership" fumble) must NOT open a second wave. If THIS leader launched THIS fleet within
+    // the window, no-op with a notice instead of spawning again.
+    const launchKey = `${workspaceId}::${fleetSlug}::${ownerId}`;
+    if (shouldSuppressRelaunch(recentFleetLaunches.get(launchKey), Date.now(), RELAUNCH_SUPPRESS_MS)) {
+      const prior = recentFleetLaunches.get(launchKey)!;
+      const agoS = Math.max(1, Math.round((Date.now() - prior.at) / 1000));
+      return json({
+        ok: true,
+        fleet: fleetSlug,
+        leaderRole,
+        relaunchSuppressed: true,
+        message:
+          `You already lead \`${fleetSlug}\` — ${prior.count} member${prior.count === 1 ? '' : 's'} opened ${agoS}s ago. ` +
+          `You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — ` +
+          `re-call only to add another wave once the current members have drained.`,
+      });
     }
 
     // Compose every member's launch context = the universal MEMBER OPERATING
@@ -474,7 +560,7 @@ export default defineTool({
       account: args.account?.trim() || undefined,
       workspace: args.workspace?.trim() || undefined,
       role: args.role?.trim() || undefined,
-      model: args.model?.trim() || undefined,
+      model: memberModel,
       feature: args.feature?.trim() || undefined,
       launchContext: effectiveLaunchContext,
       profile: args.profile?.trim() || undefined,
@@ -495,6 +581,16 @@ export default defineTool({
       });
       if (result.status === 'ok') opened.push({ terminal: result.terminal, pid: result.pid });
       else failed.push({ error: result.error, code: result.code });
+    }
+
+    // Record this launch for the P-005 idempotency guard (only when members actually opened), and
+    // prune stale entries so the per-worker map stays bounded.
+    if (opened.length > 0) {
+      recentFleetLaunches.set(launchKey, { at: Date.now(), count: opened.length });
+      if (recentFleetLaunches.size > 256) {
+        const cutoff = Date.now() - RELAUNCH_SUPPRESS_MS;
+        for (const [k, v] of recentFleetLaunches) if (v.at < cutoff) recentFleetLaunches.delete(k);
+      }
     }
 
     let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
@@ -524,7 +620,10 @@ export default defineTool({
     }
     if (opened.length) {
       lines.push(
-        `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Until the plan is drained, your standing job each cycle:`,
+        `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Do NOT ` +
+          `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
+          `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s). Until the plan is ` +
+          `drained, your standing job each cycle:`,
       );
       // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
       // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
