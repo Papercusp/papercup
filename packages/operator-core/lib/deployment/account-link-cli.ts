@@ -144,6 +144,15 @@ interface PendingCliLink {
   reaper: ReturnType<typeof setTimeout>;
   /** The deferred Enter-keystroke timer (cleared on cleanup so it can't fire late). */
   enterTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Terminal outcome once the link finalized WITHOUT (or before) a completeCliLink call.
+   * claude CLI ≥2.1.200's `setup-token` runs a localhost callback listener; when the approving
+   * browser is on the SAME machine as this operator, claude.com delivers the code straight to
+   * the CLI ("You're all set up … close this window" — NO code is ever shown to the owner), the
+   * CLI mints the token spontaneously, and the paste step never happens. The background watcher
+   * harvests that mint here; completeCliLink and getCliLinkStatus report it.
+   */
+  done?: { ok: true; account: AccountStatusRow | null } | { ok: false; error: string };
 }
 
 type G = typeof globalThis & { __papercuspCliLinks?: Map<string, PendingCliLink> };
@@ -225,11 +234,15 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     reaper: setTimeout(() => cleanup(linkId), LINK_TTL_MS),
   };
   links.set(linkId, entry);
+  // ONE persistent listener owns appending to entry.buf; every readUntil below only OBSERVES
+  // (no-op appender). With multiple appending listeners each chunk would land twice.
+  pty.onData((d) => {
+    entry.buf += d;
+  });
+  const noAppend = () => {};
 
   const startTimeoutMs = deps.startTimeoutMs ?? START_TIMEOUT_MS;
-  const url = await readUntil(pty, () => entry.buf, (d) => {
-    entry.buf += d;
-  }, provider === 'codex' ? CODEX_URL_RE : URL_RE, startTimeoutMs);
+  const url = await readUntil(pty, () => entry.buf, noAppend, provider === 'codex' ? CODEX_URL_RE : URL_RE, startTimeoutMs);
 
   if (!url) {
     // Surface WHY: the CLI's own output tail (a real failure explains itself), or — when the pty
@@ -244,15 +257,25 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
     };
   }
   if (provider === 'codex') {
-    const userCode = await readUntil(pty, () => entry.buf, (d) => {
-      entry.buf += d;
-    }, CODEX_USER_CODE_RE, startTimeoutMs);
+    const userCode = await readUntil(pty, () => entry.buf, noAppend, CODEX_USER_CODE_RE, startTimeoutMs);
     if (!userCode) {
       cleanup(linkId);
       return { ok: false, error: 'the Codex CLI did not produce a device code' };
     }
     return { ok: true, authorizeUrl: url, linkId, provider, userCode };
   }
+  // claude CLI ≥2.1.200 same-machine auto-callback (see PendingCliLink.done): the CLI can mint
+  // the token WITHOUT any pasted code. Watch the held pty in the background and finalize the
+  // moment the token appears, so the owner's "You're all set up — close this window" path
+  // actually lands the account. The remote-browser paste path still flows through
+  // completeCliLink; finalization is idempotent (entry.finalizing), so the two can race safely.
+  void (async () => {
+    const m = await readUntil(pty, () => entry.buf, noAppend, TOKEN_RE, LINK_TTL_MS);
+    const token = m?.match(TOKEN_RE)?.[0];
+    if (token && links.get(linkId) === entry) {
+      await finalizeClaudeToken(linkId, entry, token, undefined, {});
+    }
+  })();
   return { ok: true, authorizeUrl: url, linkId, provider };
 }
 
