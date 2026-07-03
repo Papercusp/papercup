@@ -214,6 +214,117 @@ describe('docs:get handler', () => {
   });
 });
 
+/**
+ * WI-1985 — docs:get failed ~35% of calls (68/118 in 48h), EVERY failure the same
+ * shape: "slugs: Invalid input: expected array, received undefined" — an agent
+ * passing a bare singular `slug` or a string `slugs`. We coerce those into the
+ * `slugs:[]` array BEFORE validation (never rejecting a well-intentioned read),
+ * while leaving a well-formed array — and the published schema — untouched.
+ */
+describe('docs:get slug coercion (WI-1985)', () => {
+  describe('coerceDocsGetSlugs (unit)', () => {
+    it('leaves a well-formed slugs array untouched (identity)', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      const input = { slugs: ['endpoint-system/overview'] };
+      expect(coerceDocsGetSlugs(input)).toBe(input); // same reference, no clone
+    });
+
+    it('maps a singular `slug` string → slugs:[…], dropping the bad key', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return import('../get-coerce').then(({ coerceDocsGetSlugs }) => {
+        expect(coerceDocsGetSlugs({ slug: 'endpoint-system/overview' })).toEqual({
+          slugs: ['endpoint-system/overview'],
+        });
+      });
+    });
+
+    it('maps a string-valued `slugs` → a one-element array', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slugs: 'testing/agent-e2e' })).toEqual({ slugs: ['testing/agent-e2e'] });
+    });
+
+    it('splits a comma/space-separated slug string into multiple slugs', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slug: 'a/b, c/d  e/f' })).toEqual({ slugs: ['a/b', 'c/d', 'e/f'] });
+    });
+
+    it('preserves a caller `harness`/`heading` while salvaging the slug', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slug: 'p/one', harness: 'all', heading: 'sec-1' })).toEqual({
+        slugs: ['p/one'],
+        harness: 'all',
+        heading: 'sec-1',
+      });
+    });
+
+    it('prefers a usable `slugs` over the singular `slug`', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slugs: 'keep/this', slug: 'drop/this' })).toEqual({ slugs: ['keep/this'] });
+    });
+
+    it('leaves an unsalvageable object alone (no slug/slugs) so the schema errors normally', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ harness: 'all' })).toEqual({ harness: 'all' });
+    });
+
+    it('passes a non-object through untouched', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs('x')).toBe('x');
+      expect(coerceDocsGetSlugs(null)).toBe(null);
+      expect(coerceDocsGetSlugs(['a'])).toEqual(['a']);
+    });
+  });
+
+  describe('through the real args schema (the wire shapes that 400ed now parse)', () => {
+    it("a singular slug parses to slugs:[…] (was: 'expected array, received undefined')", async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({ slug: 'endpoint-system/overview' });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.slugs).toEqual(['endpoint-system/overview']);
+    });
+
+    it('a string-valued slugs parses to a one-element array', async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({ slugs: 'testing/agent-e2e' });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.slugs).toEqual(['testing/agent-e2e']);
+    });
+
+    it('a singular slug + heading still parses (single-slug heading path preserved)', async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({ slug: 'p/one', heading: 'sec-1' });
+      expect(parsed.success).toBe(true);
+    });
+
+    it('the heading-with-multiple-slugs refine STILL fires after coercion', async () => {
+      const mod = await import('../get');
+      // singular slug carrying a comma → 2 slugs + a heading → refine rejects.
+      expect(mod.default.args.safeParse({ slug: 'a/b, c/d', heading: 'x' }).success).toBe(false);
+    });
+
+    it('a well-formed slugs array is unaffected', async () => {
+      const mod = await import('../get');
+      const parsed = mod.default.args.safeParse({ slugs: ['a/b', 'c/d'] });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) expect(parsed.data.slugs).toEqual(['a/b', 'c/d']);
+    });
+
+    it('an object with no slug at all still fails (coercion never fabricates a slug)', async () => {
+      const mod = await import('../get');
+      expect(mod.default.args.safeParse({ harness: 'all' }).success).toBe(false);
+    });
+  });
+
+  it('the published tools/list JSON schema still advertises slugs as a string array', async () => {
+    const mod = await import('../get');
+    const json = z.toJSONSchema(mod.default.args as never) as {
+      properties?: { slugs?: { type?: string; items?: { type?: string } } };
+    };
+    expect(json.properties?.slugs?.type).toBe('array');
+    expect(json.properties?.slugs?.items?.type).toBe('string');
+  });
+});
+
 describe('docs:search handler', () => {
   it('harness_required gate fires with no engine call', async () => {
     mockRegistry([]);

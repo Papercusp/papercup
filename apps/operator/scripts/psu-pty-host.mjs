@@ -135,6 +135,21 @@ const COMPACT_START_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_START_MS) 
  *  being torn down regardless). */
 const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS) || 5_000;
 
+/** WI-1941: total wall-clock budget the recycle carry-note inject retries across
+ *  before it is dropped LOUDLY. A fresh COLD child can stay busy past one
+ *  agent-busy cap (large compacted-context replay, MCP load, an auto-continued
+ *  boot turn) and THEN settle — the old single-shot waitAtPrompt() dropped the
+ *  iteration SILENTLY the instant it first deferred ('the wc8 recycle left no
+ *  trace'). Generous, but kept < the loop interval so a retry can't outrun the
+ *  next scheduled wake. Env-overridable like the sibling timings. */
+const RECYCLE_CARRY_INJECT_BUDGET_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS) || 600_000;
+/** Backoff between deferred carry-inject attempts (WI-1941). Each attempt's
+ *  agent-busy cap already paces the bulk of the wait; this just avoids a tight
+ *  requeue when an attempt defers fast. */
+const RECYCLE_CARRY_RETRY_BACKOFF_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
+
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
@@ -749,6 +764,17 @@ export function hostThroughPty(o) {
     quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
     capMs: turnInjectBusyCapMs,
   });
+  // WI-1941: recycle carry-inject retry budget + backoff (per-session tunable,
+  // like the busy cap above). The fresh cold child gets this long to reach its
+  // prompt across retried waitAtPrompt() attempts before the carry is dropped.
+  const recycleCarryInjectBudgetMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS,
+    RECYCLE_CARRY_INJECT_BUDGET_MS,
+  );
+  const recycleCarryRetryBackoffMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS,
+    RECYCLE_CARRY_RETRY_BACKOFF_MS,
+  );
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).

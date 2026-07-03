@@ -27,6 +27,11 @@ import {
   isNativeToolSearch,
   extractToolSearchQuery,
   formatToolFindRedirect,
+  IDENTICAL_CALL_LOOP_LIMIT,
+  toolCallLoopKey,
+  noteToolCallRepeat,
+  resetToolCallLoopState,
+  loopBreakReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -198,6 +203,155 @@ describe('onToolCall destructive-git guard (agent sessions only)', () => {
       input: { command: 'git reset --hard' },
     });
     expect(r.block).toBeUndefined();
+  });
+});
+
+// ── doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092) ────
+
+describe('toolCallLoopKey (stable, sorted, bounded, never-throws)', () => {
+  it('is identical for the same tool + same args regardless of key order', () => {
+    const a = toolCallLoopKey('resolve', { action: 'apply', reason: 'go' });
+    const b = toolCallLoopKey('resolve', { reason: 'go', action: 'apply' });
+    expect(a).toBe(b);
+  });
+  it('lowercases the tool name (case-insensitive match)', () => {
+    expect(toolCallLoopKey('Bash', { command: 'ls' })).toBe(toolCallLoopKey('bash', { command: 'ls' }));
+  });
+  it('differs when args differ', () => {
+    expect(toolCallLoopKey('bash', { command: 'find a' })).not.toBe(
+      toolCallLoopKey('bash', { command: 'find b' }),
+    );
+  });
+  it('caps the arg blob so a huge input cannot blow memory', () => {
+    const huge = 'x'.repeat(100_000);
+    expect(toolCallLoopKey('bash', { command: huge }).length).toBeLessThan(2100);
+  });
+  it('never throws on an unserializable (circular) input', () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() => toolCallLoopKey('resolve', circular)).not.toThrow();
+    expect(toolCallLoopKey('resolve', circular)).toContain('unserializable');
+  });
+  it('treats undefined input as empty (a repeat of no-args still detects)', () => {
+    expect(toolCallLoopKey('resolve', undefined)).toBe(toolCallLoopKey('resolve', {}));
+  });
+});
+
+describe('noteToolCallRepeat + resetToolCallLoopState (consecutive-run counter)', () => {
+  beforeEach(() => resetToolCallLoopState());
+  it('increments only while the key is unchanged, resets on a new key', () => {
+    const k1 = toolCallLoopKey('resolve', { action: 'apply', reason: 'x' });
+    expect(noteToolCallRepeat(k1)).toBe(1);
+    expect(noteToolCallRepeat(k1)).toBe(2);
+    expect(noteToolCallRepeat(k1)).toBe(3);
+    const k2 = toolCallLoopKey('read', { path: 'a.ts' });
+    expect(noteToolCallRepeat(k2)).toBe(1); // different key → run resets
+    expect(noteToolCallRepeat(k1)).toBe(1); // back to k1 is a fresh run (non-consecutive)
+  });
+  it('resetToolCallLoopState clears the run so the next call is length 1', () => {
+    const k = toolCallLoopKey('resolve', {});
+    noteToolCallRepeat(k);
+    noteToolCallRepeat(k);
+    resetToolCallLoopState();
+    expect(noteToolCallRepeat(k)).toBe(1);
+  });
+});
+
+describe('loopBreakReason (family-specific steer)', () => {
+  it('redirects a resolve loop to plans:get / tools:invoke', () => {
+    const r = loopBreakReason('resolve', 3);
+    expect(r).toContain('loop-breaker');
+    expect(r).toContain('3 times in a row');
+    expect(r).toContain('plans:get');
+    expect(r).toContain('tools:invoke');
+  });
+  it('redirects a shell loop to the read/grep/ls tools', () => {
+    const r = loopBreakReason('bash', 4);
+    expect(r).toMatch(/read|grep|ls/);
+    expect(r).toContain('do not loop');
+  });
+  it('falls back to a generic change-your-approach steer', () => {
+    const r = loopBreakReason('read', 3);
+    expect(r).toContain('change your approach');
+  });
+});
+
+describe('onToolCall doom-loop breaker (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+    resetToolCallLoopState();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const resolveCall = () =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'resolve',
+      toolCallId: 'r',
+      input: { action: 'apply', reason: 'Invoking plans:get to read the plan.' },
+    });
+
+  it('blocks the Nth identical resolve call (the EI-7076 leader loop) and passes the first two', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    expect((await resolveCall()).block).toBeUndefined(); // #1
+    expect((await resolveCall()).block).toBeUndefined(); // #2
+    const third = await resolveCall(); // #3 → blocked
+    expect(third.block).toBe(true);
+    expect(third.reason).toContain('plans:get');
+    // and it keeps blocking while the loop continues
+    expect((await resolveCall()).block).toBe(true);
+  });
+
+  it('blocks an identical bash find-flail (the EI-7092 member loop)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const findCall = () =>
+      onToolCall({
+        type: 'tool_call',
+        toolName: 'bash',
+        toolCallId: 'f',
+        input: { command: 'find /repo -name design.tsx' },
+      });
+    await findCall();
+    await findCall();
+    const r = await findCall();
+    expect(r.block).toBe(true);
+    expect(r.reason).toMatch(/read|grep|ls/);
+  });
+
+  it('does NOT trip when the identical run is interrupted by a different call', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    await resolveCall(); // #1
+    await resolveCall(); // #2
+    // a different tool resets the consecutive run
+    await onToolCall({ type: 'tool_call', toolName: 'read', toolCallId: 'x', input: { path: 'a.ts' } });
+    expect((await resolveCall()).block).toBeUndefined(); // fresh run → #1, not blocked
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    for (let i = 0; i < IDENTICAL_CALL_LOOP_LIMIT + 2; i++) {
+      expect((await resolveCall()).block).toBeUndefined();
+    }
+  });
+
+  it('a specific guard (destructive git) still wins at call #1, before the loop threshold', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'g',
+      input: { command: 'git reset --hard' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('shared-tree guard'); // git message, not the loop message
   });
 });
 
