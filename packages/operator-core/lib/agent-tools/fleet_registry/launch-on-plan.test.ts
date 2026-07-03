@@ -13,7 +13,13 @@
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
 import { describe, it, expect } from 'vitest';
-import { memberLaunchCommand, isOmpLocalModel, type MemberLaunchOpts } from './launch-on-plan';
+import {
+  memberLaunchCommand,
+  isOmpLocalModel,
+  resolveFleetAgent,
+  shouldSuppressRelaunch,
+  type MemberLaunchOpts,
+} from './launch-on-plan';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -82,5 +88,72 @@ describe('isOmpLocalModel (agent/model coupling — "thought ornith, got claude"
     expect(isOmpLocalModel('gpt-4o')).toBe(false);
     expect(isOmpLocalModel(undefined)).toBe(false);
     expect(isOmpLocalModel('')).toBe(false);
+  });
+});
+
+describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
+  it('an explicit `agent` arg wins over an inferred/inherited backend', () => {
+    expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
+    expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toEqual({
+      agent: 'codex',
+      model: undefined,
+    });
+  });
+
+  it('infers omp from a local/ollama model when no agent is given (and keeps that model)', () => {
+    expect(resolveFleetAgent({ argModel: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' })).toEqual({
+      agent: 'omp',
+      model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+    });
+  });
+
+  it('inherits the CALLER backend when neither agent nor a local model is given (the claude-leak fix)', () => {
+    expect(resolveFleetAgent({ callerAgent: 'omp' })).toEqual({ agent: 'omp', model: undefined });
+  });
+
+  it('inherits the caller MODEL too when the backend is inherited (ornith leader → ornith members)', () => {
+    expect(
+      resolveFleetAgent({ callerAgent: 'omp', callerModel: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' }),
+    ).toEqual({ agent: 'omp', model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' });
+  });
+
+  it('falls back to claude only when nothing is known (or the caller backend is unrecognized)', () => {
+    expect(resolveFleetAgent({})).toEqual({ agent: 'claude', model: undefined });
+    expect(resolveFleetAgent({ callerAgent: 'not-a-backend', callerModel: 'x' })).toEqual({
+      agent: 'claude',
+      model: undefined,
+    });
+  });
+
+  it('does NOT bleed the caller model onto a member whose backend was pinned explicitly', () => {
+    // explicit agent=omp, caller was claude+opus → member is omp with NO claude model
+    expect(resolveFleetAgent({ argAgent: 'omp', callerAgent: 'claude', callerModel: 'opus:high' })).toEqual({
+      agent: 'omp',
+      model: undefined,
+    });
+  });
+
+  it('an explicit `model` arg always wins over an inherited caller model', () => {
+    expect(
+      resolveFleetAgent({ callerAgent: 'omp', callerModel: 'ollama-cc/a', argModel: 'ollama-cc/b' }),
+    ).toEqual({ agent: 'omp', model: 'ollama-cc/b' });
+  });
+
+  it('rejects an explicit claude/codex + local-model pairing (the thought-ornith-got-claude trap)', () => {
+    const r = resolveFleetAgent({ argAgent: 'claude', argModel: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M' });
+    expect('error' in r).toBe(true);
+    expect('error' in r && r.error).toMatch(/only the `omp` backend can run/);
+  });
+});
+
+describe('shouldSuppressRelaunch (P-005 idempotency guard)', () => {
+  it('suppresses a re-launch inside the window', () => {
+    expect(shouldSuppressRelaunch({ at: 1_000 }, 1_000 + 30_000, 60_000)).toBe(true);
+  });
+  it('allows a launch once the window has elapsed', () => {
+    expect(shouldSuppressRelaunch({ at: 1_000 }, 1_000 + 61_000, 60_000)).toBe(false);
+  });
+  it('never suppresses the first launch (no prior record)', () => {
+    expect(shouldSuppressRelaunch(undefined, 5_000, 60_000)).toBe(false);
   });
 });

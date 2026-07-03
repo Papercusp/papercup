@@ -62,3 +62,21 @@ now auto-injects `--fleet` into a psu command when its `fleet` arg is set — bu
 | Headless workers (no desktop window) | `bee:spawn` / `fleet:place_batch` (nursery bees) |
 
 `bee:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."
+
+## Members default to YOUR backend/model when you omit `agent` (2026-07-03)
+
+If you omit `agent` (and `model`), members no longer hard-default to `claude` — they inherit the
+**calling session's own backend + model** (`resolveFleetAgent` in `launch-on-plan.ts`). psu stamps
+the caller's resolved `agent`/`model` onto its own `/api/mcp` URL in the per-session `mcp.json`
+(`writeOmpSessionConfigDir` / `applyOmpMcpUrlParams` in `psu-launcher.mjs`); the operator reads
+those as `ctx.callerAgent` / `ctx.callerModel` when resolving each member's backend. So an
+**omp/ornith `su` leader that calls `fleet:launch-on-plan` without `agent` now spawns `omp`
+members** (previously always `claude`) — and inherits the caller's `model` too, but only when the
+backend was ALSO inherited (an explicit `agent` never picks up the caller's model, so a claude
+member is never silently handed an ornith model id).
+
+Precedence, in order: explicit `args.agent` → `omp` (inferred when `model` is a local/ollama id,
+e.g. `ollama-cc/…ornith`) → the caller's own backend → `claude` (last-resort fallback). An explicit
+`claude`/`codex` `agent` paired with a local/ollama `model` is now a hard error (previously silently
+launched `claude` mislabelled with the ornith model — the "thought ornith, got claude" trap). Set
+`agent` explicitly whenever you want a fleet backend that differs from your own session's.

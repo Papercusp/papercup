@@ -11,6 +11,7 @@ import {
   writeOmpSessionConfigDir,
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
+  applyOmpMcpUrlParams,
   ompCoreToolNames,
   isWeakOmpModel,
   OMP_CORE_MCP_TOOL_NAMES,
@@ -342,6 +343,41 @@ describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
 
   it('ignores names not in the spine (no-op, no error)', () => {
     expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+  });
+});
+
+describe('applyOmpMcpUrlParams (stamp caller backend/model — fleet-launch-agent-inheritance-2026-07-03)', () => {
+  const mk = (url: string) => JSON.stringify({ mcpServers: { 'papercusp-su': { url } } });
+  const urlOf = (json: string) => new URL(JSON.parse(json).mcpServers['papercusp-su'].url);
+
+  it('stamps agent + model onto a papercusp /api/mcp url', () => {
+    const out = applyOmpMcpUrlParams(mk('http://127.0.0.1:3070/api/mcp?superuser=1&client=x'), {
+      agent: 'omp',
+      model: 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+    });
+    const u = urlOf(out);
+    expect(u.searchParams.get('agent')).toBe('omp');
+    expect(u.searchParams.get('model')).toBe('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
+    // pre-existing params survive
+    expect(u.searchParams.get('superuser')).toBe('1');
+    expect(u.searchParams.get('client')).toBe('x');
+  });
+
+  it('omits empty/undefined params (no bare &model=)', () => {
+    const u = urlOf(applyOmpMcpUrlParams(mk('http://127.0.0.1:3070/api/mcp?superuser=1'), { agent: 'omp', model: undefined }));
+    expect(u.searchParams.get('agent')).toBe('omp');
+    expect(u.searchParams.has('model')).toBe(false);
+  });
+
+  it('leaves non-papercusp server urls untouched', () => {
+    const src = mk('http://example.com/other');
+    expect(JSON.parse(applyOmpMcpUrlParams(src, { agent: 'omp' })).mcpServers['papercusp-su'].url).toBe(
+      'http://example.com/other',
+    );
+  });
+
+  it('returns the input unchanged on invalid JSON', () => {
+    expect(applyOmpMcpUrlParams('not json', { agent: 'omp' })).toBe('not json');
   });
 });
 

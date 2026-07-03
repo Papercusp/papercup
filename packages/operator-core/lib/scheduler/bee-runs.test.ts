@@ -123,7 +123,7 @@ describe('listBeeRuns (I/O glue over fleet_assignment + the spec batch)', () => 
     mockList.mockResolvedValue([
       row({ source: 'work_item_claim', agentId: 'su-a', workItemId: 'F-1' }),
       row({ source: 'work_item_claim', agentId: 'su-b', workItemId: 'F-2' }),
-      row({ source: 'plan_item_lease', agentId: 'su-c', workItemId: 'P-1' }), // a lease, not a bee run
+      row({ source: 'plan_item_claim', agentId: 'su-c', workItemId: 'P-1' }), // a plan-item claim, not a work-item claim → dropped
       row({ source: 'work_item_claim', agentId: 'su-d', workItemId: null }), // claim w/o an item → excluded
       row({ source: 'presence', agentId: 'su-e', workItemId: null }), // presence row, not a claim
     ] as FleetAssignmentRow[]);

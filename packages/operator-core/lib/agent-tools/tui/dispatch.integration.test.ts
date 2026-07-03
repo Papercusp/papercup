@@ -40,13 +40,18 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // workspace_id is NOT NULL (migration 453) — the tool MUST stamp it. A table
+  // without this column silently passed while the tool dropped workspace_id from
+  // the insert (the ui_intents twin of that is EI-6861: NOT NULL added to the
+  // shared DB while old code inserted 4 cols → "null value in column workspace_id").
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.tui_intents (
       id BIGSERIAL PRIMARY KEY,
       client_id text NOT NULL, intent text NOT NULL,
       args jsonb NOT NULL DEFAULT '{}'::jsonb,
       status text NOT NULL DEFAULT 'pending', result jsonb, error_message text,
-      requested_by text, created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
+      requested_by text, workspace_id text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
     )`);
   h.sql = rootSql;
 }, 90_000);

@@ -353,6 +353,42 @@ beforeEach(() => {
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 });
 
+/* ─── caller backend/model stamping (fleet-launch-agent-inheritance-2026-07-03) ─── */
+
+describe('caller backend/model stamping', () => {
+  it('folds ?agent= and ?model= from a superuser MCP URL onto ctx.callerAgent/callerModel', async () => {
+    await callTool(
+      'gatingtest:crossworkspace',
+      {},
+      superuserExtra('&workspace=ws-test&agent=omp&model=ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
+    );
+    const call = seen.at(-1)!;
+    expect(call.ctx.callerAgent).toBe('omp');
+    expect(call.ctx.callerModel).toBe('ollama-cc/maxwell1500/ornith-35b:IQ3_M');
+  });
+
+  it('prefers the x-papercusp-agent/-model headers over URL params (the omp carrier)', async () => {
+    await callTool(
+      'gatingtest:crossworkspace',
+      {},
+      superuserExtra('&workspace=ws-test&agent=claude&model=opus', {
+        'x-papercusp-agent': 'omp',
+        'x-papercusp-model': 'ollama-cc/ornith',
+      }),
+    );
+    const call = seen.at(-1)!;
+    expect(call.ctx.callerAgent).toBe('omp');
+    expect(call.ctx.callerModel).toBe('ollama-cc/ornith');
+  });
+
+  it('leaves callerAgent/callerModel null when the launcher did not stamp them', async () => {
+    await callTool('gatingtest:crossworkspace', {}, superuserExtra('&workspace=ws-test'));
+    const call = seen.at(-1)!;
+    expect(call.ctx.callerAgent ?? null).toBeNull();
+    expect(call.ctx.callerModel ?? null).toBeNull();
+  });
+});
+
 /* ─── scoped-superuser-workspace-clamp (P-006 / P-007) ───────────────── */
 
 describe('scoped-superuser-workspace-clamp', () => {
