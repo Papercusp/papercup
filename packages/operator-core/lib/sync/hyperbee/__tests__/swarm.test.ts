@@ -483,7 +483,12 @@ describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
     fakeChannels.get(socket)!.onmessage!(incoming);
     await new Promise((r) => setTimeout(r, 0)); // let the async onAnnounce settle
 
-    expect(onAnnounce).toHaveBeenCalledWith(incoming);
+    // P-006 §5.2/§5.3: onAnnounce receives the per-connection ctx as a 2nd arg
+    // ({ send, muxer }) so the admission layer can serve/disclose on THIS peer.
+    expect(onAnnounce).toHaveBeenCalledWith(
+      incoming,
+      expect.objectContaining({ send: expect.any(Function), muxer: expect.anything() }),
+    );
     expect(admitted.has('cc'.repeat(32))).toBe(true);
     expect(mergeNow).toHaveBeenCalledTimes(1);
   });
@@ -506,7 +511,11 @@ describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
     fakeChannels.get(socket)!.onmessage!(forged);
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(onAnnounce).toHaveBeenCalledWith(forged);
+    // Still called with the §5.2 per-connection ctx even on the reject path.
+    expect(onAnnounce).toHaveBeenCalledWith(
+      forged,
+      expect.objectContaining({ send: expect.any(Function), muxer: expect.anything() }),
+    );
     expect(admitted.size).toBe(0);
     expect(mergeNow).not.toHaveBeenCalled();
   });

@@ -448,6 +448,13 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
     // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
     const args = [
       '--approval-mode', 'yolo',
+      // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
+      // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
+      // wrapper before recovering); lsp is pure code-intelligence a coordination worker
+      // never needs, so dropping it deletes one tool-call attractor. (The doom-loop
+      // attractor `eval` is a HALLUCINATED tool — not a real builtin to strip — so the
+      // fix for that is the kickoff's explicit tools:invoke escape hatch, not a flag.)
+      '--no-lsp',
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
     if (coordExtPath) args.push('-e', coordExtPath);
@@ -525,6 +532,13 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
     // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
     const args = [
       '--approval-mode', 'yolo',
+      // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
+      // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
+      // wrapper before recovering); lsp is pure code-intelligence a coordination worker
+      // never needs, so dropping it deletes one tool-call attractor. (The doom-loop
+      // attractor `eval` is a HALLUCINATED tool — not a real builtin to strip — so the
+      // fix for that is the kickoff's explicit tools:invoke escape hatch, not a flag.)
+      '--no-lsp',
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
     if (coordExtPath) args.push('-e', coordExtPath);

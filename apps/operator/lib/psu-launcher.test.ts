@@ -1146,13 +1146,14 @@ describe('roleLaunchArgs (interactive role session)', () => {
   it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
     const { bin, args } = roleLaunchArgs('omp', files);
     expect(bin).toBe('omp');
-    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
+    expect(args).toEqual(['--approval-mode', 'yolo', '--no-lsp', '--append-system-prompt', '/lc/session-7.md']);
   });
 
   it('omp: loads the coordination extension (-e) when a coordExtPath is supplied (lock + activity bridge)', () => {
     const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/.papercusp/papercusp-coord.ts' });
     expect(args).toEqual([
       '--approval-mode', 'yolo',
+      '--no-lsp',
       '--append-system-prompt', '/lc/session-7.md',
       '-e', '/h/.papercusp/papercusp-coord.ts',
     ]);
@@ -1201,6 +1202,7 @@ describe('roleLaunchArgs (interactive role session)', () => {
     const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/coord.ts', replaceClaudeBase: true });
     expect(args).toEqual([
       '--approval-mode', 'yolo',
+      '--no-lsp',
       '--system-prompt', '/lc/session-7.md',
       '-e', '/h/coord.ts',
     ]);
@@ -1264,6 +1266,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     expect(bin).toBe('omp');
     expect(args).toEqual([
       '--approval-mode', 'yolo',
+      '--no-lsp',
       '--append-system-prompt', '/lc/session-9.md',
       '-e', '/home/u/.papercusp/papercusp-coord.ts',
     ]);
@@ -1271,7 +1274,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
 
   it('omp: omits -e when no coordExtPath is supplied', () => {
     const { args } = suLaunchArgs('omp', { promptFile: '/lc/s.md' });
-    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/s.md']);
+    expect(args).toEqual(['--approval-mode', 'yolo', '--no-lsp', '--append-system-prompt', '/lc/s.md']);
     expect(args).not.toContain('-e');
   });
 
@@ -1332,6 +1335,7 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     const { args } = suLaunchArgs('omp', { ...files, replaceClaudeBase: true });
     expect(args).toEqual([
       '--approval-mode', 'yolo',
+      '--no-lsp',
       '--system-prompt', '/lc/session-9.md',
       '-e', '/home/u/.papercusp/papercusp-coord.ts',
     ]);

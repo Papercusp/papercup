@@ -40,6 +40,8 @@ import { isHarnessFeatureRow, type HarnessFeatureRow } from './projections/harne
 import { isHarnessIssueRow, type HarnessIssueRow } from './projections/issues';
 import { isContributorUsageEventRow, type ContributorUsageEventRow } from './projections/usage';
 import { isEngineerIssueRow, type EngineerIssueRow } from './projections/engineer-issues';
+import { isAgentFactWireRow, type AgentFactWireRow } from './projections/agent-facts';
+import { isGymQdEliteWireRow, type GymQdEliteWireRow } from './projections/gym-qd-elites';
 
 describe('composeFeatureKey / composeIssueKey', () => {
   it('composeFeatureKey is the feature_id itself (matches projection composeKey)', () => {
@@ -76,6 +78,8 @@ describe('CDC_CAPTURED_TABLES — federation completeness guard', () => {
       'hive_settings',
       'plan_item_assignments',
       'coord_event_log',
+      'agent_facts',
+      'gym_qd_archive',
     ]) {
       expect(CDC_CAPTURED_TABLES).toContain(t);
     }
@@ -437,6 +441,146 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
     expect(op.type).toBe('del');
     expect(op.table).toBe('engineer-issues');
     expect(op.hbKey).toBe('EI-10');
+    expect(op.value).toBeUndefined();
+  });
+});
+
+describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () => {
+  // A to_jsonb rendering of a SHAREABLE agent_facts row — exactly what mig 461's
+  // capture (capture_substrate_outbox → to_jsonb(NEW)) enqueues. expires_at /
+  // retracted_at are TIMESTAMPTZ → ISO strings under to_jsonb. This is the shape
+  // that fell to `default: toIssueValue` before P-012 — dropping body/scope/key
+  // and failing isAgentFactWireRow on every peer (= all fact federation dead).
+  const factOutboxRow: OutboxRow = {
+    table_name: 'agent_facts',
+    op: 'put',
+    key: 'k1',
+    ts: 1717000000000,
+    row: {
+      harness_slug: 'the-hive-home', // stamped from hiveHomeSlug (mig 461)
+      workspace_id: 'ws-1',
+      scope: 'harness',
+      scope_ref: 'member-a',
+      key: 'k1',
+      body: 'a shareable conclusion',
+      source_ref: 'plan:some-plan',
+      expires_at: '2026-08-01T00:00:00.000Z',
+      retracted_at: null,
+      created_by: 'su-int',
+      shareable: true,
+      source_hive: null,
+      origin: 'local',
+    },
+  };
+
+  it('maps to the agent-facts tableTag (NOT the raw table_name)', () => {
+    const op = outboxRowToLocalWriteOp(factOutboxRow);
+    expect(op.table).toBe('agent-facts-by-key');
+    expect(op.hbKey).toBe('k1');
+  });
+
+  it('produces a value that PASSES isAgentFactWireRow (the drop-on-peer regression)', () => {
+    const op = outboxRowToLocalWriteOp(factOutboxRow)!;
+    const v = op.type === 'put' ? (op.value as AgentFactWireRow) : (null as never);
+    // The exact failure the P-012 fix repairs: before the switch case, this was
+    // an issue-shaped value and isAgentFactWireRow(v) === false → op dropped.
+    expect(isAgentFactWireRow(v)).toBe(true);
+    expect(v.harness_slug).toBe('the-hive-home');
+    expect(v.scope).toBe('harness');
+    expect(v.scope_ref).toBe('member-a');
+    expect(v.key).toBe('k1');
+    expect(v.body).toBe('a shareable conclusion'); // the field toIssueValue dropped
+    expect(v.source_ref).toBe('plan:some-plan');
+    expect(v.expires_at).toBe('2026-08-01T00:00:00.000Z'); // ISO preserved
+    expect(v.retracted_at).toBeNull();
+    expect(v.created_by).toBe('su-int');
+  });
+
+  it('a workspace-scoped fact (null scope_ref) still validates', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...factOutboxRow,
+      row: { ...factOutboxRow.row, scope: 'workspace', scope_ref: null },
+    })!;
+    const v = op.type === 'put' ? (op.value as AgentFactWireRow) : (null as never);
+    expect(isAgentFactWireRow(v)).toBe(true);
+    expect(v.scope_ref).toBeNull();
+  });
+
+  it('maps a del to a keyed LocalWriteOp with no value', () => {
+    const op = outboxRowToLocalWriteOp({ ...factOutboxRow, op: 'del', row: null });
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('agent-facts-by-key');
+    expect(op.hbKey).toBe('k1');
+    expect(op.value).toBeUndefined();
+  });
+});
+
+describe('outboxRowToLocalWriteOp — gym_qd_archive (F1-2/F1-5 elite federation)', () => {
+  // A to_jsonb rendering of a FEDERATABLE gym_qd_archive row — what mig 464's
+  // capture enqueues. updated_at is a bigint epoch-ms column → a JSON number;
+  // descriptor is jsonb → an object. This fell to `default: toIssueValue` before
+  // P-012, losing rationale/niche_key/fitness/descriptor + failing the validator.
+  const eliteOutboxRow: OutboxRow = {
+    table_name: 'gym_qd_archive',
+    op: 'put',
+    key: 'v1:tool/search/r2/small',
+    ts: 1717000000000,
+    row: {
+      harness_slug: 'the-hive-home',
+      workspace_id: 'ws-1',
+      niche_key: 'v1:tool/search/r2/small',
+      candidate_id: 'cand-42',
+      scope: 'tool',
+      domain: 'search',
+      risk: 'r2',
+      fitness: 0.87,
+      descriptor: { surface: 'tool', shape: 'search', features: [0.1, 0.2] },
+      rationale: 'won the eval by a clear margin',
+      updated_at: 1717000000000,
+      federatable: true,
+      source_hive: null,
+      novelty_gift: false,
+      origin: 'local',
+    },
+  };
+
+  it('maps to the gym-qd-elites tableTag (NOT the raw table_name)', () => {
+    const op = outboxRowToLocalWriteOp(eliteOutboxRow);
+    expect(op.table).toBe('gym-qd-elites-by-niche');
+    expect(op.hbKey).toBe('v1:tool/search/r2/small');
+  });
+
+  it('produces a value that PASSES isGymQdEliteWireRow (the drop-on-peer regression)', () => {
+    const op = outboxRowToLocalWriteOp(eliteOutboxRow)!;
+    const v = op.type === 'put' ? (op.value as GymQdEliteWireRow) : (null as never);
+    expect(isGymQdEliteWireRow(v)).toBe(true);
+    expect(v.niche_key).toBe('v1:tool/search/r2/small');
+    expect(v.candidate_id).toBe('cand-42');
+    expect(v.fitness).toBe(0.87); // number preserved (double precision)
+    expect(v.descriptor).toEqual({ surface: 'tool', shape: 'search', features: [0.1, 0.2] });
+    expect(v.rationale).toBe('won the eval by a clear margin'); // toIssueValue dropped this
+    expect(v.updated_at).toBe(1717000000000); // bigint epoch → number
+    expect(v.federatable).toBe(true);
+  });
+
+  it('a non-federatable row would NOT validate on the peer (defensive re-check)', () => {
+    // Capture only fires on federatable=true, but if a buggy/hostile sender's log
+    // carried one, the receiver's validator rejects it — the mapper faithfully
+    // carries federatable so that gate can fire.
+    const op = outboxRowToLocalWriteOp({
+      ...eliteOutboxRow,
+      row: { ...eliteOutboxRow.row, federatable: false },
+    })!;
+    const v = op.type === 'put' ? (op.value as GymQdEliteWireRow) : (null as never);
+    expect(v.federatable).toBe(false);
+    expect(isGymQdEliteWireRow(v)).toBe(false);
+  });
+
+  it('maps a del to a keyed LocalWriteOp with no value', () => {
+    const op = outboxRowToLocalWriteOp({ ...eliteOutboxRow, op: 'del', row: null });
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('gym-qd-elites-by-niche');
+    expect(op.hbKey).toBe('v1:tool/search/r2/small');
     expect(op.value).toBeUndefined();
   });
 });

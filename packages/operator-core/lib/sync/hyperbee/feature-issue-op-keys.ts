@@ -728,6 +728,58 @@ function toP2pReceiptValue(row: Record<string, unknown>): P2pReceiptWireRow {
 }
 
 /**
+ * Map an outbox `row` jsonb to the `AgentFactWireRow` the agent-facts projection
+ * consumes (F1-4 / P-012, mig 461/462) — the SHAREABLE federated subset. The
+ * capture stores `to_jsonb(row)`, so `expires_at`/`retracted_at` (timestamptz)
+ * are already ISO strings on the wire and pass through as-is. Peers stamp
+ * `source_hive` from the admitted log identity — it is deliberately NOT carried
+ * (a sender-claimed source is never trusted). Must satisfy `isAgentFactWireRow`
+ * or the op is dropped on every peer (the bug this case fixes: facts fell to
+ * `toIssueValue`, which produced issue columns and dropped body/scope/key). */
+function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    scope: String(row.scope ?? ''),
+    scope_ref: strOrNull(row.scope_ref),
+    key: String(row.key ?? ''),
+    body: String(row.body ?? ''),
+    source_ref: strOrNull(row.source_ref),
+    expires_at: String(row.expires_at ?? ''),
+    retracted_at: strOrNull(row.retracted_at),
+    created_by: String(row.created_by ?? ''),
+  };
+}
+
+/**
+ * Map an outbox `row` jsonb to the `GymQdEliteWireRow` the gym-qd-elites
+ * projection consumes (F1-2/F1-5, mig 464) — the federatable subset. `updated_at`
+ * is a `bigint` epoch-ms column so `to_jsonb` renders it as a number; `descriptor`
+ * is jsonb (an object); `federatable` is the sender eligibility stamp (capture only
+ * fires when true, and the receiver re-checks `=== true`). Must satisfy
+ * `isGymQdEliteWireRow` or the op is dropped on every peer (same class of bug as
+ * agent_facts above — elites fell to `toIssueValue` and lost rationale/niche/
+ * fitness/descriptor). `source_hive`/`novelty_gift` are receiver-stamped, not
+ * carried. */
+function toGymQdEliteValue(row: Record<string, unknown>): GymQdEliteWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    niche_key: String(row.niche_key ?? ''),
+    candidate_id: String(row.candidate_id ?? ''),
+    scope: String(row.scope ?? ''),
+    domain: String(row.domain ?? ''),
+    risk: String(row.risk ?? ''),
+    fitness: numOrZero(row.fitness),
+    descriptor:
+      row.descriptor && typeof row.descriptor === 'object' && !Array.isArray(row.descriptor)
+        ? (row.descriptor as Record<string, unknown>)
+        : {},
+    rationale: strOrNull(row.rationale),
+    federatable: row.federatable === true,
+    updated_at: numOrZero(row.updated_at),
+  };
+}
+
+/**
  * Thrown when an outbox row names a `table_name` this build has no mapper for.
  * This is BOTH a programming error (a new trigger shipped without its mapper) AND
  * a legitimate forward-compat rolling-deploy state: a NEWER operator/migration may

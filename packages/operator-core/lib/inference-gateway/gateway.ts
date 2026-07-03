@@ -1923,7 +1923,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const headers: Record<string, string> = { 'content-type': upstream.headers.get('content-type') ?? 'application/json' };
           res.writeHead(upstream.status, headers);
           if (upstream.body) {
-            Readable.fromWeb(upstream.body as import('stream/web').ReadableStream<Uint8Array>).pipe(res);
+            // GUARD the pipe (backend-reliability-100pct-2026-07-03 W2.2): an unhandled stream
+            // 'error' here (e.g. the AbortSignal.timeout above firing mid-body, or an upstream
+            // reset) is emitted with NO listener → Node throws it as an uncaughtException →
+            // whole-gateway crash. The Anthropic/Claude proxy paths (~gateway.ts:3258/3636) are
+            // already hardened this way; the local-backend path was the last unguarded pipe.
+            // Tear down both ends on error and never re-throw.
+            const nodeStream = Readable.fromWeb(upstream.body as import('stream/web').ReadableStream<Uint8Array>);
+            nodeStream.on('error', (e) => {
+              log('warn', `inference-gateway: local backend '${backend.id}' stream error mid-body: ${(e as Error)?.message ?? String(e)}`);
+              try { res.destroy(); } catch { /* already torn down */ }
+            });
+            res.on('error', () => { try { nodeStream.destroy(); } catch { /* already torn down */ } });
+            nodeStream.pipe(res);
           } else {
             res.end(await upstream.text().catch(() => ''));
           }

@@ -58,6 +58,23 @@ async function main(): Promise<void> {
   });
   logLine(`up on 127.0.0.1:${svc.port} → account '${svc.account.accountId}' (${svc.account.source})`);
 
+  // CRASH-PROOFING (backend-reliability-100pct-2026-07-03 W2) — process-level BACKSTOP.
+  // A single request's unhandled stream 'error' (e.g. an AbortSignal.timeout firing on a
+  // piped upstream body) is thrown by Node as an uncaughtException → the WHOLE shared
+  // multi-tenant gateway dies (status=1/FAILURE → systemd restart), dropping EVERY in-flight
+  // bee/queen request. Observed ≥2× on 2026-07-02 (21:49, 22:10: "Unhandled 'error' event …
+  // TimeoutError"). The per-pipe '.on(error)' handlers at the stream sites are the primary fix;
+  // THIS is defense-in-depth for any unforeseen source: log durably and KEEP SERVING. For a
+  // shared proxy, surviving one poisoned request is strictly better than a mass outage.
+  // Registered AFTER a successful boot so genuine STARTUP failures still propagate to
+  // main().catch → exit(1) → clean systemd restart (we don't want to swallow those).
+  process.on('uncaughtException', (err, origin) => {
+    logLine(`uncaughtException (${origin}) — logged, NOT exiting (crash-proofing W2): ${(err as Error)?.stack || String(err)}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logLine(`unhandledRejection — logged, NOT exiting (crash-proofing W2): ${reason instanceof Error ? reason.stack : String(reason)}`);
+  });
+
   let stopping = false;
   const shutdown = async (sig: string) => {
     if (stopping) return;

@@ -35,13 +35,20 @@ export function deriveLaunchPromptText(
   //  · "call the `plans:get` MCP tool … NOT … read/bash/find/grep" — session 9870
   //    burned 29 turns because "read it with the plans:get tool" made it call the
   //    `read` BUILTIN with path:"plans:get", then flail with `find`/`grep`/`ls`.
+  //  · "invoke it via `tools:invoke` … do NOT invent an `eval`/`code` tool" — session
+  //    9885 abused `lsp` and session 9891 DOOM-LOOPED calling a HALLUCINATED `eval`
+  //    tool (26 no-op calls) instead of the real MCP tool; naming the reliable
+  //    tools:invoke escape hatch + forbidding the invented tool breaks that loop.
   //  · "(C) … executed with the `fleet:launch-on-plan` tool" — sessions 9870/9865
   //    chose C, then never launched (the tool was hidden) or hand-built a broken psu
   //    command; naming the exact verb makes option C real.
   return "You've been handed a plan to implement. First read it by calling the `plans:get` " +
     "MCP tool with the plan's slug — the plan lives in the coordination system, NOT on disk, so " +
     'do NOT use the `read`, `bash`, `find`, or `grep` file tools and do NOT guess a `plan://` or ' +
-    'file path. Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
+    'file path. If a papercusp tool is not directly callable, invoke it via `tools:invoke` with ' +
+    '`{ name, args }` (e.g. `tools:invoke { name: "plans:get", args: { slug, harness } }`) — do NOT ' +
+    'route a tool call through `lsp` and do NOT invent an `eval`/`code` tool. ' +
+    'Then, BEFORE doing any work, go through your routing gate: outline the approach ' +
     'and present the execution options — (A) do it yourself, (B) hand it to the Queen, or (C) ' +
     'launch a fleet of agents to parallelize it (executed in ONE call with the ' +
     '`fleet:launch-on-plan` tool — never a hand-built psu command) — recommend one based on the ' +

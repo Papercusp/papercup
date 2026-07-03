@@ -26,10 +26,10 @@ export default defineTool({
   name: 'fleet:spawn',
   profile: 'engineer',
   description:
-    'Spawn one agent of a role into a registered harness (project). Returns a spawn_id immediately; the run is tracked durably in the nursery — watch it with fleet:tree, stop it with fleet:cancel. role="worker" requires chunk.',
+    'Spawns a BEE — a background worker inside the queen↔bee AUTONOMOUS loop, NOT a visible desktop agent. For visible desktop su member terminals on a plan (what "launch a fleet" usually means) → fleet:launch-on-plan instead. Spawns one agent of a role into a registered harness (project); returns a spawn_id immediately; the run is tracked durably in the nursery — watch it with fleet:tree, stop it with fleet:cancel. role="worker" requires chunk.',
   guidance: {
-    when: 'The user asks to launch an agent on work — "spawn a validator in <harness>", "put a worker on <feature>", "have a scoper break down X". CHOOSE THE RIGHT UNIT: a coding-HIVE `bee` self-pulls via a claim-spec (scheduler:set_claim_spec + get_next) — for a self-pulling worker spawn role="bee", NOT scoper; coding-FACTORY roles (scoper→architect→worker) are HANDED a FEATURE_ID (worker also a chunk) and never self-pull. The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later. Pick a `tier` per task (quick/standard/deep/max — see the arg rubric); omit it for routine work at the role default.',
-    notWhen: 'For answering a question you already know — spawning is for new work, not lookups. For the durable feature pipeline, file a work_item and let the harness autoloop dispatch it. (A claim-spec set on a factory role is INERT — for a self-pulling claim-spec worker use role="bee".)',
+    when: 'The user asks to launch a BACKGROUND autonomous-loop worker on work — "spawn a validator in <harness>", "put a worker on <feature>", "have a scoper break down X". (For VISIBLE desktop su members on a plan → fleet:launch-on-plan, not this.) CHOOSE THE RIGHT UNIT: a coding-HIVE `bee` self-pulls via a claim-spec (scheduler:set_claim_spec + get_next) — for a self-pulling worker spawn role="bee", NOT scoper; coding-FACTORY roles (scoper→architect→worker) are HANDED a FEATURE_ID (worker also a chunk) and never self-pull. The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later. Pick a `tier` per task (quick/standard/deep/max — see the arg rubric); omit it for routine work at the role default.',
+    notWhen: 'To open VISIBLE desktop su member terminals on a plan — that is what "launch a fleet" means → fleet:launch-on-plan, NOT this (this spawns invisible background bees in the queen↔bee nursery loop). For answering a question you already know — spawning is for new work, not lookups. For the durable feature pipeline, file a work_item and let the harness autoloop dispatch it. (A claim-spec set on a factory role is INERT — for a self-pulling claim-spec worker use role="bee".)',
     chaining: 'fleet:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',
@@ -158,19 +158,27 @@ export default defineTool({
     let fleetPlacement:
       | { slug: string; role: string; bg: string; fg: string; cursor: string }
       | null = null;
+    // WI-1764 #2: nudge at the moment of confusion. If the `fleet` param names a
+    // fleet that did NOT already exist, a BEE spawn just materialised it — which is
+    // exactly the mistake that spun up 3 background bees when the caller meant
+    // visible desktop members. Still create it (bees can be color-grouped), but flag
+    // the substrate so a mis-aimed "launch a fleet" screams instead of silently
+    // succeeding. A `fleet` that already existed = deliberate grouping → no advisory.
+    let fleetAutoCreated = false;
     if (args.fleet) {
       try {
         const { fleetSlugFromName, createFleetIfAbsent, resolveFleetScheme } = await import(
           '../../agent-fleets-store'
         );
         const fleetSlug = fleetSlugFromName(args.fleet);
-        const { record } = await createFleetIfAbsent({
+        const { record, created } = await createFleetIfAbsent({
           workspaceId,
           fleetSlug,
           title: args.fleet,
           owner: ownerId || null,
           leaderOwnerId: ownerId || null,
         });
+        fleetAutoCreated = created;
         const scheme = resolveFleetScheme(record);
         fleetPlacement = {
           slug: fleetSlug,
@@ -227,6 +235,12 @@ export default defineTool({
             // and retry the same spawn on wake (a slot-free announces it).
             ...(res.awaitEvent ? { await_event: res.awaitEvent } : {}),
             ...(res.deduped ? { deduped: true } : {}),
+            // WI-1764 #2: loud advisory when this bee-spawn auto-created its fleet.
+            ...(fleetAutoCreated && res.ok
+              ? {
+                  fleet_advisory: `⚠ Created fleet "${args.fleet}" from a BEE spawn — these are autonomous-loop bees (queen↔bee nursery), NOT visible desktop su agents. If you meant desktop members on a plan, fleet:cancel this + use fleet:launch-on-plan instead.`,
+                }
+              : {}),
             next: res.ok
               ? 'fleet:tree { spawn_id } to watch; fleet:cancel { spawn_id } to abort.'
               : res.awaitEvent

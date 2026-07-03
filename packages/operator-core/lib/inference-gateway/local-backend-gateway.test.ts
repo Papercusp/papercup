@@ -100,6 +100,36 @@ test('a non-JSON / model-less body 400s', async () => {
   assert.equal(res.status, 400);
 });
 
+test('a local-backend body stream that ERRORS mid-pipe does NOT crash the gateway (W2.2 crash-proofing guard)', async () => {
+  // backend-reliability-100pct-2026-07-03 W2.2: the upstream body is piped to the client via
+  // Readable.fromWeb(...).pipe(res). If that stream errors mid-body with NO 'error' listener,
+  // Node throws it as an uncaughtException → the WHOLE shared gateway process dies (observed
+  // 2026-07-02). This "bad" backend sends a 200 + partial body then RSTs the socket, forcing the
+  // piped stream to error mid-flight. GUARD: the gateway must survive and still serve a LATER
+  // request (pre-fix, this test crashes the worker; post-fix it is green).
+  const bad = await startFakeBackend('bad', (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.write('{"partial":true,'); // partial body — never completes
+    setTimeout(() => { try { res.socket?.destroy(); } catch { /* gone */ } }, 20); // RST mid-stream
+  });
+  const good = await startFakeBackend('good', okJsonReply({ id: 'from-good' }));
+  backends = [bad, good];
+  await boot([
+    { id: 'bad', kind: 'llama-server', baseUrl: bad.baseUrl, models: ['m-bad'], maxConcurrent: 4, enabled: true },
+    { id: 'good', kind: 'llama-server', baseUrl: good.baseUrl, models: ['m-good'], maxConcurrent: 4, enabled: true },
+  ]);
+
+  // Hit the bad backend — its body stream errors mid-pipe. The client may see a reset/partial
+  // response; that is acceptable. What must NOT happen is a process crash.
+  await chatCompletions({ model: 'm-bad', messages: [] }).catch(() => undefined);
+
+  // The gateway is still up: a subsequent request to a healthy backend succeeds.
+  const res2 = await chatCompletions({ model: 'm-good', messages: [] });
+  assert.equal(res2.status, 200, 'gateway survived the mid-pipe stream error and served a later request');
+  const json = (await res2.json()) as { id: string };
+  assert.equal(json.id, 'from-good');
+});
+
 test('least-loaded routing: sends the next request to the LESS busy backend', async () => {
   // b1 never responds (simulates a busy/slow backend held mid-flight); b2 replies fast.
   const held: http.ServerResponse[] = [];
