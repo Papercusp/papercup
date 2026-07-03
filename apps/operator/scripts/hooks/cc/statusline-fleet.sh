@@ -285,13 +285,50 @@ def model_title(label, effort):
     return '/'.join(x for x in (label, effort) if x)
 
 
+def fleets_part(g):
+    """The fleet-identity segment for the OS title (multi-fleet-terminal-identity, WI-1963): one chip per
+    named fleet this agent is in — 👑 (leader) / 👤 (member) + the fleet name + its bound color SQUARE —
+    from the glance payload's `self.fleets`. A window has only ONE background colour (OSC 11), so an agent
+    in N fleets shows the other fleets as N colour squares HERE instead. ADDITIVE + FAIL-OPEN: '' when the
+    agent is in no fleet, or the field is absent (older operator), so the existing title is untouched.
+    Caps at 4 chips (+N overflow) and clips each name so a many-fleet leader can't swallow the title."""
+    if not isinstance(g, dict):
+        return ''
+    fleets = (g.get('self') or {}).get('fleets')
+    if not isinstance(fleets, list) or not fleets:
+        return ''
+    chips = []
+    for f in fleets[:4]:
+        if not isinstance(f, dict):
+            continue
+        label = str(f.get('label') or f.get('slug') or '').strip()
+        if not label:
+            continue
+        if len(label) > 16:
+            label = label[:15] + '…'
+        glyph = '👑' if f.get('role') == 'leader' else '👤'
+        square = str(f.get('square') or '').strip()
+        chips.append(f'{glyph} {label}{(" " + square) if square else ""}')
+    if not chips:
+        return ''
+    seg = ' · '.join(chips)
+    more = len(fleets) - len(chips)
+    if more > 0:
+        seg += f' +{more}'
+    return seg
+
+
 def term_title(g, model_tag=''):
-    """The OSC terminal-title string — LEADS with the loop chip (the surfaced autonomy signal: present ⇒
-    a loop is armed, absent ⇒ none), then the model·effort tag (so the titlebar always shows which model
-    + settings this terminal is on), the session shorthand id, and a clipped objective. '' when there's
-    nothing meaningful (skip the write)."""
+    """The OSC terminal-title string — LEADS with the fleet chips (👑/👤 + name + colour square per fleet,
+    the multi-fleet identity, WI-1963), then the loop chip (the surfaced autonomy signal: present ⇒ a loop
+    is armed, absent ⇒ none), the model·effort tag (so the titlebar always shows which model + settings
+    this terminal is on), the session shorthand id, and a clipped objective. '' when there's nothing
+    meaningful (skip the write)."""
     me_id = self_short(me)
     bits = []
+    fl = fleets_part(g)
+    if fl:
+        bits.append(fl)
     lp = (g.get('self') or {}).get('loop') if isinstance(g, dict) else None
     if isinstance(lp, dict) and lp.get('active'):
         # WI-655: trailing '!' on the title loop chip when the loop is armed but not wake-reachable.
@@ -315,6 +352,16 @@ def set_title(title):
     which it captures as the statusline body). Fail-open: no tty / not permitted → skip silently."""
     if not title:
         return
+    # Test seam: the real target (/dev/tty) is NOT captured by the fixture-mode test harness, so
+    # when PAPERCUSP_STATUSLINE_TITLE_OUT names a file we also record the computed title there —
+    # the only way to assert the title render. Unset in production → this is a no-op.
+    title_out = os.environ.get('PAPERCUSP_STATUSLINE_TITLE_OUT')
+    if title_out:
+        try:
+            with open(title_out, 'w') as fh:
+                fh.write(title)
+        except Exception:
+            pass
     try:
         with open('/dev/tty', 'w') as tty:
             tty.write(f'\033]0;{title}\a')

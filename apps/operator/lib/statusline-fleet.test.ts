@@ -5,7 +5,7 @@
  * peers / 💡 tip / ⋯ detail-affordance row) and the quiet-state single line.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -28,6 +28,19 @@ function render(glance: unknown, extraEnv: Record<string, string> = {}, input = 
       ...extraEnv,
     },
   });
+}
+
+/** Render, and return the OSC-0 window TITLE the script computed. The real title
+ *  target (/dev/tty) is not captured by execFileSync, so the script honors
+ *  PAPERCUSP_STATUSLINE_TITLE_OUT (a test-only seam) and writes the title there. */
+function titleOf(glance: unknown, extraEnv: Record<string, string> = {}, input = '{}'): string {
+  const titleFile = join(dir, `${Math.random().toString(36).slice(2)}.title`);
+  render(glance, { ...extraEnv, PAPERCUSP_STATUSLINE_TITLE_OUT: titleFile }, input);
+  try {
+    return readFileSync(titleFile, 'utf8');
+  } catch {
+    return ''; // no title written (nothing meaningful) — treated as empty
+  }
 }
 
 const activity = [
@@ -336,5 +349,76 @@ describe('statusline-fleet render (fixture mode)', () => {
   it('no session-JSON model (fixture/no-stdin shape) → no 🧠 chip, render unchanged', () => {
     // Settings are gated off in fixture mode, so a dev's ~/.claude/settings.json can't leak in here.
     expect(render(quietGlance)).not.toContain('🧠');
+  });
+});
+
+describe('statusline-fleet OS title — multi-fleet identity (WI-1963)', () => {
+  const base = {
+    ok: true,
+    wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+    bees: { running: 0 },
+    governor: { anyPaused: false, paused: [] },
+    activity: [],
+    tips: [],
+  };
+
+  it('renders one 👑 name + colour-square chip per LED fleet, leading the title', () => {
+    const title = titleOf({
+      ...base,
+      self: {
+        objective: null,
+        fleets: [
+          { slug: 'roman-fleet', label: 'roman', role: 'leader', square: '🟪' },
+          { slug: 'greek-fleet', label: 'greek', role: 'leader', square: '🟩' },
+        ],
+      },
+    });
+    expect(title).toContain('👑 roman 🟪');
+    expect(title).toContain('👑 greek 🟩');
+    expect(title.startsWith('👑 roman 🟪')).toBe(true); // fleets LEAD the title
+    expect(title).toContain('su-me'); // the existing id chip still trails
+  });
+
+  it('uses 👤 for a member fleet (non-leader)', () => {
+    const title = titleOf({
+      ...base,
+      self: { fleets: [{ slug: 'blue-fleet', label: 'blue', role: 'member', square: '🟦' }] },
+    });
+    expect(title).toContain('👤 blue 🟦');
+    expect(title).not.toContain('👑');
+  });
+
+  it('no fleets → no 👑/👤 in the title (id chip unchanged)', () => {
+    const title = titleOf({ ...base, self: { objective: null, fleets: [] } });
+    expect(title).not.toContain('👑');
+    expect(title).not.toContain('👤');
+    expect(title).toContain('su-me');
+  });
+
+  it('a missing self.fleets (older operator) → no fleet chips, title fails open', () => {
+    const title = titleOf({ ...base, self: { objective: null } });
+    expect(title).not.toContain('👑');
+    expect(title).not.toContain('👤');
+  });
+
+  it('caps at 4 chips with a +N overflow for a many-fleet leader', () => {
+    const fleets = ['a', 'b', 'c', 'd', 'e'].map((n) => ({
+      slug: n,
+      label: n,
+      role: 'leader',
+      square: '🟦',
+    }));
+    const title = titleOf({ ...base, self: { fleets } });
+    expect(title).toContain('+1'); // 4 shown, 1 folded
+    expect([...title.matchAll(/👑/g)]).toHaveLength(4);
+  });
+
+  it('fleet chips go ONLY to the title, never the visible statusline body', () => {
+    const out = render({
+      ...base,
+      self: { fleets: [{ slug: 'roman', label: 'roman', role: 'leader', square: '🟪' }] },
+    });
+    expect(out).not.toContain('👑');
+    expect(out).not.toContain('🟪');
   });
 });

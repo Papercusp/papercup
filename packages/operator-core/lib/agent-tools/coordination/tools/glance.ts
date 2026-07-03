@@ -23,7 +23,11 @@ import { countAllPendingWakes } from '../pending-wakes';
 import { evaluateTips, GLANCE_AUDIENCES } from '../glance-tips';
 import { resolveAgentIdentity } from '../identity';
 import { getPresence } from '../presence';
+import { fetchPresenceFleet } from '../presence-fleet';
 import { getLoopStatus } from '../../../harness/routines/loop';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { getFleet, listFleetsLedBy, resolveFleetScheme } from '../../../agent-fleets-store';
+import { nearestColorSquareEmoji } from '../../../console-color-schemes';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
 
@@ -145,6 +149,13 @@ export default defineTool({
     // turn died (`stalled`) is the black-hole this surfaces, so the bottom display can
     // render "⟳ <interval> (unreachable!)" with NO extra probe.
     let selfLoop: { active: true; intervalSec: number; parked: boolean; reachable: boolean } | null = null;
+    // self.fleets — EVERY named fleet this agent is in, for the multi-fleet terminal
+    // identity (WI-1963). Scope A (no schema change): all fleets they LEAD
+    // (agent_fleets.leader_owner_id — a per-fleet fact, so leading N fleets yields N
+    // entries) ∪ their single presence member-fleet. A window has only ONE background
+    // (OSC 11), so N fleets are shown as N nearest-match color SQUARES + names in the
+    // OS title (statusline-fleet.sh). Empty when the agent is in no fleet. FAIL-OPEN.
+    let selfFleets: Array<{ slug: string; label: string; role: string; square: string }> = [];
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
       if (ownerId) {
@@ -172,6 +183,38 @@ export default defineTool({
         } catch {
           selfLoop = null; // fail-open: loop read never breaks the glance render
         }
+        // Fleets this agent leads + its member fleet → color squares + names for the
+        // OS title. Own try so a fleet-read hiccup never wipes objective/loop above.
+        try {
+          const wsId =
+            (ctx as { workspaceId?: string }).workspaceId &&
+            (ctx as { workspaceId?: string }).workspaceId !== '*'
+              ? (ctx as { workspaceId?: string }).workspaceId!
+              : activeWorkspaceId();
+          const seen = new Set<string>();
+          for (const f of (await listFleetsLedBy(wsId, ownerId)).slice(0, 12)) {
+            seen.add(f.fleetSlug);
+            selfFleets.push({
+              slug: f.fleetSlug,
+              label: f.title?.trim() || f.fleetSlug,
+              role: 'leader',
+              square: nearestColorSquareEmoji(resolveFleetScheme(f).bg),
+            });
+          }
+          // Their single presence membership fleet — skip if already a led fleet.
+          const membership = (await fetchPresenceFleet([ownerId])).get(ownerId);
+          if (membership?.fleetSlug && !seen.has(membership.fleetSlug)) {
+            const rec = await getFleet(wsId, membership.fleetSlug);
+            selfFleets.push({
+              slug: membership.fleetSlug,
+              label: rec?.title?.trim() || membership.fleetSlug,
+              role: membership.fleetRole === 'leader' ? 'leader' : 'member',
+              square: rec ? nearestColorSquareEmoji(resolveFleetScheme(rec).bg) : '⬛',
+            });
+          }
+        } catch {
+          selfFleets = []; // fail-open: a fleet-read error never breaks the render
+        }
       }
     } catch {
       selfObjective = null;
@@ -193,7 +236,7 @@ export default defineTool({
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,
-            self: { objective: selfObjective, loop: selfLoop },
+            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets },
             // Loud tier marker (D-004): a non-full session sees the smaller
             // activity window is tier-derived (widen via activity_limit /
             // payloadTier:"full").

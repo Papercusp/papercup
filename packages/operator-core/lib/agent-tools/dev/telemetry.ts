@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { telemetryRollup } from '../../dev-data';
+import { flagPollSuspects, telemetryRollup } from '../../dev-data';
 
 export default defineTool({
   name: 'dev:telemetry',
@@ -36,18 +36,24 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
+    const hours = args.hours ?? 24;
     const result = await telemetryRollup({
       workspaceIds: args.workspaceIds ?? null,
       transports: args.transports ?? null,
-      hours: args.hours,
+      hours,
       limit: args.limit,
     });
+    // Poll-detector guard (EI-7029): surface polling-shaped tools UP FRONT so a
+    // new storm is flagged on the next telemetry read, not discovered from a
+    // bandwidth bill. Empty array = nothing suspect.
+    const pollSuspects = flagPollSuspects(result.entries, hours);
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify({
             count: result.entries.length,
+            poll_suspects: pollSuspects,
             entries: result.entries,
           }),
         },

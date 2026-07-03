@@ -7,8 +7,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   COLOR_SCHEMES,
+  COLOR_SQUARES,
   DEFAULT_SCHEME,
   allocateNextSchemeName,
+  hexToHsv,
+  nearestColorSquareEmoji,
   oscRecolorSequence,
   oscResetSequence,
   schemeByName,
@@ -133,6 +136,58 @@ describe('schemeForSlug (deterministic fallback)', () => {
   it('always returns a catalog member', () => {
     for (const slug of ['a', 'fleet-one', 'dummy-fleet-gcd-lcm-2026-06-30', '']) {
       expect(COLOR_SCHEMES).toContainEqual(schemeForSlug(slug));
+    }
+  });
+});
+
+describe('hexToHsv', () => {
+  it('converts primaries to their canonical hue (s=v=1)', () => {
+    expect(hexToHsv('#ff0000')).toEqual({ h: 0, s: 1, v: 1 });
+    expect(hexToHsv('#00ff00')).toEqual({ h: 120, s: 1, v: 1 });
+    expect(hexToHsv('#0000ff')).toEqual({ h: 240, s: 1, v: 1 });
+  });
+  it('reads grayscale as zero saturation, value = lightness', () => {
+    expect(hexToHsv('#000000')).toEqual({ h: 0, s: 0, v: 0 });
+    expect(hexToHsv('#808080').s).toBe(0);
+    expect(hexToHsv('#ffffff')).toEqual({ h: 0, s: 0, v: 1 });
+  });
+  it('accepts a missing #, 3-digit shorthand, and falls back to black on garbage', () => {
+    expect(hexToHsv('ff0000')).toEqual({ h: 0, s: 1, v: 1 });
+    expect(hexToHsv('#f00')).toEqual({ h: 0, s: 1, v: 1 });
+    expect(hexToHsv('not-a-color')).toEqual({ h: 0, s: 0, v: 0 });
+  });
+});
+
+describe('nearestColorSquareEmoji', () => {
+  it('snaps pure hues to their family square (cyan→blue, magenta→purple)', () => {
+    expect(nearestColorSquareEmoji('#ff0000')).toBe('🟥');
+    expect(nearestColorSquareEmoji('#ff8000')).toBe('🟧');
+    expect(nearestColorSquareEmoji('#ffff00')).toBe('🟨');
+    expect(nearestColorSquareEmoji('#00ff00')).toBe('🟩');
+    expect(nearestColorSquareEmoji('#00ffff')).toBe('🟦'); // cyan → blue (no cyan square)
+    expect(nearestColorSquareEmoji('#0000ff')).toBe('🟦');
+    expect(nearestColorSquareEmoji('#8a2be2')).toBe('🟪');
+    expect(nearestColorSquareEmoji('#ff00ff')).toBe('🟪'); // magenta → purple
+  });
+  it('maps near-grayscale to a neutral square by lightness', () => {
+    expect(nearestColorSquareEmoji('#111111')).toBe('⬛');
+    expect(nearestColorSquareEmoji('#eeeeee')).toBe('⬜');
+  });
+  it('reads a dark warm color as brown, a bright one as orange/yellow', () => {
+    expect(nearestColorSquareEmoji('#3a2c08')).toBe('🟫'); // antique-gold bg (dark amber)
+    expect(nearestColorSquareEmoji('#78350f')).toBe('🟧'); // burnt-amber bg (brighter)
+  });
+  it('maps representative catalog backgrounds to the expected family', () => {
+    const bg = (name: string) => schemeByName(name)!.bg;
+    expect(nearestColorSquareEmoji(bg('royal-purple'))).toBe('🟪');
+    expect(nearestColorSquareEmoji(bg('forest'))).toBe('🟩');
+    expect(nearestColorSquareEmoji(bg('oxblood'))).toBe('🟥');
+    expect(nearestColorSquareEmoji(bg('midnight-slate'))).toBe('🟦');
+    expect(nearestColorSquareEmoji(bg('graphite'))).toBe('⬛');
+  });
+  it('every catalog scheme bg resolves to a valid palette square', () => {
+    for (const s of COLOR_SCHEMES) {
+      expect(COLOR_SQUARES as readonly string[], s.name).toContain(nearestColorSquareEmoji(s.bg));
     }
   });
 });

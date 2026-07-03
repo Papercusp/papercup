@@ -22,9 +22,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SubstrateIpcClient } from './substrate-ipc-client';
 
-/** A minimal line-delimited JSON-RPC 2.0 echo server (the sidecar wire shape). */
-function startEchoServer(socketPath: string): Promise<net.Server> {
+interface FakeSidecar {
+  server: net.Server;
+  /** Simulate process death: destroy every live connection AND stop listening. */
+  kill(): Promise<void>;
+}
+
+/** A minimal line-delimited JSON-RPC 2.0 echo server (the sidecar wire shape).
+ *  Tracks connections so kill() behaves like a killed process — a bare
+ *  server.close() only stops the LISTENER and would leave established
+ *  connections (and thus the test) hanging. */
+function startEchoServer(socketPath: string, respond = true): Promise<FakeSidecar> {
+  const conns = new Set<net.Socket>();
   const server = net.createServer((conn) => {
+    conns.add(conn);
+    conn.on('close', () => conns.delete(conn));
+    if (!respond) return;
     let buf = '';
     conn.on('data', (chunk) => {
       buf += chunk.toString();
@@ -38,14 +51,15 @@ function startEchoServer(socketPath: string): Promise<net.Server> {
       }
     });
   });
+  const kill = (): Promise<void> => {
+    for (const c of conns) c.destroy();
+    conns.clear();
+    return new Promise((resolve) => server.close(() => resolve()));
+  };
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(socketPath, () => resolve(server));
+    server.listen(socketPath, () => resolve({ server, kill }));
   });
-}
-
-function closeServer(server: net.Server): Promise<void> {
-  return new Promise((resolve) => server.close(() => resolve()));
 }
 
 function tmpSocketPath(tag: string): string {
@@ -79,8 +93,8 @@ describe('SubstrateIpcClient — WI-895 (b): reconnect + truthful dial errors', 
     const gen1 = await startEchoServer(sockPath);
     await expect(client.call('sidecar:healthz')).resolves.toEqual({ echo: 'sidecar:healthz' });
 
-    // 2. Sidecar dies (server closed + socket file gone — a killed process).
-    await closeServer(gen1);
+    // 2. Sidecar dies (connections destroyed + listener closed + socket file gone).
+    await gen1.kill();
     fs.rmSync(sockPath, { force: true });
     // Give the client's 'close' event a beat to fire.
     await new Promise((r) => setTimeout(r, 50));
@@ -94,43 +108,36 @@ describe('SubstrateIpcClient — WI-895 (b): reconnect + truthful dial errors', 
     //    this) — the very next call must reconnect and succeed. This is the
     //    "next healthz reconnects" recurrence guard from the WI-895 live specimen.
     const gen2 = await startEchoServer(sockPath);
-    cleanups.push(() => closeServer(gen2));
+    cleanups.push(() => gen2.kill());
     await expect(client.call('sidecar:ping')).resolves.toEqual({ echo: 'sidecar:ping' });
   });
 
   it('an in-flight RPC rejects promptly when the connection drops (no 30s hang)', async () => {
     const sockPath = tmpSocketPath('drop');
-    // A server that accepts, never answers, and hard-destroys the connection shortly after.
-    const server = net.createServer((conn) => {
-      setTimeout(() => conn.destroy(), 100);
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(sockPath, () => resolve());
-    });
-    cleanups.push(() => closeServer(server));
+    // Accepts, never answers; we kill it while the RPC is in flight.
+    const sidecar = await startEchoServer(sockPath, false);
+    cleanups.push(() => sidecar.kill());
 
     const client = new SubstrateIpcClient(sockPath);
     cleanups.push(() => client.close());
 
     const started = Date.now();
-    await expect(client.call('sidecar:healthz')).rejects.toThrow(/Socket error|closed/i);
+    const inflight = client.call('sidecar:healthz');
+    inflight.catch(() => {}); // observed again below — avoid an unhandled-rejection blip
+    await new Promise((r) => setTimeout(r, 100)); // let the dial + write land
+    await sidecar.kill(); // sidecar dies mid-RPC
+    await expect(inflight).rejects.toThrow(/Socket error|closed/i);
     expect(Date.now() - started).toBeLessThan(5000);
   });
 
   it('close() rejects pending RPCs instead of leaving them to time out', async () => {
     const sockPath = tmpSocketPath('close');
-    const server = net.createServer(() => {
-      /* accept, never respond */
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(sockPath, () => resolve());
-    });
-    cleanups.push(() => closeServer(server));
+    const sidecar = await startEchoServer(sockPath, false); // accept, never respond
+    cleanups.push(() => sidecar.kill());
 
     const client = new SubstrateIpcClient(sockPath);
     const inflight = client.call('sidecar:healthz');
+    inflight.catch(() => {}); // observed again below
     // Let the dial establish so the RPC is actually pending on the wire.
     await new Promise((r) => setTimeout(r, 50));
     client.close();

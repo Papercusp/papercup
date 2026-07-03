@@ -210,6 +210,72 @@ export async function telemetryRollup(
   };
 }
 
+// ── Poll-suspect detector (EI-7029) ────────────────────────────────
+
+export interface PollSuspect {
+  tool_name: string;
+  call_count: number;
+  /** Sustained call rate over the window. */
+  calls_per_hour: number;
+  /** Mean same-tool calls per spawn — a poller re-calls one tool from few spawns. */
+  calls_per_spawn: number;
+  /** Aggregate result bytes over the window — the cost of the polling. */
+  total_bytes: number;
+  reason: string;
+}
+
+/** A tool is poll-suspect when it sustains ≥ this many calls/hour… */
+export const POLL_SUSPECT_MIN_CALLS_PER_HOUR = 120;
+/** …AND averages ≥ this many same-tool calls per spawn. Both together
+ *  separate a polling loop (few spawns, endless re-calls — the statusline
+ *  double-call storm was thousands/hr from hook re-invocations) from a busy
+ *  fleet legitimately fanning one call per spawn. */
+export const POLL_SUSPECT_MIN_CALLS_PER_SPAWN = 30;
+
+/**
+ * Flag poll-shaped tool usage in a telemetry rollup (EI-7029: the statusline
+ * storm — ~200k wasted MCP calls/day — sat visible-but-unflagged in this very
+ * rollup for weeks). Pure so it is unit-testable; `dev:telemetry` folds the
+ * result into its response as `poll_suspects`, which the /dev Telemetry tab
+ * and any agent reading the tool see without having to know the thresholds.
+ * A flag, not a block: legit high-frequency callers stay callable — the point
+ * is that a NEW poll storm surfaces on the next telemetry read, not after the
+ * next 50GB/day bill.
+ */
+export function flagPollSuspects(
+  entries: TelemetryRollupEntry[],
+  hours: number,
+): PollSuspect[] {
+  const h = Math.max(1, hours);
+  const suspects: PollSuspect[] = [];
+  for (const e of entries) {
+    const spawns = Math.max(1, e.call_count - (e.repeat_within_spawn ?? 0));
+    const perHour = e.call_count / h;
+    const perSpawn = e.call_count / spawns;
+    if (
+      perHour >= POLL_SUSPECT_MIN_CALLS_PER_HOUR &&
+      perSpawn >= POLL_SUSPECT_MIN_CALLS_PER_SPAWN
+    ) {
+      suspects.push({
+        tool_name: e.tool_name,
+        call_count: e.call_count,
+        calls_per_hour: Math.round(perHour),
+        calls_per_spawn: Math.round(perSpawn),
+        total_bytes: e.total_bytes,
+        reason:
+          `${Math.round(perHour)} calls/hr sustained over ${h}h from ~${spawns} spawn(s) ` +
+          `(${Math.round(perSpawn)} calls/spawn) — polling-shaped; expect an SSE/event ` +
+          `subscription or a cached read instead (EI-7029)`,
+      });
+    }
+  }
+  // Worst first: rate × per-spawn concentration.
+  suspects.sort(
+    (a, b) => b.calls_per_hour * b.calls_per_spawn - a.calls_per_hour * a.calls_per_spawn,
+  );
+  return suspects;
+}
+
 // ── Served-format adoption (usage-insights P-002/D-002) ────────────
 
 export interface FormatAdoptionInput {

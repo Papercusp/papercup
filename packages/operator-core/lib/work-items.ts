@@ -1986,7 +1986,7 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
        SET taken_by = NULL, taken_at = NULL, last_progress_at = NULL,
            -- Release-cooldown provenance (mig 485 / EI-6956): remember WHO freed this row
            -- so the claim floors keep the RELEASING bee off it for a short cooldown
-           -- (claim/release ping-pong guard). SET's RHS reads the OLD row, so `taken_by`
+           -- (claim/release ping-pong guard). SET's RHS reads the OLD row, so taken_by
            -- here is the releasing holder; an already-free release keeps prior provenance.
            last_released_by = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN taken_by ELSE last_released_by END,
            last_released_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_released_at END,
