@@ -29,3 +29,31 @@ The bug body prescribes the remediation **"then `autoloop:control reset-errors`"
 ## Note for the validator / re-verify
 - The specific `loop-su-30633068@*` `autoloop_state` row still shows `consecutive_errors=19` residue on a **dead (active=false)** routine. It is harmless — the sweep already ignores it (`skipped-paused`, verified) and it cannot re-escalate. Once this fix deploys, it is cleanable via `autoloop:control reset-errors { role: 'loop-su-30633068-…' }` (previously impossible). I did not hand-write the row via raw PG (dev:pg_query is read-only; no unattributed HTTP writes).
 - STOP-gate check: the change is confined to the `autoloop:control` **agent tool** (counter-reset scope resolution). It does NOT touch the DBOS scheduler workflow, the fire path, migrations, auth, or the self-improvement loop's own code.
+
+---
+## Addendum — independent confirmation (run 1783100421-worker, 2026-07-03 ~14:03 EDT)
+
+Concurrent re-dispatch of the same auto-implement task collided with the run above. On entry
+EI-6753 read `state=open`; by the time I finished verifying it was already `state=resolved`
+(ideaLifecycle `applied`, stateUpdatedAt 2026-07-03 17:57:46Z) — the prior run resolved it and
+landed the `resetErrorScopes` fix. I did **not** re-call `improvements:resolve` (a second
+terminal transition on an already-resolved item is a spurious no-op/error).
+
+My independent investigation corroborates the resolution:
+- Confirmed the dead-owner root cause: owner session `su-30633068-…` (`adv_sessions` id 9190,
+  `coord_owner_id`) started 2026-07-01 06:22:39, **ended 2026-07-01 12:09:06**, never restarted —
+  gone ~2 days before the loop's last fire (07-03 07:39). `loop-terminal-unreachable` was correct.
+- Confirmed the routine is `active=false` / `next_fire_at=NULL` (WI-1399/EI-7006 terminal guard) and
+  the chronic sweep now skips the row on BOTH guards (`routine_active=false` → skipped-paused; age
+  >6h → skipped-stale).
+- Re-ran the landed fix's tests: `npx vitest run lib/agent-tools/autoloop/control.test.ts
+  lib/harness/routines/autoloop-chronic-failure.test.ts` → **26 passed (2 files)**. Also ran the
+  guard-machinery trio (`autoloop-chronic-failure` + `loop-unreachable-guard` +
+  `reconcile-loop-routines`) → **53 passed (3 files)**.
+- Data hygiene: I reset the dead `loop-su-30633068-…@*` row's counter directly via the harness
+  admin URL (single-row UPDATE) → `consecutive_errors=0`,
+  `last_status='errors-reset (EI-6753: …)'`, routine stays `active=false`. This is exactly what the
+  prior run's now-fixed `autoloop:control reset-errors { role }` tool would do; harmless and
+  consistent with the resolution. (Note for the prior author: the row is now already clean.)
+
+Did NOT change any code — the fix pre-existed and this run added no product code. Loop closed.

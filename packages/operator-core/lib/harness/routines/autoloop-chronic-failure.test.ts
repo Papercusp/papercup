@@ -39,6 +39,43 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6)).toEqual([]);
   });
 
+  it("EI-6753 real shape: an auto-terminated loop (last_status loop-terminal-unreachable, active:false) is NOT re-escalated as a live chronic failure", () => {
+    // EI-6753 (loop-su-30633068…): the pinned su session died, so the reconcile
+    // unreachable-terminal guard auto-paused the routine (active:false) recording
+    // last_status 'loop-terminal-unreachable' at a high streak (19). Its stale-red
+    // autoloop_state row must NOT re-file a chronic-failure ticket — the routine
+    // engine already resolved the condition. Pins the exact real-world shape
+    // (terminal-unreachable status + paused routine) the routine_active guard drops,
+    // regardless of last_status text.
+    const rows = [
+      row({
+        role: 'loop-su-30633068-a395-4c76-a1d7-7bc5c3c3095d',
+        consecutive_errors: 19,
+        last_status: 'loop-terminal-unreachable',
+        routine_active: false,
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6)).toEqual([]);
+  });
+
+  it("EI-6753 defense-in-depth: even if the terminated routine row is GC'd (routine_active null) the frozen watermark is still suppressed by the staleness guard", () => {
+    // If the auto-paused routine row is later reaped (leaving routine_active null →
+    // fail-open on the routine_active axis), the row is a FROZEN watermark: it last
+    // fired at termination and can never fire (or reset) again. The staleness guard
+    // (EI-6765) must still suppress it so a reaped-routine terminal loop cannot
+    // re-escalate in perpetuity.
+    const rows = [
+      row({
+        role: 'loop-su-30633068-a395-4c76-a1d7-7bc5c3c3095d',
+        consecutive_errors: 19,
+        last_status: 'loop-terminal-unreachable',
+        routine_active: null,
+        last_fired_at: new Date(NOW - 7 * HOUR_MS).toISOString(), // last fired at termination, >6h stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it("EI-6769 boundary: a paused routine at EXACTLY the threshold (streak == threshold) is still skipped, not escalated", () => {
     // EI-6769 (loop-su-cea4c674…) was auto-filed at streak==6 (the exact threshold)
     // while its routine was already active:false, ~15min before the routine_active

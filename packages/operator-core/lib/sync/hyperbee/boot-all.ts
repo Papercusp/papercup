@@ -540,17 +540,35 @@ export async function bootSingleHarness(
     }
   }
   const workspaceRoot = opts.workspaceRoot ?? workspaceRootForId(workspaceId);
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  // WI-1892/P-059: 30s is routinely too short under a 35-substrate boot storm
+  // (RocksDB open + merge catch-up + swarm join contend for I/O), and a timed-out
+  // boot is NOT unwound — the detached bootHarness keeps running, holding the
+  // corestore lock + the joined swarm topic with NO registered handle, so the
+  // send-side drain is never wired and peers see a zombie endpoint that answers
+  // announces but never replicates/drains (2026-07-03: 16/35 harnesses on bg-host,
+  // incl. papercusp-workspace::papercusp — the P-059 outage). Until timeout
+  // CANCELLATION is implemented, make the budget operator-tunable.
+  const envBootTimeout = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS);
+  const timeoutMs =
+    opts.timeoutMs ??
+    (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
+  // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
+  // boot that outlives the timeout can be ADOPTED instead of zombified — see the
+  // catch below. Without this, the detached boot keeps the corestore lock + the
+  // joined swarm topic forever with NO registered handle: peers connect and
+  // exchange announces with a substrate that can never drain or merge.
+  let rawBoot: Promise<BootedHarnessHandle> | null = null;
   const bootPromise = (async () => {
     const swarmBinding = (await resolver(workspaceId, harnessSlug)) ?? null;
+    rawBoot = bootHarness({
+      workspaceRoot,
+      workspaceId,
+      harnessSlug,
+      swarmBinding,
+    });
     return await Promise.race([
-      bootHarness({
-        workspaceRoot,
-        workspaceId,
-        harnessSlug,
-        swarmBinding,
-      }),
+      rawBoot,
       new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error(`boot timeout after ${timeoutMs}ms`)),
@@ -581,11 +599,45 @@ export async function bootSingleHarness(
     if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
+    const errMsg = (e as Error)?.message ?? String(e);
+    // WI-1892 (zombie-substrate guard): the race timed out but the REAL boot is
+    // still running detached — holding the corestore lock and (once it gets
+    // there) the joined swarm topic. When it eventually settles, ADOPT a success
+    // (register the handle + wire the send-side, exactly as the happy path
+    // would) unless a newer boot got there first — in which case close the late
+    // one so it releases the corestore instead of squatting. A late FAILURE
+    // needs no action (bootHarnessSubstrate unwinds its own partial state).
+    if (rawBoot && errMsg.startsWith('boot timeout')) {
+      void rawBoot
+        .then(async (handle) => {
+          if (!handles.has(k) && !inflight.has(k)) {
+            handles.set(k, handle);
+            if (evictionTrackingEnabled) {
+              lastAccess.set(k, Date.now());
+              evicted.delete(k);
+            }
+            // eslint-disable-next-line no-console
+            console.info(
+              `[hyperbee-substrate] (${k}) late boot ADOPTED after '${errMsg}' — registering handle + wiring send-side`,
+            );
+            if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
+          } else {
+            // eslint-disable-next-line no-console
+            console.info(
+              `[hyperbee-substrate] (${k}) late boot superseded by a newer boot — closing it to release the corestore`,
+            );
+            await (handle as { close?: () => Promise<void> }).close?.();
+          }
+        })
+        .catch(() => {
+          // late failure — bootHarnessSubstrate's own cleanup applies
+        });
+    }
     return {
       workspaceId,
       harnessSlug,
       state: 'failed',
-      error: (e as Error)?.message ?? String(e),
+      error: errMsg,
     };
   } finally {
     inflight.delete(k);

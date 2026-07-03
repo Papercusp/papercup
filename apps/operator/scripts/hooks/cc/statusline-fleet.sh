@@ -68,11 +68,17 @@ OBJECTIVE_MAX = 48  # clip a long objective so the 🔭 segment can't swallow li
 
 
 def call_tool(name, args):
-    """One MCP JSON-RPC tools/call → the inner tool payload (or None)."""
+    """One MCP JSON-RPC tools/call → the inner tool payload (or None).
+
+    `format=json` is REQUIRED on the URL (result-format negotiation, P-009): the
+    fleet-wide tool-result default is TOON text, which json.loads() below cannot
+    parse — without the pin every glance came back unparseable, this returned
+    None, and the caller took the legacy double-call fallback on EVERY render
+    (~4k wasted activity:recent calls/hour fleet-wide, EI-7029)."""
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                        'params': {'name': name, 'arguments': args}}).encode()
     req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&client=' + urllib.parse.quote(me, safe=''),
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client=' + urllib.parse.quote(me, safe=''),
         data=body,
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                  'Accept': 'application/json, text/event-stream'},
@@ -361,16 +367,19 @@ mchip = model_chip(_mlabel, _meffort)
 mtitle = model_title(_mlabel, _meffort)
 
 if not isinstance(glance, dict) or 'wake' not in glance:
-    # Operator predates coord:glance (pre-deploy window) → legacy single line.
-    # In fixture mode an activity-shaped payload (no 'wake' key) exercises THIS
-    # branch — the legacy render stays testable.
-    if fixture:
-        data = glance if isinstance(glance, dict) else None
-    else:
-        try:
-            data = call_tool('activity:recent', {'limit': ACTIVITY_WINDOW})
-        except Exception:
-            data = None
+    # No parseable glance. Fixture mode: an activity-shaped payload (no 'wake'
+    # key) exercises the legacy single-line render below — stays testable.
+    # LIVE mode: NO second network call. The old `activity:recent` fallback
+    # existed for the pre-deploy window before coord:glance shipped
+    # (2026-06-12); once the TOON result-format default landed, json.loads()
+    # failed on every glance response and this branch silently DOUBLED the
+    # statusline's MCP traffic fleet-wide while rendering the degraded legacy
+    # line (EI-7029). call_tool now pins format=json, so an unparseable glance
+    # means operator trouble — fail open and render nothing, per the header
+    # contract.
+    if not fixture:
+        sys.exit(0)
+    data = glance if isinstance(glance, dict) else None
     rows = (data or {}).get('activity')
     if not isinstance(rows, list) or not rows:
         sys.exit(0)

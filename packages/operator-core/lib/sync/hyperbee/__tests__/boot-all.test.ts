@@ -149,6 +149,48 @@ describe('boot-all — substrate orchestrator', () => {
     expect(r.boot.state).toBe('failed');
   });
 
+  // WI-1892 (P-059 zombie-substrate class): a boot that outlives the timeout
+  // used to keep running DETACHED — corestore lock held, swarm topic joined,
+  // but no registered handle and no send-side drain, so peers saw a live
+  // endpoint that answered announces yet never replicated or drained. The fix
+  // ADOPTS a late success (register + wire) unless a newer boot won the slot,
+  // in which case the late handle is closed to release the corestore.
+  it('WI-1892: adopts a late boot after timeout instead of zombifying it', async () => {
+    const h = fakeHandle('ws-9', 'slowpoke');
+    const r = await bootSingleHarness('ws-9', 'slowpoke', {
+      timeoutMs: 5,
+      bootHarness: () =>
+        new Promise<BootedHarnessHandle>((res) => setTimeout(() => res(h), 40)),
+      resolveSwarmBinding: async () => null,
+      skipSendSideWiring: true,
+    });
+    expect(r.state).toBe('failed');
+    expect(r.error).toMatch(/^boot timeout/);
+    // Not yet adopted — the real boot is still running detached.
+    expect(getBootedHarness('ws-9', 'slowpoke')).toBeNull();
+    await new Promise((res) => setTimeout(res, 80));
+    // The late success was ADOPTED: registered exactly like the happy path.
+    expect(getBootedHarness('ws-9', 'slowpoke')).toBe(h);
+  });
+
+  it('WI-1892: closes the late boot when a newer boot already took the slot', async () => {
+    const late = fakeHandle('ws-9', 'raced');
+    const r = await bootSingleHarness('ws-9', 'raced', {
+      timeoutMs: 5,
+      bootHarness: () =>
+        new Promise<BootedHarnessHandle>((res) => setTimeout(() => res(late), 40)),
+      resolveSwarmBinding: async () => null,
+      skipSendSideWiring: true,
+    });
+    expect(r.state).toBe('failed');
+    const winner = fakeHandle('ws-9', 'raced');
+    _setHandleForTests('ws-9', 'raced', winner);
+    await new Promise((res) => setTimeout(res, 80));
+    // The winner keeps the slot; the late boot was closed (corestore released).
+    expect(getBootedHarness('ws-9', 'raced')).toBe(winner);
+    expect(late.close).toHaveBeenCalled();
+  });
+
   it('bootAllHarnessesForActiveWorkspace returns 0 attempts for empty workspace list', async () => {
     const result = await bootAllHarnessesForActiveWorkspace({
       workspaceIds: [],

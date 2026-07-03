@@ -92,9 +92,22 @@ export const argsSchema = z
   })
   .refine(
     (a) =>
-      (a.items?.length ?? 0) > 0 ||
-      (Boolean(a.slug) && Boolean(a.phase) && Boolean(a.text) && Boolean(a.importance)),
-    { message: 'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many' },
+      (a.items?.length ?? 0) > 0
+        ? // Bulk form: every item must RESOLVE a slug, phase and importance (its own or
+          // the batch fallback). The handler dereferences the resolved phase (`as string`
+          // casts), so an unresolvable field used to escape validation and crash inside
+          // the plan lock with "Cannot read properties of undefined (reading 'slice')".
+          a.items!.every(
+            (it) =>
+              Boolean(it.slug ?? a.slug) &&
+              Boolean(it.phase ?? a.phase) &&
+              Boolean(it.importance ?? a.importance),
+          )
+        : Boolean(a.slug) && Boolean(a.phase) && Boolean(a.text) && Boolean(a.importance),
+    {
+      message:
+        'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many — every item must resolve a slug, a phase AND an importance (per-item or batch-level)',
+    },
   );
 
 interface NewItem {

@@ -28,7 +28,11 @@
  *   - `system:coord-invariant-monitor` (P-013, hourly): cheap SQL/adapter
  *     snapshots checked against thresholds —
  *       · handoffs stuck pending          (open > stuckHandoffHours, def 12)
- *       · unacked escalations             (open > staleEscalationHours, def 6)
+ *       · operational escalations undrained (operational + open past the reconcile
+ *                                          TTL — the substrate's own drain is failing;
+ *                                          EI-6910: was "any open escalation past 6h",
+ *                                          which fired perpetually on the human's normal
+ *                                          decision backlog)
  *       · locks held past TTL, unswept    (expired > expiredLockGraceMin, def 60)
  *       · presence ghosts                 (heartbeat stale > presenceGhostHours,
  *                                          def 72, rows never cleaned)

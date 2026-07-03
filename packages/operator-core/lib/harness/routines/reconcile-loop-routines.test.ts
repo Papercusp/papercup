@@ -25,7 +25,9 @@ const NO_PRIOR_ERRORS = vi.fn(async () => null);
 function fakeSql(rows: Record<string, unknown>[], updates: unknown[][]): Sql {
   return ((strings: TemplateStringsArray, ...vals: unknown[]) => {
     const q = strings.join(' ? ');
-    if (/UPDATE/i.test(q)) {
+    // Anchor on the statement HEAD: the reconcile SELECT legitimately contains the
+    // substring "update" (carry_notes.updated_ts), so a bare /UPDATE/i misclassifies it.
+    if (/^\s*UPDATE/i.test(q)) {
       updates.push(vals);
       return Promise.resolve([{ id: 'rt-1' }]);
     }
@@ -92,7 +94,7 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
   });
 });
 
-describe('reconcileLoopRoutines — cold reset-boundary guard (su-cold-auto 2026-07-03)', () => {
+describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
   const coldRow = (over: Record<string, unknown>) => ({
@@ -105,6 +107,8 @@ describe('reconcileLoopRoutines — cold reset-boundary guard (su-cold-auto 2026
     routine_workspace_id: 'ws-papercusp',
     last_fired_at: pgString(T0),
     presence_last_active_at: null,
+    carry: 'cold',
+    note_updated_ts: null,
     ...over,
   });
 
@@ -145,11 +149,12 @@ describe('reconcileLoopRoutines — cold reset-boundary guard (su-cold-auto 2026
     expect(res.loops[0].nextFireAt).toBe(T0 + 90_000 + 60_000); // completed + interval, off the REAL settle
   });
 
-  it("a warm loop (no post-fire 'started' — process boot precedes the fire) settles exactly as before", async () => {
+  it("a warm loop (no carry marker) with a post-fire 'ended' settles exactly as before", async () => {
     const updates: unknown[][] = [];
     const sql = fakeSql(
       [
         coldRow({
+          carry: null, // WARM loop
           lifecycle_completed_at: pgString(T0 + 5_000),
           lifecycle_started_at: null, // warm: 'started' fired at boot, outside the > last_fired window
         }),
@@ -161,16 +166,55 @@ describe('reconcileLoopRoutines — cold reset-boundary guard (su-cold-auto 2026
     expect(res.loops[0].via).toBe('lifecycle');
   });
 
-  it('while the reset boundary suppresses the lifecycle settle, presence-quiescence still recovers a genuinely-idle session', async () => {
-    // The cold turn did work (presence advanced past the fire) then idled ≥60s but its Stop
-    // report was DROPPED: the fallback must still re-arm — the boundary guard only suppresses
-    // the PRIMARY signal, it must not wedge the loop.
+  it('the carry-note REFRESH is a cold settle (the protocol\'s own completion receipt), even with no turn-ended marker', async () => {
+    // The iteration checkpointed (loop:checkpoint before turn end) but its Stop report was
+    // dropped — the note refresh is authoritative evidence the iteration ran.
     const updates: unknown[][] = [];
     const sql = fakeSql(
       [
         coldRow({
           lifecycle_completed_at: pgString(T0 + 1_000),
-          lifecycle_started_at: pgString(T0 + 1_250),
+          lifecycle_started_at: pgString(T0 + 1_250), // boundary only — no turn-ended yet
+          note_updated_ts: String(T0 + 45_000), // bigint arrives as a STRING over the wire
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 50_000 });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('note-refresh');
+    expect(res.loops[0].nextFireAt).toBe(T0 + 45_000 + 60_000);
+  });
+
+  it('bare presence-quiescence is NOT a cold settle — a recycled, booted-but-idle session whose carry inject was dropped must NOT re-fire (the stale-note treadmill, wakes #5033→#5036)', async () => {
+    // Live repro: the wc8 RECYCLE killed the child (ended, no started yet / boot idle),
+    // presence advanced at boot then went quiet ≥60s with the iteration NEVER run. The old
+    // quiescence fallback read that as settled and fired wc9 91s later into a booting host.
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          lifecycle_completed_at: pgString(T0 + 1_000), // the recycle kill's 'ended'
+          lifecycle_started_at: null, // fresh child hasn't emitted 'started' (or boot idle)
+          presence_last_active_at: pgString(T0 + 5_000), // boot activity, then quiet
+          note_updated_ts: String(T0 - 300_000), // note is STALE (pre-fire) — iteration never ran
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({ sql, nowMs: T0 + 100_000 }); // 95s quiet — old code re-fired here
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0); // parked until real evidence (or the stuck-park backstop retries)
+  });
+
+  it('a warm loop still recovers via presence-quiescence (the fallback is unchanged for warm)', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        coldRow({
+          carry: null, // WARM loop
+          lifecycle_completed_at: null,
+          lifecycle_started_at: null,
           presence_last_active_at: pgString(T0 + 30_000), // worked until +30s, then quiet
         }),
       ],

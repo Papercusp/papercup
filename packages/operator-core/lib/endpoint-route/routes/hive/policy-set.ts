@@ -21,6 +21,8 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { loadHivePubkey } from '../../../identity/hive-keypair';
+import { deriveHiveFederationTopic, topicAsHex } from '../../../sync/hyperbee/derive-swarm-topic';
 import { resolveLocalGithubIdentity } from '../../../identity/resolve-local-github-identity';
 import { authorHivePolicy, type AuthorHivePolicyResult } from '../../../hive-policy-author';
 import { getHivePolicy, type ResolvedHivePolicy } from '../../../hive-policy-store';
@@ -132,13 +134,13 @@ async function realViewerGithubId(): Promise<number | null> {
   }
 }
 
-async function realReadClaimGate(workspaceId: string, hiveHomeSlug: string): Promise<ClaimGateRow | null> {
+async function queryBindingBySlug(workspaceId: string, slug: string): Promise<ClaimGateRow | null> {
   const { sql } = getOrgPg();
   try {
     const rows = (await sql`
       SELECT claim_status, claimed_by_github_user_ids
         FROM harness_shared.shared_repo_binding_cache
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${hiveHomeSlug}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug}
        LIMIT 1
     `) as unknown as Array<{
       claim_status: BindingClaimStatus;
@@ -156,6 +158,77 @@ async function realReadClaimGate(workspaceId: string, hiveHomeSlug: string): Pro
     if (/does not exist|relation .* does not exist/i.test(msg)) return null;
     throw e;
   }
+}
+
+async function queryClaimedBindingsByTopic(workspaceId: string, topicHex: string): Promise<ClaimGateRow[]> {
+  const { sql } = getOrgPg();
+  try {
+    const rows = (await sql`
+      SELECT claim_status, claimed_by_github_user_ids
+        FROM harness_shared.shared_repo_binding_cache
+       WHERE workspace_id = ${workspaceId}
+         AND harness_topic = ${topicHex}
+         AND claim_status = 'claimed'
+    `) as unknown as Array<{
+      claim_status: BindingClaimStatus;
+      claimed_by_github_user_ids: unknown;
+    }>;
+    return rows.map((row) => ({
+      claimStatus: row.claim_status,
+      claimedGithubUserIds: parseIdArray(row.claimed_by_github_user_ids),
+    }));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/does not exist|relation .* does not exist/i.test(msg)) return [];
+    throw e;
+  }
+}
+
+/** Injectable seams for {@link readClaimGateWithTopicFallback} (unit-testable without PG/keychain). */
+export interface ClaimGateReadSeams {
+  querySlugRow?: (workspaceId: string, slug: string) => Promise<ClaimGateRow | null>;
+  queryClaimedTopicRows?: (workspaceId: string, topicHex: string) => Promise<ClaimGateRow[]>;
+  loadPubkey?: (workspaceId: string, hiveHomeSlug: string) => Promise<string | null>;
+}
+
+/**
+ * WI-1918 (P-009): the binding-cache rows of a from-repo Hive are keyed by
+ * MEMBER slug — `hive-publish-from-repo` step 6 passes `m.slug`, one row per
+ * member repo, keyed (workspace, provider, github_repository_id) — so the hive
+ * HOME slug never has a row (it is not repo-bound), and the slug-only lookup
+ * made this gate return `hive_unclaimed` FOREVER for that hive class, even
+ * after a legitimate `claimBinding`. The member rows DO carry
+ * `harness_topic` = the hive federation topic (derived from the hive pubkey),
+ * so when the direct slug lookup misses: resolve the hive's pubkey (the same
+ * loader the author step uses — only the owner Swarm holds it), derive its
+ * topic, and accept CLAIMED member bindings on that topic as the hive's claim
+ * gate (claimants = union across claimed rows). A claimant proved GitHub
+ * authority over a repo OF this hive — the EN-1 authority intent.
+ */
+export async function readClaimGateWithTopicFallback(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  seams: ClaimGateReadSeams = {},
+): Promise<ClaimGateRow | null> {
+  const {
+    querySlugRow = queryBindingBySlug,
+    queryClaimedTopicRows = queryClaimedBindingsByTopic,
+    loadPubkey = loadHivePubkey,
+  } = seams;
+  const direct = await querySlugRow(workspaceId, hiveHomeSlug);
+  if (direct) return direct;
+  const pubkey = await loadPubkey(workspaceId, hiveHomeSlug).catch(() => null);
+  if (!pubkey) return null; // not the owner Swarm / unknown hive — keep 403 semantics
+  const topicHex = topicAsHex(deriveHiveFederationTopic(pubkey));
+  const rows = await queryClaimedTopicRows(workspaceId, topicHex);
+  if (rows.length === 0) return null;
+  const ids = new Set<number>();
+  for (const r of rows) for (const id of r.claimedGithubUserIds) ids.add(id);
+  return { claimStatus: 'claimed', claimedGithubUserIds: [...ids] };
+}
+
+async function realReadClaimGate(workspaceId: string, hiveHomeSlug: string): Promise<ClaimGateRow | null> {
+  return readClaimGateWithTopicFallback(workspaceId, hiveHomeSlug);
 }
 
 const realDeps: SetPolicyDeps = {

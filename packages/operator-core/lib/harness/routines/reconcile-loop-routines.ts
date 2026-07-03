@@ -30,10 +30,12 @@
  * ended" — picks the end marker exactly, since "started" has no "end".)
  *
  * ## Robustness (3 layers, each cheap)
- *  1. PRIMARY — the lifecycle 'ended' marker (above). COLD caveat: a cold reset/recycle
- *     wake restarts the session at delivery, emitting ended→started back-to-back; an
- *     'ended' older than the newest post-fire 'started' is that boundary, not a settle
- *     (see completionSignal's guard).
+ *  1. PRIMARY — the lifecycle 'ended' marker (above). COLD loops (payload_template
+ *     carry:'cold') use a DIFFERENT ladder entirely — see completionSignal: the settle is
+ *     the turn's 'ended' AFTER the boundary 'started', OR the carry-note refresh (the
+ *     protocol's own completion receipt); bare presence-quiescence is NOT a cold settle
+ *     (a recycle's booted-but-idle session is quiet without having run its iteration —
+ *     the 2026-07-03 stale-note-treadmill live finding, wakes #5033→#5036).
  *  2. FALLBACK — the lifecycle report is a DETACHED, fail-open POST (it CAN be lost). If
  *     no 'ended' marker exists after the fire but `coord_presence.last_active_at`
  *     advanced past last_fired_at AND has since gone quiet (≥ FALLBACK_QUIET_MS), the
@@ -113,7 +115,7 @@ function stuckParkMs(intervalMs: number): number {
   return Math.max(base, intervalMs * 4);
 }
 
-export type RebaseVia = 'lifecycle' | 'presence-quiescence' | 'stuck-backstop';
+export type RebaseVia = 'lifecycle' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
 
 export interface LoopRebaseResult {
   /** Loops re-armed this pass. */
@@ -157,6 +159,13 @@ interface LoopRow {
   /** max(agent_activity.created_at) for a kind='lifecycle' 'started' marker after the fire —
    *  the cold reset-boundary guard (see completionSignal). */
   lifecycle_started_at: Date | string | null;
+  /** payload_template->>'carry' — 'cold' marks a cold loop (reset/recycle wakes), which
+   *  changes what counts as a settle (see completionSignal). */
+  carry: string | null;
+  /** max(carry_notes.updated_ts) for the loop's scope, any workspace (epoch ms — bigint,
+   *  so a STRING over the wire). A refresh AFTER the fire is the cold protocol's own
+   *  "iteration done" contract (loop:checkpoint is REQUIRED before a cold turn ends). */
+  note_updated_ts: string | number | null;
   /** The session's most-recent genuine-activity timestamp (presence-v2, mig 277). */
   presence_last_active_at: Date | string | null;
 }
@@ -171,6 +180,40 @@ function completionSignal(
   lastFiredMs: number,
   nowMs: number,
 ): { completedAt: number; via: Exclude<RebaseVia, 'stuck-backstop'> } | null {
+  // ── COLD loop (carry:'cold') — settle requires evidence the ITERATION RAN ────────
+  // A cold wake delivers a reset/recycle that restarts the session, so the signals mean
+  // different things than warm (su-cold-auto live test, 2026-07-03, wakes 7-10):
+  //  - A recycle KILLS the child (emitting '■ session ended') and the fresh child's
+  //    carry inject is best-effort — when it defers, the booted-but-idle session sits
+  //    QUIET, which the presence-quiescence fallback read as "turn settled" and re-fired
+  //    91s after the recycle, into a still-booting host (wake #5036 after #5033). Bare
+  //    quiescence CANNOT distinguish "booted idle, iteration never ran" from "iteration
+  //    done" — so it is NOT a cold settle signal at all.
+  //  - What IS: (1) the turn's own Stop-hook 'ended' NEWER than the boundary 'started'
+  //    (the session booted AND its turn finished), or (2) the carry-note REFRESH — the
+  //    cold protocol's required loop:checkpoint before turn end, i.e. the iteration's
+  //    own completion receipt. Take the later of the two (checkpoint-then-more-work
+  //    still re-arms off the latest evidence; the pty host's clean-boundary gate defers
+  //    an early-landing cold apply to the turn boundary regardless).
+  //  - A dead boot / dropped iteration produces NEITHER → the loop stays parked until
+  //    the stuck-park backstop re-fires it, which re-delivers the SAME note — exactly
+  //    the right retry.
+  if (row.carry === 'cold') {
+    const lcCold = tsMs(row.lifecycle_completed_at);
+    const lsCold = tsMs(row.lifecycle_started_at);
+    const turnEnded = lcCold != null && lsCold != null && lcCold > lsCold ? lcCold : null;
+    const rawNoteTs = row.note_updated_ts == null ? null : Number(row.note_updated_ts);
+    const noteRefreshed =
+      rawNoteTs != null && Number.isFinite(rawNoteTs) && rawNoteTs > lastFiredMs ? rawNoteTs : null;
+    if (turnEnded != null && (noteRefreshed == null || turnEnded >= noteRefreshed)) {
+      return { completedAt: turnEnded, via: 'lifecycle' };
+    }
+    if (noteRefreshed != null) {
+      return { completedAt: noteRefreshed, via: 'note-refresh' };
+    }
+    return null;
+  }
+  // ── WARM loop — the original two-layer ladder ────────────────────────────────────
   // 1. PRIMARY: the Stop-hook lifecycle 'ended' marker (already filtered > last_fired by
   //    the SQL window). COLD-RESET-BOUNDARY GUARD (su-cold-auto 2026-07-03): a COLD
   //    reset/recycle wake restarts the session AT delivery — the dying process emits
@@ -249,6 +292,11 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary ILIKE '%start%'
                AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
+           (r.payload_template->>'carry') AS carry,
+           (SELECT max(cn.updated_ts)
+              FROM harness_shared.carry_notes cn
+             WHERE cn.scope = ('loop:' || r.install_slug || ':' || r.target_owner_id)
+               AND cn.note IS NOT NULL) AS note_updated_ts,
            (SELECT max(p.last_active_at)
               FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at
