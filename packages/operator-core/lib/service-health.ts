@@ -129,6 +129,97 @@ export function evaluateBgHostTicker(
   };
 }
 
+/**
+ * WI-1867: the routine hot paths — code that changes ROUTINE BEHAVIOR and therefore
+ * only takes effect on the bg-host after a `papercup-bg-host.service` restart. When
+ * the newest commit touching one of these is YOUNGER than the bg-host process, the
+ * routines primary is running STALE code: every loop fire / scheduled routine / wake
+ * emit behaves as-of its boot, however green the tree. This is exactly how the
+ * 2026-07-03 cold-auto bug hid — flag ON, code landed 08:46, bg-host up since 07:37,
+ * so every cold loop fire went out payload-less (warm) with zero error anywhere.
+ */
+export const BG_HOST_HOT_PATHS = [
+  'packages/operator-core/lib/dbos',
+  'packages/operator-core/lib/harness/routines',
+  'packages/operator-core/lib/events',
+  'packages/operator-core/lib/agent-tools/loop',
+] as const;
+
+/**
+ * Pure verdict for bg-host CODE DRIFT (WI-1867), from the bg-host process start (ms)
+ * + the newest hot-path commit (ms, sha). Unknown inputs ⇒ present:false (fail-soft,
+ * never a fabricated verdict). Drift is reported `up:true` — the service WORKS, it
+ * just behaves as-of an older commit — so it never fires a down-transition alarm or
+ * nudges an auto-restart (EI-2186: a bg-host restart reclaims in-flight spawns; the
+ * restart is a HUMAN/agent decision, this is the loud signal that it's due).
+ */
+export function evaluateBgHostCodeDrift(
+  bootMs: number | null,
+  hotCommitMs: number | null,
+  hotCommitSha?: string | null,
+): ProbeResult {
+  const name = 'bg-host-code';
+  if (bootMs == null || hotCommitMs == null) {
+    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'bg-host code-drift unknown (boot time or hot-path commit unreadable)' };
+  }
+  const drifted = hotCommitMs > bootMs;
+  if (!drifted) {
+    return { name, up: true, status: null, latencyMs: 0, note: 'bg-host code current (no routine hot-path commit since its boot)' };
+  }
+  const behindMin = Math.max(1, Math.round((hotCommitMs - bootMs) / 60_000));
+  const sha = hotCommitSha ? ` (${hotCommitSha.slice(0, 10)})` : '';
+  return {
+    name,
+    up: true,
+    status: null,
+    latencyMs: 0,
+    note:
+      `⚠ bg-host CODE DRIFT: routine hot-path code landed${sha} ~${behindMin}m AFTER papercup-bg-host booted — ` +
+      `loop fires / scheduled routines / wake emits are running STALE code until ` +
+      `\`systemctl --user restart papercup-bg-host.service\`. If you just landed routine-behavior code and it ` +
+      `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
+  };
+}
+
+/** Probe bg-host code drift (WI-1867): unit MainPID elapsed-seconds vs the newest
+ *  commit touching BG_HOST_HOT_PATHS in the integration tree. Fail-soft at every
+ *  step (no systemd / no git / no unit ⇒ present:false, never a phantom drift). */
+export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
+  const start = Date.now();
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    // Boot time: MainPID → ps etimes (elapsed seconds). Robust across locales/TZ
+    // (systemd's ActiveEnterTimestamp is a locale/TZ-formatted string).
+    const unit = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
+    const { stdout: pidOut } = await run('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', `${unit}.service`], { timeout: 3000 });
+    const pid = Number(pidOut.trim());
+    if (!Number.isFinite(pid) || pid <= 0) {
+      return { ...evaluateBgHostCodeDrift(null, null), latencyMs: Date.now() - start };
+    }
+    const { stdout: etimesOut } = await run('ps', ['-o', 'etimes=', '-p', String(pid)], { timeout: 3000 });
+    const etimes = Number(etimesOut.trim());
+    const bootMs = Number.isFinite(etimes) && etimes >= 0 ? now - etimes * 1000 : null;
+    // Newest hot-path commit in the integration tree (the tree the bg-host runs from).
+    let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
+    if (!integrationRoot) {
+      const { stdout } = await run('git', ['rev-parse', '--show-toplevel'], { timeout: 3000 });
+      integrationRoot = stdout.trim();
+    }
+    const { stdout: logOut } = await run(
+      'git',
+      ['-C', integrationRoot, 'log', '-1', '--format=%H %ct', '--', ...BG_HOST_HOT_PATHS],
+      { timeout: 5000 },
+    );
+    const [sha, ct] = logOut.trim().split(/\s+/);
+    const hotCommitMs = ct && Number.isFinite(Number(ct)) ? Number(ct) * 1000 : null;
+    return { ...evaluateBgHostCodeDrift(bootMs, hotCommitMs, sha ?? null), latencyMs: Date.now() - start };
+  } catch {
+    return { name: 'bg-host-code', up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'bg-host code-drift unknown (probe failed)' };
+  }
+}
+
 /** Probe the bg-host ticker via the newest active-routine `last_fired_at`. Fail-soft:
  *  a PG/read failure → liveness UNKNOWN (present:false), never a fabricated DOWN. */
 export async function probeBgHostTicker(now: number = Date.now()): Promise<ProbeResult> {
@@ -209,13 +300,14 @@ export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promis
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
   // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832);
   // the substrate sidecar (WI-899) is a third portless process, probed via its own IPC RPC.
-  const [http, desktop, bgHostTicker, substrateSidecar] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, substrateSidecar] = await Promise.all([
     Promise.all(specs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
+    probeBgHostCodeDrift(),
     probeSubstrateSidecar(),
   ]);
-  return [...http, desktop, bgHostTicker, substrateSidecar];
+  return [...http, desktop, bgHostTicker, bgHostCode, substrateSidecar];
 }
 
 export interface HealthTransition {

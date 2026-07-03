@@ -40,7 +40,13 @@ Both sides cache the key in-process, but with **different invalidation policies*
 `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` → `writeSignedSpawnMcp()` is what the orchestrator's `invoke()` calls when it lays down a per-spawn `.mcp.json`. It:
 
 1. Builds the baked URL params (`harness, workspace, role, run, spawn, [feature], [chunk], [parent_spawn], [client]`).
-2. Adds `exp` = `now + 24h` (override with `ttlSec`).
+2. Adds `exp`. **As of the 2026-07-01 owner directive, the default is `exp=0` — PERMANENT, no
+   time-based expiry** (pass `ttlSec > 0` to get the old `now + ttlSec` behavior). The 24h TTL
+   used to force a daily re-mint that churned `.mcp.json` and triggered a Claude Code
+   re-approval prompt, silently darkening unattended sessions; `exp=0` is a sentinel the
+   verifier special-cases to skip only the *time* check — the signature still covers `exp`, so a
+   role-escalation rewrite of a permanent URL fails verification exactly as before. Revocation is
+   now **key-rotation only** (see [Coarse revocation](#coarse-revocation)), not expiry.
 3. Canonicalizes by sorting + URL-encoding (only the allowlist; duplicates rejected; `sig` itself ignored).
 4. HMAC-SHA256 over the canonical string, base64url-encoded, appended as `sig=`.
 5. Writes the `.mcp.json` with mode 0600. The per-spawn worktree dir is mode 0700.
@@ -96,7 +102,7 @@ Two auth envelopes are checked **before** the signature path and so don't need a
 
 ## Coarse revocation
 
-If a key may be compromised, or a bad batch of prompts shipped and you want every in-flight spawn to fail closed, rotate. There is **no per-spawn revocation** — rotation invalidates everything.
+If a key may be compromised, or a bad batch of prompts shipped and you want every in-flight spawn to fail closed, rotate. There is **no per-spawn revocation** — rotation invalidates everything. This is now the **only** revocation mechanism for permanent (`exp=0`) URLs — since the 2026-07-01 default dropped time-based expiry, a URL that isn't explicitly `ttlSec`-scoped never ages out on its own.
 
 ### Preferred: admin endpoint (immediate effect)
 
@@ -187,8 +193,8 @@ A non-zero rate of `invalid_signature` outside explicit test runs is a real sign
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `missing_sig`               | URL has `exp` but no `sig`. Once a URL carries `exp` (or `sig`), `verifySpawnParams` runs and any failure is logged **and** hard-rejected, regardless of strict vs soft-warn mode. (The soft-warn logged-only-accept path only fires when *neither* `sig` nor `exp` is present, and that path emits no reason code.) |
 | `missing_exp`               | URL has `sig` but no `exp`                                                                                                                                                                                                                                                                                           |
-| `invalid_exp`               | `exp` not parseable as a positive integer                                                                                                                                                                                                                                                                            |
-| `expired`                   | `exp < now()`                                                                                                                                                                                                                                                                                                        |
+| `invalid_exp`               | `exp` not parseable as a non-negative integer                                                                                                                                                                                                                                                                        |
+| `expired`                   | `exp < now()` — only reachable when the mint used a `ttlSec > 0` override; the default `exp=0` (permanent, since 2026-07-01) skips this check entirely                                                                                                                                                               |
 | `invalid_sig_encoding`      | `sig` isn't valid base64url                                                                                                                                                                                                                                                                                          |
 | `invalid_signature`         | HMAC mismatch — the realistic forgery signal                                                                                                                                                                                                                                                                         |
 | `duplicate_param:<k>`       | Same allowlisted key appears twice (forger appending `&role=operator` after the signed one)                                                                                                                                                                                                                          |

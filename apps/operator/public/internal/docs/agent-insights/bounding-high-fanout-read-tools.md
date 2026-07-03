@@ -24,7 +24,17 @@ fixed across: `coord:inbox` (EI-1752), `coord:plan-events` (EI-1737, default bou
 `plans:get` mode:sections (WI-274 — inlined every decision body), `work_items:list`
 (full `summary` per row → 73KB at 40 items), `coord:feed` (full envelope × 100 rows),
 `fleet:assignments` (per-agent intent + queued lists × N agents). Swept together as
-**EI-1597**.
+**EI-1597**. A NEWER instance of the same class: `fleet:assignments { includeDag }`'s
+DAG-filter frontier (EI-6949, 2026-07-03) — a plan's WHOLE item list, which can be
+large — was bounded from day one per the rule below (see "Per-tool shapes").
+
+Payload-TIER shaping (context-trimming-tiers-2026-07-01) is now a second, sibling
+mechanism layered on top of the SAME bound-at-the-tool-layer discipline —
+`assignments-shape.ts` tier-collapses `agents`/`orphaned`/`stalled`/`coverage`/`dag`
+for `trimmed`/`standard` sessions (uniform keys + a visible truncation note per
+tier), while `payloadTier:"full"` still gets the byte-budget-bounded shape below.
+Tiering changes HOW MUCH of the already-bounded result a given session sees; it does
+not replace the byte-budget bound itself.
 
 ## The fix — a budget-aware bound at the TOOL layer
 
@@ -63,6 +73,12 @@ Shared util: `packages/operator-core/lib/agent-tools/_bound-output.ts`
 * **High default row count** → lower the AGENT default, keep the cursor. (coord:feed:
   agent default 30 vs the UI's `DEFAULT_FEED_LIMIT` 100 — at 100 the per-row metadata
   floor alone threatens the cap.)
+* **Opt-in field whose size scales with an external structure (not the row count)**
+  → never silently drop it, but collapse to counts + a visible note at the leaner
+  tiers. (fleet:assignments `{ includeDag }` — the DAG frontier lists every item in
+  the queried plan; `assignments-shape.ts` keeps the full frontier at
+  `standard`/`full` but collapses `dag` → `dag_counts` + a `dag_note` at `trimmed`,
+  mirroring how `coverage` collapses to `coverage_note`.)
 
 ## When you add a NEW read tool
 

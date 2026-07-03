@@ -35,6 +35,11 @@ Selectors (pure resolver in `agent-tools/coordination/audience.ts`, PG wiring in
   tagged-topic subscribers. Build it with `objectSelector(workItemObjectRef(wi))`.
 * `@file:<path>` — active presence whose `current_files` includes `<path>` (the
   file-collision signal, used by intent).
+* `@fleet:<slug>` — live (fresh-heartbeat) members of a named fleet, leader
+  included; `@fleet-leader:<slug>` — the fleet's CURRENT registry leader
+  (liveness-independent). Added 2026-06-30
+  (`fleet-broadcast-audience-history-integration`); resolved by the same
+  expander, used by fleet-scoped broadcasts rather than lifecycle emits.
 
 Plain ownerIds, `*`, and `human` pass through untouched (a normal `coord:send` is
 zero-overhead). Which category emits which selectors:

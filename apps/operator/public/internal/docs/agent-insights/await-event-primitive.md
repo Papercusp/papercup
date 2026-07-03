@@ -16,8 +16,12 @@ wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set
 no session id can be recovered — parking is no longer the default for codex.
 
 Everything else in this runbook still checks out against the code; only that one
-gotcha is reversed. (See also the framing note: `events:await {key}` is now
-named sugar over a unified `events:watch` primitive —
+gotcha is reversed (current citations:
+`packages/operator-core/lib/events/await/wake-executor.ts:296-319` for the
+`codex exec resume <uuid> <prompt>` args, `:783-787` for the
+`codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery, `:855` for
+`env.CODEX_HOME` — line numbers drift as the file grows, re-grep the symbol
+names if these are stale again). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive —
 `events:await {key}` == `watch(key, { wake: true, once: true })`, at
 `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake
 semantics are unchanged.)
@@ -51,11 +55,24 @@ On fire, the executor walks:
 
 1. **Live managed pty** (pid-matched in pty-bridge) → the wake turn is
    injected directly.
-2. **Process exited** → your session is **resumed** under a managed pty
-   (`claude --resume <native-id>` / `omp -r <thread>`) with the wake reason as
-   the prompt; `PAPERCUSP_SID` is re-exported so identity, lock hooks, and
-   your other awaits survive. claude resume REQUIRES the native session UUID —
+2. **Process exited** → your session is **resumed headless, one turn**
+   (`claude --resume <native-id> -p ...`, `codex exec resume <uuid> ...`, or
+   modern `omp -r <thread> -p ...`) — spawned **detached**, not into a managed
+   pty: a pty resume just sits idle waiting on a TTY nothing drives (Stage-B
+   finding, 2026-06-07). The managed-pty injection path survives only as an
+   explicit fallback for older OMP builds
+   (`PAPERCUSP_OMP_RESUME_VIA_PTY=1`, `wake-executor.ts` `resumeCommandFor`).
+   `PAPERCUSP_SID` is re-exported so identity, lock hooks, and your other
+   awaits survive. claude resume REQUIRES the native session UUID —
    `--continue` would resume a random peer's conversation on the shared cwd.
+   **Exception — a drained bee warm-injected a NEW work-item:** the
+   bee-context-efficiency fork
+   (`packages/operator-core/lib/events/await/wake-executor-fresh-context.ts`,
+   flag `BEE_FRESH_CONTEXT_WARM_INJECT`, default ON) skips `--resume`
+   entirely and spawns a **fresh session** for that item instead — the
+   grown prior-task transcript is dropped, and continuity rides the
+   work-item checkpoint (not the session). Fail-soft: any error there falls
+   through to the legacy resume above.
 3. **Alive but uninjectable** (a detached terminal — the common psu case, or a
    pid-less session row with fresh presence) → **parked** + a one-time inbox
    nudge; the parked wake converts to a resume when your process exits.
@@ -68,6 +85,31 @@ On fire, the executor walks:
 Delivery is durable (PG queue, at-least-once + idempotent wake): a host
 restart re-claims stuck deliveries; a missed lock-grant NOTIFY is re-derived
 from waiter-table truth each 30s sweep.
+
+## Finding the key — `events:catalog` + sugar verbs (2026-07-03)
+
+The primitive's remaining friction was **discoverability**, not mechanics: agents kept
+polling (`dev:pipeline_position`, `dev:build_status`, re-reading a peer's status) because
+they never found the event key that already fires. `event-await-discoverability-and-coverage-2026-07-03`
+closes that gap with two additions layered on top of the same `registerAwait` path — neither
+is a second subscription system:
+
+* **`events:catalog`** renders the awaitable-key registry
+  (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each
+  row names the family, the key template + a ready `events:await` example, who emits it,
+  whether it fires **today** (`awaitable_now` — some Phase-2 keys are catalogued but not yet
+  wired), the poll it replaces, and its sugar verb. Check it *before* you poll.
+* **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) —
+  `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`,
+  `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers
+  that build the correctly-shaped key from the catalog and then call the exact same
+  `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy,
+  checkpoint) arm both the success and failure keys at once since the two are mutually
+  exclusive, so the agent wakes either way with no double-wake risk.
+
+Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your
+turn. This does not change the delivery ladder or cost discipline below — it's purely a
+findability layer over the same primitive.
 
 ## The patterns
 
@@ -87,9 +129,13 @@ from waiter-table truth each 30s sweep.
   that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
   a loud miss to act on (they're not running: spawn fresh or pick another addressee), not
   a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey,
-  the inbox itself) catches a miss — then a miss is silent by design. Legacy `wake:true`
-  coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable).
-  (directed-wake-honesty-2026-06-14)
+  the inbox itself) catches a miss — and **name that backstop via the `backstop` arg**
+  (e.g. `backstop: 'queen-survey re-dispatches'`). Without a declared `backstop`, an
+  optimistic miss is now reported just as loudly as a required one (`recipient_absent` +
+  the missed agents' fresh `sessionState`) — silence must be consciously claimed, never a
+  default; don't pass a fake backstop just to silence the warning, that recreates the
+  dead-drop trap. Legacy `wake:true` coerces to `'required'`; broadcast (`*`/`human`) is
+  exempt (never wakeable). (directed-wake-honesty-2026-06-14, FF#1)
 * **`events:emit` is honest, not strict (D-001):** emit is fire-and-forget
   broadcast — a fact-announcer (`release:green`, `work-item:done:<id>`) doesn't
   know who's listening, so "nobody awaiting" is the normal, correct case. It
@@ -124,5 +170,7 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
 * **Exact-key match, no globs.** `events:await` matches the literal string.
 * The store + engine live at
   `packages/operator-core/lib/events/await/` (migration 163:
-  `event_awaits` + `event_wake_deliveries`); the lock bridge at
+  `event_awaits` + `event_wake_deliveries`); the awaitable-key registry is
+  `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
+  every sugar verb read from); the lock bridge at
   `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.

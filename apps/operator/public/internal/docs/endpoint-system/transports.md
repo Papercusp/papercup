@@ -20,8 +20,8 @@ The HTTP, MCP, and gated in-process paths all go through the same `dispatchProje
 
 The catch-all routes are stupidly simple:
 
-1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`)
-2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
+1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`). It's a **two-step** catch-all: it first tries the in-memory plugin-`apiRoutes` registry (`dispatchPluginApiRoute`) — a plugin can register bespoke handlers outside the projected-tool system; a registry hit returns that plugin's `Response` directly and skips everything below. A registry miss (`null`) falls through to projected-tool dispatch.
+2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404 (a 404 on a path that matches a *registered* route under a different HTTP method is upgraded to 405-with-`Allow`, since the catch-all shadows the global method-not-allowed hook)
 3. Validates the HTTP method against the manifest's `expose.http.methods` (default `['POST']`) — if not allowed, 405
 4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver). If no `run` param/header was supplied, a fresh `runId` is generated server-side so `ctx.askUser` / `ctx.publishState` can install — they gate on `workspaceId + runId`. SSE callers had this since T2.2; the JSON path got parity in the pass-9 audit.
 5. If `Authorization: Bearer ...` present, resolves it to a principal and tx (no-op for plugins; required for built-ins)
@@ -338,6 +338,18 @@ A `ToolResponse.data` is no longer always `JSON.stringify`'d into `content[0].te
 **Lossless guarantee.** `@toon-format/toon` is lossless in the common case but has round-trip edge cases (pathological keys; certain string values with structural characters in its nested form). The encoder VERIFIES the round-trip (`encodeToonChecked`: encode → decode → deep-compare) and falls back to JSON whenever it doesn't hold — the model is never handed a compact payload that doesn't decode back to the input. See the agent-insight [Parsing tagged compact tool results](/internal/docs/agent-insights/compact-tool-result-formats).
 
 MCP `tools/list` advertises a tool's `outputSchema` (spec-aligned) and a Papercusp `resultFormats` extension (its capability set) so a client knows what it may negotiate.
+
+## Freshness negotiation — `_meta.delta`
+
+Alongside `format`/`structured`/`idempotencyKey`, an MCP `tools/call` may carry a fourth
+`_meta` control: `delta` — a per-call value (`req.params._meta.delta`) that wins over a
+connection-level `?delta=` on the MCP URL, mirroring the `?format=` fallback. It lets a
+delta-capable tool answer `not_modified` (or a semantic `added`/`updated`/`removed` diff)
+instead of replaying an unchanged snapshot, mirroring HTTP `ETag`/`If-None-Match`. The
+**harness**, not the model, sets this and owns cursor storage + base-presence tracking —
+absent ⇒ no negotiation (serve `full`, today's behavior, byte-identical to a delta-unaware
+client). Full contract, cursor format, the base-presence rules, and the production
+flag/gate: [Tool result freshness: the delta base-presence contract](/internal/docs/agent-insights/tool-delta-base-presence-contract).
 
 ## The three context types
 

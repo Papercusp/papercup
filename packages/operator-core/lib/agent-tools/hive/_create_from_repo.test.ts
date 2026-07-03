@@ -453,3 +453,58 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(calls.removedDirs).toEqual(['/clones/shop']);
   });
 });
+
+/**
+ * WI-1861 regression pin: defaultCreateMember must carry harness:create's
+ * failure DETAIL (parseError / errors[] / missing) through into its error
+ * string — the narrow `{ error }` pick swallowed the validation errors, so a
+ * live 'blueprint invalid' red reached the gate artifact with the failing
+ * field unnamed (undiagnosable from the smoke output alone).
+ */
+describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
+  const call = async (payload: unknown) => {
+    vi.resetModules();
+    vi.doMock('../harness/create', () => ({
+      default: { handler: async () => ({ content: [{ text: JSON.stringify(payload) }] }) },
+    }));
+    const { defaultCreateMember } = await import('./_create_from_repo');
+    return defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h' });
+  };
+
+  it('ok:true passes through clean', async () => {
+    expect(await call({ ok: true })).toEqual({ ok: true });
+  });
+
+  it("'blueprint invalid' carries errors[] and parseError into the error string", async () => {
+    const r = await call({
+      ok: false,
+      error: 'blueprint invalid',
+      parseError: undefined,
+      errors: [{ code: 'unknown-op', path: 'spine.0', message: 'op nope:x not registered' }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('blueprint invalid');
+    expect(r.error).toContain('unknown-op');
+    expect(r.error).toContain('nope:x');
+  });
+
+  it('dependency-gate failures carry missing{} through', async () => {
+    const r = await call({
+      ok: false,
+      error: 'blueprint tool dependencies unmet',
+      missing: { tools: ['bee:spawn'] },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('bee:spawn');
+  });
+
+  it('unparseable response still fails closed', async () => {
+    vi.resetModules();
+    vi.doMock('../harness/create', () => ({
+      default: { handler: async () => ({ content: [{ text: 'not-json' }] }) },
+    }));
+    const { defaultCreateMember } = await import('./_create_from_repo');
+    const r = await defaultCreateMember({ slug: 's', path: '/p', blueprint: { id: 's' }, hive: 'h' });
+    expect(r).toEqual({ ok: false, error: 'harness:create returned an unparseable response' });
+  });
+});

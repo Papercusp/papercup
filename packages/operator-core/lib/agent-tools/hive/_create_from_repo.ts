@@ -224,7 +224,8 @@ async function defaultBuildBlueprint(
   };
 }
 
-async function defaultCreateMember(args: {
+/** Exported for tests (WI-1861 — failure detail must survive the parse). */
+export async function defaultCreateMember(args: {
   slug: string;
   path: string;
   blueprint: Record<string, unknown>;
@@ -235,8 +236,30 @@ async function defaultCreateMember(args: {
     content: { text: string }[];
   };
   try {
-    const parsed = JSON.parse(res.content[0].text) as { ok?: boolean; error?: string };
-    return { ok: parsed.ok === true, ...(parsed.error ? { error: parsed.error } : {}) };
+    // WI-1861: carry harness:create's failure DETAIL through, not just the headline.
+    // The narrow `{ error }` pick swallowed `parseError` / `errors[]` / `missing`,
+    // so a live 'blueprint invalid' red reached the smoke output with the failing
+    // field unnamed — undiagnosable from the artifact alone. Flatten the detail
+    // fields into the error string so hive:create_from_repo's `message` names them.
+    const parsed = JSON.parse(res.content[0].text) as {
+      ok?: boolean;
+      error?: string;
+      parseError?: string;
+      errors?: unknown;
+      missing?: unknown;
+      messages?: unknown;
+    };
+    if (parsed.ok === true) return { ok: true };
+    const detail = [
+      parsed.error,
+      parsed.parseError ? `parseError: ${parsed.parseError}` : null,
+      parsed.errors != null ? `errors: ${JSON.stringify(parsed.errors)}` : null,
+      parsed.missing != null ? `missing: ${JSON.stringify(parsed.missing)}` : null,
+      parsed.messages != null ? `messages: ${JSON.stringify(parsed.messages)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' | ');
+    return { ok: false, ...(detail ? { error: detail.slice(0, 2000) } : {}) };
   } catch {
     return { ok: false, error: 'harness:create returned an unparseable response' };
   }

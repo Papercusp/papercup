@@ -22,9 +22,13 @@ A 2026-06-26 audit of `harness_shared.tool_invocations` found near-zero *organic
 `code-run-batch-nudge.ts` now runs a **sliding-window** (`NUDGE_WINDOW_MS`, 90s) tracker
 per session with **two triggers**:
 
-* **same-tool** ≥ `BATCH_NUDGE_THRESHOLD` (3) in the window → a list-then-loop skeleton.
-* **fan-out** ≥ `FANOUT_DISTINCT_THRESHOLD` (4) *distinct* tools in the window → a
-  ready-to-paste **`Promise.all`** skeleton over the exact tools just seen.
+* **same-tool** ≥ `BATCH_NUDGE_THRESHOLD` (originally 3, **lowered to 2** by the
+  2026-06-29 code-run-adoption directive — the 2nd identical round-trip already IS the
+  loop) in the window → a list-then-loop skeleton.
+* **fan-out** ≥ `FANOUT_DISTINCT_THRESHOLD` (originally 4, **lowered to 3** on the same
+  2026-06-29 pass — three different reads in one burst is already a Promise.all-able
+  fan-out) *distinct* tools in the window → a ready-to-paste **`Promise.all`** skeleton
+  over the exact tools just seen.
 
 It **re-fires on exponential backoff** (cooldown 4→8→16→32→64 calls) instead of going
 permanently silent, and **leads with the running round-trip count** so the otherwise
@@ -35,6 +39,19 @@ invisible token cost is felt in-loop. Each trigger has its own flag:
   independent A/B knob).
 
 The hot path stays a ring push; `getFlag` is consulted only when a hint actually fires.
+The nudge is further scoped to `CODE_RUN_CAPABLE_ROLES` (a caller who can't actually run
+`code:run` never sees a nudge to use it) — currently the full `AGENT_ROLES` set, in
+lockstep with `code:run`'s own gate, plus superusers (checked separately at the call
+site).
+
+> `code-run-batch-nudge.ts` also exports a third, unrelated nudge —
+> `maybeOrientDedupNudge` (flag `FLAGS.ORIENT_DEDUP_NUDGE`) — which catches a session
+> re-fetching data `coord:orient` already returned within `ORIENT_DEDUP_WINDOW_MS`. It
+> lives in the same module for the shared per-session tracking state, but it is a
+> different metric with its own doc and production-telemetry queries:
+> [`measuring-code-run-adoption.mdx`](/agent-insights/measuring-code-run-adoption/)'s
+> "Production telemetry" section (metric #3, `dev:orient_dedup_rate`). This doc stays
+> scoped to `code:run` itself.
 
 ## The adoption metric
 
@@ -56,12 +73,16 @@ days). To eyeball adoption per role over the last 7 days:
 WITH s AS ( /* CODE_RUN_ADOPTION_SQL body, $1 = 7 */ )
 SELECT role,
        count(*)                                              AS spawns,
-       count(*) FILTER (WHERE max_same_tool >= 3 OR distinct_tools >= 4)               AS opportunities,
-       count(*) FILTER (WHERE (max_same_tool >= 3 OR distinct_tools >= 4) AND used_code_run) AS adopted,
-       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 3 OR distinct_tools >= 4) AND used_code_run)
-             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 3 OR distinct_tools >= 4), 0), 1) AS adoption_pct
+       count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3)               AS opportunities,
+       count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run) AS adopted,
+       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run)
+             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3), 0), 1) AS adoption_pct
 FROM s GROUP BY role ORDER BY opportunities DESC;
 ```
+
+(These literals track `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` in
+`code-run-batch-nudge.ts` as of this writing — see the Gotcha below before trusting them
+blindly.)
 
 (Prefer `readCodeRunAdoption` in code — it owns the canonical query and the reducer.)
 

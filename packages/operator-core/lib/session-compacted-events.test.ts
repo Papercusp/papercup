@@ -3,7 +3,11 @@
  * (event-await-discoverability-and-coverage-2026-07-03 P-103).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { emitSessionCompactedEvent } from './session-compacted-events';
+import {
+  emitSessionCompactedEvent,
+  emitSessionCompactedEventAsync,
+  parseSessionCompactedArgv,
+} from './session-compacted-events';
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
@@ -57,5 +61,59 @@ describe('emitSessionCompactedEvent (P-103)', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+// ── the AWAITABLE core the bridge CLI runs (P-103 linchpin) ─────────────────
+describe('emitSessionCompactedEventAsync (the CLI-awaited core)', () => {
+  it('RESOLVES only after the emit settles (the CLI must not exit before the fire commits)', async () => {
+    let settled = false;
+    const emit = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      settled = true;
+      return { ok: true as const, key: '', woken: 1, notified: [] as string[], msgId: null };
+    });
+    await emitSessionCompactedEventAsync('su-9', 'focus', { emit });
+    expect(settled).toBe(true); // awaited through — not fire-and-forget
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'session:compacted:su-9',
+      source: 'session',
+      payload: { owner: 'su-9', detail: 'focus' },
+    });
+  });
+
+  it('REJECTS on an emit failure (the CLI wraps this fail-soft; the in-process wrapper does not)', async () => {
+    const emit = vi.fn(async () => {
+      throw new Error('engine down');
+    });
+    await expect(emitSessionCompactedEventAsync('su-10', undefined, { emit: emit as never })).rejects.toThrow(
+      'engine down',
+    );
+  });
+});
+
+describe('parseSessionCompactedArgv (CLI arg mapping)', () => {
+  const argv = (...rest: string[]) => ['node', '/scripts/emit-session-compacted.ts', ...rest];
+
+  it('maps <ownerId> <focus> to { owner, focus }', () => {
+    expect(parseSessionCompactedArgv(argv('su-94b69', 'keep identity + plan Now'))).toEqual({
+      owner: 'su-94b69',
+      focus: 'keep identity + plan Now',
+    });
+  });
+
+  it("collapses the host's empty-string focus (String(focus ?? '')) back to undefined", () => {
+    expect(parseSessionCompactedArgv(argv('su-1', ''))).toEqual({ owner: 'su-1' });
+    expect(parseSessionCompactedArgv(argv('su-1'))).toEqual({ owner: 'su-1' });
+  });
+
+  it('trims surrounding whitespace on owner and focus', () => {
+    expect(parseSessionCompactedArgv(argv('  su-2  ', '  hi  '))).toEqual({ owner: 'su-2', focus: 'hi' });
+  });
+
+  it('returns null when no ownerId is present (the CLI then no-ops and exits 0)', () => {
+    expect(parseSessionCompactedArgv(argv())).toBeNull();
+    expect(parseSessionCompactedArgv(argv('   '))).toBeNull();
   });
 });

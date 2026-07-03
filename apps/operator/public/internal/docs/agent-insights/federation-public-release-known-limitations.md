@@ -34,7 +34,7 @@ federation is done.
 | Coordination **control plane** cross-machine (wake / push / presence)                               | ✅ **Boundary LIVE-PROVEN (Brief 7 matrix, 2026-07-02)**                                             | Harness-scoped coord messages + escalations FEDERATE; raw presence/watermarks/await-subscriptions stay LOCAL by design (cross-machine visibility rides `shared_presence`). The "handoffs don't federate" gap (WI-1510) is **CLOSED — by design, not a wire bug**: handoffs DO federate but the receiver-side P-013 comms-tier gate quarantines any handoff whose author is below `steer` (`coord_quarantine`, reason `handoff-below-steer`; no owner special-case — steer is a local per-user grant that never federates). Live-proven both legs 2026-07-02 (m1783013203): ungranted → quarantined; steer-granted → applies                                                                                                                                                                              |
 | True 3-machine multi-member fanout, **live**                                                        | ⛔ **Not coverable** under the current 2-server quota                                                | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | NAT / firewall / cross-region diversity                                                             | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat**                                     | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner's owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Long-running node stability (bg-host listener/handle leak)                                          | 🔴 **Open — re-observed live**                                                                      | WI-1089's fix did not hold: \~30GB RSS at \~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Long-running node stability (bg-host listener/handle leak)                                          | ✅ **RESOLVED + live-re-verified (2026-07-02)**                                                      | The re-observed 30GB climb (WI-1417) was the claude-sessions fs-sweep, not the swarm listeners: negative-resolution + roots TTL caches in `claude-sessions.ts` landed and were re-verified live 2026-07-02 — bg-host holds a healthy 5.7–5.8GB sawtooth plateau over a multi-hour soak (RSS *decreased* across a 12-min recheck), no reaper false-reap storm; 3 recurrence-guard tests (`claude-sessions-cache.test.ts`). WI-1089 + WI-1415 + WI-1416 also resolved                                                                                                                                                                                                                                                                                                                                      |
 | LWW convergence under clock skew                                                                    | ✅ **All four known ordering sources FIXED (2026-07-02)** — one residual PRESENCE gap open (WI-1684) | (1) capture-boundary two-clock bug → **mig 446**; (2) HLC-fold vs fed\_ts-guard order split → **mig 458** (`fed_order_key` across all 20 mutable projection writers, EI-1698); (3) exact `(ms,count)` fed\_hlc TIES swap winners under counter-lockstep (WI-1672) → **mig 459** node-id total order (3-segment HLC) + locks-core `hlc.ts`; (4) one absurd-future stamp pins every recv-ratcheted clock forever (the WI-1672 amplifier) → **mig 460** + `HlcClock.maxDriftMs` ε recv clamp (600s = 2× the D-007 announce window). Evidence: production-topology convergence-fuzz sweep (TEETH + 120-seed FIXED, monotone AND skew) + forced-tie two-device PG integration test. **Still open: WI-1684** — local-del resurrection under skipOwnOps (missing tombstone; row PRESENCE split-brain; see § 4a) |
 | Revocation **read** cut-off                                                                         | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)**                                                             | Post-ban owner content never reached the banned member over real VMs (\~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
@@ -286,13 +286,18 @@ the restricted-cone emulation). Earlier rig work also proved that two VMs
 sharing one NAT egress IP **hairpin** and fail a public-DHT holepunch — a
 class of failure single-NAT topologies never surface.
 
-### 6. Long-running node stability (bg-host listener leak)
+### 6. Long-running node stability (bg-host leak) — RESOLVED (2026-07-02)
 
-25+ substrate boots add `swarm.on('connection')` to the **shared** swarm without
-removal → `MaxListenersExceeded` → a listener/handle/heap leak that degrades a
-node running for days. WI-1088/1089 (Brief 10) — a real release risk for any
-long-lived federated node; needs the listener-lifecycle fix + a heap/handle
-regression guard landed.
+The original listener-leak class (25+ substrate boots adding `swarm.on('connection')`
+to the shared swarm without removal, WI-1088/1089, Brief 10) was fixed; the
+re-observed 30GB RSS climb (WI-1417) turned out to be a **different** driver — the
+claude-sessions full owner-dir fs sweep
+([operator-memory-bloat-claude-sessions-fs-sweep](/internal/docs/agent-insights/operator-memory-bloat-claude-sessions-fs-sweep)),
+fixed with negative-resolution + roots TTL caches in `claude-sessions.ts`.
+Live-re-verified 2026-07-02: bg-host sits at a 5.7–5.8GB sawtooth plateau (GC keeping
+pace, not a monotonic climb), no dbos-reaper false-reap storm; recurrence-guarded by
+3 tests in `claude-sessions-cache.test.ts`. WI-1415/WI-1416 (the git-sync symptom
+chain) independently resolved. No longer a release risk row.
 
 ### 7. Data-completeness is table-grain-guarded, column-grain is the residual risk
 
@@ -308,11 +313,16 @@ would be a security regression).
 
 ### 8. The 2-server quota cap → no true 3-machine multi-member LIVE
 
-The Hetzner quota is \~2 concurrent servers (treat as **permanent** for now).
-True 3-machine member↔member fanout (owner + 2 members, Brief 2) is therefore
-**not live-coverable**; it is proven only via a 2-VM proxy + the in-process
-matrix. Document multi-member fanout as **gated on a >2-server quota**, not as
-live-proven.
+*(historical)* The Hetzner quota was \~2 concurrent servers, so true 3-machine
+member↔member fanout (owner + 2 members, Brief 2) was **not live-coverable**;
+it was proven only via a 2-VM proxy + the in-process matrix, and the owner
+ratified that min-bar (D-006). **UPDATE 2026-07-03 (D-001,
+`shared-hive-p2p-release-readiness-2026-07-03`): Hetzner is gone entirely, and
+the un-gating path is now LOCAL** — extend the containerized rig to 3 frames
+(`bin/local-matrix.sh` provisions docker frames; the rig lib is already
+N-frame) and run the matrix + membership churn there (that plan's P-010).
+"Gated on a >2-server quota" is obsolete; the residual gap is simply that the
+3-frame local run has not been executed yet.
 
 ### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (RESOLVED — both mechanisms fixed + live-verified 2026-07-02)
 
@@ -363,6 +373,32 @@ slug-filter frames while the hive-home projection slug is unresolved
 **Live verification:** matrix run m1783013203 (2026-07-02) federated A→B on the
 FIRST poll across all 8 scenarios — no restart, no adaptive re-fold rescue
 needed. This limitation is closed.
+
+### 10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)
+
+The post-min-bar backlog was given explicit verdicts under
+`shared-hive-p2p-release-readiness-2026-07-03` P-011 (full table:
+`shared-hive-release-testing/RELEASE-READINESS.md`). The standing
+ship-with-limitation rows, each with an accountable tracker:
+
+* **No un-revoke path (G8, WI-1855)** — revocation is one-way; un-banning a member
+  has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must
+  NOT retro-grant cut epochs).
+* **Membership teardown doesn't federate (G24/G27, WI-1857)** — dissolve publishes no
+  membership tombstone (peers' rows orphan out by TTL) and a leaver's `hive_members`
+  row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`;
+  the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap,
+  not a security hole.
+* **revoke() Hypercore session leak (G9, WI-1856)** — revoked members' core sessions
+  are not verifiably closed on the owner; unbounded only on long-lived owners with
+  many revokes.
+* **Usage-events metering is machine-local (G2, WI-1858)** — the
+  `contributor_usage_events` capture trigger is deliberately deferred to the GA
+  migration (completeness-guard exemption until then).
+* **From-repo joiner incremental federation (WI-971, OPEN)** — the outbox drain is
+  never wired for joined/created hive harnesses (WI-259 was closed as its duplicate).
+  If from-repo joins are v1 public scope this is release-critical, not a limitation
+  row — P-014 makes that scope call.
 
 ***
 
@@ -416,12 +452,20 @@ exits 0). CI is no longer red on this.
 > **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is
 > RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve;
 > WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went
-> green first-poll with no restart (m1783013203). **One standing owner-wall:**
-> the Hetzner account has rejected ALL billable creates with
-> `403 forbidden "permission denied"` since 2026-07-02 (reads + free writes
-> work; token-a/token-b are dead 401s) — an account-level billing/verification
-> lock only the owner can clear in console.hetzner.cloud. Until then, matrix
-> reruns are container-grade (2-node docker rig), not VM-grade.
+> green first-poll with no restart (m1783013203).
+>
+> **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of
+> `shared-hive-p2p-release-readiness-2026-07-03`).** Access to the Hetzner
+> machines is permanently lost (owner directive); the former "billing lock the
+> owner can clear" framing no longer applies. **The LOCAL rig set is now the
+> proof of record:** (i) the containerized 2-node matrix rig —
+> `bin/local-matrix.sh`, the one-command wrapper over the same BYO-frames seam
+> (`RIG_FRAME_IPS`) that produced m1783013203; (ii) the tower↔VM rig
+> (`bin/vm-rig/` — a REAL kernel + network boundary, i.e. VM-grade, not just
+> container-grade); (iii) the mac VM cross-platform witness; (iv) the
+> single-box `two-instance-*-smoke.sh` suite. The `deb-hetzner-*` cloud
+> provision paths are retired-not-deleted. Historical per-brief Hetzner runs
+> remain valid evidence for the rows above.
 
 ***
 

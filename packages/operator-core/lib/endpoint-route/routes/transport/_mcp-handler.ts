@@ -747,6 +747,61 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 
 /**
+ * Bind the tx + principal a projected tool needs, then run `run` under that ctx.
+ * The ONE place the "how does a projected tool get its workspace tx" decision
+ * lives — shared by the direct tools/call path AND the tools:invoke re-dispatch
+ * (dispatchTool), so the two can never drift apart again:
+ *   - crossWorkspace tool → the admin (rolbypassrls) handle, so it spans
+ *     workspaces (RLS never hides another workspace's rows).
+ *   - needsTx tool (concrete workspace) → a withWorkspace(ws) harness_app tx +
+ *     a least-privilege synthesized principal.
+ *   - unscoped ('*') non-crossWorkspace tool → runs tx-less (its own
+ *     "workspace= arg required" fallback fires).
+ *
+ * EI-6982: tools:invoke previously reused the OUTER call's ctx (built for
+ * tools:invoke itself — requirePrincipal:false, so NO tx/principal was
+ * synthesized), which made EVERY crossWorkspace/needsTx target (memory:*,
+ * flags:set, harness:list, …) throw "requires a workspace-scoped call" from an
+ * unscoped psu/fleet session. Routing both dispatch paths through this helper is
+ * the durable fix.
+ */
+async function dispatchWithSynthesizedTx<T>(
+  tool: { crossWorkspace?: boolean },
+  spawnCtx: BuiltSpawnContext,
+  baseCtx: UnifiedToolContext,
+  run: (ctx: UnifiedToolContext) => Promise<T>,
+): Promise<T> {
+  // P-062 — crossWorkspace tools span workspaces: hand them the admin
+  // (rolbypassrls) handle, never a workspace-scoped harness_app tx. Checked
+  // before needsTx so it also covers the superuser/'*' discovery case
+  // (e.g. papercusp:list_workspaces). Tools that read getOrgPg() directly are
+  // unaffected (they ignore ctx.tx).
+  if (tool.crossWorkspace === true) {
+    const { sql: adminTx } = getOrgPg();
+    const ctx: UnifiedToolContext = {
+      ...baseCtx,
+      tx: adminTx,
+      principal: await synthesizeDispatchPrincipal(adminTx, spawnCtx),
+    };
+    return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
+  }
+  if (dispatchNeedsTx(spawnCtx)) {
+    const ctxWs = spawnCtx.workspaceId;
+    return runWithWorkspaceIfConcrete(ctxWs, () =>
+      withWorkspace(ctxWs, async (tx) => {
+        const ctx: UnifiedToolContext = {
+          ...baseCtx,
+          tx,
+          principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
+        };
+        return run(ctx);
+      }),
+    );
+  }
+  return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(baseCtx));
+}
+
+/**
  * Build a full UnifiedToolContext for an MCP tool invocation. Combines:
  *   - spawn fields parsed from URL
  *   - per-call helpers (log, progress, spawn, secret)
@@ -882,12 +937,23 @@ async function buildMcpToolContext(
     if (!target?.expose?.mcp) {
       return { isError: true, content: [{ type: 'text' as const, text: `unknown_tool: ${toolName}` }] };
     }
-    return (await dispatchProjectedToolToMcp(
-      target,
-      toolName,
-      toolArgs ?? {},
-      ctxRef.current!,
-      PROJECTED_DEPS,
+    // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
+    // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
+    // crossWorkspace/needsTx target (memory:*, flags:set, harness:list, …) threw
+    // "requires a workspace-scoped call" from an unscoped session. Honor a per-call
+    // `workspace` arg on the target too, so an unscoped superuser can
+    // `tools:invoke { name:'harness:list', args:{ workspace } }` exactly as a direct
+    // call would (effectiveDispatchWorkspace). Shared with the direct tools/call
+    // path via dispatchWithSynthesizedTx so the two can't drift.
+    const effectiveWs = effectiveDispatchWorkspace(spawn, toolArgs ?? {});
+    const spawnCtx: BuiltSpawnContext =
+      effectiveWs === spawn.workspaceId ? spawn : { ...spawn, workspaceId: effectiveWs };
+    const baseCtx: UnifiedToolContext =
+      effectiveWs === ctxRef.current!.workspaceId
+        ? ctxRef.current!
+        : { ...ctxRef.current!, workspaceId: effectiveWs };
+    return (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
+      dispatchProjectedToolToMcp(target, toolName, toolArgs ?? {}, ctx, PROJECTED_DEPS),
     )) as Awaited<ReturnType<NonNullable<UnifiedToolContext['dispatchTool']>>>;
   };
   const builtCtx: UnifiedToolContext = {

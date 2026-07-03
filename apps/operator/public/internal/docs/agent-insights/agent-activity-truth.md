@@ -146,3 +146,48 @@ session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` /
 `recipient_liveness:[…ended]` = MISSED → re-dispatch to a LIVE agent
 (`coord:presence → wakeable:true`) or respawn the owner. "I handed it off" only counts
 if a live owner received it.
+
+## The third corollary: a broadcast to zero live recipients is a silent no-op (EI-6874, 2026-07-02)
+
+Same root cause, a third surface: **`coord:send` to an AUDIENCE SELECTOR** (not a
+concrete `to`) can resolve to **zero live recipients** and, before this fix, said
+nothing about it — `ok:true`, no count, no warning. Fleet `p2p-dist`'s leader
+(`su-3700b`) sent a drain order to `@fleet:p2p-dist`; all 4 members had been
+launched **without fleet registration** (`fleetSlug:null` — the EI-5835 `--fleet`
+trap), so the audience resolved to **zero** live members. The leader believed the
+order went out and sat **\~3h "awaiting compliance acks"** that could never arrive,
+while the (unregistered) members kept working through what should have been a
+pause.
+
+This is the send-side twin of the handoff corollary above: there, a wake looked
+delivered but the recipient was dead; here, a *broadcast* looked delivered but the
+audience was empty. Both are "an announcement that outlived (or never reached) the
+work" — exactly what this doc's root cause names.
+
+**The fix (`packages/operator-core/lib/agent-tools/coordination/tools/send.ts`):**
+
+* Every send to a **live-audience selector** (`@fleet:`, `@fleet-leader:`,
+  `@topic:`, `@plan:`, `@object:`, `@file:` — resolved against who's live *now*,
+  unlike a **slot** selector like `@role:`/`@wave:`/`@feature:`/`@user:`, which
+  legitimately parks for a future agent and is excluded from this check) now
+  reports **`recipients_resolved`** — how many live recipients the audience
+  actually expanded to, every time, not just on a miss.
+* An **explicit** audience selector that resolves to **zero** live recipients is
+  now a **hard refusal** (`ok:false`, `error:'zero_recipients'`) — the row still
+  persists to audience history (a later joiner still catches up via
+  `coord:catch-up`), but the send is NOT silently `ok:true`.
+* An **auto-scoped** `'*' → @fleet:<slug>` broadcast (a bare `to:['*']` from a
+  fleeted sender, down-scoped per `fleet-scoped-broadcast-default`) that resolves
+  to zero stays a **soft warning** (`ok:true` + `zero_recipients`) — the sender
+  intended a plain broadcast, not a targeted directive, so a solo/quiet fleet
+  isn't a hard error.
+* A fleet-selector zero-hit result names the likely cause inline: verify each
+  member's presence row actually carries `fleetSlug` (`coord:roster`) — an
+  unregistered launch is the EI-5835 trap that caused this incident — or address
+  the members by `ownerId` directly.
+
+**What this means for you:** the same rule as the rest of this doc — **read the
+result, not your assumption.** After sending to any audience selector, check
+`recipients_resolved`; a `zero_recipients` warning (or the hard refusal) means
+nobody live got it, full stop — don't sit "awaiting compliance" on a broadcast
+that never left the building.

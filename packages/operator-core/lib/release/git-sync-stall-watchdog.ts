@@ -85,8 +85,10 @@ export interface GitSyncStallSnapshot {
    *  (`metadata.wd_error_sweeps`, maintained by checkGitSyncStall). Absent with a
    *  present lastError reads as 1 — a first observation, below the alarm bar. */
   errorSweeps?: number;
-  /** The routine's last recorded sync status ('synced' | 'nothing' | 'error' | …).
-   *  'nothing' = clean tree ⇒ HEAD-staleness is healthy idle, never a stall. */
+  /** The routine's last recorded sync status ('synced' | 'nothing' | 'skipped' | 'error' | …).
+   *  'nothing' = clean tree ⇒ HEAD-staleness is healthy idle, never a stall.
+   *  'skipped' = the eligibility gate no-opped the fire (no_path / hive_home / …) ⇒ a
+   *  commit was never attemptable, so HEAD-staleness is likewise never a stall. */
   lastStatus?: string | null;
   /** the watchdog's own dedup flag (`metadata.watchdog_alerted`). */
   watchdogAlerted: boolean;
@@ -138,8 +140,18 @@ export function evaluateGitSyncStall(
   // A head-stale verdict now requires evidence of WORK: the last sync status must
   // NOT be the clean-tree 'nothing'. Fire-stale / error / reap stalls are
   // status-independent and unchanged (a dead engine can't report anything).
-  const cleanIdle = s.lastStatus === 'nothing';
-  const commitStale = !cleanIdle && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
+  //
+  // FALSE-ALARM FIX (2026-07-03, same class via 'skipped'): a fire the P-008
+  // eligibility gate SKIPS (no_path / hive_home / remote_hive_view / …) never
+  // even runs the pipeline, so HEAD frozen across skips is definitional, not a
+  // stall. Live incident: a federation test rig teardown deleted the
+  // hello-world/spoon-knife lane clones; their routines kept firing 'skipped'/
+  // no_path and the frozen HEAD urgently paged "code is stranding" for checkouts
+  // that no longer EXISTED. Commit-staleness therefore requires a status where a
+  // commit was ATTEMPTABLE — not clean-idle 'nothing', not gated 'skipped' (the
+  // skip stays loud in metadata.last_skip_reason / schedule:inventory).
+  const commitNotAttemptable = s.lastStatus === 'nothing' || s.lastStatus === 'skipped';
+  const commitStale = !commitNotAttemptable && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
   const fireStale = s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   // FALSE-ALARM FIX (2026-07-02, second class): a fault observed on a SINGLE sweep is
   // transient (a push/fetch blip git-sync clears on its next healthy 3-min tick) — it must

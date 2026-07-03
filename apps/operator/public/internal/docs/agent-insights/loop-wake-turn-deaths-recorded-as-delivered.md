@@ -217,8 +217,18 @@ The original per-file roadmap (kept below for provenance):
 
 ## Gating note
 
-`papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) but its `FLAGS.LOOPS`
-*default* is still `false` (KNOWN\_DARK). **P0/P1/P2/P3 have all LANDED + are unit/integration-tested**
+:::note\[UPDATE — the recommended default flip has since landed]
+`FLAGS.LOOPS` (`papercusp-loops`) is now **DEFAULT ON** (WI-612, `libs/flags/src/types.ts`) and
+is **no longer in `KNOWN_DARK_FLAGS`** — the derived FLAG\_DEFAULTS inversion picked it up, so
+fresh hosts get loops enabled out of the box, not just the one runtime the owner hand-flipped on
+2026-06-23. The recommendation at the bottom of this doc ("the flip-dark-flags effort can flip
+the default ON") has been carried out; the paragraph below is kept for the historical gating
+record. `loop:arm` no longer refuses anywhere by default.
+:::
+
+`papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) — its `FLAGS.LOOPS`
+*default* was `false` (KNOWN\_DARK) at the time this doc was written; see the note above for the
+current state. **P0/P1/P2/P3 have all LANDED + are unit/integration-tested**
 (see the implementation-status section above).
 
 ### LIVE VERIFICATION (2026-06-23 \~13:30 EDT, deployed sha b40cff17d) — gate effectively satisfied
@@ -248,3 +258,27 @@ silently recorded as a successful delivery, circuit never opening) is now dispro
 
 **Recommendation:** the flip-dark-flags effort can flip the `FLAGS.LOOPS` default ON. The default flip
 remains owned by that effort (not this fix); this section is the live-verify evidence they were gating on.
+
+**✅ Done.** `FLAGS.LOOPS` now defaults ON (see the note at the top of this section) — the
+recommendation this doc made has been executed.
+
+## Also since this doc (2026-07-03) — cold-auto loops are a new, separate capability
+
+A follow-on effort (`su-cold-auto-mode-2026-07-03`) added a **second loop wake mode** on the
+same `wake-executor.ts` / `engine.ts` path this doc analyzes: a loop armed with
+`loop:arm { carry: 'cold' }` can RESET-CONTEXT / periodically recycle to a carry-note instead of
+resuming the warm in-place turn this doc describes throughout. It is gated by its own master
+flag, `FLAGS.SU_COLD_AUTO` (`papercusp-su-cold-auto`, default ON but only an *availability*
+switch — nothing goes cold until a loop is explicitly armed `carry:'cold'` AND a carry-note
+exists via `decideColdWake`). The turn-death-recorded-as-delivered failure mode this doc
+documents is about the WARM resume path specifically; cold-auto wakes are a distinct code path
+and are out of scope here — see the code at the `coldAutoEnabled` dep in `engine.ts` if you're
+chasing a cold-loop issue instead of a warm one.
+
+**Same day, later commit:** `injectPsuHostWake`'s cold branch (`wake-executor.ts`) no longer
+injects the raw `carryNote` — it now wraps it with `su-cold-loop.ts`'s new
+`renderColdWakeInjection(carryNote)`, which frames the note as the woken agent's entire
+reconstructed working state and appends a standing mandate to refresh it (`loop:checkpoint`)
+before ending the turn, or call `loop:end` if done/blocked — otherwise a cold loop's anchor goes
+stale after one wake. Still entirely inside the cold-auto branch this section already scopes out
+of the warm-path failure mode; noted here only so the `wake-executor.ts` anchor stays precise.

@@ -103,6 +103,7 @@ describe('renderCatalog', () => {
     expect(byFamily['plan-item'].awaitable_now).toBe(true); // plan-item:done:<slug>:<id> — P-105 LANDED (set-status)
     expect(byFamily['claim-released'].awaitable_now).toBe(true); // claim:released:<id> — P-105 LANDED (releaseWorkItem)
     expect(byFamily['fleet-drained'].awaitable_now).toBe(true); // fleet:drained:<slug> — WI-1830 LANDED (set-status plan-drain edge)
+    expect(byFamily['session-compacted'].awaitable_now).toBe(true); // session:compacted:<owner> — P-103 LANDED (psu-host → emit-session-compacted CLI)
   });
 });
 

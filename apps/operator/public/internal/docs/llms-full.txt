@@ -302,8 +302,11 @@ Superseded — Step 4 is stale
 
 Step 4 below tells you to bump exact-count `toHaveLength(N)` assertions in two test files. **Those assertions no longer exist** — both were deliberately deleted and replaced with non-shrinking floor checks specifically *because* bumping them on every add/remove flapped CI red. There is no count to bump.
 
-* `packages/operator-core/lib/sync-resolver/index.test.ts:149` now asserts `expect(names.length).toBeGreaterThanOrEqual(61)` (the comment at `:141` calls the old `toHaveLength(63)` a “brittle exact-count that flapped red”).
-* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts:102` now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the comment at `:92`–`:100` calls the old exact count of 56 “brittle” and states the floor is “set WELL BELOW the current count … so a routine add/remove doesn’t flap it red”).
+* `packages/operator-core/lib/sync-resolver/index.test.ts` now asserts `expect(names.length).toBeGreaterThanOrEqual(61)` (grep for it — the adjacent comment calls the old `toHaveLength(63)` a “brittle exact-count that flapped red”).
+
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts` now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the adjacent comment calls the old exact count of 56 “brittle” and states the floor is “set WELL BELOW the current count … so a routine add/remove doesn’t flap it red”).
+
+  (Line numbers deliberately omitted — they drift on every edit; grep the assertion text instead.)
 
 **What to actually do for a registry add today:** add your new name to the relevant `toContain(...)` family assertion(s) in `index.test.ts` (the exact-set assertions are what catch real drift now) and, if it’s bridged, to the corresponding membership assertion in `table-to-query-names.test.ts`. The floor checks (`toBeGreaterThanOrEqual`) only fire if the registry *shrinks* below the floor — leave them alone. The `FORWARD_DEFINED` guidance later in Step 4 is still correct.
 
@@ -896,6 +899,23 @@ Guidance alone failed once (the signals existed and were rationalized away), so 
 * **FF#3 — the fresh liveness is forced into the result.** On any miss, both tools attach `recipient_liveness: [{ ownerId, sessionState, wakeable }]` — the missed addressee’s CURRENT state, freshly read at the transfer moment (`recipient-liveness.ts` → `fetchWakeability`/`deriveSessionState`). A transfer to a long-ended agent reads `sessionState:'ended'` right in the answer, not a silent `woken:0`.
 
 Rule of thumb: **after any handoff/wake, look at the count.** `woken ≥ 1` = a live session was re-invoked. `woken:0` / `recipient_absent` / `recipient_dead` / `recipient_liveness:[…ended]` = MISSED → re-dispatch to a LIVE agent (`coord:presence → wakeable:true`) or respawn the owner. “I handed it off” only counts if a live owner received it.
+
+## The third corollary: a broadcast to zero live recipients is a silent no-op (EI-6874, 2026-07-02)
+
+[Section titled “The third corollary: a broadcast to zero live recipients is a silent no-op (EI-6874, 2026-07-02)”](#the-third-corollary-a-broadcast-to-zero-live-recipients-is-a-silent-no-op-ei-6874-2026-07-02)
+
+Same root cause, a third surface: **`coord:send` to an AUDIENCE SELECTOR** (not a concrete `to`) can resolve to **zero live recipients** and, before this fix, said nothing about it — `ok:true`, no count, no warning. Fleet `p2p-dist`’s leader (`su-3700b`) sent a drain order to `@fleet:p2p-dist`; all 4 members had been launched **without fleet registration** (`fleetSlug:null` — the EI-5835 `--fleet` trap), so the audience resolved to **zero** live members. The leader believed the order went out and sat **\~3h “awaiting compliance acks”** that could never arrive, while the (unregistered) members kept working through what should have been a pause.
+
+This is the send-side twin of the handoff corollary above: there, a wake looked delivered but the recipient was dead; here, a *broadcast* looked delivered but the audience was empty. Both are “an announcement that outlived (or never reached) the work” — exactly what this doc’s root cause names.
+
+**The fix (`packages/operator-core/lib/agent-tools/coordination/tools/send.ts`):**
+
+* Every send to a **live-audience selector** (`@fleet:`, `@fleet-leader:`, `@topic:`, `@plan:`, `@object:`, `@file:` — resolved against who’s live *now*, unlike a **slot** selector like `@role:`/`@wave:`/`@feature:`/`@user:`, which legitimately parks for a future agent and is excluded from this check) now reports **`recipients_resolved`** — how many live recipients the audience actually expanded to, every time, not just on a miss.
+* An **explicit** audience selector that resolves to **zero** live recipients is now a **hard refusal** (`ok:false`, `error:'zero_recipients'`) — the row still persists to audience history (a later joiner still catches up via `coord:catch-up`), but the send is NOT silently `ok:true`.
+* An **auto-scoped** `'*' → @fleet:<slug>` broadcast (a bare `to:['*']` from a fleeted sender, down-scoped per `fleet-scoped-broadcast-default`) that resolves to zero stays a **soft warning** (`ok:true` + `zero_recipients`) — the sender intended a plain broadcast, not a targeted directive, so a solo/quiet fleet isn’t a hard error.
+* A fleet-selector zero-hit result names the likely cause inline: verify each member’s presence row actually carries `fleetSlug` (`coord:roster`) — an unregistered launch is the EI-5835 trap that caused this incident — or address the members by `ownerId` directly.
+
+**What this means for you:** the same rule as the rest of this doc — **read the result, not your assumption.** After sending to any audience selector, check `recipients_resolved`; a `zero_recipients` warning (or the hard refusal) means nobody live got it, full stop — don’t sit “awaiting compliance” on a broadcast that never left the building.
 
 # Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
 
@@ -1563,7 +1583,7 @@ Superseded — codex now resumes, not parks
 
 The **“codex sessions park instead of resuming”** gotcha below (formerly the per-session `CODEX_HOME` “isn’t re-derivable yet” claim) is now the OPPOSITE of the code. Since `turn-lifecycle-control-2026-06-08`, codex wakes **resume**: `executeWake` derives the per-session home with `codexHomeForAdvSession(handle.advSessionId)`, recovers the conversation UUID from that home’s rollout via `findCodexRolloutSessionId(home)`, and delivers the wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set (`packages/operator-core/lib/events/await/wake-executor.ts:201-223`, `:461-469`, `:521`). codex only falls back to park if the home dir is missing or no session id can be recovered — parking is no longer the default for codex.
 
-Everything else in this runbook still checks out against the code; only that one gotcha is reversed. (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive — `events:await {key}` == `watch(key, { wake: true, once: true })`, at `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake semantics are unchanged.)
+Everything else in this runbook still checks out against the code; only that one gotcha is reversed (current citations: `packages/operator-core/lib/events/await/wake-executor.ts:296-319` for the `codex exec resume <uuid> <prompt>` args, `:783-787` for the `codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery, `:855` for `env.CODEX_HOME` — line numbers drift as the file grows, re-grep the symbol names if these are stale again). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive — `events:await {key}` == `watch(key, { wake: true, once: true })`, at `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake semantics are unchanged.)
 
 ## What it is
 
@@ -1585,11 +1605,22 @@ Sources fire keys with `events:emit { event, summary, payload, to? }` (agents) o
 The wake handle is stamped at **registration** (your coord SID → `adv_sessions`): it can’t be fetched at fire time because you’re asleep. On fire, the executor walks:
 
 1. **Live managed pty** (pid-matched in pty-bridge) → the wake turn is injected directly.
-2. **Process exited** → your session is **resumed** under a managed pty (`claude --resume <native-id>` / `omp -r <thread>`) with the wake reason as the prompt; `PAPERCUSP_SID` is re-exported so identity, lock hooks, and your other awaits survive. claude resume REQUIRES the native session UUID — `--continue` would resume a random peer’s conversation on the shared cwd.
+2. **Process exited** → your session is **resumed headless, one turn** (`claude --resume <native-id> -p ...`, `codex exec resume <uuid> ...`, or modern `omp -r <thread> -p ...`) — spawned **detached**, not into a managed pty: a pty resume just sits idle waiting on a TTY nothing drives (Stage-B finding, 2026-06-07). The managed-pty injection path survives only as an explicit fallback for older OMP builds (`PAPERCUSP_OMP_RESUME_VIA_PTY=1`, `wake-executor.ts` `resumeCommandFor`). `PAPERCUSP_SID` is re-exported so identity, lock hooks, and your other awaits survive. claude resume REQUIRES the native session UUID — `--continue` would resume a random peer’s conversation on the shared cwd. **Exception — a drained bee warm-injected a NEW work-item:** the bee-context-efficiency fork (`packages/operator-core/lib/events/await/wake-executor-fresh-context.ts`, flag `BEE_FRESH_CONTEXT_WARM_INJECT`, default ON) skips `--resume` entirely and spawns a **fresh session** for that item instead — the grown prior-task transcript is dropped, and continuity rides the work-item checkpoint (not the session). Fail-soft: any error there falls through to the legacy resume above.
 3. **Alive but uninjectable** (a detached terminal — the common psu case, or a pid-less session row with fresh presence) → **parked** + a one-time inbox nudge; the parked wake converts to a resume when your process exits. **If the nudge reaches you while awake and you act on it, ACK it:** `events:cancel { delivery_id }` — otherwise you’ll also be resumed later (a wasted turn).
 4. **Nothing live, nothing resumable** → dropped VISIBLY (logged + metered), never silently.
 
 Delivery is durable (PG queue, at-least-once + idempotent wake): a host restart re-claims stuck deliveries; a missed lock-grant NOTIFY is re-derived from waiter-table truth each 30s sweep.
+
+## Finding the key — `events:catalog` + sugar verbs (2026-07-03)
+
+[Section titled “Finding the key — events:catalog + sugar verbs (2026-07-03)”](#finding-the-key--eventscatalog--sugar-verbs-2026-07-03)
+
+The primitive’s remaining friction was **discoverability**, not mechanics: agents kept polling (`dev:pipeline_position`, `dev:build_status`, re-reading a peer’s status) because they never found the event key that already fires. `event-await-discoverability-and-coverage-2026-07-03` closes that gap with two additions layered on top of the same `registerAwait` path — neither is a second subscription system:
+
+* **`events:catalog`** renders the awaitable-key registry (`packages/operator-core/lib/events/await/catalog.ts` — the single source of truth): each row names the family, the key template + a ready `events:await` example, who emits it, whether it fires **today** (`awaitable_now` — some Phase-2 keys are catalogued but not yet wired), the poll it replaces, and its sugar verb. Check it *before* you poll.
+* **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) — `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`, `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers that build the correctly-shaped key from the catalog and then call the exact same `registerAwait`/`startAwaitSweeper` path as raw `events:await`. Dual-outcome verbs (deploy, checkpoint) arm both the success and failure keys at once since the two are mutually exclusive, so the agent wakes either way with no double-wake risk.
+
+Flow: `events:catalog` (find the key) → `events:await { event }` or its sugar verb → end your turn. This does not change the delivery ladder or cost discipline below — it’s purely a findability layer over the same primitive.
 
 ## The patterns
 
@@ -1597,7 +1628,7 @@ Delivery is durable (PG queue, at-least-once + idempotent wake): a host restart 
 
 * **Blocked on a file lock:** `locks:acquire { paths, intent, wake_on_grant: true }` → returns `queued_for_wake` + a ticket — end your turn. The wake carries your `lock_id` with the TTL **already running**: edit, then `locks:release`. The old “pivot/retry” advice is retired.
 * **Blocked on a peer:** they tell you a key (or you agree on one) → you `events:await`, they `events:emit`. Built-in keys that fire today: `work-item:done:<id>`, `work-item:unblocked:<id>` (last blocker settled), `plan-run:finished:<runId>`, `plan:draft-ready:<slug>`, `conversation:answered:<id>` (coord:ask’s miss path names it), `release:green`, `release:deployed` / `release:deploy-failed`, `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`, `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`.
-* **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }` that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** — a loud miss to act on (they’re not running: spawn fresh or pick another addressee), not a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey, the inbox itself) catches a miss — then a miss is silent by design. Legacy `wake:true` coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable). (directed-wake-honesty-2026-06-14)
+* **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }` that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** — a loud miss to act on (they’re not running: spawn fresh or pick another addressee), not a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey, the inbox itself) catches a miss — and **name that backstop via the `backstop` arg** (e.g. `backstop: 'queen-survey re-dispatches'`). Without a declared `backstop`, an optimistic miss is now reported just as loudly as a required one (`recipient_absent` + the missed agents’ fresh `sessionState`) — silence must be consciously claimed, never a default; don’t pass a fake backstop just to silence the warning, that recreates the dead-drop trap. Legacy `wake:true` coerces to `'required'`; broadcast (`*`/`human`) is exempt (never wakeable). (directed-wake-honesty-2026-06-14, FF#1)
 * **`events:emit` is honest, not strict (D-001):** emit is fire-and-forget broadcast — a fact-announcer (`release:green`, `work-item:done:<id>`) doesn’t know who’s listening, so “nobody awaiting” is the normal, correct case. It returns an honest `{ woken, notified }` count; the discipline is to **read the count** when you care that someone heard you (a `woken:0` means no live waiter yet), NOT to expect emit to throw. There is deliberately no strict mode on emit — that’s the directed-wake-honesty fix for emit (vs `coord:send`’s loud `recipient_absent` for a *directed* wake). (directed-wake-honesty-2026-06-14)
 * **Wake-at-reset for a rate limit:** you hold a `retryAfterMs` → `events:await { event: 'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout: 'wake' }` — the deadline IS the reset wake; an earlier reset emit just arrives sooner.
 * **“Re-verify after the next deploy”:** await `release:deployed` instead of hand-tracking the deferral.
@@ -1614,7 +1645,7 @@ A wake = a re-invocation = a turn = tokens. Hence: `notify` is the default and n
 
 * **Workspace scoping is normalized.** Awaits/deliveries live in the ONE coord workspace regardless of your identity’s scoping — an early build registered ’\*‘-scoped awaits that never matched system emits. Event keys embed globally-unique ids, so one namespace is collision-free by construction.
 * **Exact-key match, no globs.** `events:await` matches the literal string.
-* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`); the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
+* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`); the awaitable-key registry is `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` + every sugar verb read from); the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
 
 # Bare "fetch failed" spawn failures = loopback retry swallowing undici UND_ERR_* codes during restarts
 
@@ -1861,7 +1892,9 @@ You then have to file-slice to read your own inbox / the work queue / a plan. On
 
 [Section titled “The class (recurring)”](#the-class-recurring)
 
-Any agent-facing read tool whose result grows with the workspace is at risk. Seen + fixed across: `coord:inbox` (EI-1752), `coord:plan-events` (EI-1737, default bound), `plans:get` mode:sections (WI-274 — inlined every decision body), `work_items:list` (full `summary` per row → 73KB at 40 items), `coord:feed` (full envelope × 100 rows), `fleet:assignments` (per-agent intent + queued lists × N agents). Swept together as **EI-1597**.
+Any agent-facing read tool whose result grows with the workspace is at risk. Seen + fixed across: `coord:inbox` (EI-1752), `coord:plan-events` (EI-1737, default bound), `plans:get` mode:sections (WI-274 — inlined every decision body), `work_items:list` (full `summary` per row → 73KB at 40 items), `coord:feed` (full envelope × 100 rows), `fleet:assignments` (per-agent intent + queued lists × N agents). Swept together as **EI-1597**. A NEWER instance of the same class: `fleet:assignments { includeDag }`’s DAG-filter frontier (EI-6949, 2026-07-03) — a plan’s WHOLE item list, which can be large — was bounded from day one per the rule below (see “Per-tool shapes”).
+
+Payload-TIER shaping (context-trimming-tiers-2026-07-01) is now a second, sibling mechanism layered on top of the SAME bound-at-the-tool-layer discipline — `assignments-shape.ts` tier-collapses `agents`/`orphaned`/`stalled`/`coverage`/`dag` for `trimmed`/`standard` sessions (uniform keys + a visible truncation note per tier), while `payloadTier:"full"` still gets the byte-budget-bounded shape below. Tiering changes HOW MUCH of the already-bounded result a given session sees; it does not replace the byte-budget bound itself.
 
 ## The fix — a budget-aware bound at the TOOL layer
 
@@ -1890,6 +1923,7 @@ Shared util: `packages/operator-core/lib/agent-tools/_bound-output.ts`
 * **Unbounded sub-list per row** → `boundListField` cap. (fleet:assignments `queued` work-list — keep the head + `load` count; the Queen reads those for placement.)
 * **Many variable-size fields per row** → `trimToByteBudget` backstop. (fleet:assignments agent groups — sorted live-first so the trim drops the least-relevant tail.)
 * **High default row count** → lower the AGENT default, keep the cursor. (coord:feed: agent default 30 vs the UI’s `DEFAULT_FEED_LIMIT` 100 — at 100 the per-row metadata floor alone threatens the cap.)
+* **Opt-in field whose size scales with an external structure (not the row count)** → never silently drop it, but collapse to counts + a visible note at the leaner tiers. (fleet:assignments `{ includeDag }` — the DAG frontier lists every item in the queried plan; `assignments-shape.ts` keeps the full frontier at `standard`/`full` but collapses `dag` → `dag_counts` + a `dag_note` at `trimmed`, mirroring how `coverage` collapses to `coverage_note`.)
 
 ## When you add a NEW read tool
 
@@ -2227,6 +2261,49 @@ bwrap **cannot create a mount point under the read-only `/` bind**: a `--tmpfs <
 
 * [Fleet OS sandbox](/internal/docs/agent-insights/fleet-os-sandbox) — the *per-spawn* claude/codex/omp sandbox (a different code path, `orchestrator/invoke.ts`, fail-LOUD). The credential-mask list here is kept in parity with its `FLEET_SANDBOX_DENY_READ` (asserted by a test).
 * Plan `agent-capability-confinement-2026-06-13` (P-022 / D-008 / P-033) — the full design: srt-preferred exec sandbox, the egress-parity decision, the three confinement-hole fixes (D-012).
+
+# A federated column silently never federates if the CDC capture trigger's WHEN clause doesn't watch it
+
+> capture_substrate_outbox snapshots to_jsonb(NEW) AT FIRE TIME, and the per-table AFTER UPDATE capture trigger has a COLUMN-SCOPED WHEN clause. Add a new federated column but write it in a separate UPDATE that touches only that column, and the trigger never fires → the value is set locally but NEVER placed on the peer-log. Adding a federated column to an existing CDC table = also widen the trigger WHEN clause.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+Federated tables ride `harness_shared.capture_substrate_outbox()` — an `AFTER INSERT/UPDATE/DELETE` trigger that, **at fire time**, does `to_jsonb(NEW)` and INSERTs that **row snapshot** into `substrate_outbox` (drained onto the peer-log). Two load-bearing facts:
+
+1. **It snapshots the row AS IT IS WHEN THE TRIGGER FIRES.** A column written *after* the firing update is not in that snapshot.
+
+2. **The per-table `AFTER UPDATE` capture trigger has a COLUMN-SCOPED `WHEN` clause** — it fires only when specific columns change (a deliberate noise-filter so unrelated updates don’t federate). Example from mig 464 (`gym_qd_archive`):
+
+   ```sql
+   WHEN ((NEW.federatable = true OR OLD.federatable = true)
+     AND (OLD.fitness IS DISTINCT FROM NEW.fitness
+       OR OLD.candidate_id IS DISTINCT FROM NEW.candidate_id
+       OR OLD.federatable IS DISTINCT FROM NEW.federatable))
+   ```
+
+So if you **add a new federated column** and write it in an `UPDATE` that touches **only that column**, the `WHEN` clause is false → **the trigger never fires** → the value lands in the local row but is **never captured onto the wire**. It looks correct locally (the column is set; unit tests with a fake `sql` pass) and is silently inert in federation.
+
+## How it bit (F1-6 / P-014)
+
+[Section titled “How it bit (F1-6 / P-014)”](#how-it-bit-f1-6--p-014)
+
+`markEliteFederatable`’s device-signing path stamps `federatable=true` in one UPDATE, then writes the signed `outcome_record` in a **second** UPDATE touching only `outcome_record`. mig 478 added the column and its comment *assumed* “the archive’s existing capture triggers” would carry it — but mig 464’s trigger predated the column and didn’t watch it. Result: every elite federated outcome-**UNVERIFIED** even when a signer was present. The whole signing layer was inert on the wire, and nothing failed loudly.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+**Adding a federated column to an existing CDC-captured table is TWO changes, not one:** add the column (migration) **and** widen the capture trigger’s `WHEN` clause to fire on that column (`OR OLD.<col> IS DISTINCT FROM NEW.<col>`). mig 481 did exactly that. A `CREATE OR REPLACE TRIGGER` migration is idempotent and additive.
+
+## Verify it for real — not with a fake `sql`
+
+[Section titled “Verify it for real — not with a fake sql”](#verify-it-for-real--not-with-a-fake-sql)
+
+A fake-`sql` unit test cannot catch this: the bug lives in the PG trigger, not the TS. Prove it against real Postgres — hand-provision the table + `substrate_outbox`
+
+* the capture fn + the trigger (the `_pg-helpers` subset-provisioning precedent), run the writer, and assert the captured `substrate_outbox.row->'…'` actually carries the new column. `elite-outcome-capture.integration.test.ts` provisions BOTH the old and fixed trigger and asserts old-misses / fixed-captures — the durable regression guard.
 
 # CI runner reds: the dev-box-parity failure classes (and the provisioning recipe)
 
@@ -2631,15 +2708,17 @@ A 2026-06-26 audit of `harness_shared.tool_invocations` found near-zero *organic
 
 `code-run-batch-nudge.ts` now runs a **sliding-window** (`NUDGE_WINDOW_MS`, 90s) tracker per session with **two triggers**:
 
-* **same-tool** ≥ `BATCH_NUDGE_THRESHOLD` (3) in the window → a list-then-loop skeleton.
-* **fan-out** ≥ `FANOUT_DISTINCT_THRESHOLD` (4) *distinct* tools in the window → a ready-to-paste **`Promise.all`** skeleton over the exact tools just seen.
+* **same-tool** ≥ `BATCH_NUDGE_THRESHOLD` (originally 3, **lowered to 2** by the 2026-06-29 code-run-adoption directive — the 2nd identical round-trip already IS the loop) in the window → a list-then-loop skeleton.
+* **fan-out** ≥ `FANOUT_DISTINCT_THRESHOLD` (originally 4, **lowered to 3** on the same 2026-06-29 pass — three different reads in one burst is already a Promise.all-able fan-out) *distinct* tools in the window → a ready-to-paste **`Promise.all`** skeleton over the exact tools just seen.
 
 It **re-fires on exponential backoff** (cooldown 4→8→16→32→64 calls) instead of going permanently silent, and **leads with the running round-trip count** so the otherwise invisible token cost is felt in-loop. Each trigger has its own flag:
 
 * `FLAGS.CODE_RUN_BATCH_NUDGE` — the same-tool trigger.
 * `FLAGS.CODE_RUN_FANOUT_NUDGE` — the new fan-out trigger (its **own** flag so it is an independent A/B knob).
 
-The hot path stays a ring push; `getFlag` is consulted only when a hint actually fires.
+The hot path stays a ring push; `getFlag` is consulted only when a hint actually fires. The nudge is further scoped to `CODE_RUN_CAPABLE_ROLES` (a caller who can’t actually run `code:run` never sees a nudge to use it) — currently the full `AGENT_ROLES` set, in lockstep with `code:run`’s own gate, plus superusers (checked separately at the call site).
+
+> `code-run-batch-nudge.ts` also exports a third, unrelated nudge — `maybeOrientDedupNudge` (flag `FLAGS.ORIENT_DEDUP_NUDGE`) — which catches a session re-fetching data `coord:orient` already returned within `ORIENT_DEDUP_WINDOW_MS`. It lives in the same module for the shared per-session tracking state, but it is a different metric with its own doc and production-telemetry queries: [`measuring-code-run-adoption.mdx`](/agent-insights/measuring-code-run-adoption/)’s “Production telemetry” section (metric #3, `dev:orient_dedup_rate`). This doc stays scoped to `code:run` itself.
 
 ## The adoption metric
 
@@ -2660,12 +2739,14 @@ The hot path stays a ring push; `getFlag` is consulted only when a hint actually
 WITH s AS ( /* CODE_RUN_ADOPTION_SQL body, $1 = 7 */ )
 SELECT role,
        count(*)                                              AS spawns,
-       count(*) FILTER (WHERE max_same_tool >= 3 OR distinct_tools >= 4)               AS opportunities,
-       count(*) FILTER (WHERE (max_same_tool >= 3 OR distinct_tools >= 4) AND used_code_run) AS adopted,
-       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 3 OR distinct_tools >= 4) AND used_code_run)
-             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 3 OR distinct_tools >= 4), 0), 1) AS adoption_pct
+       count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3)               AS opportunities,
+       count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run) AS adopted,
+       round(100.0 * count(*) FILTER (WHERE (max_same_tool >= 2 OR distinct_tools >= 3) AND used_code_run)
+             / NULLIF(count(*) FILTER (WHERE max_same_tool >= 2 OR distinct_tools >= 3), 0), 1) AS adoption_pct
 FROM s GROUP BY role ORDER BY opportunities DESC;
 ```
+
+(These literals track `BATCH_NUDGE_THRESHOLD` / `FANOUT_DISTINCT_THRESHOLD` in `code-run-batch-nudge.ts` as of this writing — see the Gotcha below before trusting them blindly.)
 
 (Prefer `readCodeRunAdoption` in code — it owns the canonical query and the reducer.)
 
@@ -2939,6 +3020,8 @@ The **general principle** still holds (flat/uniform list tools get a compact for
 
 Also new since this was written and **not** covered below: a 16 KiB size gate (`TOON_VERIFY_MAX_BYTES`, `libs/generic/result-encoding/src/encode.ts:74`) skips round-trip verification and forces JSON for lists above that size.
 
+And a fifth format has since been added: **`format: md`** — a markdown table, display-oriented and lossy (never round-tripped; `decode()` throws for it). It sits in the same capability class as `csv`/`tsv` (flat-object arrays only) and is **opt-in only, never auto-selected** — `bestCompactFormat`/`chooseFormat` still only ever auto-pick `toon` or `json` (`libs/generic/result-encoding/src/eligibility.ts`). Request it the same way as `csv`: `_meta.format: "md"` / `?format=md`.
+
 ## What changed
 
 [Section titled “What changed”](#what-changed)
@@ -2958,6 +3041,7 @@ format: toon
 * **No marker → it’s JSON** (the assumed default; unmarked so bytes are unchanged).
 * **`format: toon`** → TOON. The `[N]{cols}:` header names the row count `N` and the columns; each following indented line is one row, comma-separated, in column order. Nested values indent YAML-style. It is a lossless JSON superset — read a cell as the JSON value it represents (`null` is `null`, `42` is a number, a quoted `"…"` is a string with escapes).
 * **`format: csv`** / **`format: tsv`** → a header row then comma/tab-separated rows, RFC 4180 quoted (a field with a delimiter/quote/newline is `"…"`, embedded quotes doubled). CSV is **lossy** — every cell is a string; there are no types or nulls. Only flat tools opt into it.
+* **`format: md`** → a markdown table (display-oriented, lossy, never decoded back). Same eligibility as CSV/TSV (flat-object arrays only) and likewise never auto-selected — request it explicitly.
 
 ## Where the envelope went
 
@@ -3293,6 +3377,7 @@ Selectors (pure resolver in `agent-tools/coordination/audience.ts`, PG wiring in
 * `@topic:<slug>` — subscribers of that topic.
 * `@object:<kind>:<ref>` — subscribers of that coord object (the full stored subscription `target_ref`, e.g. `feature:<harness>#<id>` / `issue:<id>`) ∪ its tagged-topic subscribers. Build it with `objectSelector(workItemObjectRef(wi))`.
 * `@file:<path>` — active presence whose `current_files` includes `<path>` (the file-collision signal, used by intent).
+* `@fleet:<slug>` — live (fresh-heartbeat) members of a named fleet, leader included; `@fleet-leader:<slug>` — the fleet’s CURRENT registry leader (liveness-independent). Added 2026-06-30 (`fleet-broadcast-audience-history-integration`); resolved by the same expander, used by fleet-scoped broadcasts rather than lifecycle emits.
 
 Plain ownerIds, `*`, and `human` pass through untouched (a normal `coord:send` is zero-overhead). Which category emits which selectors:
 
@@ -4244,8 +4329,8 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
 [Section titled “Why the confusion is easy — and how to catch it”](#why-the-confusion-is-easy--and-how-to-catch-it)
 
 * **A bee-spawn can create a fleet.** `bee:spawn { fleet: "X" }` auto-CREATES fleet X if it’s absent (bees can be color-grouped). So “I passed a fleet name” does NOT mean you got desktop members. A bee-spawn that materialises a new fleet now returns a loud `fleet_advisory` telling you so (WI-1764 #2).
-* **The count now splits.** `fleet:list` and `fleet:status` report **`memberCount` (visible desktop su) vs `beeCount` (background bees that joined the fleet’s presence label)**, plus a workspace-wide **`runningBees`** total (WI-1764 #4). A fleet showing `0 members` while `runningBees > 0` is the tell that you spawned bees where you meant `fleet:launch-on-plan`.
-* **Bees carry no per-fleet linkage in the nursery.** A `spawned_agents` row has no fleet column, and nursery spawn-ids never appear in `fleet_membership_events` or `coord_presence.fleet_slug`. That is *why* `liveMemberCount` read 0 in the origin incident — the bees were simply not attributed to the fleet anywhere. The workspace-wide `runningBees` count is what makes the mismatch visible regardless.
+* **The count now splits.** `fleet:list` and `fleet:status` report **`memberCount` (visible desktop su) vs `beeCount` (background bees spawned INTO the fleet)**, plus a workspace-wide **`runningBees`** total (WI-1764 #4). A fleet showing `0 members` while `runningBees > 0` is the tell that you spawned bees where you meant `fleet:launch-on-plan`.
+* **`beeCount` is nursery-attributed and reliable (WI-1813).** A bee’s `fleet_slug` is now stamped on its `spawned_agents` row at spawn (mig 475), so `beeCount` (via `countRunningFleetBees`) counts every running bee attributed to the fleet — *independent* of whether the bee booted far enough to write a `coord_presence` fleet label (the earlier weak signal). `memberCount` still comes from presence — a member IS a live desktop session. The workspace-wide `runningBees` remains the belt-and-suspenders total that also catches ungrouped and pre-mig-475 bees carrying no `fleet_slug`.
 
 ## The two-line heuristic
 
@@ -6119,6 +6204,66 @@ The `console.warn('[dbos] boot failed (non-fatal): …')` line from step 2 of th
 
 More importantly, this incident is no longer undetectable: `host-bootstrap.ts` now arms a **Red Queen engine-death sentinel** (`packages/operator-core/lib/red-queen/engine-death.ts`, `armEngineDeathSentinel()`) as a **plain `setInterval`, deliberately outside DBOS/routines** — its own comment names this exact incident (“the swallowed `[dbos] boot failed` above left every routine dead for 80+ min on 2026-06-12 with nothing detecting it”) as the reason it must survive the failure it watches for. It’s inert while the `papercusp-red-queen` flag is OFF (checked every pass). Step 1 of the diagnosis runbook above (`next_fire_at` all in the past) is still the fastest manual confirmation, but a live host should now self-report this class of stall via the sentinel instead of silently sitting dead for 80+ minutes.
 
+# Stop polling — await the event (events:catalog + sugar verbs)
+
+> The await-event primitive already exists and is barely used: agents poll dev:pipeline_position / dev:build_status / a peer's status because they never find the event key that already fires. The fix is discoverability — events:catalog lists every awaitable key, and named sugar verbs (deploy:await, work-item:await, …) build the key for you. Register, END YOUR TURN, get re-invoked when it fires.
+
+## The mistake: polling for something that already fires an event
+
+[Section titled “The mistake: polling for something that already fires an event”](#the-mistake-polling-for-something-that-already-fires-an-event)
+
+The single most common waste in a fleet session is **re-polling** for a condition that is already announced as an awaitable event:
+
+* Re-reading `dev:pipeline_position` every few minutes to see if “my change is live on `:3070`” — while `release:deployed` fires the moment it lands.
+* Re-reading `dev:build_status` to see if the gate went green — while `release:green` / `green-checkpoint:red` already fire the verdict.
+* Re-reading `work_items:get` for a peer’s item — while `work-item:done:<id>` already fires when it settles.
+
+A usage audit (`tool_invocations`, `tool_name='events:await'`) found agents **barely use the primitive** — not because it doesn’t work (it’s durable + liveness-adaptive: it wakes a live pty, resumes an exited session, or nudges an inbox), but because they never **find** the key. The gap was discoverability, not mechanism.
+
+## The fix: one read, then sleep
+
+[Section titled “The fix: one read, then sleep”](#the-fix-one-read-then-sleep)
+
+**Before you poll, run `events:catalog`.** It lists every awaitable key family: the key template, a ready-to-copy `events:await` example, what it means, who emits it, whether it fires *today*, and the poll it replaces. If the thing you’re about to poll for is in there, don’t poll — arm the await and **end your turn**. You are re-invoked when it fires (or at the deadline).
+
+```plaintext
+events:catalog                          # what can I wait on?
+events:await { event: "release:green" } # arm it
+# …end your turn. You wake when the gate resolves.
+```
+
+## Prefer the named sugar verbs
+
+[Section titled “Prefer the named sugar verbs”](#prefer-the-named-sugar-verbs)
+
+For the common waits there’s a thin named verb that **builds the key for you** (sourced from the same catalog — the single source of truth):
+
+| Want to wait for…                 | Sugar verb                       | Resolves to                                           |
+| --------------------------------- | -------------------------------- | ----------------------------------------------------- |
+| my sha live on `:3070`            | `deploy:await { sha? }`          | `release:deployed` (+ `release:deploy-failed`)        |
+| the green gate’s verdict          | `checkpoint:await`               | `release:green` (+ `green-checkpoint:red`)            |
+| a work item to change / settle    | `work-item:await { id, state? }` | `work-item:status:<id>` (or `:done` / `:blocked` / …) |
+| a service to recover              | `service:await-up { name }`      | `service:up:<name>`                                   |
+| my edit committed                 | `git-sync:await { sha? }`        | `git-sync:committed:<sha>`                            |
+| a plan item done                  | `plan-item:await { slug, id }`   | `plan-item:done:<slug>:<id>`                          |
+| my fleet to drain (then loop:end) | `fleet:await-drained { slug }`   | `fleet:drained:<slug>`                                |
+
+The dual-outcome verbs (`deploy:await`, `checkpoint:await`) arm awaits on **both** the success and failure keys — mutually exclusive, so you wake exactly once, either way. These are \~convenience wrappers over `events:await`, **not** a second subscription system — `coord:wake` / `coord:dispatch` hide the `coord:inbox-wake:<owner>` key the same way.
+
+## Don’t
+
+[Section titled “Don’t”](#dont)
+
+* **Don’t sit in a poll loop** for a deploy / gate / commit / peer item. Arm the await and end your turn — a wake is a turn; the pump paces mass unblocks.
+* **Don’t hand-hold a raw PG `LISTEN`.** Agents park/end between turns and would miss events fired while asleep; the operator holds the connection and *wakes* you. That’s the value Postgres doesn’t provide (see the plan’s D-004).
+* **Don’t invent a key.** If the catalog marks a family `awaitable_now: false`, its emitter is being wired — the key shape is stable but nothing fires it yet.
+
+## Why it’s structured this way
+
+[Section titled “Why it’s structured this way”](#why-its-structured-this-way)
+
+`events/await/catalog.ts` is the **single source of truth**: the `events:catalog` tool, the `awaitable:` hints the poll-site tools now return, and the sugar verbs all read it. So a key shape lives in exactly one place — and a future unification of the await primitive with the ECA reaction engine is a *form* change, not a rebuild (event-await-discoverability-and-coverage-2026-07-03, D-005).
+
 # Exit 144 — pkill -f kills your own Bash tool shell
 
 > A Bash tool call that contains `pkill -f "<pattern>"` dies with exit 144 when the pattern appears anywhere in the script text — the tool runs the script with its full text in argv, so pkill matches and kills its own shell. Misdiagnosed on 2026-06-11 as "the box wall-clock-SIGTERMs every vite/playwright launch", which stalled e2e verification for a whole session and forced a needless handoff.
@@ -6522,7 +6667,7 @@ It deliberately supersedes the optimistic “FULLY WORKING + RELEASE-READY” cl
 | Coordination **control plane** cross-machine (wake / push / presence)                               | ✅ **Boundary LIVE-PROVEN (Brief 7 matrix, 2026-07-02)**                                             | Harness-scoped coord messages + escalations FEDERATE; raw presence/watermarks/await-subscriptions stay LOCAL by design (cross-machine visibility rides `shared_presence`). The “handoffs don’t federate” gap (WI-1510) is **CLOSED — by design, not a wire bug**: handoffs DO federate but the receiver-side P-013 comms-tier gate quarantines any handoff whose author is below `steer` (`coord_quarantine`, reason `handoff-below-steer`; no owner special-case — steer is a local per-user grant that never federates). Live-proven both legs 2026-07-02 (m1783013203): ungranted → quarantined; steer-granted → applies                                                                                                                                                                              |
 | True 3-machine multi-member fanout, **live**                                                        | ⛔ **Not coverable** under the current 2-server quota                                                | Brief 2 — permanent cap; 2-VM proxy + in-process only until quota lifts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | NAT / firewall / cross-region diversity                                                             | ✅ **LIVE-PROVEN (Brief 8, 2026-07-02) — with one filed caveat**                                     | 2-frame ash↔hil, stateful restricted-cone NAT on the member frame, public DHT: holepunch PASS both ways, member→owner content PASS, owner→member content converges **late-not-never** — ops appended during the joiner’s owner-binding-null window stall until the next owner-side append kicks a full backlog fold (WI-1534). Symmetric-NAT rung out of scope (needs a real symmetric-NAT middlebox)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Long-running node stability (bg-host listener/handle leak)                                          | 🔴 **Open — re-observed live**                                                                      | WI-1089’s fix did not hold: \~30GB RSS at \~10-20 min uptime re-observed 2026-07-01 → **WI-1417** (with the full CPU-profile diagnosis: 66% spawn + 16% GC). git-sync is now resilient to the resulting stalls (WI-1416 checkpointed resume), but the leak itself still degrades long-running nodes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Long-running node stability (bg-host listener/handle leak)                                          | ✅ **RESOLVED + live-re-verified (2026-07-02)**                                                      | The re-observed 30GB climb (WI-1417) was the claude-sessions fs-sweep, not the swarm listeners: negative-resolution + roots TTL caches in `claude-sessions.ts` landed and were re-verified live 2026-07-02 — bg-host holds a healthy 5.7–5.8GB sawtooth plateau over a multi-hour soak (RSS *decreased* across a 12-min recheck), no reaper false-reap storm; 3 recurrence-guard tests (`claude-sessions-cache.test.ts`). WI-1089 + WI-1415 + WI-1416 also resolved                                                                                                                                                                                                                                                                                                                                      |
 | LWW convergence under clock skew                                                                    | ✅ **All four known ordering sources FIXED (2026-07-02)** — one residual PRESENCE gap open (WI-1684) | (1) capture-boundary two-clock bug → **mig 446**; (2) HLC-fold vs fed\_ts-guard order split → **mig 458** (`fed_order_key` across all 20 mutable projection writers, EI-1698); (3) exact `(ms,count)` fed\_hlc TIES swap winners under counter-lockstep (WI-1672) → **mig 459** node-id total order (3-segment HLC) + locks-core `hlc.ts`; (4) one absurd-future stamp pins every recv-ratcheted clock forever (the WI-1672 amplifier) → **mig 460** + `HlcClock.maxDriftMs` ε recv clamp (600s = 2× the D-007 announce window). Evidence: production-topology convergence-fuzz sweep (TEETH + 120-seed FIXED, monotone AND skew) + forced-tie two-device PG integration test. **Still open: WI-1684** — local-del resurrection under skipOwnOps (missing tombstone; row PRESENCE split-brain; see § 4a) |
 | Revocation **read** cut-off                                                                         | ✅ **LIVE-PROVEN (Brief 3, 2026-07-02)**                                                             | Post-ban owner content never reached the banned member over real VMs (\~90s negative assert); pre-ban content stayed readable (epoch-0 semantics, matches the in-process repro). WI-1329                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
@@ -6631,11 +6776,11 @@ Found by the production-topology fuzz rig while verifying the WI-1672 fix, and *
 
 Brief 8 lifted this from the easy topology: 2 Hetzner frames **cross-region** (ash↔hil) with a **stateful restricted-cone NAT** (nftables masquerade + established/related-only inbound) in front of the member frame, real public DHT. Verdict: **holepunch PASS both directions; member→owner content PASS; owner→member content is LATE, not never** — ops the owner appends while the joiner is still in its owner-binding-null admit-refusal window stall indefinitely (80+ min observed, survives a cold restart of the member) until the **next owner-side append** kicks the replication/fold, after which the entire backlog folds within minutes. No data loss; the log is intact. Filed as **WI-1534** (unbounded staleness on quiescent hives — fix directions: force a remote-length refresh/initial sync after late admit, or an anti-entropy `update()` tick in the merge pass). Remaining out-of-scope rung: **symmetric NAT** (needs a real symmetric-NAT middlebox; port-dependent mapping defeats the restricted-cone emulation). Earlier rig work also proved that two VMs sharing one NAT egress IP **hairpin** and fail a public-DHT holepunch — a class of failure single-NAT topologies never surface.
 
-### 6. Long-running node stability (bg-host listener leak)
+### 6. Long-running node stability (bg-host leak) — RESOLVED (2026-07-02)
 
-[Section titled “6. Long-running node stability (bg-host listener leak)”](#6-long-running-node-stability-bg-host-listener-leak)
+[Section titled “6. Long-running node stability (bg-host leak) — RESOLVED (2026-07-02)”](#6-long-running-node-stability-bg-host-leak--resolved-2026-07-02)
 
-25+ substrate boots add `swarm.on('connection')` to the **shared** swarm without removal → `MaxListenersExceeded` → a listener/handle/heap leak that degrades a node running for days. WI-1088/1089 (Brief 10) — a real release risk for any long-lived federated node; needs the listener-lifecycle fix + a heap/handle regression guard landed.
+The original listener-leak class (25+ substrate boots adding `swarm.on('connection')` to the shared swarm without removal, WI-1088/1089, Brief 10) was fixed; the re-observed 30GB RSS climb (WI-1417) turned out to be a **different** driver — the claude-sessions full owner-dir fs sweep ([operator-memory-bloat-claude-sessions-fs-sweep](/internal/docs/agent-insights/operator-memory-bloat-claude-sessions-fs-sweep)), fixed with negative-resolution + roots TTL caches in `claude-sessions.ts`. Live-re-verified 2026-07-02: bg-host sits at a 5.7–5.8GB sawtooth plateau (GC keeping pace, not a monotonic climb), no dbos-reaper false-reap storm; recurrence-guarded by 3 tests in `claude-sessions-cache.test.ts`. WI-1415/WI-1416 (the git-sync symptom chain) independently resolved. No longer a release risk row.
 
 ### 7. Data-completeness is table-grain-guarded, column-grain is the residual risk
 
@@ -6647,7 +6792,7 @@ Brief 8 lifted this from the easy topology: 2 Hetzner frames **cross-region** (a
 
 [Section titled “8. The 2-server quota cap → no true 3-machine multi-member LIVE”](#8-the-2-server-quota-cap--no-true-3-machine-multi-member-live)
 
-The Hetzner quota is \~2 concurrent servers (treat as **permanent** for now). True 3-machine member↔member fanout (owner + 2 members, Brief 2) is therefore **not live-coverable**; it is proven only via a 2-VM proxy + the in-process matrix. Document multi-member fanout as **gated on a >2-server quota**, not as live-proven.
+*(historical)* The Hetzner quota was \~2 concurrent servers, so true 3-machine member↔member fanout (owner + 2 members, Brief 2) was **not live-coverable**; it was proven only via a 2-VM proxy + the in-process matrix, and the owner ratified that min-bar (D-006). **UPDATE 2026-07-03 (D-001, `shared-hive-p2p-release-readiness-2026-07-03`): Hetzner is gone entirely, and the un-gating path is now LOCAL** — extend the containerized rig to 3 frames (`bin/local-matrix.sh` provisions docker frames; the rig lib is already N-frame) and run the matrix + membership churn there (that plan’s P-010). “Gated on a >2-server quota” is obsolete; the residual gap is simply that the 3-frame local run has not been executed yet.
 
 ### 9. Owner→joiner federation can stay broken in the pure NO-RESTART join path (RESOLVED — both mechanisms fixed + live-verified 2026-07-02)
 
@@ -6660,6 +6805,18 @@ A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, rea
 **Status: FIX LANDED (su-2c799, WI-1378).** `resolveHiveHomeProjectionSlug` now calls `joinerHiveHomeSlug(ws, slug, { fresh: true })`, threaded through `loadHarnessRegistry({fresh})` → `readOperatorState({fresh})` to BYPASS the 2s cache on this one rare resolve path (hot-path callers keep the cache, so the seqscan perf win is preserved). A fresh PG read is guaranteed to see the committed write (join-hive awaits the `mutateRegistry` commit before the rekey RPC). **Second mechanism (WI-1544, the race bifurcation):** when the deterministic join-time binding resolved BEFORE the owner’s announce, the joiner’s hive-home projection conclusively rejected the owner core on the slug filter (origin=member-slug), membership chicken-and-egged, and A→B blacked out *permanently* (the rekey rescue was structurally unreachable — no binding transition). Fixed in `boot.ts`: `inJoinBootstrapWindow()` reclassifies a join-window `binding_invalid` as retryable/buffered instead of conclusive-reject, and the `scope_unresolved` buffer holds out-of-scope slug-filter frames while the hive-home projection slug is unresolved (WI-1544, resolved 2026-07-02; 41 dedicated tests in `boot.test.ts` + `announce-channel-multihive.test.ts`).
 
 **Live verification:** matrix run m1783013203 (2026-07-02) federated A→B on the FIRST poll across all 8 scenarios — no restart, no adaptive re-fold rescue needed. This limitation is closed.
+
+### 10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)
+
+[Section titled “10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)”](#10-membership-lifecycle--residual-trackers-p-011-verdicts-2026-07-03)
+
+The post-min-bar backlog was given explicit verdicts under `shared-hive-p2p-release-readiness-2026-07-03` P-011 (full table: `shared-hive-release-testing/RELEASE-READINESS.md`). The standing ship-with-limitation rows, each with an accountable tracker:
+
+* **No un-revoke path (G8, WI-1855)** — revocation is one-way; un-banning a member has no sanctioned flow (workaround: re-invite as a fresh device/epoch, which must NOT retro-grant cut epochs).
+* **Membership teardown doesn’t federate (G24/G27, WI-1857)** — dissolve publishes no membership tombstone (peers’ rows orphan out by TTL) and a leaver’s `hive_members` row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`; the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole.
+* **revoke() Hypercore session leak (G9, WI-1856)** — revoked members’ core sessions are not verifiably closed on the owner; unbounded only on long-lived owners with many revokes.
+* **Usage-events metering is machine-local (G2, WI-1858)** — the `contributor_usage_events` capture trigger is deliberately deferred to the GA migration (completeness-guard exemption until then).
+* **From-repo joiner incremental federation (WI-971, OPEN)** — the outbox drain is never wired for joined/created hive harnesses (WI-259 was closed as its duplicate). If from-repo joins are v1 public scope this is release-critical, not a limitation row — P-014 makes that scope call.
 
 ***
 
@@ -6689,7 +6846,9 @@ A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, rea
 
 **Also gating, outside the federation product code:** Brief **14** — operator-core `lint:tsc` — ✅ **DONE** (su-337c2, committed `f42d55681`): the gate is GREEN again (310→244 errors, all type-only test-typing fixes, ratcheted, `npm run lint:tsc` exits 0). CI is no longer red on this.
 
-> **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve; WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went green first-poll with no restart (m1783013203). **One standing owner-wall:** the Hetzner account has rejected ALL billable creates with `403 forbidden "permission denied"` since 2026-07-02 (reads + free writes work; token-a/token-b are dead 401s) — an account-level billing/verification lock only the owner can clear in console.hetzner.cloud. Until then, matrix reruns are container-grade (2-node docker rig), not VM-grade.
+> **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve; WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went green first-poll with no restart (m1783013203).
+>
+> **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of `shared-hive-p2p-release-readiness-2026-07-03`).** Access to the Hetzner machines is permanently lost (owner directive); the former “billing lock the owner can clear” framing no longer applies. **The LOCAL rig set is now the proof of record:** (i) the containerized 2-node matrix rig — `bin/local-matrix.sh`, the one-command wrapper over the same BYO-frames seam (`RIG_FRAME_IPS`) that produced m1783013203; (ii) the tower↔VM rig (`bin/vm-rig/` — a REAL kernel + network boundary, i.e. VM-grade, not just container-grade); (iii) the mac VM cross-platform witness; (iv) the single-box `two-instance-*-smoke.sh` suite. The `deb-hetzner-*` cloud provision paths are retired-not-deleted. Historical per-brief Hetzner runs remain valid evidence for the rows above.
 
 ***
 
@@ -8419,7 +8578,7 @@ This does **not** change the trap-2 boot order: the HTTP listener still binds be
 
 The inference gateway (`papercusp-inference-gateway` flag) routes LLM egress through a localhost pacing proxy (`127.0.0.1:8788`) that strips + reinjects the bound pool account’s auth — so even when the org has disabled Claude *subscription* access (an OAuth 401), calls through the gateway succeed.
 
-The catch: the gateway env (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`) is applied **at the spawn chokepoint** — `operator-spawn.ts` merges `gatewaySpawnEnv(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))` into each **spawned bee’s** environment. An **in-process** LLM call never passes through that chokepoint, so it never receives the gateway env.
+The catch: the gateway env (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`) is applied **at the spawn chokepoint** — `operator-spawn.ts` merges `resolveSpawnGatewayEnv({ ownerId, account, role, model, … })` (the backend-aware wrapper in `inference-gateway/spawn-env.ts` that resolves the account/pin/priority and internally calls `gatewaySpawnEnv`) into each **spawned bee’s** environment. An **in-process** LLM call never passes through that chokepoint, so it never receives the gateway env.
 
 The gym cycle (`runOneAutoloopCycle`) has both kinds of LLM call:
 
@@ -8428,7 +8587,7 @@ The gym cycle (`runOneAutoloopCycle`) has both kinds of LLM call:
 
 This is why the live :3070 autoloop showed `gym-cycle:error` with 10 consecutive errors while the implement-lane workers (spawned bees) ran fine on the same gateway: the cycle booted clean (EI-368 is contained), the pipeline agents ran, then the judge 401’d “before completing” and the circuit opened.
 
-Originally compounding it: `anthropicDirectTransport` (`chat-stream.ts`) read `process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com'` — it honored the papercusp-specific override but **not** the standard `ANTHROPIC_BASE_URL` that the gateway sets for the CLI, so the two LLM legs keyed off different env vars. **This is now fixed** — it reads `PAPERCUSP_ANTHROPIC_URL ?? ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'` (`chat-stream.ts:612-614`), so an in-process call picks up the gateway env even when only `ANTHROPIC_BASE_URL` is set.
+Originally compounding it: `anthropicDirectTransport` (`chat-stream.ts`) read `process.env.PAPERCUSP_ANTHROPIC_URL ?? 'https://api.anthropic.com'` — it honored the papercusp-specific override but **not** the standard `ANTHROPIC_BASE_URL` that the gateway sets for the CLI, so the two LLM legs keyed off different env vars. **This is now fixed** — it reads `PAPERCUSP_ANTHROPIC_URL ?? ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'` (`chat-stream.ts` `resolveAnthropicBaseUrl`, currently around line 651), so an in-process call picks up the gateway env even when only `ANTHROPIC_BASE_URL` is set.
 
 ## The fix (2026-06-13, FB-16 of self-improvement-consume-edges)
 
@@ -8443,7 +8602,7 @@ Proven 2026-06-13: a real `GYM_LOOP_MAX_CYCLES=1` cycle with the gateway env set
 [Section titled “Two gotchas for the next agent”](#two-gotchas-for-the-next-agent)
 
 * **`getFlag(FLAGS.INFERENCE_GATEWAY)` resolves `false` in a standalone CLI/tsx context** (it falls back to `FLAG_DEFAULTS`, where the flag is OFF), even though the PG override / MCP `flags:get` reports it ON. The flag resolves ON only inside a full operator process (PostHog + PG override). So a manual `gym-loop-run.ts` proof must set the gateway env explicitly; the flag-gated auto-apply fires on the live `:3070` operator.
-* **The broader latent gap (now closed at the shared transport)**: the `anthropicDirectTransport` fallback to `ANTHROPIC_BASE_URL` is implemented (`chat-stream.ts:612-614`), so any in-process anthropic-direct consumer that routes through it (e.g. the `su` llm-test target) now picks up the gateway env. A consumer that resolves its own URL without going through `anthropicDirectTransport` still needs the same `?? ANTHROPIC_BASE_URL` fallback applied locally.
+* **The broader latent gap (now closed at the shared transport)**: the `anthropicDirectTransport` fallback to `ANTHROPIC_BASE_URL` is implemented (`chat-stream.ts` `resolveAnthropicBaseUrl`), so any in-process anthropic-direct consumer that routes through it (e.g. the `su` llm-test target) now picks up the gateway env. A consumer that resolves its own URL without going through `anthropicDirectTransport` still needs the same `?? ANTHROPIC_BASE_URL` fallback applied locally.
 
 # Testing the gym live-boot path (runOneAutoloopCycle / runGymBlueprintCycle)
 
@@ -9476,7 +9635,11 @@ The *truly cross-machine* proof is layered (the plan’s P-011): the substrate h
 
 [Section titled “The re-key surface — full anchor inventory (P-003)”](#the-re-key-surface--full-anchor-inventory-p-003)
 
-The complete enumeration behind the D-010 “the migs-144/150 triggers are a no-op” invariant and the Track-B authority map above — every site that names the federation scope. It is the *evidence* that the re-key was a topic move, not a trigger rewrite: `harness_slug` is the **capture/demux column** everywhere, never the federation domain. Verified against live `staging` 2026-06-08. (Origin: `fleet-federation-reanchor-2026-06-06` P-003 — that plan is superseded by this one; the inventory lives here because the surface it maps is live/shipped. Folded into the plan’s D-009.)
+The complete enumeration behind the D-010 “the migs-144/150 triggers are a no-op” invariant and the Track-B authority map above — every site that names the federation scope. It is the *evidence* that the re-key was a topic move, not a trigger rewrite: `harness_slug` is the **capture/demux column** everywhere, never the federation domain. Verified against live `staging` 2026-06-08.
+
+> **Line numbers below have drifted (re-verified 2026-07-03) and are no longer byte-exact** — this shared tree receives concurrent unrelated edits daily, so a `:281`-style citation from 2026-06-08 can shift by dozens of lines within weeks even when the function/table/gate it names is unchanged. Spot-checked 2026-07-03: every function, table, tag, and gate named below still exists with the described behavior (e.g. `lockAuthorityFor` now sits at line 314, not 281; `queryPresenceRowsForHive` at 189, not 167; `NOTIFY_CHANNEL` at 73, not 54; the `AuthorityOpEnvelope` interface is actually named `AuthorityRpcEnvelope`) — only the exact line numbers are stale, not the structure. Treat every `:NNN` below as “around there” and grep the symbol name to confirm, not as a pinned coordinate.
+
+(Origin: `fleet-federation-reanchor-2026-06-06` P-003 — that plan is superseded by this one; the inventory lives here because the surface it maps is live/shipped. Folded into the plan’s D-009.)
 
 ### 1 — Capture triggers (`libs/papercusp/libs/db/sql/`)
 
@@ -9527,14 +9690,14 @@ The partial fed-unique indexes carry the same `WHERE harness_slug IS NOT NULL` g
 
 The scope-key parameter is named `harnessSlug` but is **polymorphic** — post-P-009 it carries a hive slug too (`lock-authority.ts:426` — “the transport field is named harnessSlug”). The harness path and its Hive twin coexist:
 
-| File                       | harness-scope                                                                                   | Hive-scope twin                                                                                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `lock-authority.ts`        | `lockAuthorityFor` :281, `routeToAuthority` :367, `queryPresenceRows`(harness\_slug) :131       | `lockAuthorityForHive`, `routeToAuthorityForHive` :411, `queryPresenceRowsForHive`(hive\_slug) :167 — shared core `selectAuthorityFromRows` :212 |
-| `remote-peers-cache.ts`    | `hasRemotePeers` :43                                                                            | `hasRemoteHivePeers` :56 (key `hive:<slug>`)                                                                                                     |
-| `file-lock-routing.ts`     | `DomainToHarnessSlug` :49                                                                       | `HarnessToHiveSlug` :53 → `routeFileLockOp` picks `{kind:hive\|harness}` :133-151                                                                |
-| `authority-op-registry.ts` | `AuthorityOpEnvelope.harnessSlug` :27, `verifyIsAuthority` :66/85                               | same envelope; scope key carries either                                                                                                          |
-| `hardened-authority.ts`    | `resolveHardenedAuthority(harnessSlug)` :83, fetch/load/save :52-55                             | generic — reused for hive                                                                                                                        |
-| `peer-rpc-transport.ts`    | `PeerRpcRequest.harnessSlug` :28; `http-peer-rpc-transport.ts` serializes `{harnessSlug,…}` :91 | wire field carries the scope key                                                                                                                 |
+| File                       | harness-scope                                                                                                                                                          | Hive-scope twin                                                                                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lock-authority.ts`        | `lockAuthorityFor` :281, `routeToAuthority` :367, `queryPresenceRows`(harness\_slug) :131                                                                              | `lockAuthorityForHive`, `routeToAuthorityForHive` :411, `queryPresenceRowsForHive`(hive\_slug) :167 — shared core `selectAuthorityFromRows` :212 |
+| `remote-peers-cache.ts`    | `hasRemotePeers` :43                                                                                                                                                   | `hasRemoteHivePeers` :56 (key `hive:<slug>`)                                                                                                     |
+| `file-lock-routing.ts`     | `DomainToHarnessSlug` :49                                                                                                                                              | `HarnessToHiveSlug` :53 → `routeFileLockOp` picks `{kind:hive\|harness}` :133-151                                                                |
+| `authority-op-registry.ts` | `AuthorityRpcEnvelope.harnessSlug` (interface actually named `AuthorityRpcEnvelope`, not `AuthorityOpEnvelope`) :28, `verifyIsAuthority` opt :100, gated call :155/158 | same envelope; scope key carries either                                                                                                          |
+| `hardened-authority.ts`    | `resolveHardenedAuthority(harnessSlug)` :83, fetch/load/save :52-55                                                                                                    | generic — reused for hive                                                                                                                        |
+| `peer-rpc-transport.ts`    | `PeerRpcRequest.harnessSlug` :28; `http-peer-rpc-transport.ts` serializes `{harnessSlug,…}` :91                                                                        | wire field carries the scope key                                                                                                                 |
 
 **Both Track-B cutovers are now LANDED** (fed-reanchor P-060, 2026-06-08 — both single-box no-ops by construction; cross-Swarm proof stays the owner-gated 2-machine run):
 
@@ -11566,6 +11729,14 @@ Pass `capability:terminal { fleet:'x', terminals:[{ command:'psu …' }] }` *wit
 
 `bee:spawn` / `fleet:place_batch` are HEADLESS — never use them for a “desktop fleet.”
 
+## Members default to YOUR backend/model when you omit `agent` (2026-07-03)
+
+[Section titled “Members default to YOUR backend/model when you omit agent (2026-07-03)”](#members-default-to-your-backendmodel-when-you-omit-agent-2026-07-03)
+
+If you omit `agent` (and `model`), members no longer hard-default to `claude` — they inherit the **calling session’s own backend + model** (`resolveFleetAgent` in `launch-on-plan.ts`). psu stamps the caller’s resolved `agent`/`model` onto its own `/api/mcp` URL in the per-session `mcp.json` (`writeOmpSessionConfigDir` / `applyOmpMcpUrlParams` in `psu-launcher.mjs`); the operator reads those as `ctx.callerAgent` / `ctx.callerModel` when resolving each member’s backend. So an **omp/ornith `su` leader that calls `fleet:launch-on-plan` without `agent` now spawns `omp` members** (previously always `claude`) — and inherits the caller’s `model` too, but only when the backend was ALSO inherited (an explicit `agent` never picks up the caller’s model, so a claude member is never silently handed an ornith model id).
+
+Precedence, in order: explicit `args.agent` → `omp` (inferred when `model` is a local/ollama id, e.g. `ollama-cc/…ornith`) → the caller’s own backend → `claude` (last-resort fallback). An explicit `claude`/`codex` `agent` paired with a local/ollama `model` is now a hard error (previously silently launched `claude` mislabelled with the ornith model — the “thought ornith, got claude” trap). Set `agent` explicitly whenever you want a fleet backend that differs from your own session’s.
+
 # Lazy-import coord/presence into registry-loaded files (avoid load-time cycles)
 
 > A top-level import of a coordination/presence module into a file the system-action or endpoint registry side-effect-imports (e.g. git-sync-action) forms a require cycle that 500s an unrelated route. Use a call-time `await import()`.
@@ -12150,7 +12321,11 @@ The original per-file roadmap (kept below for provenance):
 
 [Section titled “Gating note”](#gating-note)
 
-`papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) but its `FLAGS.LOOPS` *default* is still `false` (KNOWN\_DARK). **P0/P1/P2/P3 have all LANDED + are unit/integration-tested** (see the implementation-status section above).
+UPDATE — the recommended default flip has since landed
+
+`FLAGS.LOOPS` (`papercusp-loops`) is now **DEFAULT ON** (WI-612, `libs/flags/src/types.ts`) and is **no longer in `KNOWN_DARK_FLAGS`** — the derived FLAG\_DEFAULTS inversion picked it up, so fresh hosts get loops enabled out of the box, not just the one runtime the owner hand-flipped on 2026-06-23. The recommendation at the bottom of this doc (“the flip-dark-flags effort can flip the default ON”) has been carried out; the paragraph below is kept for the historical gating record. `loop:arm` no longer refuses anywhere by default.
+
+`papercusp-loops` is FLAG-ON at runtime (owner-flipped 2026-06-23) — its `FLAGS.LOOPS` *default* was `false` (KNOWN\_DARK) at the time this doc was written; see the note above for the current state. **P0/P1/P2/P3 have all LANDED + are unit/integration-tested** (see the implementation-status section above).
 
 ### LIVE VERIFICATION (2026-06-23 \~13:30 EDT, deployed sha b40cff17d) — gate effectively satisfied
 
@@ -12164,6 +12339,16 @@ The previously-”unverified-live” turn-outcome path is now **production-verif
 **The only un-exercised sliver** is the FAST `onResumeTurnExit` resume-exit observer firing *specifically* on a detached-resume 429 — vs. the reconcile stuck-backstop catching the same death a beat later. Both routes end in the identical `recordFire('error')` + circuit-open + re-arm outcome, so this is a precision/latency refinement, **not a correctness gap**: the gate’s real risk (a dead turn silently recorded as a successful delivery, circuit never opening) is now disproven in production.
 
 **Recommendation:** the flip-dark-flags effort can flip the `FLAGS.LOOPS` default ON. The default flip remains owned by that effort (not this fix); this section is the live-verify evidence they were gating on.
+
+**✅ Done.** `FLAGS.LOOPS` now defaults ON (see the note at the top of this section) — the recommendation this doc made has been executed.
+
+## Also since this doc (2026-07-03) — cold-auto loops are a new, separate capability
+
+[Section titled “Also since this doc (2026-07-03) — cold-auto loops are a new, separate capability”](#also-since-this-doc-2026-07-03--cold-auto-loops-are-a-new-separate-capability)
+
+A follow-on effort (`su-cold-auto-mode-2026-07-03`) added a **second loop wake mode** on the same `wake-executor.ts` / `engine.ts` path this doc analyzes: a loop armed with `loop:arm { carry: 'cold' }` can RESET-CONTEXT / periodically recycle to a carry-note instead of resuming the warm in-place turn this doc describes throughout. It is gated by its own master flag, `FLAGS.SU_COLD_AUTO` (`papercusp-su-cold-auto`, default ON but only an *availability* switch — nothing goes cold until a loop is explicitly armed `carry:'cold'` AND a carry-note exists via `decideColdWake`). The turn-death-recorded-as-delivered failure mode this doc documents is about the WARM resume path specifically; cold-auto wakes are a distinct code path and are out of scope here — see the code at the `coldAutoEnabled` dep in `engine.ts` if you’re chasing a cold-loop issue instead of a warm one.
+
+**Same day, later commit:** `injectPsuHostWake`’s cold branch (`wake-executor.ts`) no longer injects the raw `carryNote` — it now wraps it with `su-cold-loop.ts`’s new `renderColdWakeInjection(carryNote)`, which frames the note as the woken agent’s entire reconstructed working state and appends a standing mandate to refresh it (`loop:checkpoint`) before ending the turn, or call `loop:end` if done/blocked — otherwise a cold loop’s anchor goes stale after one wake. Still entirely inside the cold-auto branch this section already scopes out of the warm-path failure mode; noted here only so the `wake-executor.ts` anchor stays precise.
 
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 
@@ -12219,7 +12404,7 @@ Compare in **one order space**: synthesize an HLC from `ts` for a no-HLC op at c
 const key = op.hlc ?? encodeHlc({ ms: op.ts ?? 0, count: 0 }); // missing hlc → ts-as-HLC
 ```
 
-Then every comparison is HLC-space → a single total order → transitive → order-independent for ANY HLC-presence mix. **Both halves have now landed:** `lwwPick` (`projection.ts`) does the compare-time synth inline (2026-06-20); mig-458 (`libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql`, 2026-07-02) gave the PG-level guard the SAME fix via a small immutable SQL function, `harness_shared.fed_order_key(hlc, ts)`, and swept EVERY mutable projection’s `ON CONFLICT … WHERE` / `DELETE WHERE` guard onto it (30 projection files as of 2026-07-03, and growing as new mutable projections land — `grep -rl fed_order_key packages/operator-core/lib/sync/hyperbee/projections/ | wc -l`) — so the guard now compares in the *exact* order space `lwwPick` does, on every table, not just in `lwwPick` alone.
+Then every comparison is HLC-space → a single total order → transitive → order-independent for ANY HLC-presence mix. **Both halves have now landed:** `lwwPick` (`projection.ts`) does the compare-time synth inline (2026-06-20); mig-458 (`libs/papercusp/libs/db/sql/458-fed-order-key-transitivity-fix.sql`, 2026-07-02) gave the PG-level guard the SAME fix via a small immutable SQL function, `harness_shared.fed_order_key(hlc, ts)`, and swept EVERY mutable projection’s `ON CONFLICT … WHERE` / `DELETE WHERE` guard onto it (32 projection files as of 2026-07-03, and growing as new mutable projections land — `grep -rl fed_order_key packages/operator-core/lib/sync/hyperbee/projections/ | wc -l`) — so the guard now compares in the *exact* order space `lwwPick` does, on every table, not just in `lwwPick` alone.
 
 This is **verified**, not argued — see `__tests__/fed-hlc-transitivity-fix-proof.test.ts`: a 600-run sweep shows the synth-HLC comparator is ALWAYS a strict total order (`win-counts {0,1,2}`) while the broken “both-HLC → HLC, else → ts” rule cycles (`{1,1,1}`). (The test still models both comparators locally rather than importing the real ones — that’s a test-hygiene follow-up, not a sign the fix is unapplied; the code cited above is the actual load-bearing path.)
 
@@ -13636,7 +13821,7 @@ Two program shapes, discriminated by the gate (no schema field):
 
 # Migration-number collisions: the reservation tool and lint:migrations aren't gated
 
-> Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles. lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
+> Two agents racing `ls | tail` pick the same NNN-*.sql number. db:next-migration prevents this — an MCP agent-tool (also available as `npm run db:next-migration` since 2026-06-20) now open to ALL built-in roles, and (2026-07-03) with its fsMax read moved inside the advisory lock to close a TOCTOU race (EI-6852). lint:migrations would catch dups + raw BEGIN/COMMIT + unreserved numbers, but it is not wired into CI or git hooks, so the guard never runs — and the violation counts have grown since discovery, not shrunk. Plus a two-dirs footgun: the canonical libs dir vs the gitignored sidecar mirror.
 
 ## What
 
@@ -13666,11 +13851,15 @@ The fix layers are therefore **prevention at creation** (the reservation tool/CL
 
    **Role access (2026-06-25):** `db:next-migration` previously used `agentRoles: [...SU_ROLES, 'bee']` — only superuser-role agents and the generic bee could call it. Changed to `agentRoles: [...AGENT_ROLES]`: every built-in role (worker, validator, reviewer, architect, etc.) can now call the MCP tool directly and participate in collision-free allocation without falling back to the npm CLI.
 
+   **fsMax TOCTOU race fixed (2026-07-03, EI-6852):** even after the advisory lock landed, both allocators read the filesystem max (`maxNumberOnDisk`) **before** entering `sql.begin(...)` — i.e. before acquiring `pg_advisory_xact_lock`. That left a window (a pooled-connection-acquire plus the lock-wait, which can run seconds under a busy fleet) during which a concurrent caller could write a higher-numbered `NNN-*.sql` to disk; the stale `fsMax` then failed to fold it in and the tool could hand out an already-used number. Both `next_migration.ts` (the MCP tool) and `scripts/next-migration.mjs` (the CLI) now compute `fsMax` **inside** the `sql.begin` callback, immediately before the `GREATEST(...)` read and the reservation insert, so all three GREATEST inputs (on-disk, reserved, applied) are read atomically under the same lock. `next_migration.ts` also now `export`s `ALLOC_ADVISORY_KEY` so the regression test (`next_migration.integration.test.ts`, case “EI-6852: the filesystem max is read INSIDE the advisory lock”) can hold the lock itself to reproduce the race. This closes the last remaining collision window in the “supported path” — the collisions this doc otherwise documents are all from agents who bypassed `db:next-migration`/the CLI entirely.
+
 2. ~~**The MCP client is currently dropped.**~~ **Historical note (2026-06-20):** At the time of discovery the harness MCP client was dropped, so even MCP-aware agents couldn’t reach `db:next-migration` and fell back to hand-picking. The npm CLI (`npm run db:next-migration`) was added precisely to fix this (gap #1 fix). The MCP client drop is a session-specific transient; the systematic fix is the CLI + the per-role access expansion (see gap #1 update above).
 
 3. **`lint:migrations` is not gated.** `scripts/lint-migrations.mjs` already detects (a) duplicate `NNN`, (b) raw top-level `BEGIN;`/`COMMIT;` (which would end the runner’s per-file wrapper txn early), and (c) numbers ≥215 absent from the reservation ledger. But `lint:migrations` is **only an npm script** — it is referenced in neither `.github/` (CI) nor `.husky/` / `.git/hooks`. So the guard never runs automatically; the dup-number check (which is PG-free and would run fine in CI) never fires on a PR.
 
-As of `2026-06-20`, `node scripts/lint-migrations.mjs` exits **1**: 7 files carry raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and \~10 numbers ≥215 are unreserved (`293, 294, 298, 301, 303–307, 319, 320`). The tree has been shipping with the linter red.
+As of `2026-06-20`, `node scripts/lint-migrations.mjs` exited **1**: 7 files carried raw `BEGIN/COMMIT` (`299, 300, 306, 307, 308, 312, 317`) and \~10 numbers ≥215 were unreserved (`293, 294, 298, 301, 303–307, 319, 320`).
+
+**Re-verified `2026-07-03` — the guard is still ungated and the violation count has grown, not shrunk** (confirming gap #3 is still open): `node scripts/lint-migrations.mjs` still exits **1**, now with **3 duplicate-number groups** (`357`, `375`, `460` — each has two distinct files sharing the same leading `NNN`, exactly the collision this doc is about), **34 files** carrying raw top-level `BEGIN;`/`COMMIT;`, and **64 numbers ≥215** on disk with no reservation-ledger row. The tree has been shipping with the linter red for weeks with nothing catching it at PR time — direct evidence that gap #3 (below) remains unaddressed.
 
 ## The two-dirs footgun (bonus)
 
@@ -13696,7 +13885,7 @@ npm run db:next-migration -- --name add-foo-index --intent "what it does"
 # Add --dry-run to see the number without reserving it.
 ```
 
-It scans BOTH dirs for the on-disk max, allocates under the advisory lock, and records the reservation — the same contract as the MCP `db:next-migration` tool. Then write the file to `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror). It auto-applies on the next operator restart. It refuses to hand out a number when PG is unreachable (an unreserved number re-opens the race).
+It scans BOTH dirs for the on-disk max **inside** the advisory lock (the `2026-07-03` EI-6852 fix — see above), allocates, and records the reservation — the same contract as the MCP `db:next-migration` tool. Then write the file to `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror). It auto-applies on the next operator restart. It refuses to hand out a number when PG is unreachable (an unreserved number re-opens the race).
 
 ## Recommended fix (plan)
 
@@ -13704,10 +13893,10 @@ It scans BOTH dirs for the on-disk max, allocates under the advisory lock, and r
 
 Small, mostly additive; each item is independent:
 
-1. ~~**Add `npm run db:next-migration`.**~~ **DONE (`2026-06-20`)** — `scripts/next-migration.mjs` + the `db:next-migration` npm script. Reservation now works without the MCP client (the highest-leverage gap — it kills the `ls | tail` path at the source). Mirrors the MCP tool via the shared ledger + advisory key; a follow-up could DRY the two onto one exported core.
-2. **Gate `lint:migrations`** (the real detection layer — it already has a `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Wire it into CI (and ideally pre-push). NOTE: the tree is red today, so this must be sequenced AFTER cleaning the 7 raw `BEGIN/COMMIT` files + backfilling the unreserved reservation rows — otherwise the new gate immediately fails. Don’t add the gate first. (Do NOT instead change the boot runner to abort on dup numbers: it currently applies both colliding files by filename, and altering boot-apply semantics — especially the `continueOnError` fleet path — is far riskier than catching the dup at PR time.)
+1. ~~**Add `npm run db:next-migration`.**~~ **DONE (`2026-06-20`)** — `scripts/next-migration.mjs` + the `db:next-migration` npm script. Reservation now works without the MCP client (the highest-leverage gap — it kills the `ls | tail` path at the source). Mirrors the MCP tool via the shared ledger + advisory key. ~~A follow-up could DRY the two onto one exported core~~ — see item 4 below (still open). **Also DONE (`2026-07-03`, EI-6852):** both allocators now read the on-disk max **inside** the advisory-lock transaction instead of before it, closing the TOCTOU window described above.
+2. **Gate `lint:migrations`** (the real detection layer — it already has a `duplicateNumberGroups` check, which is PG-free and runs fine in CI). Still **not done** as of `2026-07-03` — see the re-verified counts above (3 duplicate-number groups, 34 raw-`BEGIN/COMMIT` files, 64 unreserved numbers ≥215). Wire it into CI (and ideally pre-push). NOTE: the tree is red today (worse than at discovery — see above), so this must be sequenced AFTER cleaning the raw `BEGIN/COMMIT` files, resolving the duplicate-number groups, and backfilling the unreserved reservation rows — otherwise the new gate immediately fails. Don’t add the gate first. (Do NOT instead change the boot runner to abort on dup numbers: it currently applies both colliding files by filename, and altering boot-apply semantics — especially the `continueOnError` fleet path — is far riskier than catching the dup at PR time.)
 3. **Mark the sidecar mirror.** Since the mirror dir is itself gitignored, a `README` placed in it wouldn’t be tracked — put the “this is a gitignored build mirror; author migrations in the canonical libs dir” note where it’s visible: the canonical dir’s own README, or `migration-drift.ts` (which already owns `resolveSqlDir`).
-4. **DRY the allocator** (low priority). Export the allocation core from `next_migration.ts` and have both the MCP tool and `scripts/next-migration.mjs` call it, instead of the two mirroring the ledger contract independently.
+4. **DRY the allocator** (low priority). Export the allocation core from `next_migration.ts` and have both the MCP tool and `scripts/next-migration.mjs` call it, instead of the two mirroring the ledger contract independently. The `2026-07-03` EI-6852 fix had to be hand-applied to **both** files in lockstep (see above) precisely because they’re still two independent implementations of the same contract — live evidence for why this item matters, not just a hypothetical.
 
 Sequencing matters for #3: clean first, gate second.
 
@@ -14607,10 +14796,10 @@ See also the user-level memory note `verify-server-pid-before-measuring` and the
 
 [Section titled “What”](#what)
 
-`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the **total parsed error count** against `packages/operator-core/.tsc-baseline.json` (a single number, `operatorCoreErrorCount` — `224` as of 2026-07-03, ratcheted down repeatedly since the `262` figure this doc originally cited). The gate:
+`npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the **total parsed error count** against `packages/operator-core/.tsc-baseline.json` (a single number, `operatorCoreErrorCount`). Don’t trust any literal value cited here as current — run `npm run lint:tsc` for the live count vs baseline. As of this writing (2026-07-03) the baseline is **PINNED at `224`** (deliberately the *higher* of a known `223`/`224` flap — see below), ratcheted down repeatedly since the `262` figure this doc originally cited — but the baseline file’s own change history shows the true count **flapping between `223` and `224` within the same day** under unrelated concurrent-edit noise (a pre-existing deep-instantiation/test- fixture ripple, e.g. `inference-gateway/observability.test.ts`’s `GatewayStats`), not a real regression each time. Pinning the higher value makes the gate pass at both 223 and 224 instead of false-redding the fleet every time it shuffles back up. If you see a lone ±1 shift with no attributable new error, that’s the known flap — verify across a few clean runs on a quiet tree before treating it as either a real improvement or a real regression, and **don’t** bare-run-ratchet a transient dip (that happened twice on 2026-07-03 and had to be manually re-restored to 224 — see the baseline file’s own `note` field). The gate:
 
 * **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a single net-new error **blocks the whole fleet’s deploy**, not just yours.
-* **count < baseline ⇒ auto-ratchet down** — improvements lock the baseline lower, with or without `--update`; it can never silently regress. `--update` only lowers or no-ops when the count already equals the baseline. Raising the baseline is a deliberate human edit, never automatic.
+* **count < baseline ⇒ ratchets down, but ONLY on an explicit `npm run lint:tsc -- --update`** (audit P-073 / EI-104, fixed 2026-07-03 — this reverses the prior “auto-ratchet on every bare run” behavior). A **bare** run (CI, or a peer’s plain `npm run lint:tsc`) never rewrites the baseline file — it only checks and hard-fails above baseline; auto-ratcheting on every bare run turned out to lock in transient dips in this shared, concurrently-edited tree and then false-red the gate for the whole fleet the next time the count shuffled back up. `--update` still only ever *lowers* the baseline (or no-ops at parity) — raising it remains a deliberate human JSON edit, never automatic. This `--update`-only policy now lives in the **pure `decide()`** function (a bare run below baseline returns `ok-below` and `main()` never writes; only `--update` yields `ok-ratchet`) and is locked by `lint-tsc.test.ts` — so a `main()` refactor can’t silently reintroduce the auto-ratchet flap. (EI-104 shipped in `main()` first but left the invariant in untested imperative code while `decide()` + its test still encoded the old auto-ratchet; WI-1822 folded the policy into `decide()` and added the guard.)
 * **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless of the total count because `tsc` under-reports the errors behind a parse failure.
 * It is **position-independent**: only the count matters. Adding lines above a pre-existing baselined error doesn’t “create” it, but any *net-new* error (yours, or one a refactor newly exposes) tips the total over.
 
@@ -18716,6 +18905,8 @@ The helper above assumes `$PAPERCUSP_SID` is a real **minted** client identity. 
 
 So an externally-launched session **cannot claim/close/comment on work items or declare a coord lane**, even via the bridge. Do NOT reflexively run `install-standalone-mcp.sh` to fix this mid-session: it **regenerates the superuser token and rewrites `~/.claude.json` + `~/.claude/settings.json`** (your *own* running session’s MCP config + hooks) — far too invasive to fire blind during an autonomous loop. Instead, deliver value through the ungated paths: land the actual **code fix** (the commit is the durable artifact), reference the `EI-NNNN` in-code and in the commit, and `memory:remember` the learning. The unclaimable-but-fixed item resolves when a peer or the issues-engine notices the fix; the small duplication risk is cheaper than a token/config rewrite at 4am.
 
+> **Superseded (fixed since discovery, EI-2127/EI-334):** the hard failure above no longer reproduces. `resolveAgentIdentity`’s superuser branch used to **throw** on a missing `uiClientId`; it now resolves a stable fallback id (`SUPERUSER_FALLBACK_CLIENT_ID = 'su-loopback'`, `packages/operator-core/lib/agent-tools/coordination/identity.ts`) instead of throwing — and the JSON-HTTP transport layer (`libs/generic/tooldef-http/src/http-projection.ts`) already defaults a missing `uiClientId` to `'su-http-loopback'` before identity resolution even runs. So an externally-launched session hitting the bridge with **no** `?client=` now resolves to one of those fallback ids instead of failing — `coord:whoami`, `coord:declare-intent`, `issues:*`, and `work_items:claim`/`:comment`/`:complete`/ `:set_state` all work, just attributed to the shared fallback identity rather than a per-session one. The symptom, the `EI-NNNN` error text, and the workaround above are kept as a record of what the gap looked like and how to route around a **similar** future gap — don’t expect to hit this exact error anymore.
+
 ## When to use vs. wait
 
 [Section titled “When to use vs. wait”](#when-to-use-vs-wait)
@@ -19410,11 +19601,43 @@ select ws.workflow_uuid, ws.status, ws.deduplication_id,
 
 Structural fix: `dbos-executor-reaper` now treats a `routineFire` whose `created_at` is older than a longer first-output window with zero operation rows as stale, NULLs its dedup, sets it `CANCELLED`, and pushes the owning `harness_shared.routines.next_fire_at` back to `now()`. That window is deliberately longer than the scheduler-tick window because `operation_outputs` is a checkpoint table: a legitimate long first step has no row until it completes or records its own timeout/error. Scout’s cycle timeout is the live proof. It also cancels no-first-output `routinesTick` rows by `created_at`, because a stuck scheduler tick is the upstream version of the same failure. The requeue is intentionally limited to the no-first-output `routineFire` safety-valve class; routine bodies that did checkpoint a DBOS step still rely on their explicit workflow deadline/backoff rather than being retried immediately.
 
+## Update: the fix itself caused a NEW wedge — over-eager reaping of healthy fires (WI-1415 → WI-1416, 2026-06-30–07-01)
+
+[Section titled “Update: the fix itself caused a NEW wedge — over-eager reaping of healthy fires (WI-1415 → WI-1416, 2026-06-30–07-01)”](#update-the-fix-itself-caused-a-new-wedge--over-eager-reaping-of-healthy-fires-wi-1415--wi-1416-2026-06-3007-01)
+
+**Symptom (2026-06-30, `git-sync-stall-watchdog` incident).** git-sync kept firing every 3 min, but its DBOS fires got stuck — `metadata.last_error` repeatedly showed `"routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine"` — so no commit landed for \~6h while \~100 source files sat stranded uncommitted (and thus un-deployable). Nothing alarmed: the routine LOOKED active (`last_fired_at` advancing every 3 min, exactly the symptom this doc’s title describes), but every fire was being killed and restarted from scratch before it could commit — roughly one commit per 40 minutes instead of one per 3 minutes.
+
+**Root cause: the 2026-06-25 fast-orphan check above was built on the WRONG queue-row semantics.** It read “no live `dbos.workflow_queue` row” as “orphaned” — but this DBOS version deletes the queue row at **dequeue** time, so every actively-EXECUTING `PENDING` fire *also* has no queue row. The fast path was therefore reaping ANY fire whose first step ran past the 90s scheduler-silence window, healthy or not — a self-inflicted restart loop on git-sync specifically, because git-sync’s real first-step work (committing across the whole tree + every submodule) routinely takes longer than 90s.
+
+**Fix (`dbos-executor-reaper.ts`, verified live 2026-07-01):**
+
+* The fast-orphan path now only reaps a fire that is `ENQUEUED` (never dequeued at all — a genuine anomaly, e.g. a crash between the queue delete and the status flip) AND older than its own, separate, tunable window (`DEFAULT_STALE_ROUTINE_FIRE_ORPHAN_MS`, default 10 min; env `PAPERCUSP_DBOS_REAPER_FIRE_ORPHAN_MS`). A `PENDING` (i.e. executing) no-output fire is no longer eligible for the fast path at all — it falls back to the longer no-first-output window, now **60 minutes** (`DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS`), retuned above green-checkpoint’s suite runtime (grew to \~55m; see the constant’s own header comment for the tuning invariant chain against `GREEN_CHECKPOINT_SUITE_TIMEOUT_MS` and `CHECKPOINT_LOCK_STALE_MS`).
+* `routineFireImpl` (`routines-workflow.ts`) now runs a **multi-step** system action like git-sync’s internal steps as individual `DBOS.runStep` sub-steps of the workflow (`entry.ownSteps`, WI-1416 / `bg-host-freeze-eventloop-stall` P-006) instead of one opaque long step — so the reaper sees genuine incremental progress (`operation_outputs.function_id > 0`) as soon as any sub-step checkpoints, rather than waiting for the whole action to finish before it can prove it isn’t wedged.
+* A dedicated **`git-sync-stall-watchdog.ts`** (process-level `setInterval`, 15-min sweep, same “not a DBOS routine” reasoning as `dbos-executor-reaper` — a routine-based watchdog queues on the very engine that wedges) now closes the observability gap this whole doc originally called out (“the routines table looks healthy while the routine is dead”). It reads `harness_shared.routines.metadata` for git-sync specifically and alarms (owner page + escalation + fleet broadcast) on any of: HEAD staleness (tree hasn’t advanced while active — the PRIMARY signal, skipped on a legitimately clean/idle tree), fire staleness (scheduler not running it), a persistent `last_error` across ≥2 consecutive 15-min sweeps, or — the WI-1416-specific signal — `metadata.reaped_count` (consecutive executor-reaper cancels since the last completed fire, incremented by the reaper and reset on success) reaching 3, which catches exactly this reap→requeue→restart loop even while `last_error` is flipping null between reaps.
+
+Net effect: the `routineFire` no-output windows are now two-tiered by TRUE anomaly (never-dequeued `ENQUEUED`, 10 min) vs legitimate-long-first-step `PENDING` (60 min), and a persistent-reap counter + dedicated watchdog give this failure class its own alarm instead of relying on someone noticing `last_fired_at` looking healthy while nothing actually happens.
+
 # Routines are claimed by WHICHEVER host's tick wins — green and staging race on one table
 
 > Green (:3070, release tree) and staging (:3170, main) both run routinesTick against one harness_shared.routines table, so which CODE VERSION handles a fire is a lottery — new-code-only payloads fail intermittently until the release deploy.
 
-**What.** Since the 2026-06-05 release-gate cutover the dev box runs TWO operators — green `:3070` from the `papercup-release` checkout (the `ready` ref) and staging `:3170` from `main` — and **both** register the DBOS `routinesTick` against the **same** `harness_shared.routines` table (they share `apps/operator/.env.local`, so both see `PAPERCUSP_DBOS_ROUTINES=1`). The atomic claim in `claimDueRoutine` guarantees exactly ONE host fires a due routine, but **which one wins is a race** — so the code version that executes a routine’s payload is a per-fire lottery.
+## Current behavior (2026-07-03)
+
+[Section titled “Current behavior (2026-07-03)”](#current-behavior-2026-07-03)
+
+**The two-host race this doc describes no longer happens — the topology it was written against has been superseded.** Verified live against the running systemd units + journal:
+
+* `papercup-dev-api.service` (green, `:3070`, `papercusp-release` checkout) now runs with `PAPERCUSP_BACKGROUND_WORKERS=0` (drop-in `50-cluster.conf`). Its journal confirms: `[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)`.
+* `papercup-staging-api.service` (`:3170`, `main`/staging checkout) has carried the same `BACKGROUND_WORKERS=0` gate since **EI-126** (drop-in `10-background-workers.conf`) — also confirmed live in its journal.
+* The **sole** DBOS routines primary is now a dedicated third host, `papercup-bg-host.service` (`PAPERCUSP_BACKGROUND_WORKERS=1`, cut over 2026-07-03 per `operator-scalability-event-loop-2026-06-16` P1-3) — confirmed firing `routinesTick`’s sweeps live in its journal. It runs from the **staging/integration checkout** (`papercupai-workspace/papercusp`, same tree as `:3170`), **not** `papercusp-release`, and pins its own `DBOS__APPVERSION=bg-host-v1` / `DBOS__VMID=bg-host-3270`.
+
+Net effect: exactly ONE process claims `harness_shared.routines` rows now, and it always runs the current staging/`main` code — never the (older) green/release checkout. The version-lottery this doc documents is structurally gone for the current green+staging+bg-host topology.
+
+**This is a topology invariant, not a code guarantee** — nothing stops a future change from starting a second `BACKGROUND_WORKERS=1` host again (the underlying fact that `:3070`/`:3170` share the same default `PINNED_APP_VERSION` unless a host sets `DBOS__APPVERSION` is still true; `bg-host` is simply the only host that currently does). If you are re-introducing a second background-capable host, the failure mode and mitigations below still apply verbatim — read on.
+
+***
+
+**What (historical, 2026-06-05).** Since the 2026-06-05 release-gate cutover the dev box runs TWO operators — green `:3070` from the `papercup-release` checkout (the `ready` ref) and staging `:3170` from `main` — and **both** register the DBOS `routinesTick` against the **same** `harness_shared.routines` table (they share `apps/operator/.env.local`, so both see `PAPERCUSP_DBOS_ROUTINES=1`). The atomic claim in `claimDueRoutine` guarantees exactly ONE host fires a due routine, but **which one wins is a race** — so the code version that executes a routine’s payload is a per-fire lottery.
 
 **Why it matters.** A routine whose payload only newer code understands fails intermittently-to-always until the next release deploy. Observed live (autoloop-pot-operator-rebuild D-010): a `system:blueprint-run {blueprintId:'pot'}` wake was claimed by the green host, whose release tree had no `pot` blueprint — `fireLaunchBlueprint` threw, and (second, compounding bug fixed on `main` in `packages/operator-core/lib/harness/routines/claim.ts`) the old claim semantics left the one-shot row ACTIVE with `next_fire_at=NULL`, which means “due now” — an infinite 30s refire loop until the row was deactivated by hand.
 
@@ -40954,7 +41177,7 @@ Both sides cache the key in-process, but with **different invalidation policies*
 `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` → `writeSignedSpawnMcp()` is what the orchestrator’s `invoke()` calls when it lays down a per-spawn `.mcp.json`. It:
 
 1. Builds the baked URL params (`harness, workspace, role, run, spawn, [feature], [chunk], [parent_spawn], [client]`).
-2. Adds `exp` = `now + 24h` (override with `ttlSec`).
+2. Adds `exp`. **As of the 2026-07-01 owner directive, the default is `exp=0` — PERMANENT, no time-based expiry** (pass `ttlSec > 0` to get the old `now + ttlSec` behavior). The 24h TTL used to force a daily re-mint that churned `.mcp.json` and triggered a Claude Code re-approval prompt, silently darkening unattended sessions; `exp=0` is a sentinel the verifier special-cases to skip only the *time* check — the signature still covers `exp`, so a role-escalation rewrite of a permanent URL fails verification exactly as before. Revocation is now **key-rotation only** (see [Coarse revocation](#coarse-revocation)), not expiry.
 3. Canonicalizes by sorting + URL-encoding (only the allowlist; duplicates rejected; `sig` itself ignored).
 4. HMAC-SHA256 over the canonical string, base64url-encoded, appended as `sig=`.
 5. Writes the `.mcp.json` with mode 0600. The per-spawn worktree dir is mode 0700.
@@ -41012,7 +41235,7 @@ Two auth envelopes are checked **before** the signature path and so don’t need
 
 [Section titled “Coarse revocation”](#coarse-revocation)
 
-If a key may be compromised, or a bad batch of prompts shipped and you want every in-flight spawn to fail closed, rotate. There is **no per-spawn revocation** — rotation invalidates everything.
+If a key may be compromised, or a bad batch of prompts shipped and you want every in-flight spawn to fail closed, rotate. There is **no per-spawn revocation** — rotation invalidates everything. This is now the **only** revocation mechanism for permanent (`exp=0`) URLs — since the 2026-07-01 default dropped time-based expiry, a URL that isn’t explicitly `ttlSec`-scoped never ages out on its own.
 
 ### Preferred: admin endpoint (immediate effect)
 
@@ -41111,8 +41334,8 @@ A non-zero rate of `invalid_signature` outside explicit test runs is a real sign
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `missing_sig`               | URL has `exp` but no `sig`. Once a URL carries `exp` (or `sig`), `verifySpawnParams` runs and any failure is logged **and** hard-rejected, regardless of strict vs soft-warn mode. (The soft-warn logged-only-accept path only fires when *neither* `sig` nor `exp` is present, and that path emits no reason code.) |
 | `missing_exp`               | URL has `sig` but no `exp`                                                                                                                                                                                                                                                                                           |
-| `invalid_exp`               | `exp` not parseable as a positive integer                                                                                                                                                                                                                                                                            |
-| `expired`                   | `exp < now()`                                                                                                                                                                                                                                                                                                        |
+| `invalid_exp`               | `exp` not parseable as a non-negative integer                                                                                                                                                                                                                                                                        |
+| `expired`                   | `exp < now()` — only reachable when the mint used a `ttlSec > 0` override; the default `exp=0` (permanent, since 2026-07-01) skips this check entirely                                                                                                                                                               |
 | `invalid_sig_encoding`      | `sig` isn’t valid base64url                                                                                                                                                                                                                                                                                          |
 | `invalid_signature`         | HMAC mismatch — the realistic forgery signal                                                                                                                                                                                                                                                                         |
 | `duplicate_param:<k>`       | Same allowlisted key appears twice (forger appending `&role=operator` after the signed one)                                                                                                                                                                                                                          |
@@ -42122,8 +42345,8 @@ The HTTP, MCP, and gated in-process paths all go through the same `dispatchProje
 
 The catch-all routes are stupidly simple:
 
-1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`)
-2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
+1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`). It’s a **two-step** catch-all: it first tries the in-memory plugin-`apiRoutes` registry (`dispatchPluginApiRoute`) — a plugin can register bespoke handlers outside the projected-tool system; a registry hit returns that plugin’s `Response` directly and skips everything below. A registry miss (`null`) falls through to projected-tool dispatch.
+2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404 (a 404 on a path that matches a *registered* route under a different HTTP method is upgraded to 405-with-`Allow`, since the catch-all shadows the global method-not-allowed hook)
 3. Validates the HTTP method against the manifest’s `expose.http.methods` (default `['POST']`) — if not allowed, 405
 4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host’s resolver impls (spawn, secret, projectDir resolver). If no `run` param/header was supplied, a fresh `runId` is generated server-side so `ctx.askUser` / `ctx.publishState` can install — they gate on `workspaceId + runId`. SSE callers had this since T2.2; the JSON path got parity in the pass-9 audit.
 5. If `Authorization: Bearer ...` present, resolves it to a principal and tx (no-op for plugins; required for built-ins)
@@ -42441,6 +42664,12 @@ A `ToolResponse.data` is no longer always `JSON.stringify`’d into `content[0].
 **Lossless guarantee.** `@toon-format/toon` is lossless in the common case but has round-trip edge cases (pathological keys; certain string values with structural characters in its nested form). The encoder VERIFIES the round-trip (`encodeToonChecked`: encode → decode → deep-compare) and falls back to JSON whenever it doesn’t hold — the model is never handed a compact payload that doesn’t decode back to the input. See the agent-insight [Parsing tagged compact tool results](/internal/docs/agent-insights/compact-tool-result-formats).
 
 MCP `tools/list` advertises a tool’s `outputSchema` (spec-aligned) and a Papercusp `resultFormats` extension (its capability set) so a client knows what it may negotiate.
+
+## Freshness negotiation — `_meta.delta`
+
+[Section titled “Freshness negotiation — \_meta.delta”](#freshness-negotiation--_metadelta)
+
+Alongside `format`/`structured`/`idempotencyKey`, an MCP `tools/call` may carry a fourth `_meta` control: `delta` — a per-call value (`req.params._meta.delta`) that wins over a connection-level `?delta=` on the MCP URL, mirroring the `?format=` fallback. It lets a delta-capable tool answer `not_modified` (or a semantic `added`/`updated`/`removed` diff) instead of replaying an unchanged snapshot, mirroring HTTP `ETag`/`If-None-Match`. The **harness**, not the model, sets this and owns cursor storage + base-presence tracking — absent ⇒ no negotiation (serve `full`, today’s behavior, byte-identical to a delta-unaware client). Full contract, cursor format, the base-presence rules, and the production flag/gate: [Tool result freshness: the delta base-presence contract](/internal/docs/agent-insights/tool-delta-base-presence-contract).
 
 ## The three context types
 

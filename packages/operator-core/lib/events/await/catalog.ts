@@ -189,8 +189,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'session:compacted:<owner>',
     params: [{ name: 'owner', required: true, describe: 'the ownerId whose compaction to wait on' }],
     describe: 'A session finished a /compact (WI-1804 alt post-compaction wake; a leader can await a member\'s compaction).',
-    emitter: 'session-compacted-events (packages/operator-core/lib/session-compacted-events.ts) — helper built; host wire PENDING at psu-pty-host step-4 (su-94b69)',
-    exists: false, // P-103: server helper + test landed; flip true once the psu host fires it at compaction-complete
+    emitter: 'psu-pty-host.mjs (mode:compact step-4) → apps/operator/scripts/emit-session-compacted.ts → session-compacted-events.emitSessionCompactedEventAsync',
+    exists: true, // P-103 LANDED: host wire (su-94b69) + the bridge CLI fire session:compacted:<owner> on compaction-complete
   },
   {
     family: 'service-up',

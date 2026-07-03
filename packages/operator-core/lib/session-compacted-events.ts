@@ -51,23 +51,55 @@ export interface SessionCompactedEventsDeps {
 }
 
 /**
- * Fire the awaitable key for one completed session compaction. `owner` is the coord
- * ownerId (PAPERCUSP_SID) whose /compact just finished; it lives IN the key, so a
- * waiter wakes only for that owner. `detail` (the compaction focus, when any) rides
- * the summary + payload so a woken peer sees the focus without a follow-up read.
- * Fire-and-forget; never throws — an emit failure can never break the resume turn.
+ * AWAITABLE core: build + fire `session:compacted:<owner>` and resolve once the emit
+ * has committed (awaits fired atomically + wake deliveries durably queued in PG).
+ * `owner` is the coord ownerId (PAPERCUSP_SID) whose /compact just finished; it lives
+ * IN the key, so a waiter wakes only for that owner. `detail` (the compaction focus,
+ * when any) rides the summary + payload so a woken peer sees the focus without a
+ * follow-up read.
+ *
+ * The bridge CLI (apps/operator/scripts/emit-session-compacted.ts) awaits THIS, then
+ * exits — a standalone detached process must not race the emit against its own
+ * teardown. This variant MAY reject (the CLI wraps it fail-soft); in-process callers
+ * that must never throw use the void wrapper below.
+ */
+export async function emitSessionCompactedEventAsync(
+  owner: string,
+  detail?: string,
+  deps: SessionCompactedEventsDeps = {},
+): Promise<void> {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const key = `session:compacted:${owner}`;
+  const summary = `session ${owner} finished /compact${detail ? ` — ${detail}` : ''}`;
+  await emit({ key, summary, payload: { owner, detail: detail ?? null }, source: 'session' });
+}
+
+/**
+ * Fire-and-forget wrapper for IN-PROCESS callers — never throws, so an emit failure
+ * can never break the resume turn. (The detached CLI uses the awaitable core above so
+ * it can await-then-exit.)
  */
 export function emitSessionCompactedEvent(
   owner: string,
   detail?: string,
   deps: SessionCompactedEventsDeps = {},
 ): void {
-  const emit = deps.emit ?? emitAwaitedEvent;
-  void Promise.resolve()
-    .then(async () => {
-      const key = `session:compacted:${owner}`;
-      const summary = `session ${owner} finished /compact${detail ? ` — ${detail}` : ''}`;
-      await emit({ key, summary, payload: { owner, detail: detail ?? null }, source: 'session' });
-    })
-    .catch((e: unknown) => failSoft(`compacted-event for ${owner}`, e));
+  void emitSessionCompactedEventAsync(owner, detail, deps).catch((e: unknown) =>
+    failSoft(`compacted-event for ${owner}`, e),
+  );
+}
+
+/**
+ * Parse the bridge CLI's argv — `[execPath, scriptPath, <ownerId>, <focus?>]` — into
+ * the emit args. Pure + exported so it is unit-testable without spawning the CLI.
+ * Returns null when no ownerId is present (the CLI then no-ops and exits 0). The host
+ * passes the focus as `String(focus ?? '')`, so a missing focus arrives as '' and
+ * collapses back to undefined here.
+ */
+export function parseSessionCompactedArgv(argv: string[]): { owner: string; focus?: string } | null {
+  const owner = (argv[2] ?? '').trim();
+  if (!owner) return null;
+  const rawFocus = argv[3];
+  const focus = rawFocus != null && rawFocus.trim() !== '' ? rawFocus.trim() : undefined;
+  return { owner, focus };
 }

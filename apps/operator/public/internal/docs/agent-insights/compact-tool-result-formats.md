@@ -28,6 +28,14 @@ format); only the named tool and its claimed format (TOON) are wrong. Treat
 Also new since this was written and **not** covered below: a 16 KiB size gate
 (`TOON_VERIFY_MAX_BYTES`, `libs/generic/result-encoding/src/encode.ts:74`) skips
 round-trip verification and forces JSON for lists above that size.
+
+And a fifth format has since been added: **`format: md`** — a markdown table,
+display-oriented and lossy (never round-tripped; `decode()` throws for it). It sits
+in the same capability class as `csv`/`tsv` (flat-object arrays only) and is
+**opt-in only, never auto-selected** — `bestCompactFormat`/`chooseFormat` still
+only ever auto-pick `toon` or `json`
+(`libs/generic/result-encoding/src/eligibility.ts`). Request it the same way as
+`csv`: `_meta.format: "md"` / `?format=md`.
 :::
 
 ## What changed
@@ -58,6 +66,9 @@ format: toon
   rows, RFC 4180 quoted (a field with a delimiter/quote/newline is `"…"`, embedded
   quotes doubled). CSV is **lossy** — every cell is a string; there are no types or
   nulls. Only flat tools opt into it.
+* **`format: md`** → a markdown table (display-oriented, lossy, never decoded
+  back). Same eligibility as CSV/TSV (flat-object arrays only) and likewise never
+  auto-selected — request it explicitly.
 
 ## Where the envelope went
 

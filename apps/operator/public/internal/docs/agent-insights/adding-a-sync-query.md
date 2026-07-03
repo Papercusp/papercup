@@ -11,14 +11,18 @@ two test files. **Those assertions no longer exist** — both were deliberately
 deleted and replaced with non-shrinking floor checks specifically *because*
 bumping them on every add/remove flapped CI red. There is no count to bump.
 
-* `packages/operator-core/lib/sync-resolver/index.test.ts:149` now asserts
-  `expect(names.length).toBeGreaterThanOrEqual(61)` (the comment at `:141`
-  calls the old `toHaveLength(63)` a "brittle exact-count that flapped red").
-* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts:102`
-  now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the comment at
-  `:92`–`:100` calls the old exact count of 56 "brittle" and states the floor
-  is "set WELL BELOW the current count ... so a routine add/remove doesn't flap
+* `packages/operator-core/lib/sync-resolver/index.test.ts` now asserts
+  `expect(names.length).toBeGreaterThanOrEqual(61)` (grep for it — the adjacent
+  comment calls the old `toHaveLength(63)` a "brittle exact-count that flapped
+  red").
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts`
+  now asserts `expect(names.length).toBeGreaterThanOrEqual(45)` (the adjacent
+  comment calls the old exact count of 56 "brittle" and states the floor is
+  "set WELL BELOW the current count ... so a routine add/remove doesn't flap
   it red").
+
+  (Line numbers deliberately omitted — they drift on every edit; grep the
+  assertion text instead.)
 
 **What to actually do for a registry add today:** add your new name to the
 relevant `toContain(...)` family assertion(s) in `index.test.ts` (the

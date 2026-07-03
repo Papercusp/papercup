@@ -8,16 +8,40 @@ npm run lint:tsc gates packages/operator-core on a TOTAL tsc-error count vs .tsc
 `npm run lint:tsc` (`scripts/lint-tsc.mjs`) runs
 `tsc -p packages/operator-core/tsconfig.json --noEmit` and compares the
 **total parsed error count** against
-`packages/operator-core/.tsc-baseline.json` (a single number, `operatorCoreErrorCount` —
-`224` as of 2026-07-03, ratcheted down repeatedly since the `262` figure this doc
-originally cited). The gate:
+`packages/operator-core/.tsc-baseline.json` (a single number,
+`operatorCoreErrorCount`). Don't trust any literal value cited here as current —
+run `npm run lint:tsc` for the live count vs baseline. As of this writing
+(2026-07-03) the baseline is **PINNED at `224`** (deliberately the *higher* of a
+known `223`/`224` flap — see below), ratcheted down repeatedly since the `262`
+figure this doc originally cited — but the baseline file's own change history
+shows the true count **flapping between `223` and `224` within the same day**
+under unrelated concurrent-edit noise (a pre-existing deep-instantiation/test-
+fixture ripple, e.g. `inference-gateway/observability.test.ts`'s `GatewayStats`),
+not a real regression each time. Pinning the higher value makes the gate pass at
+both 223 and 224 instead of false-redding the fleet every time it shuffles back
+up. If you see a lone ±1 shift with no attributable new error, that's the known
+flap — verify across a few clean runs on a quiet tree before treating it as
+either a real improvement or a real regression, and **don't** bare-run-ratchet a
+transient dip (that happened twice on 2026-07-03 and had to be manually
+re-restored to 224 — see the baseline file's own `note` field). The gate:
 
 * **count > baseline ⇒ HARD FAIL** — and it runs in green-checkpoint, so a
   single net-new error **blocks the whole fleet's deploy**, not just yours.
-* **count \< baseline ⇒ auto-ratchet down** — improvements lock the baseline
-  lower, with or without `--update`; it can never silently regress. `--update`
-  only lowers or no-ops when the count already equals the baseline. Raising the
-  baseline is a deliberate human edit, never automatic.
+* **count \< baseline ⇒ ratchets down, but ONLY on an explicit `npm run lint:tsc -- --update`** (audit P-073 / EI-104, fixed 2026-07-03 — this reverses the
+  prior "auto-ratchet on every bare run" behavior). A **bare** run (CI, or a
+  peer's plain `npm run lint:tsc`) never rewrites the baseline file — it only
+  checks and hard-fails above baseline; auto-ratcheting on every bare run
+  turned out to lock in transient dips in this shared, concurrently-edited tree
+  and then false-red the gate for the whole fleet the next time the count
+  shuffled back up. `--update` still only ever *lowers* the baseline (or
+  no-ops at parity) — raising it remains a deliberate human JSON edit, never
+  automatic. This `--update`-only policy now lives in the **pure `decide()`**
+  function (a bare run below baseline returns `ok-below` and `main()` never
+  writes; only `--update` yields `ok-ratchet`) and is locked by
+  `lint-tsc.test.ts` — so a `main()` refactor can't silently reintroduce the
+  auto-ratchet flap. (EI-104 shipped in `main()` first but left the invariant in
+  untested imperative code while `decide()` + its test still encoded the old
+  auto-ratchet; WI-1822 folded the policy into `decide()` and added the guard.)
 * **any TS1xxx parse error ⇒ HARD FAIL** — syntax-broken files fail regardless
   of the total count because `tsc` under-reports the errors behind a parse
   failure.

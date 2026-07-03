@@ -12,7 +12,9 @@ bound pool account's auth — so even when the org has disabled Claude
 
 The catch: the gateway env (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`) is
 applied **at the spawn chokepoint** — `operator-spawn.ts` merges
-`gatewaySpawnEnv(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))` into each
+`resolveSpawnGatewayEnv({ ownerId, account, role, model, … })` (the
+backend-aware wrapper in `inference-gateway/spawn-env.ts` that resolves the
+account/pin/priority and internally calls `gatewaySpawnEnv`) into each
 **spawned bee's** environment. An **in-process** LLM call never passes through
 that chokepoint, so it never receives the gateway env.
 
@@ -38,8 +40,9 @@ the papercusp-specific override but **not** the standard `ANTHROPIC_BASE_URL` th
 the gateway sets for the CLI, so the two LLM legs keyed off different env vars.
 **This is now fixed** — it reads
 `PAPERCUSP_ANTHROPIC_URL ?? ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'`
-(`chat-stream.ts:612-614`), so an in-process call picks up the gateway env even
-when only `ANTHROPIC_BASE_URL` is set.
+(`chat-stream.ts` `resolveAnthropicBaseUrl`, currently around line 651), so an
+in-process call picks up the gateway env even when only `ANTHROPIC_BASE_URL` is
+set.
 
 ## The fix (2026-06-13, FB-16 of self-improvement-consume-edges)
 
@@ -66,7 +69,7 @@ that 401'd on the live host now completes through the gateway.
   auto-apply fires on the live `:3070` operator.
 * **The broader latent gap (now closed at the shared transport)**: the
   `anthropicDirectTransport` fallback to `ANTHROPIC_BASE_URL` is implemented
-  (`chat-stream.ts:612-614`), so any in-process anthropic-direct consumer that routes
+  (`chat-stream.ts` `resolveAnthropicBaseUrl`), so any in-process anthropic-direct consumer that routes
   through it (e.g. the `su` llm-test target) now picks up the gateway env. A consumer that
   resolves its own URL without going through `anthropicDirectTransport` still needs the same
   `?? ANTHROPIC_BASE_URL` fallback applied locally.
