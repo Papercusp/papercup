@@ -45,7 +45,13 @@ export default defineTool({
   guidance: {
     when: 'Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.',
     notWhen: 'Read-only SQL needs no lock. Never apply migrations casually on a shared box.',
-    chaining: 'db:migrate { file } (dry) → review → db:migrate { file, confirm: true }.',
+    chaining:
+      'db:migrate { file } (dry) → review → db:migrate { file, confirm: true }. ' +
+      'EI-6955: `file` is an arbitrary absolute path — pass it a migration you JUST wrote in the STAGING tree ' +
+      "(don't wait for db:check_drift, whose sql_dir is the release checkout and won't see it). On a dev box the " +
+      'real apply is normally WITHHELD (PAPERCUSP_ALLOW_DB_MIGRATE is host-only), but confirm:true still hands you ' +
+      'the exact psql + schema_migrations INSERT command to run by hand — use that instead of hand-deriving it from ' +
+      "CLAUDE.md's escape hatch.",
     seeAlso: [
       'db:check_drift (verify schema drift first)',
       'db:next-migration (scaffold a new migration)',

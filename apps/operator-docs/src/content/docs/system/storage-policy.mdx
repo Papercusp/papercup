@@ -152,6 +152,30 @@ empty → head applies with zero skips, builds the full schema, is idempotent) a
 `packages/operator-core/lib/db-tools/verify-baseline.ts` tool. Both must stay green. A new
 migration that breaks `empty → head` fails CI loudly — there is no skip-tolerance.
 
+**Fleet-member gotchas when adding a migration (EI-6955):**
+
+- **`libs/papercusp` is a git submodule** — your new `.sql` file and the regenerated
+  `generated.ts` live *inside* it, so `git status`/`git log` from the superproject show
+  **nothing** for them (only a submodule-pointer bump). Verify they actually committed by
+  `cd libs/papercusp && git status` / `git log`, not from the repo root.
+- **`db:check_drift`'s `sql_dir` is the RELEASE checkout's sql directory**
+  (`papercup-release/libs/papercusp/libs/db/sql`), not the staging tree you're editing — a
+  migration you just added in staging does **not** show up as `missing` in `db:check_drift`,
+  it simply isn't scanned at all until the file reaches release. Don't read a clean
+  `db:check_drift` as confirmation your new migration doesn't need applying yet.
+- **`db:migrate` is tree-agnostic** — it takes an explicit absolute `file` path and runs
+  `psql -f <file>` against the live admin DB, so point it at your STAGING tree's new file
+  directly. On this dev box the real apply is normally WITHHELD (`PAPERCUSP_ALLOW_DB_MIGRATE`
+  is a host-level opt-in, not agent-settable) — but calling `db:migrate { file, confirm:true }`
+  even so hands you back the *exact* `psql … BEGIN; \i <file>; INSERT INTO
+  harness_shared.schema_migrations (filename, sha256) VALUES (...); COMMIT;` command to run by
+  hand, matching the escape hatch above — call it first instead of hand-deriving the
+  psql+schema_migrations dance from memory.
+- After applying to the dev DB by hand (or via the fallback command), run
+  `node libs/papercusp/libs/db/scripts/pull-schema.mjs` to regenerate `generated.ts` — it reads
+  the *live* DB, so it must already have your migration applied (chicken-and-egg: apply first,
+  then regenerate).
+
 ## Acceptable file uses
 
 Files are correct for these specific cases:

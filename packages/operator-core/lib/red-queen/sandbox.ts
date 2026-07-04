@@ -36,6 +36,7 @@ import {
   type WatchdogTickOptions,
   type WatchdogTickResult,
   type WatchdogCollector,
+  type WatchdogDeps,
 } from '../harness/improvements/watchdog';
 import { readImprovementItems, type ReadImprovementOpts } from '../harness/improvements/read-items';
 import { buildDigest } from '../harness/improvements/digest';
@@ -73,7 +74,7 @@ export interface DrillCycleDeps {
   runTick: (
     workspaceId: string,
     opts: WatchdogTickOptions,
-    deps: { collectors: WatchdogCollector[] },
+    deps: { collectors: WatchdogCollector[] } & Pick<WatchdogDeps, 'processAging' | 'processAutoClose'>,
   ) => Promise<WatchdogTickResult>;
   getIssue: (id: string) => Promise<EngineerIssue | null>;
   readItems: (opts: ReadImprovementOpts) => Promise<ImprovementCandidate[]>;
@@ -170,10 +171,27 @@ export async function runDrillCycle(cls: DrillClass, deps: DrillCycleDeps): Prom
     log(`drill ${cls.id} planted (${drillId}) — expecting ${planted.expectedWatchdogKey}`);
 
     // ── DETECT: a REAL watchdog tick over the sandbox workspace ─────────────
+    // EI-6933: processAging/processAutoClose are NOT workspace-scoped by the
+    // sandbox's SANDBOX_WORKSPACE_ID the way the collectors above are — both
+    // resolve their issue reads through issuesScopeWorkspace()/activeWorkspaceId()
+    // (issues-engineer.ts), a PROCESS-GLOBAL "current workspace" concept the
+    // watchdog tick's own workspaceId PARAMETER never reaches. So a drill tick
+    // was silently running the auto-close sweep against the REAL, unscoped,
+    // system-wide open-issue backlog (up to 500 rows + cross-referencing) on
+    // every single drill — inflating (and scaling with backlog growth) every
+    // drill's measured detect_ms, AND carrying a live correctness risk: a
+    // "duplicate" among those real issues gets auto-closed as a side effect of
+    // an unrelated sandbox test run. Neither sweep is part of what a drill
+    // measures (drills test DETECTION — collector → capture — not the close/
+    // aging machinery), so no-op both for the sandbox tick.
     const tick = await deps.runTick(
       SANDBOX_WORKSPACE_ID,
       { installSlug: 'red-queen-sandbox', maxPerTick: 5 },
-      { collectors: cls.collectors(sql, planted, SANDBOX_WORKSPACE_ID) },
+      {
+        collectors: cls.collectors(sql, planted, SANDBOX_WORKSPACE_ID),
+        processAging: async () => [],
+        processAutoClose: async () => [],
+      },
     );
     if (tick.status === 'skipped') {
       await store.failed(sql, drillId, 'sandbox watchdog tick skipped (cross-host lock) — retry next cadence');

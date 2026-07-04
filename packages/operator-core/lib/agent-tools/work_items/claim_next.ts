@@ -32,6 +32,16 @@ export default defineTool({
     when: 'You are an idle agent picking up work — prefer this self-selection over waiting to be assigned. Returns the oldest claimable feature-family item, now yours.',
     notWhen: 'When a SPECIFIC item must go to a SPECIFIC agent — that is work_items:claim with an explicit assignee (named assignment, the exception — it deliberately bypasses the status/readiness floors self-select enforces, so an item claimable by id can still legitimately miss here).',
     chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a MISS, read `drained`: drained:true means the queue is empty (message leader + idle); drained:false means work exists but is currently blocked/gated (pendingUnclaimed>0) — do NOT idle, re-check shortly or help unblock the backlog rather than reporting the queue drained.',
+    // EI-6981: this self-selects the OLDEST unclaimed item HARNESS-WIDE, not just your
+    // fleet/plan — a peer's "solo takeover" of an item they haven't formally
+    // work_items:claim'd (declared only in a coord message / the item's own summary
+    // prose, assignee field still empty/stale) is INVISIBLE to this atomic claim and can
+    // get self-selected out from under them (observed live: WI-1729). Before acting on a
+    // freshly-claimed item, skim its title/summary for an existing "taken over by <owner>"
+    // / "solo takeover" note — if you find one, work_items:release it immediately rather
+    // than proceeding, and prefer a narrower harness/kind filter (or a leader-set
+    // claim-spec / scheduler:get_next) when you know you're one of several fleets sharing
+    // one harness.
     seeAlso: [
       'work_items:claim (by-id / named-assignee claim — the exception to self-select)',
       'work_items:list (on a drained:false miss, see which items are blocked/gated)',

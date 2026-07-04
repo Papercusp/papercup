@@ -61,6 +61,17 @@ function engine(): ReactionEngine {
  * Register an event-reaction rule. Idempotent by `rule.id` (re-registering the
  * same id replaces). Safe to call at module-load. THE public API the `emits`
  * desugar + plugin/blueprint contributions call.
+ *
+ * ⚠ EI-6980 — your `when`/`args` sees ONE PER-ITEM event, never the bulk envelope.
+ * Every agent-facing bulk-capable tool returns `{ ok, results: [...], counts }`
+ * (`runBulk`/`bulkContent`), even for a single-item call — but `matchAndRun`
+ * (`./engine.ts`'s `fanOutBulkEvent`, D-007) explodes that envelope into one
+ * synthetic event PER RESULT ITEM before matching, and never matches the bulk
+ * carrier itself. So `e.result.data` in your rule is always a single flat
+ * per-item record (e.g. `{ workItem, completion, ... }`) — a rule written to
+ * read `e.result.data.results[]` matches NOTHING, silently, with no error
+ * (reconcile-rule.ts sat dead this way — EI-5925/EI-6960). Read the per-item
+ * shape directly, the way `./reflect-rules.ts` does (`data.workItem`).
  */
 export function registerReactionRule(rule: ReactionRule): void {
   engine().add(rule);

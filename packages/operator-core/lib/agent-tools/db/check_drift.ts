@@ -20,7 +20,12 @@ export default defineTool({
   guidance: {
     when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
-    chaining: 'missing non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)).',
+    chaining:
+      'missing non-empty → restart the operator (or db:migrate the file under exclusive(db-schema)). ' +
+      "EI-6955: the returned `sql_dir` is the RELEASE checkout's sql directory, NOT your staging tree — a migration " +
+      "you JUST added in staging is invisible here (not 'missing') until it reaches release. A clean/in-sync result " +
+      'does not mean your new staging migration needs no action; apply it directly via db:migrate { file: <absolute ' +
+      'staging-tree path> } regardless of what this tool reports.',
     seeAlso: [
       'db:migrate (apply a pending migration)',
       'db:next-migration (scaffold the next migration file)',
