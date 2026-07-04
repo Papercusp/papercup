@@ -19,7 +19,7 @@ describe('configureLexicon / ambient resolution', () => {
     reset();
     expect(isLexiconConfigured()).toBe(false);
     expect(activePackId()).toBe('classic');
-    expect(term('pot')).toBe('Hive');
+    expect(term('pot')).toBe('Pot');
   });
 
   it('resolves against the wired pack', () => {
@@ -47,6 +47,6 @@ describe('configureLexicon / ambient resolution', () => {
       },
     });
     expect(activePackId()).toBe('classic');
-    expect(term('pot')).toBe('Hive');
+    expect(term('pot')).toBe('Pot');
   });
 });

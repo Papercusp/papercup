@@ -201,11 +201,20 @@ export function buildLoginSpec(
 }
 
 /**
- * Locate the onboarding concierge script (onboard-launcher.mjs) from the
- * operator's cwd. Same fallback-chain trick as the bundled-gh resolution
- * below: dev runs with cwd=apps/operator; the packaged sidecar keeps scripts/
- * next to its cwd. Returns null when absent (Onboarding Console then shows
- * its GUI-wizard fallback).
+ * Locate the onboarding concierge script from the operator's cwd. Same
+ * fallback-chain trick as the bundled-gh resolution below: dev runs with
+ * cwd=apps/operator; the packaged sidecar keeps scripts/ next to its cwd.
+ * Returns null when absent (Onboarding Console then shows its GUI-wizard
+ * fallback).
+ *
+ * ⚠ The PACKAGED sidecar RENAMES the script: build-desktop-sidecar.sh
+ * esbuilds `scripts/onboard-launcher.mjs` → `scripts/onboard.mjs` (named for
+ * the `papercusp onboard` CLI, like psu/ptool). So we MUST accept BOTH names —
+ * `onboard.mjs` (packaged) and `onboard-launcher.mjs` (dev source). Checking
+ * only the source name made EVERY packaged build return onboardConcierge:null,
+ * so the chat-first onboarding dead-ended on the GUI-wizard fallback — found
+ * live on the Windows build 2026-07-04 (the resolver looked for
+ * onboard-launcher.mjs; the sidecar only had onboard.mjs).
  */
 export function resolveConciergeScript(
   cwd: string = process.cwd(),
@@ -216,6 +225,10 @@ export function resolveConciergeScript(
   },
 ): string | null {
   const candidates = [
+    // Packaged sidecar (build-renamed): onboard.mjs sits next to serve.mjs.
+    `${cwd}/scripts/onboard.mjs`,
+    `${cwd}/../scripts/onboard.mjs`,
+    // Dev / source layout: the un-renamed source stem.
     `${cwd}/scripts/onboard-launcher.mjs`,
     `${cwd}/../scripts/onboard-launcher.mjs`,
     `${cwd}/apps/operator/scripts/onboard-launcher.mjs`,

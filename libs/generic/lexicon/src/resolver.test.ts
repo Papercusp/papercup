@@ -4,7 +4,9 @@ import { BRAND_PACKS, CLASSIC_PACK, THE_HIVE_PACK } from './packs';
 
 describe('resolveTerm', () => {
   it('resolves singular by default', () => {
-    expect(resolveTerm('classic', 'pot')).toBe('Hive');
+    // Public pack = Pot (P-001 reverted the 2026-06-16 pot→Hive baseline override);
+    // the bee pack keeps Hive.
+    expect(resolveTerm('classic', 'pot')).toBe('Pot');
     expect(resolveTerm('the-hive', 'pot')).toBe('Hive');
   });
 

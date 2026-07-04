@@ -186,6 +186,16 @@ interface BootHarnessRequest {
   workspaceRoot?: string;
   storagePath?: string;
   swarmBinding?: SwarmBinding | null;
+  /**
+   * EI-7154 guard (a): default true (unchanged behavior) — set false for a
+   * read-only/diagnostic probe. When true a probe against an idle/orphaned
+   * sidecar that never booted this (workspaceId, harnessSlug) pair silently
+   * MINTS a brand-new store + own-log (a stray-identity trap, same class as
+   * WI-1981/WI-2018) instead of erroring — the exact incident this guards.
+   * With false, a miss on `findExisting` throws instead of booting fresh, so a
+   * probe against the wrong sidecar fails loudly rather than minting state.
+   */
+  createIfMissing?: boolean;
 }
 
 /**
@@ -348,6 +358,19 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
           admittedPeerCount: rec.booted.admitted.size,
         };
       }
+    }
+
+    // EI-7154 guard (a): a probe that explicitly asked for existing-only
+    // semantics gets a clear, loud error instead of this (possibly wrong)
+    // sidecar silently minting a fresh store + own-log for a harness it never
+    // booted — the exact stray-identity incident this guards against.
+    if (!existing && p.createIfMissing === false) {
+      throw new RpcMethodError(
+        -32001,
+        `bootHarness: no existing store for ${p.workspaceId}/${p.harnessSlug} on this sidecar and ` +
+          `createIfMissing:false was requested — refusing to mint a fresh store. This sidecar is either ` +
+          `not the one hosting this harness, or the harness genuinely hasn't booted yet.`,
+      );
     }
 
     const storagePath = resolveStoragePath(p);

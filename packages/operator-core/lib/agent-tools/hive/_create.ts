@@ -586,6 +586,31 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
               entry.github_default_branch = publish.defaultBranch ?? committed.branch;
               await saveHarnessRegistry(reg2, ws);
             }
+            if (publish.recoveredFromPushFailure) {
+              // EI-7163: the FIRST `gh repo create --push` attempt's push leg silently
+              // failed and a same-call retry recovered it — worth a loud log even though
+              // the outcome is fine, since a persistent version of this same fault
+              // degrades to the local-only branch below with no visible remote at all.
+              console.warn(
+                `[hive:create] ${opts.slug}: gh repo create's push leg failed on the first attempt and ` +
+                  `recovered on retry (remote=${publish.remote}) — if this repeats, check gh's git_protocol ` +
+                  `vs this box's ssh identity (EI-7163's root cause).`,
+              );
+            }
+          } else if (publish.mode === 'local-only' && publish.reason?.startsWith('push_failed_after_remote_create')) {
+            // EI-7163: the release-critical silent-degradation case — `gh repo create`
+            // DID create a real remote GitHub repo (and `gh` already configured a local
+            // `origin` pointing at it), but the push leg failed even on retry. Treating
+            // this as an ordinary local-only outcome would silently strand a real,
+            // unpushed remote repo with no operator-visible signal. Log loudly (not the
+            // generic warn below) with the orphaned remote so a human/agent can manually
+            // `git push` it or clean it up.
+            console.error(
+              `[hive:create] ${opts.slug}: gh created a remote repo (${publish.remote ?? 'origin'}) but BOTH ` +
+                `push attempts failed — the remote is configured locally but UNPUSHED (not orphan-cleaned; ` +
+                `a manual \`git -C ${path} push -u origin ${committed.branch}\` or repo deletion may be needed). ` +
+                `reason=${publish.reason}`,
+            );
           }
         }
         repoInit = {

@@ -229,6 +229,21 @@ describe('engineer issues surface (real PG)', () => {
     expect(released?.assignedAt).toBeNull();
   });
 
+  it('EI-7150: setIssueState to a non-terminal state (e.g. open) PRESERVES the claim — only resolved/closed clear it', async () => {
+    await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const claimed = await issues.claimIssue('EI-1', 'agB');
+    expect(claimed?.assignee).toBe('agB');
+    // The non-terminal UPDATE branch (state !== resolved/closed) must touch ONLY
+    // `state` — never assignee/assigned_at. A caller re-recording state (or an
+    // agent-typo state that normalizeWorkItemState aliases onto 'open', e.g.
+    // 'in_progress'/'blocked'/'wip' — the issue family has no richer
+    // representation) must never silently drop the claim it's still holding.
+    const stillOpen = await issues.setIssueState('EI-1', 'open', 'agB');
+    expect(stillOpen?.state).toBe('open');
+    expect(stillOpen?.assignee).toBe('agB');
+    expect(stillOpen?.assignedAt).toBeTruthy();
+  });
+
   it('close→resolved reaches a mention-mode subscriber (Lifecycle + D-006)', async () => {
     await topicStore.create({ slug: 'area', description: 'an area', created_ts: NOW });
     await subs.subscribe({ subscriber_id: 'agC', target_kind: 'topic', target_ref: 'area', delivery_mode: 'mention', created_ts: NOW });

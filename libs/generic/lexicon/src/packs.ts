@@ -16,11 +16,12 @@
 import type { BrandPack, BrandPackId, TermKey } from './types';
 
 const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
-  // Owner directive 2026-06-16: "Pots are now Hives" — the top-level grouping is
-  // canonically a HIVE in the baseline UI now (members within it stay
-  // `harness`/"Harness"). The full bee theme (Colony/Sentinel/Queen/…) remains
-  // flag-gated behind `the-hive`; only this one term is promoted to baseline.
-  pot: { one: 'Hive', other: 'Hives' },
+  // Owner directive 2026-07-04: public release ships the POT (Papercup) lexicon.
+  // This REVERTS the 2026-06-16 "Pots are now Hives" baseline override — the
+  // top-level grouping is a POT again in the classic/public pack (the full bee
+  // theme, incl. Hive, stays flag-gated behind `the-hive` for internal/testing
+  // use only). restore-pot-lexicon-public-release-2026-07-04 P-001 (keystone).
+  pot: { one: 'Pot', other: 'Pots' },
   fleet: { one: 'Fleet', other: 'Fleets' },
   operator: { one: 'Operator', other: 'Operators' },
   brain: { one: 'Brain', other: 'Brains' },

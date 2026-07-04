@@ -70,6 +70,18 @@ describe('onboarding concierge spec (P-003)', () => {
     expect(resolveConciergeScript('/nowhere', () => false)).toBeNull();
   });
 
+  it('resolveConciergeScript finds the PACKAGED name onboard.mjs (build renames it)', () => {
+    // build-desktop-sidecar.sh esbuilds onboard-launcher.mjs -> scripts/onboard.mjs.
+    // The packaged sidecar has ONLY onboard.mjs (no -launcher). Regression guard
+    // for the live Windows bug (2026-07-04) where the resolver missed it and the
+    // Onboarding Console dead-ended on its GUI-wizard fallback.
+    const packaged = '/mnt/c/App/sidecar/scripts/onboard.mjs';
+    expect(resolveConciergeScript('/mnt/c/App/sidecar', (p) => p === packaged)).toBe(packaged);
+    // onboard.mjs one level up (cwd/../scripts) also resolves.
+    const up = '/mnt/c/App/sidecar/../scripts/onboard.mjs';
+    expect(resolveConciergeScript('/mnt/c/App/sidecar', (p) => p === up)).toBe(up);
+  });
+
   it('buildConciergeSpec uses an absolute node and threads the operator origin', () => {
     const spec = buildConciergeSpec(
       '/srv/operator/scripts/onboard-launcher.mjs',

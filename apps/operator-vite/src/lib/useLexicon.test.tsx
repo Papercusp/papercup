@@ -45,9 +45,10 @@ describe('useLexicon', () => {
     setHive(false);
     render(<Probe />);
     expect(screen.getByTestId('pack').textContent).toBe('classic');
-    // Owner directive 2026-06-16: `pot` is canonically "Hive" in the baseline too.
-    expect(screen.getByTestId('pot').textContent).toBe('Hive');
-    expect(screen.getByTestId('pots').textContent).toBe('Hives');
+    // Public pack = Pot (restore-pot-lexicon P-001 reverted the 2026-06-16
+    // pot→Hive baseline override; the bee pack still says Hive).
+    expect(screen.getByTestId('pot').textContent).toBe('Pot');
+    expect(screen.getByTestId('pots').textContent).toBe('Pots');
     expect(screen.getByTestId('cupboard').textContent).toBe('Cupboard');
     expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
   });
@@ -68,10 +69,12 @@ describe('useLexicon', () => {
   it('re-renders on a live flag flip (reactive, not render-time only)', () => {
     setHive(false);
     render(<Probe />);
-    // `pot` resolves to "Hive" in BOTH packs now, so assert on a term that still
-    // DIFFERS across packs (operator → sentinel) to prove the live reactivity.
+    // `pot` now differs across packs again (Pot vs Hive, P-001), so it proves the
+    // live flip directly; operator → sentinel corroborates.
+    expect(screen.getByTestId('pot').textContent).toBe('Pot');
     expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
     setHive(true); // SSE-style live flip
+    expect(screen.getByTestId('pot').textContent).toBe('Hive');
     expect(screen.getByTestId('operator-lower').textContent).toBe('sentinel');
     expect(screen.getByTestId('pack').textContent).toBe('the-hive');
   });

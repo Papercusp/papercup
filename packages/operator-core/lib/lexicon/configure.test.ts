@@ -14,7 +14,7 @@ describe('server lexicon twin', () => {
     setFlagOverridesForTest({ 'papercusp-the-hive': false });
     expect(await refreshLexiconPack()).toBe('classic');
     expect(activeServerPackId()).toBe('classic');
-    expect(term('pot')).toBe('Hive');
+    expect(term('pot')).toBe('Pot');
     expect(term('cupboard')).toBe('Cupboard');
   });
 
@@ -33,6 +33,6 @@ describe('server lexicon twin', () => {
     expect(term('pot')).toBe('Hive');
     setFlagOverridesForTest({ 'papercusp-the-hive': false });
     await refreshLexiconPack();
-    expect(term('pot')).toBe('Hive');
+    expect(term('pot')).toBe('Pot');
   });
 });

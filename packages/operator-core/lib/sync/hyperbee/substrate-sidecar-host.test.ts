@@ -108,6 +108,36 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(host.storeCount()).toBe(1);
   });
 
+  it('EI-7154 guard: createIfMissing:false throws instead of minting a fresh store when none exists', async () => {
+    const host = makeHost();
+    const { workspaceRoot } = tempWorkspace('reloc-createifmissing-');
+    await expect(
+      host.methods['substrate:bootHarness']({
+        workspaceId: WS,
+        harnessSlug: SLUG,
+        workspaceRoot,
+        createIfMissing: false,
+      }),
+    ).rejects.toThrow(/refusing to mint a fresh store/);
+    expect(host.storeCount()).toBe(0);
+  });
+
+  it('EI-7154 guard: createIfMissing:false still returns the existing store when one is already booted', async () => {
+    const host = makeHost();
+    const { workspaceRoot } = tempWorkspace('reloc-createifmissing-hit-');
+    const a = (await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, workspaceRoot })) as {
+      storeId: string;
+    };
+    const b = (await host.methods['substrate:bootHarness']({
+      workspaceId: WS,
+      harnessSlug: SLUG,
+      workspaceRoot,
+      createIfMissing: false,
+    })) as { storeId: string };
+    expect(b.storeId).toBe(a.storeId);
+    expect(host.storeCount()).toBe(1);
+  });
+
   it('appendOp HLC-stamps + persists into the relocated own-log (verified by reopening from disk)', async () => {
     const host = makeHost();
     const { workspaceRoot, storagePath } = tempWorkspace('reloc-append-');
