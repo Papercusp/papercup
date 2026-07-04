@@ -76,6 +76,13 @@ describe('gradeOrientDedupRate — cutoffs (lower pctRedundant is healthier)', (
 });
 
 describe('readOrientDedupRate — runs the canonical SQL through an injected runner', () => {
+  it('canonical SQL ignores coord:orient internal subcalls by requiring post-orient follow-ups', () => {
+    expect(ORIENT_DEDUP_RATE_SQL).toContain("tool_name='coord:orient'");
+    expect(ORIENT_DEDUP_RATE_SQL).toContain('min(invoked_at) AS first_orient_at');
+    expect(ORIENT_DEDUP_RATE_SQL).toContain('t.invoked_at > o.first_orient_at');
+    expect(ORIENT_DEDUP_RATE_SQL).toContain('coalesce(redundant, false) AS redundant');
+  });
+
   it('passes sinceHours as the param and maps DB rows into a rollup', async () => {
     const captured: { query: string; params: unknown[] }[] = [];
     const fakeRun = async <T,>(query: string, params: unknown[]): Promise<T[]> => {

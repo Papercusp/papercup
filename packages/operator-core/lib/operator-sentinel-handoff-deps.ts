@@ -128,6 +128,20 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       // resolves, plus a standing-candidate refresh so the settings page can offer
       // a STANDING approval for this (capability, harness) pair (the user-facing
       // approval tier — P-015). The Queen places once the user approves.
+      //
+      // WI-2200 (EI-3643): the Sentinel re-proposes the SAME gate (identical
+      // capability + harness) across turns with a FRESHLY-worded `summary` each
+      // time (its own natural-language restatement) — without an explicit dedup
+      // key, openEscalation's default subjectSignature falls back to the raw
+      // summary text (escalationDedupIdentity), so every reworded restatement
+      // reads as a NEW subject and never dedupes against the still-open request
+      // for the SAME underlying approval. Observed live: 34 open escalations for
+      // capability=bee:spawn/fleet:spawn harness=workspace, all differently
+      // worded, none ever resolved — pure backlog-drift noise. Pin BOTH dedup
+      // fields to the stable (capability, harness) identity so a re-proposal
+      // bumps the EXISTING escalation's repeatCount (openEscalation's built-in
+      // findOpenDuplicate/tryBumpProjectionDuplicate path) instead of minting a
+      // duplicate the user has to individually triage.
       await openEscalation(identity, {
         severity: 'question',
         summary: `Approve ${tier}-tier action? ${summary}`.slice(0, 280),
@@ -135,6 +149,10 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
           `The Sentinel wants to hand off a ${tier}-tier action (capability=${capability}, ` +
           `harness=${harness ?? 'workspace'}). Approve to let the Queen place it; ` +
           `grant a standing approval to skip this prompt next time.`,
+        meta: {
+          dedupKind: 'sentinel-handoff-approval',
+          subjectSignature: `${capability}:${harness ?? 'workspace'}`,
+        },
       });
       await refreshCandidates().catch(() => {});
     },

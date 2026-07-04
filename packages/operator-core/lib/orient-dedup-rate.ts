@@ -64,17 +64,34 @@ export const ORIENT_SUBSUMED_TOOLS = [
 ] as const;
 
 /** The canonical live query (measuring-code-run-adoption.mdx metric #3) — of spawns that called
- *  coord:orient, how many ALSO re-called a tool it already subsumes, over the last `$1` hours.
+ *  coord:orient, how many ALSO re-called a tool it already subsumes AFTER orient returned, over
+ *  the last `$1` hours. coord:orient internally reads inbox/plan-events/memory and declares intent;
+ *  those subcalls are logged under the same spawn just before the orient row, so the timestamp
+ *  predicate is load-bearing to avoid grading orient's own implementation as agent re-fetching.
  *  Runnable as-is via dev:pg_query. */
 export const ORIENT_DEDUP_RATE_SQL = `
-WITH s AS (
-  SELECT spawn_id,
-         bool_or(tool_name='coord:orient') AS oriented,
-         bool_or(tool_name IN ('coord:plan-events','memory:search','coord:inbox','coord:declare-intent')) AS redundant
+WITH oriented AS (
+  SELECT spawn_id, min(invoked_at) AS first_orient_at
   FROM harness_shared.tool_invocations
-  WHERE transport='mcp' AND invoked_at > now() - (($1)::int || ' hours')::interval AND spawn_id IS NOT NULL
-  GROUP BY spawn_id)
-SELECT spawn_id, oriented, redundant FROM s WHERE oriented
+  WHERE transport='mcp'
+    AND tool_name='coord:orient'
+    AND invoked_at > now() - (($1)::int || ' hours')::interval
+    AND spawn_id IS NOT NULL
+  GROUP BY spawn_id
+),
+s AS (
+  SELECT o.spawn_id,
+         true AS oriented,
+         bool_or(t.tool_name IN ('coord:plan-events','memory:search','coord:inbox','coord:declare-intent')) AS redundant
+  FROM oriented o
+  LEFT JOIN harness_shared.tool_invocations t
+    ON t.spawn_id = o.spawn_id
+   AND t.transport = 'mcp'
+   AND t.invoked_at > o.first_orient_at
+   AND t.invoked_at > now() - (($1)::int || ' hours')::interval
+  GROUP BY o.spawn_id
+)
+SELECT spawn_id, oriented, coalesce(redundant, false) AS redundant FROM s
 `;
 
 /** Read the orient-dedup rollup from PG (last `sinceHours` hours, default 24) and fold it. */

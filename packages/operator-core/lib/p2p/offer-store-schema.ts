@@ -10,7 +10,7 @@
  * member-side projection (projections/work-offers.ts) BOTH derive the signed
  * bytes from {@link workOfferStoreSignedBytes}, so they can never drift.
  *
- * TWO OFFER KINDS in one store record (kind-discriminated):
+ * THREE OFFER KINDS in one store record (kind-discriminated):
  *   'work' — a P-102 WorkOffer + its inner OfferAuthorship envelope. The inner
  *            envelope is the artifact the receiver-side chain
  *            (offer-authorship.verifyOfferAuthorship / standing-puller) verifies
@@ -26,6 +26,20 @@
  *            gateway ACCOUNT ID NEVER crosses the wire — the payload carries
  *            only accountScope 'auto'|'pinned' (the raw account string may feed
  *            the offerId HASH at the publish layer, never the record body).
+ *   'spawn_request' — P-009 cross-machine launch: the FLEET OWNER's signed
+ *            request that the host holding a specific seat-offer SPAWN bounded
+ *            members from it. Authority-bearing ("spend a seat on my behalf"),
+ *            which is exactly why it rides this signed store and not the coord
+ *            message rail. The target seat-offer is named by (publisher uid,
+ *            offerId) — per-machine unique by construction (the offer id hashes
+ *            the device pubkey), and the honoring host re-derives its own seat
+ *            ids to match, so the M19 account secret still never crosses the
+ *            wire. Honoring is FAIL-CLOSED behind the host's owner-authority
+ *            ACCEPT_DELEGATED_SEATS gate (p2p/accept-delegated-seats.ts) and
+ *            time-fenced by requestedAtMs (a late gate flip must not fire a
+ *            stale spawn). The host's honored/refused mark is the LOCAL
+ *            disposition column (it cannot re-sign the owner's record); refusals
+ *            federate back as p2p_receipts.
  *
  * The outer signature covers status + recordVersion, so a publisher's cancel is
  * as unforgeable as the publish. A HOST-side refusal (revocation-reaper P-106
@@ -60,6 +74,31 @@ export interface SeatOfferPayload {
   hostLabel: string | null;
 }
 
+/** P-009: a fleet owner's signed request that the host holding one seat-offer
+ *  spawn members from it. The target is the SEAT-OFFER's key pair — never a
+ *  seat template ref (that would leak the M19-local account segment). */
+export interface SpawnRequestPayload {
+  /** The seat-offer's publisher (the contributing host's X9 numeric gh id). */
+  targetPublisherGithubUserId: number;
+  /** The seat-offer's id (`seat-<hex16>`, per-machine unique — hashes the
+   *  target device pubkey, so it names exactly one machine's delegation). */
+  targetOfferId: string;
+  /** Members to spawn (1..seat count; the host's resolveSeatLaunch +
+   *  consumeSeatAtBoot re-enforce the cap regardless). */
+  count: number;
+  /** The plan the spawned members work (the owner fleet's plan). */
+  planSlug: string;
+  /** The requesting session's coord owner id — audit + the addressee for any
+   *  host-side follow-up. Advisory data, never an authority claim. */
+  requesterOwnerId: string;
+  /** Publisher-clock ms of the request — the honor-window fence (a host must
+   *  refuse a request older than its window; blocks the late-flag-flip spawn). */
+  requestedAtMs: number;
+  /** Optional per-fleet brief the host composes UNDER the member baseline, or
+   *  null (members then get the baseline only). */
+  launchContext: string | null;
+}
+
 /** The publisher-signed offer-store record — one per (publisher, offerId). */
 export interface WorkOfferStoreRecord {
   /** Store row id, unique per publisher (the fed key namespaces it under the
@@ -69,15 +108,17 @@ export interface WorkOfferStoreRecord {
   publisherGithubUserId: number;
   /** The fleet channel the offer targets (H5 owner-prefixed at the scope layer). */
   fleetSlug: string;
-  kind: 'work' | 'seat';
+  kind: 'work' | 'seat' | 'spawn_request';
   status: OfferStoreStatus;
   /** Why a 'cancelled' record was cancelled (display/receipts), or null. */
   cancelReason: string | null;
-  /** kind 'work': the P-102 offer + inner authorship envelope. null for 'seat'. */
+  /** kind 'work': the P-102 offer + inner authorship envelope. null otherwise. */
   workOffer: WorkOffer | null;
   authorship: OfferAuthorship | null;
-  /** kind 'seat': the D-005 payload. null for 'work'. */
+  /** kind 'seat': the D-005 payload. null otherwise. */
   seat: SeatOfferPayload | null;
+  /** kind 'spawn_request': the P-009 payload. null otherwise. */
+  spawnRequest: SpawnRequestPayload | null;
   /** Monotone version; bumps on each author (secondary order; fed_hlc is LWW). */
   recordVersion: number;
 }
