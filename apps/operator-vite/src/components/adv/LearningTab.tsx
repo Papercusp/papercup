@@ -370,7 +370,7 @@ export default function LearningTab() {
       )}
 
       <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}’s editable memory lives in Learnings.
+        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it's all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}'s editable memory lives in Learnings.
       </p>
 
       <LearningStyles />
@@ -961,6 +961,7 @@ interface HiveEvalGeneration {
 const ratioLabel = (v: number | null): string => (v == null ? '—' : `${v.toFixed(2)}×`);
 
 function HiveEvalTrendView() {
+  const t = useLexicon();
   const sync = useSyncQuery<{ instances: HiveEvalGeneration[] }>({
     queryName: 'learning.hiveEvalTrend',
     args: {},
@@ -981,11 +982,11 @@ function HiveEvalTrendView() {
   return (
     <div className="pc-learning__hive-eval">
       <div className="pc-learning__sectionhead">
-        <h2>Hive orchestration <em>good · efficient · fast?</em></h2>
+        <h2>{t('pot')} orchestration <em>good · efficient · fast?</em></h2>
         <button
           type="button"
           className="pc-learning__refresh"
-          aria-label="Reload the Hive-orchestration trend"
+          aria-label={`Reload the ${t('pot')}-orchestration trend`}
           disabled={sync.fetching}
           onClick={() => sync.invalidate()}
         >
@@ -996,23 +997,23 @@ function HiveEvalTrendView() {
       {instances.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Gauge size={20} aria-hidden />
-          <strong>No Hive-eval generations yet</strong>
+          <strong>No {t('pot')}-eval generations yet</strong>
           <span>
-            This benchmark runs the WHOLE Hive (Queen + bees) on seeded scenarios and grades each run on
+            This benchmark runs the WHOLE {t('pot')} ({t('brain')} + {t('contributor', { plural: true, lower: true })}) on seeded scenarios and grades each run on
             outcome quality, efficiency, and speed — with an un-gameable gate (a fast-but-wrong run scores
-            zero). Every run spends real budget, so it’s owner-gated: it runs when the owner sets the monthly
-            cadence’s budget (P-051). Once generations land, the composite trend appears here — the yardstick
-            for whether queen-execution / wave-dispatch / autonomy actually made the Hive better.
+            zero). Every run spends real budget, so it&rsquo;s owner-gated: it runs when the owner sets the monthly
+            cadence&rsquo;s budget (P-051). Once generations land, the composite trend appears here — the yardstick
+            for whether {t('brain', { lower: true })}-execution / wave-dispatch / autonomy actually made the {t('pot')} better.
           </span>
         </div>
       ) : (
         <>
-          <div className="pc-learning__scoreboard" aria-label="Hive orchestration summary">
+          <div className="pc-learning__scoreboard" aria-label={`${t('pot')} orchestration summary`}>
             <Stat
               label="composite"
               value={latest ? compositeLabel(latest.meanComposite) : '—'}
               tone="good"
-              hint="Latest generation’s mean Hive-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number."
+              hint={`Latest generation's mean ${t('pot')}-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number.`}
             />
             <Stat
               label="outcome gate"
@@ -1054,6 +1055,7 @@ const BAKEOFF_VERDICT_META: Record<BakeoffTrendRow['verdict'], { label: string; 
 };
 
 function BakeoffTrendView() {
+  const t = useLexicon();
   const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
     queryName: 'learning.bakeoff',
     args: {},
@@ -1092,7 +1094,7 @@ function BakeoffTrendView() {
           <Gauge size={20} aria-hidden />
           <strong>No bake-offs yet</strong>
           <span>
-            A bake-off runs the whole Hive twice over the seeded scenarios — once with a bet flag OFF,
+            A bake-off runs the whole {t('pot')} twice over the seeded scenarios — once with a bet flag OFF,
             once ON — and diffs the gated composite + outcome-gate pass rate. It’s the un-gameable A/B
             proof that a change (compiled briefs, conflict-free placement, …) actually beats baseline; a
             drop in the gate auto-reverts the flag. Every run spends real budget and needs the operator
@@ -1293,6 +1295,7 @@ function formatDurationMs(ms: number | null | undefined): string {
  * split, read from hive_throughput_ticks (mig 261) via learning.hiveThroughput.
  */
 function ThroughputView() {
+  const t = useLexicon();
   const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
   const soak = useSyncQuery<HiveSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
   const hives = sync.data?.[0]?.hives ?? [];
