@@ -68,7 +68,7 @@ import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
-import { PendingMembershipContent } from './pending-membership-content';
+import { PendingMembershipContent, reapplyDrainedMemberContent } from './pending-membership-content';
 import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
@@ -1585,6 +1585,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /** Drain queued admissions. MUST run under the merge gate (mergeOnePass). */
   async function drainAdmissionQueue(): Promise<void> {
+    const newlyResolvedSourceLogs: string[] = [];
     while (admissionQueue.length > 0) {
       const frame = admissionQueue.shift()!;
       // Revocation can land BETWEEN enqueue and drain (the queue defers the
@@ -1613,6 +1614,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           githubUserId: frame.github_user_id,
           attestationGistId: frame.attestation_gist_id,
         });
+        newlyResolvedSourceLogs.push(frame.log_core_key);
         if (!admitted.has(frame.log_core_key)) {
           const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(
             store,
@@ -2917,6 +2919,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         }
       }
+    }
+    if (newlyResolvedSourceLogs.length > 0) {
+      await reapplyDrainedMemberContent(
+        pendingMemberContent.drainForSourceLogKeys(newlyResolvedSourceLogs, Date.now()),
+      );
     }
   }
   function armPendingRetry(): void {

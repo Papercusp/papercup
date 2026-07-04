@@ -59,6 +59,19 @@ export interface DeferredMemberContentOp {
   expiresAt: number;
 }
 
+/** One deferred cross-member content op whose source-log identity has not resolved yet. */
+export interface DeferredSourceLogContentOp {
+  /** The immutable receiver-stamped source log key. Re-resolved when admission catches up. */
+  sourceLogKey: string;
+  tableTag: string;
+  rowKey: string;
+  fedHlc: string | null;
+  fedTs: number | null;
+  reapply: () => Promise<void>;
+  seq: number;
+  expiresAt: number;
+}
+
 /** Default hard cap on total deferred ops. The race is rare + brief, so this is a safety
  *  backstop, not a working size — a real workload keeps this near 0. */
 export const DEFAULT_MAX_PENDING_MEMBER_CONTENT = 5_000;
@@ -77,6 +90,16 @@ export interface DeferMemberContentInput {
   reapply: () => Promise<void>;
 }
 
+/** Deferral shape for content whose `sourceLogKeyHex -> device` identity is not available yet. */
+export interface DeferSourceLogContentInput {
+  sourceLogKey: string;
+  tableTag: string;
+  rowKey: string;
+  fedHlc?: string | null;
+  fedTs?: number | null;
+  reapply: () => Promise<void>;
+}
+
 /**
  * A bounded, TTL-evicting, per-author-device FIFO buffer of content ops deferred because their
  * author's hive-membership has not yet federated. NOT thread-shared — one per booted harness
@@ -85,6 +108,8 @@ export interface DeferMemberContentInput {
 export class PendingMembershipContent {
   /** authorDevice → ordered deferred ops (insertion order). */
   private readonly buckets = new Map<string, DeferredMemberContentOp[]>();
+  /** sourceLogKey → ordered deferred ops waiting for admission identity resolution. */
+  private readonly sourceLogBuckets = new Map<string, DeferredSourceLogContentOp[]>();
   /** Monotone insertion counter (deterministic ordering; never wall-clock). */
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
@@ -126,6 +151,35 @@ export class PendingMembershipContent {
   }
 
   /**
+   * Defer a cross-member content op whose source-log key is known but has no resolved admission
+   * identity yet. This catches the log-identity-before-content race: once admission records the
+   * log->device mapping, drainForSourceLogKeys re-applies the op and the normal member-device
+   * guard either applies it or moves it into the device-membership buffer above.
+   */
+  deferUnresolvedSourceLog(input: DeferSourceLogContentInput, now: number): boolean {
+    this.sweepExpired(now);
+    let list = this.sourceLogBuckets.get(input.sourceLogKey);
+    if (!list) {
+      list = [];
+      this.sourceLogBuckets.set(input.sourceLogKey, list);
+    }
+    if (list.some((d) => sameOp(d, input))) return false;
+    list.push({
+      sourceLogKey: input.sourceLogKey,
+      tableTag: input.tableTag,
+      rowKey: input.rowKey,
+      fedHlc: input.fedHlc ?? null,
+      fedTs: input.fedTs ?? null,
+      reapply: input.reapply,
+      seq: this.seqCounter++,
+      expiresAt: now + this.ttlMs,
+    });
+    this.total++;
+    if (this.total > this.maxPending) this.evictOldest();
+    return true;
+  }
+
+  /**
    * A member just federated (a `hive_members` row applied). Remove + return — in FIFO order —
    * the deferred ops waiting on ANY of that member's device pubkeys, so the caller can re-apply
    * them (their membership is now known). Sweeps expired entries first. Returns [] if none.
@@ -144,6 +198,23 @@ export class PendingMembershipContent {
     return out.sort((a, b) => a.seq - b.seq);
   }
 
+  /**
+   * A source log identity just became known at admission. Remove + return the deferred ops waiting
+   * on that log key so the caller can re-apply them against the now-populated resolver.
+   */
+  drainForSourceLogKeys(sourceLogKeys: Iterable<string>, now: number): DeferredSourceLogContentOp[] {
+    this.sweepExpired(now);
+    const out: DeferredSourceLogContentOp[] = [];
+    for (const sourceLogKey of sourceLogKeys) {
+      const list = this.sourceLogBuckets.get(sourceLogKey);
+      if (!list || list.length === 0) continue;
+      this.sourceLogBuckets.delete(sourceLogKey);
+      this.total -= list.length;
+      out.push(...list);
+    }
+    return out.sort((a, b) => a.seq - b.seq);
+  }
+
   /** Drop every entry whose TTL has passed. Called on the defer + drain hot paths (cheap when
    *  empty) so genuine non-member content expires even if no member ever joins to drain it.
    *  Returns the count evicted. */
@@ -156,6 +227,13 @@ export class PendingMembershipContent {
       if (live.length === 0) this.buckets.delete(device);
       else this.buckets.set(device, live);
     }
+    for (const [sourceLogKey, list] of this.sourceLogBuckets) {
+      const live = list.filter((d) => d.expiresAt > now);
+      if (live.length === list.length) continue;
+      removed += list.length - live.length;
+      if (live.length === 0) this.sourceLogBuckets.delete(sourceLogKey);
+      else this.sourceLogBuckets.set(sourceLogKey, live);
+    }
     this.total -= removed;
     return removed;
   }
@@ -167,26 +245,37 @@ export class PendingMembershipContent {
 
   /** Distinct author-device buckets currently holding deferrals. */
   bucketCount(): number {
-    return this.buckets.size;
+    return this.buckets.size + this.sourceLogBuckets.size;
   }
 
   /** Drop the globally-oldest deferral to honour `maxPending`. The op's bytes remain in the peer
    *  log, so a later re-fold re-defers it (for a real member) — back-pressure, not data loss. */
   private evictOldest(): void {
     let oldestKey: string | null = null;
+    let oldestKind: 'device' | 'sourceLog' | null = null;
     let oldestSeq = Infinity;
     for (const [device, list] of this.buckets) {
       const head = list[0]; // each bucket is seq-ascending (push order)
       if (head && head.seq < oldestSeq) {
         oldestSeq = head.seq;
         oldestKey = device;
+        oldestKind = 'device';
       }
     }
-    if (oldestKey === null) return;
-    const list = this.buckets.get(oldestKey)!;
+    for (const [sourceLogKey, list] of this.sourceLogBuckets) {
+      const head = list[0];
+      if (head && head.seq < oldestSeq) {
+        oldestSeq = head.seq;
+        oldestKey = sourceLogKey;
+        oldestKind = 'sourceLog';
+      }
+    }
+    if (oldestKey === null || oldestKind === null) return;
+    const buckets = oldestKind === 'device' ? this.buckets : this.sourceLogBuckets;
+    const list = buckets.get(oldestKey)!;
     list.shift();
     this.total--;
-    if (list.length === 0) this.buckets.delete(oldestKey);
+    if (list.length === 0) buckets.delete(oldestKey);
   }
 }
 
@@ -196,7 +285,7 @@ export class PendingMembershipContent {
  * re-applied without throwing. Mirrors drainQueuedEpochContent's best-effort loop.
  */
 export async function reapplyDrainedMemberContent(
-  entries: readonly DeferredMemberContentOp[],
+  entries: readonly (DeferredMemberContentOp | DeferredSourceLogContentOp)[],
 ): Promise<number> {
   let reapplied = 0;
   for (const entry of entries) {
@@ -213,7 +302,10 @@ export async function reapplyDrainedMemberContent(
 /** Two deferrals are the SAME iff they project the same row version: same projection + key +
  *  LWW ordering keys. A strictly-newer op for the same key is a DIFFERENT deferral (the apply
  *  path's LWW guard supersedes the stale one on re-apply). */
-function sameOp(d: DeferredMemberContentOp, input: DeferMemberContentInput): boolean {
+function sameOp(
+  d: Pick<DeferredMemberContentOp | DeferredSourceLogContentOp, 'tableTag' | 'rowKey' | 'fedHlc' | 'fedTs'>,
+  input: Pick<DeferMemberContentInput | DeferSourceLogContentInput, 'tableTag' | 'rowKey' | 'fedHlc' | 'fedTs'>,
+): boolean {
   return (
     d.tableTag === input.tableTag &&
     d.rowKey === input.rowKey &&
