@@ -29,13 +29,12 @@ interface SettingsGroup {
   readonly links: readonly SettingsLink[];
 }
 
+// The GUI Setup Wizard is DEMOTED to Advanced (agent-first-onboarding-2026-07-03
+// P-010): first-run now lands on the agent-chat Onboarding Console (/onboarding,
+// ONBOARDING_AGENT_FIRST), and the wizard survives as the fallback — reachable
+// here and at /setup?force=1. Keep it listed (it is the no-pty / browser escape
+// hatch), but not as the headline "Get started" entry.
 const SETTINGS_GROUPS: readonly SettingsGroup[] = [
-  {
-    label: 'Get started',
-    links: [
-      { href: '/settings/setup-wizard', label: 'Setup Wizard', keywords: ['setup', 'wizard', 'onboarding', 'first run', 'install', 'permissions', 'workspace', 'keys', 'login', 'pair'] },
-    ],
-  },
   {
     label: 'Identity & devices',
     links: [
@@ -74,6 +73,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Advanced',
     links: [
+      { href: '/settings/setup-wizard', label: 'Setup Wizard (classic)', keywords: ['setup', 'wizard', 'onboarding', 'first run', 'install', 'permissions', 'workspace', 'keys', 'login', 'pair', 'fallback', 'classic', 'gui'], advanced: true },
       { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference', 'harness'], advanced: true },
       { href: '/settings/agent', label: 'AI backend', keywords: ['agent backend', 'claude', 'omp', 'meridian', 'models', 'roles', 'command'], advanced: true },
       { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction'], advanced: true },

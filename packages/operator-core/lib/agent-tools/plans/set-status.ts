@@ -266,6 +266,49 @@ export async function releaseTerminalGrips(opts: {
   return { claimReleased, assignmentReleased };
 }
 
+/**
+ * →todo claim release (EI-5822). A →todo flip is the documented "hand it back
+ * to the pool" affordance, but historically only released the item's stored
+ * STATUS token — the caller's live coord CLAIM LEASE (what actually blocks a
+ * peer's next wip-flip with claim_conflict) survived until its TTL expired.
+ * Net: "released via →todo, all yours" was a false affordance — the next
+ * claimant had to wait out the lease or ask for an explicit release.
+ *
+ * Release ONLY the caller's OWN claim (releaseClaim no-ops if the caller
+ * doesn't hold it — this must never void a LIVE PEER's lease); unlike a
+ * terminal flip, do NOT touch the durable assignment: →todo means "I'm done
+ * working it right now", not "I'm done owning it" — the item may legitimately
+ * stay assigned while its lease frees up for the assignee (or anyone) to
+ * re-claim. Deps injected so this is unit-testable without the PG/lock path
+ * (mirrors releaseTerminalGrips). Fail-safe: a release hiccup is logged and
+ * reported as not-released, never thrown.
+ */
+export async function releaseTodoClaim(opts: {
+  status: string;
+  agentOwnerId: string | null;
+  scope: { workspaceId: string; harnessSlug: string };
+  slug: string;
+  itemId: string;
+  releaseClaim: (
+    workspaceId: string,
+    harnessSlug: string,
+    planSlug: string,
+    itemId: string,
+    owner: string,
+  ) => Promise<boolean>;
+}): Promise<{ claimReleased: boolean }> {
+  if (opts.status !== 'todo' || !opts.agentOwnerId) {
+    return { claimReleased: false };
+  }
+  const claimReleased = await opts
+    .releaseClaim(opts.scope.workspaceId, opts.scope.harnessSlug, opts.slug, opts.itemId, opts.agentOwnerId)
+    .catch((e) => {
+      console.warn('[plans:set-status] todo claim release failed:', (e as Error)?.message ?? e);
+      return false;
+    });
+  return { claimReleased };
+}
+
 export function flipStatusInBody(
   body: string,
   itemId: string,
@@ -561,29 +604,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       clearAssignment: unassignItem,
     }));
   } else if (agentId && it.status === 'todo') {
-    // EI-5822: a →todo flip is the documented "hand it back to the pool"
-    // affordance, but historically only released the item's stored STATUS
-    // token — the caller's live coord CLAIM LEASE (which is what actually
-    // blocks a peer's next wip-flip with claim_conflict) survived until its
-    // TTL expired. Net: "released via →todo, all yours" was a false
-    // affordance — the next claimant had to wait out the lease or ask for an
-    // explicit release. Release ONLY the caller's OWN claim (releaseOwnClaim
-    // no-ops if the caller doesn't hold it — never voids a live peer's
-    // lease), and — unlike a terminal flip — do NOT touch the durable
-    // assignment: →todo is "I'm done working it, not done deciding who owns
-    // it", so the item may legitimately stay assigned while its lease frees
-    // up for the assignee (or anyone) to re-claim.
     const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-    claimReleased = await releaseOwnClaim(
-      scope.workspaceId,
-      scope.harnessSlug,
-      it.slug,
-      it.itemId,
-      agentId.ownerId,
-    ).catch((e) => {
-      console.warn('[plans:set-status] todo claim release failed:', (e as Error)?.message ?? e);
-      return false;
-    });
+    ({ claimReleased } = await releaseTodoClaim({
+      status: it.status,
+      agentOwnerId: agentId.ownerId,
+      scope,
+      slug: it.slug,
+      itemId: it.itemId,
+      releaseClaim: releaseOwnClaim,
+    }));
   }
 
   return {

@@ -6,6 +6,7 @@ import {
   truncateInlineNote,
   isTerminalStatus,
   releaseTerminalGrips,
+  releaseTodoClaim,
   terminalFlipConflict,
   type HolderInfo,
 } from './set-status';
@@ -220,6 +221,63 @@ describe('releaseTerminalGrips (EI-2298)', () => {
       },
     });
     expect(out.assignmentReleased).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+});
+
+// EI-5822: a →todo flip is the documented "hand it back to the pool"
+// affordance, but only the ASSIGNMENT/status token released — the caller's
+// live coord claim LEASE (what actually blocks a peer's next wip-flip with
+// claim_conflict) survived until TTL expiry. releaseTodoClaim closes that gap
+// WITHOUT touching the durable assignment (unlike a terminal flip).
+describe('releaseTodoClaim (EI-5822)', () => {
+  const scope = { workspaceId: 'ws', harnessSlug: 'h' };
+  function fakes() {
+    const calls: unknown[][] = [];
+    return { calls, releaseClaim: async (...a: unknown[]) => { calls.push(a); return true; } };
+  }
+  const at = (slug = 'plan-a', itemId = 'P-001') => ({ scope, slug, itemId });
+
+  it('on →todo with an attributable agent: releases the caller\'s own claim', async () => {
+    const f = fakes();
+    const out = await releaseTodoClaim({
+      status: 'todo',
+      agentOwnerId: 'su-x',
+      ...at(),
+      releaseClaim: f.releaseClaim,
+    });
+    expect(out).toEqual({ claimReleased: true });
+    expect(f.calls).toEqual([['ws', 'h', 'plan-a', 'P-001', 'su-x']]);
+  });
+
+  it('on →todo with NO caller identity (a human/principal flip): never calls releaseClaim', async () => {
+    const f = fakes();
+    const out = await releaseTodoClaim({ status: 'todo', agentOwnerId: null, ...at(), releaseClaim: f.releaseClaim });
+    expect(out).toEqual({ claimReleased: false });
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('on a NON-todo flip (wip/done/blocked/…): never calls releaseClaim — this is todo-specific, not a blanket release', async () => {
+    const f = fakes();
+    for (const status of ['wip', 'done', 'dropped', 'blocked', 'needs-human']) {
+      const out = await releaseTodoClaim({ status, agentOwnerId: 'su-x', ...at(), releaseClaim: f.releaseClaim });
+      expect(out).toEqual({ claimReleased: false });
+    }
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('is fail-safe: a releaseClaim throw is swallowed → claimReleased=false, no throw', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await releaseTodoClaim({
+      status: 'todo',
+      agentOwnerId: 'su-x',
+      ...at(),
+      releaseClaim: async () => {
+        throw new Error('coord store down');
+      },
+    });
+    expect(out).toEqual({ claimReleased: false });
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
   });
