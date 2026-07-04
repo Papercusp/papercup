@@ -32,18 +32,16 @@ import { Tooltip } from '../../harness/Tooltip';
 import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
+import { useLexicon } from '@/lib/useLexicon';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 
 // Compact legend for the kind pills (owner ask 2026-06-11) — same order as
 // the pui colony roster; the tooltip carries the one-line "what is this kind".
-const KIND_LEGEND: Array<{ kind: string; hint: string }> = [
-  { kind: 'queen', hint: 'Queen — the autonomous brain session (cadence-driven)' },
-  { kind: 'overwatch', hint: 'Overwatch — the autonomous system-health supervisor (a Queen sibling); watches + nudges, never edits' },
-  { kind: 'bee', hint: 'Bee — Queen-spawned headless worker (invoke-once); ephemeral' },
-  { kind: 'sentinel', hint: 'Sentinel — the always-on, owner-facing operator chat persona' },
-  { kind: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
-  { kind: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
-];
+// `kind` stays the internal pane-kind id (glyph lookup + React key, plan D-001);
+// the display `label` + `hint` route the user-facing role words through the
+// lexicon (queen→Brain, bee→Cup, sentinel→Operator — restore-pot-lexicon P-007).
+// Built at render time (see kindLegend) because the terms depend on the hook.
+// overwatch/planner/su have no TermKey and stay literal.
 
 // Liveness legend (owner ask 2026-06-11) — thresholds read straight off the
 // canonical constants (lib/liveness — the same leaf deriveLiveness uses), so
@@ -128,6 +126,17 @@ export default function AdvAgentsPanel({ params, api }: PanelComponentProps) {
     'agentsView',
     parseAsStringEnum<'working' | 'runs'>(['working', 'runs']).withDefault('working'),
   );
+  const t = useLexicon();
+  // Render-time kind legend — internal `kind` id kept for the glyph/key; the
+  // user-facing role words routed through the lexicon (restore-pot-lexicon P-007).
+  const kindLegend: Array<{ kind: string; label: string; hint: string }> = [
+    { kind: 'queen', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
+    { kind: 'overwatch', label: 'overwatch', hint: `Overwatch — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
+    { kind: 'bee', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
+    { kind: 'sentinel', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
+    { kind: 'planner', label: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
+    { kind: 'su', label: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
+  ];
 
   if (!slug) {
     return <div className="pc-advpanel__empty">No harness slug in params.</div>;
@@ -395,10 +404,10 @@ function WorkingView({
         />
       )}
       <div className="pc-adv-agents__legendbar" aria-label="Agent kind and liveness legend">
-        {KIND_LEGEND.map(({ kind: k, hint }) => (
+        {kindLegend.map(({ kind: k, label, hint }) => (
           <Tooltip key={k} label={hint}>
             <span className="pc-adv-agents__legend-item">
-              {AGENT_KIND_GLYPH[k]} {k}
+              {AGENT_KIND_GLYPH[k]} {label}
             </span>
           </Tooltip>
         ))}

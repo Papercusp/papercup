@@ -66,6 +66,10 @@ let runsState: { agents: unknown[] | null; loading: boolean; error: string | nul
 const refreshMock = vi.fn();
 vi.mock('./useHarnessData', () => ({ useHarnessAgents: () => runsState }));
 
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the routed
+// kind-legend copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import AdvAgentsPanel from './AdvAgentsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 
