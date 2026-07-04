@@ -1848,8 +1848,9 @@ export function assertLaunchPersona(promptFile) {
  * Claude Code / the gateway enable the 1M-context window — treats them as 1M.
  * Idempotent; a no-op for a spec already carrying `[1m]` or outside the
  * default-1M families. `[1m]` is inserted before a recognized `:effort`
- * suffix, else appended. Papercusp then caps their compaction at 500k
- * (agent-config-constants defaultCompactionLimitForSpec) to bound token spend.
+ * suffix, else appended. Papercusp then caps their compaction at 400k —
+ * named-fleet MEMBERS at 300k (owner directive 2026-07-03; agent-config-constants
+ * defaultCompactionLimitForSpec) — to bound token spend.
  * sonnet-5 REQUIRES the marker too — REVERSAL of the earlier P-031 note
  * (2026-07-02), live-verified via `/context` the same day: bare `--model
  * sonnet` runs a 200k AUTO-COMPACT window in CC 2.1.198 ("76k/200k ·

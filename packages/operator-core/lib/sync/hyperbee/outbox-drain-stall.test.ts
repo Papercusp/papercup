@@ -58,6 +58,9 @@ const OUTBOX_ROW = {
 describe('outbox-drain pass watchdog (WI-2009)', () => {
   it('a hung append times out, escalates, and the loop UN-WEDGES (next pass drains)', async () => {
     vi.useFakeTimers();
+    // The drain catch path console.error's on the failed pass (by design — the loud
+    // failure log); expected + ASSERTED below, so vitest-fail-on-console stays green.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       let calls = 0;
       let resolveHung: (() => void) | undefined;
@@ -99,6 +102,10 @@ describe('outbox-drain pass watchdog (WI-2009)', () => {
       await vi.advanceTimersByTimeAsync(1100);
       expect(episodes).toHaveLength(1);
       expect(episodes[0]).toContain('WI-2009');
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[outbox-drain] drain failed'),
+        expect.anything(),
+      );
       await vi.advanceTimersByTimeAsync(1100);
       expect(append.mock.calls.length).toBeGreaterThanOrEqual(2);
 
@@ -108,6 +115,7 @@ describe('outbox-drain pass watchdog (WI-2009)', () => {
 
       await drain.stop();
     } finally {
+      errSpy.mockRestore();
       vi.useRealTimers();
     }
   });

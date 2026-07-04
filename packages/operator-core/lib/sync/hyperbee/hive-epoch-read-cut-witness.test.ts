@@ -29,16 +29,18 @@
  *
  * THE WITNESSED SEQUENCE (K0 → K1 → K-revoke → K-CUT), all on the REAL crypto + the REAL
  * op-path:
- *   K0       owner admits members B (later revoked) + C (remains); wraps epoch-0 key to
+ *   K0       owner admits members B (later revoked) + C (remains); wraps epoch-1 key to
  *            both; writes content-0. Both B and C replicate the ciphertext op and decrypt.
- *   K1       owner re-keys to epoch 1 (benign), wraps to both; writes content-1. Both read.
- *   K-revoke owner revokes B → advances to epoch 2, wraps to C ONLY (B excluded); writes
+ *            (The ladder starts at epoch 1 — epoch 0 is the plaintext BASELINE and is
+ *            never encrypted, per the WI-2102 BASELINE_EPOCH model.)
+ *   K1       owner re-keys to epoch 2 (benign), wraps to both; writes content-1. Both read.
+ *   K-revoke owner revokes B → advances to epoch 3, wraps to C ONLY (B excluded); writes
  *            content-2.
  *   K-CUT    C decrypts content-2. B REPLICATES the identical ciphertext op but (a) the
- *            decrypt gate defers it forever (no epoch-2 key row will ever arrive), AND
- *            (b) the bytes are cryptographically unreadable — B's only held key (epoch 1)
- *            fails the real AEAD against the epoch-2 ciphertext. B still reads the OLD
- *            epoch-1 content it legitimately holds (forward-cut, not retroactive).
+ *            decrypt gate defers it forever (no epoch-3 key row will ever arrive), AND
+ *            (b) the bytes are cryptographically unreadable — B's only held key (epoch 2)
+ *            fails the real AEAD against the epoch-3 ciphertext. B still reads the OLD
+ *            epoch-2 content it legitimately holds (forward-cut, not retroactive).
  *
  * Hermetic: REAL sodium-native crypto + REAL Ed25519 device keys; only the keychain
  * (OS-secret/file I/O) is mocked in-memory, and the federated `hive_epoch_keys` table is
@@ -207,56 +209,58 @@ describe('hive-epoch read-cut witness — K0→K1→K-revoke→K-CUT on the REAL
     const beeB = memberApplier(memberB);
     const beeC = memberApplier(memberC);
 
-    // ── K0: both members admitted; epoch-0 key wrapped to both; owner writes content-0.
-    await ownerRekeyTo(0, [memberB, memberC]);
-    const enc0 = await ownerWrite(0, 'F-0', { note: 'content-0' });
+    // ── K0: both members admitted; epoch-1 key wrapped to both; owner writes content-0.
+    // (Ladder starts at epoch 1: epoch 0 is the plaintext BASELINE — buildEpochEncryptCapability
+    // returns null there per the WI-2102 BASELINE_EPOCH model, so encryption begins at e1.)
+    await ownerRekeyTo(1, [memberB, memberC]);
+    const enc0 = await ownerWrite(1, 'F-0', { note: 'content-0' });
     const b0 = await beeB.apply(enc0, 'F-0');
     const c0 = await beeC.apply(enc0, 'F-0');
     expect(b0).toMatchObject({ applied: true, plaintext: { note: 'content-0' }, pendingSize: 0 });
     expect(c0).toMatchObject({ applied: true, plaintext: { note: 'content-0' }, pendingSize: 0 });
 
-    // ── K1: benign re-key to epoch 1, wrapped to both; both still read the new content.
-    await ownerRekeyTo(1, [memberB, memberC]);
-    const enc1 = await ownerWrite(1, 'F-1', { note: 'content-1' });
+    // ── K1: benign re-key to epoch 2, wrapped to both; both still read the new content.
+    await ownerRekeyTo(2, [memberB, memberC]);
+    const enc1 = await ownerWrite(2, 'F-1', { note: 'content-1' });
     const b1 = await beeB.apply(enc1, 'F-1');
     const c1 = await beeC.apply(enc1, 'F-1');
     expect(b1).toMatchObject({ applied: true, plaintext: { note: 'content-1' } });
     expect(c1).toMatchObject({ applied: true, plaintext: { note: 'content-1' } });
 
-    // ── K-revoke: owner revokes B → advance to epoch 2, wrap to C ONLY (B excluded).
-    await ownerRekeyTo(2, [memberC]);
-    expect(store.has(2, memberC.pubkeyBase64), 'remaining member C has the epoch-2 key row').toBe(true);
-    expect(store.has(2, memberB.pubkeyBase64), 'revoked member B has NO epoch-2 key row — structural forever-cut').toBe(false);
-    const enc2 = await ownerWrite(2, 'F-2', { note: 'content-2-secret' });
+    // ── K-revoke: owner revokes B → advance to epoch 3, wrap to C ONLY (B excluded).
+    await ownerRekeyTo(3, [memberC]);
+    expect(store.has(3, memberC.pubkeyBase64), 'remaining member C has the epoch-3 key row').toBe(true);
+    expect(store.has(3, memberB.pubkeyBase64), 'revoked member B has NO epoch-3 key row — structural forever-cut').toBe(false);
+    const enc2 = await ownerWrite(3, 'F-2', { note: 'content-2-secret' });
 
-    // ── K-CUT (remaining): C unwraps epoch-2 + decrypts the post-boundary content.
+    // ── K-CUT (remaining): C unwraps epoch-3 + decrypts the post-boundary content.
     const c2 = await beeC.apply(enc2, 'F-2');
     expect(c2).toMatchObject({ applied: true, plaintext: { note: 'content-2-secret' }, pendingSize: 0 });
 
     // ── K-CUT (revoked): B REPLICATES the identical ciphertext op (it holds the bytes) …
     const ct2 = ciphertextOf(enc2);
-    expect(ct2.byteLength, 'B holds the replicated epoch-2 ciphertext bytes').toBeGreaterThan(0);
+    expect(ct2.byteLength, 'B holds the replicated epoch-3 ciphertext bytes').toBeGreaterThan(0);
 
-    // … but the decrypt gate defers it FOREVER — its epoch-2 key row never arrives.
+    // … but the decrypt gate defers it FOREVER — its epoch-3 key row never arrives.
     const b2 = await beeB.apply(enc2, 'F-2');
-    expect(b2.applied, 'revoked B cannot apply the epoch-2 op').toBe(false);
+    expect(b2.applied, 'revoked B cannot apply the epoch-3 op').toBe(false);
     expect(b2.plaintext, 'revoked B never sees plaintext').toBeUndefined();
     expect(b2.pendingSize, 'the op is buffered (deferred forever = the C-001 read cut)').toBe(1);
 
     // … and the cut is CONTENT-ENCRYPTION, not merely access-denial: B still holds its
-    // epoch-1 key, yet that key cannot decrypt the epoch-2 ciphertext under the REAL AEAD.
-    const bEpoch1Key = await beeB.provider.keyForEpoch(HIVE, 1); // B legitimately holds this
+    // epoch-2 key, yet that key cannot decrypt the epoch-3 ciphertext under the REAL AEAD.
+    const bEpoch1Key = await beeB.provider.keyForEpoch(HIVE, 2); // B legitimately holds this
     await expect(
-      decryptOpPayload(crypto, ct2, { hiveId: HIVE, epoch: 2, id: opIdentity('F-2', writerPubkey) }, bEpoch1Key),
-      'B replicates the ciphertext but its only held key (epoch 1) cannot decrypt epoch-2 content',
+      decryptOpPayload(crypto, ct2, { hiveId: HIVE, epoch: 3, id: opIdentity('F-2', writerPubkey) }, bEpoch1Key),
+      'B replicates the ciphertext but its only held key (epoch 2) cannot decrypt epoch-3 content',
     ).rejects.toThrow();
 
-    // … and B is NOT retroactively cut — it can still read the OLD epoch-1 content it holds.
+    // … and B is NOT retroactively cut — it can still read the OLD epoch-2 content it holds.
     const ct1 = ciphertextOf(enc1);
     const oldPlaintext = await decryptOpPayload(
       crypto,
       ct1,
-      { hiveId: HIVE, epoch: 1, id: opIdentity('F-1', writerPubkey) },
+      { hiveId: HIVE, epoch: 2, id: opIdentity('F-1', writerPubkey) },
       bEpoch1Key,
     );
     expect(JSON.parse(new TextDecoder().decode(oldPlaintext))).toEqual({ note: 'content-1' });

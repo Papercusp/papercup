@@ -53,7 +53,7 @@ import {
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
  *  `spawned_agents` keyed by the interpolated ownerId (first tag value). */
 function fakeSql(opts: {
-  unseeded?: Array<{ owner_id: string }>;
+  unseeded?: Array<{ owner_id: string; fleet_slug?: string | null; fleet_role?: string | null }>;
   seeded?: Array<{ owner_id: string; owner_label: string; compaction_limit: number }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
 }) {
@@ -78,7 +78,7 @@ beforeEach(() => {
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
-  it('seeds the model-derived default for limit-less live sessions: fable [1m] → 500k cap, unresolvable → 158k', async () => {
+  it('seeds the model-derived default for limit-less live sessions: fable [1m] → 400k cap, unresolvable → 158k', async () => {
     specMock.mockImplementation(async (owner: string) =>
       owner === 'su-wide' ? 'claude-fable-5[1m]' : null,
     );
@@ -86,8 +86,31 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       fakeSql({ unseeded: [{ owner_id: 'su-wide' }, { owner_id: 'su-narrow' }] }),
     );
     expect(out.seeded).toEqual(['su-wide', 'su-narrow']);
-    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 500_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-wide', 400_000);
     expect(setLimitMock).toHaveBeenCalledWith('su-narrow', 158_000);
+  });
+
+  it('shapes the [1m] default by fleet role: member → 300k, leader/solo → 400k (owner directive 2026-07-03)', async () => {
+    specMock.mockResolvedValue('sonnet[1m]:high');
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        unseeded: [
+          { owner_id: 'su-member', fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+          { owner_id: 'su-leader', fleet_slug: 'backlog-clearance', fleet_role: 'leader' },
+          { owner_id: 'su-solo', fleet_slug: null, fleet_role: null },
+          // member shaping reaches the spawn-record spec leg too (D-006 honor leg)
+          { owner_id: 'su-spawned-member', fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+        ],
+        spawnRecords: {
+          'su-spawned-member': { model_spec: 'claude-fable-5[1m]', model_tier: null },
+        },
+      }),
+    );
+    expect(out.seeded).toEqual(['su-member', 'su-leader', 'su-solo', 'su-spawned-member']);
+    expect(setLimitMock).toHaveBeenCalledWith('su-member', 300_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-leader', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-solo', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('su-spawned-member', 300_000);
   });
 
   it('honors the spawn record: explicit tier limit > recorded spec default > resolver (D-006)', async () => {
@@ -96,7 +119,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
       fakeSql({
         unseeded: [
           { owner_id: 's-tier' }, // spawn record names tier "deep" → explicit 120k
-          { owner_id: 's-spec' }, // spawn record carries only a fable [1m] spec → 500k cap
+          { owner_id: 's-spec' }, // spawn record carries only a fable [1m] spec → 400k cap
           { owner_id: 's-none' }, // no spawn record → resolver fallback → 158k
         ],
         spawnRecords: {
@@ -107,7 +130,7 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
     );
     expect(out.seeded).toEqual(['s-tier', 's-spec', 's-none']);
     expect(setLimitMock).toHaveBeenCalledWith('s-tier', 120_000);
-    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 500_000);
+    expect(setLimitMock).toHaveBeenCalledWith('s-spec', 400_000);
     expect(setLimitMock).toHaveBeenCalledWith('s-none', 158_000);
     // the fs/argv resolver only ran for the record-less owner
     expect(specMock).toHaveBeenCalledTimes(1);

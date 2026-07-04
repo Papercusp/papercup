@@ -3,6 +3,7 @@ import {
   MODEL_WINDOW_1M,
   MODEL_WINDOW_DEFAULT,
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
+  COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
   modelWindowForSpec,
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
@@ -14,8 +15,9 @@ import {
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
-// papercusp compacts [1m] sessions preemptively at 500k (owner directive
-// 2026-07-02). Window/limit MATH keys on the [1m] MARKER only, never the bare
+// papercusp compacts [1m] sessions preemptively at 400k, fleet MEMBERS at 300k
+// (owner directive 2026-07-03, revised from the 500k of 2026-07-02).
+// Window/limit MATH keys on the [1m] MARKER only, never the bare
 // family name: live-verified via /context on CC 2.1.198 (2026-07-02), a bare
 // `sonnet` session runs a 200k AUTO-COMPACT window (auto-fires ~167k — killed
 // a wave of sonnet fleet members), while `sonnet[1m]` runs 967k. This file
@@ -70,13 +72,22 @@ describe('modelWindowForSpec (keys on the [1m] MARKER only)', () => {
 });
 
 describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
-  it('[1m] specs are capped at 500k (preemptive compaction despite the 1M window)', () => {
-    expect(COMPACTION_LIMIT_DEFAULT_1M_CAP).toBe(500_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(500_000);
-    expect(defaultCompactionLimitForSpec('opus[1m]:xhigh')).toBe(500_000);
-    expect(defaultCompactionLimitForSpec('claude-fable-5[1m]:xhigh')).toBe(500_000);
-    expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(500_000);
-    expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(500_000);
+  it('[1m] specs are capped at 400k (preemptive compaction despite the 1M window)', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_CAP).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]:xhigh')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('claude-fable-5[1m]:xhigh')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(400_000);
+    expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(400_000);
+  });
+  it('[1m] fleet MEMBERS default to the leaner 300k; role never touches a real-window derivation', () => {
+    expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(300_000);
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(300_000);
+    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(300_000);
+    // explicit non-member (leader/solo) keeps the full cap
+    expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: false })).toBe(400_000);
+    // a 200k-window member still derives from the REAL window, not the role
+    expect(defaultCompactionLimitForSpec('haiku', { fleetMember: true })).toBe(158_000);
   });
   it('a BARE default-1M-family spec derives 158k — BELOW CC\'s own ~167k auto trigger on the real 200k window, so papercusp compacts cleanly first', () => {
     expect(defaultCompactionLimitForSpec('opus')).toBe(158_000);
@@ -92,9 +103,13 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
 });
 
 describe('clampCompactionLimit (the default is also the CEILING)', () => {
-  it('clamps a [1m] request above 500k down to the 500k cap', () => {
-    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(500_000);
-    expect(clampCompactionLimit(600_000, 'claude-fable-5[1m]:xhigh')).toBe(500_000);
+  it('clamps a [1m] request above 400k down to the 400k cap', () => {
+    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(400_000);
+    expect(clampCompactionLimit(600_000, 'claude-fable-5[1m]:xhigh')).toBe(400_000);
+  });
+  it('the CEILING for an explicit set stays the spec cap (400k) even for a fleet member — 300k shapes only the DEFAULT', () => {
+    // clampCompactionLimit takes no role: an explicit 350k on a member is honored.
+    expect(clampCompactionLimit(350_000, 'sonnet[1m]:high')).toBe(350_000);
   });
   it('honors a leaner [1m] request below the cap', () => {
     expect(clampCompactionLimit(120_000, 'opus[1m]')).toBe(120_000);
