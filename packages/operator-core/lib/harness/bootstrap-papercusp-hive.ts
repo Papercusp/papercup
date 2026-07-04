@@ -180,6 +180,11 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
 async function defaultRestoreHiveSeed(
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<RestoreHiveSeedResult> {
+  // --no-seed escape hatch: force the cold join path even if a seed is bundled.
+  if (process.env.PAPERCUSP_NO_SEED) {
+    record?.('clone', 'running', { detail: 'seed: disabled (PAPERCUSP_NO_SEED) — cold join' });
+    return { ran: false, outcomes: [], deferred: [] };
+  }
   const seedDir = process.env.PAPERCUSP_SEED_DIR;
   if (!seedDir) return { ran: false, outcomes: [], deferred: [] };
   const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;

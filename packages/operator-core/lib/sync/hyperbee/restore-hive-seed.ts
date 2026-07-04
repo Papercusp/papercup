@@ -56,6 +56,11 @@ export interface RestoreHiveSeedCtx {
   readonly decryptionKey?: Uint8Array;
   /** Override the origin the restored clone re-points at (else the seed's own). */
   readonly originUrl?: string;
+  /** The `--no-seed` escape hatch: force-skip restore entirely and take the pure
+   *  cold path (ran:false), even when a valid seed is present. The bootstrap default
+   *  wires this from the PAPERCUSP_NO_SEED env — the operator's kill-switch if a
+   *  shipped seed ever misbehaves, and how the cold-join canary forces a real join. */
+  readonly disabled?: boolean;
   /** Seams (tests inject; defaults are the real filesystem + providers). */
   readonly readManifest?: (seedDir: string) => Promise<SeedManifest | null>;
   readonly registry?: SeedProviderRegistry;
@@ -101,6 +106,11 @@ function isDeferred(entry: SeedStoreEntry, hasKey: boolean): boolean {
 export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreHiveSeedResult> {
   const log = ctx.log ?? (() => {});
   const readManifest = ctx.readManifest ?? defaultReadManifest;
+
+  if (ctx.disabled) {
+    log('[seed] restore disabled (--no-seed) — forcing the cold join path');
+    return { ran: false, outcomes: [], deferred: [] };
+  }
 
   const manifest = await readManifest(ctx.seedDir).catch(() => null);
   if (!manifest) {

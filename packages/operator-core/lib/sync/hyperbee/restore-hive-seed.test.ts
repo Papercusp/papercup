@@ -122,6 +122,15 @@ describe('restoreHiveSeed — restore-before-join orchestration', () => {
     expect(res.ran).toBe(false);
   });
 
+  it('--no-seed (disabled:true) ⇒ cold path even with a valid seed present', async () => {
+    const { seedDir } = await cutFixtureSeed();
+    const targetRepoDir = join(tmpDir('rhs-dis-r-'), 'repo');
+    const targetStoreDir = join(tmpDir('rhs-dis-s-'), 'hyperbee');
+    const res = await restoreHiveSeed({ seedDir, targetRepoDir, targetStoreDir, disabled: true });
+    expect(res).toEqual({ ran: false, outcomes: [], deferred: [] });
+    expect(existsSync(join(targetRepoDir, 'code.txt'))).toBe(false); // nothing restored
+  });
+
   it('an UNENCRYPTED seed restores BOTH stores pre-key', async () => {
     const { seedDir, keyHex } = await cutFixtureSeed();
     const targetRepoDir = join(tmpDir('rhs-r3-'), 'repo');
