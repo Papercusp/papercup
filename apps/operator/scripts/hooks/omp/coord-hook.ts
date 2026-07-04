@@ -1628,6 +1628,27 @@ export function fleetLaunchBudgetReason(count: number): string {
   );
 }
 
+/** True when the current process is a Papercusp AGENT session, so the coord-hook
+ *  guards below (doom-loop breaker, per-turn shell + session fleet-launch budgets,
+ *  eval + native-tool-search redirects, native-scheduler lockout, destructive-git
+ *  mirror) apply. Two signals, OR'd for defense-in-depth (WI-2350):
+ *   - PAPERCUSP_AGENT_SESSION==='1' — the canonical marker psu-launcher arms for
+ *     autonomous launches.
+ *   - PAPERCUSP_AGENT==='omp' — this hook ONLY ever loads inside omp, and an omp
+ *     CLI session is ALWAYS a local-model agent (never a human typing as
+ *     themselves), so this alone is sufficient. It is the BACKSTOP that keeps
+ *     every guard live even when a launcher path forgets the marker — the
+ *     2026-07-04 ornith run-3b root cause: a `--plan`/`--fleet` omp launch is
+ *     brain=false, so psu-launcher never set PAPERCUSP_AGENT_SESSION and the
+ *     ENTIRE guard suite (incl. the doom-loop breaker) sat inert while the leader
+ *     spun ~22× on a no-op `resolve`.
+ *  Owner sessions set NEITHER signal, so they stay unrestricted (D-003). Pure. */
+export function isAgentSession(): boolean {
+  return (
+    process.env.PAPERCUSP_AGENT_SESSION === '1' || process.env.PAPERCUSP_AGENT === 'omp'
+  );
+}
+
 /** True for an `eval`/python code-execution call in any surface spelling. The
  *  trimmed OMP surface hands a weak local model (ornith IQ3_M) tools:find +
  *  tools:invoke as its ONLY discovery/invocation path — every MCP/papercusp tool
@@ -1709,7 +1730,7 @@ export async function onToolCall(
   // Gated on the agent-session marker env: the owner's own sessions never set
   // it (D-003) and stay fully unrestricted. Local decision, no operator call.
   if (
-    process.env.PAPERCUSP_AGENT_SESSION === '1' &&
+    isAgentSession() &&
     event.toolName.toLowerCase().startsWith('bash')
   ) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
@@ -1741,7 +1762,7 @@ export async function onToolCall(
   // D-010 retry storm). So don't just block it — run tools:find with the model's own query and
   // hand back the top matches inline: the model is forced onto tools:find→tools:invoke AND still
   // gets its answer this turn. Gated on the agent-session marker (owner sessions unrestricted, D-003).
-  if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isNativeToolSearch(event.toolName)) {
+  if (isAgentSession() && isNativeToolSearch(event.toolName)) {
     return { block: true, reason: await buildToolFindRedirect(event.input) };
   }
 
@@ -1753,7 +1774,7 @@ export async function onToolCall(
   // #1 and redirect onto the native tool / tools:invoke / Bash triad. Placed with
   // the specific guards so it wins before the generic loop-breaker. Owner sessions
   // unrestricted (D-003).
-  if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isEvalCall(event.toolName)) {
+  if (isAgentSession() && isEvalCall(event.toolName)) {
     return { block: true, reason: evalBlockReason() };
   }
 
@@ -1763,7 +1784,7 @@ export async function onToolCall(
   // Placed AFTER the specific bash/tool-search guards so their (more precise) refusal
   // wins at call #1; this generic backstop only fires once a call has repeated
   // identically IDENTICAL_CALL_LOOP_LIMIT times. Owner sessions unrestricted (D-003).
-  if (process.env.PAPERCUSP_AGENT_SESSION === '1') {
+  if (isAgentSession()) {
     const runLen = noteToolCallRepeat(toolCallLoopKey(event.toolName, event.input));
     if (runLen >= IDENTICAL_CALL_LOOP_LIMIT) {
       return { block: true, reason: loopBreakReason(event.toolName, runLen) };

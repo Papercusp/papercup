@@ -40,6 +40,7 @@ import {
   isFleetLaunchCall,
   resetFleetLaunchBudget,
   fleetLaunchBudgetReason,
+  isAgentSession,
   isEvalCall,
   evalBlockReason,
   hookOwnerId,
@@ -66,12 +67,20 @@ import {
 // default so the suite runs in the deterministic minted-fallback mode; the single PAPERCUSP_SID-path
 // test in the hookOwnerId describe sets it explicitly within its own body.
 const _origPaperSidForSuite = process.env.PAPERCUSP_SID;
+// isAgentSession() (WI-2350) also treats PAPERCUSP_AGENT==='omp' as an agent
+// session. Clear it by default so the "owner session, marker unset" tests
+// throughout the suite see isAgentSession()===false; tests that want the omp
+// signal set it explicitly within their own body.
+const _origPaperAgentForSuite = process.env.PAPERCUSP_AGENT;
 beforeEach(() => {
   delete process.env.PAPERCUSP_SID;
+  delete process.env.PAPERCUSP_AGENT;
 });
 afterEach(() => {
   if (_origPaperSidForSuite === undefined) delete process.env.PAPERCUSP_SID;
   else process.env.PAPERCUSP_SID = _origPaperSidForSuite;
+  if (_origPaperAgentForSuite === undefined) delete process.env.PAPERCUSP_AGENT;
+  else process.env.PAPERCUSP_AGENT = _origPaperAgentForSuite;
 });
 
 describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
@@ -362,6 +371,46 @@ describe('onToolCall doom-loop breaker (agent sessions only)', () => {
     });
     expect(r.block).toBe(true);
     expect(r.reason).toContain('shared-tree guard'); // git message, not the loop message
+  });
+});
+
+describe('isAgentSession (guard gating, WI-2350)', () => {
+  const prev = { s: process.env.PAPERCUSP_AGENT_SESSION, a: process.env.PAPERCUSP_AGENT };
+  afterEach(() => {
+    if (prev.s === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prev.s;
+    if (prev.a === undefined) delete process.env.PAPERCUSP_AGENT;
+    else process.env.PAPERCUSP_AGENT = prev.a;
+  });
+  it('true when the canonical marker is set', () => {
+    delete process.env.PAPERCUSP_AGENT;
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    expect(isAgentSession()).toBe(true);
+  });
+  it('true for an omp session even WITHOUT the marker (the run-3b backstop)', () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    process.env.PAPERCUSP_AGENT = 'omp';
+    expect(isAgentSession()).toBe(true);
+  });
+  it('false for an owner session — neither signal (D-003)', () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    delete process.env.PAPERCUSP_AGENT;
+    expect(isAgentSession()).toBe(false);
+  });
+  it('false for a non-omp agent (claude/codex) without the marker', () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    process.env.PAPERCUSP_AGENT = 'claude';
+    expect(isAgentSession()).toBe(false);
+  });
+  it('a guard fires for an omp session with ONLY PAPERCUSP_AGENT set (marker absent — the exact run-3b bug)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    process.env.PAPERCUSP_AGENT = 'omp';
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    // The eval block (a marker-gated guard) must now trip even though the
+    // canonical marker was never set — this is what was inert in run-3b.
+    const r = await onToolCall({ type: 'tool_call', toolName: 'eval', toolCallId: 'e', input: { code: 'x' } });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('eval-blocked');
   });
 });
 

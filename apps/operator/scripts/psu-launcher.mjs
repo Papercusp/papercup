@@ -1378,7 +1378,10 @@ export function resumeAccountPlan(args) {
 export function buildResumeEnv(session, { fork = false, brain = false, accountEnv = null } = {}) {
   return {
     ...resumeEnvFor(session, { fork }),
-    ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+    // omp is always an agent session (a local model drives it), so a resumed omp
+    // session needs the coord-hook guards armed too — parity with launchFreshSu
+    // (WI-2350). Owner sessions never run omp; D-003 preserved for claude/codex.
+    ...(brain || session.agent === 'omp' ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
     ...(accountEnv?.env ?? {}),
   };
 }
@@ -3596,10 +3599,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     cwd: res.cwd,
     // The brain (Queen) is an agent: arm the hook-level scheduler guard. A
     // plain human su launch never sets the marker (native-scheduler-lockout
-    // D-003).
+    // D-003). omp is ALSO always an agent session — a local model drives it, so
+    // a `--plan`/`--fleet` omp launch (brain=false) still needs the coord-hook
+    // guards armed (WI-2350: without this the ENTIRE guard suite sat inert and
+    // ornith leaders doom-looped uncaught). Owner sessions never run omp.
     envelopeEnv: {
       ...res.envelopeEnv,
-      ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
+      ...(brain || res.agent === 'omp' ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
       // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
       // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
       // live model object like Claude's statusline stdin). Omitted when no --model (default).
