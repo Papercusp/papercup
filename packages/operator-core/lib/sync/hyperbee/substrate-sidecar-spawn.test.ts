@@ -5,8 +5,10 @@ const spawnMock = vi.fn();
 vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
 
 import {
+  _resetSidecarRespawnListenersForTests,
   _resetSubstrateSidecarSpawnStateForTests,
   getSubstrateSidecarProcess,
+  onSidecarRespawned,
   spawnSubstrateSidecar,
 } from './substrate-sidecar-spawn';
 
@@ -38,12 +40,14 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     vi.useFakeTimers();
     spawnMock.mockReset();
     _resetSubstrateSidecarSpawnStateForTests();
+    _resetSidecarRespawnListenersForTests();
     delete process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MEMORY_MAX_G;
     delete process.env.PAPERCUSP_SUBSTRATE_SIDECAR_SCOPE;
   });
 
   afterEach(() => {
     _resetSubstrateSidecarSpawnStateForTests();
+    _resetSidecarRespawnListenersForTests();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

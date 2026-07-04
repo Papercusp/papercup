@@ -25,6 +25,15 @@
  * completion signal (the holder is DEAD, work is genuinely incomplete); the
  * →`passed` polarity belongs to WI-222's clean-rc=0-exit path only (D-006).
  *
+ * EI-6992: the above (`todo`/`blocked`) is the FEATURE-family vocabulary only.
+ * Since SCHEDULER_ISSUES_CLAIMABLE (P-007) put issue-family (bug/change/task)
+ * claims through this SAME sweep, an issue-family row is reclaimed by clearing
+ * `taken_by`/`taken_at` ONLY — its `status` (open|resolved|closed) is never
+ * touched, since claimability there is orthogonal to status (see the
+ * `freed-issue` StaleClaimAction). Writing the feature literals onto an issue
+ * row was live, ongoing data corruption before this fix (~450-650+ drifted
+ * rows found live).
+ *
  * Liveness rule — deliberately identical to migration 225's alias-aware
  * holder resolution (EI-311), so the sweep and the view can never disagree:
  * a claim's holder is ALIVE iff
@@ -102,7 +111,21 @@ export type StaleClaimAction =
   /** Row was terminal (`passed`/`deprecated`) — only `taken_by` cleared (no re-placement). */
   | 'freed-terminal'
   /** Row was `blocked` — only `taken_by` cleared; its own signal path handles it. */
-  | 'freed-blocked';
+  | 'freed-blocked'
+  /** EI-6992: an issue-family (bug/change/task) row — only `taken_by`/`taken_at` cleared,
+   *  `status` is NEVER touched. Issue-family claimability is orthogonal to status
+   *  (governed by `taken_by` alone; `open` already means "claimable" whether held or
+   *  not) — the feature-vocabulary `requeue → 'todo'` / `dead-letter → 'blocked'`
+   *  targets are BOTH outside the issue vocab (open|resolved|closed) and would corrupt
+   *  the row (confirmed live: this reaper had been writing `status='todo'` onto dead-
+   *  held issue-family rows, the dominant source of the "~450-650 rows drifted" EI-6992
+   *  reported — the item's own suspected culprit, work-items.ts's CREATE path, was
+   *  independently verified correct). Issue-family also has no `blocked`-equivalent
+   *  hold state today (a separate, deliberately-deferred design gap — see EI-6992 /
+   *  WI-1682), so there is no cap/dead-letter analog here; a repeatedly-dying holder's
+   *  issue claim is freed every sweep with no poison-item protection until that design
+   *  lands. */
+  | 'freed-issue';
 
 export interface ReleasedClaim {
   workspace_id: string;
@@ -139,8 +162,13 @@ interface ReleasedRow {
   reason: ClaimReason;
 }
 
-/** Classify a freed row from its former/new status + counter. */
+const ISSUE_FAMILY_ITEM_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+
+/** Classify a freed row from its former/new status + counter. Issue-family (EI-6992)
+ *  is checked FIRST — its status is never touched by this reaper (see `freed-issue`),
+ *  so it must never fall into the feature-vocabulary branches below. */
 function classify(row: ReleasedRow, cap: number): StaleClaimAction {
+  if (ISSUE_FAMILY_ITEM_KINDS.has(row.item_kind)) return 'freed-issue';
   if (isRequeueableReclaimedStatus(row.former_status)) {
     return row.requeue_count >= cap ? 'dead-lettered' : 'requeued';
   }
@@ -319,14 +347,22 @@ export async function reclaimStaleWorkItemClaims(
     UPDATE harness_shared.work_items f
        SET taken_by = NULL,
            taken_at = NULL,
-           -- Requeueable (mid-flight) rows bump the counter; everything else holds.
+           -- EI-6992: issue-family (bug/change/task) NEVER has its requeue_count or
+           -- status touched — see the `freed-issue` StaleClaimAction doc for why (the
+           -- feature-vocabulary requeue/dead-letter targets ('todo'/'blocked') are
+           -- outside the issue vocab open|resolved|closed and were corrupting these
+           -- rows). Clearing taken_by/taken_at alone is the complete, correct reclaim
+           -- for an issue-family claim.
            requeue_count = CASE
+             WHEN d.item_kind IN ('bug', 'change', 'task') THEN d.former_requeue_count
+             -- Requeueable (mid-flight) rows bump the counter; everything else holds.
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN d.former_requeue_count + 1
              ELSE d.former_requeue_count END,
            -- Mid-flight → todo, or → blocked once the (incremented) counter hits
            -- the cap (dead-letter). Terminal / blocked / todo rows keep status.
            status = CASE
+             WHEN d.item_kind IN ('bug', 'change', 'task') THEN d.former_status
              WHEN d.former_status <> ALL(${nonRequeue}::text[])
                THEN (CASE WHEN d.former_requeue_count + 1 >= ${cap} THEN 'blocked' ELSE 'todo' END)
              ELSE d.former_status END,

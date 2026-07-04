@@ -195,6 +195,10 @@ export async function bootSubstrateWithFallback(
     console.log('[substrate-boot] SUBSTRATE_SIDECAR on: spawning sidecar for relocated substrate boot');
     await spawnSubstrateSidecar();
     registerSidecarShutdownHooks();
+    // WI-1877: arm the post-respawn reconcile BEFORE the first boot sweep below —
+    // a crash-respawn minutes from now must re-register every harness this
+    // process ends up caching, not just ones booted after this line.
+    ensureSidecarRespawnReconcileRegistered();
     const client = getSubstrateIpcClient();
     await client.call('sidecar:healthz');
     // The remote (sidecar) boot factory. Bootstrap-sweep AND every standalone

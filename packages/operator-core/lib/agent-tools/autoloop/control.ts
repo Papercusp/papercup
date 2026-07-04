@@ -49,7 +49,11 @@ export default defineTool({
   guidance: {
     when: 'User says "pause the autoloop", "turn autopilot back on", or a circuit-open harness needs its error counter reset after a fix. Per-harness, durable.',
     notWhen: 'For PAUSING all of the operator (silence-mode-style), use the operator-pause flag — autoloop is per-harness. For pausing git-sync or another non-schedule routine, flip that routine directly.',
-    chaining: 'autoloop:status first to see the schedule routines + circuit state; reset-errors after fixing whatever made the fires fail.',
+    chaining:
+      'autoloop:status first to see the schedule routines + circuit state; reset-errors after fixing whatever made the fires fail. ' +
+      "A dead loop:arm loop's red counter lives under the workspace-wide '*' scope, not your harness — " +
+      "reset-errors {harness, role:'<the dead loop's owner/role>'} clears BOTH scopes in one call (EI-6753); " +
+      "literal harness:'*' is still rejected (P-004), pass any real harness.",
     seeAlso: [
       'autoloop:status (see schedule routines + circuit state first)',
       'operator:paused (pause ALL of the operator, not just one harness)',
