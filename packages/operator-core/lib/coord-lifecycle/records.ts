@@ -30,6 +30,22 @@ export const LIFECYCLE_CATEGORIES = [
 ] as const;
 export type LifecycleCategory = (typeof LIFECYCLE_CATEGORIES)[number];
 
+export const CompletionVerifiedHowSchema = z.enum(['unit', 'integration', 'live-drove-ui', 'manual', 'already-passing']);
+
+export const CompletionVerificationEvidenceSchema = z.object({
+  /** Files/modules changed, for audit queries without reading completion prose. */
+  filesChanged: z.array(z.string().min(1)).optional(),
+  /** Exact command/probe run, or the concrete already-fixed verification. */
+  testsRun: z.string().min(1).optional(),
+  /** Result summary, e.g. "9/9 green" or "HTTP 200 smoke passed". */
+  testResult: z.string().min(1).optional(),
+  /** Verification mode, coarse enough for leader/Queen completion audits. */
+  verifiedHow: CompletionVerifiedHowSchema.optional(),
+  /** Whether this completion added or changed tests. */
+  addedTests: z.boolean().optional(),
+});
+export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
+
 /**
  * COMPLETION (D-004) — the single biggest token + signal win. A work_item
  * transitioning to done emits this instead of the agent hand-writing a
@@ -51,6 +67,13 @@ export const CompletionRecordSchema = z.object({
   migrations: z.array(z.string().min(1)).optional(),
   /** Tests — counts / status, e.g. "67 green tests" or "32 tests green (vitest integration)". */
   tests: z.string().min(1).optional(),
+  /** Queryable verification evidence; aliases below keep legacy callers cheap. */
+  verification: CompletionVerificationEvidenceSchema.optional(),
+  filesChanged: z.array(z.string().min(1)).optional(),
+  testsRun: z.string().min(1).optional(),
+  testResult: z.string().min(1).optional(),
+  verifiedHow: CompletionVerifiedHowSchema.optional(),
+  addedTests: z.boolean().optional(),
   /** Deploy note, e.g. "additive, loads next :3070 restart" | "restarted :3070". */
   deploy: z.string().min(1).optional(),
   /**

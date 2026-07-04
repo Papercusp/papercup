@@ -56,6 +56,7 @@ import { hasGenericKind } from './datatype-registry-store';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from './work-item-dispatch-states';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
+import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
   ISSUE_KIND,
   type IssueKind,
@@ -192,6 +193,8 @@ export interface WorkItem {
    *  or plan-item ref) recorded for the CURRENT terminal state. A terminal
    *  transition without both is rejected by setWorkItemState / setIssueState. */
   terminalCompletionRef: string | null;
+  /** Queryable structured verification evidence recorded beside terminalCompletionRef. */
+  terminalCompletionEvidence: CompletionVerificationEvidence | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -240,6 +243,19 @@ function tsIso(v: unknown): string {
   return String(v ?? '');
 }
 
+const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
+
+function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  const v = (payload as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  return v as CompletionVerificationEvidence;
+}
+
+function completionEvidenceJson(evidence: CompletionVerificationEvidence | undefined): string | null {
+  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify(evidence) : null;
+}
+
 /** Allocate the next kind-independent WI-NNN id (D-008). */
 export async function nextWorkItemId(): Promise<string> {
   const { sql } = getOrgPg();
@@ -272,6 +288,7 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     priority: null, // issue-family (bug/change/task) isn't the dispatched backlog — no feature_order
     terminalOwner: i.terminalOwner,
     terminalCompletionRef: i.terminalCompletionRef,
+    terminalCompletionEvidence: extractTerminalCompletionEvidence(i.payload),
     // Issue-family isn't auditor-gated (bug/change run inline, not autonomous remote
     // dispatch) — report 'local' so isAutoPickable treats them as pickable (unchanged).
     origin: 'local',
@@ -338,6 +355,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     verifiedAuthorGithubUserId: coerceGithubUserId(r.verified_author_github_user_id),
     terminalOwner: r.terminal_owner,
     terminalCompletionRef: r.terminal_completion_ref,
+    terminalCompletionEvidence: extractTerminalCompletionEvidence(r.payload),
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
@@ -983,7 +1001,14 @@ export async function markFeatureProgress(harness: string, id: string): Promise<
 export async function setWorkItemState(
   id: string,
   state: string,
-  opts: { harness?: string; by?: string; allowNonCanonical?: boolean; completionRef?: string; skipCompletionGate?: boolean } = {},
+  opts: {
+    harness?: string;
+    by?: string;
+    allowNonCanonical?: boolean;
+    completionRef?: string;
+    completionEvidence?: CompletionVerificationEvidence;
+    skipCompletionGate?: boolean;
+  } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -1004,6 +1029,7 @@ export async function setWorkItemState(
   let result: WorkItem | null;
   if (wi.family === 'issue') {
     const updated = await setIssueState(id, state as IssueState, opts.by, opts.completionRef, {
+      completionEvidence: opts.completionEvidence,
       skipCompletionGate: opts.skipCompletionGate,
     });
     result = updated ? issueToWorkItem(updated) : null;
@@ -1022,6 +1048,7 @@ export async function setWorkItemState(
       }
     }
     const { sql } = getOrgPg();
+    const evidenceJson = completionEvidenceJson(opts.completionEvidence);
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
     const resetRequeue = isTerminal;
@@ -1040,7 +1067,11 @@ export async function setWorkItemState(
              last_progress_at = NULL,
              updated_ts = ${Date.now()},
              terminal_owner = ${opts.by ?? null},
-             terminal_completion_ref = ${opts.completionRef ?? null}
+             terminal_completion_ref = ${opts.completionRef ?? null},
+             payload = CASE WHEN ${evidenceJson}::jsonb IS NULL
+                            THEN payload
+                            ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${TERMINAL_COMPLETION_EVIDENCE_KEY}::text, ${evidenceJson}::jsonb))
+                       END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`
       : await sql<FeatureRowDb[]>`

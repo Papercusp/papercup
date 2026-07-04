@@ -43,6 +43,7 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
+import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 
@@ -265,6 +266,11 @@ const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state,
   assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by,
   signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, created_at, updated_at`;
+
+const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
+function completionEvidenceJson(evidence: CompletionVerificationEvidence | undefined): string | null {
+  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify(evidence) : null;
+}
 
 /** Allocate the next globally-unique EI-<n> id. */
 async function nextIssueId(sql = getOrgPg().sql): Promise<string> {
@@ -587,7 +593,7 @@ export async function setIssueState(
   state: IssueState,
   by?: string,
   completionRef?: string,
-  opts: { skipCompletionGate?: boolean } = {},
+  opts: { completionEvidence?: CompletionVerificationEvidence; skipCompletionGate?: boolean } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
   if (isTerminal && !opts.skipCompletionGate) {
@@ -603,12 +609,17 @@ export async function setIssueState(
     }
   }
   const { sql } = getOrgPg();
+  const evidenceJson = completionEvidenceJson(opts.completionEvidence);
   const rows = isTerminal
     ? await sql<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues
            SET state = ${state}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
-               terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null}
+               terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null},
+               payload = CASE WHEN ${evidenceJson}::jsonb IS NULL
+                              THEN payload
+                              ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${TERMINAL_COMPLETION_EVIDENCE_KEY}::text, ${evidenceJson}::jsonb))
+                         END
          WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
         RETURNING ${sql.unsafe(ISSUE_COLS)}`
     : await sql<IssueRowDb[]>`

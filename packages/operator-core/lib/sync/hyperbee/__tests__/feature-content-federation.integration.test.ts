@@ -89,7 +89,7 @@ import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-s
 import { buildHiveMembersProjection, type HiveMemberRow } from '../projections/hive-members';
 import type { HarnessIssueRow } from '../projections/issues';
 import type { ProvenanceContext } from '../projection';
-import { PendingMembershipContent } from '../pending-membership-content';
+import { DEFAULT_MEMBER_CONTENT_TTL_MS, PendingMembershipContent } from '../pending-membership-content';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // .../apps/operator/lib/sync/hyperbee/__tests__ → repo root is six levels up.
@@ -1660,10 +1660,14 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         { ...ghostIssue },
         { authorPubkey: 'ghost-log-key', origin: 'remote', ts: 9000, fedHlc: 'hlc-ghost-9000' },
       );
-      // resolveAuthorDevice('ghost-log-key') → null, so the guard can't confirm an identity → it is
-      // a 'drop' (no author device to wait on), NOT a 'defer'. So the buffer stays empty.
-      expect(buffer.size(), 'an op with no resolvable author identity is dropped, not deferred').toBe(0);
+      // resolveAuthorDevice('ghost-log-key') → null, so the guard can't confirm an identity yet.
+      // WI-1632: this is no longer a permanent drop; the op is buffered by source-log key and
+      // retried when admission later records sourceLogKey → device. If admission never catches up,
+      // the same TTL backstop evicts it.
+      expect(buffer.size(), 'an op with a source-log key but unresolved identity must be buffered').toBe(1);
       expect(await readIssueForSlug(orgDb.adminSql, 'never-a-member', 'I-ghost')).toBeUndefined();
+      expect(buffer.sweepExpired(9000 + DEFAULT_MEMBER_CONTENT_TTL_MS)).toBe(1);
+      expect(buffer.size()).toBe(0);
     },
     60_000,
   );

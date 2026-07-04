@@ -24,12 +24,15 @@
  */
 
 /** CompletionRecord fields that are arrays of strings (a lone scalar → `[scalar]`). */
-const ARRAY_FIELDS = ['whatLanded', 'migrations', 'deferred'] as const;
+const ARRAY_FIELDS = ['whatLanded', 'migrations', 'deferred', 'filesChanged'] as const;
 /** CompletionRecord fields that are plain strings (an array → joined). */
 const STRING_FIELDS = [
   'summary',
   'status',
   'tests',
+  'testsRun',
+  'testResult',
+  'verifiedHow',
   'deploy',
   'coordNotes',
   'planSlug',
@@ -37,8 +40,9 @@ const STRING_FIELDS = [
   'title',
   'workItem',
 ] as const;
+const BOOL_FIELDS = ['addedTests'] as const;
 /** Every completion-record field name — used to recognise a FLAT completion. */
-export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS];
+export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS, ...BOOL_FIELDS, 'verification'];
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -88,6 +92,15 @@ export function coerceCompletionShape(raw: unknown): unknown {
   for (const f of STRING_FIELDS) {
     const val = out[f];
     if (Array.isArray(val)) out[f] = joinToString(val) || undefined;
+  }
+
+  for (const f of BOOL_FIELDS) {
+    const val = out[f];
+    if (typeof val === 'string') {
+      const s = val.trim().toLowerCase();
+      if (['true', 'yes', 'y', '1'].includes(s)) out[f] = true;
+      if (['false', 'no', 'n', '0'].includes(s)) out[f] = false;
+    }
   }
 
   // derive a summary if the caller omitted it (after array-coercion, so whatLanded[0] is safe).

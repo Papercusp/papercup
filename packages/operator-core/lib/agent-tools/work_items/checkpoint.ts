@@ -51,7 +51,11 @@ export default defineTool({
     notWhen:
       'Mid-task scratch state that the live transcript already holds — checkpoint only the durable, cross-boundary ' +
       'gist. Do not dump file contents or full tool output.',
-    chaining: 'work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note.',
+    chaining:
+      'work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note. ' +
+      'Also the fix for EI-6772: a claim held through a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest, zero ' +
+      'papercusp-su calls) can go presence-stale and be reclaimed as dead — a mid-investigation checkpoint is itself a ' +
+      'papercusp-su dispatch, so it doubles as a liveness pulse (there is no separate work_items:heartbeat verb).',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
