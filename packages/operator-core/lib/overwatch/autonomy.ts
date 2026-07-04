@@ -39,10 +39,12 @@ import type { AutonomyPosture } from '../autonomy/decider';
 
 /**
  * How overwatch's action surface partitions. The first three are the C-2 write
- * verbs (all AUTO); `structural` is everything else — the D-002 escalate-only
- * bucket (a recognized structural verb OR an unmapped one; both fail to gated).
+ * verbs (nudge/observe/escalate); `lifecycle` is overwatch's OWN wake-scheduling
+ * bookkeeping (EI-3588 — see below); `structural` is everything else — the
+ * D-002 escalate-only bucket (a recognized structural verb OR an unmapped one;
+ * both fail to gated).
  */
-export type OverwatchActionClass = 'nudge' | 'observe' | 'escalate' | 'structural';
+export type OverwatchActionClass = 'nudge' | 'observe' | 'escalate' | 'lifecycle' | 'structural';
 
 /** Overwatch reuses the binary posture vocabulary: `auto` (do it) / `gated` (escalate). */
 export type OverwatchPosture = AutonomyPosture;
@@ -56,16 +58,30 @@ export type OverwatchPosture = AutonomyPosture;
 const NUDGE_VERBS: ReadonlySet<string> = new Set(['coord:send', 'messages:send']);
 const OBSERVE_VERBS: ReadonlySet<string> = new Set(['improvements:capture']);
 const ESCALATE_VERBS: ReadonlySet<string> = new Set(['coord:escalate']);
+/**
+ * EI-3588: `overwatch:declare-wake` schedules overwatch's OWN next wake (REPLACE
+ * semantics — see agent-tools/overwatch/declare_wake.ts) before it ends a turn.
+ * It never mutates agents, work placement, or shared infra (D-001's concern) — it
+ * is pure self-scheduling bookkeeping the role brief mandates EVERY turn. Before
+ * this fix it fell through to `structural` ⇒ gated ⇒ escalate-only, forcing
+ * Overwatch to violate either the gate verdict or its own hard turn-completion
+ * checklist every single turn. A distinct `lifecycle` class (not folded into
+ * nudge/observe/escalate, which are genuinely different in kind) keeps the
+ * classification honest.
+ */
+const LIFECYCLE_VERBS: ReadonlySet<string> = new Set(['overwatch:declare-wake']);
 
 /**
  * The verbs overwatch may AUTO-execute (its full write-to-the-world surface,
- * C-2 / D-001) — sorted, for the tool description + the B-11 contract test.
- * Anything NOT in this set is structural ⇒ gated ⇒ escalate-only (D-002).
+ * C-2 / D-001, plus its own lifecycle bookkeeping) — sorted, for the tool
+ * description + the B-11 contract test. Anything NOT in this set is structural
+ * ⇒ gated ⇒ escalate-only (D-002).
  */
 export const OVERWATCH_AUTO_VERBS: readonly string[] = [
   ...NUDGE_VERBS,
   ...OBSERVE_VERBS,
   ...ESCALATE_VERBS,
+  ...LIFECYCLE_VERBS,
 ].sort();
 
 /** Normalize a verb for lookup: trim + lowercase + tolerate a `.` separator. */
@@ -75,7 +91,7 @@ function normalizeAction(action: string): string {
 
 /**
  * Classify an overwatch action by its verb. Unknown / structural verbs fall
- * through to `structural` (the fail-safe — overwatch performs only its three
+ * through to `structural` (the fail-safe — overwatch performs only its four
  * allowlisted action classes; everything else it must escalate).
  */
 export function classifyOverwatchAction(action: string): OverwatchActionClass {
@@ -83,6 +99,7 @@ export function classifyOverwatchAction(action: string): OverwatchActionClass {
   if (NUDGE_VERBS.has(a)) return 'nudge';
   if (OBSERVE_VERBS.has(a)) return 'observe';
   if (ESCALATE_VERBS.has(a)) return 'escalate';
+  if (LIFECYCLE_VERBS.has(a)) return 'lifecycle';
   return 'structural';
 }
 
@@ -109,9 +126,9 @@ export interface OverwatchDecision {
 }
 
 /**
- * The overwatch autonomy gate (D-002). AUTO for nudge / observe / escalate;
- * GATED (escalate-only) for any structural or unmapped action. Pure — the verdict
- * depends only on the action verb.
+ * The overwatch autonomy gate (D-002). AUTO for nudge / observe / escalate /
+ * lifecycle; GATED (escalate-only) for any structural or unmapped action. Pure —
+ * the verdict depends only on the action verb.
  */
 export function decideOverwatchAutonomy(input: { action: string }): OverwatchDecision {
   const action = input.action;

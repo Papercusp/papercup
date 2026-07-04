@@ -17,8 +17,9 @@
  *
  * ── The overwatch envelope (overwatch-role-2026-06-15 B-06 / D-002) ──────────
  * Overwatch is a DIFFERENT autonomy model: a fixed allowlist (nudge / observe /
- * escalate are auto; any structural change is escalate-only), not risk × ceiling.
- * When the caller's role is `overwatch` (the `role` arg, or `ctx.role`), this tool
+ * escalate / its own wake-scheduling lifecycle bookkeeping are auto; any
+ * structural change is escalate-only — EI-3588), not risk × ceiling. When the
+ * caller's role is `overwatch` (the `role` arg, or `ctx.role`), this tool
  * DISPATCHES to the overwatch gate (`lib/overwatch/autonomy.ts`) instead of the
  * Queen 13-category gate — one decision tool, two envelopes, no fork.
  */
@@ -34,7 +35,7 @@ export default defineTool({
   // resolved workspace id — so an unscoped operator/SU/Queen session can call it.
   crossWorkspace: true,
   description:
-    'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): it returns `auto` when the action is within ceiling + reversible + system-authority, and `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner FULL-AUTONOMY grant (QUEEN_FULL_AUTONOMY) ON, even that residue returns `auto`; OFF restores it. When the caller is the overwatch role it instead applies the overwatch envelope (B-06): nudge/observe/escalate are auto, structural is escalate-only.',
+    'The autonomy gate (D-004): given an action + its risk/authority/reversibility, returns auto (decide it without asking) or gated (routes to the owner Queue), with the category, effective ceiling, and the reasons. The policy is ARMED (all 13 categories at ceiling `critical`): it returns `auto` when the action is within ceiling + reversible + system-authority, and `gated` only for protected surfaces, authority=owner, or above-ceiling / graduation asks. With the owner FULL-AUTONOMY grant (QUEEN_FULL_AUTONOMY) ON, even that residue returns `auto`; OFF restores it. When the caller is the overwatch role it instead applies the overwatch envelope (B-06): nudge/observe/escalate/its own overwatch:declare-wake lifecycle bookkeeping are auto, structural is escalate-only.',
   capability: 'intel:read',
   guidance: {
     when: "You are the Queen (or a bee) deciding whether to auto-handle a queue item / answer a card without the owner — or the overwatch deciding whether to nudge/observe/escalate (auto) vs escalate a structural change (gated). Pass the action's tool name (group:verb) + the item's risk_tier / reversibility; the gate tells you auto vs the owner Queue and why.",

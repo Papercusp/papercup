@@ -374,6 +374,26 @@ test('renderQueenBrief — the interactive-brain teaching stays deterministic (n
   assert.doesNotMatch(a, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
 });
 
+test('renderQueenBrief — EI-3419: the hive anchor renders before "Woke by", and the carry-journal/note gets a scope caveat naming it', () => {
+  const floor: QueenBriefFloor = { hiveSlug: 'papercusp', wokeBy: 'timer', frontier: frontier3 };
+  const withJournal = renderQueenBrief({ floor, carryJournal: [{ at: 0, note: 'still mid-fix on the ranker' }] });
+  assert.match(withJournal, /\*\*Hive \(this wake\):\*\* papercusp/);
+  // The hive line precedes the wokeBy line (ordering matters — it's the anchor).
+  assert.ok(withJournal.indexOf('**Hive (this wake):**') < withJournal.indexOf('**Woke by:**'));
+  assert.match(withJournal, /shared across every hive this Queen operates/);
+  assert.match(withJournal, /if it names a different hive than \*\*papercusp\*\* above, IGNORE it/);
+
+  const withLegacyNote = renderQueenBrief({ floor, carryNote: 'stale note from another hive' });
+  assert.match(withLegacyNote, /Your carry-note \(you wrote this last wake.*shared across every hive this Queen operates.*papercusp.*\)/s);
+});
+
+test('renderQueenBrief — no hiveSlug: the anchor line and the scope caveat are both omitted (no ground truth to anchor against)', () => {
+  const floor: QueenBriefFloor = { wokeBy: 'timer', frontier: frontier3 };
+  const out = renderQueenBrief({ floor, carryJournal: [{ at: 0, note: 'in flight' }] });
+  assert.doesNotMatch(out, /\*\*Hive \(this wake\):\*\*/);
+  assert.doesNotMatch(out, /shared across every hive this Queen operates/);
+});
+
 test('floorFromSurvey — maps survey frontier/plans/blocked and merges watchdog signals (P-005 reuse)', () => {
   const survey = { frontier: frontier3, plans: [], frontierBlocked: 4 };
   const bees: BriefBee[] = [{ id: 'b1', load: 1, alive: true }];

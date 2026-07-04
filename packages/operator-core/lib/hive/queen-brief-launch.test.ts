@@ -75,6 +75,16 @@ test('computeQueenWakeBrief — renders the survey floor + carry-journal (B-03/B
   assert.deepEqual(surveyHive.mock.calls[0], ['ws-1', 'papercup', {}]);
 });
 
+test('computeQueenWakeBrief — EI-3419: the install slug renders as the ground-truth hive anchor, ahead of Woke-by', async () => {
+  surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getHiveCarryJournal.mockResolvedValue([{ at: Date.now(), note: 'trailing intention from a prior wake' }]);
+  const out = await computeQueenWakeBrief('ws-1', 'papercup', { wokeBy: 'timer' });
+  assert.ok(out);
+  assert.match(out!, /\*\*Hive \(this wake\):\*\* papercup/);
+  assert.ok(out!.indexOf('**Hive (this wake):**') < out!.indexOf('**Woke by:**'));
+  assert.match(out!, /if it names a different hive than \*\*papercup\*\* above, IGNORE it/);
+});
+
 test('computeQueenWakeBrief — owner steering directive flows into the brief (B-02 / P-002)', async () => {
   surveyHive.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
   getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], eligibleHives: [], pauseNewWork: false, pausedUntil: null });

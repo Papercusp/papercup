@@ -10,6 +10,7 @@
 import { platform } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { collectSetupStatus } from './setup-status';
+import type { SetupWizardState } from './setup-wizard-state';
 import { readOperatorState } from '../../../operator-state-pg';
 import { activeWorkspaceId, workspaceDir } from '../../../workspace-registry';
 import {
@@ -41,9 +42,11 @@ export default defineTool({
       return Response.json({ error: 'onboarding-tutor.md prompt source not found' }, { status: 500 });
     }
 
-    const [status, progress] = await Promise.all([
+    // Tutorial progress lives INSIDE setup_wizard_state (P-012 — reuse-first;
+    // a bare 'tutorial_progress' StateTable does not exist and never did).
+    const [status, wizard] = await Promise.all([
       collectSetupStatus().catch(() => null),
-      readOperatorState<Record<string, unknown>>('tutorial_progress').catch(() => null),
+      readOperatorState<SetupWizardState>('setup_wizard_state').catch(() => null),
     ]);
 
     let workspacePath = '';
@@ -72,7 +75,7 @@ export default defineTool({
       appVersion: process.env.npm_package_version ?? process.env.PAPERCUSP_VERSION ?? 'dev',
       mode,
       setupStatusJson: JSON.stringify(status ?? {}, null, 2),
-      tutorialProgressJson: JSON.stringify(progress ?? {}, null, 2),
+      tutorialProgressJson: JSON.stringify(wizard?.tutorial_progress ?? {}, null, 2),
       tutorialPackIndex,
     });
     return Response.json({ path, mode, agent });

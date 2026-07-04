@@ -502,6 +502,24 @@ export interface BootHarnessOpts {
    * read is skipped) so a test never depends on global flag state.
    */
   sidecarOffloadOverride?: (socket: unknown, peerInfo?: unknown) => boolean;
+  /**
+   * TEST SEAM (WI-1910 hardening): stands in for `getHarnessScopedStore` in the
+   * P-006 scoped-log init so a test can make the scoped layer STALL (a promise
+   * that never settles) or fail, without touching the real scoped corestore.
+   * The scoped init is best-effort and runs OFF the join critical path — this
+   * seam exists to prove that property (a stalled scoped dep must never block
+   * `swarm.join`).
+   */
+  scopedStoreOverride?: () => Promise<unknown>;
+  /**
+   * Bound (ms) on the post-join wait for the P-006 scoped-log init to settle
+   * before `joinForBinding` returns (default 10s). Normally the init settles
+   * long before the swarm join does; on timeout the join returns with the
+   * scoped layer still null and the init keeps wiring in the background
+   * (every consumer null-guards). Tests set this small to exercise the
+   * timeout path deterministically.
+   */
+  scopedInitWaitMs?: number;
 }
 
 export interface BootedHarnessHandle {
@@ -2840,6 +2858,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the feature never crosses. Re-keying in place leaves the replication streams
   // intact, so serving continues seamlessly onto the new topic.
   async function joinForBinding(binding: SwarmBinding): Promise<void> {
+    // WI-1910 hardening: 'join_started' BEFORE the first await. The run-#5
+    // forensics had no signal separating "joinForBinding never ran" from "it
+    // ran and wedged on an await" — both looked like a silent local-only
+    // harness. With this witness, join_started with neither join_succeeded
+    // nor swarm_join_failed = wedged mid-join; absent entirely = never called.
+    recordBootEvent(opts.workspaceId, opts.harnessSlug, 'join_started', `binding=${binding.kind}`);
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
       const topic = deriveSwarmTopic(binding);

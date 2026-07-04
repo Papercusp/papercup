@@ -14,6 +14,17 @@ const KEY = 'setup_wizard_state';
 
 export type UpdateChannel = 'alpha' | 'beta' | 'stable';
 
+/** Onboarding-tutor progress (agent-first-onboarding-2026-07-03 P-012/P-013).
+ *  Lives INSIDE setup_wizard_state (reuse-first: no parallel table) — written
+ *  by the tutor via `setup:set_tutorial_progress`, read at handoff by
+ *  /desktop/onboarding-launch-context to resume a re-opened tutorial. */
+export interface TutorialProgress {
+  /** Pack section id (e.g. `ch2-01-plans`) the tutorial last delivered. */
+  last_section_id?: string;
+  completed_ids?: string[];
+  updated_at?: string;
+}
+
 export interface SetupWizardState {
   step_status: Record<string, 'dismissed' | 'completed'>;
   last_visited_step?: string;
@@ -26,6 +37,7 @@ export interface SetupWizardState {
    *  navigator.permissions probes return granted. Read by setup-status
    *  to drive the sidebar's os-permissions badge on darwin. */
   os_permissions_ok?: boolean;
+  tutorial_progress?: TutorialProgress;
   updated_at?: string;
 }
 
@@ -91,6 +103,18 @@ export async function mergeSetupWizardState(
   }
   if (typeof body.os_permissions_ok === 'boolean') {
     next.os_permissions_ok = body.os_permissions_ok;
+  }
+  if (body.tutorial_progress === null) {
+    delete next.tutorial_progress;
+  } else if (body.tutorial_progress && typeof body.tutorial_progress === 'object') {
+    const tp = body.tutorial_progress as Record<string, unknown>;
+    const merged: TutorialProgress = { ...current.tutorial_progress };
+    if (typeof tp.last_section_id === 'string') merged.last_section_id = tp.last_section_id;
+    if (Array.isArray(tp.completed_ids) && tp.completed_ids.every((x) => typeof x === 'string')) {
+      merged.completed_ids = tp.completed_ids as string[];
+    }
+    merged.updated_at = new Date().toISOString();
+    next.tutorial_progress = merged;
   }
   if (body.step_status && typeof body.step_status === 'object') {
     const merged = { ...current.step_status };

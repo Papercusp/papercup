@@ -300,11 +300,19 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push('');
     out.push(factsFold);
   }
+  // EI-3419: this substrate is WORKSPACE-scoped (one shared store across every
+  // hive this Queen operates — see hiveScope() in carry-note.ts), not scoped to
+  // the hive above, so an entry here may be trailing intention from a wake for a
+  // DIFFERENT hive. Only worth stating when there's a ground-truth hive to check
+  // against; keep it one line so it doesn't drown the note itself.
+  const scopeCaveat = f.hiveSlug?.trim()
+    ? ` — shared across every hive this Queen operates; if it names a different hive than **${f.hiveSlug.trim()}** above, IGNORE it and re-derive from this wake's floor instead`
+    : '';
   const journal = (input.carryJournal ?? []).filter((e) => (e.note ?? '').trim().length > 0);
   if (journal.length > 0) {
     out.push('');
     out.push(
-      '### Your carry-journal (your own notes from recent wakes, newest first — in-flight intention, not world-state; leave the next one via declare-wake { remember })',
+      `### Your carry-journal (your own notes from recent wakes, newest first — in-flight intention, not world-state${scopeCaveat}; leave the next one via declare-wake { remember })`,
     );
     const journalBudget = Math.max(600, Math.floor(textCaps.carryNoteChars) * 3);
     let journalUsed = 0;
@@ -318,7 +326,7 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     const legacyNote = (input.carryNote ?? '').trim();
     if (legacyNote) {
       out.push('');
-      out.push('### Your carry-note (you wrote this last wake — your in-flight intention, not world-state)');
+      out.push(`### Your carry-note (you wrote this last wake — your in-flight intention, not world-state${scopeCaveat})`);
       out.push(truncateText(legacyNote, Math.floor(textCaps.carryNoteChars), 'carry-note truncated'));
     }
   }

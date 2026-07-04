@@ -16,6 +16,8 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       ['messages:send', 'nudge'],
       ['improvements:capture', 'observe'],
       ['coord:escalate', 'escalate'],
+      // EI-3588: overwatch's own wake-scheduling bookkeeping — never structural
+      ['overwatch:declare-wake', 'lifecycle'],
       // structural — the D-002 escalate-only bucket
       ['routines:write', 'structural'],
       ['flags:set', 'structural'],
@@ -70,6 +72,14 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       expect(d.reasons).toContain('overwatch-auto:escalate');
     });
 
+    it('AUTO-decides its own wake-scheduling bookkeeping (overwatch:declare-wake, EI-3588)', () => {
+      const d = decideOverwatchAutonomy({ action: 'overwatch:declare-wake' });
+      expect(d.posture).toBe('auto');
+      expect(d.actionClass).toBe('lifecycle');
+      expect(d.escalateOnly).toBe(false);
+      expect(d.reasons).toContain('overwatch-auto:lifecycle');
+    });
+
     it('GATES a structural change (restart a routine) as escalate-only', () => {
       const d = decideOverwatchAutonomy({ action: 'routines:write' });
       expect(d.posture).toBe('gated');
@@ -96,9 +106,9 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
   });
 
   describe('OVERWATCH_AUTO_VERBS contract (B-11 anchor)', () => {
-    it('is exactly the C-2 write surface (nudge/observe/escalate), sorted', () => {
+    it('is exactly the C-2 write surface (nudge/observe/escalate) plus its own lifecycle bookkeeping (EI-3588), sorted', () => {
       expect([...OVERWATCH_AUTO_VERBS]).toEqual(
-        ['coord:escalate', 'coord:send', 'improvements:capture', 'messages:send'],
+        ['coord:escalate', 'coord:send', 'improvements:capture', 'messages:send', 'overwatch:declare-wake'],
       );
     });
 
