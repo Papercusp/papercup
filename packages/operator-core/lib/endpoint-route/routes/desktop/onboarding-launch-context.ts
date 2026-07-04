@@ -22,6 +22,7 @@ import {
   packIndexMarkdown,
   resolvePackRoot,
 } from '../../../onboarding/tutorial-pack';
+import { guiTabTourMarkdown } from '../../../onboarding/gui-tab-tour';
 
 const AGENTS = new Set(['claude', 'codex', 'omp']);
 
@@ -77,6 +78,7 @@ export default defineTool({
       setupStatusJson: JSON.stringify(status ?? {}, null, 2),
       tutorialProgressJson: JSON.stringify(wizard?.tutorial_progress ?? {}, null, 2),
       tutorialPackIndex,
+      guiTabTour: guiTabTourMarkdown(),
     });
     return Response.json({ path, mode, agent });
   },

@@ -55,6 +55,27 @@ describe('set_url intent', () => {
     expect(window.location.search).toBe('?c=3');
   });
 
+  it('path switches the route while params merge (P-018 GUI tab-tour)', async () => {
+    window.history.replaceState({}, '', '/harness?ws=default');
+    await call('set_url', { path: '/adv', params: { tab: 'overview' } });
+    expect(window.location.pathname).toBe('/adv');
+    expect(window.location.search).toContain('tab=overview');
+    expect(window.location.search).toContain('ws=default'); // params still merge
+  });
+
+  it('path alone (no params) navigates and keeps the existing query', async () => {
+    window.history.replaceState({}, '', '/admin?ws=default');
+    await call('set_url', { path: '/harness' });
+    expect(window.location.pathname).toBe('/harness');
+    expect(window.location.search).toContain('ws=default');
+  });
+
+  it('rejects a non-relative path (same-origin only — never a full URL)', async () => {
+    window.history.replaceState({}, '', '/admin');
+    await expect(call('set_url', { path: 'https://evil.example/x' })).rejects.toThrow(/path must start with/);
+    expect(window.location.pathname).toBe('/admin'); // unchanged
+  });
+
   it('dispatches a popstate so nuqs/Next subscribers re-read the URL', async () => {
     // The whole point of set_url over a plain history.replaceState: it fires a
     // popstate so URL-state subscribers refresh. Dropping it would silently break

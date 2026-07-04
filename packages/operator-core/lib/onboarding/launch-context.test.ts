@@ -12,6 +12,8 @@ const TOKENS: TutorTokens = {
   setupStatusJson: '{"statuses":{}}',
   tutorialProgressJson: '{}',
   tutorialPackIndex: '**Chapter 1**\n- ch1-01 — Sample → `/tmp/sample.md`',
+  guiTabTour:
+    "1. **Overview** — `ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab:'overview'}}}` — sample blurb",
 };
 
 describe('renderTutorTemplate', () => {
