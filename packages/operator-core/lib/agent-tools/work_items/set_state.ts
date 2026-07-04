@@ -96,10 +96,21 @@ export default defineTool({
           harness,
           it.decision,
         ).catch(() => null);
-        const workItem = await setWorkItemState(it.id, it.state, { harness, by: ident.ownerId, completionRef: it.completionRef });
+        // EI-7125 / WI-2573: capture a requested->resolved alias (e.g. issue-family
+        // 'blocked' -> 'open') so the caller sees it instead of a silent no-op-looking
+        // ok:true with the state unchanged from their ask.
+        let aliasNote: string | undefined;
+        const workItem = await setWorkItemState(it.id, it.state, {
+          harness,
+          by: ident.ownerId,
+          completionRef: it.completionRef,
+          onAlias: ({ requested, resolved }) => {
+            aliasNote = `requested state '${requested}' has no distinct representation for this item's family — recorded as '${resolved}' instead.`;
+          },
+        });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
         return workItem
-          ? { ok: true as const, id: it.id, workItem }
+          ? { ok: true as const, id: it.id, workItem, ...(aliasNote ? { aliasNote } : {}) }
           : { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
       },
       { keyOf: (it) => ({ id: it.id }) },
