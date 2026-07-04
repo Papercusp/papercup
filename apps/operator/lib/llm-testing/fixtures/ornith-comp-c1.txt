@@ -6,9 +6,9 @@ wrong branch, and fix it so the expectations below all pass. Change ONLY what is
 needed to fix the bug — do not rename anything or rewrite the whole function.
 
 function classify(n) {
+  if (n % 3 === 0 && n % 5 === 0) return "fizzbuzz";
   if (n % 3 === 0) return "fizz";
   if (n % 5 === 0) return "buzz";
-  if (n % 3 === 0 && n % 5 === 0) return "fizzbuzz";
   return "none";
 }
 
@@ -17,3 +17,4 @@ EXPECTED after fix:
   classify(9)  === "fizz"
   classify(10) === "buzz"
   classify(7)  === "none"
+

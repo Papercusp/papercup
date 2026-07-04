@@ -30,26 +30,28 @@
  *   --json                 print the manifest + size report as JSON
  */
 
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rm } from 'node:fs/promises';
 import Corestore from 'corestore';
-import { generateSeedKey } from '@papercusp/seed-bundle';
 import {
   cutHiveSeed,
   enumerateOwnStoreCoreKeys,
   formatBytes,
   type GitCutSpec,
   type CorestoreCutSpec,
-} from '../../../../packages/operator-core/lib/sync/hyperbee/seed-cutter';
-import { stampOpHlc } from '../../../../packages/operator-core/lib/sync/hyperbee/hlc-stamp';
-import { getHiveEpoch } from '../../../../packages/operator-core/lib/sync/hyperbee/hive-epoch-state';
+} from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
+import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
+import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
 
 function resolveWorkspaceRoot(): string {
   // Mirrors role-codex-home.ts. From apps/operator/lib/release → up to the repo root.
-  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(__dirname, '..', '..', '..', '..');
+  const here = dirname(fileURLToPath(import.meta.url));
+  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(here, '..', '..', '..', '..');
 }
 
 interface Args {
@@ -173,7 +175,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  console.error('[cut-seed] FAILED:', e instanceof Error ? e.stack ?? e.message : e);
-  process.exitCode = 1;
-});
+if (isCliEntry(import.meta.url)) {
+  main().catch((e) => {
+    console.error('[cut-seed] FAILED:', e instanceof Error ? e.stack ?? e.message : e);
+    process.exitCode = 1;
+  });
+}
