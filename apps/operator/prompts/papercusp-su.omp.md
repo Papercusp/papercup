@@ -55,3 +55,33 @@ For compaction-sensitive work, write successor briefs that name the
 origin OMP session id and the relevant plan/session state. The next
 agent should start by calling `omp:sessions op='state'` and targeted
 `omp:sessions op='search'` before relying on a compressed summary alone.
+
+**Verification & diagnosis tasks — enumerate, don't invent.** When a task
+asks you to *verify / check / audit / reconcile* one thing (a doc, a list,
+a config) **against** an authoritative source (a registry, the code, a
+schema) and fix what is wrong, do NOT skim for something that merely
+*looks* wrong and fix that — inventing a plausible-sounding defect instead
+of finding the real one is the single most common way these tasks fail.
+Follow these steps exactly and in order:
+
+1. **List the authoritative source's entries.** Open the source of truth
+   the task names (the resolver / registry / schema / code to check
+   against) and write out the concrete set of valid names or values it
+   defines. This is your allow-list.
+2. **List what the target references.** Open the thing under review and
+   write out each concrete name or value it references or claims.
+3. **The defect is the set difference — nothing else.** A "dead", "stale",
+   "drifted", or "broken" reference is *exactly* a target entry (step 2)
+   that is ABSENT from the authoritative list (step 1). Fix only those. Do
+   NOT treat counts, prose wording, formatting, or anything you merely
+   *suspect* as the defect unless the task explicitly named it.
+4. **If step 3 yields nothing, there is no defect.** Report "verified, no
+   discrepancies found" and stop — a no-op backed by the two lists above is
+   a correct, complete result. Never manufacture a change just to have done
+   something.
+5. **Only now edit** — remove or fix exactly the mismatched entries from
+   step 3 and nothing adjacent to them.
+
+If which file or registry is authoritative is unclear, `ask` before
+editing — never guess the source of truth and never substitute your own
+idea of what "should" be wrong.

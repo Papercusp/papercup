@@ -451,6 +451,64 @@ export async function getActiveClaimForOwner(
   return rows[0] ? claimFromDb(rows[0]) : null;
 }
 
+/** One live claim's freshness inputs for the flush-freshness gate
+ *  (flush-to-proceed-stretch-discipline-2026-07-04 P-002): the claim's own
+ *  timestamps + its work-item checkpoint's last write, all as epoch ms so the pure
+ *  classifier reasons in one unit. Structurally the classifier's `ClaimFreshness`
+ *  (inbox-flush-gate.ts) — kept local to avoid a lib→coordination-tool import; the
+ *  classifier consumes it structurally. `checkpointUpdatedMs` is null when the
+ *  claim has no work-item checkpoint yet (never flushed). */
+export interface ClaimCheckpointFreshness {
+  workItemId: string;
+  lastActivityMs: number;
+  acquiredMs: number;
+  checkpointUpdatedMs: number | null;
+}
+
+/**
+ * Freshness of every LIVE claim the owner holds — each claim LEFT-JOINed to its
+ * work-item CHECKPOINT (harness_shared.carry_notes, scope `workitem:<harness>:<id>`,
+ * `updated_ts` epoch ms) for the flush-freshness gate (P-002). The checkpoint join is
+ * BY SCOPE across ANY workspace (max updated_ts) — the scope string is globally unique
+ * (harness + WI id), and the checkpoint can sit under a DIFFERENT workspace than the
+ * claim under host-version skew (the same skew that broke the loop carry-note twice; see
+ * carry-note.ts getLoopCarryNote). A cleared checkpoint (note IS NULL, journal-less bee
+ * store deletes the row) reads as no-checkpoint, which is the honest "unflushed" state.
+ * Ordered newest-active first. NOT federated; coord-family, workspace+owner filtered.
+ */
+export async function listActiveClaimFreshnessForOwner(
+  workspaceId: string,
+  owner: string,
+): Promise<ClaimCheckpointFreshness[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    {
+      work_item_id: string;
+      acquired_ms: string;
+      last_activity_ms: string;
+      checkpoint_updated_ms: string | null;
+    }[]
+  >`
+    SELECT c.work_item_id,
+           (extract(epoch from c.acquired_ts) * 1000)::bigint      AS acquired_ms,
+           (extract(epoch from c.last_activity_ts) * 1000)::bigint AS last_activity_ms,
+           (SELECT max(cn.updated_ts)
+              FROM harness_shared.carry_notes cn
+             WHERE cn.scope = 'workitem:' || c.harness_slug || ':' || c.work_item_id
+               AND cn.note IS NOT NULL)                            AS checkpoint_updated_ms
+      FROM harness_shared.work_item_claims c
+     WHERE c.workspace_id = ${workspaceId} AND c.owner = ${owner}
+       AND c.expires_ts > clock_timestamp()
+     ORDER BY c.last_activity_ts DESC
+  `;
+  return rows.map((r) => ({
+    workItemId: r.work_item_id,
+    acquiredMs: Number(r.acquired_ms),
+    lastActivityMs: Number(r.last_activity_ms),
+    checkpointUpdatedMs: r.checkpoint_updated_ms == null ? null : Number(r.checkpoint_updated_ms),
+  }));
+}
+
 /** All live (non-lapsed) claims for a Hive — the "what's already taken" view the backlog reads. */
 export async function listLiveClaimsForHive(workspaceId: string, hiveSlug: string): Promise<WorkItemClaim[]> {
   const { sql } = getOrgPg();

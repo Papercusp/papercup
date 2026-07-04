@@ -130,6 +130,7 @@ function agentRow(i: number, overrides: Record<string, unknown> = {}) {
     name: null,
     present: true,
     alive: true,
+    sessionState: "live",
     heartbeatAt: "2026-07-02T00:00:00Z",
     intent: `a long intent string for agent ${i} that certainly exceeds the eighty character trimmed cap on intent text`,
     declaredPlanSlug: "plan-x",
@@ -177,6 +178,10 @@ describe("shapeFleetAssignments (P-022)", () => {
     expect(agents[0].claims).toBe(2);
     expect(agents[0].doing).toContain("WI-9");
     expect(agents[0].load).toBe(3);
+    // EI-6077: sessionState rides at BOTH tiers (it's part of the placement-
+    // decision core, not extra detail) so a caller never has to cross-call
+    // coord:presence just to tell "really runnable" from "just looks alive".
+    expect(agents[0].sessionState).toBe("live");
     expect(agents[0]).not.toHaveProperty("queued");
     expect(String(agents[0].intent).length).toBeLessThanOrEqual(
       ASSIGNMENTS_TIER_CAPS.trimmed.intent,
