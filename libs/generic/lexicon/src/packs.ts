@@ -25,7 +25,10 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
   fleet: { one: 'Fleet', other: 'Fleets' },
   operator: { one: 'Operator', other: 'Operators' },
   brain: { one: 'Brain', other: 'Brains' },
-  contributor: { one: 'Contributor', other: 'Contributors' },
+  // Pot/Cup/Cupboard theme (owner 2026-07-04, D-006): the worker/contributor is a
+  // CUP (the backend id bee→cup mirrors this display label). A Pot holds Cups,
+  // stored in the Cupboard.
+  contributor: { one: 'Cup', other: 'Cups' },
   human: { one: 'Human', other: 'Humans' },
   chunk: { one: 'Chunk', other: 'Chunks' },
   cupboard: { one: 'Cupboard', other: 'Cupboards' },

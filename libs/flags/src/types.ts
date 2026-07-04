@@ -54,11 +54,14 @@ export const FLAGS = {
   // /admin/features to go dark.
   VOICE_CHANNELS: "papercusp-voice-channels",
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
-  // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
-  // unchanged, D-001). ON (default, owner-activated 2026-06-09) = the `the-hive`
-  // bee pack (Pot→Hive, Fleet→Colony, Queen=brain, Swarm = a deployment-to-instance
-  // unit; D-007); OFF = the `classic` Papercusp pack. Fully reversible presentation
-  // switch; @papercusp/lexicon resolves it.
+  // user-facing LEXICON layer. ON = the `the-hive` bee pack (Hive/Colony/Queen/
+  // Bee/…); OFF = the `classic` Papercup POT pack. DEFAULT OFF as of
+  // restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public
+  // release ships the Pot lexicon; the Swarm skin is kept but TESTING-gated
+  // (in DARK_FLAGS, reachable only via the FLAGS.TESTING BrandSwitcher). Fully
+  // reversible presentation switch; @papercusp/lexicon resolves it. NOTE: the
+  // backend-identifier rename (hive→pot, Phase 6) is a SEPARATE change from this
+  // presentation flag.
   THE_HIVE: "papercusp-the-hive",
   // blueprint-aware-harness-ui-2026-06-09 (P-008): gates the new SCHEMA-DRIVEN
   // harness settings panel (BlueprintSettingsPanel) that renders controls from the
@@ -1352,6 +1355,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.HARNESS_PHASES, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.DESIGN, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.TESTING, { case: 'parked', reason: 'cut for V1.' }],
+    [FLAGS.THE_HIVE, { case: 'parked', reason: 'restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public release ships the Pot (Papercup) lexicon by DEFAULT. The `the-hive`/Swarm skin is BUILT and kept, but cut from public V1 — reachable only via the TESTING-gated BrandSwitcher (P-004). OFF ⇒ the classic/pot pack (the public default); ON ⇒ the bee skin for internal/testing use.' }],
     // incomplete — the code is not fully working / unverified on a path that matters
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],

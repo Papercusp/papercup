@@ -80,6 +80,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // case: incomplete; default-OFF is the intended production state (ON = testers only).
   // Count 11 → 12; well under DARK_FLAGS_HIGH_WATERMARK (22), so no watermark bump.
   'papercusp-onboarding-preview-features',
+  // 2026-07-04 — the-hive/Swarm lexicon skin (restore-pot-lexicon-public-release,
+  // owner-directed): public release ships the Pot (Papercup) lexicon by DEFAULT, so
+  // the-hive flips to default-OFF. case: parked (BUILT + kept, but cut from public V1 —
+  // reachable only via the TESTING-gated BrandSwitcher, P-004). Count 12 → 13.
+  'papercusp-the-hive',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -192,7 +197,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met).
     // 2026-07-04 — papercusp-onboarding-preview-features (deterministic-onboarding-tutorial
     // P-001, owner-directed): gates not-ready tutorial items. Count 11 → 12.
-    expect(offCount).toBe(12);
+    // 2026-07-04 — papercusp-the-hive flips default-OFF (restore-pot-lexicon-public-release,
+    // owner-directed): public ships the Pot lexicon; Swarm skin is TESTING-gated. Count 12 → 13.
+    expect(offCount).toBe(13);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {
