@@ -32,7 +32,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'documenter', 'curator', 'operator'],
+  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'documenter', 'doc-steward', 'curator', 'operator'],
   modality: ['text'],
   args: argsSchema,
   // context-trimming-tiers P-023: trimmed/standard sessions get lean entry

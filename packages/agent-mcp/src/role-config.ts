@@ -104,6 +104,17 @@ export const AGENT_ROLES = [
   // does NOT push. Registered late (mirrors merge-resolver): the `release-fix` blueprint
   // declared the role, but the registry never knew it.
   'release-fixer',
+  // The DOC-STEWARD — the automated documentation-freshness fixer (docs-corpus-audit
+  // WS2 / P-008; the `doc-steward` launch blueprint). Fired by the post-git-sync
+  // freshness sweep when a doc's anchored code drifts: it re-syncs the prose to the
+  // current code and `harness_docs:verify`s it. Registered late, same class as the
+  // launch-fixer family above (queen/sentinel/content-fixer/release-fixer): the role
+  // existed ONLY in the blueprint, so every role-gated allowlist (SU_ROLES / COORD_ROLES
+  // / the harness_docs:* + docs:* tools it needs) filtered it out — a doc-steward spawn
+  // got a near-empty MCP catalog with NONE of docs:*/harness_docs:*/work_items:*/coord:*
+  // and no ToolSearch to load them, forcing a blind fallback to scripts/mcp-call.mjs
+  // (EI-6643). Its persona ships at blueprints/base/prompts/doc-steward.md.
+  'doc-steward',
   // The SENTINEL — the fleet watcher split out of the overloaded "operator"
   // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
   // (steer: schedule + place + prioritize) AND a watcher; they are now separate.
@@ -219,6 +230,11 @@ export const SU_ROLES = [
   'queen',
   'documenter',
   'curator',
+  // The doc-steward is a documenter SPECIALIZED for drift-healing (EI-6643) — it needs
+  // the same docs:*/read surface documenter has (docs:get/outline/search are [...SU_ROLES]).
+  // Prompt-constrained to docs-only (blueprints/base/prompts/doc-steward.md); NOT added to
+  // SU_WRITE_ROLES/OPERATOR_CONFIG_WRITE_ROLES (it is not operator-config-write authority).
+  'doc-steward',
 ] as const satisfies readonly BuiltinAgentRole[];
 
 /**

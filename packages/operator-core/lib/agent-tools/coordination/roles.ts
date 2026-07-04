@@ -46,4 +46,11 @@ export const COORD_ROLES = [
   // (placement is the Queen's — the overwatch NUDGES her to re-place, never re-places
   // itself; D-001 — same carve-out as bee/sentinel).
   'overwatch',
+  // The DOC-STEWARD — the automated doc-freshness fixer (docs-corpus-audit P-008;
+  // the `doc-steward` launch blueprint). Its prompt calls `work_items:get` (to read
+  // WHY the anchored code changed) and `coord:escalate` (when it can't faithfully fix
+  // a doc) — both COORD_ROLES-gated. It was never a registered role, so those failed
+  // `role_not_allowed` for a doc-steward-scoped URL, forcing a scripts/mcp-call.mjs
+  // fallback (EI-6643). Same registered-late class as bee/sentinel/overwatch above.
+  'doc-steward',
 ] as const;

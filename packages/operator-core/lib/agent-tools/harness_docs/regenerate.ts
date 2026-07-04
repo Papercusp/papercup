@@ -49,7 +49,7 @@ export default defineTool({
   },
   capability: 'docs:write',
   requirePrincipal: false,
-  agentRoles: ['documenter', 'operator', 'reviewer', 'bee'],
+  agentRoles: ['documenter', 'doc-steward', 'operator', 'reviewer', 'bee'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
