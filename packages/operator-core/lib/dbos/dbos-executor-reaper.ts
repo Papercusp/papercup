@@ -367,20 +367,41 @@ export function startExecutorReaper(
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
 
-  const run = (): void => {
-    void reapDeadExecutorWorkflows(
+  // EI-3673: `run` used to be `(): void` and fire-and-forget the reap promise with
+  // ONLY a success handler (`void p.then(onSuccess)`, no `.catch`) — a rejection
+  // (a transient PG error, e.g. right after a bg-host restart while the pool is
+  // still reconnecting) became an UNHANDLED PROMISE REJECTION completely outside
+  // managedSetInterval's own tick-wrapping: because `run()` returned `undefined`
+  // synchronously, the tick wrapper (dbos/../scheduled-registry makeTick) never saw
+  // the async work at all, so a failed reap left NO trace in schedule:inventory's
+  // `lastError` — indistinguishable from "the interval never fired". `run` now
+  // RETURNS the promise chain (with a `.catch` that logs and re-throws) so a reap
+  // failure is (a) logged with full context here AND (b) recorded by
+  // managedSetInterval's own tick wrapper as a visible `lastError` — the
+  // regression/health guard this ticket asks for. The next tick still retries per
+  // the interval either way; this only removes the silent-failure blind spot.
+  const run = (): Promise<void> => {
+    return reapDeadExecutorWorkflows(
       sql,
       opts.livenessThresholdMs,
       opts.staleSchedulerMs,
       opts.staleRoutineFireNoOutputMs,
       opts.staleRoutineFireOrphanMs,
-    ).then((r) => {
-      if (r.cancelled > 0 || r.queuePurged > 0) {
+    ).then(
+      (r) => {
+        if (r.cancelled > 0 || r.queuePurged > 0) {
+          console.warn(
+            `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
+          );
+        }
+      },
+      (e: unknown) => {
         console.warn(
-          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
+          `[dbos-executor-reaper] reap tick FAILED (next interval retries): ${e instanceof Error ? e.message : String(e)}`,
         );
-      }
-    });
+        throw e; // re-throw so managedSetInterval records it in schedule:inventory's lastError
+      },
+    );
   };
 
   run(); // boot reap

@@ -123,6 +123,26 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
   });
 
+  it('writes the `papercusp` dispatcher shim when the onboard concierge resolves (P-014)', async () => {
+    // No concierge in the base fixture → dispatcher not written, no throw.
+    let result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.papercuspCliWritten).toBe(false);
+    expect(result.onboardLauncherSource).toBe('');
+
+    // Bundled concierge present → dispatcher lands with onboard/tutorial subcommands.
+    await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
+    result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    expect(result.papercuspCliWritten).toBe(true);
+    const launcher = path.join(tmpAppRoot, 'scripts', 'onboard.mjs');
+    expect(result.onboardLauncherSource).toBe(launcher);
+    expect(result.papercuspCliPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'papercusp'));
+    const cli = await fs.readFile(result.papercuspCliPath, 'utf8');
+    expect(cli).toMatch(/^#!\/usr\/bin\/env bash\n/);
+    expect(cli).toContain(`onboard)  shift; exec "node" ${JSON.stringify(launcher)} "$@" ;;`);
+    expect(cli).toContain(`tutorial) shift; exec "node" ${JSON.stringify(launcher)} --tutorial "$@" ;;`);
+    expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
+  });
+
   it('prefers the bundled psu.mjs over the dev psu-launcher.mjs (A2)', async () => {
     // A packaged sidecar ships scripts/psu.mjs alongside the dev source; the
     // bundled name must win so end users run the self-contained bundle.
