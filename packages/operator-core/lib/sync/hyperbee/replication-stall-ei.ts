@@ -25,11 +25,20 @@ import type { ReplicationStallEpisode } from './replication-liveness';
 
 export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
 
+/**
+ * The EI surface also escalates the WI-2009 outbox-drain watchdog (kind
+ * 'drain_stalled' — same durable-EI + dedup mechanism, same triage topic; the
+ * "logKeyHex" slot carries the own-log key as the harness's stable identifier).
+ */
+export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
+  kind: ReplicationStallEpisode['kind'] | 'drain_stalled';
+};
+
 /** Stable, dedup-able title for one (harness, log, kind). */
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated';
+  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated' | 'drain_stalled';
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +
@@ -75,7 +84,7 @@ export function _resetReplicationStallEiForTests(): void {
  * failure (best-effort — the caller never awaits this on the merge path).
  */
 export async function fileReplicationStallEi(
-  episode: ReplicationStallEpisode,
+  episode: StallEiEpisode,
   deps?: ReplicationStallEiDeps,
 ): Promise<string | null> {
   const title = replicationStallEiTitle(episode);
@@ -92,12 +101,20 @@ export async function fileReplicationStallEi(
         `workspace=${episode.workspaceId} harness=${episode.harnessSlug}\n` +
         `log_core_key=${episode.logKeyHex}\n` +
         `kind=${episode.kind} stalledForMs=${episode.stalledForMs}\n\n` +
-        `Meaning: the swarm-level connection may look healthy (peer_connected), but this ` +
-        `admitted remote log is ${
-          episode.kind === 'no_replicator'
-            ? 'no longer carried by any live replicator session — its writer’s ops are NOT arriving'
-            : 'attached to a replicator but ingesting nothing — the writer is ahead and no ops have merged for the whole grace window'
-        }. Writes made on that peer are silently diverging until replication recovers.\n\n` +
+        `Meaning: ${
+          episode.kind === 'drain_stalled'
+            ? 'the OUTBOX DRAIN pass for this harness exceeded its watchdog timeout — a hung await ' +
+              '(keychain unwrap / epoch-key resolution / append) wedged the serialized drain loop, so ' +
+              'NO local writes were federating (WI-2009 permanence class). The watchdog un-wedged the ' +
+              'loop (a fresh pass re-attempts; duplicate appends are safe per the at-least-once contract), ' +
+              'but the underlying hang needs a root-cause look (WI-2018 keychain identity is the known suspect).'
+            : `the swarm-level connection may look healthy (peer_connected), but this ` +
+              `admitted remote log is ${
+                episode.kind === 'no_replicator'
+                  ? 'no longer carried by any live replicator session — its writer’s ops are NOT arriving'
+                  : 'attached to a replicator but ingesting nothing — the writer is ahead and no ops have merged for the whole grace window'
+              }. Writes made on that peer are silently diverging until replication recovers.`
+        }\n\n` +
         `Triage: check \`getReplicationLiveness()\` (federation status / dogfood-substrate-status) ` +
         `for the current verdict; see agent-insights/shared-hive-federation-diagnosis-toolkit for the rig probes. ` +
         `This EI auto-dedupes per (harness, log, kind) while one stays open.`,

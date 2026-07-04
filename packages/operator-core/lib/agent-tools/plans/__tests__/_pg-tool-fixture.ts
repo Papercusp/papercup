@@ -110,6 +110,12 @@ export async function cleanupPlans(
     DELETE FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
   `;
+  // Drop the synthetic Hive-home identity registerHarnessProject seeded, so a
+  // run leaves no trace in harness_shared.hives either.
+  await admin`
+    DELETE FROM harness_shared.hives
+     WHERE workspace_id = ${workspaceId} AND home_slug = ${harnessSlug}
+  `.catch(() => {});
 }
 
 /**
@@ -119,6 +125,15 @@ export async function cleanupPlans(
  * 'default' (source.ts) — so a test that drives a plan tool against a `zzz-…`
  * harness must first register it, exactly as production does before any plan is
  * written for a harness. Idempotent; uses the slug as the id (unique per test).
+ *
+ * ALSO registers the harness as its OWN Hive home (an identity row in
+ * `harness_shared.hives`): `resolvePlanScope` is Hive-scoped (WI-1992 — plans are
+ * keyed at Hive-home grain), so a concrete slug must resolve through
+ * `hiveHomeSlugForHarness()` or the tool THROWS. The registry read answers
+ * nothing for a throwaway slug, so the resolver falls to its `getHiveBySlug`
+ * fallback — this row — exactly the shape `hive:create` writes in production.
+ * Synthetic identity: a random 32-byte pubkey (UNIQUE constraint; pgcrypto is a
+ * baseline prereq) + a test keychain id nothing dereferences.
  */
 export async function registerHarnessProject(
   admin: postgres.Sql,
@@ -131,6 +146,13 @@ export async function registerHarnessProject(
     VALUES
       (${harnessSlug}, ${harnessSlug}, 'active', ${harnessSlug}, ${workspaceId}, 0, 0)
     ON CONFLICT DO NOTHING
+  `;
+  await admin`
+    INSERT INTO harness_shared.hives
+      (workspace_id, home_slug, public_key, keychain_id, created_at, updated_at)
+    VALUES
+      (${workspaceId}, ${harnessSlug}, gen_random_bytes(32), ${'zzz-test-hive-' + harnessSlug}, 0, 0)
+    ON CONFLICT (workspace_id, home_slug) DO NOTHING
   `;
 }
 

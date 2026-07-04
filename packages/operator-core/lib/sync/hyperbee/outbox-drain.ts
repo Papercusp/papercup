@@ -69,6 +69,40 @@ export const OUTBOX_GC_MAX_BATCHES = 20;
 /** Default poll-fallback cadence for `startOutboxDrain` (ms). */
 export const DEFAULT_POLL_MS = 5000;
 
+/**
+ * WI-2009 (gate 1b, shared-hive-p2p-release-readiness): watchdog timeout for ONE
+ * drain pass. The drain loop SERIALIZES passes (`draining` flag) — so a single
+ * pass that never settles (a hung `await`: keychain unwrap inside
+ * `epochEncrypt.encryptOp` on a wedged mac keychain [WI-2018], an epoch-key
+ * resolution, an `append` into a wedged substrate) freezes the WHOLE loop
+ * FOREVER: every later NOTIFY/poll tick coalesces into the stuck pass and the
+ * harness's local writes silently stop federating. That is the live VM
+ * signature this WI was filed on (fail-count frozen for 18min+ across process
+ * restarts, ONE fresh attempt ~50s post-boot then silence — the 5s poll never
+ * "stopped", it was coalescing into a hung pass).
+ *
+ * The watchdog RACES each pass against this timeout. On expiry the loop is
+ * un-wedged (the pass is abandoned; a fresh pass re-attempts on the next tick)
+ * — SAFE by this module's own at-least-once contract: the zombie pass finishing
+ * later just re-appends rows a newer pass already delivered, which the LWW
+ * merge + idempotent projections tolerate by design. The stall also escalates
+ * loudly (console line + durable EI via the replication-liveness EI surface) so
+ * a hung drain is never silent again.
+ */
+export const DRAIN_PASS_TIMEOUT_MS = 120_000;
+
+/** Thrown inside the drain loop when a pass exceeds `DRAIN_PASS_TIMEOUT_MS`. */
+export class DrainPassTimeoutError extends Error {
+  constructor(readonly scope: string, readonly timeoutMs: number) {
+    super(
+      `[outbox-drain] PASS TIMEOUT for ${scope}: a drain pass exceeded ${timeoutMs}ms — ` +
+        `hung await (keychain unwrap / epoch-key resolution / append) wedging the serialized ` +
+        `drain loop (WI-2009 class). Loop un-wedged; next tick re-attempts.`,
+    );
+    this.name = 'DrainPassTimeoutError';
+  }
+}
+
 /** The NOTIFY channel the Stage-1 capture trigger fires on. */
 const NOTIFY_CHANNEL = 'substrate_outbox';
 
@@ -337,6 +371,12 @@ export interface StartDrainOptions {
   fanout?: OutboxFanoutFn;
   /** Re-key encrypt-on-capture capability (C-001) — threaded to each drain pass. */
   epochEncrypt?: EpochEncryptCapability;
+  /** Test seam: override the per-pass watchdog timeout (`DRAIN_PASS_TIMEOUT_MS`).
+   *  0 disables the watchdog. Production omits it. */
+  _passTimeoutMs?: number;
+  /** Test seam: intercept the stall escalation (default = durable EI via
+   *  `fileReplicationStallEi`). Production omits it. */
+  _onStallEpisode?: (detail: string) => void;
 }
 
 export interface OutboxDrainHandle {
@@ -375,6 +415,28 @@ export function startOutboxDrain(
   let draining = false;
   let runAgain = false;
 
+  const passTimeoutMs = opts._passTimeoutMs ?? DRAIN_PASS_TIMEOUT_MS;
+
+  /** WI-2009 stall escalation: loud console line (grep-able, mirrors the
+   *  WI-1840 detector pattern) + durable EI (dedup'd per harness while one
+   *  stays open). Best-effort — never throws into the drain loop. */
+  const escalateStall =
+    opts._onStallEpisode ??
+    ((detail: string): void => {
+      void import('./replication-stall-ei').then(
+        (m) =>
+          m.fileReplicationStallEi({
+            workspaceId: handle.workspaceId,
+            harnessSlug: handle.harnessSlug,
+            logKeyHex: handle.ownLog.keyHex,
+            kind: 'drain_stalled',
+            stalledForMs: passTimeoutMs,
+            detail,
+          }),
+        () => {},
+      );
+    });
+
   async function drainSafely(): Promise<void> {
     if (stopped) return;
     if (draining) {
@@ -389,7 +451,34 @@ export function startOutboxDrain(
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
         if (epochEncrypt !== undefined) drainOpts.epochEncrypt = epochEncrypt;
-        await drainOutboxOnce(handle, pg, drainOpts);
+        // WI-2009 watchdog: race the pass against the timeout so ONE hung await
+        // can never wedge the serialized loop forever (the live-VM permanence
+        // signature). The abandoned zombie pass is swallowed — if it settles
+        // later its work is either complete (drained_at already stamped) or
+        // re-attempted by a fresh pass (at-least-once tolerates the duplicate).
+        const pass = drainOutboxOnce(handle, pg, drainOpts);
+        if (passTimeoutMs > 0) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              pass,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)),
+                  passTimeoutMs,
+                );
+                timer.unref?.();
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+            // Detach the (possibly zombie) pass so a late rejection can't
+            // become an unhandled rejection after we've moved on.
+            pass.catch(() => {});
+          }
+        } else {
+          await pass;
+        }
       } while (runAgain && !stopped);
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -397,6 +486,12 @@ export function startOutboxDrain(
         `[outbox-drain] drain failed for ${wantPayload}:`,
         e instanceof Error ? e.message : String(e),
       );
+      if (e instanceof DrainPassTimeoutError) {
+        escalateStall(
+          `outbox-drain pass for ${wantPayload} exceeded ${passTimeoutMs}ms (hung await — ` +
+            `WI-2009 permanence class; loop un-wedged, next tick re-attempts)`,
+        );
+      }
     } finally {
       draining = false;
     }

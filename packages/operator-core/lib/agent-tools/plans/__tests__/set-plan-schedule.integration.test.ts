@@ -11,12 +11,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import { setPlanSchedule } from '../source';
 
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-setsched';
-const HARNESS = 'papercup';
+// The OPERATOR-HOME slug, so resolvePlanScope's home short-circuit applies (no
+// hive registration needed in this throwaway DB). The old literal 'papercup' is
+// a RETIRED alias: canonicalHarnessSlug collapses it to the home slug, so the
+// tool wrote under 'papercusp' while the fixture seeded 'papercup' → 0-row
+// UPDATEs and silent `false` returns (WI-1992).
+const HARNESS = operatorHomeHarnessSlug();
 const SLUG = 'monitor-y';
 
 beforeAll(async () => {
