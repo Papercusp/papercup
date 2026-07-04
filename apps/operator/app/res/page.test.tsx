@@ -34,6 +34,10 @@ vi.mock('nuqs', () => ({
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
+// routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 /* The account chip select is the Radix-based harness <Select> (page.tsx migrated off the
  * native <select>). Mock @radix-ui/react-select to inert passthroughs — same approach as
  * app/harness/Select.test.tsx — so items render inline (no portal / jsdom open-state

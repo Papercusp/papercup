@@ -710,9 +710,10 @@ function buildSections(opts: {
   hiveLower: string;
   hivesLower: string;
   combLabel: string;
+  brainLabel: string;
   githubUrlEnabled: boolean;
 }): PickerSection[] {
-  const { hiveLower, hivesLower, combLabel, githubUrlEnabled } = opts;
+  const { hiveLower, hivesLower, combLabel, brainLabel, githubUrlEnabled } = opts;
 
   if (!githubUrlEnabled) {
     // Legacy layout (flag off) — preserved byte-for-byte.
@@ -794,7 +795,7 @@ function buildSections(opts: {
           key: 'work-hive',
           step: 'work-hive',
           label: `Start a work ${hiveLower}`,
-          description: `A fresh ${hiveLower} for non-coding work — the ${t('brain')} judges deliverables, no repo needed.`,
+          description: `A fresh ${hiveLower} for non-coding work — the ${brainLabel} judges deliverables, no repo needed.`,
           icon: '📋',
         },
       ],
@@ -907,12 +908,14 @@ function PickerStep({
   combLabel: string;
   githubUrlEnabled: boolean;
 }) {
+  const t = useLexicon();
   const hiveLower = hiveLabel.toLowerCase();
   const intoHive = mode === 'into-hive' && hiveScope;
   const sections = buildSections({
     hiveLower,
     hivesLower: `${hiveLower}s`,
     combLabel,
+    brainLabel: t('brain'),
     githubUrlEnabled,
   });
   const fork = (

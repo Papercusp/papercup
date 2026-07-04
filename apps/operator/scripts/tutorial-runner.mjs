@@ -711,6 +711,343 @@ function runFinale(script) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Setup tab (#4) — the concierge folded into a re-entrant tab. Drives the SAME
+// server-side stage machine (GET /desktop/onboarding-status → stage-resolver) and
+// pty specs (/desktop/setup-pty-commands) the first-run concierge uses, so the two
+// setup surfaces can never drift.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Friendly label for the actionable stage (the Setup tab's "continue" button). */
+const SETUP_STEP_LABEL = {
+  pick: 'choose & install a framework',
+  install: 'install your framework',
+  login: 'sign in',
+  embeddings: 'add an embeddings key',
+};
+
+/** One onboarding-status poll, threading the session's picked framework so the
+ *  resolver can advance past pick/login (it returns `pick` for an installed-but-
+ *  not-signed-in framework unless `chosen` is set — see stage-resolver). */
+async function fetchOnboardingStatus(base, session = {}) {
+  const q = new URLSearchParams();
+  if (session.chosen) q.set('chosen', session.chosen);
+  if (session.forcePick) q.set('forcePick', '1');
+  if (session.embeddingsSkipped) q.set('embeddingsSkipped', '1');
+  const qs = q.toString();
+  return api(base, `/desktop/onboarding-status${qs ? `?${qs}` : ''}`);
+}
+
+/** Run ONE setup step for the current stage (reuses the concierge's pty specs).
+ *  Mutates `session` (chosen / embeddingsSkipped) so the next poll advances. */
+async function runSetupStep(base, status, prompts, session) {
+  const { select, confirm, password } = prompts;
+  const { stage, labels } = status;
+  switch (stage.stage) {
+    case 'pick': {
+      const detected = new Set(stage.detected ?? []);
+      const chosen = await select({
+        message: 'Which agent framework do you want to install?',
+        choices: (stage.frameworks ?? []).map((f) => ({
+          value: f,
+          name:
+            `${labels[f] ?? f}${detected.has(f) ? dim('  (already installed)') : ''}` +
+            (f === 'claude' ? dim('  — recommended, simplest') : ''),
+        })),
+      });
+      session.chosen = chosen;
+      const cmds = await api(base, '/desktop/setup-pty-commands');
+      const spec = cmds.installFramework?.[chosen];
+      if (spec) {
+        say(`Installing ${bold(labels[chosen] ?? chosen)} — streaming the installer here.`);
+        await runSpec(spec);
+      } else {
+        say(dim(`No installer for ${labels[chosen] ?? chosen} on this OS — try another framework.`));
+        session.chosen = null;
+      }
+      return;
+    }
+    case 'install': {
+      say(`Installing ${bold(labels[stage.framework] ?? stage.framework)} — streaming the installer here.`);
+      const cmds = await api(base, '/desktop/setup-pty-commands');
+      const spec = cmds.installFramework?.[stage.framework];
+      if (spec) await runSpec(spec);
+      else say(dim('No installer available on this OS.'));
+      return;
+    }
+    case 'login': {
+      say(`${bold(labels[stage.framework] ?? stage.framework)} is installed — let's sign you in.`);
+      const cmds = await api(base, '/desktop/setup-pty-commands');
+      const specKey = { claude: 'loginClaude', codex: 'loginCodex', 'omp-meridian': 'loginOmp' }[
+        stage.framework
+      ];
+      if (cmds[specKey]) await runSpec(cmds[specKey]);
+      return;
+    }
+    case 'embeddings': {
+      const wants = await confirm({
+        message: 'Add an OpenAI embeddings key now? (recommended — better search & memory)',
+        default: true,
+      });
+      if (!wants) {
+        session.embeddingsSkipped = true;
+        say(dim('Skipped — add it later in Settings or here any time.'));
+        return;
+      }
+      const key = await password({ message: 'Paste your OpenAI API key (hidden):', mask: '*' });
+      if (!key?.trim()) {
+        session.embeddingsSkipped = true;
+        return;
+      }
+      try {
+        await api(base, '/credentials', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ openai_api_key: key.trim() }),
+        });
+        say(ok('Saved. ✓'));
+      } catch (e) {
+        say(dim(`(couldn't save the key: ${e?.message ?? e})`));
+      }
+      return;
+    }
+    default:
+      return; // handoff/done — nothing to run
+  }
+}
+
+/**
+ * The Setup tab loop. Renders the checklist + the next actionable step; runs it; re-polls.
+ * Returns { switchTo:'tutorial' } on Tab / any tutorial-global key / "go to tutorial",
+ * or { exit:true } on Finish.
+ */
+async function runSetupTab(shell) {
+  const { base, prompts, interactive } = shell;
+  const st = shell.setup;
+  if (!st.entered) {
+    st.entered = true;
+    say(bold('Setup — finish or adjust your Papercusp setup any time.'));
+  }
+  for (;;) {
+    let status;
+    try {
+      status = await fetchOnboardingStatus(base, st.session);
+    } catch (e) {
+      say(dim(`(can't reach the server for setup status: ${e?.message ?? e})`));
+      return { switchTo: 'tutorial' };
+    }
+    const steps = setupChecklist(status.snapshot, status.labels);
+    shell.setupComplete = steps.filter((s) => s.key !== 'embeddings').every((s) => s.status === 'done');
+    const stageName = status.stage?.stage;
+    const actionable = ['pick', 'install', 'login', 'embeddings'].includes(stageName);
+
+    const header =
+      renderTabBar('setup', { setupComplete: shell.setupComplete }) +
+      '\n\n' +
+      renderChecklist(steps) +
+      '\n' +
+      dim('What next?');
+
+    const choices = [];
+    if (actionable) {
+      choices.push({ value: 'step', name: accent(`▶ Continue setup — ${SETUP_STEP_LABEL[stageName]}`) });
+    } else {
+      choices.push({ value: 'tutorial', name: ok('✓ Required setup complete — go to the Tutorial') });
+    }
+    if (status.optionalSetup?.length) {
+      choices.push({ value: 'optional', name: '⚙️  Optional items (git identity, GitHub, …)' });
+    }
+    choices.push({ value: 'tutorial', name: '📘 Go to the Tutorial tab' });
+    choices.push({ value: 'finish', name: '🏁 Finish' });
+
+    let action;
+    if (interactive) {
+      const r = await shellScreen({ header, choices });
+      // Tab or any tutorial-global shortcut on the Setup tab → hop to the Tutorial tab
+      // (those actions — search/jump/ask — are section-scoped and live there).
+      if (r.key === 'tab' || r.key === 'search' || r.key === 'jump' || r.key === 'ask') {
+        return { switchTo: 'tutorial' };
+      }
+      action = r.value;
+    } else {
+      action = actionable ? 'step' : 'finish';
+    }
+
+    if (action === 'step') {
+      await runSetupStep(base, status, prompts, st.session);
+      continue;
+    }
+    if (action === 'optional') {
+      await runOptionalSetup(base, status.optionalSetup, prompts);
+      continue;
+    }
+    if (action === 'tutorial') return { switchTo: 'tutorial' };
+    if (action === 'finish') {
+      await finishUp(base, shell.script, shell.args);
+      return { exit: true };
+    }
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tutorial tab — the deterministic section walk, now driven by the keypress
+// shellScreen so the global shortcuts (search/jump/ask/tab) work on every screen.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Handle ONE tutorial-section screen. Returns { switchTo } / { exit } / {} (stayed). */
+async function tutorialSectionAction(shell, s) {
+  const { prompts, base, script, sections, interactive } = shell;
+  const t = shell.tut;
+  let action;
+  let typedQuestion = null;
+  if (interactive) {
+    const header =
+      renderTabBar('tutorial', { setupComplete: shell.setupComplete }) + '\n' + dim('What next?');
+    const r = await shellScreen({ header, choices: sectionChoices(s) });
+    if (r.key === 'tab') return { switchTo: 'setup' };
+    if (r.key === 'search') action = 'search';
+    else if (r.key === 'jump') action = 'menu';
+    else if (r.key === 'ask') action = 'question';
+    else action = r.value; // menu select
+  } else {
+    const reply = interpretReply(await prompts.input({ message: OPTION_LINE }));
+    action = reply.kind;
+    if (reply.kind === 'question') typedQuestion = reply.text;
+  }
+
+  if (action === 'continue') {
+    t.completed.add(s.id);
+    await saveProgress(base, s.id, [...t.completed]);
+    t.idx += 1;
+    return {};
+  }
+  if (action === 'details') {
+    say(s.details || dim('(no extra details for this section — ask a question if you like)'));
+    return {};
+  }
+  if (action === 'search') {
+    const target = await searchTutorial(script, prompts);
+    if (typeof target === 'number' && target >= 0) {
+      t.idx = target;
+      t.lastChapter = null; // re-print the chapter header on the jump
+    }
+    return {};
+  }
+  if (action === 'question') {
+    const q = typedQuestion ?? (await prompts.input({ message: '💬 Your question:' }))?.trim();
+    if (q) {
+      const backend = await resolveQaBackend(script, prompts, shell.qaBackend);
+      if (!backend) {
+        // B2-#3b: no agent backend installed → REAL auto-route to the Setup tab.
+        say(dim('No agent backend is installed yet — taking you to Setup to install one.'));
+        return { switchTo: 'setup' };
+      }
+      shell.qaBackend = backend; // cache the session's choice (B2-#3)
+      await answerQuestion(backend.agent, backend.bin, s, q);
+    }
+    return {};
+  }
+  if (action === 'menu') {
+    const choice = await chapterMenu(script, prompts, false, null);
+    if (choice === '__finish') {
+      await finishUp(base, script, shell.args);
+      return { exit: true };
+    }
+    t.idx = choice === '__begin' ? 0 : Math.max(0, firstIndexOfChapter(sections, Number(choice)));
+    t.lastChapter = null;
+    return {};
+  }
+  if (action === 'finish') {
+    await finishUp(base, script, shell.args);
+    return { exit: true };
+  }
+  return {};
+}
+
+/** The Tutorial tab loop. Returns { switchTo:'setup' } on Tab, { exit:true } at the end. */
+async function runTutorialTab(shell) {
+  const { script, sections, prompts, base, args, interactive } = shell;
+  const t = shell.tut;
+  const totalChapters = script.chapters?.length ?? 0;
+
+  // First entry only: greeting + the resume/chapter menu (re-entry or prior progress).
+  if (!t.entered) {
+    t.entered = true;
+    say(
+      args.tutorial
+        ? bold('The Papercusp tutorial — welcome back.')
+        : bold("You're set up. Here's a quick tour of Papercusp — about 10 minutes."),
+    );
+    const hasProgress =
+      Boolean(script.progress?.last_section_id) && t.idx > 0 && t.idx < sections.length;
+    if (args.tutorial || hasProgress) {
+      const resumeCh = hasProgress
+        ? script.chapters.find((c) => c.number === sections[t.idx].chapter)
+        : null;
+      const choice = await chapterMenu(
+        script,
+        prompts,
+        hasProgress,
+        resumeCh ? `Chapter ${resumeCh.number} — ${resumeCh.title}` : null,
+      );
+      if (choice === '__finish') {
+        await finishUp(base, script, args);
+        return { exit: true };
+      }
+      if (choice === '__begin') t.idx = 0;
+      else if (choice === '__resume') {
+        /* keep computed idx */
+      } else {
+        const ci = firstIndexOfChapter(sections, Number(choice));
+        t.idx = ci >= 0 ? ci : 0;
+      }
+    }
+  }
+
+  while (t.idx < sections.length) {
+    const s = sections[t.idx];
+    if (s.chapter !== t.lastChapter) {
+      const ch = script.chapters.find((c) => c.number === s.chapter);
+      const bar = totalChapters ? dim(`  ${renderProgressBar(s.chapter, totalChapters, 12)}`) : '';
+      say(
+        accent(bold(`${chapterEmoji(s.chapter)}  Chapter ${s.chapter}${ch ? ` — ${ch.title}` : ''}`)) +
+          bar,
+      );
+      t.lastChapter = s.chapter;
+    }
+    // Print the Brief VERBATIM once per visit (not re-typed when the user stays on a
+    // section for details/search/ask). A jump resets t.shownIdx via idx change.
+    if (t.shownIdx !== t.idx) {
+      process.stdout.write(`\n${bold(s.title)}\n`);
+      await typeOut(s.brief);
+      t.shownIdx = t.idx;
+    }
+
+    const res = await tutorialSectionAction(shell, s);
+    if (res.switchTo) return { switchTo: res.switchTo };
+    if (res.exit) return { exit: true };
+  }
+
+  // Reached the natural end → the finale, then graduate.
+  runFinale(script);
+  await finishUp(base, script, args, /* skipFinale */ true);
+  return { exit: true };
+}
+
+/** The top-level unified-shell loop: run the active tab until it hands control back. */
+async function runShell(shell) {
+  for (;;) {
+    const result =
+      shell.activeTab === 'tutorial' ? await runTutorialTab(shell) : await runSetupTab(shell);
+    if (result?.exit) return 0;
+    if (result?.switchTo) {
+      shell.activeTab = result.switchTo;
+      continue;
+    }
+    return 0;
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Main
 // ───────────────────────────────────────────────────────────────────────────
 async function main() {
@@ -726,7 +1063,6 @@ async function main() {
   );
 
   const prompts = await import('@inquirer/prompts');
-  const { select, input } = prompts;
   const interactive = Boolean(process.stdout.isTTY) && Boolean(process.stdin.isTTY);
 
   // The banner animates (~0.8s) while the fetch is in flight — the fetch latency is
@@ -749,8 +1085,6 @@ async function main() {
     say('No tutorial content is installed on this build. ' + dim('Nothing to run.'));
     return 0;
   }
-  const totalChapters = script.chapters?.length ?? 0;
-
   // The Q&A backend is chosen lazily when the user actually asks a question
   // (resolveQaBackend — B2-#3), not once at startup. Seed the session cache from
   // an explicit --agent (the concierge's chosen framework) so first-run users are
