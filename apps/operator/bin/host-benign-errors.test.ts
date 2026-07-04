@@ -61,6 +61,26 @@ function pgNullWriteError(variant: 'esm' | 'cjs' = 'esm'): TypeError {
   return e;
 }
 
+/** The exact postgres-js CONNECT_TIMEOUT that HARD-CRASHED bg-host (2026-07-04):
+ *  a pool connect() to PgBouncer (:6432) exceeded connect_timeout, so postgres-js's
+ *  DETACHED connectTimedOut timer (connection.js:262) rejected with code
+ *  'CONNECT_TIMEOUT'. Same detached-timer class as the null-write crash — no awaitable
+ *  call site — so it reached the process guard as an unhandled rejection and downed the
+ *  git-sync / DBOS / substrate host for the whole fleet on a transient ~5s pooler blip. */
+function pgConnectTimeout(): Error {
+  return Object.assign(new Error('write CONNECT_TIMEOUT 127.0.0.1:6432'), {
+    code: 'CONNECT_TIMEOUT',
+    errno: 'CONNECT_TIMEOUT',
+    address: '127.0.0.1',
+    port: 6432,
+    stack: [
+      'Error: write CONNECT_TIMEOUT 127.0.0.1:6432',
+      '    at connectTimedOut (file:///home/x/papercupai-workspace/papercusp/node_modules/postgres/src/connection.js:262:20)',
+      '    at Timeout.done [as _onTimeout] (file:///home/x/papercupai-workspace/papercusp/node_modules/postgres/src/connection.js:100:11)',
+    ].join('\n'),
+  });
+}
+
 /** Produce a REAL JSON.parse SyntaxError (not a hand-built one) so the message
  *  matched is exactly what Node throws on the wire. */
 function realJsonParseError(bad: string): unknown {
@@ -135,6 +155,17 @@ describe('isTransientPgConnectionError (2026-06-18 — torn-down PG connection m
     expect(isTransientPgConnectionError(new Error('write CONNECTION_CLOSED localhost:5432'))).toBe(true);
   });
 
+  it('classifies the postgres-js CONNECT_TIMEOUT crash (code or message) as transient (2026-07-04 bg-host crash)', () => {
+    // The exact error that hard-crashed the bg-host: a PgBouncer connect timeout
+    // from postgres-js's detached connectTimedOut timer. It must be swallowed so a
+    // transient pooler blip can't down the git-sync/DBOS/substrate host for the fleet.
+    expect(isTransientPgConnectionError(pgConnectTimeout())).toBe(true);
+    // by code alone
+    expect(isTransientPgConnectionError(Object.assign(new Error('x'), { code: 'CONNECT_TIMEOUT' }))).toBe(true);
+    // by message alone (defensive fallback if the code is ever stripped in transit)
+    expect(isTransientPgConnectionError(new Error('write CONNECT_TIMEOUT 127.0.0.1:6432'))).toBe(true);
+  });
+
   it('does NOT swallow a null-`write` TypeError from OUTSIDE postgres-js (real bugs still fail fast)', () => {
     // Same message, but the stack is in our own code — must stay fatal so a genuine
     // null-deref isn't masked.
@@ -193,6 +224,7 @@ describe('isBenignHostError (the combined fail-fast boundary)', () => {
     expect(isBenignHostError(realJsonParseError('{bad'))).toBe(true);
     expect(isBenignHostError(Object.assign(new Error('x'), { code: 'ERR_INVALID_STATE' }))).toBe(true);
     expect(isBenignHostError(pgNullWriteError('cjs'))).toBe(true); // the 2026-06-18 (EI-1405) crash-loop fix — real incident CJS stack
+    expect(isBenignHostError(pgConnectTimeout())).toBe(true); // 2026-07-04 — bg-host CONNECT_TIMEOUT (PgBouncer) crash
     expect(isBenignHostError(watcherEnospc())).toBe(true); // EI-3385 — inotify exhaustion
     expect(isBenignHostError(new Error("resolvePlanScope: harness 'operator' is not registered in the harness registry"))).toBe(true); // worker-crash fix
   });

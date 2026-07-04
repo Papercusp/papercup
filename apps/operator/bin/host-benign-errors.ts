@@ -65,6 +65,21 @@ export function isBenignRequestParse(e: unknown): boolean {
  * fails fast. `CONNECTION_CLOSED` (postgres-js's closed-mid-write code) is also
  * treated as recoverable — if one ever escapes as an unhandled rejection, keep
  * serving rather than crash-loop. (backend-connection-scaling-2026-06-17.)
+ *
+ * `CONNECT_TIMEOUT` is the same class: postgres-js's DETACHED connection-timeout
+ * timer (connectTimedOut → Timeout.done, connection.js:262) rejects with code
+ * 'CONNECT_TIMEOUT' when a pool connect() exceeds connect_timeout — e.g. PgBouncer
+ * (:6432) or PG momentarily saturated/unreachable. There is no awaitable call site
+ * to try/catch (the timer fires outside any query promise), so it escaped to the
+ * process guard and HARD-CRASHED the bg-host (DBOS routines / git-sync / substrate
+ * primary) for the whole fleet on a transient ~5s pooler blip (2026-07-04). The
+ * pool reconnects on the next query, and a GENUINE sustained DB outage is caught by
+ * the dedicated liveness / lag watchdogs (startInfraLivenessAlarm,
+ * lag-self-restart, cluster-lag-watchdog) — NOT by this random-which-query-times-
+ * out-first guard — so a transient connect timeout must not down the host. Both
+ * `CONNECT_TIMEOUT` and `CONNECTION_CLOSED` are postgres-js-invented codes (not
+ * standard Node errno strings), so matching on `code` is inherently postgres-js-
+ * scoped and cannot mask an unrelated error.
  */
 export function isTransientPgConnectionError(e: unknown): boolean {
   const x = e as { code?: string; message?: string; stack?: string } | null;
@@ -78,7 +93,12 @@ export function isTransientPgConnectionError(e: unknown): boolean {
   ) {
     return true;
   }
-  return x.code === 'CONNECTION_CLOSED' || /\bCONNECTION_CLOSED\b/.test(msg);
+  return (
+    x.code === 'CONNECTION_CLOSED' ||
+    /\bCONNECTION_CLOSED\b/.test(msg) ||
+    x.code === 'CONNECT_TIMEOUT' ||
+    /\bCONNECT_TIMEOUT\b/.test(msg)
+  );
 }
 
 /**

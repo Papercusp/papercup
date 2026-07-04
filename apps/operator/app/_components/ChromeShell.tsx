@@ -238,7 +238,10 @@ export default function ChromeShell() {
           <NotificationCenter />
           <RecentActionsCenter />
           <ThemeSelector />
-          <BrandSwitcher />
+          {/* Lexicon/brand switcher (Papercup ⇄ The Swarm) is a TESTING-only
+              surface — public release ships the Pot lexicon with no toggle, to
+              avoid brand confusion between users. restore-pot-lexicon P-004. */}
+          {testingFlag ? <BrandSwitcher /> : null}
           <WorkspaceSwitcher />
           <UserPicker />
         </nav>
