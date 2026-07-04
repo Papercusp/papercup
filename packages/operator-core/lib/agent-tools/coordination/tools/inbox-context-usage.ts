@@ -14,6 +14,20 @@
 export const COMPACTION_HINT_PCT = 85;
 
 /**
+ * The rounded percent-of-soft-limit for a session, or null when it can't be computed
+ * (no limit / no estimate). Split out (flush-to-proceed-stretch-discipline P-002) so the
+ * context-usage line AND the flush-freshness gate key on ONE pct computation instead of
+ * each re-deriving it — a single source for "how full am I", identical rounding.
+ */
+export function contextUsagePct(
+  contextTokens: number | null | undefined,
+  compactionLimit: number | null | undefined,
+): number | null {
+  if (!compactionLimit || contextTokens == null) return null;
+  return Math.round((contextTokens / compactionLimit) * 100);
+}
+
+/**
  * WI-1795 (owner-requested 2026-07-03): render the context-usage signal prepended to the
  * coord injection each turn. Below {@link COMPACTION_HINT_PCT} it's a bare
  * `context: N/M (P%)` FACT; at/above it, the line also NAMES THE ACTION
@@ -27,8 +41,8 @@ export function renderContextUsageLine(
   contextTokens: number | null | undefined,
   compactionLimit: number | null | undefined,
 ): string | null {
-  if (!compactionLimit || contextTokens == null) return null;
-  const pct = Math.round((contextTokens / compactionLimit) * 100);
+  const pct = contextUsagePct(contextTokens, compactionLimit);
+  if (pct == null) return null;
   let line = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
   if (pct >= COMPACTION_HINT_PCT) {
     line +=
