@@ -202,6 +202,50 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(summary.items).toEqual([]);
   });
 
+  it('EI-6650: summarizeOpenPlacements excludes a stale recovering placement once the unit is deliberately parked (blocked/needs-human)', async () => {
+    // Mirrors the live-observed bug: a placement row frozen at `recovering` from
+    // BEFORE the reconcile-side isUnitParked fix (or simply not yet revisited by a
+    // fresh bee-spawn event), whose underlying unit has since been parked `blocked`
+    // by an owner/human gate. The Queen brief must stop telling her to re-place it.
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-SUMMARY-PARKED-BLOCKED', ${HIVE}, ${QUEEN},
+              'bee-1', 'recovering', 0, now(), now(), now())`;
+    await seedUnit({ id: 'F-SUMMARY-PARKED-BLOCKED', status: 'blocked', takenBy: null });
+
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-SUMMARY-PARKED-NEEDSHUMAN', ${HIVE}, ${QUEEN},
+              'bee-1', 'recovering', 0, now(), now(), now())`;
+    await seedUnit({ id: 'F-SUMMARY-PARKED-NEEDSHUMAN', status: 'needs-human', takenBy: null });
+
+    const summary = await summarizeOpenPlacements(WS, HIVE);
+
+    expect(summary.recovering).toBe(0);
+    expect(summary.items).toEqual([]);
+  });
+
+  it('EI-6650: summarizeOpenPlacements still surfaces a genuinely-active recovering placement (not parked)', async () => {
+    await sql`
+      INSERT INTO harness_shared.hive_placements
+        (workspace_id, install_slug, work_item_id, harness_slug, queen_owner_id,
+         bee_owner_id, status, fail_count, placed_at, last_seen_at, updated_at)
+      VALUES (${WS}, ${HIVE}, 'F-SUMMARY-STILL-RECOVERING', ${HIVE}, ${QUEEN},
+              'bee-1', 'recovering', 0, now(), now(), now())`;
+    await seedUnit({ id: 'F-SUMMARY-STILL-RECOVERING', status: 'in_progress', takenBy: null });
+
+    const summary = await summarizeOpenPlacements(WS, HIVE);
+
+    expect(summary.recovering).toBe(1);
+    expect(summary.items).toEqual([
+      expect.objectContaining({ workItemId: 'F-SUMMARY-STILL-RECOVERING', status: 'recovering' }),
+    ]);
+  });
+
   it('P-021: a unit at the breaker threshold → cursed + an owner escalation, no further wake', async () => {
     // Pre-seed two prior failed placements, past the debounce window.
     await sql`

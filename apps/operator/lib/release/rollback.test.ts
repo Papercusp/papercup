@@ -27,6 +27,7 @@ function deps(over: Partial<DeployDeps> = {}): { deps: DeployDeps; calls: string
     broadcast: async () => {
       calls.push('broadcast');
     },
+    emitEvent: async () => {}, // WI-2399: required DeployDeps field; executeRollback never emits
     log: () => {},
     ...over,
   };

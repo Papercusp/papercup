@@ -58,6 +58,7 @@ function makeStubDeps(over: Partial<DeployDeps> = {}): DeployDeps {
     preflight: async () => ({ ok: true }),
     restoreSnapshot: async () => {},
     broadcast: async () => {},
+    emitEvent: async () => {}, // WI-2399: injected await-bus emit (main() never reaches it — executeDeploy is stubbed)
     log: () => {},
     ...over,
   };

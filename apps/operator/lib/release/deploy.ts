@@ -132,6 +132,17 @@ export interface DeployDeps {
   restoreSnapshot(snap: SnapshotInfo): Promise<void>;
   /** coord:send broadcast. */
   broadcast(summary: string, body?: string): Promise<void>;
+  /** Emit an awaitable event onto the shared await/notify bus (release:deployed /
+   *  release:deploy-failed). INJECTED (WI-2399) instead of a hard dynamic import
+   *  of the await engine inside executeDeploy: for that emit alone the mechanics
+   *  used to reach past the deps seam, so a unit test that forgot to `vi.mock` the
+   *  engine fired a REAL event onto the shared bus (EI-7287 — two phantom
+   *  deploy:await wakes). Now it's a required dep, so TypeScript forces every
+   *  caller to wire an emitter and no test can emit by default; the sole prod
+   *  caller (realDeps) forwards to emitAwaitedEvent. AWAITED at the call site
+   *  (EI-5993): deploy-cli process.exit()s right after executeDeploy resolves, so
+   *  a fire-and-forget emit would race that exit and almost never fire. */
+  emitEvent(opts: { key: string; summary?: string; payload?: unknown; source?: string }): Promise<void>;
   /** Append a `deploy` row to harness_shared.pipeline_events (the /admin/git
    *  history). Lives HERE (not in the release-trigger routine) because the
    *  routine's host dies at this deploy's own restart step — only the deploy
@@ -326,18 +337,19 @@ export async function executeDeploy(
       // main() resolves, same as recordEvent below — a fire-and-forget emit here
       // raced that exit and was almost always killed before it fired, so every
       // caller `events:await`-ing `release:deployed` timed out despite the deploy
-      // succeeding.
-      await import('@papercusp/operator-core/lib/events/await/engine')
-        .then(async ({ emitAwaitedEvent }) => {
-          const summary = `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`;
-          const payload = { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations };
-          // GLOBAL key — wake on the NEXT deploy of any sha (the payload.sha says which).
-          await emitAwaitedEvent({ key: 'release:deployed', summary, payload, source: 'release-gate' });
-          // PER-SHA key (event-await-… P-102) — "did MY sha land?" without payload-
-          // filtering the global. An agent that knows its target sha awaits exactly it.
-          await emitAwaitedEvent({ key: `release:deployed:${plan.targetSha}`, summary, payload, source: 'release-gate' });
-        })
-        .catch(() => {});
+      // succeeding. Now via the INJECTED deps.emitEvent (WI-2399), not a hard
+      // dynamic import — the swallow keeps a bus hiccup from failing a good deploy.
+      try {
+        const summary = `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`;
+        const payload = { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations };
+        // GLOBAL key — wake on the NEXT deploy of any sha (the payload.sha says which).
+        await deps.emitEvent({ key: 'release:deployed', summary, payload, source: 'release-gate' });
+        // PER-SHA key (event-await-… P-102) — "did MY sha land?" without payload-
+        // filtering the global. An agent that knows its target sha awaits exactly it.
+        await deps.emitEvent({ key: `release:deployed:${plan.targetSha}`, summary, payload, source: 'release-gate' });
+      } catch {
+        /* a bus hiccup must never fail an otherwise-successful deploy */
+      }
       // AWAITED (not void): deploy-cli process.exit()s right after main()
       // resolves — a dangling append would be killed before the row lands.
       if (deps.recordEvent) {
@@ -401,15 +413,14 @@ export async function executeDeploy(
       // P-015: a failure is as awaitable as a success — a deploy-blocked
       // agent learns the bad news now, not at its timeout.
       // AWAITED (not void, EI-5993): same process.exit() race as the success path.
-      await import('@papercusp/operator-core/lib/events/await/engine')
-        .then(({ emitAwaitedEvent }) =>
-          emitAwaitedEvent({
-            key: 'release:deploy-failed',
-            summary: `deploy of ${short(plan.targetSha)} FAILED${rolledBack ? ' (rolled back)' : ' (rollback failed)'}: ${error}`,
-            payload: { sha: plan.targetSha, rolledBack, error },
-            source: 'release-gate',
-          }),
-        )
+      // Via the INJECTED deps.emitEvent (WI-2399), not a hard dynamic import.
+      await deps
+        .emitEvent({
+          key: 'release:deploy-failed',
+          summary: `deploy of ${short(plan.targetSha)} FAILED${rolledBack ? ' (rolled back)' : ' (rollback failed)'}: ${error}`,
+          payload: { sha: plan.targetSha, rolledBack, error },
+          source: 'release-gate',
+        })
         .catch(() => {});
       if (deps.recordEvent) {
         await deps

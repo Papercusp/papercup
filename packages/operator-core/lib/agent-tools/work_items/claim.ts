@@ -76,11 +76,13 @@ export default defineTool({
   guidance: {
     when: 'You are starting work on work-item(s) — claim so peers do not duplicate. Claim a swath at once via { ids:[…] }.',
     notWhen: 'A per-item `claim_conflict` means a LIVE peer holds it — coordinate with the `holder` (coord:send) or pick another item; do not blind-retry. (If the holder is dead, the stale-claim reclaim lane frees it.)',
-    chaining: 'work_items:list → work_items:claim → work_items:set_state → work_items:release/close.',
+    chaining:
+      'work_items:list → work_items:claim → work_items:set_state → work_items:release/close. There is no separate work_items:heartbeat — ANY papercusp-su tool call already refreshes your liveness (dispatch-heartbeat beats coord_presence on every settled dispatch), which is what the stale-claim reaper checks before reclaiming a held item. The gap is a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest with zero papercusp-su calls) during a >10-15min single-claim investigation (EI-6772) — call work_items:checkpoint { id, checkpoint } partway through (it doubles as your progress note AND a liveness pulse) rather than going silent on the platform for the whole investigation.',
     seeAlso: [
       'work_items:claim_next (self-select the next claimable item instead of naming an id)',
       'work_items:observe (check claimability before taking)',
       'work_items:release (drop the claim if you stop working it)',
+      'work_items:checkpoint (periodic progress note + liveness pulse during a long claim)',
     ],
   },
   capability: 'work_items:write',

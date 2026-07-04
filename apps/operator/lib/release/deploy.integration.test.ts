@@ -123,6 +123,12 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
     broadcast: async () => {
       calls.push('broadcast');
     },
+    // WI-2399: the injected await-bus emit is stubbed here just like broadcast/
+    // systemctl/snapshot — this e2e proves the git swap + migrate + rollback
+    // mechanics, not the event bus, so a no-op keeps it off the shared bus.
+    emitEvent: async () => {
+      calls.push('emitEvent');
+    },
     log: () => {},
   };
   return { deps, calls };

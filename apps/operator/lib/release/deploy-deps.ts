@@ -281,6 +281,20 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       });
     },
 
+    async emitEvent(opts): Promise<void> {
+      // WI-2399: the ONE real forwarder from executeDeploy's injected emit seam to
+      // the await/notify bus (release:deployed / release:deploy-failed). Making
+      // this a dep — instead of a hard `await import(engine)` inside executeDeploy —
+      // is what closes the class EI-7287 patched per-file: TypeScript now forces a
+      // DeployDeps at every call site to provide an emitter, so a unit test can't
+      // fire a REAL event by forgetting to mock the engine. Lazy-imported so a
+      // plain `import` of this module stays light (mirrors recordEvent below).
+      const { emitAwaitedEvent } = await import(
+        '@papercusp/operator-core/lib/events/await/engine'
+      );
+      await emitAwaitedEvent(opts);
+    },
+
     async recordEvent(ev): Promise<void> {
       // The /admin/git deploy history (mig 177). Recorded by the DEPLOY process
       // (which survives the :3070 restart it performs) — the release-trigger

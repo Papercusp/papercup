@@ -4,7 +4,7 @@
  * fails health without rolling back, would wedge the fleet). Stub deps so we
  * test pure orchestration; real wiring is exercised in the e2e integration test.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,22 +20,15 @@ import {
 import { git, revParse } from './git-ops';
 import { releaseConfig } from './release-config';
 
-// EI-5993: emitAwaitedEvent must be AWAITED, not fire-and-forget — deploy-cli
-// process.exit()s right after executeDeploy resolves, so a `void`'d emit races
-// the exit and (in production) almost never fires. Mocked with a real async
-// delay so a regression back to fire-and-forget makes this test fail instead
-// of passing by scheduling luck.
-const { emittedKeys, emitAwaitedEventMock } = vi.hoisted(() => {
-  const emittedKeys: string[] = [];
-  const emitAwaitedEventMock = vi.fn(async (opts: { key: string }) => {
-    await new Promise((r) => setTimeout(r, 20));
-    emittedKeys.push(opts.key);
-  });
-  return { emittedKeys, emitAwaitedEventMock };
-});
-vi.mock('@papercusp/operator-core/lib/events/await/engine', () => ({
-  emitAwaitedEvent: emitAwaitedEventMock,
-}));
+// WI-2399: executeDeploy no longer hard-imports the await engine — the emit is an
+// INJECTED dep (deps.emitEvent), so there's nothing to vi.mock here. makeDeps'
+// stub captures emitted keys into this module-level array; the EI-5993 / P-102
+// tests reset + read it. The 20ms delay in the stub is the EI-5993 guard: a
+// regression back to a fire-and-forget emit (dropping the await at the call site)
+// makes the await-ordering tests fail instead of passing by scheduling luck —
+// deploy-cli process.exit()s right after executeDeploy resolves, so an un-awaited
+// emit races the exit and (in production) almost never fires.
+const emittedKeys: string[] = [];
 
 function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: DeployDeps; calls: string[] } {
   const calls: string[] = [];
@@ -65,6 +58,14 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
     broadcast: (s) => {
       calls.push(`broadcast:${s.includes('✅') ? 'ok' : s.includes('❌') ? 'fail' : 'other'}`);
       return Promise.resolve();
+    },
+    // WI-2399: the injected await-bus emit. The 20ms delay is the EI-5993 guard
+    // (see the emittedKeys note above) — it captures the key only AFTER the delay,
+    // so an un-awaited call at the site would leave emittedKeys empty when the
+    // assertion runs.
+    emitEvent: async (opts) => {
+      await new Promise((r) => setTimeout(r, 20));
+      emittedKeys.push(opts.key);
     },
     // The deploy records its own pipeline event (deployer-dies-with-deployed,
     // 2026-06-06: the routine's host dies at the deploy's restart step, so only
