@@ -16,6 +16,8 @@ import { emitServiceHealthTransitionEvent } from './service-health-events';
 export interface EndpointSpec {
   name: string;
   url: string;
+  /** Per-endpoint probe timeout override (default 3000ms — see {@link probeEndpoint}). */
+  timeoutMs?: number;
 }
 
 /**
@@ -36,7 +38,14 @@ export interface EndpointSpec {
  */
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
-  { name: 'vite', url: 'http://127.0.0.1:3055/' },
+  // EI-6902: vite's dev-server request handler can legitimately take 4-6s+ to answer
+  // under this box's typical concurrent build/vitest load (confirmed live: a plain
+  // GET / took 5.4s to resolve while otherwise healthy) — the shared 3000ms default
+  // was firing a persistent false "vite DOWN" alarm (aged 2 days, escalated to
+  // critical) purely from probe impatience, not an actual outage. A generous
+  // per-endpoint override here fixes the false positive without loosening the
+  // timeout for the other (consistently fast, <100ms) endpoints.
+  { name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 10_000 },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
   { name: 'code-server', url: 'http://127.0.0.1:8082/' },
 ];
@@ -59,7 +68,7 @@ export interface ProbeResult {
   recentErrors?: number;
 }
 
-export async function probeEndpoint(spec: EndpointSpec, timeoutMs = 3000): Promise<ProbeResult> {
+export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeoutMs ?? 3000): Promise<ProbeResult> {
   const start = Date.now();
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);

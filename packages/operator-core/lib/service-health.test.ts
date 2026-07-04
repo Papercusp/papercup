@@ -1,10 +1,11 @@
 /**
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   diffHealth,
   HEALTH_ENDPOINTS,
+  probeEndpoint,
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
   BG_HOST_STALE_MS,
@@ -93,6 +94,34 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
       ['code-server', 'operator', 'scout', 'vite'].sort(),
     );
+  });
+
+  // EI-6902: vite's dev-server can legitimately take several seconds to answer under
+  // this box's typical concurrent build/vitest load — the shared 3000ms default fired
+  // a persistent false "vite DOWN" alarm from probe impatience, not an actual outage.
+  it('gives vite a more generous probe timeout than the 3000ms default', () => {
+    const vite = HEALTH_ENDPOINTS.find((e) => e.name === 'vite');
+    expect(vite?.timeoutMs).toBeGreaterThan(3000);
+  });
+});
+
+describe('probeEndpoint — per-spec timeout override (EI-6902)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("honors a spec's own timeoutMs over the 3000ms default", async () => {
+    // A fetch that never settles — probeEndpoint must wait for the SPEC's timeout
+    // (not the 3000ms default) before aborting.
+    const fetchSpy = vi.fn(
+      (_url: string, opts: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+    const start = Date.now();
+    const result = await probeEndpoint({ name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 20 });
+    expect(Date.now() - start).toBeGreaterThanOrEqual(15); // aborted at ~20ms, not ~3000ms
+    expect(result).toEqual(expect.objectContaining({ name: 'vite', up: false, status: null }));
   });
 });
 
