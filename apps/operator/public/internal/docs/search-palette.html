@@ -28,8 +28,22 @@
     <title>Search docs</title>
     <link href="./pagefind/pagefind-ui.css" rel="stylesheet" />
     <style>
+      /* Blue-frost theme — palette borrowed VERBATIM from the docs site
+         (apps/operator-docs/src/styles/blue-frost.css) so the search palette
+         matches the docs visually. Force-dark like the docs. Owner spec: the
+         search box is translucent frosted glass; result cards stay SOLID so
+         their text is crisp over the busy backdrop. */
       :root {
-        color-scheme: light dark;
+        color-scheme: dark;
+        --frost-bg: #050b13;
+        --frost-panel: #07101d; /* SOLID surface for result cards */
+        --frost-text: #e7f7ff;
+        --frost-text-soft: #b9d4e8;
+        --frost-text-muted: #86a3bb;
+        --frost-accent: #38bdf8;
+        --frost-accent-soft: #7dd3fc;
+        --frost-border: rgba(125, 211, 252, 0.16);
+        --frost-border-strong: rgba(125, 211, 252, 0.34);
       }
       * {
         box-sizing: border-box;
@@ -41,33 +55,116 @@
         height: 100%;
         font-family:
           -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        background: #fff;
-        color: #111;
+        color: var(--frost-text);
+        background: var(--frost-bg);
       }
-      @media (prefers-color-scheme: dark) {
-        html,
-        body {
-          background: #16181d;
-          color: #e6e6e6;
-        }
-      }
+      /* Frosted body: cyan glows over a deep blue gradient (docs-site body). */
       body {
         display: flex;
         flex-direction: column;
         padding: 12px;
+        background:
+          radial-gradient(circle at 50% -10%, rgba(56, 189, 248, 0.26), transparent 22rem),
+          radial-gradient(circle at 92% 6%, rgba(125, 211, 252, 0.14), transparent 16rem),
+          radial-gradient(circle at 8% 40%, rgba(14, 165, 233, 0.12), transparent 18rem),
+          linear-gradient(180deg, #0b1220 0%, #081523 44%, #050b13 100%);
+        background-attachment: fixed;
+      }
+      ::selection {
+        background: rgba(56, 189, 248, 0.35);
+        color: #f0fbff;
       }
       #search {
         flex: 1;
         min-height: 0;
         overflow-y: auto;
       }
-      /* Pagefind's default UI ships its own theming via CSS custom properties —
-         nudge only what's needed to sit flush in a small always-on-top window. */
+
+      /* ---- Pagefind default UI, re-skinned to blue-frost ---- */
+      .pagefind-ui {
+        --pagefind-ui-primary: var(--frost-accent);
+        --pagefind-ui-text: var(--frost-text);
+        --pagefind-ui-background: var(--frost-panel); /* SOLID result cards */
+        --pagefind-ui-border: var(--frost-border);
+        --pagefind-ui-tag: rgba(56, 189, 248, 0.12);
+        --pagefind-ui-border-width: 1px;
+        --pagefind-ui-border-radius: 10px;
+        --pagefind-ui-font: inherit;
+      }
+
+      /* Search box — TRANSLUCENT frosted glass over the gradient. */
       .pagefind-ui__search-input {
+        background: rgba(3, 8, 16, 0.45) !important;
+        -webkit-backdrop-filter: blur(14px) saturate(160%);
+        backdrop-filter: blur(14px) saturate(160%);
+        border: 1px solid var(--frost-border-strong) !important;
+        color: var(--frost-text) !important;
         font-size: 15px;
+        border-radius: 10px;
+      }
+      .pagefind-ui__search-input::placeholder {
+        color: var(--frost-text-muted);
+      }
+
+      /* Result cards — SOLID so text stays crisp over the busy backdrop. */
+      .pagefind-ui__result {
+        background: var(--frost-panel) !important;
+        border: 1px solid var(--frost-border) !important;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 8px;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.04),
+          0 10px 30px rgba(0, 0, 0, 0.32);
+      }
+      .pagefind-ui__result:hover {
+        border-color: var(--frost-border-strong) !important;
       }
       .pagefind-ui__result-link {
+        color: var(--frost-accent-soft);
         text-decoration: none;
+        font-weight: 600;
+      }
+      .pagefind-ui__result-link:hover {
+        color: #d7f3ff;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .pagefind-ui__result-excerpt {
+        color: var(--frost-text-soft);
+      }
+      .pagefind-ui__result-excerpt mark,
+      .pagefind-ui__result-title mark {
+        background: rgba(56, 189, 248, 0.3);
+        color: #f0fbff;
+        border-radius: 3px;
+        padding: 0 2px;
+      }
+      .pagefind-ui__result-nested {
+        border-left: 1px solid var(--frost-border);
+      }
+      .pagefind-ui__message {
+        color: var(--frost-text-muted);
+      }
+
+      /* Frost scrollbar (docs site). */
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(125, 211, 252, 0.22);
+        border: 3px solid rgba(5, 11, 19, 0.9);
+        border-radius: 999px;
+      }
+      ::-webkit-scrollbar-track {
+        background: rgba(3, 8, 16, 0.55);
+      }
+      input:focus-visible,
+      a:focus-visible,
+      button:focus-visible {
+        outline: 2px solid rgba(125, 211, 252, 0.48);
+        outline-offset: 2px;
       }
     </style>
   </head>
@@ -78,7 +175,14 @@
       window.addEventListener('DOMContentLoaded', () => {
         new PagefindUI({
           element: '#search',
-          bundlePath: 'pagefind/',
+          // ABSOLUTE bundlePath — Pagefind loads its engine via
+          // `import(`${bundlePath}pagefind.js`)`. A relative `pagefind/` becomes a
+          // BARE module specifier ("pagefind/pagefind.js") the browser refuses to
+          // resolve → the search silently never runs (WI-2648 shipped this way).
+          // The palette is always served at /internal/docs/search-palette.html with
+          // the index sibling at /internal/docs/pagefind/, in dev AND the packaged
+          // Server, so this absolute path is stable across every host.
+          bundlePath: '/internal/docs/pagefind/',
           showSubResults: true,
           showImages: false,
           autofocus: true,
