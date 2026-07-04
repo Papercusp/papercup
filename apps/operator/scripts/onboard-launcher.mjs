@@ -24,6 +24,7 @@
  * Scripting:    onboard --framework=<claude|codex|omp-meridian> [--operator-url=…]
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -281,13 +282,34 @@ async function main() {
         }
         say(
           args.tutorialOnly
-            ? `Handing you to ${bold(labels[session.chosen])} — the tutorial continues right here.`
-            : `You're all set — handing you to your agent now. ` +
-                dim('(same window; the tutorial continues right here)'),
+            ? `Re-opening the tutorial — right here in this window.`
+            : `You're all set — starting the tutorial now. ` +
+                dim("(same window; I'll walk you through it and you can ask questions any time)"),
         );
-        // P-005: render the tutor launch-context server-side and thread it
-        // through the env seam buildHandoffArgs reads. Failure is non-fatal —
-        // the session still launches, just without the tutor brief.
+        // deterministic-onboarding-tutorial-2026-07-04 P-006: the tutorial is now a
+        // DETERMINISTIC scripted walkthrough (tutorial-runner.mjs) — it prints the
+        // content pack verbatim and only invokes the agent for free-form questions.
+        // Fall back to the agentic psu tutor ONLY if the runner script is missing or
+        // exits abnormally.
+        const runnerPath = fileURLToPath(new URL('./tutorial-runner.mjs', import.meta.url));
+        if (existsSync(runnerPath)) {
+          const runnerArgs = [
+            runnerPath,
+            `--agent=${mapFrameworkToAgent(session.chosen)}`,
+            `--operator-url=${base}`,
+          ];
+          if (args.tutorialOnly) runnerArgs.push('--tutorial');
+          const rc = await new Promise((resolve) => {
+            const child = spawn(process.execPath, runnerArgs, { stdio: 'inherit' });
+            child.on('exit', (c) => resolve(c ?? 0));
+            child.on('error', () => resolve(-1));
+          });
+          if (rc === 0 || rc === 130) return rc; // clean exit / Ctrl+C
+          say(dim('(the guided tutorial exited early — starting your agent session instead)'));
+        }
+        // Fallback: the agentic psu tutor (original behavior). Render the tutor
+        // launch-context server-side and thread it through the env seam
+        // buildHandoffArgs reads. Failure is non-fatal — the session still launches.
         try {
           const lc = await api(
             base,
