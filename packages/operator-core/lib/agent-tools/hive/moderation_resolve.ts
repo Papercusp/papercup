@@ -56,9 +56,9 @@ export default defineTool({
   async handler(args, ctx) {
     const workspaceId =
       args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    // Owner gate (once for the batch).
-    const ownerPubkey = await loadHivePubkey(workspaceId, args.hive).catch(() => null);
-    if (!ownerPubkey) {
+    // Owner gate (once for the batch): the CANONICAL owner, not merely "holds a key".
+    const isOwner = await isCanonicalHiveOwner(workspaceId, args.hive).catch(() => false);
+    if (!isOwner) {
       return text({ ok: false, code: 'not_owner', detail: 'this Swarm does not hold the Hive private key' });
     }
     const resolutions = args.items?.length

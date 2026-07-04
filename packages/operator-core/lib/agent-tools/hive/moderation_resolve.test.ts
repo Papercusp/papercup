@@ -1,18 +1,18 @@
 /**
  * moderation_resolve.test.ts — hive:moderation_resolve HANDLER, bulk keyed-array
  * contract (bulk-endpoint-standardization-2026-06-21 P-006). The owner gate
- * (loadHivePubkey) + the reports store (setReportStatus) are mocked. Pins the
- * inline n=1 form, the items:[…] many form (per-item results keyed by reportId,
- * heterogeneous status), the owner gate firing ONCE for the batch, and a
- * no-report item failing only itself.
+ * (isCanonicalHiveOwner — WI-2000: the canonical-ownership check) + the reports
+ * store (setReportStatus) are mocked. Pins the inline n=1 form, the items:[…]
+ * many form (per-item results keyed by reportId, heterogeneous status), the
+ * owner gate firing ONCE for the batch, and a no-report item failing only itself.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/hive/moderation_resolve.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ loadHivePubkey: vi.fn(), setReportStatus: vi.fn() }));
+const h = vi.hoisted(() => ({ isCanonicalHiveOwner: vi.fn(), setReportStatus: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../identity/hive-keypair', () => ({ loadHivePubkey: h.loadHivePubkey }));
+vi.mock('../../hive-identity', () => ({ isCanonicalHiveOwner: h.isCanonicalHiveOwner }));
 vi.mock('../../hive-reports-store', () => ({ setReportStatus: h.setReportStatus }));
 
 import tool from './moderation_resolve';
@@ -28,13 +28,13 @@ const env = async (args: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.loadHivePubkey.mockResolvedValue('PUBKEY');
+  h.isCanonicalHiveOwner.mockResolvedValue(true);
   h.setReportStatus.mockImplementation(async (_ws: string, _hive: string, reportId: string, status: string) => ({ reportId, status }));
 });
 
 describe('hive:moderation_resolve handler (bulk keyed-array, P-006)', () => {
   it('owner gate fails the WHOLE call when this Swarm does not hold the key', async () => {
-    h.loadHivePubkey.mockResolvedValue(null);
+    h.isCanonicalHiveOwner.mockResolvedValue(false);
     const b = await env({ hive: 'sheets', reportId: 'r1', status: 'actioned' });
     expect(b).toMatchObject({ ok: false, code: 'not_owner' });
   });
