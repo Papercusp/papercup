@@ -297,6 +297,10 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         // bucket (there is no reset window to wait for), and tag it DISTINCTLY so the memory
         // tools narrate "OpenAI quota exhausted — check billing" instead of "rate-limited".
         if (r.status === 429 && /insufficient_quota/.test(body)) {
+          // EI-3381: a hard billing stop fails identically forever until fixed — start the
+          // local-preference cooldown now so the NEXT resolveEmbedder() call (a fresh
+          // memory:remember/search) doesn't retry a key we just learned is dead.
+          markOpenAiEmbedFailure();
           throw new Error(`openai_embed_quota_exhausted: ${body}`);
         }
         const err = new Error(`openai_embed_failed_${r.status}: ${body}`);
@@ -331,6 +335,10 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
       waitedMs += waitMs;
       await sleep(waitMs);
     }
+    // EI-3381: the retry budget is spent (attempts exhausted, or the server's reset window
+    // is longer than we can wait — the exact sustained org-wide TPM-drain shape this ticket
+    // reports) — a SUSTAINED exhaustion, not a short spike. Prefer local for a cooldown.
+    markOpenAiEmbedFailure();
     throw lastErr ?? new Error('openai_embed_failed: retries exhausted');
   };
 }

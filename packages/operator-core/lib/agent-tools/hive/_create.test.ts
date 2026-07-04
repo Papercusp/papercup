@@ -431,6 +431,11 @@ describe('createHiveHarness', () => {
         // Identity minted, loop provisioned — the rest of create is unchanged.
         expect(ensureCalls).toEqual([['default', 'linked-hive']]);
         expect(provisionCalls).toEqual([{ workspaceId: 'default', hiveSlug: 'linked-hive' }]);
+        // EI-3388: the blueprint resolver was given the linked repo's own
+        // .papercusp/blueprints as a local tier, so a custom blueprint authored
+        // there (e.g. a hive-scoped `extends` parent) resolves without a manual
+        // copy into the global ~/.papercusp/blueprints installed tier.
+        expect(resolveExtendsCalls).toEqual([{ localDirs: [join(existing, '.papercusp', 'blueprints')] }]);
       } finally {
         rmSync(existing, { recursive: true, force: true });
       }
