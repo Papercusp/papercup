@@ -103,8 +103,13 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     expect(validateTemplateSet(REFERENCE_TEMPLATES)).toEqual({ ok: true, errors: [] });
   });
 
+  // Template #1's composition = the agentic-desktop-app requires-closure
+  // (P-015) — NOT the whole reference set, which now also carries templates
+  // the app does not require (data-sync, …).
+  const template1 = () => resolveRequiresClosure([AGENTIC_DESKTOP_APP_TEMPLATE], REFERENCE_TEMPLATES).templates;
+
   it("agentic-desktop-app + both aspects compose: one app scope, consistent pins", () => {
-    const { ok, errors, composition } = composeTemplates(REFERENCE_TEMPLATES);
+    const { ok, errors, composition } = composeTemplates(template1());
     expect(errors).toEqual([]);
     expect(ok).toBe(true);
     expect(composition!.scope).toBe("app");
@@ -121,7 +126,7 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
   });
 
   it("the union-of-checks carries every aspect's flagship checks + the app's integrity check", () => {
-    const { composition } = composeTemplates(REFERENCE_TEMPLATES);
+    const { composition } = composeTemplates(template1());
     const keys = composition!.checks.map((c) => `${c.templateId}:${c.item.id}`).sort();
     expect(keys).toEqual([
       "agentic-desktop-app:composition-integrity",

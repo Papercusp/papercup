@@ -130,4 +130,76 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
       "streams for table-less moments, graceful SIGTERM shutdown (host close → sync stop → PG stop → discovery " +
       "file removal), and env-gated optional planes so boot without config changes nothing.",
   },
+
+  // ---- P-017: the data-sync component family (papercusp-data-sync template) ----
+  {
+    id: "sync",
+    version: "0.0.1",
+    tier: "A",
+    kind: "package",
+    provides: ["state-sync-transport", "sse-sync-client", "reconnect-backpressure"],
+    composesWith: ["sse", "projection-index", "debounce-coalesce", "hono-host"],
+    source: { repo: "Papercusp/papercup", path: "libs/generic/sync", package: "@papercusp/sync" },
+    tests: "npm test in the lib (vitest)",
+    summary:
+      "Schema-agnostic sync transports (Zero + SSE) with reconnect and backpressure handling — the client half " +
+      "of live app-state sync: subscribe to server changes, survive drops, and never overrun a slow consumer.",
+    guide: "agent-insights/templates-system-design",
+  },
+  {
+    id: "sse",
+    version: "0.0.1",
+    tier: "A",
+    kind: "package",
+    provides: ["sse-response-builder", "sse-channel-bus", "pg-notify-bridge"],
+    composesWith: ["sync", "hono-host", "embedded-postgres-server"],
+    source: { repo: "Papercusp/papercup", path: "libs/generic/sse", package: "@papercusp/sse" },
+    tests: "npm test in the lib (vitest)",
+    summary:
+      "Spec-compliant Server-Sent Events primitives — the server half of live sync: an SSE response builder for " +
+      "any fetch-style host (Hono drop-in), an in-process channel bus, and a PG NOTIFY bridge so table changes " +
+      "stream to subscribed clients without polling.",
+  },
+  {
+    id: "projection-index",
+    version: "0.1.0",
+    tier: "A",
+    kind: "package",
+    provides: ["event-maintained-projection", "structured-index"],
+    composesWith: ["sync", "sse", "embedded-postgres-server"],
+    source: { repo: "Papercusp/papercup", path: "libs/generic/projection-index", package: "@papercusp/projection-index" },
+    tests: "npm test in the lib (vitest)",
+    summary:
+      "A generic event-maintained structured→index projection: feed it source records as they change and it " +
+      "keeps a queryable index current — the read-model half of a synced data plane (derived views stay fresh " +
+      "without rebuild jobs).",
+  },
+  {
+    id: "debounce-coalesce",
+    version: "0.1.0",
+    tier: "A",
+    kind: "package",
+    provides: ["wake-floor-debounce", "burst-coalesce"],
+    composesWith: ["sync", "sse", "projection-index"],
+    source: { repo: "Papercusp/papercup", path: "libs/generic/debounce-coalesce", package: "@papercusp/debounce-coalesce" },
+    tests: "npm test in the lib (vitest)",
+    summary:
+      "Per-subscriber wake-floor + burst-coalesce primitive: a leading-edge debounce that enforces a minimum " +
+      "wake interval and folds change bursts into one delivery — what keeps a live sync plane from stampeding " +
+      "its consumers.",
+  },
+  {
+    id: "resumable-download",
+    version: "0.1.0",
+    tier: "A",
+    kind: "package",
+    provides: ["resumable-http-download", "streaming-checksum"],
+    composesWith: ["sync", "hono-host"],
+    source: { repo: "Papercusp/papercup", path: "libs/generic/resumable-download", package: "@papercusp/resumable-download" },
+    tests: "npm test in the lib (vitest)",
+    summary:
+      "Generic, domain-free resumable HTTP downloader with streaming checksum verification (HTTP Range resume) — " +
+      "the large-asset leg of data sync: interrupted transfers continue where they stopped and corruption is " +
+      "caught in-stream.",
+  },
 ];

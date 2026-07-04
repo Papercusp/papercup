@@ -43,6 +43,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, appendFileSync, write
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AGENTIC_DESKTOP_APP_TEMPLATE, REFERENCE_TEMPLATES, resolveRequiresClosure } from "@papercusp/template-kit";
 
 // ---------------------------------------------------------------- pure core
 
@@ -114,12 +115,29 @@ function papercupRootFromHere(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
 }
 
-/** Scan templates/<id>/checks/*.test.ts (skip node_modules / dot dirs). */
+/**
+ * The template ids consumer #1 (quartermaster) actually COMPOSES — the
+ * agentic-desktop-app requires-closure, derived from the kit so it
+ * self-maintains (P-022's re-layer onto desktop-app updates it without
+ * touching the gym). The P-013 verbatim-copy invariant applies to THESE
+ * templates only: a template qm does not consume (data-sync, search, …)
+ * has no qm-side twin by design and must not red the leg (P-017 fix).
+ */
+function consumer1TemplateIds(): Set<string> {
+  const closure = resolveRequiresClosure([AGENTIC_DESKTOP_APP_TEMPLATE], REFERENCE_TEMPLATES);
+  // Fallback (a broken closure fails the kit-suite leg loudly anyway): the 3-way split.
+  if (!closure.ok) return new Set(["agentic-desktop-app", "papercusp-ops-hives", "tauri-desktop-shell"]);
+  return new Set(closure.templates.map((t) => t.id));
+}
+
+/** Scan templates/<id>/checks/*.test.ts for consumer #1's composed set (skip node_modules / dot dirs). */
 function readTemplateCheckFiles(papercupRoot: string): Map<string, string> {
   const out = new Map<string, string>();
   const templatesDir = path.join(papercupRoot, "templates");
+  const consumed = consumer1TemplateIds();
   for (const d of readdirSync(templatesDir, { withFileTypes: true })) {
     if (!d.isDirectory() || d.name === "node_modules" || d.name.startsWith(".")) continue;
+    if (!consumed.has(d.name)) continue;
     const checksDir = path.join(templatesDir, d.name, "checks");
     if (!existsSync(checksDir)) continue;
     for (const f of readdirSync(checksDir)) {

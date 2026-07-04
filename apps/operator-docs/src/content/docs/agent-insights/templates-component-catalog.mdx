@@ -39,6 +39,11 @@ Every component carries a manifest (`@papercusp/template-kit`
 | `tauri-release-kit` | A | package | desktop-build-orchestration · release-channels · updater-manifest · artifact-classification | tauri-shell | [Papercusp/tauri-release-kit](https://github.com/Papercusp/tauri-release-kit) · `@papercusp/tauri-release-kit` | lib `npm test`; driven by both apps' `bin/release.ts` |
 | `typed-contracts` | **B** | pattern | contract-schema · single-parse-gate · payload-validation | hive-app-seam | reference: quartermaster `packages/contracts`, oddsmith `libs/prospect-contract` + `@oddsmith/contracts` | contract suites + seam round-trip tests |
 | `hono-host` | A | pattern | sidecar-http-host · operator-json-discovery · spa-serving · sse-streams | tauri-shell, embedded-postgres-server, hive-app-seam | reference: quartermaster `apps/desktop/bin/serve.ts` + `src/_hono/`; oddsmith equivalent | each app's `_hono` integration suites |
+| `sync` | A | package | state-sync-transport · sse-sync-client · reconnect-backpressure | sse, projection-index, debounce-coalesce, hono-host | papercup `libs/generic/sync` · `@papercusp/sync` | lib `npm test` |
+| `sse` | A | package | sse-response-builder · sse-channel-bus · pg-notify-bridge | sync, hono-host, embedded-postgres-server | papercup `libs/generic/sse` · `@papercusp/sse` | lib `npm test` |
+| `projection-index` | A | package | event-maintained-projection · structured-index | sync, sse, embedded-postgres-server | papercup `libs/generic/projection-index` · `@papercusp/projection-index` | lib `npm test` |
+| `debounce-coalesce` | A | package | wake-floor-debounce · burst-coalesce | sync, sse, projection-index | papercup `libs/generic/debounce-coalesce` · `@papercusp/debounce-coalesce` | lib `npm test` |
+| `resumable-download` | A | package | resumable-http-download · streaming-checksum | sync, hono-host | papercup `libs/generic/resumable-download` · `@papercusp/resumable-download` | lib `npm test` |
 
 ## How an agent uses this
 

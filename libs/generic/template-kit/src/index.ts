@@ -43,6 +43,7 @@ export {
   parseChecksConfig,
   validateChecksConfig,
   type ChecksBootSection,
+  type ChecksComponentsSection,
   type ChecksCompositionSection,
   type ChecksConfinementSection,
   type ChecksGymSection,
@@ -51,6 +52,7 @@ export {
 } from "./checks-config.js";
 export {
   AGENTIC_DESKTOP_APP_TEMPLATE,
+  PAPERCUSP_DATA_SYNC_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   REFERENCE_TEMPLATES,
   TAURI_DESKTOP_SHELL_TEMPLATE,

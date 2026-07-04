@@ -88,6 +88,19 @@ export interface ChecksCompositionSection {
   templateYamls: string[];
 }
 
+/**
+ * `components-integrated` (P-017) — the generic check every lib-integration
+ * aspect template (data-sync, search, data-layer, ui, release-pipeline)
+ * ships: the composed app actually DEPENDS on the template's pinned component
+ * packages. `packages` lists the npm package names the app must declare
+ * (dependencies or devDependencies, any workspace package.json under root).
+ */
+export interface ChecksComponentsSection {
+  packages: string[];
+  /** Package.json paths to search, app-root-relative. Default: ["package.json"]. */
+  manifests?: string[];
+}
+
 export interface TemplateChecksConfig {
   app: {
     /** The app's name (diagnostics only). */
@@ -100,6 +113,7 @@ export interface TemplateChecksConfig {
   boot?: ChecksBootSection;
   gym?: ChecksGymSection;
   composition?: ChecksCompositionSection;
+  components?: ChecksComponentsSection;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -173,6 +187,15 @@ export function validateChecksConfig(value: unknown): string[] {
   if (value.composition !== undefined) {
     if (!isRecord(value.composition)) errors.push("composition: must be an object");
     else requireStringArray(errors, "composition", "templateYamls", value.composition.templateYamls, true);
+  }
+
+  if (value.components !== undefined) {
+    if (!isRecord(value.components)) errors.push("components: must be an object");
+    else {
+      requireStringArray(errors, "components", "packages", value.components.packages, true);
+      if (value.components.manifests !== undefined)
+        requireStringArray(errors, "components", "manifests", value.components.manifests, true);
+    }
   }
 
   return errors;

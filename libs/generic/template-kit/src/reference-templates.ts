@@ -126,9 +126,48 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   ],
 };
 
+/**
+ * Aspect: the live data-sync plane (owner directive 2026-07-04 / P-017 —
+ * 'Papercusp Official: Data Sync'). Integrates the sync generic-library
+ * family: client transports + SSE server primitives + event-maintained
+ * projections + burst control + resumable large-asset transfer.
+ */
+export const PAPERCUSP_DATA_SYNC_TEMPLATE: TemplateManifest = {
+  id: "papercusp-data-sync",
+  version: "0.1.0",
+  scope: "aspect",
+  category: "data",
+  summary:
+    "The live data-sync plane for a papercusp-composed app: @papercusp/sync (client transports with " +
+    "reconnect/backpressure) paired with @papercusp/sse (server SSE primitives + PG NOTIFY bridge), " +
+    "@papercusp/projection-index for event-maintained read models, @papercusp/debounce-coalesce for " +
+    "wake-floor + burst-coalesce delivery, and @papercusp/resumable-download for interrupted large-asset " +
+    "transfer. Compose into any app whose UI must track server state live without polling.",
+  components: [
+    { id: "sync", version: "0.0.1" },
+    { id: "sse", version: "0.0.1" },
+    { id: "projection-index", version: "0.1.0" },
+    { id: "debounce-coalesce", version: "0.1.0" },
+    { id: "resumable-download", version: "0.1.0" },
+  ],
+  contracts: [],
+  decisionPoints: [
+    { id: "sync-transport", prompt: "Which sync transport fits the app — SSE (simplest, one-directional server push over the sidecar) or Zero (bidirectional)? Default SSE unless the app needs client-originated sync." },
+    { id: "synced-surfaces", prompt: "Which app tables/views must sync live to the UI, and which stay request/response? Wire the PG NOTIFY bridge only for the live set." },
+    { id: "projection-set", prompt: "Which derived read models does the UI query (feed projection-index from the change stream), and what burst policy per subscriber (wake floor / coalesce window via debounce-coalesce)?" },
+    { id: "large-assets", prompt: "Does the app move large files (models, media, archives)? If so, route them through resumable-download with streaming checksums; if not, drop the component from the composition." },
+  ],
+  composesWith: ["tauri-desktop-shell"],
+  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  checks: [
+    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+  ],
+};
+
 /** The reference template set — validateTemplateSet(REFERENCE_TEMPLATES) must stay green. */
 export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   TAURI_DESKTOP_SHELL_TEMPLATE,
   AGENTIC_DESKTOP_APP_TEMPLATE,
+  PAPERCUSP_DATA_SYNC_TEMPLATE,
 ];
