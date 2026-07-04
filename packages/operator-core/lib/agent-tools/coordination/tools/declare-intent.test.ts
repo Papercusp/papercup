@@ -252,3 +252,45 @@ describe('coord:declare-intent conflict surfacing (the DOUBLE-PLACEMENT invarian
     expect(String(claims.hint)).toMatch(/item_not_found/);
   });
 });
+
+describe('coord:declare-intent — EI-5873 broad-intent over-coverage nudge', () => {
+  it('a broad "all remaining items" intent with no structured items gets an advisory hint', async () => {
+    const res = parse(await tool.handler({ intent: 'continue working on all the remaining items' }, ctx));
+    expect(res.ok).toBe(true);
+    expect(String(res.overCoverageHint)).toMatch(/EI-5873/);
+    expect(String(res.overCoverageHint)).toMatch(/structured `items`/);
+  });
+
+  it('"everything" alone also reads as broad', async () => {
+    const res = parse(await tool.handler({ intent: 'finish everything' }, ctx));
+    expect(res.overCoverageHint).toBeTruthy();
+  });
+
+  it('the SAME broad intent declared WITH structured items gets NO hint — the claim system already covers it', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems(['P-001', 'P-002']));
+    const res = parse(
+      await tool.handler(
+        { intent: 'working all remaining items', current_plan_slug: 'my-plan', items: ['P-001', 'P-002'] },
+        ctx,
+      ),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.overCoverageHint).toBeUndefined();
+  });
+
+  it('a narrow, specific intent never gets the hint (no false-positive noise on the common case)', async () => {
+    const res = parse(await tool.handler({ intent: 'fixing the null-icon crash in EI-12' }, ctx));
+    expect(res.overCoverageHint).toBeUndefined();
+  });
+
+  it('a broad intent with an explicit EMPTY items array (a lane release, not a claim) still gets the hint', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems(['P-001']));
+    const res = parse(
+      await tool.handler(
+        { intent: 'done — releasing everything', current_plan_slug: 'my-plan', items: [] },
+        ctx,
+      ),
+    );
+    expect(res.overCoverageHint).toBeTruthy();
+  });
+});

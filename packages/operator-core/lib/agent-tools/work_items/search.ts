@@ -11,7 +11,7 @@ import { searchWorkItems, type WorkItemKind } from '../../work-items';
 export default defineTool({
   name: 'work_items:search',
   profile: 'engineer',
-  description: 'Full-text search work-items across kinds (feature/research-task/chunk/bug/change). Matches title + body/summary. Filter by harness or kind. Use to dedup before creating.',
+  description: 'Full-text search work-items across kinds (feature/research-task/chunk/bug/change). Matches title + body/summary. Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920).',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
     chaining: 'work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail.',

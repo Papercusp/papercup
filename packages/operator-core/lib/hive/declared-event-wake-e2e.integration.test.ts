@@ -222,6 +222,19 @@ beforeAll(async () => {
   await rootSql.unsafe(
     `INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id) VALUES ('papercusp', 'papercusp', 'active', 'papercusp', '${WS}')`,
   );
+  // resolveWorkspaceForHarnessSlugIn's step 1 (workspace-registry-first) additionally
+  // consults harness_shared.harness_registry (harness-registry.ts loadHarnessRegistry,
+  // a generic per-workspace JSONB blob, migration 025) — same missing-relation class.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.harness_registry (
+      workspace_id text NOT NULL,
+      payload jsonb NOT NULL,
+      updated_at bigint DEFAULT 0 NOT NULL
+    )
+  `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp"}]}'::jsonb)`,
+  );
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();

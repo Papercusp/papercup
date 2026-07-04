@@ -74,9 +74,9 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
 export default defineTool({
   name: 'coord:declare-intent',
   description:
-    'Declare what you are working on right now — a one-line intent, optionally the plan slug, the plan items you are taking (auto-claimed as your lane), and the files in scope. Other agents see this via coord:presence / fleet:assignments. Declares your whole current state; omitted fields reset (except claims — omitted `items` leaves claims untouched).',
+    'Declare what you are working on right now — a one-line intent, optionally the plan slug, the plan items you are taking (auto-claimed as your lane), and the files in scope. Other agents see this via coord:presence / fleet:assignments. Declares your whole current state; omitted fields reset (except claims — omitted `items` leaves claims untouched). A broad "all remaining items" intent declared with no structured `items` gets an advisory `overCoverageHint` back (EI-5873) — a peer declaring the same broad scope has no structural signal to catch the overlap otherwise.',
   guidance: {
-    when: 'Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose.',
+    when: 'Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose. Especially for a broad "take everything remaining" directive: enumerate the items so a colliding peer sees a real conflict instead of two agents each independently claiming to own the whole set (EI-5873).',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
     chaining:
       'coord:declare-intent { intent, current_plan_slug, items: ["P-001", "P-002"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane. Items in `claims.unknown` did not parse as plan items and were NOT claimed — fix the plan format or the ids.',
