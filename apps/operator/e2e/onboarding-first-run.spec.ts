@@ -73,7 +73,9 @@ test.describe('onboarding console surface (/onboarding)', () => {
   test('browser fallback card routes to the GUI wizard at /setup?force=1', async ({ page }) => {
     await page.goto('/onboarding', { waitUntil: 'domcontentloaded' });
     const escapeHatch = page.getByRole('button', { name: 'Open the setup wizard' });
-    await expect(escapeHatch).toBeVisible();
+    // Generous first-paint budget: on a cold vite dev server the first request
+    // triggers a full module-graph transform that can exceed the 5s default.
+    await expect(escapeHatch).toBeVisible({ timeout: 20_000 });
     await escapeHatch.click();
     await page.waitForURL(/\/setup\?/);
     expect(page.url()).toContain('force=1');

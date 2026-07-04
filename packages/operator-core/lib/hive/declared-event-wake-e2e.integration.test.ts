@@ -106,7 +106,6 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
   const parsed: unknown = text ? JSON.parse(text) : {};
-  if (process.env.DEBUG_DISPATCH) console.error('DISPATCH_DEBUG', tool, JSON.stringify(res.result), '|||', text, '|||', JSON.stringify(parsed));
   // EI-7217: every defineTool handler now returns the canonical `{ data }`
   // envelope (definetool-token-optimization-adoption P-006/D-008), one level
   // OUTSIDE whatever the handler itself returns — plans:start's bulk envelope
@@ -196,6 +195,22 @@ beforeAll(async () => {
       principal_kind text, principal_auth_method text, principal_trust text,
       error_code text,
       coord_owner_id text
+    )
+  `);
+  // EI-7217: resolveWorkspaceForHarness (workspace-for-harness.ts) -> fill_workspace_id_from_projects
+  // (agent-tools/plans/source.ts) queries harness_shared.projects as its FIRST consult before
+  // falling back to the harness registry (a hive/generic harness like this test's 'papercup'
+  // legitimately has ZERO rows here — that's fine, it's the query erroring because the TABLE
+  // itself didn't exist in this test's hand-curated minimal schema that broke plans:start with
+  // "relation harness_shared.projects does not exist". Only slug/workspace_id are ever read
+  // (lookupProjectWorkspaceIds); a minimal empty table is enough for the graceful 0-rows path.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.projects (
+      id text NOT NULL,
+      name text NOT NULL,
+      status text NOT NULL,
+      slug text,
+      workspace_id text NOT NULL
     )
   `);
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
