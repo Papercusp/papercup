@@ -467,6 +467,7 @@ import './fleet_registry/join';
 import './fleet_registry/leave';
 import './fleet_registry/take-leadership';
 import './fleet_registry/launch-on-plan';
+import './fleet_registry/request-remote-spawn';
 import './fleet_registry/recolor';
 
 // L1 agent coordination (identity & presence) — see

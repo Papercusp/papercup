@@ -11,10 +11,16 @@
  * invariant only holds for values whose serialization is brace-delimited (an
  * object). The bare + fenced branches are value-agnostic and are also checked.
  *
- * Wrapping prose is drawn from a brace-free alphabet so it can never inject a
- * stray `{`/`}` that would corrupt the slice span — that keeps the property a
- * statement about the parser, not about adversarial prose (which is genuinely
- * unrecoverable and out of scope for round-trip).
+ * Wrapping prose is drawn from a brace-free AND quote-free alphabet so it can
+ * never corrupt the recovery: a stray `{`/`}` corrupts the slice span, and a
+ * quote PAIR around the payload turns the whole reply into a *valid JSON
+ * string* (`" {} "` IS the JSON string " {} "), where "recover the object"
+ * and "a bare string round-trips" are mutually undecidable — the parser's
+ * documented precedence is whole-document validity first. Both are adversarial
+ * prose, genuinely unrecoverable and out of scope for round-trip. (The quote
+ * case was found by fast-check as seed 1619552845's counterexample
+ * [{}, '"', '"'] — see eval-battery/src/parse-json.test.ts for the pinned
+ * precedence.)
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -32,10 +38,12 @@ const jsonObject = fc
 // depend on brace-slicing.
 const anyJsonValue = fc.jsonValue().map((v) => JSON.parse(JSON.stringify(v)));
 
-// Brace-free prose so wrapping never injects a `{`/`}` into the slice span.
+// Inert prose: brace-free (no fake slice spans) AND quote-free (a quote pair
+// around the payload would make the WHOLE reply a valid JSON string — the
+// undecidable class described in the header).
 const braceFreeProse = fc
   .string()
-  .map((s) => s.replace(/[{}]/g, ''));
+  .map((s) => s.replace(/[{}"]/g, ''));
 
 describe('tryParseJson — round-trip properties', () => {
   it('recovers any JSON value from its bare serialization', () => {

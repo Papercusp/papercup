@@ -173,7 +173,7 @@ async function writeToPg(
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   const now = Date.now();
-  await sql`
+  const upsertResult = await sql`
     INSERT INTO harness_shared.p2p_work_offers
       (workspace_id, harness_slug, publisher_github_user_id, offer_id, record_json,
        signer_device_pubkey, signature, record_version, fleet_slug, offer_kind, status,
@@ -202,6 +202,36 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() (mirrors lwwPick exactly).
     WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.p2p_work_offers.fed_hlc, harness_shared.p2p_work_offers.fed_ts)
   `;
+
+  // P-009 honor hook (the WI-1940 reaper pattern): a landed REMOTE-origin open
+  // 'spawn_request' asks THIS host to spawn from its own delegated seats — hand
+  // it to delegated-spawn-honor.ts (gate → target match → freshness → seat cap
+  // → atomic disposition claim → spawn). Only remote ops reach here (skipOwnOps),
+  // and the row is already signature-verified above. Dynamic import + best-effort:
+  // the replication apply path must never drag the spawn graph in eagerly nor
+  // unwind a landed write on a spawn hiccup (D-004: refusals are still loud —
+  // the honor path itself emits the disposition + receipt).
+  if ((upsertResult.count ?? 0) > 0 && row.offer_kind === 'spawn_request' && row.status === 'open' && provenance?.origin === 'remote') {
+    try {
+      const { honorSpawnRequestFromProjection } = await import('../../../p2p/delegated-spawn-honor');
+      const res = await honorSpawnRequestFromProjection({
+        workspaceId: opts.workspaceId,
+        hiveHomeSlug: opts.harnessSlug,
+        row,
+        sql,
+      });
+      if (res.outcome === 'honored' || res.outcome === 'refused') {
+        console.log(
+          `[work-offers] spawn-request ${row.publisher_github_user_id}/${row.offer_id} → ${res.outcome}` +
+            (res.outcome === 'honored' ? ` (${res.opened} member(s) opened${res.failed ? `, ${res.failed} failed` : ''})` : ` (${res.code})`),
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[work-offers] spawn-request honor hook failed for ${row.publisher_github_user_id}/${row.offer_id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }
 
 async function deleteFromPg(

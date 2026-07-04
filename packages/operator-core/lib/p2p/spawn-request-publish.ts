@@ -171,6 +171,15 @@ export async function publishSpawnRequest(
     return { ok: false, error: `device signer unavailable: ${e instanceof Error ? e.message : String(e)}` };
   }
 
+  // Self-target guard: the honor hook only fires on REMOTE apply (skipOwnOps),
+  // so a request against THIS machine's own seat-offer would sit forever.
+  if (opts.targetPublisherGithubUserId === actor.githubUserId && target.signerDevicePubkey === signer.pubkey) {
+    return {
+      ok: false,
+      error: `seat-offer ${opts.targetOfferId} is this machine's OWN delegation — spawn locally instead (fleet:launch-on-plan consumes local seats directly)`,
+    };
+  }
+
   const requestedAtMs = nowMs();
   const spawnRequest: SpawnRequestPayload = {
     targetPublisherGithubUserId: opts.targetPublisherGithubUserId,
