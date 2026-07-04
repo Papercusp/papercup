@@ -58,6 +58,10 @@ import {
   noteMcpCurlBlock,
   resetMcpCurlBudget,
   MCP_CURL_BLOCK_KILL_AFTER,
+  REFLEXIVE_BLOCK_KILL_AFTER,
+  REFLEXIVE_BLOCK_ESCALATE_AFTER,
+  noteReflexiveBlock,
+  resetReflexiveBlockBudget,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -714,6 +718,32 @@ describe('onToolCall MCP-endpoint-curl guard (agent sessions only)', () => {
   });
 });
 
+describe('noteReflexiveBlock + resetReflexiveBlockBudget (shared reflexive-block backstop, iter16 / WI-2382)', () => {
+  afterEach(() => resetReflexiveBlockBudget());
+  it('is session-cumulative across tools and reset clears it', () => {
+    resetReflexiveBlockBudget();
+    expect(noteReflexiveBlock('irc')).toBe(1);
+    expect(noteReflexiveBlock('ask')).toBe(2); // shared — counts across reflexive tools
+    resetReflexiveBlockBudget();
+    expect(noteReflexiveBlock('irc')).toBe(1);
+  });
+  it('halts exactly on the Kth call, not before, naming the offending tool', () => {
+    resetReflexiveBlockBudget();
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((r) => halts.push(r));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) noteReflexiveBlock('irc');
+      expect(halts).toHaveLength(0);
+      noteReflexiveBlock('irc');
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('irc');
+      expect(halts[0]).toContain(String(REFLEXIVE_BLOCK_KILL_AFTER));
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+});
+
 describe('isAskCall + askBlockReason (interactive ask-gate guard, ornith iter10 / WI-2382)', () => {
   it('matches the bare `ask` builtin in every spelling, strips a group prefix', () => {
     expect(isAskCall('ask')).toBe(true);
@@ -740,9 +770,11 @@ describe('onToolCall ask guard (agent sessions only)', () => {
   beforeEach(() => {
     global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
     resetToolCallLoopState();
+    resetReflexiveBlockBudget();
   });
   afterEach(() => {
     resetToolCallLoopState();
+    resetReflexiveBlockBudget();
     if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
     else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
   });
@@ -774,6 +806,45 @@ describe('onToolCall ask guard (agent sessions only)', () => {
     });
     expect(r.reason ?? '').not.toContain('ask-blocked');
   });
+
+  it('escalates the block message once the session ignores it past the threshold', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < REFLEXIVE_BLOCK_ESCALATE_AFTER + 2; i++) reason = (await askCall()).reason ?? '';
+    expect(reason).toContain('STOP');
+  });
+
+  it('structurally HALTS the session after REFLEXIVE_BLOCK_KILL_AFTER blocked ask calls (iter16 / WI-2382)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        expect((await askCall()).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      const kth = await askCall();
+      expect(kth.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain(String(REFLEXIVE_BLOCK_KILL_AFTER));
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER + 3; i++) {
+        expect((await askCall()).block).toBeUndefined();
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
 });
 
 describe('isIrcCall + ircBlockReason (native irc-distraction guard, ornith iter11 / WI-2382)', () => {
@@ -802,15 +873,19 @@ describe('onToolCall irc guard (agent sessions only)', () => {
   beforeEach(() => {
     global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
     resetToolCallLoopState();
+    resetReflexiveBlockBudget();
   });
   afterEach(() => {
     resetToolCallLoopState();
+    resetReflexiveBlockBudget();
     if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
     else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
   });
 
   const ircCall = () =>
     onToolCall({ type: 'tool_call', toolName: 'irc', toolCallId: 'i', input: {} });
+  const askCall = () =>
+    onToolCall({ type: 'tool_call', toolName: 'ask', toolCallId: 'a', input: { questions: [] } });
 
   it('blocks an `irc` call on #1 for an agent session, redirecting to coord:presence', async () => {
     process.env.PAPERCUSP_AGENT_SESSION = '1';
@@ -823,6 +898,63 @@ describe('onToolCall irc guard (agent sessions only)', () => {
   it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
     delete process.env.PAPERCUSP_AGENT_SESSION;
     expect((await ircCall()).block).toBeUndefined();
+  });
+
+  it('escalates the block message once the session ignores it past the threshold (the iter16 loop)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < REFLEXIVE_BLOCK_ESCALATE_AFTER + 2; i++) reason = (await ircCall()).reason ?? '';
+    expect(reason).toContain('STOP');
+    expect(reason).toContain('plans:get');
+  });
+
+  it('structurally HALTS the session after REFLEXIVE_BLOCK_KILL_AFTER blocked irc calls (iter16 / WI-2382 — the 482× loop)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        expect((await ircCall()).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      const kth = await ircCall();
+      expect(kth.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain(String(REFLEXIVE_BLOCK_KILL_AFTER));
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('the backstop is SHARED across reflexive tools — a mixed irc+ask loop still halts at the threshold', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Alternate irc/ask; neither alone reaches the threshold, but the shared counter does.
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        await (i % 2 === 0 ? ircCall() : askCall());
+      }
+      expect(halts).toHaveLength(0);
+      await askCall(); // the Kth reflexive block overall
+      expect(halts).toHaveLength(1);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER + 3; i++) {
+        expect((await ircCall()).block).toBeUndefined();
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
   });
 });
 

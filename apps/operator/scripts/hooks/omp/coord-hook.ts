@@ -1727,6 +1727,44 @@ export function setHaltForTest(fn: (reason: string) => void): (reason: string) =
   return prev;
 }
 
+/** After this many CUMULATIVE blocked "reflexive" tool calls in one session the shared backstop
+ *  structurally terminates the runaway (ornith iter16, 2026-07-04 / WI-2382). The reflexive class is
+ *  the weak-model doom-loop where the model keeps re-issuing a disabled/wrong tool despite the block.
+ *  `eval` and the curl-the-MCP-endpoint content-block each already halt on their OWN per-tool count,
+ *  but `irc` and `ask` had the block with NO halt — so an ornith LEADER that reflexively hammered
+ *  `irc` at kickoff burned its ENTIRE session (iter16: 482 blocked `irc` calls, 0 progress — never
+ *  read its plan; the iter14 eval doom-loop reproduced on a different tool). The generic
+ *  consecutive-identical loop-breaker missed it because the calls varied just enough to be
+ *  non-adjacent. This shared counter is the UNIVERSAL backstop for that class: any mix of reflexive
+ *  blocks (irc/ask, + any future tool-name block wired to noteReflexiveBlock) that reaches the
+ *  threshold self-terminates. Threshold matches EVAL_BLOCK_KILL_AFTER for consistency. */
+export const REFLEXIVE_BLOCK_KILL_AFTER = 10;
+/** After this many blocked reflexive calls, the block MESSAGE escalates from the polite redirect to a
+ *  hard, copy-pasteable STOP (mirrors EVAL_BLOCK_ESCALATE_AFTER). Below the kill threshold so the
+ *  escalated prose gets a few turns to land before the structural halt. */
+export const REFLEXIVE_BLOCK_ESCALATE_AFTER = 3;
+let _reflexiveBlockCount = 0;
+
+/** Count a blocked reflexive tool call and, at/past REFLEXIVE_BLOCK_KILL_AFTER, structurally halt the
+ *  runaway agent session (reuses _haltRunawaySession so the process SIGTERM handler cleans up locks
+ *  first). Returns the new cumulative total so the caller can escalate its block MESSAGE too. Wired
+ *  into the reflexive guards that lack their own per-tool halt (irc, ask). isAgentSession-gating stays
+ *  at the call sites — an owner session never reaches these guards, so it never trips the halt. */
+export function noteReflexiveBlock(tool: string): number {
+  const n = ++_reflexiveBlockCount;
+  if (n >= REFLEXIVE_BLOCK_KILL_AFTER) {
+    _haltRunawaySession(
+      `reflexive-block doom-loop: ${n} blocked reflexive tool calls in one session (latest: ${tool})`,
+    );
+  }
+  return n;
+}
+
+/** Test seam: reset the session-cumulative reflexive-block backstop counter. */
+export function resetReflexiveBlockBudget(): void {
+  _reflexiveBlockCount = 0;
+}
+
 /** The redirect returned when an agent session invokes `eval`. Forces the model back
  *  onto the native tool / tools:invoke / Bash triad it actually has. ESCALATES once the
  *  session has ignored the block more than EVAL_BLOCK_ESCALATE_AFTER times: a weak model
@@ -1771,14 +1809,20 @@ export function isAskCall(toolName: string): boolean {
  *  GATE must be presented as plain TEXT and awaited (the launcher/owner sends the route as a
  *  coordination message); a genuine mid-work question goes to the durable `coord:ask-owner`
  *  path, which actually reaches the owner and never auto-defaults. Pure. */
-export function askBlockReason(): string {
-  return (
+export function askBlockReason(count = 1): string {
+  const base =
     'ask-blocked: the interactive `ask` tool is DISABLED for papercusp agent sessions — you ' +
     'have no human at the terminal, so `ask` cannot be answered and auto-resolves to its ' +
     'default option (sending you down a route nobody chose). If this is your KICKOFF ROUTING ' +
     'GATE, present the options as plain TEXT and STOP — your launcher/owner will send the ' +
     'routing decision as a coordination message you act on next turn. If you genuinely need an ' +
-    'owner decision mid-task, call `coord:ask-owner` (durable) — NOT `ask`. Do not call `ask` again.'
+    'owner decision mid-task, call `coord:ask-owner` (durable) — NOT `ask`. Do not call `ask` again.';
+  if (count <= REFLEXIVE_BLOCK_ESCALATE_AFTER) return base;
+  return (
+    `ask-blocked (×${count}): STOP — you have called \`ask\` ${count} times and EVERY call is ` +
+    'blocked; `ask` will NEVER be answered in this session. Do NOT call `ask` again. Present your ' +
+    'routing gate as plain TEXT and end your turn, or use `coord:ask-owner` for a real owner ' +
+    'decision. Continuing to call `ask` only wastes the session and will end it.'
   );
 }
 
@@ -1798,14 +1842,21 @@ export function isIrcCall(toolName: string): boolean {
  *  coordinate through the `coord:*` MCP tools, never omp's native chat: `coord:presence` for live
  *  peers, `coord:send` to message one, `coord:orient` for your own assignments + inbox. At KICKOFF
  *  you do not need peers at all — read your plan and go through your routing gate. Pure. */
-export function ircBlockReason(): string {
-  return (
+export function ircBlockReason(count = 1): string {
+  const base =
     'irc-blocked: the native `irc` inter-agent chat tool is DISABLED for papercusp agent sessions — ' +
     'it is not wired to the papercusp coordination bus, so it always returns "No other agents" and ' +
     'only wastes turns. To see live peers use `coord:presence`; to message one use `coord:send`; for ' +
     'your own assignments + inbox use `coord:orient`. But at KICKOFF you do not need peers — read ' +
     'your plan with `tools:invoke {name:"plans:get", args:{slug, harness}}` and go through your ' +
-    'routing gate. Do not call `irc` again.'
+    'routing gate. Do not call `irc` again.';
+  if (count <= REFLEXIVE_BLOCK_ESCALATE_AFTER) return base;
+  return (
+    `irc-blocked (×${count}): STOP — you have called \`irc\` ${count} times and EVERY call is ` +
+    'blocked; it is permanently disabled and will NEVER reach a peer. Do NOT call `irc` again — ' +
+    'calling it again only wastes the turn. Your next action must be to READ YOUR PLAN: ' +
+    '`tools:invoke {name:"plans:get", args:{slug:"<your plan slug>", harness:"papercusp"}}`, then ' +
+    'go through your routing gate. If you truly need peers, use `coord:presence` — never `irc`.'
   );
 }
 
@@ -2022,10 +2073,14 @@ export async function onToolCall(
   // tools, so this tool-NAME block is the structural lever: present the routing gate as TEXT and
   // wait for the owner's coord decision; use coord:ask-owner for a genuine mid-task question. A
   // structural replacement for prompt-only steering (a weak model ignores prose — same lesson as
-  // eval). Not reflexive like eval, so no escalation counter; the generic loop-breaker below is the
-  // backstop if it ever repeats. Owner sessions unrestricted (D-003).
+  // eval). Feeds the SHARED reflexive-block backstop (noteReflexiveBlock): the escalating message
+  // hardens past the threshold and, after REFLEXIVE_BLOCK_KILL_AFTER blocked reflexive calls, the
+  // session self-terminates — the generic identical-call breaker is NOT enough (iter16 proved it:
+  // 482 blocked `irc` calls slipped past it, so `ask` gets the same halt). Owner sessions
+  // unrestricted (D-003).
   if (isAgentSession() && isAskCall(event.toolName)) {
-    return { block: true, reason: askBlockReason() };
+    const n = noteReflexiveBlock('ask');
+    return { block: true, reason: askBlockReason(n) };
   }
 
   // irc-distraction guard (ornith iter11, 2026-07-04 / WI-2382): OMP's native `irc` inter-agent
@@ -2034,9 +2089,15 @@ export async function onToolCall(
   // (iter11: 5× before the generic loop-breaker caught it) before reading its plan. Same class as
   // eval/ask (no omp-config disable; `--tools` gates the MCP tools too), so block by tool-NAME on
   // call #1 and redirect onto coord:presence / the plan read. Fires before the generic loop-breaker
-  // so it wins at call #1 rather than after 3 wasted repeats. Owner sessions unrestricted (D-003).
+  // so it wins at call #1. That generic breaker is NOT a sufficient backstop here: iter16
+  // (2026-07-04) a leader hammered `irc` 482× — 0 progress, never read its plan — and the
+  // consecutive-identical breaker missed it (the calls varied just enough to be non-adjacent, the
+  // exact reason eval needed its own counter). So `irc` feeds the SHARED reflexive-block backstop
+  // (noteReflexiveBlock): the message escalates past the threshold and the session self-terminates
+  // after REFLEXIVE_BLOCK_KILL_AFTER blocked reflexive calls. Owner sessions unrestricted (D-003).
   if (isAgentSession() && isIrcCall(event.toolName)) {
-    return { block: true, reason: ircBlockReason() };
+    const n = noteReflexiveBlock('irc');
+    return { block: true, reason: ircBlockReason(n) };
   }
 
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the

@@ -5,14 +5,23 @@
  * installer bundles as a Tauri resource, and prints a SIZE REPORT so a release
  * build can see exactly how much the installer grows.
  *
- * Run (against a QUIESCENT operator — stop it first so the corestore dir is not
+ * Run — the SHIPPING command — on the OWNER box (the live epoch keychain must be
+ * present: the git seal key is the hive epoch key, and deriveEpochKey is
+ * get-or-CREATE, so a wrong keychain context mints a divergent key no member can
+ * unwrap) against a QUIESCENT operator (stop it first so the corestore dir is not
  * being written):
  *
  *   PAPERCUSP_ALLOW_DEV_RESTART=1 \
  *   npx tsx apps/operator/lib/release/cut-seed-cli.ts \
  *     --out papercusp-desktop/src-tauri/seed \
  *     --origin https://github.com/Papercusp/papercup \
- *     --encrypt-key-hex <64-hex>            # REQUIRED for the private repo
+ *     --workspace-id papercusp-workspace    # seal git bundles under the hive epoch key (keyRef via=epoch)
+ *
+ * ⚠ Pass --workspace-id (or --epoch) for a real release: it seals via=epoch, which
+ * a freshly-admitted member decrypts with the epoch key admission delivers (Q-4).
+ * --encrypt-key-hex is FIXTURE/manual ONLY (keyRef via=seed-key-op) — there is NO
+ * joiner delivery path for it, so a member cannot unwrap it and the git half falls
+ * back to a cold clone. Do NOT use --encrypt-key-hex for a shippable seed.
  *
  * Flags (all optional except where noted):
  *   --out <dir>            seed output dir (default: papercusp-desktop/src-tauri/seed)
@@ -22,9 +31,10 @@
  *   --origin <url>         origin the restored clone re-points at (default: the GitHub repo)
  *   --rev <rev>            git bundle rev selector (default: --all; pass HEAD for a smaller seed — Q-1)
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
- *   --workspace-id <id>    resolve cutAtEpoch from live hive_settings
+ *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
- *   --encrypt-key-hex <h>  32-byte hex key to seal the git bundles at rest (env: PAPERCUSP_SEED_KEY_HEX)
+ *   --encrypt-key-hex <h>  FIXTURE ONLY (via=seed-key-op, no joiner delivery): 32-byte hex to seal the
+ *                          git bundles at rest (env: PAPERCUSP_SEED_KEY_HEX) — never for a real release
  *   --no-git               skip the code half (hive-state-only seed)
  *   --no-corestore         skip the federated-state half (code-only seed)
  *   --json                 print the manifest + size report as JSON
