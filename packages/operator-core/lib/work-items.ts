@@ -246,8 +246,16 @@ function tsIso(v: unknown): string {
 const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 
 function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
-  const v = (payload as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  let obj = payload;
+  if (typeof obj === 'string') {
+    try {
+      obj = JSON.parse(obj) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  const v = (obj as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   return v as CompletionVerificationEvidence;
 }

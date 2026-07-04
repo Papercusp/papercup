@@ -1666,7 +1666,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       // the same TTL backstop evicts it.
       expect(buffer.size(), 'an op with a source-log key but unresolved identity must be buffered').toBe(1);
       expect(await readIssueForSlug(orgDb.adminSql, 'never-a-member', 'I-ghost')).toBeUndefined();
-      expect(buffer.sweepExpired(9000 + DEFAULT_MEMBER_CONTENT_TTL_MS)).toBe(1);
+      expect(buffer.sweepExpired(Date.now() + DEFAULT_MEMBER_CONTENT_TTL_MS + 1)).toBe(1);
       expect(buffer.size()).toBe(0);
     },
     60_000,

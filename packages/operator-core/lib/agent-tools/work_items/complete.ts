@@ -33,7 +33,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
 import { getWorkItem, setWorkItemState, workItemObjectRef } from '../../work-items';
-import { CompletionRecordSchema, type CompletionRecord } from '../../coord-lifecycle/records';
+import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -82,6 +82,22 @@ const itemSpec = z.object({
 
 type CompleteItem = z.infer<typeof itemSpec>;
 
+function completionEvidenceFromRecord(rec: CompletionRecord): CompletionVerificationEvidence | undefined {
+  const nested = rec.verification ?? {};
+  const filesChanged = rec.filesChanged ?? nested.filesChanged;
+  const testsRun = rec.testsRun ?? nested.testsRun ?? rec.tests;
+  const testResult = rec.testResult ?? nested.testResult;
+  const verifiedHow = rec.verifiedHow ?? nested.verifiedHow;
+  const addedTests = rec.addedTests ?? nested.addedTests;
+  const evidence: CompletionVerificationEvidence = {};
+  if (filesChanged?.length) evidence.filesChanged = filesChanged;
+  if (testsRun?.trim()) evidence.testsRun = testsRun;
+  if (testResult?.trim()) evidence.testResult = testResult;
+  if (verifiedHow) evidence.verifiedHow = verifiedHow;
+  if (addedTests !== undefined) evidence.addedTests = addedTests;
+  return Object.keys(evidence).length > 0 ? evidence : undefined;
+}
+
 /** Complete ONE item — confirm it exists, optionally transition state (a failed
  *  state write NEVER loses the completion, EI-24), fill provenance defaults, and
  *  return the reflect step. Self-describes its id. */
@@ -122,6 +138,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
           harness: it.harness,
           by: ident.ownerId,
           completionRef: it.completion.summary,
+          completionEvidence: completionEvidenceFromRecord(it.completion),
         })) ?? existing;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);

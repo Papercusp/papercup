@@ -96,6 +96,37 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('passes structured verification evidence to the terminal state writer', async () => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+    await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'shipped',
+        tests: 'pnpm vitest complete.test.ts --run',
+        testResult: '1/1 green',
+        filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+        verifiedHow: 'unit',
+        addedTests: true,
+      },
+    });
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({
+        completionRef: 'shipped',
+        completionEvidence: {
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+          testsRun: 'pnpm vitest complete.test.ts --run',
+          testResult: '1/1 green',
+          verifiedHow: 'unit',
+          addedTests: true,
+        },
+      }),
+    );
+  });
+
   it('fills completion.workItem from the id when the caller omits it (DRY)', async () => {
     getWorkItem.mockResolvedValue(item);
     const r = await one({ id: 'F-12', completion: { summary: 's' } });
@@ -339,6 +370,16 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.deferred).toEqual(['timeout follow-up']);
     });
 
+    it('coerces structured verification aliases', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        filesChanged: 'packages/operator-core/lib/work-items.ts',
+        addedTests: 'true',
+      }) as { filesChanged: unknown; addedTests: unknown };
+      expect(out.filesChanged).toEqual(['packages/operator-core/lib/work-items.ts']);
+      expect(out.addedTests).toBe(true);
+    });
+
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
       const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
       expect(out.tests).toBe('67 green; vitest');
@@ -367,6 +408,13 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', whatLanded: ['a'] })).toEqual({
         id: 'WI-1',
         completion: { summary: 'done', whatLanded: ['a'] },
+      });
+    });
+
+    it('gathers flat structured verification fields under `completion`', () => {
+      expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', testsRun: 'vitest green', addedTests: true })).toEqual({
+        id: 'WI-1',
+        completion: { summary: 'done', testsRun: 'vitest green', addedTests: true },
       });
     });
 

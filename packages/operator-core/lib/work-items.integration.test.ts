@@ -268,6 +268,46 @@ describe('WI-1403 — completion-integrity gate (contract C-1)', () => {
     expect(dbRow.assigned_at).toBeNull();
   });
 
+  it('persists structured terminal completion evidence for feature and issue families', async () => {
+    const evidence = {
+      filesChanged: ['packages/operator-core/lib/work-items.ts'],
+      testsRun: 'pnpm vitest work-items.integration.test.ts --run',
+      testResult: '2/2 green',
+      verifiedHow: 'integration' as const,
+      addedTests: true,
+    };
+
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
+    const featAfter = await wi.setWorkItemState(feat.id, 'passed', {
+      harness: 'papercup',
+      by: 'agA',
+      completionRef: 'shipped with structured evidence',
+      completionEvidence: evidence,
+    });
+    expect(featAfter?.terminalCompletionEvidence).toEqual(evidence);
+    expect((await wi.getWorkItem(feat.id, 'papercup'))?.terminalCompletionEvidence).toEqual(evidence);
+
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    const bugAfter = await wi.setWorkItemState(bug.id, 'closed', {
+      by: 'agA',
+      completionRef: 'closed with structured evidence',
+      completionEvidence: evidence,
+    });
+    expect(bugAfter?.terminalCompletionEvidence).toEqual(evidence);
+    expect((await wi.getWorkItem(bug.id))?.terminalCompletionEvidence).toEqual(evidence);
+
+    const [featurePayload] = await db.sql<{ evidence: unknown }[]>`
+      SELECT payload->'_completionEvidence' AS evidence
+        FROM harness_shared.harness_features_consolidated
+       WHERE feature_id = ${feat.id}`;
+    const [issuePayload] = await db.sql<{ evidence: unknown }[]>`
+      SELECT payload->'_completionEvidence' AS evidence
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${bug.id}`;
+    expect(featurePayload.evidence).toEqual(evidence);
+    expect(issuePayload.evidence).toEqual(evidence);
+  });
+
   it('a non-terminal transition is UNAFFECTED by the gate — no owner/completionRef required', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const after = await wi.setWorkItemState(feat.id, 'in_progress', { harness: 'papercup' });
