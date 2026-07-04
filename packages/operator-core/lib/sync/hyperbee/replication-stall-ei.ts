@@ -26,23 +26,40 @@ import type { ReplicationStallEpisode } from './replication-liveness';
 export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
 
 /**
- * The EI surface also escalates the two WI-2009 outbox-drain detectors — same
- * durable-EI + dedup mechanism, same triage topic; the "logKeyHex" slot carries
- * the own-log key as the harness's stable identifier:
- *   - 'drain_stalled' — a single drain pass HUNG past the watchdog timeout;
- *   - 'drain_backlog_stalled' — passes SETTLE but drain zero rows for the whole
- *     no-progress window while mapped undrained rows wait (the original filed
- *     silent-permanence signature the hung-pass watchdog does not cover).
+ * The EI surface also escalates the outbox-drain detectors — same durable-EI +
+ * dedup mechanism, same triage topic; the "logKeyHex" slot carries a log key as
+ * the stable dedup identifier:
+ *   - 'drain_stalled' (WI-2009) — a single drain pass HUNG past the watchdog
+ *     timeout; logKeyHex = the harness's LIVE own-log key;
+ *   - 'drain_backlog_stalled' (WI-2009) — passes SETTLE but drain zero rows for the
+ *     whole no-progress window while mapped undrained rows wait (the original filed
+ *     silent-permanence signature the hung-pass watchdog does not cover); logKeyHex
+ *     = the harness's LIVE own-log key;
+ *   - 'drain_orphan_tail' (WI-2136) — fed-scope rows were drained into a PRIOR-era
+ *     own-log key that no longer matches the live log (the own-log keypair did not
+ *     persist across a restart — WI-2105 class), so that era's unreplicated tail is
+ *     stranded; logKeyHex = the DEAD prior-era key (so distinct dead eras page
+ *     separately).
  */
 export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
-  kind: ReplicationStallEpisode['kind'] | 'drain_stalled' | 'drain_backlog_stalled';
+  kind:
+    | ReplicationStallEpisode['kind']
+    | 'drain_stalled'
+    | 'drain_backlog_stalled'
+    | 'drain_orphan_tail';
 };
 
 /** Stable, dedup-able title for one (harness, log, kind). */
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated' | 'drain_stalled' | 'drain_backlog_stalled';
+  kind:
+    | 'no_replicator'
+    | 'frozen'
+    | 'connected_never_replicated'
+    | 'drain_stalled'
+    | 'drain_backlog_stalled'
+    | 'drain_orphan_tail';
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +

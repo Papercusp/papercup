@@ -149,6 +149,25 @@ describe('runDrillCycle', () => {
     expect(cls.cleaned.v).toBe(true);
   });
 
+  it('EI-6933: the detect-stage tick no-ops processAging/processAutoClose (both are NOT scoped to SANDBOX_WORKSPACE_ID upstream — they resolve issues via a process-global "active workspace", so left live they run against the REAL production issue backlog on every drill)', async () => {
+    const cls = fakeClass();
+    const { deps } = fakeDeps();
+    await runDrillCycle(cls, deps);
+
+    expect(deps.runTick).toHaveBeenCalledTimes(1);
+    const [, , tickDeps] = (deps.runTick as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      unknown,
+      { processAging?: (...a: unknown[]) => Promise<unknown[]>; processAutoClose?: (...a: unknown[]) => Promise<unknown[]> },
+    ];
+    expect(tickDeps.processAging).toBeTypeOf('function');
+    expect(tickDeps.processAutoClose).toBeTypeOf('function');
+    // Both must resolve to an empty array WITHOUT doing any real work — no
+    // arguments matter, they are unconditional no-ops for the sandbox tick.
+    await expect(tickDeps.processAging!()).resolves.toEqual([]);
+    await expect(tickDeps.processAutoClose!()).resolves.toEqual([]);
+  });
+
   it('an in-flight drill of the same class skips (one open drill per class)', async () => {
     const { deps } = fakeDeps();
     (deps.store.readOutcomes as ReturnType<typeof vi.fn>).mockResolvedValue([

@@ -116,6 +116,25 @@ export const DRAIN_PASS_TIMEOUT_MS = 120_000;
  */
 export const DRAIN_BACKLOG_STALL_MS = 10 * 60 * 1000;
 
+/**
+ * WI-2136 (orphan-tail recurrence guard): the lookback window for the orphan-tail
+ * detector. It only considers rows drained within this window into a PRIOR-era
+ * own-log key. Set to the inline-GC horizon (24h) — a still-present drained row is
+ * inherently ≤24h old (older ones are GC'd), so this captures exactly the tails
+ * that could still be recovered by a re-emit (drained_at=NULL). A dead era whose
+ * rows have all been GC'd is unrecoverable and (correctly) no longer flagged.
+ */
+export const DRAIN_ORPHAN_LOOKBACK_MS = OUTBOX_GC_AGE_MS;
+
+/**
+ * WI-2136: min interval between orphan-tail detector runs. The detector runs once
+ * at boot (the moment a restart's prior-era tail is detectable) and then at most
+ * this often, piggy-backed on the existing drain loop (no second timer). Each dead
+ * key escalates ONCE per process (in-memory latch) and the durable EI dedups per
+ * (harness, dead-log, kind), so this cadence bounds the read cost, not the noise.
+ */
+export const DRAIN_ORPHAN_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
 /** Thrown inside the drain loop when a pass exceeds `DRAIN_PASS_TIMEOUT_MS`. */
 export class DrainPassTimeoutError extends Error {
   constructor(readonly scope: string, readonly timeoutMs: number) {
@@ -375,10 +394,14 @@ export async function drainOutboxOnce(
       }
     }
 
-    // Mark drained only after the append + fan-out resolved.
+    // Mark drained only after the append + fan-out resolved. WI-2136: also stamp
+    // WHICH own-log key this row was appended into, so the orphan-tail recurrence
+    // guard can later detect a row drained onto a PRIOR-era log that no longer
+    // matches the live process's log (the WI-2105 non-persistent-keypair class).
     await pg`
       UPDATE harness_shared.substrate_outbox
-         SET drained_at = ${now}
+         SET drained_at = ${now},
+             drained_log_key = ${handle.ownLog.keyHex}
        WHERE id = ${r.id}`;
     drained += 1;
   }
@@ -402,10 +425,21 @@ export interface StartDrainOptions {
   /** Test seam: override the no-forward-progress backlog-stall window
    *  (`DRAIN_BACKLOG_STALL_MS`). 0 disables the backlog detector. Production omits it. */
   _backlogStallMs?: number;
-  /** Test seam: intercept BOTH stall escalations (default = durable EI via
+  /** Test seam (WI-2136): override the orphan-tail lookback window
+   *  (`DRAIN_ORPHAN_LOOKBACK_MS`). Production omits it. */
+  _orphanLookbackMs?: number;
+  /** Test seam (WI-2136): override the orphan-tail check throttle
+   *  (`DRAIN_ORPHAN_CHECK_INTERVAL_MS`). A NEGATIVE value disables the detector.
+   *  Production omits it. */
+  _orphanCheckIntervalMs?: number;
+  /** Test seam: intercept ALL detector escalations (default = durable EI via
    *  `fileReplicationStallEi`). Receives the human detail + the episode `kind`
-   *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress). Production omits it. */
-  _onStallEpisode?: (detail: string, kind?: 'drain_stalled' | 'drain_backlog_stalled') => void;
+   *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress |
+   *  'drain_orphan_tail' prior-era log). Production omits it. */
+  _onStallEpisode?: (
+    detail: string,
+    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail',
+  ) => void;
 }
 
 export interface OutboxDrainHandle {
@@ -446,6 +480,8 @@ export function startOutboxDrain(
 
   const passTimeoutMs = opts._passTimeoutMs ?? DRAIN_PASS_TIMEOUT_MS;
   const backlogStallMs = opts._backlogStallMs ?? DRAIN_BACKLOG_STALL_MS;
+  const orphanLookbackMs = opts._orphanLookbackMs ?? DRAIN_ORPHAN_LOOKBACK_MS;
+  const orphanCheckIntervalMs = opts._orphanCheckIntervalMs ?? DRAIN_ORPHAN_CHECK_INTERVAL_MS;
 
   // WI-2009 leg-3 backlog-stall detector state. `lastProgressAt` is the last
   // time ANY pass drained ≥1 row (init: loop start). `backlogStallEscalated`
@@ -454,14 +490,26 @@ export function startOutboxDrain(
   let lastProgressAt = Date.now();
   let backlogStallEscalated = false;
 
+  // WI-2136 orphan-tail detector state. `escalatedOrphanKeys` latches each dead
+  // prior-era log key so it pages ONCE per process; `lastOrphanCheckAt` throttles
+  // the check to `orphanCheckIntervalMs` (0 ⇒ never run yet → run on the first pass,
+  // i.e. at boot — the moment a restart's stranded tail becomes detectable).
+  const escalatedOrphanKeys = new Set<string>();
+  let lastOrphanCheckAt = 0;
+
   /** WI-2009 stall escalation for BOTH detectors: loud console line (grep-able,
    *  mirrors the WI-1840 detector pattern) + durable EI (dedup'd per
    *  (harness, log, kind) while one stays open). Best-effort — never throws into
    *  the drain loop. */
   const escalateStall = (
-    kind: 'drain_stalled' | 'drain_backlog_stalled',
+    kind: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail',
     detail: string,
     stalledForMs: number,
+    // WI-2136: the log key the EI dedups on. Defaults to the LIVE own-log key
+    // (the harness's stable identifier for the drain-stall kinds); the orphan-tail
+    // kind overrides it with the DEAD prior-era key so distinct dead eras page
+    // separately and each dedups against its own open EI.
+    logKeyHex: string = handle.ownLog.keyHex,
   ): void => {
     if (opts._onStallEpisode) {
       opts._onStallEpisode(detail, kind);
@@ -472,7 +520,7 @@ export function startOutboxDrain(
         m.fileReplicationStallEi({
           workspaceId: handle.workspaceId,
           harnessSlug: handle.harnessSlug,
-          logKeyHex: handle.ownLog.keyHex,
+          logKeyHex,
           kind,
           stalledForMs,
           detail,
@@ -519,6 +567,78 @@ export function startOutboxDrain(
           `NOT federating; the ${pollMs}ms poll keeps re-attempting.`,
         stalledForMs,
       );
+    } catch {
+      // best-effort observability — the drain's own liveness must not depend on it
+    }
+  }
+
+  /**
+   * WI-2136 orphan-tail recurrence guard: page when fed-scope rows were drained
+   * into a PRIOR-era own-log key that no longer matches the live process's log.
+   *
+   * The own-log keypair is SUPPOSED to persist across restarts; WI-2105 found it
+   * does NOT on the tower bg-host (e06b8704 era → 4072cfad era), so each restart
+   * orphans the prior log's unreplicated tail — rows sit drained_at-stamped but
+   * their blocks can never replicate (no live process holds the dead log's
+   * keypair). The drain now stamps `drained_log_key` per row (mig 495); this reads
+   * the distinct keys of recently-drained rows and escalates a durable
+   * `drain_orphan_tail` EI for any that isn't the live key. Recovery is
+   * runbook-only per the GO/NO-GO (d)-clause (set drained_at=NULL for the dead-key
+   * rows → the next drain re-appends them onto the live log); the root fix (Q1) is
+   * to persist the keypair, after which the live key always matches and this guard
+   * stays silent — pinning the class against regression.
+   *
+   * Throttled + latched: runs at boot (the initial pass) and then ≤ once per
+   * `orphanCheckIntervalMs`; each dead key pages once per process (and the EI dedups
+   * per (harness, dead-log, kind) besides). Best-effort + read-only: a probe fault
+   * must never wedge the drain. Legacy rows (drained pre-495) carry NULL and are
+   * excluded, so they never false-fire.
+   */
+  async function maybeDetectOrphanTail(): Promise<void> {
+    if (stopped || orphanCheckIntervalMs < 0) return;
+    const nowT = Date.now();
+    if (lastOrphanCheckAt !== 0 && nowT - lastOrphanCheckAt < orphanCheckIntervalMs) return;
+    lastOrphanCheckAt = nowT;
+    try {
+      const groups = await pg<
+        Array<{
+          drained_log_key: string;
+          rows: number;
+          oldest_at: string | number | null;
+          newest_at: string | number | null;
+        }>
+      >`
+        SELECT drained_log_key,
+               count(*)::int AS rows,
+               min(drained_at) AS oldest_at,
+               max(drained_at) AS newest_at
+          FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${handle.workspaceId}
+           AND harness_slug = ${handle.harnessSlug}
+           AND drained_at IS NOT NULL
+           AND drained_log_key IS NOT NULL
+           AND drained_log_key <> ${handle.ownLog.keyHex}
+           AND drained_at >= ${nowT - orphanLookbackMs}
+         GROUP BY drained_log_key`;
+      for (const g of groups) {
+        const deadKey = g.drained_log_key;
+        if (escalatedOrphanKeys.has(deadKey)) continue;
+        escalatedOrphanKeys.add(deadKey);
+        const oldestAt = g.oldest_at != null ? Number(g.oldest_at) : nowT;
+        const newestAt = g.newest_at != null ? Number(g.newest_at) : nowT;
+        escalateStall(
+          'drain_orphan_tail',
+          `outbox-drain orphan-tail (WI-2136 / WI-2105 class) for ${wantPayload}: ${g.rows} ` +
+            `fed-scope row(s) were drained into a PRIOR-era own-log key ${deadKey.slice(0, 12)}… that ` +
+            `no longer matches the live log ${handle.ownLog.keyHex.slice(0, 12)}… — the own-log keypair ` +
+            `changed across a restart, so that era's unreplicated tail is stranded (its blocks can never ` +
+            `replicate; no live process holds the dead log). Recovery is runbook-only: set drained_at=NULL ` +
+            `for the dead-key rows so the next drain re-appends them onto the live log (drained ` +
+            `${oldestAt}–${newestAt}).`,
+          Math.max(0, nowT - oldestAt),
+          deadKey,
+        );
+      }
     } catch {
       // best-effort observability — the drain's own liveness must not depend on it
     }
@@ -597,6 +717,11 @@ export function startOutboxDrain(
     // drain settles — reached on BOTH the normal and the throw (fast-fail) path,
     // so a pass that fails fast every time (the filed signature) is caught.
     if (!stopped && !anyProgress) await maybeEscalateBacklogStall();
+    // WI-2136: check for an orphaned prior-era drain tail (throttled; runs at boot
+    // via the initial pass). Independent of drain progress — a perfectly healthy
+    // draining process can still be sitting on a stranded tail from a prior era
+    // whose keypair it no longer holds.
+    if (!stopped) await maybeDetectOrphanTail();
   }
 
   // Immediate catch-up drain.
