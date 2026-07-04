@@ -52,6 +52,11 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     const base = {
       agentId: r.agentId ?? null,
       alive: r.alive === true,
+      // EI-6077: the coordinator-facing session state (live|parked|ended|recorded),
+      // derived from wakeability — surfaced alongside `alive` so a caller can tell
+      // "really runnable" from "just looks alive" without a second coord:presence
+      // call. null when the wakeability read was unavailable (state unknown).
+      sessionState: typeof r.sessionState === "string" ? r.sessionState : null,
       intent: clip(r.intent, c.intent),
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,
