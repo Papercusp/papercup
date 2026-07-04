@@ -9,7 +9,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { repoHeadSha, runGit } from './git-runner';
 import { resolveHarnessDocPaths } from './harness-repo';
 import { readDocBody } from './doc-fs';
@@ -95,9 +95,20 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
         // bug we want surfaced, not silently dropped.
         const inferred = inferSubjectFromBody(body);
         if (inferred.length) {
+          // EI-6592: a doc's own prose legitimately quotes its OWN path sometimes (a
+          // changelog note naming the tracking item about itself, e.g.) — never treat
+          // that as a meaningful subject. Left unguarded, this is how a body-inferred
+          // doc self-widens WITHOUT BOUND: `reconcileAllDocAnchors` (sweep-after-sync.ts)
+          // re-runs this same inference on a recurring cadence with the doc's CURRENT
+          // body, so once a doc mentions its own path (to explain "what changed" about
+          // itself), every future reconcile tick re-discovers and re-persists that
+          // self-mention as a permanent anchor — confirmed live on
+          // docs/archive/signal-fusion-activation-A-D.md (oddsmith), whose anchor set
+          // came to include its own path after a re-verification note quoted it.
+          const selfRepoRelPath = relative(repoRoot, join(docsRoot, docId)).split(sep).join('/');
           const real = inferred
             .flatMap((r) => (r.kind === 'path' ? r.globs : []))
-            .filter((g) => existsSync(join(repoRoot, g)));
+            .filter((g) => g !== selfRepoRelPath && existsSync(join(repoRoot, g)));
           if (real.length) documents = real;
         }
       }

@@ -219,6 +219,30 @@ describe('harness-docs full flow', () => {
     expect(merged.entries.find((e) => e.docId === 'orphan.md')!.status).toBe('untracked');
   });
 
+  it("anchorManualDoc: body-inference EXCLUDES the doc's own path as a self-anchor (EI-6592 self-widening loop)", async () => {
+    // No `documents:` frontmatter — falls through to body-inference. The body quotes
+    // its OWN path (as a doc legitimately might, e.g. a changelog entry naming the
+    // tracking item about itself) alongside a real, DIFFERENT repo file.
+    writeFileSync(
+      join(repo, 'docs/guides/selfref.md'),
+      '# Selfref\nSee `docs/guides/selfref.md` (this doc) and `src/feature1.ts` for details.\n',
+    );
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'selfref']);
+
+    const res = await anchorManualDoc({ harnessSlug: 'demo', docId: 'guides/selfref.md' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.anchored).toBe(true);
+    const globs = res.subjectRef[0]?.kind === 'path' ? res.subjectRef[0].globs : [];
+    // The real OTHER path is inferred...
+    expect(globs).toContain('src/feature1.ts');
+    // ...but the doc never anchors on ITSELF — the exact mechanism that turned every
+    // doc-steward re-verification note quoting the doc's own path into a permanent,
+    // monotonically-widening anchor (EI-6592, oddsmith signal-fusion-activation-A-D.md).
+    expect(globs).not.toContain('docs/guides/selfref.md');
+  });
+
   // #5 PART B: the periodic FULL reconcile catches a STALE anchor cache that slipped past the git-sync
   // re-anchor-on-change path — it re-derives anchors from CURRENT frontmatter for every anchor-derived doc.
   it('reconcileAllDocAnchors re-derives a STALE anchor cache from current frontmatter (re-anchor-on-change safety net)', async () => {
