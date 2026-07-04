@@ -16,8 +16,9 @@
  * item whose test-requiring VALs are not all passing. With zero test-requiring VALs
  * anywhere there is nothing to prove, so it passes.
  *
- * Gated behind `FLAGS.TEST_COMPLETION_GATE` (default OFF) at the call site
- * (`agent-tools/work_items/complete.ts`), so it is inert until the flag is flipped.
+ * Gated behind `FLAGS.TEST_COMPLETION_GATE` (default ON since 2026-07-04 — graduated
+ * from the dark set after P-014 verified it live with zero blast radius, EI-7280) at
+ * the call site (`agent-tools/work_items/complete.ts`).
  */
 
 import { getOrgPg } from '@papercusp/db-org';
