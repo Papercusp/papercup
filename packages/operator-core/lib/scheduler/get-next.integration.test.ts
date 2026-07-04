@@ -478,6 +478,30 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-issue-fallthrough', revision: 2 });
   });
 
+  it('tier 3: an issue-kind spec narrows issue fallback instead of claiming an older task', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('WI-task-owner-reserved', { state: 'open', createdTs: 10, kind: 'task' });
+    await seedIssue('EI-bug', { state: 'open', createdTs: 100, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'bug-change-issue-fallthrough',
+      revision: 3,
+      view: {
+        filter: {
+          all: [
+            { field: 'kind', op: 'in', value: ['bug', 'change'] },
+            { field: 'id', op: '!=', value: 'WI-task-owner-reserved' },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-bug');
+    expect(r?.workItem.kind).toBe('bug');
+    expect(r?.claimedUnder).toEqual({ specId: 'bug-change-issue-fallthrough', revision: 3 });
+  });
+
   it('tier 3: the SAME kind-narrowed request stays dry when SCHEDULER_ISSUES_CLAIMABLE is OFF (the flag, not the kind narrowing, gates it — WI-1407 regression)', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
     await seedIssue('EI-t3-off', { state: 'open', createdTs: 100 });

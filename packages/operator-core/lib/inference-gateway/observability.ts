@@ -15,6 +15,10 @@ import type { RawGatewayStats } from './gateway-wedge';
 export interface GatewayHeadroom {
   reachable: boolean;
   accountId?: string;
+  /** Epoch ms when the gateway process started, when the live /stats payload is new enough to expose it. */
+  processStartedAt?: number;
+  /** Milliseconds since the gateway process started. Fresh restarts can briefly report zero capacity. */
+  processUptimeMs?: number;
   /** Most-constraining unified window: '5h' | '7d' | 'unified' (D-009). */
   window?: string;
   /** 0..1+ utilization of that window (1.0 = at cap). */
@@ -62,9 +66,17 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
   const u = stats.unified;
   // P-005: surface the bound account's smoothing pace (the /stats `smoothing.byAccount[accountId]` entry).
   const sm = stats.smoothing?.byAccount?.[stats.accountId];
+  const processStartedAt = Number.isFinite(stats.processStartedAt) ? stats.processStartedAt : undefined;
+  const processUptimeMs = Number.isFinite(stats.processUptimeMs)
+    ? stats.processUptimeMs
+    : processStartedAt != null
+      ? Math.max(0, now - processStartedAt)
+      : undefined;
   return {
     reachable: true,
     accountId: stats.accountId,
+    processStartedAt,
+    processUptimeMs,
     window: u?.window,
     utilization: u?.utilization,
     utilizationPct: u ? Math.round(u.utilization * 100) : undefined,

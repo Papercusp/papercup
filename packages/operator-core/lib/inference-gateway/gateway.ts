@@ -732,6 +732,11 @@ export interface GatewayDeps {
 export interface GatewayStats {
   accountId: string;
   upstreamBase: string;
+  /** Epoch ms when THIS gateway process started. Optional for deploy-skew readers of older live gateways. */
+  processStartedAt?: number;
+  /** Milliseconds since THIS gateway process started. Lets capacity readers distinguish a fresh restart
+   *  bootstrap snapshot from sustained pool exhaustion. Optional for deploy-skew readers. */
+  processUptimeMs?: number;
   totalRequests: number;
   inFlight: number;
   queueDepth: number;
@@ -1074,6 +1079,7 @@ export async function peekBody(
 }
 
 export function createInferenceGateway(deps: GatewayDeps) {
+  const processStartedAt = Date.now();
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const openaiUpstreamBase = (deps.openaiUpstreamBase ?? 'https://api.openai.com').replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
@@ -1801,6 +1807,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return {
       accountId: active.accountId,
       upstreamBase,
+      processStartedAt,
+      processUptimeMs: Math.max(0, now - processStartedAt),
       totalRequests,
       inFlight: admission.running,
       queueDepth: admission.queued,

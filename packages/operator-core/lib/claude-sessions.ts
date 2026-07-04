@@ -15,7 +15,7 @@
  * instead of the real $HOME.
  */
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -227,6 +227,81 @@ export async function findSessionTranscript(
   return null;
 }
 
+/**
+ * P-016 fallback resolver: the newest `*.jsonl` under this owner's isolation root
+ * `<base>/<owner>/projects/<cwd>/` (excluding the `history.jsonl` shell log).
+ *
+ * Covers the gap `findSessionTranscript`'s exact-id lookup CANNOT: the `session_id`
+ * recorded in adv_sessions goes STALE when a resume mints a fresh Claude UUID (so
+ * `<sessionId>.jsonl` no longer exists though a live transcript does), and some launch
+ * cohorts write a `<sessionId>/` directory rather than a flat file. When the exact-id
+ * lookup misses, the newest jsonl under the owner root is the session's CURRENT
+ * transcript regardless of its UUID. Best-effort single-owner-dir scan (cheap — one
+ * readdir per project dir, never the 12k-owner sweep): null on any error.
+ *
+ * (Lives here, beside findSessionTranscript, as the transcript-resolution primitive;
+ * compaction-usage.ts re-exports it for its context-estimate fallback. Originally
+ * P-016 in compaction-usage — moved 2026-07-04 so the agents-roster live-thinking
+ * pane + stream can share the SAME robustness, WI-2680.)
+ */
+export function newestTranscriptUnderOwner(
+  ownerId: string,
+  isolationBase: string = papercuspSessionClaudeBase(),
+): string | null {
+  // Guard the path join — owner ids are our own UUIDs, but never escape the root.
+  if (!ownerId || ownerId.includes('/') || ownerId.includes('..')) return null;
+  try {
+    const projectsRoot = join(isolationBase, ownerId, 'projects');
+    let best: { p: string; mtimeMs: number } | null = null;
+    for (const projDir of readdirSync(projectsRoot)) {
+      const dir = join(projectsRoot, projDir);
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        continue; // not a dir / unreadable
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.jsonl') || name === 'history.jsonl') continue;
+        const p = join(dir, name);
+        try {
+          const st = statSync(p);
+          if (st.isFile() && (!best || st.mtimeMs > best.mtimeMs)) best = { p, mtimeMs: st.mtimeMs };
+        } catch {
+          /* vanished mid-scan */
+        }
+      }
+    }
+    return best?.p ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an INTERACTIVE claude session's transcript with the P-016 fallback:
+ * the exact recorded `session_id` → `<sessionId>.jsonl` FIRST, and — only on a miss,
+ * when the coord `owner` is known — the newest jsonl under that owner's isolation
+ * root. This is what the live-thinking pane/stream + the roster's `thinking` flag
+ * should use so a session that RESUMED (fresh uuid ⇒ stale recorded id) still shows
+ * its current transcript instead of an empty pane (WI-2680). Callers WITHOUT an owner
+ * hint (or non-claude backends) get the plain exact-id resolution.
+ */
+export async function resolveInteractiveTranscript(
+  sessionId: string,
+  opts: { owner?: string | null; roots?: string[]; isolationBase?: string; nowMs?: number } = {},
+): Promise<string | null> {
+  const exact = await findSessionTranscript(sessionId, {
+    owner: opts.owner,
+    roots: opts.roots,
+    isolationBase: opts.isolationBase,
+    nowMs: opts.nowMs,
+  });
+  if (exact) return exact;
+  if (opts.owner) return newestTranscriptUnderOwner(opts.owner, opts.isolationBase);
+  return null;
+}
+
 /** A session reads as "actively thinking" if its transcript was appended within
  *  this window. It's the best available proxy — the transcript writes COMPLETE
  *  records (no token-level signal), so a long model generation between writes can
@@ -244,17 +319,35 @@ export async function isSessionThinking(
   sessionId: string,
   opts: { owner?: string | null; nowMs?: number; roots?: string[]; isolationBase?: string } = {},
 ): Promise<boolean> {
-  const path = await findSessionTranscript(sessionId, {
+  return (await resolveSessionThinkingState(sessionId, opts)).thinking;
+}
+
+/**
+ * Resolve an interactive claude session's transcript ONCE and derive BOTH the roster
+ * signals the agents-roster needs: `resolvable` (a transcript actually exists to
+ * stream — the "Live thinking" affordance should be OFFERED only when true, else the
+ * pane opens empty) and `thinking` (that transcript was appended within
+ * {@link SESSION_THINKING_ACTIVE_MS}). Uses the P-016 fallback so a resumed session
+ * (stale recorded id) still resolves its current transcript. Fail-soft
+ * `{ resolvable:false, thinking:false }`. Single resolve so the roster's per-agent
+ * cost stays one stat, not two. (WI-2680.)
+ */
+export async function resolveSessionThinkingState(
+  sessionId: string,
+  opts: { owner?: string | null; nowMs?: number; roots?: string[]; isolationBase?: string } = {},
+): Promise<{ resolvable: boolean; thinking: boolean }> {
+  const path = await resolveInteractiveTranscript(sessionId, {
     owner: opts.owner,
     roots: opts.roots,
     isolationBase: opts.isolationBase,
+    nowMs: opts.nowMs,
   });
-  if (!path) return false;
+  if (!path) return { resolvable: false, thinking: false };
   try {
     const st = await fs.stat(path);
-    return (opts.nowMs ?? Date.now()) - st.mtimeMs < SESSION_THINKING_ACTIVE_MS;
+    return { resolvable: true, thinking: (opts.nowMs ?? Date.now()) - st.mtimeMs < SESSION_THINKING_ACTIVE_MS };
   } catch {
-    return false;
+    return { resolvable: false, thinking: false };
   }
 }
 

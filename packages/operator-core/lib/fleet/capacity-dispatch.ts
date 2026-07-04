@@ -23,6 +23,8 @@ import type { GatewayHeadroom } from '../inference-gateway/observability';
 export interface CapacitySignal {
   /** False ⇒ the gateway is down/unreachable; the caller must fail-safe to NO clamp. */
   reachable: boolean;
+  /** Milliseconds since the gateway process started, if /stats is new enough to expose it. */
+  processUptimeMs?: number | null;
   /** 0..1+ utilization of the most-constraining unified budget window (1.0 = at cap). */
   utilization?: number;
   /** The whole pool is currently paused (every account rate-throttled). */
@@ -49,12 +51,16 @@ export interface CapacityDispatchConfig {
   /** Utilization above which the budget leg starts throttling (linearly to 0 at util ≥ 1.0). Env:
    *  `QUEEN_CAPACITY_UTIL_HIGH`. Default 0.85. */
   utilizationHigh: number;
+  /** Grace window after gateway process start where a paused/zero-capacity snapshot is treated as recovering,
+   *  not sustained pool exhaustion. Env: `QUEEN_CAPACITY_RESTART_GRACE_MS`. Default 30s. */
+  restartRecoveryWindowMs: number;
 }
 
 export const DEFAULT_CAPACITY_DISPATCH_CONFIG: CapacityDispatchConfig = {
   minHeadroom: 2,
   queueSoftCap: 24,
   utilizationHigh: 0.85,
+  restartRecoveryWindowMs: 30_000,
 };
 
 export interface CapacityDecision {
@@ -74,6 +80,13 @@ function hasTieredBeeCapacity(signal: CapacitySignal): boolean {
   return (signal.healthyAccounts ?? 0) > 0 && (signal.dispatchBudget ?? 0) > 0;
 }
 
+function isFreshGatewayRestart(signal: CapacitySignal, config: CapacityDispatchConfig): boolean {
+  const uptime = signal.processUptimeMs;
+  if (uptime == null || !Number.isFinite(uptime) || uptime < 0) return false;
+  if (uptime > Math.max(0, config.restartRecoveryWindowMs)) return false;
+  return (signal.paused === true || signal.rejected === true) && !hasTieredBeeCapacity(signal);
+}
+
 /**
  * PURE + HEADROOM-INDEPENDENT: the pool's spare-capacity FACTOR in [0,1] (1 = full headroom, 0 = no fresh
  * capacity). `factor = min(budgetLeg, queueLeg)`, forced to 0 when the pool is paused/rejected. This is the
@@ -88,6 +101,7 @@ export function capacityFactor(
   if (!signal.reachable) return 1;
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
   const accountWindowBlocked = signal.paused === true || signal.rejected === true;
+  if (isFreshGatewayRestart(signal, config)) return 1;
   // With priority tiers, `/stats.{unified,paused,rejected}` describe the currently-BOUND account,
   // NOT the pool. If that account is paused/exhausted while the tier oracle still reports healthy
   // accounts AND bee-tier spare slots, pool capacity exists — a bound-account block must not gate
@@ -123,6 +137,7 @@ export function computeCapacityHeadroom(
   const util = signal.utilization ?? 0;
   const queueDepth = Math.max(0, signal.queueDepth ?? 0);
   const factor = capacityFactor(signal, config);
+  const freshRestart = isFreshGatewayRestart(signal, config);
   const floor = Math.max(0, Math.floor(config.minHeadroom));
   // Floor lifts the clamp toward minHeadroom, but the result is never MORE than the raw headroom (a 0-slot
   // pool stays 0 — the floor lets high-priority work flow, it doesn't manufacture slots that don't exist).
@@ -133,7 +148,9 @@ export function computeCapacityHeadroom(
     headroom,
     factor,
     throttled,
-    reason: throttled
+    reason: freshRestart
+      ? `capacity-recovering: gateway restarted ${Math.round((signal.processUptimeMs ?? 0) / 1000)}s ago → no clamp on startup snapshot`
+      : throttled
       ? `capacity-throttle: ${beeHeadroom}→${headroom} fresh bees (util ${pct}%, queue ${queueDepth}` +
         `${signal.paused ? ', POOL PAUSED' : ''}${signal.rejected ? ', rejected' : ''}, factor ${factor.toFixed(2)}, floor ${floor})`
       : `capacity-ok: ${beeHeadroom} fresh bees (util ${pct}%, queue ${queueDepth})`,
@@ -155,6 +172,10 @@ export function resolveCapacityConfig(
     ),
     queueSoftCap: num(env.QUEEN_CAPACITY_QUEUE_SOFT_CAP, over?.queueSoftCap ?? DEFAULT_CAPACITY_DISPATCH_CONFIG.queueSoftCap, 1),
     utilizationHigh: num(env.QUEEN_CAPACITY_UTIL_HIGH, over?.utilizationHigh ?? DEFAULT_CAPACITY_DISPATCH_CONFIG.utilizationHigh),
+    restartRecoveryWindowMs: num(
+      env.QUEEN_CAPACITY_RESTART_GRACE_MS,
+      over?.restartRecoveryWindowMs ?? DEFAULT_CAPACITY_DISPATCH_CONFIG.restartRecoveryWindowMs,
+    ),
   };
 }
 
@@ -200,6 +221,7 @@ export async function queenCapacityHeadroom(
       rejected: gw.rejected,
       queueDepth: gw.queueDepth,
       inFlight: gw.inFlight,
+      processUptimeMs: gw.processUptimeMs,
       healthyAccounts: gw.priorityTiers?.healthyAccounts ?? null,
       dispatchBudget,
     };

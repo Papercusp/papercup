@@ -1932,6 +1932,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
 export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   _ws: string,
+  opts: { issueKinds?: readonly IssueStoreKind[] } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the
@@ -1952,13 +1953,14 @@ export async function claimNextIssueWorkItem(
   // Claimable issue status = 'open'; terminal (resolved|closed) excluded by status, blocked
   // ones by readiness (below).
   const states = ISSUE_FAMILY_CLAIMABLE_STATES;
+  const issueKinds = opts.issueKinds?.length ? [...opts.issueKinds] : [...ISSUE_FAMILY_KINDS];
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
      WHERE (workspace_id, feature_id) = (
        SELECT workspace_id, feature_id
          FROM harness_shared.work_items wi
-        WHERE wi.item_kind IN ('bug', 'change', 'task')
+        WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR wi.taken_by = '')

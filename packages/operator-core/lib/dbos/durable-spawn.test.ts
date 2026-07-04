@@ -455,6 +455,7 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
   });
 
   it('records `failed` + capacity_shed (RETRYABLE → THROWS) when a clean mid-turn exit-1 coincides with a wholesale-throttled gateway (P-006)', async () => {
+    h.getFlag.mockResolvedValue(false); // leave this test on the legacy post-invoke classifier path.
     h.gatewayThrottled.value = true; // the gateway pool was all-throttled at death
     h.loopbackFetch.mockResolvedValue(okBody({ ok: false, exitCode: 1, agentOutput: 'partial turn', timedOut: false, stderr: '' }));
     // capacity_shed THROWS so the step-retry re-fires through the paced gateway — NOT a terminal phantom host death.

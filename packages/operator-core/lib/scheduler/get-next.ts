@@ -52,6 +52,7 @@ import {
   claimNextIssueWorkItem,
   featureRowToWorkItem,
   FEATURE_COLS,
+  ISSUE_FAMILY_KINDS,
   type FeatureRowDb,
   type OrgSql,
   type WorkItem,
@@ -296,6 +297,65 @@ function widenPastKind(filter: FilterNode | undefined): FilterNode | undefined {
   return filter;
 }
 
+const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_KINDS);
+type IssueFallbackKind = (typeof ISSUE_FAMILY_KINDS)[number];
+
+function intersectIssueKinds(
+  current: Set<IssueFallbackKind> | undefined,
+  next: Iterable<IssueFallbackKind>,
+): Set<IssueFallbackKind> {
+  const incoming = new Set(next);
+  if (!current) return incoming;
+  return new Set([...current].filter((kind) => incoming.has(kind)));
+}
+
+/**
+ * Tier-3 issue fallback normally preserves WI-1407's "feature-family dry ⇒ adjacent
+ * issues" behavior. When a spec explicitly names issue-family kinds, however, that
+ * is a real lane constraint and must survive the fallback, or a bug-only fleet can
+ * claim a task (WI-2118's ping-pong shape).
+ *
+ * Conservatively inspect `all`/leaf filters only. OR/NOT filters can express more
+ * complex set logic; leave those as the legacy unrestricted issue fallback rather
+ * than narrowing incorrectly.
+ */
+function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFallbackKind[] | undefined {
+  let allowed: Set<IssueFallbackKind> | undefined;
+  let sawIssueKindConstraint = false;
+
+  function applyLeaf(leaf: FilterLeaf): boolean {
+    if (leaf.field !== 'kind') return true;
+    const values = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
+    const issueValues = values.filter((v): v is IssueFallbackKind => ISSUE_KIND_SET.has(v));
+    if (leaf.op === '=' || leaf.op === 'in') {
+      if (issueValues.length > 0) {
+        sawIssueKindConstraint = true;
+        allowed = intersectIssueKinds(allowed, issueValues);
+      }
+      return true;
+    }
+    if (leaf.op === '!=') {
+      if (issueValues.length > 0) {
+        sawIssueKindConstraint = true;
+        const base = allowed ?? new Set<IssueFallbackKind>(ISSUE_FAMILY_KINDS);
+        for (const kind of issueValues) base.delete(kind);
+        allowed = base;
+      }
+      return true;
+    }
+    return true;
+  }
+
+  function walk(node: FilterNode): boolean {
+    if (isLeaf(node)) return applyLeaf(node);
+    if ('all' in node) return node.all.every(walk);
+    return false;
+  }
+
+  if (!filter || !walk(filter) || !sawIssueKindConstraint || !allowed) return undefined;
+  return [...allowed];
+}
+
 /**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
@@ -505,6 +565,7 @@ export async function getNextWorkItem(
   // so there is nothing spec-specific to carry across — this tier is the shared, unconditional
   // "any open, unblocked bug/change/task" claim.
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+    const issueKinds = issueKindsForFallback(spec.view.filter);
     claimed = await claimNextIssueWorkItem(
       {
         harness: opts.harness,
@@ -514,6 +575,7 @@ export async function getNextWorkItem(
         excludeRedundant: opts.excludeRedundant,
       },
       ws,
+      { issueKinds },
     );
   }
 

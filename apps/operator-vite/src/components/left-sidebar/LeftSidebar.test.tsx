@@ -93,7 +93,10 @@ describe('<LeftSidebar> shell', () => {
   it('orders Accounts as the leftmost tab before Queen', () => {
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
-    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'Queen']);
+    // The queen tab label now routes through the lexicon (t('brain')); the
+    // useLexicon mock above echoes the key, so it renders as 'brain'
+    // (restore-pot-lexicon P-005 — classic pack shows 'Brain' at runtime).
+    expect(tabs.map((x) => x.textContent?.trim()).slice(0, 2)).toEqual(['Accounts', 'brain']);
   });
 
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {

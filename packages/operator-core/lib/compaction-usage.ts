@@ -15,7 +15,13 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { findSessionTranscript, papercuspSessionClaudeBase } from './claude-sessions';
+import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
+
+// P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
+// the agents-roster live-thinking pane + stream share the SAME resume-rotation
+// robustness. Re-exported here so existing importers (+ compaction-usage.test.ts) are
+// unaffected; the estimate fallback below still calls it.
+export { newestTranscriptUnderOwner } from './claude-sessions';
 
 export interface SessionRef {
   /** Backend: 'claude' | 'omp' | 'codex' | null (unknown → treated as claude). */
