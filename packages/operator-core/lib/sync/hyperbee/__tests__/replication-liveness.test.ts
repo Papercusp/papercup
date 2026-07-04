@@ -50,7 +50,7 @@ describe('no_replicator axis (the original WI-183 symptom)', () => {
         WS,
         HS,
         { keyHex: KEY, knownLength: len, mergedPosition: pos, peersCount: peers },
-        { graceMs: GRACE, nowMs: now, onStallEpisode: on },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
       );
 
     sample(1); // was replicating

@@ -18,6 +18,15 @@
 
 export const OPERATOR_SCOPE = 'operator';
 const HARNESS_PREFIX = 'harness:';
+const WILDCARD_HARNESS = '*';
+
+function assertConcreteHarnessSlug(slug: string, original: string): void {
+  if (slug === WILDCARD_HARNESS) {
+    throw new Error(
+      `work-item harness scope must name a concrete harness slug (got wildcard ${JSON.stringify(original)})`,
+    );
+  }
+}
 
 /** Throw if `scope` is not a well-formed work-item scope. */
 export function assertScopeWellFormed(scope: string): void {
@@ -28,6 +37,9 @@ export function assertScopeWellFormed(scope: string): void {
     throw new Error(
       `work-item scope '${HARNESS_PREFIX}' requires a non-empty harness slug (got ${JSON.stringify(scope)})`,
     );
+  }
+  if (scope.startsWith(HARNESS_PREFIX)) {
+    assertConcreteHarnessSlug(scope.slice(HARNESS_PREFIX.length).trim(), scope);
   }
 }
 
@@ -43,7 +55,9 @@ export function harnessScope(harness: string | null | undefined): string {
       `harnessScope() given a blank harness — pass a non-empty slug, or null for the explicit operator scope`,
     );
   }
-  return `${HARNESS_PREFIX}${harness.trim()}`;
+  const slug = harness.trim();
+  assertConcreteHarnessSlug(slug, harness);
+  return `${HARNESS_PREFIX}${slug}`;
 }
 
 /** The harness slug a scope names, or null for the global operator scope. */

@@ -21,6 +21,9 @@ describe('work-item scope guards (unified-work-item-ledger P-001)', () => {
     it('rejects a harness: prefix with a whitespace slug', () => {
       expect(() => assertScopeWellFormed('harness:   ')).toThrow(/non-empty harness slug/);
     });
+    it('rejects the wildcard harness selector as a persisted harness scope', () => {
+      expect(() => assertScopeWellFormed('harness:*')).toThrow(/concrete harness slug/);
+    });
   });
 
   describe('harnessScope', () => {
@@ -37,6 +40,9 @@ describe('work-item scope guards (unified-work-item-ledger P-001)', () => {
     it('throws on a blank harness (never silently collapses to operator)', () => {
       expect(() => harnessScope('')).toThrow(/blank harness/);
       expect(() => harnessScope('   ')).toThrow(/blank harness/);
+    });
+    it('throws on the wildcard harness selector', () => {
+      expect(() => harnessScope('*')).toThrow(/concrete harness slug/);
     });
     it('produces scopes that pass the well-formed guard', () => {
       expect(() => assertScopeWellFormed(harnessScope('papercusp'))).not.toThrow();
