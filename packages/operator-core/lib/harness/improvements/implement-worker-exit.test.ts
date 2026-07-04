@@ -4,6 +4,7 @@ import {
   recordImplementWorkerExit,
   ENV_FAILURE_RUNTIME_FLOOR_MS,
   CONTEXT_OVERFLOW_ESCALATE_CAP,
+  TIMEOUT_ESCALATE_CAP,
   type ImplementWorkerExitDeps,
 } from './implement-worker-exit';
 
@@ -90,6 +91,62 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
       stdout: 'x'.repeat(300) + '\nrequest exceeds the model context window',
     });
     expect(v.class).toBe('context-overflow');
+  });
+
+  it('WI-2162: a SIGTERM (143) at/past the configured timeout classes as timeout, even with NO output', () => {
+    const v = isEnvFailureExit({ exitCode: 143, runtimeMs: 2_702_000, configuredTimeoutMs: 2_700_000 });
+    expect(v.env).toBe(true);
+    expect(v.class).toBe('timeout');
+    expect(v.reason).toMatch(/worker timeout/);
+  });
+
+  it('WI-2162: the live EI-6942-shape death (exit 143 at 2702s vs a 2700s configured limit) classes as timeout', () => {
+    const v = isEnvFailureExit({
+      exitCode: 143,
+      runtimeMs: 2_702_000,
+      configuredTimeoutMs: 2_700_000,
+      stdout: 'Let me check for any existing plan/design for the periodic fix and the git history',
+    });
+    expect(v.class).toBe('timeout');
+  });
+
+  it('WI-2162: SIGKILL (137) also classes as timeout (the grace-period escalation path)', () => {
+    const v = isEnvFailureExit({ exitCode: 137, runtimeMs: 2_705_000, configuredTimeoutMs: 2_700_000 });
+    expect(v.class).toBe('timeout');
+  });
+
+  it('WI-2162: a run well UNDER the configured timeout is NOT a timeout death even at exit 143 (e.g. an external SIGTERM/cancel)', () => {
+    const v = isEnvFailureExit({ exitCode: 143, runtimeMs: 60_000, configuredTimeoutMs: 2_700_000 });
+    expect(v.class).not.toBe('timeout');
+  });
+
+  it('WI-2162: exit 143 with NO configuredTimeoutMs known falls through unchanged (not misclassified)', () => {
+    const v = isEnvFailureExit({ exitCode: 143, runtimeMs: 2_702_000 });
+    expect(v.class).not.toBe('timeout');
+  });
+
+  it('WI-2162: a slightly-under-limit runtime within jitter tolerance still classes as timeout', () => {
+    const v = isEnvFailureExit({ exitCode: 143, runtimeMs: 2_695_000, configuredTimeoutMs: 2_700_000 });
+    expect(v.class).toBe('timeout');
+  });
+
+  it('WI-2162: context-overflow text wins over the timeout shape when BOTH are present (more specific signal first)', () => {
+    const v = isEnvFailureExit({
+      exitCode: 143,
+      runtimeMs: 2_702_000,
+      configuredTimeoutMs: 2_700_000,
+      stdout: 'Prompt is too long',
+    });
+    expect(v.class).toBe('context-overflow');
+  });
+
+  it('WI-2162: a normal exit-1 crash at a long runtime with NO timeout config is unaffected (regression guard)', () => {
+    const v = isEnvFailureExit({
+      exitCode: 1,
+      runtimeMs: ENV_FAILURE_RUNTIME_FLOOR_MS + 600_000,
+      stdout: 'Reproduced the bug, wrote a regression test, but the fix attempt still fails 2 assertions. '.repeat(6),
+    });
+    expect(v.env).toBe(false);
   });
 });
 
@@ -283,5 +340,69 @@ describe('recordImplementWorkerExit — WI-716 context-overflow bounded escalati
     expect(res.contextOverflow).toBeUndefined();
     expect(getPayloadCalls).toBe(0);
     expect(calls.mergePayload).toEqual([['EI-9', { implementAttempts: 1 }]]);
+  });
+});
+
+describe('recordImplementWorkerExit — WI-2162 worker-timeout bounded escalation', () => {
+  const timeoutInput = (over: Partial<Parameters<typeof recordImplementWorkerExit>[0]> = {}) => ({
+    dispatchId: 'd-to',
+    itemId: 'EI-7203',
+    attempt: 1,
+    exitCode: 143,
+    runtimeMs: 2_702_000,
+    configuredTimeoutMs: 2_700_000,
+    stdout: "Let me check for any existing plan/design for the periodic fix and the git history",
+    ...over,
+  });
+
+  it('a FIRST timeout death (no prior) rolls the attempt back, persists deaths=1, tags -timeout — not escalated', async () => {
+    const { deps, calls } = fakeDeps({ getPayload: async () => null });
+    const res = await recordImplementWorkerExit(timeoutInput(), deps);
+    expect(res.charged).toBe(false);
+    expect(res.timeoutEscalation).toEqual({ deaths: 1, escalated: false });
+    expect(calls.mergePayload).toEqual([['EI-7203', { timeoutDeaths: 1, implementAttempts: 0 }]]);
+    expect(calls.markOrphaned[0][1]).toBe('worker-exit-backedge-timeout');
+    expect(calls.markOrphaned[0][2]).toMatch(/worker-timeout death 1\/2/);
+  });
+
+  it(`a ${TIMEOUT_ESCALATE_CAP}th timeout death trips the cap: needsHuman, attempt NOT rolled back`, async () => {
+    const { deps, calls } = fakeDeps({ getPayload: async () => ({ timeoutDeaths: TIMEOUT_ESCALATE_CAP - 1 }) });
+    const res = await recordImplementWorkerExit(timeoutInput({ attempt: 3 }), deps);
+    expect(res.timeoutEscalation).toEqual({ deaths: TIMEOUT_ESCALATE_CAP, escalated: true });
+    expect(calls.mergePayload).toEqual([
+      ['EI-7203', { timeoutDeaths: TIMEOUT_ESCALATE_CAP, needsHuman: true }],
+    ]);
+    expect(calls.mergePayload[0][1]).not.toHaveProperty('implementAttempts');
+    expect(calls.markOrphaned[0][2]).toMatch(/escalation cap tripped/);
+  });
+
+  it('a getPayload failure is treated as 0 prior timeout deaths (best-effort — never throws)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps, calls } = fakeDeps({ getPayload: async () => { throw new Error('pg down'); } });
+    const res = await recordImplementWorkerExit(timeoutInput(), deps);
+    expect(res.timeoutEscalation).toEqual({ deaths: 1, escalated: false });
+    expect(calls.mergePayload).toEqual([['EI-7203', { timeoutDeaths: 1, implementAttempts: 0 }]]);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('a timeout death is NEVER charged and is tagged distinctly from a generic worker crash', async () => {
+    const { deps, calls } = fakeDeps({ getPayload: async () => null });
+    const res = await recordImplementWorkerExit(timeoutInput(), deps);
+    expect(res.charged).toBe(false);
+    expect(calls.markOrphaned[0][1]).not.toBe('worker-exit-backedge');
+  });
+
+  it('a generic worker crash (exit 1, no timeout config) never touches getPayload / timeoutDeaths', async () => {
+    let getPayloadCalls = 0;
+    const { deps, calls } = fakeDeps({ getPayload: async () => { getPayloadCalls++; return null; } });
+    const res = await recordImplementWorkerExit(
+      { dispatchId: 'd-crash', itemId: 'EI-2', attempt: 2, exitCode: 1, runtimeMs: 900_000, stdout: 'fix attempt failed, 2 assertions red'.repeat(10) },
+      deps,
+    );
+    expect(res.timeoutEscalation).toBeUndefined();
+    expect(res.charged).toBe(true);
+    expect(getPayloadCalls).toBe(0);
+    expect(calls.mergePayload).toHaveLength(0);
   });
 });
