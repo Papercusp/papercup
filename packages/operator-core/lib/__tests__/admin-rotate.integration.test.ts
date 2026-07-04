@@ -64,7 +64,11 @@ async function callMcp(params: URLSearchParams, payload: unknown) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
+    // 30s, not 10s: this hits the SHARED live operator (:3070), whose event loop can stall
+    // well past 10s while the checkpoint suite + fleet hammer the box — at 10s this was the
+    // top gate flake on 2026-07-03 (7 fail / 2 pass in one day, every leg sub-second when
+    // probed in isolation). The assertions are behavioral, not latency SLAs.
+    signal: AbortSignal.timeout(30000),
   });
   return { status: r.status, text: await r.text() };
 }

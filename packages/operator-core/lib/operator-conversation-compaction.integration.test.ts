@@ -119,6 +119,7 @@ beforeAll(async () => {
       created_at bigint NOT NULL,
       tools jsonb,
       report jsonb,
+      workspace_id text NOT NULL, -- mig 453: appendTurn stamps activeWorkspaceId()
       CONSTRAINT operator_turns_conv_seq UNIQUE (conversation_id, seq)
     );
   `);

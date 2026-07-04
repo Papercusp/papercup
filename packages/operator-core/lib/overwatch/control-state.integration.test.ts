@@ -38,13 +38,15 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // FAITHFUL to baseline: key PK, value NOT NULL, updated_at bigint (Date.now() epoch-ms).
+  // FAITHFUL to baseline: key PK, value NOT NULL, updated_at bigint (Date.now() epoch-ms),
+  // workspace_id NOT NULL (mig 453 — every write stamps activeWorkspaceId()).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.operator_settings (
       key text NOT NULL,
       value text NOT NULL,
       description text,
       updated_at bigint DEFAULT 0 NOT NULL,
+      workspace_id text NOT NULL,
       CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
     )`);
   h.sql = rootSql;

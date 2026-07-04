@@ -151,8 +151,17 @@ interface OpenStoreRequest {
 /** Mirror corestore.ts: `<workspaceRoot>/.papercusp/<harness>/hyperbee`. */
 function resolveStoragePath(p: OpenStoreRequest): string {
   if (p.storagePath) return p.storagePath;
-  const workspaceRoot = p.workspaceRoot || process.cwd();
-  return path.join(workspaceRoot, '.papercusp', p.harnessSlug, 'hyperbee');
+  // WI-2105: NO process.cwd() fallback. A workspaceRoot-less request minted a
+  // fresh split-brain store under the service's WorkingDirectory
+  // (apps/operator/.papercusp/papercusp/hyperbee, born 2026-07-03 19:42) with
+  // its own log key. Fail loud; the caller must say which store it means.
+  if (!p.workspaceRoot) {
+    throw new RpcMethodError(
+      -32602,
+      `missing workspaceRoot (and no storagePath) for ${p.workspaceId}/${p.harnessSlug} — refusing to derive a store path from cwd`,
+    );
+  }
+  return path.join(p.workspaceRoot, '.papercusp', p.harnessSlug, 'hyperbee');
 }
 
 interface AppendOpRequest {
@@ -312,6 +321,17 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     if (!p.workspaceId || !p.harnessSlug) {
       throw new RpcMethodError(-32602, 'Missing workspaceId or harnessSlug');
     }
+    // WI-2105: bootHarnessImpl derives the REAL store path from workspaceRoot
+    // (corestore.ts storagePath(); the request's storagePath field is only
+    // bookkeeping here) — so a cwd fallback mints a split-brain store under the
+    // service's WorkingDirectory with its own log key (the 19:42 stray store).
+    // Require it; never guess from cwd.
+    if (!p.workspaceRoot) {
+      throw new RpcMethodError(
+        -32602,
+        `bootHarness requires workspaceRoot for ${p.workspaceId}/${p.harnessSlug} — refusing to boot a store derived from cwd`,
+      );
+    }
     const existing = findExisting(p.workspaceId, p.harnessSlug);
     if (existing) {
       const rec = requireRecord(existing);
@@ -329,7 +349,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
 
     const storagePath = resolveStoragePath(p);
     const handle = await bootHarnessImpl({
-      workspaceRoot: p.workspaceRoot || process.cwd(),
+      workspaceRoot: p.workspaceRoot,
       workspaceId: p.workspaceId,
       harnessSlug: p.harnessSlug,
       swarmBinding: p.swarmBinding ?? null,

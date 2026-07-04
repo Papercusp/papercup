@@ -630,12 +630,18 @@ export function runBootstrap(): void {
   // which DBOS routines already tick). Arm the routing latch NOW so an early
   // bootSingleHarness WAITS for the decision instead of silently booting a
   // duplicate in-process engine beside the sidecar (the 2026-07-03 bg-host
-  // tower↔VM outage: alreadyBooted=1 = the raced in-process engine).
+  // tower↔VM outage: alreadyBooted=1 = the raced in-process engine). Import
+  // ordering makes this safe without await: any bootSingleHarness caller must
+  // resolve the same boot-all module first, and this .then was registered first.
   if (backgroundWorkers && !utilityHost) {
-    const { markSubstrateBootRoutingPending } = await import(
-      '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
-    );
-    markSubstrateBootRoutingPending();
+    void import('@papercusp/operator-core/lib/sync/hyperbee/boot-all')
+      .then(({ markSubstrateBootRoutingPending }) => markSubstrateBootRoutingPending())
+      .catch((e) =>
+        console.warn(
+          '[substrate-boot] failed to arm routing latch (non-fatal):',
+          e instanceof Error ? e.message : e,
+        ),
+      );
   }
 
   // [infra-perf-reliability-audit-round4 P-014] Boot the event-loop-lag gauge on the

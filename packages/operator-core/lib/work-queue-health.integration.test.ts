@@ -31,7 +31,8 @@ const ENGINEER_ISSUES_DDL = `
 const SWEEP_RUNS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.periodic_sweep_runs (
     sweep_name text PRIMARY KEY, last_run_at timestamptz NOT NULL DEFAULT now(),
-    last_released integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now())`;
+    last_released integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now(),
+    workspace_id text NOT NULL)`; // mig 453: recordSweepRun stamps activeWorkspaceId()
 const PLAN_ASSIGNMENTS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_assignments (
     workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL, item_id text NOT NULL,

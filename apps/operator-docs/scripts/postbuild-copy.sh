@@ -32,12 +32,27 @@
 # swap the old DEST out of the way, swap the new tree in. This is the same
 # "build a temp tree, publish atomically" pattern build-desktop-sidecar.sh
 # itself already uses for its own SIDECAR_DIR (EI-160/P-056) — applied here
-# to the docs deploy target that races it. The window a reader can lose in
-# shrinks from "however long the rsync takes" (seconds, file-by-file) to the
-# gap between two rename() syscalls (sub-millisecond): a reader that already
-# opened DEST keeps reading the consistent pre-swap tree via its open file
-# descriptor (Linux keeps an unlinked-but-open directory's contents alive);
-# a reader that opens DEST after the swap sees the consistent new tree.
+# to the docs deploy target that races it.
+#
+# ── follow-up: the two-rename swap ALONE is NOT enough — reap with a grace
+#    period, don't eagerly rm -rf the swapped-out tree ─────────────────────
+# The rename swap makes the top-level NAME "DEST" flip atomically, but a
+# reader like `cp -a`/rsync doesn't hold one fd for its whole walk — it opens
+# each file/subdir by name as it descends. unlink()ing a name removes it from
+# lookup for EVERYONE, including a reader with a perfectly valid, still-open
+# fd on an ancestor directory: "the inode stays alive while open" only covers
+# files the reader has ALREADY opened, not ones it hasn't reached yet in its
+# walk. So an eager `rm -rf "$DEST_OLD"` right after the swap (the original
+# fix's EXIT trap did this unconditionally, same-run) unlinks the just-
+# swapped-out tree's contents out from under any reader still mid-walk of it
+# — reproduced live: a concurrent-reader stress harness (rapid re-publish +
+# a slow `cp -a` loop) still threw `cp: cannot stat …: No such file or
+# directory` on pagefind shards WITH the rename-swap in place, because this
+# same run's trap deleted DEST_OLD within milliseconds of creating it — zero
+# grace period. Fix: never touch a FRESH swap-out; instead, before this run's
+# own swap, reap only PRIOR runs' swapped-out trees old enough (>=2 min) that
+# no reasonable reader could still be walking them. A reader that takes over
+# 2 minutes to copy the docs tree has a bigger problem than this script.
 #
 set -euo pipefail
 
@@ -45,16 +60,18 @@ SRC="dist"
 DEST="../operator/public/internal/docs"
 DEST_TMP="${DEST}.tmp.$$"
 DEST_OLD="${DEST}.old.$$"
+DEST_OLD_GLOB="$(basename "$DEST").old.*"
+DEST_OLD_GRACE_MIN=2
 
 if [[ ! -d "$SRC" ]]; then
   echo "postbuild-copy: '$SRC' not found — run 'astro build' first" >&2
   exit 1
 fi
 
-# Clean up our own staging dirs on any exit (success, error, or interrupt) so
-# a killed/failed run never leaves debris a later run has to reason about;
-# after a successful publish these are already-removed no-ops.
-trap 'rm -rf "$DEST_TMP" "$DEST_OLD"' EXIT
+# Clean up ONLY our own tmp staging dir on any exit (success, error, or
+# interrupt) — NEVER this run's own DEST_OLD (see above: that would reap the
+# tree we just swapped out with no grace period for an in-flight reader).
+trap 'rm -rf "$DEST_TMP"' EXIT
 
 rm -rf "$DEST_TMP"
 mkdir -p "$DEST_TMP"
@@ -69,12 +86,19 @@ else
   cp -R "$SRC"/. "$DEST_TMP"/
 fi
 
+mkdir -p "$(dirname "$DEST")"
+
+# Reap stale swapped-out trees from PRIOR runs — only ones old enough that no
+# in-flight reader could plausibly still be walking them. Never matches this
+# run's own (not-yet-created) DEST_OLD, since -mmin +N excludes anything that
+# doesn't exist yet.
+find "$(dirname "$DEST")" -maxdepth 1 -name "$DEST_OLD_GLOB" -mmin "+$DEST_OLD_GRACE_MIN" -exec rm -rf {} + 2>/dev/null || true
+
 # Atomic-ish publish: swap the old tree out, swap the new tree in. A plain
 # `mv "$DEST_TMP" "$DEST"` can't do this in one syscall when DEST already
 # exists as a non-empty directory (rename(2) requires an empty target), hence
-# the two-step swap via DEST_OLD.
-mkdir -p "$(dirname "$DEST")"
-rm -rf "$DEST_OLD"
+# the two-step swap via DEST_OLD — left in place for the grace period above
+# to reap on a LATER run, not this one.
 if [[ -d "$DEST" ]]; then
   mv "$DEST" "$DEST_OLD"
 fi
