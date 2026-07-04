@@ -6,7 +6,7 @@ between an array's LENGTH and its last valid INDEX, and fix it so the
 expectations below pass. Change ONLY the one thing that is wrong.
 
 function lastIndex(arr) {
-  return arr.length - 1;
+  return arr.length;
 }
 
 EXPECTED after fix:
