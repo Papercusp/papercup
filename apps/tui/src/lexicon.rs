@@ -23,8 +23,10 @@ use std::collections::HashMap;
 const CLASSIC: &[(&str, &str, &str)] = &[
     ("pot", "Pot", "Pots"),
     ("fleet", "Fleet", "Fleets"),
-    ("operator", "Operator", "Operators"),
-    ("brain", "Brain", "Brains"),
+    ("operator", "Papercup", "Papercups"),
+    ("brain", "Mug", "Mugs"),
+    ("overwatch", "Kettle", "Kettles"),
+    ("scout", "Blender", "Blenders"),
     ("contributor", "Contributor", "Contributors"),
     ("chunk", "Chunk", "Chunks"),
     ("cupboard", "Cupboard", "Cupboards"),

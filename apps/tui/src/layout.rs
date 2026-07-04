@@ -245,8 +245,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         let n = kdl_pane_name(&lex.lex(term), fallback);
         format!("{} {n}", kind.glyph())
     };
-    let sentinel_name = glyph_name("sentinel", "sentinel", AgentPaneKind::Sentinel);
+    let sentinel_name = glyph_name("operator", "sentinel", AgentPaneKind::Sentinel);
     let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
+    let overwatch_name = glyph_name("overwatch", "overwatch", AgentPaneKind::Overwatch);
     // The Sentinel pane is a REAL psu/Claude TUI — the FRONT-DOOR Sentinel the
     // user talks to (sentinel-as-claude-tui-2026-06-22): the `sentinel` role
     // (Sentinel persona = sentinel.persona.md), NOT the `operator` placement
@@ -311,29 +312,29 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
         pane name="{sentinel_name}" focus=true size="40%" {{
             {sentinel_cmd_block}
         }}
-        pane name="👁 overwatch" size="12%" {{
+        pane name="{overwatch_name}" size="12%" {{
             command "pui"
             args "brain-view" "--overwatch"
         }}
-        pane name="♛ queen" split_direction="vertical" size="30%" {{
+        pane name="{brain_name}" split_direction="vertical" size="30%" {{
             pane name="{brain_name}" {{
                 command "pui"
                 args "brain-view" "--queen"
             }}
             pane stacked=true size="38%" {{
-                pane name="♛✉ prompt" expanded=true {{
+                pane name="🍵✉ prompt" expanded=true {{
                     command "pui"
                     args "prompt-pane" "--queen"
                 }}
-                pane name="♛⏸ wakes" {{
+                pane name="🍵⏸ wakes" {{
                     command "pui"
                     args "wake-pane" "--queen"
                 }}
-                pane name="♛✉ mail" {{
+                pane name="🍵✉ mail" {{
                     command "pui"
                     args "mail-pane" "--queen"
                 }}
-                pane name="♛☑ work" {{
+                pane name="🍵☑ work" {{
                     command "pui"
                     args "work-pane" "--queen"
                 }}

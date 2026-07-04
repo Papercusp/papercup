@@ -64,6 +64,17 @@ export const DEFAULT_MAX_OPS_PER_AUTHOR = 50_000;
  *  monopolized the loop and burned ~1.5 cores continuously (EI-81). */
 export const MERGE_YIELD_EVERY_OPS = 1000;
 
+/** WI-2344: a SECOND, TIME-based bound alongside `MERGE_YIELD_EVERY_OPS`. The
+ *  op-count bound alone assumes ops are cheap-and-uniform; on a from-0 replay
+ *  against a loaded/slow PG (or many wide snapshot-expansion rows per op —
+ *  see `isSnapshotOp` below), a single 1000-op chunk between yields can itself
+ *  run long enough to trip the bg-host watchdog's 240s "genuinely frozen"
+ *  threshold (observed 2026-07-04, load 34/128 — not box-saturation, just a
+ *  long uninterrupted chunk). Checked every iteration alongside the op
+ *  counter so whichever bound fires first wins; comfortably under the 240s
+ *  watchdog so a slow chunk still yields well before that budget. */
+export const MERGE_YIELD_MAX_MS = 250;
+
 /** WI-2105 — persist the merge cursor to PG at most every this-many decoded ops
  *  DURING a pass (plus once per log at completion). Coarser than the event-loop
  *  yield cadence so a big fold does ~O(ops/5000) small upserts, not one per
@@ -243,6 +254,9 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
   // peer can't make the merge unbounded. A `<= 0` cap disables the bound.
   const winners = new Map<string, OpEnvelope>();
   let opsSinceYield = 0;
+  // WI-2344: wall-clock companion to the op counter, same rationale as the
+  // incremental merge below (MERGE_YIELD_MAX_MS).
+  let lastYieldAt = Date.now();
   for (const log of logs) {
     const cap = maxOpsPerAuthor;
     const capped = cap > 0 && log.length > cap;
@@ -257,8 +271,10 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
     for (let i = 0; i < upper; i++) {
       // EI-81: local-corestore gets resolve via microtask — yield a macrotask
       // every ~1k iterations so a full re-fold can't monopolize the event loop.
-      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS) {
+      // WI-2344: OR every MERGE_YIELD_MAX_MS of wall-clock, whichever first.
+      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS || Date.now() - lastYieldAt >= MERGE_YIELD_MAX_MS) {
         opsSinceYield = 0;
+        lastYieldAt = Date.now();
         await yieldToEventLoop();
       }
       const op = await readOpBounded(log, i, getTimeoutMs);
@@ -750,6 +766,8 @@ export async function mergeAdmittedLogsIncremental(
   let caughtUp = true;
   let opsSinceYield = 0;
   let opsSincePersist = 0;
+  // WI-2344: wall-clock companion to the op counter (see MERGE_YIELD_MAX_MS).
+  let lastYieldAt = Date.now();
 
   // EI-79 step 3: detect a TRUNCATED log (length < its cursor) BEFORE folding.
   // A shrunk log means ops we already counted as winners may be gone, so a
@@ -785,8 +803,14 @@ export async function mergeAdmittedLogsIncremental(
     for (; pos < upper; pos++) {
       // EI-81: yield a macrotask every ~1k iterations — counted per pass
       // (the counter carries across logs) so N small logs can't dodge it.
-      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS) {
+      // WI-2344: OR every MERGE_YIELD_MAX_MS of wall-clock, whichever comes
+      // first — bounds a chunk of slow/wide ops (loaded PG, snapshot-op
+      // expansion) that would otherwise run long past the op-count trigger
+      // and still monopolize the loop long enough to trip the bg-host
+      // watchdog's freeze detector.
+      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS || Date.now() - lastYieldAt >= MERGE_YIELD_MAX_MS) {
         opsSinceYield = 0;
+        lastYieldAt = Date.now();
         await yieldToEventLoop();
       }
       // WI-2105 REV fix (persist-after-apply): checkpoint the cursor at the

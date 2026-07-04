@@ -16,14 +16,21 @@ documents:
   - libs/generic/papergrid/grid-core/src/RichGrid.tsx
 ---
 
-:::danger[Zero is being retired — historical reference]
-Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
-path**. The shipping app uses **SSE for every runtime** — desktop Tauri shell
-*and* plain browser — where the operator sidecar's `:3070` host pushes
+:::danger[Zero is fully decommissioned, not merely retired — historical reference]
+Zero / zero-cache / ZQL named-queries is **gone from the tree**, not just
+off the transport path — `zero-decommission-2026-06-20` removed
+`@rocicorp/zero` from every `package.json` and deleted the
+`@papercusp/zero-harness` package (`libs/zero-harness` no longer exists as a
+directory). The `@papercusp/zero-harness` imports in the recipes below are
+**illustrative of the old pattern only** and will not resolve if copy-pasted.
+The shipping app uses **SSE for every runtime** — desktop Tauri shell *and*
+plain browser — where the operator sidecar's `:3070` host pushes
 invalidate/update over Postgres `LISTEN/NOTIFY`; zero-cache is **not run** at
 all. `POLLING` exists only as a degraded last-resort fallback, and the WebSocket
 transport still lives in `@papercusp/sync` but Papercusp no longer selects it.
-Treat this page as historical reference. Source of truth:
+Treat this whole page as historical reference for the shape of the old
+recipes — for the CURRENT recipe (sync-resolver v2 + SSE), see the
+[Data Sync overview](/internal/docs/data-sync) instead. Source of truth:
 `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
 doc-comment, hardcoded `syncType="SSE"`) + the root `CLAUDE.md` deployment-model
 section.

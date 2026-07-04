@@ -919,6 +919,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | P2pPeerGrantWireRow
     | P2pReceiptWireRow
     | FleetDirectoryRow
+    | WorkOfferWireRow
     | AgentFactWireRow
     | GymQdEliteWireRow;
   switch (outboxRow.table_name) {
