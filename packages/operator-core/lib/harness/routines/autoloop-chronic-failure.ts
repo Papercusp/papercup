@@ -31,6 +31,20 @@
  * scout-cycle — fixed system roles, not `loop:arm` rows) has nothing to join
  * against and is treated as still-live (fail-open: an unknown routine state
  * must never SUPPRESS a genuine chronic-failure alert).
+ *
+ * SKIP AN EPHEMERAL loop:arm OWNER LOOP entirely (EI-6727 — the fix that closes this
+ * escalation flood at the root): the `routine_active = false` skip above only kicks in AFTER
+ * the reconcile guard pauses a dead loop, but a dead `loop-su-<uuid>` owner climbs past the
+ * chronic threshold (6) and escalates in the WINDOW before the guard circuit-opens (≥8) and
+ * pauses it — filing an un-actionable "loop-su-<uuid> red N fires" ticket. 28 such EIs
+ * accumulated this way (all dead su sessions). A loop:arm loop is NOT the sweep's concern: it
+ * is OWNER-witnessed (a live su session is its owner) and auto-terminated by the reconcile
+ * dead-owner guard, which fires its OWN dedicated human escalation (`escalateDeadLoop`,
+ * WI-2339 fix E) when it pauses the loop. So the sweep ALSO drops any row whose matching
+ * routine carries a non-null `target_owner_id` (the structural marker of a loop:arm owner
+ * loop; `target_role = system:loop-wake`) — restoring the sweep to its intended scope: the
+ * witness-less FIXED system roles (director/gym-cycle/overwatch/scout-cycle) that carry no
+ * `target_owner_id` and have no other escalation path.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, claimWatchdogFire } from '../../hive/watchdog';
@@ -168,22 +182,40 @@ export async function autoloopChronicFailureSweep(): Promise<ChronicFailureResul
     const now = Date.now();
     const staleMs = staleWindowMs();
     const allRows = await sql<AutoloopStateRow[]>`
-      SELECT s.harness_slug, s.role, s.consecutive_errors, s.last_status, s.last_fired_at, r.active AS routine_active
+      SELECT s.harness_slug, s.role, s.consecutive_errors, s.last_status, s.last_fired_at,
+             r.active AS routine_active, r.target_owner_id AS routine_target_owner_id
         FROM harness_shared.autoloop_state s
    LEFT JOIN harness_shared.routines r
           ON r.name = s.role AND r.workspace_id = s.workspace_id
        WHERE s.consecutive_errors >= ${threshold}`;
-    const pausedSkipped = allRows.filter((r) => r.consecutive_errors >= threshold && r.routine_active === false);
+    // EI-6727: an ephemeral loop:arm OWNER loop (routine.target_owner_id non-null) is
+    // owner-witnessed AND auto-terminated by the reconcile dead-owner guard, which fires its
+    // OWN dedicated escalation — so the chronic sweep escalating it is a premature duplicate.
+    // Report it as skipped-loop-arm (checked FIRST, mirroring selectChronicFailures) so the
+    // paused/stale buckets below never double-report the same row.
+    const loopArmSkipped = allRows.filter((r) => r.consecutive_errors >= threshold && isLoopArmOwnerLoop(r));
+    const pausedSkipped = allRows.filter(
+      (r) => r.consecutive_errors >= threshold && !isLoopArmOwnerLoop(r) && r.routine_active === false,
+    );
     // EI-6765: a breaching, non-paused row whose last fire is older than the staleness
     // window is a FROZEN watermark (orphaned/renamed slug that stopped firing), not a
     // live chronic failure — report it as skipped-stale for observability, never escalate.
     const staleSkipped = allRows.filter(
       (r) =>
         r.consecutive_errors >= threshold &&
+        !isLoopArmOwnerLoop(r) &&
         r.routine_active !== false &&
         isStaleWatermark(r, now, staleMs),
     );
     const breaches = selectChronicFailures(allRows, threshold, { now, staleMs });
+    for (const l of loopArmSkipped) {
+      results.push({
+        harnessSlug: l.harness_slug,
+        role: l.role,
+        outcome: 'skipped-loop-arm',
+        reason: `loop:arm owner loop (owner ${l.routine_target_owner_id}) — auto-terminated by the reconcile dead-owner guard with its own escalation, not a sweep-escalatable chronic failure`,
+      });
+    }
     for (const p of pausedSkipped) {
       results.push({
         harnessSlug: p.harness_slug,

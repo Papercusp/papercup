@@ -4,6 +4,7 @@ import {
   chronicErrorThreshold,
   staleWindowMs,
   isStaleWatermark,
+  isLoopArmOwnerLoop,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
 
@@ -110,6 +111,63 @@ describe('selectChronicFailures', () => {
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
+  });
+
+  it("EI-6727 real shape: a LIVE (routine active, recently fired) loop:arm owner loop is NOT escalated — pre-pause window", () => {
+    // EI-6727 (loop-su-dad90f05…) and 27 siblings: a dead su session's loop:arm loop climbs
+    // past the chronic threshold (6) and the sweep escalates it in the WINDOW before the
+    // reconcile dead-owner guard circuit-opens (≥8) and pauses the routine. At escalation time
+    // the row looks live (routine_active:true, recent fire) so neither the routine_active nor
+    // the staleness guard catches it — only the target_owner_id marker (a loop:arm OWNER loop,
+    // which has its OWN dead-owner escalation) does. Must NOT re-file a chronic-failure ticket.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-dad90f05-580b-4cb0-b81e-8cb951756c59',
+        consecutive_errors: 7,
+        last_status: 'loop-stuck-backstop',
+        routine_active: true,
+        routine_target_owner_id: 'su-dad90f05-580b-4cb0-b81e-8cb951756c59',
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(), // fired 1min ago — not stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
+  it('EI-6727: a fixed SYSTEM role (no target_owner_id) still escalates — the suppression is loop:arm-only', () => {
+    // Regression guard against over-suppression: gym-cycle/director/overwatch/scout-cycle are
+    // witness-less fixed system roles with NO target_owner_id and no other escalation path —
+    // they remain the sweep's whole point and MUST still escalate.
+    const rows = [
+      row({ role: 'gym-cycle', consecutive_errors: 8, routine_active: true, routine_target_owner_id: null }),
+    ];
+    expect(selectChronicFailures(rows, 6).map((r) => r.role)).toEqual(['gym-cycle']);
+  });
+
+  it('EI-6727: a loop:arm owner loop is dropped even at a very high streak while its routine is still active', () => {
+    // Some dead loops reach streaks of 55+ before the reconcile tick pauses them (the guard
+    // needs looksDeadOrStuck + a reconcile pass). A high streak must NOT re-open escalation of
+    // a loop:arm owner loop — the guard owns its escalation regardless of streak.
+    const rows = [
+      row({
+        role: 'loop-su-45001f87-6b30-43f6-b37f-1899adad537f',
+        consecutive_errors: 58,
+        routine_active: true,
+        routine_target_owner_id: 'su-45001f87-6b30-43f6-b37f-1899adad537f',
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(),
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
+  it('EI-6727 mixed batch: loop:arm owner loops drop, fixed system roles still breach in order', () => {
+    const rows = [
+      row({ role: 'gym-cycle', consecutive_errors: 10, routine_active: true, routine_target_owner_id: null }),
+      row({ role: 'loop-su-a', consecutive_errors: 30, routine_active: true, routine_target_owner_id: 'su-a' }),
+      row({ role: 'scout-cycle', consecutive_errors: 8, routine_active: null, routine_target_owner_id: null }),
+      row({ role: 'loop-su-b', consecutive_errors: 99, routine_active: true, routine_target_owner_id: 'su-b' }),
+    ];
+    expect(selectChronicFailures(rows, 6).map((r) => r.role)).toEqual(['gym-cycle', 'scout-cycle']);
   });
 
   it('a role with NO matching routines row (routine_active: null — director/gym-cycle/overwatch/scout-cycle) fails OPEN and is still escalated', () => {
