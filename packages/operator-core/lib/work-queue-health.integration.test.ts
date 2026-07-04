@@ -197,8 +197,8 @@ describe('readWorkQueueHealth — reaper liveness (P-009)', () => {
 
   it('the staleness alarm FIRES when the recorded last-run is older than the threshold', async () => {
     // Stamp a last_run 10 min ago — older than the 5-min default staleness window.
-    await sql`INSERT INTO harness_shared.periodic_sweep_runs (sweep_name, last_run_at, last_released)
-      VALUES (${STALE_CLAIM_SWEEP_NAME}, now() - interval '10 minutes', 0)`;
+    await sql`INSERT INTO harness_shared.periodic_sweep_runs (sweep_name, last_run_at, last_released, workspace_id)
+      VALUES (${STALE_CLAIM_SWEEP_NAME}, now() - interval '10 minutes', 0, ${WS})`;
     const h = await readWorkQueueHealth(sql, { workspaceId: WS });
     expect(h.reaperStale).toBe(true);
     expect(h.reaperAgeMs!).toBeGreaterThan(5 * 60 * 1000);

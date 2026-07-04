@@ -95,10 +95,15 @@ describe('cadence (PG KV)', () => {
 describe('listStartedOverwatches (PG)', () => {
   it('returns ONLY started (value=true) keys, parsing workspace:install off the first colon', async () => {
     await cs.setOverwatchStarted('ws1', 'web', true);
-    await cs.setOverwatchStarted('ws1', 'api', false); // paused — excluded
+    await cs.setOverwatchStarted('ws1', 'api', false); // paused
     await cs.setOverwatchStarted('ws2', 'web-thing', true);
     const list = await cs.listStartedOverwatches();
     const sorted = list.map((x) => `${x.workspaceId}/${x.installSlug}`).sort();
-    expect(sorted).toEqual(['ws1/web', 'ws2/web-thing']); // 'ws1/api' (paused) excluded
+    // K1 workspace-scoped-coordination (P-004/D-006, flag ON by default): a start
+    // writes BOTH the workspace-sentinel row (the install dimension collapses to
+    // the workspace id → 'ws2/ws2') and the legacy per-install row; pausing ANY
+    // install converges every started row in that workspace to false — so ws1
+    // (web started, then api paused) vanishes entirely.
+    expect(sorted).toEqual(['ws2/web-thing', 'ws2/ws2']);
   });
 });

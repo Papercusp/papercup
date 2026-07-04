@@ -53,6 +53,25 @@ const SPAWNED_AGENTS_DDL = `
     -- migration 339 (EI-2186): the reclaim also SELECTs launcher_boot_id.
     pid integer, launcher_host text, launcher_boot_id text)`;
 
+// The reclaim path also frees the three claim surfaces (sweepStaleSpawnClaims,
+// spawn-reclaim.ts) — mirror spawn-reclaim.integration's minimal stand-ins so
+// the sweep runs instead of erroring "does not exist".
+const FEATURES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+    feature_id text NOT NULL, workspace_id text NOT NULL, harness_slug text NOT NULL,
+    status text, taken_by text, taken_at timestamptz, last_progress_at timestamptz,
+    updated_ts bigint, PRIMARY KEY (feature_id, workspace_id, harness_slug))`;
+const ISSUES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
+    workspace_id text NOT NULL DEFAULT 'default', issue_id text NOT NULL,
+    assignee text, assigned_at timestamptz, origin text NOT NULL DEFAULT 'local',
+    updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, issue_id))`;
+const PLAN_CLAIMS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
+    workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
+    item_id text NOT NULL, owner text NOT NULL,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id))`;
+
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };
 let db: FreshPgDb;
@@ -71,6 +90,9 @@ async function insertStaleBee(spawnId: string, parentSpawnId: string | null, ses
 beforeAll(async () => {
   db = await createFreshPgDb('hive-wake-loop');
   await db.sql.unsafe(SPAWNED_AGENTS_DDL);
+  await db.sql.unsafe(FEATURES_DDL);
+  await db.sql.unsafe(ISSUES_DDL);
+  await db.sql.unsafe(PLAN_CLAIMS_DDL);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
 beforeEach(async () => {

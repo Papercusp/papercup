@@ -7,6 +7,7 @@
 import { platform, homedir } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { detectBinaries } from '../../../agent-bin-detect';
+import { allowedFrameworks, type OnboardingFramework } from '../../../onboarding/stage-resolver';
 
 const MERIDIAN_VERSION = '1.42.1';
 // oh-my-pi has NO live npm package (`oh-my-pi` was unpublished 2026-05-21;
@@ -73,6 +74,87 @@ npm install --prefix ~/.papercusp/runtime --no-audit --no-fund
 echo '==> done'
 `;
   return { command: 'bash', args: ['-c', script], cwd: home, env: {} };
+}
+
+/**
+ * PER-FRAMEWORK install spec (agent-first-onboarding-2026-07-03 P-001) — the
+ * onboarding concierge installs ONLY the framework the user picked, unlike the
+ * wizard's all-in-one `buildInstallSpec` (kept above for the GUI wizard).
+ *
+ * Composability: the codex / meridian installs go into the SAME
+ * `~/.papercusp/runtime` prefix the wizard uses (and detection probes), via
+ * incremental `npm install --prefix` — installing one framework never removes
+ * another. oh-my-pi itself has NO npm package (unpublished 2026-05-21): it
+ * ships bundled with the desktop sidecar, so the omp-meridian spec installs
+ * Meridian only and says so.
+ *
+ * Throws on `omp-meridian` + win32 — Windows v1 ships no omp (D-006 @
+ * windows-desktop-release-readiness); callers gate the picker with
+ * `allowedFrameworks(os)` so a throw here is a caller bug, loud on purpose.
+ */
+export function buildFrameworkInstallSpec(
+  framework: OnboardingFramework,
+  os: string,
+  home: string,
+): SpawnSpec {
+  if (os === 'win32') {
+    if (framework === 'omp-meridian') {
+      throw new Error(
+        'omp-meridian is not installable on Windows (D-006: Windows v1 ships no omp)',
+      );
+    }
+    const script =
+      framework === 'claude'
+        ? `
+$ErrorActionPreference = 'Stop'
+Write-Host '==> installing Claude Code'
+Invoke-WebRequest -UseBasicParsing -Uri https://claude.ai/install.ps1 | Select-Object -ExpandProperty Content | Invoke-Expression
+Write-Host '==> done'
+`
+        : `
+$ErrorActionPreference = 'Stop'
+$runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
+New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+if (-not (Test-Path (Join-Path $runtime 'package.json'))) {
+  Push-Location $runtime; npm init -y | Out-Null; Pop-Location
+}
+Write-Host '==> installing codex'
+npm install --prefix $runtime --no-audit --no-fund ${CODEX_PACKAGE}@latest
+Write-Host '==> done'
+`;
+    return {
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      cwd: home,
+      env: {},
+    };
+  }
+
+  const runtimeBootstrap = `mkdir -p ~/.papercusp/runtime
+[ -f ~/.papercusp/runtime/package.json ] || (cd ~/.papercusp/runtime && npm init -y >/dev/null)`;
+  const scripts: Record<OnboardingFramework, string> = {
+    claude: `set -e
+echo '==> installing Claude Code'
+curl -fsSL https://claude.ai/install.sh | bash
+echo '==> done'
+`,
+    codex: `set -e
+echo '==> bootstrapping runtime'
+${runtimeBootstrap}
+echo '==> installing codex'
+npm install --prefix ~/.papercusp/runtime --no-audit --no-fund ${CODEX_PACKAGE}@latest
+echo '==> done'
+`,
+    'omp-meridian': `set -e
+echo '==> bootstrapping runtime'
+${runtimeBootstrap}
+echo '==> installing meridian'
+npm install --prefix ~/.papercusp/runtime --no-audit --no-fund @rynfar/meridian@${MERIDIAN_VERSION}
+echo '==> note: oh-my-pi itself ships bundled with the desktop app (no npm package)'
+echo '==> done'
+`,
+  };
+  return { command: 'bash', args: ['-c', scripts[framework]], cwd: home, env: {} };
 }
 
 /**
@@ -167,8 +249,14 @@ export default defineTool({
   handler() {
     const os = platform();
     const home = homedir();
+    // Per-framework specs for the onboarding concierge (P-001): only the
+    // frameworks this OS supports (win32 has no omp path).
+    const installFramework = Object.fromEntries(
+      allowedFrameworks(os).map((f) => [f, buildFrameworkInstallSpec(f, os, home)]),
+    ) as Partial<Record<OnboardingFramework, SpawnSpec>>;
     return Response.json({
       installRuntime: buildInstallSpec(os, home),
+      installFramework,
       loginClaude: buildLoginSpec('claude', home),
       loginCodex: buildLoginSpec('codex', home),
       loginOmp: buildLoginSpec('omp', home),

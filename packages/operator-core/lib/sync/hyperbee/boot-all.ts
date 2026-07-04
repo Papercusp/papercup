@@ -671,8 +671,11 @@ export async function bootSingleHarness(
     // would) unless a newer boot got there first — in which case close the late
     // one so it releases the corestore instead of squatting. A late FAILURE
     // needs no action (bootHarnessSubstrate unwinds its own partial state).
-    if (rawBoot && errMsg.startsWith('boot timeout')) {
-      void rawBoot
+    // (assertion: TS's CFA ignores the closure assignment at :628 and narrows
+    // `rawBoot` to null here, typing the guarded promise as `never`)
+    const lateBoot = rawBoot as Promise<BootedHarnessHandle> | null;
+    if (lateBoot && errMsg.startsWith('boot timeout')) {
+      void lateBoot
         .then(async (handle) => {
           if (!handles.has(k) && !inflight.has(k)) {
             handles.set(k, handle);
