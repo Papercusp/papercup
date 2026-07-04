@@ -143,6 +143,52 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(deps.ensureHive).not.toHaveBeenCalled();
   });
 
+  it('P-007: restore-before-join runs the seed restore BEFORE joinCanonical', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const restoreSeed = vi.fn(async () => {
+      order.push('restore');
+      return { ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] };
+    });
+    const joinCanonical = vi.fn(async () => {
+      order.push('join');
+      return { state: 'joined' as const, slug: 'papercusp-view' };
+    });
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created');
+    expect(restoreSeed).toHaveBeenCalledOnce();
+    expect(joinCanonical).toHaveBeenCalledOnce();
+    expect(order).toEqual(['restore', 'join']); // restore STRICTLY before the (unchanged) join
+    // The boot log summarizes what restored vs deferred (diagnostic, like clone logging).
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/seed restore: restored=\[corestore\] deferred=\[git\]/));
+    warn.mockRestore();
+  });
+
+  it('P-007: a restore failure is non-fatal — the join still runs (cold path)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const joinCanonical = vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' }));
+    const restoreSeed = vi.fn(async () => {
+      throw new Error('seed dir corrupt');
+    });
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created'); // restore threw, join still succeeded
+    expect(joinCanonical).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/seed restore failed \(non-fatal; cold path\)/));
+    warn.mockRestore();
+  });
+
   it('P-006: a join SKIP propagates as skipped (next-boot retry) — never falls through to clone+create', async () => {
     const joinCanonical = vi.fn(async () => ({
       state: 'skipped' as const,

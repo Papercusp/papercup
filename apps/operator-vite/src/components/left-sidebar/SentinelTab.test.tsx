@@ -23,6 +23,9 @@ import { effectiveFor, keyOverridden } from './SentinelTab';
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
 }));
+// Lexicon resolver mocked to ECHO its key (t('operator') → 'operator') — isolates
+// from the flag hook; classic pack renders 'Operator' at runtime (P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import SentinelTab from './SentinelTab';
 

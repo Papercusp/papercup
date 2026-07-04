@@ -32,6 +32,7 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useNavigate } from '@tanstack/react-router';
 import { Megaphone, RotateCcw, Settings2 } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 import OverridableSetting from '../override/OverridableSetting';
 import { isOverridden } from '../override/isOverridden';
 import ModelOverride from './ModelOverride';
@@ -105,6 +106,7 @@ export function keyOverridden(workspace: PrefBag, user: PrefBag, key: string, fa
 }
 
 export default function SentinelTab({ active }: { active: boolean }) {
+  const t = useLexicon();
   const navigate = useNavigate();
   const [workspace, setWorkspace] = useState<PrefBag>({ ...FALLBACK_WORKSPACE });
   const [user, setUser] = useState<PrefBag>({});
@@ -184,7 +186,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
         <header className="pc-queen__bar">
           <Megaphone size={14} aria-hidden />
           <span className="pc-queen__identity">
-            <span className="pc-queen__title">Sentinel</span>
+            <span className="pc-queen__title">{t('operator')}</span>
             <span className="pc-queen__subtitle">Voice &amp; persona</span>
           </span>
           <span className="pc-queen__spacer" />
@@ -202,14 +204,14 @@ export default function SentinelTab({ active }: { active: boolean }) {
           </div>
         )}
         <ModelOverride
-          label="Sentinel model"
+          label={`${t('operator')} model`}
           override={sentinelModel.override}
           onWrite={sentinelModel.setOverride}
           busy={sentinelModel.busy}
         />
 
         {!loaded ? (
-          <div className="pc-queen__placeholder">Loading Sentinel settings…</div>
+          <div className="pc-queen__placeholder">Loading {t('operator')} settings…</div>
         ) : (
           <>
             {/* Audience mode — engineer ↔ user-friendly. Segmented toggle. */}
@@ -239,7 +241,7 @@ export default function SentinelTab({ active }: { active: boolean }) {
                 </div>
               </OverridableSetting>
               <span className="pc-queen__hint">
-                How the Sentinel addresses you — terse &amp; technical, or plain-English &amp; outcome-first.
+                How the {t('operator')} addresses you — terse &amp; technical, or plain-English &amp; outcome-first.
               </span>
             </section>
 

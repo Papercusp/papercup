@@ -257,6 +257,33 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
   });
 
+  it('WI-2680: a claude session WHOSE TRANSCRIPT DOESN\'T RESOLVE (thinkingResolvable:false) shows the honest note, not an empty inspector', () => {
+    // The reported bug: parked/ended backlog-clearance agents (loop-armed, transcript
+    // gone) sort to the top of the roster; clicking one opened an EMPTY pane. The server
+    // now stamps thinkingResolvable:false; the client must offer the honest note and
+    // NEVER open the (empty) inspector modal.
+    H.active = [agent({ ownerId: 'zx1', role: 'su', agent: 'claude', sessionId: 'stale-sess-abc', runId: null, harnessSlug: null, thinkingResolvable: false })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-zx1'));
+    const note = screen.getByTestId('agent-no-thinking-note');
+    expect(note.textContent).toContain('Live thinking unavailable');
+    expect(note.textContent).toMatch(/ended|rotated away/); // the accurate "gone transcript" copy, not "no handle"
+    expect(screen.queryByTestId('agent-inspect-btn')).toBeNull();
+    // Clicking the row must NOT open the empty inspector.
+    fireEvent.click(screen.getByTestId('agent-row-zx1'));
+    expect(screen.queryByTestId('inspector-modal')).toBeNull();
+  });
+
+  it('WI-2680: a claude session WITH a resolvable transcript (thinkingResolvable:true) still opens the inspector (no regression)', () => {
+    H.active = [agent({ ownerId: 'lv1', role: 'su', agent: 'claude', sessionId: 'live-sess-xyz', runId: null, harnessSlug: null, thinkingResolvable: true })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-row-lv1'));
+    const modal = screen.getByTestId('inspector-modal');
+    expect(modal.getAttribute('data-url')).toContain('/api/adv/session/thinking?sessionId=live-sess-xyz');
+  });
+
   it('a CODEX session (adv row id, no claude sessionId) streams via codexSessionKey', () => {
     H.active = [agent({ ownerId: 'cq1', role: 'queen', agent: 'codex', advSessionId: 9444, runId: null, harnessSlug: null, sessionId: null })];
     nuqs.open = true;
