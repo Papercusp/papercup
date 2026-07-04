@@ -587,7 +587,7 @@ describe('LearningTab — Knowledge view', () => {
 describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-042)', () => {
   it('renders the tab-level hive picker on hive-aware views (Improvements) with the hiveList options', () => {
     render(<LearningTab />); // default view = improvements (hive-aware)
-    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    const picker = screen.getByLabelText('pot lens') as HTMLSelectElement;
     expect(picker).toBeTruthy();
     // Labels are the friendly hive name — hiveHomeLabel strips the `-hive` home
     // suffix for display (workspace-hive-ui-2026-06-17) — while the option VALUE
@@ -602,11 +602,11 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
   it('shows the picker on the Gym and Learnings views too', () => {
     nuqsState.lview = 'gym';
     render(<LearningTab />);
-    expect(screen.getByLabelText('Hive lens')).toBeTruthy();
+    expect(screen.getByLabelText('pot lens')).toBeTruthy();
     cleanup();
     nuqsState.lview = 'learnings';
     render(<LearningTab />);
-    expect(screen.getByLabelText('Hive lens')).toBeTruthy();
+    expect(screen.getByLabelText('pot lens')).toBeTruthy();
   });
 
   it('HIDES the picker on workspace-global views (Benchmark, Scout, Knowledge, Throughput)', () => {
@@ -614,7 +614,7 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
       cleanup();
       nuqsState.lview = v;
       render(<LearningTab />);
-      expect(screen.queryByLabelText('Hive lens')).toBeNull();
+      expect(screen.queryByLabelText('pot lens')).toBeNull();
     }
   });
 
@@ -624,7 +624,7 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     // view already did). The picker value + the threaded arg agree, so the lens
     // is never silently workspace-wide while showing a specific hive selected.
     render(<LearningTab />);
-    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    const picker = screen.getByLabelText('pot lens') as HTMLSelectElement;
     expect(picker.value).toBe('alpha-hive'); // first hive shown as the selection
     expect(seenArgs['learning.improvements']).toEqual({ hive: 'alpha-hive' });
   });
@@ -651,16 +651,16 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
 
   it('writes ?lhive when the picker changes', () => {
     render(<LearningTab />);
-    fireEvent.change(screen.getByLabelText('Hive lens'), { target: { value: 'beta-hive' } });
+    fireEvent.change(screen.getByLabelText('pot lens'), { target: { value: 'beta-hive' } });
     expect(nuqsSetters.lhive).toHaveBeenCalledWith('beta-hive');
   });
 
   it('disables the picker (no hives yet) and queries improvements workspace-wide', () => {
     hiveListResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
-    const picker = screen.getByLabelText('Hive lens') as HTMLSelectElement;
+    const picker = screen.getByLabelText('pot lens') as HTMLSelectElement;
     expect(picker.disabled).toBe(true);
-    expect(within(picker).getByRole('option', { name: 'no hives yet' })).toBeTruthy();
+    expect(within(picker).getByRole('option', { name: 'no pot yet' })).toBeTruthy();
     expect(seenArgs['learning.improvements']).toEqual({});
   });
 });
