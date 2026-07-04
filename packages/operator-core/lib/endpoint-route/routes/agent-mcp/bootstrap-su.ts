@@ -1042,6 +1042,21 @@ const post = defineTool({
           409,
         );
       }
+      // WI-2185 (fleet-member-wake-immunity): a spawned MEMBER gets a per-agent `auto`
+      // wake-mode override at boot so its leader's steering wakes LAND even under a
+      // `manual` GLOBAL default (the D-005 gate) — without which a manual-default fleet
+      // deadlocks: the member can't receive steering, and its leader (often a weak local
+      // model) can't release a staged wake, only the owner can. Scoped per-agent, so the
+      // owner's global default is untouched for every non-member. Fail-soft: a write
+      // hiccup just reverts to the pre-fix inherited default, never blocks the launch
+      // (unlike the membership stamp, this is a coordination-quality write, not a
+      // no-ghost correctness gate).
+      try {
+        const { ensureFleetMemberWakeAuto } = await import('../../../agent-tools/coordination/wake-mode');
+        await ensureFleetMemberWakeAuto(sid, fleetPin.fleetRole);
+      } catch {
+        /* degrade to the inherited default; non-fatal */
+      }
     }
 
     // agent-allocation P-005 (launch-from-seats): record the seat consumption NOW —

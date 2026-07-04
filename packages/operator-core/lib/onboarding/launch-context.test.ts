@@ -11,6 +11,7 @@ const TOKENS: TutorTokens = {
   mode: 'first-run',
   setupStatusJson: '{"statuses":{}}',
   tutorialProgressJson: '{}',
+  tutorialPackIndex: '**Chapter 1**\n- ch1-01 — Sample → `/tmp/sample.md`',
 };
 
 describe('renderTutorTemplate', () => {

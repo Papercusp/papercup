@@ -16,6 +16,11 @@ import {
   resolveTutorPromptSource,
   writeTutorLaunchContext,
 } from '../../../onboarding/launch-context';
+import {
+  loadTutorialPack,
+  packIndexMarkdown,
+  resolvePackRoot,
+} from '../../../onboarding/tutorial-pack';
 
 const AGENTS = new Set(['claude', 'codex', 'omp']);
 
@@ -48,6 +53,18 @@ export default defineTool({
       /* fresh installs may have no workspace yet */
     }
 
+    // Content-pack index (P-012). A broken pack must not break onboarding —
+    // fall back to the docs:search-grounded path with an honest note.
+    let tutorialPackIndex: string;
+    try {
+      const packRoot = resolvePackRoot();
+      tutorialPackIndex = packIndexMarkdown(packRoot ? loadTutorialPack(packRoot) : []);
+    } catch (e) {
+      tutorialPackIndex = `(tutorial content pack failed to load: ${
+        e instanceof Error ? e.message : String(e)
+      } — ground sections with \`docs:search\` instead)`;
+    }
+
     const path = writeTutorLaunchContext(source, {
       os: platform(),
       agent,
@@ -56,6 +73,7 @@ export default defineTool({
       mode,
       setupStatusJson: JSON.stringify(status ?? {}, null, 2),
       tutorialProgressJson: JSON.stringify(progress ?? {}, null, 2),
+      tutorialPackIndex,
     });
     return Response.json({ path, mode, agent });
   },

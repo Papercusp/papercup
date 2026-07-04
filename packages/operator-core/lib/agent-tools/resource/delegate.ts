@@ -27,8 +27,11 @@
  *   - account defaults to 'AUTO' AT THIS LAYER (D-003: the gateway draws from
  *     the fleet's allocated accounts) — the store stores it verbatim.
  *
- * Allotments are LOCAL/per-machine (M19); seat-offer federation is P-007/D-005,
- * NOT this tool.
+ * Allotments are LOCAL/per-machine (M19). D-005 (P-007): an agent_slot
+ * delegation ALSO federates as a standing SEAT-OFFER — the success path below
+ * fires p2p/offer-store-publish.ts best-effort (set → open/paused, remove →
+ * cancelled) so the fleet owner's operator sees this machine's seats; the
+ * gateway account id itself never crosses the wire.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -199,7 +202,7 @@ export default defineTool({
   name: 'resource:delegate',
   profile: 'engineer',
   description:
-    "Delegate this host's resources to a fleet (the /res board write, D-004): kind 'account'|'gpu' with a share-% cap (autonomous-loop capacity), or 'agent_slot' — N × model·effort agent seats on a gateway account (account 'AUTO' = draw from the fleet's allocated accounts). Re-delegating the same (fleet, kind, ref) UPDATES the cap (idempotent upsert); remove:true revokes. Allotments are LOCAL to this machine (M19) — seat-offer federation is the P-007 offer-store, not this tool. Returns {ok, action, allotment|removed} or a typed store refusal.",
+    "Delegate this host's resources to a fleet (the /res board write, D-004): kind 'account'|'gpu' with a share-% cap (autonomous-loop capacity), or 'agent_slot' — N × model·effort agent seats on a gateway account (account 'AUTO' = draw from the fleet's allocated accounts). Re-delegating the same (fleet, kind, ref) UPDATES the cap (idempotent upsert); remove:true revokes. Allotments are LOCAL to this machine (M19); an agent_slot delegation ALSO auto-publishes a standing seat-offer to the fleet owner over P2P (D-005 offer store — best-effort, the account id stays local). Returns {ok, action, allotment|removed} or a typed store refusal.",
   guidance: {
     when:
       "Handing a fleet capacity: 'join fleet X and assign 5 xhigh opus seats' → resource:delegate { fleetSlug:'x', kind:'agent_slot', model:'opus', effort:'xhigh', count:5 } (account omitted = AUTO). Account pools / GPUs take sharePct instead of count. Also the revoke path (remove:true — the /res chip's ×).",

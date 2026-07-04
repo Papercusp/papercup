@@ -81,6 +81,17 @@ export interface BriefCapacity {
  * escalations, what-woke-me, headroom).
  */
 export interface QueenBriefFloor {
+  /**
+   * The hive/harness slug THIS brief is for (EI-3419). There is one workspace
+   * Queen covering every started hive, and her carry-note/carry-journal is
+   * WORKSPACE-scoped, not hive-scoped (`hiveScope()` in carry-note.ts returns a
+   * constant key by design) — so a note written during a wake for hive A is
+   * still the one she reads back during a LATER wake for hive B. Rendering the
+   * ground-truth hive slug here, ahead of the carry-note, gives every wake an
+   * unambiguous anchor to catch a stale/foreign-scope carry-note against,
+   * instead of silently trusting whatever hive the note happens to name.
+   */
+  hiveSlug?: string;
   /** What woke the Queen this turn (event key / note / 'timer' / 'backstop'). */
   wokeBy?: string;
   /** Spawn concurrency budget. */
@@ -262,6 +273,15 @@ export function renderQueenBrief(input: QueenBriefInput): string {
       'just to gather this; act on it. Drill into detail this digest omits with a tool ' +
       'only when you need it (page deeper in your inbox, a specific bee/plan/thread).',
   );
+
+  // EI-3419: the ground-truth hive anchor, rendered BEFORE "Woke by" so it is
+  // the first concrete fact a fresh-per-wake Queen reads — an unambiguous
+  // cross-check point against a carry-note/journal that may (by the substrate's
+  // own workspace-wide scope, not this brief's fault) reference a different hive.
+  if (f.hiveSlug && f.hiveSlug.trim()) {
+    out.push('');
+    out.push(`**Hive (this wake):** ${f.hiveSlug.trim()}`);
+  }
 
   if (f.wokeBy && f.wokeBy.trim()) {
     out.push('');

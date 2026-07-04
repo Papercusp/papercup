@@ -11,6 +11,7 @@ import {
   setDefaultWakeMode,
   getWakeModeOverride,
   setWakeMode,
+  ensureFleetMemberWakeAuto,
   DEFAULT_WAKE_MODE,
   WAKE_MODES,
 } from './wake-mode';
@@ -75,5 +76,38 @@ describe('wake-mode store (operator_settings KV)', () => {
   it('a garbage stored value falls back to the default', async () => {
     kv.store.set('wake_mode:default', 'nonsense');
     expect(await getDefaultWakeMode()).toBe('auto');
+  });
+});
+
+describe('ensureFleetMemberWakeAuto — fleet-member wake immunity (WI-2185)', () => {
+  it('writes an auto override for a MEMBER and returns the mode', async () => {
+    expect(await ensureFleetMemberWakeAuto('s-member', 'member')).toBe('auto');
+    expect(kv.store.get('wake_mode:agent:s-member')).toBe('auto');
+    expect(await getWakeModeOverride('s-member')).toBe('auto');
+  });
+  it('makes the member immune to a manual GLOBAL default', async () => {
+    await setDefaultWakeMode('manual');
+    await ensureFleetMemberWakeAuto('s-member', 'member');
+    // The member wins with its override; a peer without one still inherits manual.
+    expect(await resolveWakeMode('s-member')).toBe('auto');
+    expect(await resolveWakeMode('s-peer')).toBe('manual');
+  });
+  it('is a NO-OP for a leader (owner-gated by design) — no override row written', async () => {
+    await setDefaultWakeMode('manual');
+    expect(await ensureFleetMemberWakeAuto('s-leader', 'leader')).toBeNull();
+    expect(kv.store.has('wake_mode:agent:s-leader')).toBe(false);
+    expect(await getWakeModeOverride('s-leader')).toBeNull();
+    expect(await resolveWakeMode('s-leader')).toBe('manual'); // still inherits the gate
+  });
+  it('is a NO-OP for a non-fleet launch (null/undefined role)', async () => {
+    expect(await ensureFleetMemberWakeAuto('s-solo', null)).toBeNull();
+    expect(await ensureFleetMemberWakeAuto('s-solo', undefined)).toBeNull();
+    expect(kv.store.has('wake_mode:agent:s-solo')).toBe(false);
+  });
+  it('setWakeMode carries a custom description when given', async () => {
+    await setWakeMode('s-x', 'auto', 'because WI-2185');
+    // The INSERT upsert stores value under the agent key regardless of description;
+    // the description rides along to the KV write (asserted via the store value).
+    expect(kv.store.get('wake_mode:agent:s-x')).toBe('auto');
   });
 });

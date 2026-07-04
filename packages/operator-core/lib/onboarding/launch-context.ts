@@ -21,6 +21,8 @@ export interface TutorTokens {
   mode: 'first-run' | 'tutorial';
   setupStatusJson: string;
   tutorialProgressJson: string;
+  /** packIndexMarkdown() over the tutorial content pack (P-012). */
+  tutorialPackIndex: string;
 }
 
 /** Replace every {{TOKEN}} in the template. Pure; exported for tests. */
@@ -32,7 +34,8 @@ export function renderTutorTemplate(template: string, t: TutorTokens): string {
     .replaceAll('{{APP_VERSION}}', t.appVersion)
     .replaceAll('{{MODE}}', t.mode)
     .replaceAll('{{SETUP_STATUS_JSON}}', t.setupStatusJson)
-    .replaceAll('{{TUTORIAL_PROGRESS_JSON}}', t.tutorialProgressJson);
+    .replaceAll('{{TUTORIAL_PROGRESS_JSON}}', t.tutorialProgressJson)
+    .replaceAll('{{TUTORIAL_PACK_INDEX}}', t.tutorialPackIndex);
 }
 
 /**

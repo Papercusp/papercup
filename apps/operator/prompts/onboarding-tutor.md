@@ -11,6 +11,7 @@
 
   Tokens: {{OS}} · {{CHOSEN_AGENT}} · {{WORKSPACE_PATH}} · {{APP_VERSION}}
           {{SETUP_STATUS_JSON}} · {{TUTORIAL_PROGRESS_JSON}} · {{MODE}}
+          {{TUTORIAL_PACK_INDEX}}
   MODE = "first-run" (fresh onboarding) | "tutorial" (re-entry via the
   Papercusp Tutorial icon / `papercusp tutorial`).
 -->
@@ -131,6 +132,16 @@ Content source: prefer the tutorial content pack under
 CANONICAL — render them, lightly personalized). Where a section has no pack
 file yet, ground yourself with `docs:search` BEFORE writing the brief; if the
 docs are silent on a section, SAY SO honestly rather than inventing.
+
+### Content-pack index (rendered at launch)
+
+{{TUTORIAL_PACK_INDEX}}
+
+Each entry points at that section's pack FILE — when the tutorial reaches a
+listed section, READ the file and deliver its `## Brief` (its `## Details`
+answers `[2]`), lightly personalized to this user. The `docs:` slugs on each
+entry are where questions about that section are grounded. Sections NOT
+listed above have no pack file yet — for those, `docs:search` first.
 
 ### Hello-world (inside Ch 2, after ⑥ work items)
 

@@ -71,8 +71,42 @@ export async function getWakeModeOverride(ownerId: string): Promise<WakeMode | n
   return coerceWakeMode(await readSetting(agentKey(ownerId)));
 }
 
-export async function setWakeMode(ownerId: string, mode: WakeMode): Promise<void> {
-  await writeSetting(agentKey(ownerId), mode, `Per-agent wake mode for ${ownerId} (hive-agent-tabs P-015).`);
+export async function setWakeMode(ownerId: string, mode: WakeMode, description?: string): Promise<void> {
+  await writeSetting(agentKey(ownerId), mode, description ?? `Per-agent wake mode for ${ownerId} (hive-agent-tabs P-015).`);
+}
+
+/**
+ * fleet-member-wake-immunity (WI-2185): make a freshly-spawned fleet MEMBER immune to a
+ * `manual` GLOBAL default (the D-005 pause/edit gate) by writing it a per-agent
+ * `auto` override at boot.
+ *
+ * Why members specifically: a member's only steering channel is its LEADER's
+ * `coord:send` wakes. Under a manual global default a member with no override inherits
+ * `manual`, so every steering wake is STAGED for owner release — and the member's leader
+ * (often a weak local model) neither knows to flip it nor CAN release a staged wake (only
+ * the owner can). The fleet then deadlocks on steering it can never receive. The owner
+ * isn't conversing with each member directly, so the manual gate buys nothing there but
+ * the deadlock. A LEADER under a manual default is deliberately left gated — the owner IS
+ * present, and releasing the leader's staged routing-gate wake is the gate working as
+ * intended.
+ *
+ * Scoped per-agent so the owner's global default is UNTOUCHED for every non-member, and
+ * reversible (the owner can flip a specific member back with `coord:wake-mode`). No-op
+ * for a leader or a non-fleet launch. Returns the mode written, or null when it did
+ * nothing. The member's owner id is freshly minted at boot, so there is never a
+ * pre-existing override to clobber.
+ */
+export async function ensureFleetMemberWakeAuto(
+  ownerId: string,
+  fleetRole: string | null | undefined,
+): Promise<WakeMode | null> {
+  if (fleetRole !== 'member') return null;
+  await setWakeMode(
+    ownerId,
+    'auto',
+    `Fleet MEMBER ${ownerId} pinned to auto wake-mode at boot (WI-2185) — immune to a manual global default so its leader's steering wakes land.`,
+  );
+  return 'auto';
 }
 
 /** Effective wake mode for an agent: override ?? global default ?? auto. */
