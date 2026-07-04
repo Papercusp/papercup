@@ -556,6 +556,34 @@ describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', ()
     await flush();
     expect(abortLocalSpawn(res.spawnId!)).toBe(false);
   });
+
+  it('de-registers the local spawn handle even when the durable finishSpawn write throws (EI-7235)', async () => {
+    // Regression: a rejected finishSpawn (transient DB error) used to leave
+    // this spawn's entry in localSpawnAborts/localSpawnOutput forever, because
+    // the cleanup ran AFTER the (now-throwing) await and terminalRecorded's
+    // early-return guard silently no-oped every later retry. Since the
+    // heartbeat loop re-heartbeats every id still in the map with no per-id
+    // liveness check, the row's heartbeat_at would stay "falsely fresh"
+    // forever — invisible to reclaimOrphanedSpawns's stale-heartbeat query.
+    // The fix clears local bookkeeping in a `finally`, independent of whether
+    // the durable write succeeded — asserted here via abortLocalSpawn flipping
+    // to false (the existing de-registration proxy) despite the rejection.
+    vi.mocked(finishSpawn).mockRejectedValueOnce(new Error('ECONNRESET: pg pool exhausted'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    await flush();
+
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId, status: 'done',
+    }));
+    // Cleared despite the throw — no lingering entry to keep heartbeating.
+    expect(abortLocalSpawn(res.spawnId!)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('completeSpawn durable-write failed'),
+      expect.anything(),
+    );
+  });
 });
 
 describe('spawnAgentInHarness — harness resolution', () => {

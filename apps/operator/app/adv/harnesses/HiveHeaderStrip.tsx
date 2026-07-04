@@ -237,7 +237,7 @@ export default function HiveHeaderStrip({
           </span>
         )}
         {deployed && (
-          <span className="pc-hive-header__deploy" title="Deployed to a cloud Swarm">
+          <span className="pc-hive-header__deploy" title={`Deployed to a cloud ${t('node', { lower: true })}`}>
             <Cloud size={11} aria-hidden /> deployed
           </span>
         )}

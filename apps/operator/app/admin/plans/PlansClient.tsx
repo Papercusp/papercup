@@ -909,7 +909,7 @@ export default function PlansClient() {
                       </>
                     ) : null}
                     {queueAuthzView && queueTab === 'queen-log' ? (
-                      <section className="pc-queue__queenlog" aria-label="Queen's decision log">
+                      <section className="pc-queue__queenlog" aria-label={`${t('brain')}'s decision log`}>
                         <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
                           {QUEEN_LOG_LAYERS.map((l) => (
                             <Tooltip key={l.id} label={l.hint}><button

@@ -1319,19 +1319,44 @@ export async function spawnAgentInHarness(
       childStartTimer = null;
     }
     finalStatus = args.status;
-    await finishSpawn(sql, {
-      spawnId,
-      workspaceId: input.workspaceId,
-      status: args.status,
-      exitCode: args.exitCode ?? null,
-      errorMessage: args.errorMessage ?? null,
-      outputTail: args.outputTail ?? null,
-    });
-    if (args.releaseClaim) {
-      await releaseSpawnWorkItemClaim(sql, { harness: slug, workItemId, spawnId }).catch(() => {});
+    try {
+      await finishSpawn(sql, {
+        spawnId,
+        workspaceId: input.workspaceId,
+        status: args.status,
+        exitCode: args.exitCode ?? null,
+        errorMessage: args.errorMessage ?? null,
+        outputTail: args.outputTail ?? null,
+      });
+      if (args.releaseClaim) {
+        await releaseSpawnWorkItemClaim(sql, { harness: slug, workItemId, spawnId }).catch(() => {});
+      }
+    } catch (err) {
+      // EI-7235 (dispatch-orphan-rate regression): a durable-write failure here
+      // must NOT leave this spawn's local bookkeeping dangling. The heartbeat
+      // loop (ensureSpawnHeartbeatLoop) unconditionally re-heartbeats every id
+      // still in localSpawnAborts, with NO per-id liveness check — so if this
+      // throw skipped the cleanup below, a dead child's row would keep getting
+      // a "falsely fresh" heartbeat_at forever, and reclaimOrphanedSpawns's
+      // candidate query (WHERE heartbeat_at < now() - staleMs) would NEVER
+      // select it: a permanent ghost holding a concurrency-ceiling slot,
+      // invisible to every existing reclaim path (this file's own periodic
+      // sweep and the boot-time reconcile alike). The finally block below
+      // clears the local map regardless of this failure, so the heartbeat
+      // stops immediately; the DB row (still 'running'/'restarting' since this
+      // write failed) then goes heartbeat-stale within RECLAIM_STALE_MS and the
+      // EXISTING stale-heartbeat reclaim sweep settles it on its own next tick
+      // — no new mechanism needed, just don't let this catch suppress the
+      // cleanup that starts that sweep's staleness clock ticking.
+      console.warn(
+        `[operator-spawn] ${spawnId} completeSpawn durable-write failed — local bookkeeping ` +
+        `cleared anyway so the heartbeat stops (row will self-heal via the stale-heartbeat reclaim sweep):`,
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      localSpawnAborts.delete(spawnId);
+      localSpawnOutput.delete(spawnId);
     }
-    localSpawnAborts.delete(spawnId);
-    localSpawnOutput.delete(spawnId);
     // The terminal flip above freed a ceiling slot — wake any over-ceiling
     // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
     void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
