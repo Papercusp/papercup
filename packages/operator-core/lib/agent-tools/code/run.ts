@@ -313,6 +313,20 @@ export function shapeMutationEcho(
       byTool,
       note: 'effect:write calls executed; per-call args omitted to keep the result bounded — re-run with dryRun:true to preview them',
     },
+    // EI-7174: a script_timeout (or any other ok:false — a thrown error, a worker crash) does
+    // NOT undo write-effect calls the script already dispatched before the failure — dispatch()
+    // invokes the REAL tool immediately for every effect:write call, timeout or not. An agent
+    // that only reads `error` and retries the whole script on a `ok:false` risks a double-write
+    // (double-claim, double-post, …) for every mutation that already landed. Surface it at the
+    // SAME top level as `error` — not just buried in `mutations.note` — so it can't be missed.
+    ...(!result.ok
+      ? {
+          warning:
+            `${plannedMutations.length} write-effect call(s) already executed before this failure ` +
+            `(${Object.entries(byTool).map(([t, n]) => `${t}×${n}`).join(', ')}) — do NOT blindly ` +
+            're-run the whole script; check what actually landed before retrying, to avoid a double-write.',
+        }
+      : {}),
   };
 }
 

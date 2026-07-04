@@ -301,4 +301,46 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped).toBe(r); // same reference — nothing to summarize
     expect((shaped as Record<string, unknown>).mutations).toBeUndefined();
   });
+
+  // EI-7174: a script_timeout (or any other ok:false) does not undo write-effect calls the
+  // script already dispatched — dispatch() invokes the real tool immediately, timeout or not.
+  // A prominent top-level `warning` (not just the easy-to-miss mutations.note) stops an agent
+  // from blindly retrying the whole script and double-writing.
+  it('ok:false with mutations already dispatched (e.g. script_timeout) surfaces a prominent top-level warning', () => {
+    const shaped = shapeMutationEcho({
+      ok: false,
+      error: 'script_timeout after 30000ms',
+      logs: [],
+      dryRun: false,
+      plannedMutations: [
+        { tool: 'work_items:claim', args: { id: 'WI-1' } },
+        { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'in_progress' } },
+      ],
+    }) as Record<string, unknown>;
+    expect(shaped.ok).toBe(false);
+    expect(shaped.error).toBe('script_timeout after 30000ms');
+    expect(shaped.mutations).toMatchObject({ count: 2, byTool: { 'work_items:claim': 1, 'work_items:set_state': 1 } });
+    expect(shaped.warning).toEqual(expect.stringContaining('2 write-effect call(s) already executed'));
+    expect(shaped.warning).toEqual(expect.stringContaining('double-write'));
+  });
+
+  it('ok:false with NO mutations dispatched carries no warning (nothing to guard against)', () => {
+    const shaped = shapeMutationEcho({
+      ok: false,
+      error: 'some thrown error',
+      logs: [],
+      dryRun: false,
+      plannedMutations: [],
+    }) as Record<string, unknown>;
+    expect(shaped.warning).toBeUndefined();
+  });
+
+  it('ok:true (a normal successful run with mutations) carries no spurious warning', () => {
+    const shaped = shapeMutationEcho({
+      ...base,
+      dryRun: false,
+      plannedMutations: [{ tool: 'work_items:claim', args: { id: 'WI-1' } }],
+    }) as Record<string, unknown>;
+    expect(shaped.warning).toBeUndefined();
+  });
 });
