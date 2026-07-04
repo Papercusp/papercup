@@ -35,8 +35,10 @@ describe('lexicon:active_pack', () => {
     const out = await callTool();
     expect(out.ok).toBe(true);
     expect(out.packId).toBe('classic');
-    // Owner directive 2026-06-16: `pot` is canonically "Hive" in the baseline.
-    expect(out.terms.pot).toEqual({ one: 'Hive', other: 'Hives' });
+    // Owner directive 2026-07-04 (restore-pot-lexicon-public-release): the classic
+    // baseline `pot` is "Pot" (Hive now lives only in the the-hive pack). Supersedes
+    // the 2026-06-16 "pot is canonically Hive in the baseline" directive.
+    expect(out.terms.pot).toEqual({ one: 'Pot', other: 'Pots' });
     expect(out.terms.fleet.one).toBe('Fleet');
     expect(out.terms.operator.one).toBe('Operator');
     expect(out.terms.cupboard.one).toBe('Cupboard');

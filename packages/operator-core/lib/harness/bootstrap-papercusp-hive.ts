@@ -46,6 +46,25 @@ import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
 import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
 import { triggerDeferredGitRestore, type TriggerDeferredGitRestoreResult } from '../sync/hyperbee/deferred-git-restore';
 import { buildMemberEpochKeyProvider } from '../sync/hyperbee/hive-epoch-boot-deps';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+
+/**
+ * P-011 kill-switch: the seed-bundle feature master gate (FLAGS.HIVE_SEED_BUNDLE,
+ * DEFAULT ON — finished work never ships dark). OFF ⇒ both restore paths no-op and
+ * the pure COLD join runs, byte-identical to a no-seed build (the runtime escape
+ * hatch if a seed restore ever misbehaves). Fail-open to ON: getFlag already returns
+ * the ON default when PostHog is unreachable, and the restore itself is
+ * safe-by-construction (any restore failure falls back to the cold path — P-008), so
+ * a flag-read hiccup must not silently force cold.
+ */
+async function seedBundleEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system');
+  } catch {
+    return true;
+  }
+}
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
@@ -190,6 +209,11 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
 async function defaultRestoreHiveSeed(
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<RestoreHiveSeedResult> {
+  // P-011 master gate: the seed-bundle feature flag (DEFAULT ON). OFF ⇒ pure cold join.
+  if (!(await seedBundleEnabled())) {
+    record?.('clone', 'running', { detail: 'seed: disabled (flag off) — cold join' });
+    return { ran: false, outcomes: [], deferred: [] };
+  }
   // Resolve the bundled seed dir: --no-seed escape hatch, then PAPERCUSP_SEED_DIR
   // override, then Tauri bundled-resource autodetect (<resourceRoot>/seed). A
   // wrong/empty candidate resolves to null → the unchanged cold path.
@@ -237,6 +261,9 @@ function seedTargetDirs(): { targetStoreDir: string; targetRepoDir: string } {
 async function defaultRestoreDeferredGitSeed(
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<TriggerDeferredGitRestoreResult> {
+  // P-011 master gate (DEFAULT ON): OFF ⇒ nothing was restored pre-join, so nothing
+  // is deferred — no-op (belt-and-suspenders; the pre-join restore already no-op'd).
+  if (!(await seedBundleEnabled())) return { ran: false, restored: [], stillDeferred: [] };
   const resolved = resolveSeedDir();
   if (resolved.disabled || !resolved.seedDir) return { ran: false, restored: [], stillDeferred: [] };
   const { targetStoreDir, targetRepoDir } = seedTargetDirs();

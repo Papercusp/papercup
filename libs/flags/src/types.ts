@@ -1039,6 +1039,19 @@ export const FLAGS = {
   // stay legacy-unencrypted (rekey D-003). Re-add to DARK_FLAGS to fall back to the
   // notImplemented stub (byte-identical to pre-rekey).
   HIVE_REKEY: "papercusp-hive-rekey",
+  // hive-seed-bundle-2026-07-04 (P-011): the master gate for the installer-shipped
+  // SEED restore — a bundled snapshot of the shared hive (git bundles + federated
+  // corestore) that first boot RESTORES so the live join only carries the DELTA.
+  // DEFAULT ON (not in DARK_FLAGS — finished work never ships dark): a fresh install
+  // with a bundled seed restores it before the (unchanged) join; the real join +
+  // admission + delta replication STILL run (D-007 — the seed pre-positions BYTES,
+  // it does NOT bypass the join), and every store re-verifies natively (git hashes,
+  // corestore merkle/signatures). OFF ⇒ the pure COLD path (whole-history transfer),
+  // byte-identical to a --no-seed / no-seed-bundled build — a runtime kill-switch if a
+  // seed restore ever misbehaves. Inert on a build with no bundled seed (resolveSeedDir
+  // → null ⇒ cold join regardless). Read at the two bootstrap restore call sites
+  // (bootstrap-papercusp-hive.ts). NOT in KNOWN_DARK_FLAGS.
+  HIVE_SEED_BUNDLE: "papercusp-hive-seed-bundle",
   // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008): the master gate for
   // engine-managed LOOPS — the tracked replacement for Claude /loop (loop:arm re-wakes a
   // warm su session N sec after each turn settles). DEFAULT ON (WI-612): the B-LOOP-1..5
