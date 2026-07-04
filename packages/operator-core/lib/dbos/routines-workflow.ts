@@ -529,6 +529,25 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'release-deploy-staleness-sweep' },
   );
 
+  // hive-seed-bundle P-008 (D-007): the COLD-JOIN CANARY. Now that seeded installs
+  // only carry the join DELTA (P-006/P-007), the full cold join (no seed, whole-
+  // history transfer) stops being exercised on every install and can silently
+  // bit-rot. This sweep forces a periodic REAL cold join (seed disabled) so the
+  // cold path stays proven, and records/alerts pass-or-fail (debounced via the
+  // shared hive_watchdog_fires ledger). DEFAULT DISABLED (a cold join is heavy) —
+  // a canary/release env opts in via PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC; the
+  // heavy executor is wired at P-010. Fail-soft; disabled ⇒ a complete no-op.
+  await DBOS.runStep(
+    async () => {
+      const { runColdJoinCanarySweep } = await import('../sync/hyperbee/cold-join-canary');
+      const result = await runColdJoinCanarySweep({ log: (m) => console.warn(m) });
+      if (result.outcome === 'failed' || result.outcome === 'error') {
+        console.warn(`[cold-join-canary] ${result.outcome}: ${result.reason}`);
+      }
+    },
+    { name: 'cold-join-canary-sweep' },
+  );
+
   // queen-memory-hybrid-2026-07-02 L1b — agent_facts hygiene: hard-delete facts
   // expired/retracted >30d (bounded audit trail). Fail-soft like every sweep here.
   await DBOS.runStep(

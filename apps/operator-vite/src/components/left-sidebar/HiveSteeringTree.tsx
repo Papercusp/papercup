@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { AlertTriangle, ChevronDown, ChevronRight, ListChecks } from 'lucide-react';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { useLexicon } from '@/lib/useLexicon';
 import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
 
 export interface HiveSteeringTreeProps {
@@ -98,6 +99,7 @@ function HiveNode({
   onTogglePlan: HiveSteeringTreeProps['onTogglePlan'];
   onSetHivePlans: HiveSteeringTreeProps['onSetHivePlans'];
 }) {
+  const t = useLexicon();
   const hasPlans = hive.plans.length > 0;
   const eligibleCount = hive.plans.filter((p) => p.checked).length;
   return (
@@ -108,7 +110,7 @@ function HiveNode({
             <button
               type="button"
               className="pc-queen__tree-caret"
-              aria-label={expanded ? 'Collapse hive' : 'Expand hive'}
+              aria-label={expanded ? `Collapse ${t('pot', { lower: true })}` : `Expand ${t('pot', { lower: true })}`}
               disabled={!hasPlans}
             >
               {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
@@ -120,7 +122,7 @@ function HiveNode({
               indeterminate={hive.planMode === 'some'}
               disabled={busy}
               onChange={() => onToggleHive(hive.slug)}
-              ariaLabel={`Toggle hive ${hive.slug}`}
+              ariaLabel={`Toggle ${t('pot', { lower: true })} ${hive.slug}`}
             />
             <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
           </div>
@@ -162,6 +164,7 @@ export default function HiveSteeringTree({
   onSetHivePlans,
   onSetAllHives,
 }: HiveSteeringTreeProps) {
+  const t = useLexicon();
   // Per-hive expand/collapse — render-only ephemeral UI (not user-meaningful
   // navigation), so useState. Default: checked hives open, the rest collapsed.
   const defaultExpanded = useMemo(
@@ -175,6 +178,8 @@ export default function HiveSteeringTree({
 
   const anyHiveChecked = tree.hives.some((h) => h.checked);
   const restricted = anyHiveChecked;
+  const checkedCount = tree.hives.filter((h) => h.checked).length;
+  const hiveNoun = (n: number) => (n === 1 ? t('pot', { lower: true }) : t('pot', { plural: true, lower: true }));
 
   return (
     <section className="pc-queen__section">
