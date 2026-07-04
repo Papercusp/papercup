@@ -49,6 +49,69 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
 
+export interface PickGitEncryptionInput {
+  /** --encrypt-key-hex / PAPERCUSP_SEED_KEY_HEX — an EXPLICIT fixture/manual key. */
+  readonly keyHex?: string;
+  /** --workspace-id — presence signals a live hive whose epoch we read from PG. */
+  readonly workspaceId?: string;
+  /** Whether --epoch was passed explicitly (a deliberate epoch context). */
+  readonly epochProvided: boolean;
+  readonly hive: string;
+  readonly cutAtEpoch: number;
+  /** The owner's epoch-key resolver (crypto.deriveEpochKey) — injected so the branch
+   *  logic unit-tests without the keychain/native crypto. */
+  readonly deriveEpochKey: (hiveId: string, epoch: number) => Promise<Uint8Array>;
+  readonly warn?: (msg: string) => void;
+}
+
+/**
+ * Decide how to seal the git bundles (P-010 live-wire 2 completion). Pure branch logic,
+ * injected `deriveEpochKey`, so it's headless-testable:
+ *
+ *   1. `keyHex` given      → FIXTURE/manual mode: seal with that key, keyRef via='seed-key-op'
+ *      (a standalone key with NO automatic joiner delivery → a joiner defers + cold-clones
+ *      the git half). For manual/test use, not a real release.
+ *   2. a DELIBERATE epoch context (`workspaceId` OR explicit `--epoch`) → RELEASE mode: seal
+ *      under the hive EPOCH key (keyRef via='epoch'), which a newly-admitted member decrypts
+ *      with the epoch key admission delivers (the path the joiner-side deferred-git-restore
+ *      trigger resolves). NEVER taken from the bare cutAtEpoch=0 guess, so we can't mint a
+ *      divergent key from nothing. ⚠ MUST run on the OWNER box with the live epoch keychain:
+ *      deriveEpochKey is get-or-CREATE — a keychain MISS mints a fresh key no member can
+ *      unwrap (seed then cold-clones the git half; no data loss).
+ *   3. otherwise            → undefined (PLAINTEXT — dev/fixture only, warned).
+ */
+export async function pickGitEncryption(inp: PickGitEncryptionInput): Promise<GitCutSpec['encryption'] | undefined> {
+  const warn = inp.warn ?? (() => {});
+  if (inp.keyHex) {
+    const key = Buffer.from(inp.keyHex, 'hex');
+    if (key.length !== 32) throw new Error(`--encrypt-key-hex must be 32 bytes (64 hex chars); got ${key.length}`);
+    warn(
+      '[cut-seed] sealed with an EXPLICIT key (keyRef via=seed-key-op) — a joiner has no delivery path for it and ' +
+        'will cold-clone the git half. FIXTURE/manual mode; a real release should seal under the epoch key ' +
+        '(drop --encrypt-key-hex, pass --workspace-id).',
+    );
+    return { key: Uint8Array.from(key), keyRef: { via: 'seed-key-op', hiveId: inp.hive } };
+  }
+  if (inp.workspaceId || inp.epochProvided) {
+    const epochKey = Uint8Array.from(await inp.deriveEpochKey(inp.hive, inp.cutAtEpoch));
+    if (epochKey.length !== 32) {
+      throw new Error(`owner epoch key for (${inp.hive}, epoch ${inp.cutAtEpoch}) is ${epochKey.length}B, expected 32`);
+    }
+    warn(
+      `[cut-seed] git bundles sealed under hive epoch ${inp.cutAtEpoch} (keyRef via=epoch, hive '${inp.hive}'). ` +
+        'MUST have run on the OWNER box with the live epoch keychain — a wrong context mints a divergent key no ' +
+        'member can unwrap (seed then cold-clones the git half).',
+    );
+    return { key: epochKey, keyRef: { via: 'epoch', hiveId: inp.hive, epoch: inp.cutAtEpoch } };
+  }
+  warn(
+    '[cut-seed] ⚠ NO encryption key + no --workspace-id/--epoch — git bundles will be PLAINTEXT. The dogfood repo ' +
+      'is PRIVATE; a real release MUST pass --workspace-id (seal under the hive epoch key) or --encrypt-key-hex. ' +
+      'Proceeding UNENCRYPTED (dev/fixture only).',
+  );
+  return undefined;
+}
+
 function resolveWorkspaceRoot(): string {
   // Mirrors role-codex-home.ts. From apps/operator/lib/release → up to the repo root.
   const here = dirname(fileURLToPath(import.meta.url));
