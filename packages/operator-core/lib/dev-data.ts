@@ -1080,7 +1080,14 @@ export async function buildStatus(): Promise<BuildStatus> {
 
   async function reachable(url: string): Promise<boolean> {
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(500) });
+      // EI-7059: 500ms was a false-negative trap — the root `/` response on
+      // this dev box (both :3055 and :3070) legitimately takes 6-13s (full
+      // page render, not a lightweight health check), so the old 500ms budget
+      // aborted on EVERY probe and reported "unreachable" for a server that
+      // was actually serving 200s. 10s tolerates the observed tail latency
+      // without making a genuinely-down server hang the whole buildStatus()
+      // call forever (the two probes still run in parallel via Promise.all).
+      const r = await fetch(url, { signal: AbortSignal.timeout(10_000) });
       return r.status < 500;
     } catch {
       return false;
