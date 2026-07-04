@@ -120,7 +120,7 @@ export default defineTool({
   name: 'scheduler:set_claim_spec',
   profile: 'engineer',
   description:
-    "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision }.",
+    "Steer a SELF-PULLING agent — a coding-hive bee, the queen, or an su fleet member — by setting/replacing its versioned claim spec (view.filter + rank). The agent's scheduler:get_next then pulls deterministically per this spec within the global floors. Re-steer a running puller by setting a new spec (the revision bumps; it's picked up on the next get_next) — not by micro-dispatching. Validates the spec; returns { ok, errors, revision, warning? } (EI-6079: a `warning` can flag the bee as not currently wakeable — the spec still stored, but a warm-inject wake to it may return woken:0).",
   guidance: {
     when:
       'Steer a SELF-PULLING agent that calls scheduler:get_next: a coding-hive bee, the queen, or an su fleet member. Set a property-filtered view plus rank for a standing lane; use `id in [...]` only for a static pinned wave. Re-steer by bumping the spec, not by micro-dispatching.',
