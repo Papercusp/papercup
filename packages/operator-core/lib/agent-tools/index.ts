@@ -372,6 +372,16 @@ import './backup/promote';
 import './backup/rollback';
 import './backup/settings_get';
 import './backup/settings_set';
+
+// setup:* — the onboarding tutor's conversational replacements for the GUI
+// Setup Wizard steps (agent-first-onboarding-2026-07-03 P-004). Backups are
+// deliberately NOT here — the tutor reuses backup:settings_set above.
+import './setup/status';
+import './setup/set_git_identity';
+import './setup/set_telemetry';
+import './setup/set_update_channel';
+import './setup/save_key';
+import './setup/complete';
 import './docs/outline';
 import './docs/get';
 import './docs/search';

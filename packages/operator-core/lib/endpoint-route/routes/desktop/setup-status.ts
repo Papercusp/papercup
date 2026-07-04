@@ -98,93 +98,103 @@ function boolToStatus(ok: boolean): StepStatus {
   return ok ? 'ok' : 'needs-attention';
 }
 
+/**
+ * Gather every Setup-Wizard step status + the agent-runtime breakdown — the
+ * ONE detection read, shared by the GET route below and the `setup:status`
+ * agent tool (agent-first-onboarding-2026-07-03 P-004), so the tutor and the
+ * wizard sidebar can never disagree.
+ */
+export async function collectSetupStatus() {
+  const ws = activeWorkspaceId();
+
+  const [
+    pgOk,
+    claudeOk,
+    codexOk,
+    ompOk,
+    meridianOk,
+    creds,
+    wizardState,
+    devices,
+    backupSettings,
+    gitOk,
+  ] = await Promise.all([
+    safe(probePostgres(), false),
+    safe(detectClaude(), false),
+    safe(detectCodex(), false),
+    safe(detectOmp(), false),
+    safe(Promise.resolve(detectMeridianInstalled()), false),
+    safe(readCredentials(), {} as Awaited<ReturnType<typeof readCredentials>>),
+    safe(
+      readOperatorState<{
+        update_channel?: string;
+        telemetry_enabled?: boolean | null;
+        os_permissions_ok?: boolean;
+      }>('setup_wizard_state'),
+      null,
+    ),
+    safe(listDevices(ws), [] as Awaited<ReturnType<typeof listDevices>>),
+    safe(workspaceBackupFor(ws).getSettings(), null as Awaited<ReturnType<ReturnType<typeof workspaceBackupFor>['getSettings']>> | null),
+    safe(gitIdentityConfigured(), false),
+  ]);
+
+  // os-permissions: Linux/Windows aren't install-gated → 'ok'. macOS
+  // has system-level grants the Node server can't read, so we trust
+  // the client-side StepOsPermissions probes that PATCH
+  // os_permissions_ok back into operator state.
+  const osPermissionsStatus: StepStatus =
+    process.platform === 'darwin'
+      ? wizardState?.os_permissions_ok === true
+        ? 'ok'
+        : 'needs-attention'
+      : 'ok';
+
+  // workspace: registry has at least one entry.
+  const workspaceOk = readRegistry().workspaces.length > 0;
+
+  // agents: a complete backend is EITHER a standalone CLI agent
+  // (Claude Code or Codex — the orchestrator drives the CLI directly)
+  // OR oh-my-pi + Meridian (the multi-provider path). Any one
+  // satisfies the step.
+  const agentsOk = claudeOk || codexOk || (ompOk && meridianOk);
+
+  // keys: any of openai/anthropic/github saved.
+  const keysOk = Boolean(
+    creds.openai_api_key || creds.anthropic_api_key || creds.github_pat,
+  );
+
+  const statuses: Record<StepId, StepStatus> = {
+    'os-permissions': osPermissionsStatus,
+    'embedded-pg': boolToStatus(pgOk),
+    workspace: boolToStatus(workspaceOk),
+    agents: boolToStatus(agentsOk),
+    logins: boolToStatus(anyAgentSignedIn()),
+    keys: boolToStatus(keysOk),
+    git: boolToStatus(gitOk),
+    'mobile-pairing': boolToStatus(devices.length > 0),
+    backups: boolToStatus(Boolean(backupSettings?.enabled)),
+    'auto-update': boolToStatus(
+      wizardState?.update_channel === 'alpha' ||
+        wizardState?.update_channel === 'beta' ||
+        wizardState?.update_channel === 'stable',
+    ),
+    telemetry: boolToStatus(
+      wizardState?.telemetry_enabled === true ||
+        wizardState?.telemetry_enabled === false,
+    ),
+  };
+
+  // Per-component breakdown for the Agent Runtime step.
+  const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk, meridian: meridianOk };
+
+  return { statuses, agentRuntime };
+}
+
 export default defineTool({
   method: 'GET',
   path: '/desktop/setup-status',
   auth: {},
   async handler() {
-    const ws = activeWorkspaceId();
-
-    const [
-      pgOk,
-      claudeOk,
-      codexOk,
-      ompOk,
-      meridianOk,
-      creds,
-      wizardState,
-      devices,
-      backupSettings,
-      gitOk,
-    ] = await Promise.all([
-      safe(probePostgres(), false),
-      safe(detectClaude(), false),
-      safe(detectCodex(), false),
-      safe(detectOmp(), false),
-      safe(Promise.resolve(detectMeridianInstalled()), false),
-      safe(readCredentials(), {} as Awaited<ReturnType<typeof readCredentials>>),
-      safe(
-        readOperatorState<{
-          update_channel?: string;
-          telemetry_enabled?: boolean | null;
-          os_permissions_ok?: boolean;
-        }>('setup_wizard_state'),
-        null,
-      ),
-      safe(listDevices(ws), [] as Awaited<ReturnType<typeof listDevices>>),
-      safe(workspaceBackupFor(ws).getSettings(), null as Awaited<ReturnType<ReturnType<typeof workspaceBackupFor>['getSettings']>> | null),
-      safe(gitIdentityConfigured(), false),
-    ]);
-
-    // os-permissions: Linux/Windows aren't install-gated → 'ok'. macOS
-    // has system-level grants the Node server can't read, so we trust
-    // the client-side StepOsPermissions probes that PATCH
-    // os_permissions_ok back into operator state.
-    const osPermissionsStatus: StepStatus =
-      process.platform === 'darwin'
-        ? wizardState?.os_permissions_ok === true
-          ? 'ok'
-          : 'needs-attention'
-        : 'ok';
-
-    // workspace: registry has at least one entry.
-    const workspaceOk = readRegistry().workspaces.length > 0;
-
-    // agents: a complete backend is EITHER a standalone CLI agent
-    // (Claude Code or Codex — the orchestrator drives the CLI directly)
-    // OR oh-my-pi + Meridian (the multi-provider path). Any one
-    // satisfies the step.
-    const agentsOk = claudeOk || codexOk || (ompOk && meridianOk);
-
-    // keys: any of openai/anthropic/github saved.
-    const keysOk = Boolean(
-      creds.openai_api_key || creds.anthropic_api_key || creds.github_pat,
-    );
-
-    const statuses: Record<StepId, StepStatus> = {
-      'os-permissions': osPermissionsStatus,
-      'embedded-pg': boolToStatus(pgOk),
-      workspace: boolToStatus(workspaceOk),
-      agents: boolToStatus(agentsOk),
-      logins: boolToStatus(anyAgentSignedIn()),
-      keys: boolToStatus(keysOk),
-      git: boolToStatus(gitOk),
-      'mobile-pairing': boolToStatus(devices.length > 0),
-      backups: boolToStatus(Boolean(backupSettings?.enabled)),
-      'auto-update': boolToStatus(
-        wizardState?.update_channel === 'alpha' ||
-          wizardState?.update_channel === 'beta' ||
-          wizardState?.update_channel === 'stable',
-      ),
-      telemetry: boolToStatus(
-        wizardState?.telemetry_enabled === true ||
-          wizardState?.telemetry_enabled === false,
-      ),
-    };
-
-    // Per-component breakdown for the Agent Runtime step.
-    const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk, meridian: meridianOk };
-
-    return Response.json({ statuses, agentRuntime });
+    return Response.json(await collectSetupStatus());
   },
 });

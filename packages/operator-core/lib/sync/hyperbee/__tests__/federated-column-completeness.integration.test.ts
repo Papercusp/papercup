@@ -235,6 +235,22 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp',
     updated_at: 'machine-local row timestamp',
   },
+  p2p_fleet_directory: {
+    // P-101/D-006: the federated subset is the owner-signed record + envelope
+    // (record_json/signature/signer/version/archived — all carried by
+    // toFleetDirectoryValue). Only the row timestamps are machine-local.
+    created_at: 'machine-local row timestamp; the federated content is record_json + signature',
+    updated_at: 'machine-local row timestamp; the federated content is record_json + signature',
+  },
+  p2p_work_offers: {
+    // P-102 store leg (WI-1935): the federated subset is the publisher-signed
+    // record + envelope (record_json/signature/signer/version + the verified
+    // convenience columns — all carried by toWorkOfferValue).
+    local_disposition:
+      "HOST-LOCAL refusal (revocation-reaper P-106 deferred #2) — deliberately never federates: a host cannot re-sign the publisher's record, it only stops serving it HERE (mig 490 masks it from the stamp trigger; the projection upsert never touches it)",
+    created_at: 'machine-local row timestamp; the federated content is record_json + signature',
+    updated_at: 'machine-local row timestamp; the federated content is record_json + signature',
+  },
 };
 
 /** Run the REAL mapper over a synthetic full-column row and return the keys it

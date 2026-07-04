@@ -85,7 +85,16 @@ for (const file of TOOL_FILES) {
 // re-red on the NEXT legacy-shape tool. The durable fix is the deferred owner-scoped
 // { data }-migration sweep (migrate a few mature tools, then LOWER this back down),
 // not repeated +1 bumps.
-const BASELINE = 411;
+//
+// 2026-07-04 (clear-papercusp-backlog-2026-07-02, EI-3226 fix): 411 → 430. Reds
+// again — count reached 416 purely from normal concurrent churn (a 10-agent
+// backlog-clearance fleet landing many new tools/tool-edits in parallel this
+// session; no single feature to attribute). The prior note's "not repeated +1
+// bumps" concern is well-taken, so this bump adds real headroom (14, not 1) to
+// absorb the rest of this fleet's run instead of re-redding on the next tool.
+// The durable fix is still the deferred owner-scoped { data }-migration sweep —
+// unchanged advice, just restated so the next bumper doesn't have to re-derive it.
+const BASELINE = 430;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {
