@@ -101,6 +101,19 @@ export interface RegisterAllOpts {
    */
   hiveHomeSlug?: string;
   /**
+   * WI-2105 REV (no-hiveHome fix): the hive-home the MEMBER-CONTENT GUARD resolves
+   * its member set from — DECOUPLED from `hiveHomeSlug` (the projection-rebind home
+   * above). The guard needs a home for ANY hive-peered harness that folds cross-member
+   * content, INCLUDING an OWNED hive's MEMBER harness (the owner running a canary member
+   * of its own hive: `hive_slug` resolves the home but home !== own slug, and the hive is
+   * owned-not-remote, so `hiveHomeSlug` stayed undefined and `decideMemberContentOp` dropped
+   * EVERY cross-member op with 'no-hiveHome'; PG-proven tower-VM REV break). It overrides
+   * ONLY the content projections' guard hiveHomeSlug (via `guardScoped`) — it does NOT
+   * touch `hiveScoped`, so the owned-hive member never rebinds the hive-home projections
+   * (no double-apply). Undefined falls back to `hiveHomeSlug` (today's behavior).
+   */
+  memberContentHiveHome?: string;
+  /**
    * shared-hive-rekey-2026-06-19 (drain hook): fired `(hiveHomeSlug, epoch)` when a
    * `hive_epoch_keys` row applies, so the apply loop can drain J's PendingEpochContent for
    * that `(hive, epoch)` + re-apply the deferred content (now decryptable). Boot wires this
@@ -232,6 +245,16 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     opts.hiveHomeSlug && opts.hiveHomeSlug !== opts.harnessSlug
       ? { ...opts, harnessSlug: opts.hiveHomeSlug }
       : opts;
+  // WI-2105 REV (no-hiveHome fix): the member-content GUARD's hive-home is resolved for
+  // a BROADER set than the projection rebind — any hive-peered harness incl. an OWNED
+  // hive's member harness (`memberContentHiveHome`). Override ONLY `hiveHomeSlug` (which
+  // the content projections read for the guard's member-set lookup); `harnessSlug` stays
+  // the member slug (writes still land under it) and `hiveScoped` is untouched (the
+  // owned-hive member never rebinds the hive-home projections → no double-apply).
+  const guardScoped: RegisterAllOpts =
+    opts.memberContentHiveHome && opts.memberContentHiveHome !== opts.hiveHomeSlug
+      ? { ...opts, hiveHomeSlug: opts.memberContentHiveHome }
+      : opts;
   return [
     buildContributorsProjection(opts),
     // WI-259 (MEMBERSHIP-AWARE — plan shared-hive-member-content-federation-2026-06-20;
@@ -245,19 +268,19 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // device — `resolveAuthorDevice(op.sourceLogKeyHex)` (threaded via opts) — is in the
     // CURRENT hive member set. So a peer member's content federates + stays attributable
     // under its author's slug, and a removed member's writes stop applying, with no re-key.
-    buildFeatureClaimsProjection(opts),
-    buildFeatureQueueProjection(opts),
-    buildFeatureWorkingSetProjection(opts),
-    buildHarnessFeaturesProjection(opts),
-    buildHarnessPlansProjection(opts),
-    buildIssuesProjection(opts),
+    buildFeatureClaimsProjection(guardScoped),
+    buildFeatureQueueProjection(guardScoped),
+    buildFeatureWorkingSetProjection(guardScoped),
+    buildHarnessFeaturesProjection(guardScoped),
+    buildHarnessPlansProjection(guardScoped),
+    buildIssuesProjection(guardScoped),
     buildPresenceProjection(opts),
     buildUsageProjection(opts),
-    buildCoordConversationProjection(opts),
-    buildCoordMessageProjection(opts),
-    buildCoordThreadProjection(opts),
-    buildCoordThreadPostProjection(opts),
-    buildPlanItemAssignmentsProjection(opts),
+    buildCoordConversationProjection(guardScoped),
+    buildCoordMessageProjection(guardScoped),
+    buildCoordThreadProjection(guardScoped),
+    buildCoordThreadPostProjection(guardScoped),
+    buildPlanItemAssignmentsProjection(guardScoped),
     // A-003: hive_settings + hive_members demux on the hive-HOME slug — scope them
     // to `hiveScoped` so a joiner's member harness lands the home-grained ops.
     buildHiveSettingsProjection(hiveScoped),

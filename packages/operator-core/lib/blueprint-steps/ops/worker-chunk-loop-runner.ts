@@ -61,6 +61,28 @@ async function buildChunkLockCoordinator(repoPath: string): Promise<FileClaimCoo
 const governorMaxWaitMs = (): number =>
   Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000);
 
+/**
+ * EI-6503 — pure decision for a governor-pause abort, mirroring the WI-181 fix
+ * already applied to the sibling bee-spawn path (orchestrator-runner.ts): when
+ * the per-account spawn-admission bucket is paused past maxWait, only hard-abort
+ * when there is NO inference-gateway egress (no failover safety net). With
+ * gateway egress present, the gateway's own per-account failover + internal
+ * retry reaches a healthy account anyway, so proceeding is correct.
+ *
+ * Extracted as a standalone pure function (rather than inlined) so this branch
+ * is unit-testable without exercising `defaultRunWorkerChunkLoop`'s heavy,
+ * mock-only dependency graph (resolveProject/getOrgPg/buildChunkLockCoordinator).
+ * Deliberately NOT shared with orchestrator-runner.ts this cycle — DRY-ing the
+ * two would touch the critical bee-spawn path for a minor-severity residual.
+ */
+export function resolveGovernorPauseOutcome(opts: {
+  extraSpawnEnvBaseUrl?: string;
+  processEnvBaseUrl?: string;
+}): { abort: boolean; gatewayEgress: boolean } {
+  const gatewayEgress = !!(opts.extraSpawnEnvBaseUrl ?? opts.processEnvBaseUrl);
+  return { abort: !gatewayEgress, gatewayEgress };
+}
+
 export async function defaultRunWorkerChunkLoop(
   featureId: string,
   ctx: CoordOpCtx,
@@ -130,7 +152,18 @@ export async function defaultRunWorkerChunkLoop(
   if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
     release = await gov.acquire({}, { maxWaitMs: governorMaxWaitMs() });
     if (!release) {
-      return { kind: 'aborted', reason: 'agent governor: rate-limit pause exceeded max wait' };
+      // EI-6503: mirror the WI-181 fix already applied to the sibling bee-spawn path
+      // (orchestrator-runner.ts) — don't hard-abort $0 when the inference gateway owns
+      // egress: it does per-account failover + internal retry, so the run reaches a
+      // HEALTHY account anyway. Only with NO gateway egress (no failover safety net) is
+      // the abort correct.
+      const gatewayEgress = !!(extraSpawnEnv.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL);
+      if (!gatewayEgress) {
+        return { kind: 'aborted', reason: 'agent governor: rate-limit pause exceeded max wait' };
+      }
+      console.warn('[worker:chunk-loop] spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover');
+      // release stays null — the finally below is then a no-op, same as the
+      // ungoverned (pacing-off) path.
     }
   }
   try {

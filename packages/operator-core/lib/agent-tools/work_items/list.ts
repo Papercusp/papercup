@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
+import { resolveAgentIdentity } from "../coordination/identity";
 import {
   listWorkItems,
   type WorkItemKind,
@@ -181,6 +182,19 @@ export default defineTool({
         'built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
       ),
     state: z.string().max(40).optional(),
+    assignee: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "Filter to items assigned to this agent (feature → taken_by; issue → assignee). Use `mine: true` instead to mean \"me\" without naming your own id.",
+      ),
+    mine: z
+      .boolean()
+      .optional()
+      .describe(
+        "Filter to items assigned to the CALLER (resolves your own agent identity) — EI-6506: a leader's 'see your work item' handoff, findable without raw PG or knowing your own ownerId string. Overridden by an explicit `assignee` if both are passed.",
+      ),
     parent: z
       .string()
       .max(80)
@@ -219,6 +233,10 @@ export default defineTool({
     trimmed: (data) => shapeWorkItemsList(data, "trimmed"),
   },
   async handler(args, ctx) {
+    // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
+    // `assignee` wins if both are passed (mine is the no-args-needed convenience,
+    // not an override of a deliberate lookup of someone else's work).
+    const assignee = args.assignee ?? (args.mine ? resolveAgentIdentity(ctx).ownerId : undefined);
     // Cache the expensive list read (cache-expensive-tool-reads P-005). Non-principal-
     // scoped (depends only on workspace + the filter args). The bounding is folded INTO
     // the cached factory so the stored value is the final, deterministic-per-args result.
@@ -230,6 +248,7 @@ export default defineTool({
           harness: args.harness ?? null,
           kind: args.kind ?? null,
           state: args.state ?? null,
+          assignee: assignee ?? null,
           parent: args.parent ?? null,
           includeChildren: args.includeChildren === true,
           limit: args.limit ?? null,
@@ -242,6 +261,7 @@ export default defineTool({
           harness: args.harness,
           kind: args.kind as WorkItemKind | undefined,
           state: args.state,
+          assignee,
           parent: args.parent,
           includeChildren: args.includeChildren,
           limit: args.limit,
