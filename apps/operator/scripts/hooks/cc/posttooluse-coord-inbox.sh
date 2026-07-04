@@ -171,7 +171,19 @@ if not isinstance(inner, dict):
 
 entries = inner.get('entries')
 if not isinstance(entries, list) or not entries:
-    noop()
+    # No NEW coord entries. agent-managed-compaction P-015: still surface the ≥80% LOUD
+    # context gauge so a heads-down session (native Bash/Read/Edit only, which never calls
+    # a coord tool) sees its own usage — the zero-new-mail / zero-MCP-call gap that caused
+    # the 2026-07-02 auto-compaction (EI-6597). Server-rendered (`context_gauge`), so this
+    # stays a dumb pipe; below 80% it is null and we no-op exactly as before. No cursor
+    # advance here (there are no entries to mark shown).
+    gauge = inner.get('context_gauge')
+    if isinstance(gauge, str) and gauge.strip():
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PostToolUse',
+            'additionalContext': gauge,
+        }}, sys.stdout)
+    sys.exit(0)
 
 # Advance the cursor past EVERY returned entry (not just the rendered ones) so a
 # message is never injected twice. `summary.newest_ts` is the server's max-ts
