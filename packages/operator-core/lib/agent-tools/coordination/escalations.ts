@@ -276,28 +276,33 @@ export async function listEscalationsPaginated(
   opts: { status?: 'open' | 'resolved'; maxRecords?: number } = {},
 ): Promise<{ escalations: EscalationRecord[]; truncated: boolean; total: number }> {
   // EI-1548: bound the READ at the storage layer instead of loading the ENTIRE
-  // escalations surface into memory and truncating after. Read a NEWEST-FIRST
-  // window of recent events (opens + their sibling resolves) and fold within it;
-  // `truncated` flags that older escalations exist beyond the window. The old
-  // 1000-default returned a ~9MB dump over a ~13k backlog.
+  // escalations surface into memory and truncating after.
+  //
+  // EI-6624: read `escalation` (opens) and `escalation_resolved` (resolves)
+  // events on SEPARATE bounded windows (kinds-filtered), rather than one
+  // shared `limit`-sized window mixing both kinds. The old combined window let
+  // a burst of resolve events (an active fleet resolving a backlog — exactly
+  // this session's own traffic) crowd OPEN escalations out of the window
+  // entirely: `escalations:[]` with a nonzero `total`/`truncated:true`, which
+  // read as broken rather than "no matches in a resolve-heavy window."
   const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
-  const recent = await coordLog.readEventsBounded('escalations', { limit: maxRecords });
-  const truncated = recent.length >= maxRecords;
-
-  const opens: EscalationRecord[] = [];
-  const resolves: EscalationResolvedEvent[] = [];
-  for (const rec of recent) {
-    if (rec.kind === 'escalation') opens.push(rec as EscalationRecord);
-    else if (rec.kind === 'escalation_resolved') {
-      const ev = rec as EscalationResolvedEvent;
-      if (typeof ev.related_msg_id === 'string') resolves.push(ev);
-    }
-  }
+  const [opensRaw, resolvesRaw] = await Promise.all([
+    coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation'] }),
+    coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation_resolved'] }),
+  ]);
+  const opens = opensRaw as EscalationRecord[];
+  const resolves = resolvesRaw.filter(
+    (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
+  );
 
   const escalations = foldEscalations(opens, resolves, opts);
-  // `total` = events SCANNED in the bounded window (NOT the full backlog — that
-  // would need an unbounded count); `truncated` signals more exist beyond it.
-  return { escalations, truncated, total: recent.length };
+  // `total` = escalations actually returned (matches the tool's own human-facing
+  // "Bounded to the N most-recent escalation events" note — never inconsistent
+  // with `escalations`, unlike the old raw-event-scan count). `truncated` flags
+  // that either bounded kind-window maxed out, so older matches may exist
+  // beyond it (NOT the full backlog size — that would need an unbounded count).
+  const truncated = opens.length >= maxRecords || resolves.length >= maxRecords;
+  return { escalations, truncated, total: escalations.length };
 }
 
 /**
