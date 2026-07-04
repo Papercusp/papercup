@@ -126,7 +126,7 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
 export function guiTabTourMarkdown(): string {
   const stops = GUI_TAB_TOUR.map(
     (t, i) =>
-      `${i + 1}. **${t.label}** — \`ui:dispatch {intent:'set_url', args:{params:{url:'/adv?tab=${t.id}'}}}\` — ${t.blurb}`,
+      `${i + 1}. **${t.label}** — \`ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab:'${t.id}'}}}\` — ${t.blurb}`,
   );
   return [
     ...stops,

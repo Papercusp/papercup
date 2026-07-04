@@ -90,6 +90,63 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
   });
 
+  it('STALE-LOCK SELF-HEAL (2026-07-04 incident): an ORPHANED .git/index.lock (dead writer, old mtime) is cleared + the tick still syncs', async () => {
+    writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+    // Exactly what a git process killed mid-`add -A` leaves behind: a lock file
+    // nobody holds. Backdate it past STALE_INDEX_LOCK_MS so it is provably stale.
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, 'partial index the dead writer was building');
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    // Before the fix: EVERY tick failed "Unable to create '….index.lock': File exists"
+    // until a human deleted the file. After: self-heals + commits this tick.
+    expect(out.status).toBe('synced');
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
+  });
+
+  it('STALE-LOCK SELF-HEAL: a FRESH index.lock (live writer) is NOT touched — the tick fails instead of robbing the holder', async () => {
+    writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, 'a live git process is writing this'); // mtime = now
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).not.toBe('synced'); // the failure still surfaces (watchdog sees it)
+    expect(existsSync(lockPath)).toBe(true); // the live writer keeps its lock
+  });
+
+  it('isIndexLockFailure matches the git fatal (and only it)', () => {
+    expect(
+      isIndexLockFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running"),
+    ).toBe(true);
+    expect(isIndexLockFailure("error: 'x/' does not have a commit checked out")).toBe(false);
+    expect(isIndexLockFailure('')).toBe(false);
+  });
+
+  it('clearStaleIndexLock unit edges: already-gone lock ⇒ retry ok; unlink failure ⇒ no retry', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    // lock vanished between the failure and the heal (holder finished) — retry is safe
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        statMtimeMs: async () => null,
+      }),
+    ).toBe(true);
+    // stale but unlink throws (permissions) — do NOT claim healed
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        unlinkFile: async () => {
+          throw new Error('EACCES');
+        },
+      }),
+    ).toBe(false);
+  });
+
   it('addFailureStrayPaths parses the embedded-repo fatal path(s) + strips trailing slash', () => {
     const out =
       "error: '.papercusp/.vitest-tmpdir/green-oQOrHU/' does not have a commit checked out\n" +
