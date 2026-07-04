@@ -2744,3 +2744,26 @@ describe('--launched-by (solo-launch-provenance)', () => {
     expect(argv).toContain('--launched-by=su-abc');
   });
 });
+
+describe('setupReminderLines — pre-TUI "setup unfinished" nudge (owner batch #5)', () => {
+  it('returns null when setup is complete (stage done) — no nag', () => {
+    expect(setupReminderLines('done')).toBeNull();
+  });
+  it('returns null when the stage is unknown (probe failed / operator unreachable)', () => {
+    // A failed/timed-out probe resolves to null — never nag on no signal.
+    expect(setupReminderLines(null)).toBeNull();
+    expect(setupReminderLines(undefined)).toBeNull();
+    expect(setupReminderLines('')).toBeNull();
+  });
+  it('nudges for every not-done concierge stage, naming BOTH `papercusp setup` and `papercusp tutorial`', () => {
+    for (const stage of ['pick', 'install', 'login', 'embeddings', 'handoff']) {
+      const lines = setupReminderLines(stage);
+      expect(lines, stage).not.toBeNull();
+      const text = lines.join('\n');
+      expect(text, stage).toContain('papercusp setup');
+      expect(text, stage).toContain('papercusp tutorial');
+      // States the WHY (locked functionality) so the nudge is actionable, not noise.
+      expect(text.toLowerCase(), stage).toContain('locked');
+    }
+  });
+});
