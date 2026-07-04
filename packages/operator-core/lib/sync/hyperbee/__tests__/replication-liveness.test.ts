@@ -18,6 +18,7 @@ import {
 } from '../replication-liveness';
 import {
   fileReplicationStallEi,
+  resolveReplicationStallEi,
   replicationStallEiTitle,
   _resetReplicationStallEiForTests,
   type ReplicationStallEiDeps,
@@ -92,6 +93,85 @@ describe('no_replicator axis (the original WI-183 symptom)', () => {
     expect(getReplicationLiveness({ nowMs: now - 1, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe(
       'never_connected',
     );
+  });
+
+  describe('EI-7110: onRecovery fires ONLY on a genuine alarm→recovered transition', () => {
+    function collectRecovery(): {
+      recoveries: ReplicationStallEpisode[];
+      onRecovery: (e: ReplicationStallEpisode) => void;
+    } {
+      const recoveries: ReplicationStallEpisode[] = [];
+      return { recoveries, onRecovery: (e) => recoveries.push(e) };
+    }
+
+    it('fires once when a log that alarmed no_replicator regains a live peer, with the stall duration', () => {
+      const { episodes, on } = collect();
+      const { recoveries, onRecovery } = collectRecovery();
+      let now = 1_000_000;
+      const sample = (peers: number) =>
+        sampleReplicationLiveness(
+          WS,
+          HS,
+          { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+          { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery },
+        );
+
+      sample(1); // was replicating
+      now += 1_000;
+      sample(0); // detached
+      now += GRACE; // past grace — alarms
+      sample(0);
+      expect(episodes).toHaveLength(1);
+      expect(recoveries).toHaveLength(0); // still down, nothing recovered yet
+
+      now += 20_000;
+      sample(3); // regains a peer
+      expect(recoveries).toHaveLength(1);
+      expect(recoveries[0]!.kind).toBe('no_replicator');
+      expect(recoveries[0]!.stalledForMs).toBeGreaterThanOrEqual(GRACE + 20_000);
+      expect(recoveries[0]!.detail).toContain('regained a live replicator peer');
+
+      // A later re-stall + re-recovery fires again (edge-triggered both ways).
+      now += 1_000;
+      sample(0);
+      now += GRACE;
+      sample(0);
+      now += 1_000;
+      sample(1);
+      expect(recoveries).toHaveLength(2);
+    });
+
+    it('never fires for ordinary flapping that never crossed the alarm threshold', () => {
+      const { on } = collect();
+      const { recoveries, onRecovery } = collectRecovery();
+      let now = 1_000_000;
+      const sample = (peers: number) =>
+        sampleReplicationLiveness(
+          WS,
+          HS,
+          { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+          { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery },
+        );
+
+      sample(1);
+      now += 1_000;
+      sample(0); // detaches
+      now += 2_000; // well within grace
+      sample(1); // reconnects before ever alarming
+      expect(recoveries).toHaveLength(0);
+    });
+
+    it('never fires for a log that never had a live replicator peer (nothing to recover from)', () => {
+      const { on } = collect();
+      const { recoveries, onRecovery } = collectRecovery();
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 3, mergedPosition: 0, peersCount: 1 },
+        { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: on, onRecovery },
+      );
+      expect(recoveries).toHaveLength(0);
+    });
   });
 });
 
@@ -244,18 +324,24 @@ describe('durable EI escalation (replication-stall-ei)', () => {
     detail: 'log=aaaaaaaaaaaa… has had 0 live replicator peers for 200s',
   };
 
-  function fakeDeps(open: Array<{ title: string }>): {
+  function fakeDeps(open: Array<{ id?: string; title: string }>): {
     deps: ReplicationStallEiDeps;
     created: Array<{ title: string }>;
+    resolved: Array<{ id: string; note: string }>;
   } {
     const created: Array<{ title: string }> = [];
+    const resolved: Array<{ id: string; note: string }> = [];
     return {
       created,
+      resolved,
       deps: {
-        listOpenByTopic: async () => open,
+        listOpenByTopic: async () => open.map((o) => ({ id: o.id ?? 'EI-OPEN', title: o.title })),
         create: async (input) => {
           created.push({ title: input.title });
           return { id: 'EI-999' };
+        },
+        resolve: async (id, note) => {
+          resolved.push({ id, note });
         },
       },
     };
@@ -304,6 +390,42 @@ describe('durable EI escalation (replication-stall-ei)', () => {
     // The body carries the runbook (drained_at=NULL re-emit) + the root fix hint.
     expect(body).toContain('drained_at=NULL');
     expect(body).toContain('keypair');
+  });
+
+  describe('EI-7110: resolveReplicationStallEi (auto-close on recovery)', () => {
+    it('resolves the matching open EI with a recovery note', async () => {
+      const title = replicationStallEiTitle(episode);
+      const { deps, resolved } = fakeDeps([{ id: 'EI-7110', title }]);
+      const id = await resolveReplicationStallEi(
+        { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'regained a peer after 300s' },
+        deps,
+      );
+      expect(id).toBe('EI-7110');
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]!.id).toBe('EI-7110');
+      expect(resolved[0]!.note).toContain('auto-resolved');
+      expect(resolved[0]!.note).toContain('regained a peer after 300s');
+    });
+
+    it('no-ops when no open EI matches the title (already resolved, or never crossed the escalation grace)', async () => {
+      const { deps, resolved } = fakeDeps([]);
+      const id = await resolveReplicationStallEi(
+        { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'recovered' },
+        deps,
+      );
+      expect(id).toBeNull();
+      expect(resolved).toHaveLength(0);
+    });
+
+    it('a DIFFERENT kind for the same log does not resolve an unrelated open EI (title is kind-scoped)', async () => {
+      const { deps, resolved } = fakeDeps([{ id: 'EI-1', title: replicationStallEiTitle({ ...episode, kind: 'frozen' }) }]);
+      const id = await resolveReplicationStallEi(
+        { harnessSlug: HS, logKeyHex: KEY, kind: 'no_replicator', detail: 'recovered' },
+        deps,
+      );
+      expect(id).toBeNull();
+      expect(resolved).toHaveLength(0);
+    });
   });
 });
 

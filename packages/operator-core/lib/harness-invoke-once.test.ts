@@ -218,6 +218,16 @@ describe('applyRoleModel — per-role model override', () => {
     );
   });
 
+  // EI-7138: omp takes `<model>[:<effort>]` as ONE opaque spec natively (no standalone
+  // --effort flag) — splitting it apart (as this function used to, unconditionally,
+  // regardless of backend) silently dropped the effort for an omp-backed role, the
+  // exact same class of bug this function already guards against for codex/claude.
+  it('omp: a `<model>:<effort>` spec passes through VERBATIM (no split — omp has no standalone --effort flag)', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
+    expect(applyRoleModel('omp -p', 'worker')).toBe('omp -p --model opus:high');
+    expect(applyRoleModel('omp -p', 'worker', 'sonnet:xhigh')).toBe('omp -p --model sonnet:xhigh');
+  });
+
   it('strips a pre-existing --effort and replaces it; keeps a colon-bearing model id when the suffix is not an effort', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:max', reviewer: 'vendor/model:7b' }));
     // pre-existing --effort low is stripped, the role's max wins
@@ -401,7 +411,10 @@ describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => 
     expect(env.CLAUDE).toBe('codex exec --model sonnet');
     expect(env.AGENT_BACKEND).toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
-    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'omp', model: 'opus' });
+    // EI-7138: omp takes a `<model>:<effort>` spec as ONE opaque value natively (no
+    // standalone --effort flag) — applyRoleModel no longer splits it apart for a
+    // non-codex/non-claude backend, so the resolved model here is the full spec.
+    expect(resolveSpawnBackendModel('release-manager')).toEqual({ backend: 'omp', model: 'opus:xhigh' });
   });
 
   it('resolveSpawnBackendModel follows the backend override for the governor bucket + session-id decision', () => {

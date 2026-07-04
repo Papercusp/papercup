@@ -67,9 +67,12 @@ export function replicationStallEiTitle(episode: {
   );
 }
 
+/** Resolver identity stamped on auto-resolved (recovered) replication-stall EIs. */
+export const RECOVERY_OWNER = 'system:replication-liveness';
+
 /** DI seam so the dedup+file logic unit-tests without PG. */
 export interface ReplicationStallEiDeps {
-  listOpenByTopic(topic: string): Promise<Array<{ title: string }>>;
+  listOpenByTopic(topic: string): Promise<Array<{ id: string; title: string }>>;
   create(input: {
     title: string;
     body: string;
@@ -80,6 +83,8 @@ export interface ReplicationStallEiDeps {
     createdBy: string;
     foundDuring: string;
   }): Promise<{ id: string }>;
+  /** EI-7110: resolve a previously-filed EI once its stall has recovered. */
+  resolve(id: string, note: string): Promise<void>;
 }
 
 async function defaultDeps(): Promise<ReplicationStallEiDeps> {
@@ -88,6 +93,9 @@ async function defaultDeps(): Promise<ReplicationStallEiDeps> {
     listOpenByTopic: (topic) =>
       m.listIssues({ state: 'open', topic, limit: 100 }),
     create: (input) => m.createIssue(input),
+    resolve: async (id, note) => {
+      await m.setIssueState(id, 'resolved', RECOVERY_OWNER, note);
+    },
   };
 }
 
@@ -185,5 +193,45 @@ export async function fileReplicationStallEi(
     // release it so a transient PG failure can retry on the NEXT episode
     // (episodes are edge-triggered, so this is at most once per re-arm).
     inFlight.delete(title);
+  }
+}
+
+/** The (harness, log, kind) identity resolveReplicationStallEi needs to find
+ *  the EI a recovered episode should close — the same fields replicationStallEiTitle
+ *  keys on, plus a human-readable `detail` for the resolution note. */
+export type RecoveredStallEpisode = Pick<StallEiEpisode, 'harnessSlug' | 'logKeyHex' | 'kind' | 'detail'>;
+
+/**
+ * EI-7110: auto-resolve the durable EI a stall episode filed, once
+ * `sampleReplicationLiveness` observes the SAME (harness, log, kind) recover.
+ * Without this, a filed EI never auto-clears — it sits open until a human/agent
+ * manually re-verifies current live status and closes it (exactly the toil that
+ * surfaced EI-7110 itself: a fleet member 20h downstream of the stall, unable to
+ * cheaply confirm whether it had already self-healed).
+ *
+ * No-ops (returns null) when no open EI matches the stable dedup title — that is
+ * the NORMAL case (recovered before ever crossing the escalation's OWN grace, or
+ * already resolved by an earlier recovery). Best-effort: a resolve failure never
+ * throws back into the merge pass that calls it (the registry verdict already
+ * reads 'live' regardless of whether the durable EI closes).
+ */
+export async function resolveReplicationStallEi(
+  recovery: RecoveredStallEpisode,
+  deps?: ReplicationStallEiDeps,
+): Promise<string | null> {
+  const title = replicationStallEiTitle(recovery);
+  // Same VITEST safety gate as fileReplicationStallEi (EI-6987): a unit test
+  // exercising the DETECTION logic with a real reporter (no deps override) must
+  // never touch production PG.
+  if (process.env.VITEST && !deps) return null;
+  try {
+    const d = deps ?? (await defaultDeps());
+    const open = await d.listOpenByTopic(REPLICATION_LIVENESS_TOPIC);
+    const match = open.find((i) => i.title === title);
+    if (!match) return null;
+    await d.resolve(match.id, `auto-resolved: replication recovered — ${recovery.detail}`);
+    return match.id;
+  } catch {
+    return null; // best-effort: the registry verdict already reads 'live'
   }
 }

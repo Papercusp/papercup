@@ -91,6 +91,12 @@ import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
 // tool boundary carries its own copy). The parity suite below pins them value-for-value.
 import { validateCloudModelSpec } from '@papercusp/operator-core/lib/agent-config-constants';
+// EI-7138: the operator-core TS TWIN of suWrapperExtraArgs's model:effort → CLI-flag mapping
+// (same psu-launcher.mjs / operator-core import-boundary constraint as WI-1993 above — the
+// mapping is duplicated by necessity, not oversight). The parity suite below pins them
+// value-for-value so a fix landed in one (the codex effort-drop, found 2026-07-03) can never
+// again silently miss the other.
+import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
 // weak-model-tool-tier: the canonical core spine — the psu-launcher.mjs inlined copy
 // (OMP_CORE_MCP_TOOL_NAMES) is its omp/weak-model VARIANT: identical except it drops the
 // manual granular lock tools and adds fleet:launch-on-plan (drift guard below).
@@ -1646,6 +1652,39 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
       const b = validateCloudModelSpec(s);
       expect(b.ok, s).toBe(a.ok);
       expect(b.message ?? null, s).toBe(a.message ?? null);
+    }
+  });
+});
+
+describe('suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI-7138 drift guard)', () => {
+  // Extract the flags applyRoleModel APPENDS to a bare `<bin>` baseCmd, as a token
+  // array comparable to suWrapperExtraArgs' return shape. Vectors below avoid
+  // claude's `[1m]` 1M-family auto-injection (normalizeModelSpec) — a real,
+  // INTENTIONAL divergence (psu injects it separately, upstream of
+  // suWrapperExtraArgs, in its own parseArgs step; applyRoleModel injects it
+  // inline) — by using a non-family model (haiku) so both sides start from the
+  // same bare spec and the comparison isolates the model:effort→flag mapping
+  // this drift guard actually cares about.
+  function appliedFlags(bin: 'claude' | 'codex' | 'omp', spec: string): string[] {
+    const cmd = applyRoleModel(bin, 'x', spec);
+    return cmd.slice(bin.length).trim().split(/\s+/).filter(Boolean);
+  }
+
+  it('codex: identical argv for every spec vector (the 2026-07-03 effort-drop this ticket tracks)', () => {
+    for (const spec of ['gpt-5.5', 'gpt-5.5:low', 'gpt-5.5:high', 'gpt-5.5:xhigh', 'gpt-5.5:max']) {
+      expect(appliedFlags('codex', spec), spec).toEqual(suWrapperExtraArgs('codex', { model: spec }));
+    }
+  });
+
+  it('claude (non-1M-family spec): identical argv', () => {
+    for (const spec of ['haiku', 'haiku:low', 'haiku:high', 'haiku:max', 'anthropic.claude-3-5-sonnet-20241022-v2:0']) {
+      expect(appliedFlags('claude', spec), spec).toEqual(suWrapperExtraArgs('claude', { model: spec }));
+    }
+  });
+
+  it('omp: identical argv — verbatim passthrough, never split (EI-7138: applyRoleModel used to split it, dropping the effort)', () => {
+    for (const spec of ['opus', 'opus:high', 'sonnet:xhigh', 'vendor/model:7b']) {
+      expect(appliedFlags('omp', spec), spec).toEqual(suWrapperExtraArgs('omp', { model: spec }));
     }
   });
 });

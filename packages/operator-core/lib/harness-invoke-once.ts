@@ -164,19 +164,28 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
         ? envSpec
         : roleModelDefault(role);
   if (typeof spec !== 'string' || !spec.trim()) return baseCmd;
-  // Split a trailing `:<effort>` ONLY when the suffix is a known effort level, so a
-  // colon-bearing model id (unusual for claude, but possible elsewhere) stays intact.
   const trimmed = spec.trim();
-  const lastColon = trimmed.lastIndexOf(':');
-  let model = trimmed;
-  let effort: string | undefined;
-  if (lastColon > 0 && EFFORT_LEVELS.has(trimmed.slice(lastColon + 1))) {
-    model = trimmed.slice(0, lastColon);
-    effort = trimmed.slice(lastColon + 1);
-  }
   const bin = baseCmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const isCodex = /(?:^|\/)codex$/.test(bin);
   const isClaude = /(?:^|\/)claude$/.test(bin);
+  // Split a trailing `:<effort>` ONLY when the suffix is a known effort level AND
+  // the backend has a distinct effort channel to split it INTO (codex's config
+  // override, claude's own --effort flag). EI-7138: this used to split
+  // unconditionally regardless of backend — for an omp-backed role (a real,
+  // reachable DEFAULT_BACKEND_CMDS entry, `omp -p`) that tore a valid
+  // `<model>:<effort>` spec (omp's OWN native format, per suWrapperExtraArgs'
+  // omp branch — it takes the suffixed spec verbatim) into separate
+  // `--model X --effort Y` flags; omp has no standalone --effort flag, so the
+  // effort silently dropped — the exact same effort-drop class this function
+  // already guards against for codex/claude, just never closed for omp (or
+  // any other/unknown backend, which gets the same verbatim treatment here).
+  let model = trimmed;
+  let effort: string | undefined;
+  if ((isCodex || isClaude) && trimmed.lastIndexOf(':') > 0 && EFFORT_LEVELS.has(trimmed.slice(trimmed.lastIndexOf(':') + 1))) {
+    const lastColon = trimmed.lastIndexOf(':');
+    model = trimmed.slice(0, lastColon);
+    effort = trimmed.slice(lastColon + 1);
+  }
   const codexEffort = effort === 'max' ? 'xhigh' : effort;
   // Strip any existing model/effort flags, then append the role's. Codex does
   // not have a `--effort` flag; its reasoning effort is a config override.

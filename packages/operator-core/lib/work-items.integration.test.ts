@@ -127,6 +127,32 @@ describe('per-family state normalization (EI-24)', () => {
     expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup' }))?.state).toBe('validating');
     expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup', by: 'agA', completionRef: 'test' }))?.state).toBe('deprecated');
   });
+
+  // EI-7125 / WI-2573: an issue-family 'blocked' request silently aliased to 'open'
+  // with nothing telling the caller — a real reclaim ping-pong followed from an
+  // agent assuming 'blocked' had stuck. onAlias fires exactly when the requested
+  // state differs from what actually got written, carrying both sides.
+  it('onAlias fires when an issue-family request aliases (blocked -> open), never when already canonical', async () => {
+    const task = await wi.createWorkItem({ kind: 'task', title: 't2', harness: 'papercup' });
+    const seen: Array<{ requested: string; resolved: string }> = [];
+    const after = await wi.setWorkItemState(task.id, 'blocked', {
+      onAlias: (info) => seen.push(info),
+    });
+    expect(after?.state).toBe('open');
+    expect(seen).toEqual([{ requested: 'blocked', resolved: 'open' }]);
+
+    seen.length = 0;
+    await wi.setWorkItemState(task.id, 'open', { onAlias: (info) => seen.push(info) });
+    expect(seen).toEqual([]); // already canonical — no alias, no callback
+
+    seen.length = 0;
+    await wi.setWorkItemState(task.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'test',
+      onAlias: (info) => seen.push(info),
+    });
+    expect(seen).toEqual([]); // 'resolved' is already the canonical issue-family state
+  });
 });
 
 // C2 [P2] — invalid-state rejection is ASYMMETRIC across the families (work-items.ts:679 →
