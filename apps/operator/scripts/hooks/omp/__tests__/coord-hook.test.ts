@@ -46,6 +46,8 @@ import {
   EVAL_BLOCK_ESCALATE_AFTER,
   noteEvalBlock,
   resetEvalBlockBudget,
+  EVAL_BLOCK_KILL_AFTER,
+  setHaltForTest,
   isAskCall,
   askBlockReason,
   isIrcCall,
@@ -521,6 +523,42 @@ describe('onToolCall eval guard (agent sessions only)', () => {
       input: { code: 'ok' },
     });
     expect(r.block).toBeUndefined();
+  });
+
+  it('structurally HALTS the session after EVAL_BLOCK_KILL_AFTER cumulative blocked evals (iter14 / WI-2382)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Calls 1..K-1 are blocked but must NOT halt yet — prose escalation gets its chance first.
+      for (let i = 0; i < EVAL_BLOCK_KILL_AFTER - 1; i++) {
+        const r = await evalCall(`attempt_${i}()`); // different code each time — non-adjacent runs
+        expect(r.block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      // Call #K: still blocked AND the structural halt fires exactly once, naming the run length.
+      const kth = await evalCall('attempt_final()');
+      expect(kth.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain(String(EVAL_BLOCK_KILL_AFTER));
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < EVAL_BLOCK_KILL_AFTER + 3; i++) {
+        const r = await evalCall(`owner_${i}()`);
+        expect(r.block).toBeUndefined(); // an owner's eval is never even blocked, let alone halted
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
   });
 });
 

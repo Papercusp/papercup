@@ -1688,6 +1688,45 @@ export function resetEvalBlockBudget(): void {
   _evalBlockCount = 0;
 }
 
+/** After this many CUMULATIVE blocked `eval` calls in one session, the guard gives up on prose
+ *  and STRUCTURALLY terminates the session (ornith iter14, 2026-07-04 / WI-2382). The WI-2299
+ *  name-block stops eval EXECUTING and evalBlockReason ESCALATES the message, but a weak IQ3_M
+ *  ignores prose and doom-loops — 10177=148×, 10234=80+×, iter14=139× — burning the ENTIRE session
+ *  without ever reading its plan. The HookApi tool_call return is only { block, reason } (no
+ *  session-end lever), so the sole reliable break is process-level self-termination: a session
+ *  that has ignored this many hard STOPs will never recover, and a fast fail + relaunch (the
+ *  model's turn-to-turn variance means a fresh launch usually gets past kickoff — iter13 did)
+ *  beats an unbounded hang. Threshold > EVAL_BLOCK_ESCALATE_AFTER so the prose escalation gets its
+ *  chance first. Agent sessions only (the guard is isAgentSession-gated) — an owner never trips it. */
+export const EVAL_BLOCK_KILL_AFTER = 10;
+
+/** Structural halt for a runaway agent session. SIGTERM (not a raw exit) so the process's own
+ *  SIGTERM handler runs the defensive lock cleanup first (see the exit handler above); process.exit
+ *  is the fallback if the signal cannot be delivered. A module-level `let` so a unit test can swap
+ *  it via setHaltForTest and assert it fires WITHOUT killing the test runner. NOTE: any agent-session
+ *  test that issues ≥ EVAL_BLOCK_KILL_AFTER eval calls WITHOUT swapping this seam would SIGTERM the
+ *  runner — swap the seam (as the halt tests do). Not `const`: the reassignment is the seam. */
+export let _haltRunawaySession = (reason: string): void => {
+  try {
+    process.stderr.write(`[papercusp-coord] halting runaway session: ${reason}\n`);
+  } catch {
+    /* a diagnostic write must never itself throw */
+  }
+  try {
+    process.kill(process.pid, 'SIGTERM');
+  } catch {
+    process.exit(1);
+  }
+};
+
+/** Test seam: override the runaway-halt action so a unit test can assert it fires without actually
+ *  terminating the test process. Returns the previous binding so the test can restore it. */
+export function setHaltForTest(fn: (reason: string) => void): (reason: string) => void {
+  const prev = _haltRunawaySession;
+  _haltRunawaySession = fn;
+  return prev;
+}
+
 /** The redirect returned when an agent session invokes `eval`. Forces the model back
  *  onto the native tool / tools:invoke / Bash triad it actually has. ESCALATES once the
  *  session has ignored the block more than EVAL_BLOCK_ESCALATE_AFTER times: a weak model
@@ -1865,9 +1904,15 @@ export async function onToolCall(
   // different code, so the runs were non-adjacent), so block by tool-NAME on call
   // #1 and redirect onto the native tool / tools:invoke / Bash triad. Placed with
   // the specific guards so it wins before the generic loop-breaker. Owner sessions
-  // unrestricted (D-003).
+  // unrestricted (D-003). After EVAL_BLOCK_KILL_AFTER cumulative ignored blocks the
+  // prose escalation has demonstrably failed (iter14=139×), so structurally terminate
+  // the runaway session instead of returning yet another STOP it will ignore (WI-2382).
   if (isAgentSession() && isEvalCall(event.toolName)) {
-    return { block: true, reason: evalBlockReason(noteEvalBlock()) };
+    const n = noteEvalBlock();
+    if (n >= EVAL_BLOCK_KILL_AFTER) {
+      _haltRunawaySession(`eval doom-loop: ${n} blocked eval calls in one session`);
+    }
+    return { block: true, reason: evalBlockReason(n) };
   }
 
   // ask-gate guard (ornith iter10, 2026-07-04 / WI-2382): a spawned agent has NO human at the

@@ -9,13 +9,24 @@
  *   - resolveSeedPath(): opts vs env precedence + the PAPERCUSP_PG_DISABLE_SEED kill.
  *   - extractSeed(): a directory seed AND a .tar.gz seed both land a bootable-shaped
  *     data dir (PG_VERSION + nested files) at 0700.
+ *   - SEED_INITDB_FLAGS locale portability: the WI-2649 recurrence guard — the
+ *     shipped seed's postgresql.conf must name a PORTABLE locale (C.UTF-8), never
+ *     the build host's (en_US.UTF-8), or first boot FATALs on the lean Windows
+ *     WSL rootfs. Pure assertion on the single-source-of-truth flag, no real PG.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveSeedPath, extractSeed } from '@papercusp/embedded-postgres-server';
+import {
+  resolveSeedPath,
+  extractSeed,
+  SEED_INITDB_FLAGS,
+  PORTABLE_INITDB_LOCALES,
+  initdbLocale,
+  initdbLocaleIsPortable,
+} from '@papercusp/embedded-postgres-server';
 
 const cleanups: string[] = [];
 function tmp(prefix: string): string {
@@ -82,5 +93,57 @@ describe('extractSeed (directory + tar.gz seed → bootable-shaped data dir)', (
 
   it('throws on a missing seed source (caller then falls back to initdb)', async () => {
     await expect(extractSeed(join(tmpdir(), 'does-not-exist-xyz'), tmp('seed-dst-'))).rejects.toThrow();
+  });
+});
+
+describe('initdb locale portability (WI-2649 recurrence guard)', () => {
+  // Why a flag guard IS a postgresql.conf guard: initdb resolves `--locale`
+  // (or, if absent, the host's LANG) and writes it into EVERY lc_* GUC of the
+  // new cluster's postgresql.conf (lc_collate/lc_ctype/lc_messages/lc_monetary/
+  // lc_numeric/lc_time). build-seed.mjs boots through startEmbeddedPostgresServer,
+  // so the SHIPPED seed's postgresql.conf carries exactly the locale named by
+  // SEED_INITDB_FLAGS. WI-2649: a seed built on a full-locale host baked
+  // lc_numeric='en_US.UTF-8', which FATALs at first boot on the lean Windows WSL
+  // rootfs (only C / C.utf8 / POSIX). Pinning a portable locale here is the fix;
+  // these tests fail the moment that pin is removed or weakened.
+
+  it('SEED_INITDB_FLAGS pins an explicit, portable locale (== C.UTF-8)', () => {
+    expect(initdbLocale(SEED_INITDB_FLAGS)).toBe('C.UTF-8');
+    expect(initdbLocaleIsPortable(SEED_INITDB_FLAGS)).toBe(true);
+  });
+
+  it("the shipped seed's postgresql.conf lc_* never names the build host's locale", () => {
+    // The exact value that FATALed on the Windows rootfs in WI-2649.
+    const shippedLocale = initdbLocale(SEED_INITDB_FLAGS);
+    expect(shippedLocale).not.toBe('en_US.UTF-8');
+    expect(shippedLocale).not.toMatch(/^[a-z]{2}_[A-Z]{2}/); // no ll_CC host locale
+    // Whatever it is, it must be one this package promises is present everywhere.
+    expect(PORTABLE_INITDB_LOCALES.map((l) => l.toLowerCase())).toContain(
+      String(shippedLocale).toLowerCase(),
+    );
+  });
+
+  it('rejects the regression shapes: host-specific locale, or no --locale at all', () => {
+    // A full-locale build host baked into the flags (the WI-2649 bug shape).
+    expect(initdbLocaleIsPortable(['--locale=en_US.UTF-8', '--encoding=UTF8'])).toBe(false);
+    expect(initdbLocaleIsPortable(['--locale=en_GB.UTF-8'])).toBe(false);
+    // No `--locale` → initdb inherits the host's LANG → not portable.
+    expect(initdbLocaleIsPortable(['--encoding=UTF8'])).toBe(false);
+    expect(initdbLocaleIsPortable([])).toBe(false);
+    expect(initdbLocaleIsPortable(undefined)).toBe(false);
+  });
+
+  it('accepts every portable locale, case/hyphenation-insensitively', () => {
+    for (const loc of PORTABLE_INITDB_LOCALES) {
+      expect(initdbLocaleIsPortable([`--locale=${loc}`])).toBe(true);
+    }
+  });
+
+  it('initdbLocale parses both --locale=X and split --locale X spellings', () => {
+    expect(initdbLocale(['--locale=C.UTF-8'])).toBe('C.UTF-8');
+    expect(initdbLocale(['--locale', 'C.UTF-8', '--encoding=UTF8'])).toBe('C.UTF-8');
+    expect(initdbLocale(['--encoding=UTF8'])).toBeNull();
+    expect(initdbLocale([])).toBeNull();
+    expect(initdbLocale(['--locale'])).toBeNull(); // dangling flag, no value
   });
 });
