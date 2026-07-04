@@ -69,6 +69,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
   // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
   // snapshot; the count assertion below dropped from 11 to 10 to match.
+  // 2026-07-04 — codex ChatGPT-subscription OAuth streaming reverse-proxy (WI-2198,
+  // owner-chosen Option B): reverse-engineered proprietary transport, dark until an
+  // owner-attended live canary against production ChatGPT; direct native auth is the
+  // fallback. Pending-flip (count 10 → 11).
+  'papercusp-codex-gateway-oauth-proxy',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -175,10 +180,11 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
     // 9 pre-inversion + papercusp-presence-gossip (2026-07-01 cutover) + papercusp-accept-
-    // delegated-seats (2026-07-03, agent-allocation-framework P-008 owner-authority trust gate).
+    // delegated-seats (2026-07-03, agent-allocation-framework P-008 owner-authority trust gate)
+    // + papercusp-codex-gateway-oauth-proxy (2026-07-04, WI-2198 Option B — dark until the canary).
     // Graduated to default-ON and removed from the snapshot: papercusp-queen-warm-session
     // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met).
-    expect(offCount).toBe(10);
+    expect(offCount).toBe(11);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {
