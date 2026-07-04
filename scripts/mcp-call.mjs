@@ -70,7 +70,11 @@ async function main() {
     process.exit(3);
   }
   const args = jsonArgs ? JSON.parse(jsonArgs) : {};
-  const qs = new URLSearchParams({ superuser: '1', client: flags.client ?? `mcp-call-${process.pid}` });
+  // EI-6631: an empty/whitespace-only --client (e.g. `--client "$UNSET_VAR"`) must fall
+  // back to the generated id, not be sent as a blank client= — `??` alone only catches
+  // null/undefined, not "".
+  const client = (flags.client && flags.client.trim()) || `mcp-call-${process.pid}`;
+  const qs = new URLSearchParams({ superuser: '1', client });
   // The scoped-superuser session requires a resolved workspace (else
   // `scoped_superuser_workspace_unresolved`). Default to the standard one; override
   // with --workspace or PAPERCUSP_WORKSPACE.
