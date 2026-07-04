@@ -35,6 +35,16 @@ export interface WorkerExitInfo {
   runtimeMs: number;
   stdout?: string;
   stderr?: string;
+  /**
+   * WI-2162: the invoke route's `timeoutMs` for THIS dispatch (resolveInvokeTimeoutMs /
+   * implementTimeoutMs) — the wall-clock bound the route itself SIGTERM's the child at.
+   * Threaded through so `isEnvFailureExit` can tell "the worker was killed by our own
+   * clock" from "the worker crashed on its own": both look identical to a text-pattern
+   * scan (often EMPTY output — a bare SIGTERM has no last words to grep). Optional so
+   * a caller that doesn't know it (or an older test) still gets the pre-existing
+   * classification unchanged.
+   */
+  configuredTimeoutMs?: number;
 }
 
 /**
@@ -111,6 +121,51 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
 export const CONTEXT_OVERFLOW_ESCALATE_CAP = 2;
 
 /**
+ * WI-2162 — a WORKER-TIMEOUT death: the invoke route's own clock (resolveInvokeTimeoutMs /
+ * implementTimeoutMs, currently 2_700_000ms = 45min) SIGTERM'd the child while it was still
+ * doing legitimate work, NOT because the worker crashed or gave up. Root-caused live
+ * 2026-07-04: the dominant CURRENT cause of "Auto-implement dispatch died — orphaned worker"
+ * signals (17+ duplicate EIs) is exit code 143 (SIGTERM) at ~2700-2850s runtime — the worker
+ * cut off mid-investigation ("Let me check...", "I'll start by reading...") every time, never
+ * having reached a fix attempt, let alone `improvements:resolve`. Before this, these fell
+ * through to the generic `worker-exit-backedge` bucket — CHARGED as a real attempt AND
+ * eligible for the "lane is broken" signal, even though the death says nothing about the
+ * item OR the lane: the clock simply ran out. Like context-overflow (WI-716), a bare retry
+ * with the SAME time budget tends to overflow again on a genuinely large item, so this gets
+ * the identical bounded-escalation shape instead of the indefinite env-failure rollback.
+ * (isHostRestartVictim/host-restart-recovery and env-failure deaths were ALREADY correctly
+ * excluded from lane-breakage signaling — orphaned-dispatch.ts's isLaneBreakageOrphan — so
+ * this classifier gap was the actual mechanism generating the false "lane broken" backlog,
+ * not host-restart frequency, which — while real per the dispatch-ledger stats — never
+ * reaches the signal path at all.)
+ */
+export const TIMEOUT_ESCALATE_CAP = 2;
+
+/** Exit codes a SIGTERM (143 = 128+15) or SIGKILL (137 = 128+9) subprocess kill produces —
+ *  the two signals the route / OS could plausibly use to enforce the worker timeout. */
+const TIMEOUT_KILL_EXIT_CODES: ReadonlySet<number> = new Set([143, 137]);
+
+/** How far UNDER the configured timeout a death may fall and still count as a timeout-kill —
+ *  covers measurement/scheduling jitter between the route's setTimeout firing and the
+ *  wall-clock `runtimeMs` the caller measured. No upper bound: running longer than the
+ *  configured timeout before dying is definitionally a timeout kill, whether the SIGKILL
+ *  grace period added a few seconds or (per the observed EI-6966 outlier) over a thousand. */
+const TIMEOUT_KILL_TOLERANCE_MS = 10_000;
+
+/**
+ * True when this exit is shaped like the invoke route's OWN timeout enforcement rather than
+ * the worker's own choice to exit: a SIGTERM/SIGKILL exit code at or past the configured
+ * limit (minus jitter tolerance). Requires `configuredTimeoutMs` — callers that don't know it
+ * (or old call sites) get `false` here and fall through to the pre-existing classification,
+ * unchanged. Pure.
+ */
+export function isWorkerTimeoutExit(info: WorkerExitInfo): boolean {
+  if (info.configuredTimeoutMs == null || info.configuredTimeoutMs <= 0) return false;
+  if (!TIMEOUT_KILL_EXIT_CODES.has(info.exitCode)) return false;
+  return info.runtimeMs >= info.configuredTimeoutMs - TIMEOUT_KILL_TOLERANCE_MS;
+}
+
+/**
  * A real implement worker (reproduce + fix + regression test + test:affected) takes
  * minutes. A non-zero exit UNDER this floor with ~no output is a dead-on-arrival
  * spawn (the binary never did work) — an env/infra death, not an attempt.
@@ -124,25 +179,35 @@ export interface EnvFailureVerdict {
   env: boolean;
   /** Why it was classed env (for the ledger detail / tests); undefined when not env. */
   reason?: string;
-  /** WI-716: 'context-overflow' when this death matched CONTEXT_OVERFLOW_PATTERNS —
+  /** WI-716/WI-2162: 'context-overflow' when this death matched CONTEXT_OVERFLOW_PATTERNS,
+   *  'timeout' when it matches the invoke route's own SIGTERM-at-the-limit shape — both
    *  still `env: true` (not charged on a first/second death) but routed through the
    *  bounded escalation path in `recordImplementWorkerExit` instead of the plain
    *  indefinite env-failure rollback. Absent for a generic env failure / DOA. */
-  class?: 'context-overflow';
+  class?: 'context-overflow' | 'timeout';
 }
 
 /**
  * Whether a worker exit is an ENVIRONMENT failure (don't charge the attempt) vs a
  * genuine worker outcome. A clean exit (0) is never an env failure — it resolved,
  * or it's a real exited-0-without-resolve worker bug. Non-zero: a recognizable
- * context-overflow or env signature in the output, OR a sub-floor near-empty death
- * (DOA). Pure.
+ * context-overflow or env signature in the output, a WORKER-TIMEOUT kill shape
+ * (WI-2162 — checked before the generic sub-floor DOA rule since a timeout death is
+ * ALWAYS past the floor and often has substantive-but-cut-off output, the opposite
+ * of a DOA), or a sub-floor near-empty death (DOA). Pure.
  */
 export function isEnvFailureExit(info: WorkerExitInfo): EnvFailureVerdict {
   if (info.exitCode === 0) return { env: false };
   const text = `${info.stdout ?? ''}\n${info.stderr ?? ''}`;
   const overflowHit = CONTEXT_OVERFLOW_PATTERNS.find((re) => re.test(text));
   if (overflowHit) return { env: true, reason: `context overflow ${overflowHit}`, class: 'context-overflow' };
+  if (isWorkerTimeoutExit(info)) {
+    return {
+      env: true,
+      reason: `worker timeout (exit ${info.exitCode} at ${info.runtimeMs}ms >= configured ${info.configuredTimeoutMs}ms)`,
+      class: 'timeout',
+    };
+  }
   const hit = ENV_FAILURE_PATTERNS.find((re) => re.test(text));
   if (hit) return { env: true, reason: `env signature ${hit}` };
   if (info.runtimeMs < ENV_FAILURE_RUNTIME_FLOOR_MS && text.trim().length < 200) {
@@ -173,10 +238,11 @@ export interface ImplementWorkerExitInput extends WorkerExitInfo {
 export interface ImplementWorkerExitDeps {
   markOrphaned: (dispatchId: string, by: string, detail?: string) => Promise<boolean>;
   mergePayload: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
-  /** WI-716: read the item's current payload, to find the PRIOR contextOverflowDeaths
-   *  count before deciding whether this death trips the escalation cap. Only called
-   *  on the (rare) context-overflow path — every other exit path is unchanged.
-   *  Best-effort: a read failure is treated as "0 prior deaths" (never throws). */
+  /** WI-716/WI-2162: read the item's current payload, to find the PRIOR
+   *  contextOverflowDeaths / timeoutDeaths count before deciding whether this death
+   *  trips its escalation cap. Only called on the (rare) context-overflow/timeout
+   *  path — every other exit path is unchanged. Best-effort: a read failure is
+   *  treated as "0 prior deaths" (never throws). */
   getPayload: (id: string) => Promise<Record<string, unknown> | null>;
 }
 
@@ -200,6 +266,10 @@ export interface ImplementWorkerExitResult {
    *  such deaths for this item (including this one) and whether the escalation
    *  cap tripped (routed to needs-human instead of rolled back). */
   contextOverflow?: { deaths: number; escalated: boolean };
+  /** WI-2162: set when this was a worker-TIMEOUT death (the invoke route's own
+   *  clock, not a crash) — the running count of such deaths for this item
+   *  (including this one) and whether the escalation cap tripped. */
+  timeoutEscalation?: { deaths: number; escalated: boolean };
 }
 
 /**
@@ -216,23 +286,26 @@ export async function recordImplementWorkerExit(
   const env = isEnvFailureExit(input);
   const tail = boundedTail(input);
 
-  // WI-716: a context-overflow death needs the item's PRIOR contextOverflowDeaths
-  // count (persisted independently of implementAttempts, since the whole point of
-  // rolling attempts back is that they must NOT track this) before we know whether
-  // THIS death trips the bounded escalation cap. Best-effort: a read failure is
-  // treated as "0 prior deaths" — never blocks the back-edge from recording.
+  // WI-716/WI-2162: a context-overflow OR worker-timeout death needs the item's PRIOR
+  // death count for ITS class (persisted independently of implementAttempts, since the
+  // whole point of rolling attempts back is that they must NOT track this) before we
+  // know whether THIS death trips its bounded escalation cap. Best-effort: a read
+  // failure is treated as "0 prior deaths" — never blocks the back-edge from recording.
   let overflow: { deaths: number; escalated: boolean } | undefined;
-  if (env.class === 'context-overflow') {
+  let timeoutEsc: { deaths: number; escalated: boolean } | undefined;
+  if (env.class === 'context-overflow' || env.class === 'timeout') {
     let prior = 0;
     try {
       const payload = await deps.getPayload(input.itemId);
-      const raw = payload?.contextOverflowDeaths;
+      const key = env.class === 'context-overflow' ? 'contextOverflowDeaths' : 'timeoutDeaths';
+      const raw = payload?.[key];
       prior = typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? raw : 0;
     } catch (e) {
       console.warn(`[implement-worker-exit] getPayload failed for ${input.itemId} (treating prior deaths as 0):`, e);
     }
     const deaths = prior + 1;
-    overflow = { deaths, escalated: deaths >= CONTEXT_OVERFLOW_ESCALATE_CAP };
+    if (env.class === 'context-overflow') overflow = { deaths, escalated: deaths >= CONTEXT_OVERFLOW_ESCALATE_CAP };
+    else timeoutEsc = { deaths, escalated: deaths >= TIMEOUT_ESCALATE_CAP };
   }
 
   const detail =
@@ -241,17 +314,28 @@ export async function recordImplementWorkerExit(
       ? overflow.escalated
         ? ` [context-overflow death ${overflow.deaths}/${CONTEXT_OVERFLOW_ESCALATE_CAP} — escalation cap tripped, routed to needs-human, attempt ${input.attempt} not charged]`
         : ` [context-overflow death ${overflow.deaths}/${CONTEXT_OVERFLOW_ESCALATE_CAP}; attempt ${input.attempt} not charged]`
-      : env.env
-        ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]`
-        : ' [no resolve recorded; attempt charged]') +
+      : timeoutEsc
+        ? timeoutEsc.escalated
+          ? ` [worker-timeout death ${timeoutEsc.deaths}/${TIMEOUT_ESCALATE_CAP} — escalation cap tripped, routed to needs-human, attempt ${input.attempt} not charged]`
+          : ` [worker-timeout death ${timeoutEsc.deaths}/${TIMEOUT_ESCALATE_CAP}; attempt ${input.attempt} not charged]`
+        : env.env
+          ? ` [env-failure: ${env.reason}; attempt ${input.attempt} not charged]`
+          : ' [no resolve recorded; attempt charged]') +
     (tail ? `: ${tail}` : '');
 
-  // Tag an ENV-failure (or context-overflow) death distinctly in resolved_by so the
-  // orphaned-dispatch watchdog can EXCLUDE it from the "lane is broken" signal (a
-  // rate-limit/auth outage — or a single oversized item overflowing — is not lane
-  // breakage; signaling it files a major EI that itself DOAs on the same condition
-  // → a self-amplifying noise loop).
-  const by = overflow ? 'worker-exit-backedge-context-overflow' : env.env ? 'worker-exit-backedge-env' : 'worker-exit-backedge';
+  // Tag an ENV-failure / context-overflow / worker-timeout death distinctly in
+  // resolved_by so the orphaned-dispatch watchdog can EXCLUDE it from the "lane is
+  // broken" signal (a rate-limit/auth outage, an oversized item overflowing, or a
+  // worker that simply ran out of its configured clock is not lane breakage;
+  // signaling it files a major EI that itself DOAs/times-out on the SAME condition
+  // → a self-amplifying noise loop — the exact WI-2162 backlog this closes).
+  const by = overflow
+    ? 'worker-exit-backedge-context-overflow'
+    : timeoutEsc
+      ? 'worker-exit-backedge-timeout'
+      : env.env
+        ? 'worker-exit-backedge-env'
+        : 'worker-exit-backedge';
   const marked = await deps.markOrphaned(input.dispatchId, by, detail);
   if (!marked) {
     // Already terminal — the worker called improvements:resolve. Nothing to undo.
@@ -282,6 +366,30 @@ export async function recordImplementWorkerExit(
       });
     }
     return { marked: true, charged: false, envReason: env.reason, contextOverflow: overflow };
+  }
+
+  if (timeoutEsc) {
+    if (timeoutEsc.escalated) {
+      // WI-2162 bounded escalation (mirrors WI-716): repeated timeout on the SAME item
+      // means the invoke route's fixed clock genuinely isn't enough for it — a bare
+      // retry with the same budget would just thrash — so stop rolling back and route
+      // to a human instead. needsHuman drops it from the auto-eligible pool regardless
+      // of attempts, so leaving implementAttempts untouched here is fine.
+      await deps.mergePayload(input.itemId, {
+        timeoutDeaths: timeoutEsc.deaths,
+        needsHuman: true,
+      });
+    } else {
+      // Below the cap: not a real attempt (the worker never reached a fix, let alone
+      // improvements:resolve — it was still investigating when the clock ran out) —
+      // roll the attempt back like a generic env failure, but persist the death count
+      // so it keeps accumulating across rollbacks.
+      await deps.mergePayload(input.itemId, {
+        timeoutDeaths: timeoutEsc.deaths,
+        implementAttempts: Math.max(0, input.attempt - 1),
+      });
+    }
+    return { marked: true, charged: false, envReason: env.reason, timeoutEscalation: timeoutEsc };
   }
 
   if (env.env) {
