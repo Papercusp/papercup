@@ -70,9 +70,9 @@ describe('set_url intent', () => {
     expect(window.location.search).toContain('ws=default');
   });
 
-  it('rejects a non-relative path (same-origin only — never a full URL)', async () => {
+  it('rejects a non-relative path (same-origin only — never a full URL)', () => {
     window.history.replaceState({}, '', '/admin');
-    await expect(call('set_url', { path: 'https://evil.example/x' })).rejects.toThrow(/path must start with/);
+    expect(() => call('set_url', { path: 'https://evil.example/x' })).toThrow(/path must start with/);
     expect(window.location.pathname).toBe('/admin'); // unchanged
   });
 
