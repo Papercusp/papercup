@@ -195,6 +195,38 @@ beforeAll(async () => {
       coord_owner_id text
     )
   `);
+  // EI-7227: resolveWorkspaceForHarness -> fill_workspace_id_from_projects
+  // (agent-tools/plans/source.ts) consults harness_shared.projects, then
+  // resolveWorkspaceForHarnessSlugIn (harness-core.ts) additionally consults
+  // harness_shared.harness_registry (a generic per-workspace JSONB blob,
+  // migration 025) — this test's minimal hand-curated schema had neither table,
+  // so plans:start failed with "relation ... does not exist". Also: this test's
+  // 'papercup' harness slug canonicalizes to 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES,
+  // the 2026-06-19 rename-compat shim) before resolution, and plans are Hive-scoped
+  // (must be a Hive home or belong to one) — so the registered slug must be
+  // 'papercusp' with harness_kind:'hive'.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.projects (
+      id text NOT NULL,
+      name text NOT NULL,
+      status text NOT NULL,
+      slug text,
+      workspace_id text NOT NULL
+    )
+  `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id) VALUES ('papercusp', 'papercusp', 'active', 'papercusp', '${WS}')`,
+  );
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.harness_registry (
+      workspace_id text NOT NULL,
+      payload jsonb NOT NULL,
+      updated_at bigint DEFAULT 0 NOT NULL
+    )
+  `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp","harness_kind":"hive"}]}'::jsonb)`,
+  );
   // The hive started/paused KV (hive/started.ts + overwatch control-state) —
   // the start path reads/writes it; baseline shape + workspace_id (mig 453,
   // every write stamps activeWorkspaceId()).
@@ -259,8 +291,10 @@ describe('the missing link, end to end (P-003)', () => {
     ];
     // The reaction ctx INHERITS the trigger's harness scope (buildReactionCtx),
     // which outranks the PAPERCUSP_HIVE_HOME_SLUG env fallback — the wake lands
-    // on the harness whose plan started.
-    expect(launchOpts.installSlug).toBe('papercup');
+    // on the harness whose plan started. EI-7227: 'papercup' canonicalizes to
+    // 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES, the 2026-06-19 rename-compat
+    // shim) by the time it reaches the launch.
+    expect(launchOpts.installSlug).toBe('papercusp');
     expect(launchOpts.kickoff).toContain('plans:start');
 
     // The started plan is visible to the woken Queen's survey store.

@@ -114,6 +114,13 @@ export const COLD_LOOP_WAKE_ADDENDUM = [
   '    loop:checkpoint { did, left, insight, next }   (compressed facts — what you did, what is left, the key',
   '    non-obvious insight, and the single next action). This is REQUIRED on a cold loop: with no carry-note the',
   '    loop silently stays warm (and grows unbounded); a stale note makes the next wake repeat work.',
+  'The carry-note is NOT the only thing to persist — it is LOST if your session dies, so also, before ending:',
+  '  • if you hold a work-item, REFRESH work_items:checkpoint { id, checkpoint } at least as often as the',
+  '    carry-note — the ITEM checkpoint is INHERITED by a successor/reclaimer when your session dies, while the',
+  '    loop-note is not; it is your real death-resilience anchor, not a nice-to-have.',
+  '  • if you reached a DURABLE conclusion this wake (a confirmed root cause / repro, a decision, a system bug),',
+  '    facts:assert it — a standing fact is folded VERBATIM into every future orient/brief, so the next cold wake',
+  '    (and every peer) starts already knowing it. A conclusion left only in the carry-note dies with the loop.',
 ].join('\n');
 
 /** Interpolate the default wakeup prompt with this loop's specifics. For a cold loop

@@ -140,6 +140,11 @@ export function renderColdWakeInjection(carryNote: string): string {
     'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —',
     'otherwise the next wake restarts from this same note:',
     '    loop:checkpoint { did, left, insight, next }   (compressed facts, not a transcript)',
+    'The carry-note dies with your session — so also persist what must OUTLIVE it:',
+    '  • holding a work-item? REFRESH work_items:checkpoint { id, checkpoint } — a successor/reclaimer INHERITS it',
+    '    if you die (the carry-note does not); refresh it at least as often as this note.',
+    '  • reached a durable conclusion (root cause, repro, decision, a bug worth filing)? facts:assert it — it is',
+    '    folded into every future orient, so the next wake and every peer start already knowing it.',
     'If the goal is DONE or you are blocked, call loop:end instead of leaving the loop spinning.',
   ].join('\n');
 }

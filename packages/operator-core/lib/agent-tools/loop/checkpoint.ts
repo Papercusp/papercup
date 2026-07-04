@@ -44,8 +44,11 @@ export default defineTool({
       "A WARM loop (carry:'warm', the default) carries its live transcript across wakes and needs no carry-note. " +
       'Not for work-item state — that is work_items:checkpoint.',
     chaining:
-      "loop:checkpoint { did, left, insight, next } as the last step before ending a cold-loop turn. " +
-      "Pass { note:'' } to clear a stale note.",
+      "loop:checkpoint { did, left, insight, next } as the last step before ending a cold-loop turn — but it is " +
+      'NOT the only continuity write, and it is the WEAKEST for death-resilience: the carry-note is LOST if your ' +
+      'session dies. So if you hold a work-item also refresh work_items:checkpoint { id, checkpoint } (a successor ' +
+      'INHERITS it), and facts:assert any durable conclusion you reached (folded VERBATIM into every future ' +
+      "orient/brief). Pass { note:'' } to clear a stale note.",
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
