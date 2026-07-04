@@ -56,6 +56,13 @@ import {
   type CodexCliRunOpts,
   type CodexCliRunResult,
 } from './codex-cli-bridge';
+import {
+  buildCodexUpstreamHeaders,
+  codexBackendUrl,
+  refreshCodexToken,
+  resolveCodexAccessToken,
+  type CodexAuth,
+} from './codex-oauth-proxy';
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { egressEntries } from '../deployment/account-pool';
 import { egressCacheKey, egressIsHttpProxy, egressIsSocks5Proxy } from './egress-dispatcher';
@@ -562,6 +569,10 @@ export interface GatewayDeps {
   codexCliAccounts?: () => CodexCliAccount[];
   /** Test seam: the codex-CLI completion runner (default runCodexCliCompletion). */
   codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
+  /** codex-gateway-oauth-proxy-2026-07-04 (WI-2198): when true, a codex-cli account serves a
+   *  STREAMING /v1/responses by OAuth-reverse-proxying to the ChatGPT backend (codex-oauth-proxy.ts)
+   *  instead of the one-shot exec bridge. Flag-resolved at the launch layer; default false. */
+  codexOAuthProxy?: boolean;
   /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
   upstreamBase?: string;
   /** OpenAI-compatible upstream base URL. Default `https://api.openai.com`. */
@@ -1115,6 +1126,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // ChatGPT-subscription bridge (codex-cli-bridge.ts): CLI-served codex accounts + the runner.
   const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
+  // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
+  const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
   const isCodexCliAccountId = (accountId: string) => codexCliAccounts().some((a) => a.accountId === accountId);
   const codexQueue = new PriorityAdmissionQueue({
     maxConcurrent: codexConcurrency,
@@ -3380,22 +3393,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  account (codex-cli-bridge.ts). Non-streaming only; runs INSIDE the codex admission
    *  queue (same slot accounting as the bearer path), so concurrent CLI spawns are bounded
    *  by codexConcurrency. */
-  async function serveCodexCliBridge(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount) {
+  async function serveCodexCliBridge(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount, preBody?: Buffer) {
     totalRequests++;
     codexRequests++;
     let bodyBuf: Buffer;
-    try {
-      bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
-    } catch {
+    if (preBody) {
+      bodyBuf = preBody; // already-read body (the OAuth-proxy path hands off a non-streaming request here)
+    } else {
       try {
-        req.destroy();
+        bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
       } catch {
-        /* already torn down */
+        try {
+          req.destroy();
+        } catch {
+          /* already torn down */
+        }
+        if (!res.headersSent) {
+          sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex-cli request body read stalled; retry shortly' }, gateway: true });
+        }
+        return;
       }
-      if (!res.headersSent) {
-        sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex-cli request body read stalled; retry shortly' }, gateway: true });
-      }
-      return;
     }
     let body: { model?: unknown; input?: unknown; instructions?: unknown; stream?: unknown } = {};
     try {
@@ -3444,6 +3461,137 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
+  /** codex-gateway-oauth-proxy-2026-07-04 (WI-2198): serve one `/v1/responses` for a
+   *  ChatGPT-SUBSCRIPTION codex-cli account as a TRANSPARENT STREAMING reverse-proxy to the
+   *  ChatGPT backend (codex-oauth-proxy.ts) — the OAuth bearer from ~/.codex/auth.json is
+   *  injected, the SSE streams straight back, and the token is refreshed once on a 401.
+   *  A NON-streaming request (the in-process scout/judge callers) is handed to the exec
+   *  bridge unchanged, so only the streaming FLEET path is new. Runs inside the codex
+   *  admission slot (same accounting as the bearer path). */
+  async function serveCodexOAuthProxy(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount, url: string) {
+    let bodyBuf: Buffer;
+    try {
+      bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
+    } catch {
+      try { req.destroy(); } catch { /* already torn down */ }
+      if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex request body read stalled; retry shortly' }, gateway: true });
+      return;
+    }
+    // Non-streaming (scout/judge) → exec bridge, byte-identical to flag-OFF. Only stream:true
+    // (the fleet CLI agents) takes the OAuth proxy path below.
+    let wantStream = false;
+    if (bodyBuf.length) {
+      try { wantStream = (JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean }).stream === true; } catch { /* non-JSON — treat as non-stream */ }
+    }
+    if (!wantStream) {
+      await serveCodexCliBridge(req, res, cli, bodyBuf);
+      return;
+    }
+    totalRequests++;
+    codexRequests++;
+
+    const reqAbort = new AbortController();
+    const abortRequest = (reason: string) => { if (!reqAbort.signal.aborted) reqAbort.abort(new Error(reason)); };
+    const onReqAborted = () => abortRequest('codex downstream request aborted');
+    const onResClose = () => abortRequest('codex downstream response closed');
+    req.once('aborted', onReqAborted);
+    res.once('close', onResClose);
+    res.setTimeout(downstreamIdleMs, () => res.destroy());
+    const ceilingTimer = setTimeout(() => {
+      abortRequest(`codex request ceiling: ${requestCeilingMs}ms`);
+      try { req.destroy(); } catch { /* torn down */ }
+      try { res.destroy(); } catch { /* torn down */ }
+    }, requestCeilingMs);
+    ceilingTimer.unref?.();
+
+    try {
+      let auth: CodexAuth;
+      try {
+        auth = await withDeadline(resolveCodexAccessToken(cli.home), tokenTimeoutMs, `codex oauth token '${cli.accountId}'`);
+      } catch (e) {
+        codexUpstreamErrors++;
+        log('error', `inference-gateway: codex OAuth token resolve failed on '${cli.accountId}': ${(e as Error).message}`);
+        if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: codex OAuth token unavailable for '${cli.accountId}'` }, gateway: true }, { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+        return;
+      }
+
+      // Base headers from the codex CLI request, minus hop-by-hop/auth/host (STRIP_REQUEST).
+      const baseHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
+        baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+      }
+      const upstreamUrl = codexBackendUrl(url);
+
+      // One attempt; a 401 triggers a single token refresh + retry (the token expired between
+      // the proactive check and the call, or was rotated by a peer).
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const ac = new AbortController();
+        const onAbort = () => ac.abort(reqAbort.signal.reason instanceof Error ? reqAbort.signal.reason : new Error('codex request aborted'));
+        if (reqAbort.signal.aborted) onAbort();
+        else reqAbort.signal.addEventListener('abort', onAbort, { once: true });
+        let stallTimer: ReturnType<typeof setTimeout> | undefined;
+        const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = undefined; } };
+        const armStall = (ms: number) => { clearStall(); stallTimer = setTimeout(() => ac.abort(new Error(`codex upstream stall: no activity for ${ms}ms`)), ms); stallTimer.unref?.(); };
+        const detach = () => { reqAbort.signal.removeEventListener('abort', onAbort); clearStall(); };
+
+        const headers = buildCodexUpstreamHeaders({ base: baseHeaders, accessToken: auth.accessToken, accountId: auth.accountId });
+        let up: Response;
+        try {
+          armStall(upstreamStreamHeadersTimeoutMs); // SHORT TTFB — this is always a stream
+          up = await doFetch(upstreamUrl, { method: req.method ?? 'POST', headers, body: new Uint8Array(bodyBuf), signal: ac.signal } as RequestInit);
+          armStall(upstreamBodyIdleTimeoutMs);
+        } catch (e) {
+          detach();
+          codexUpstreamErrors++;
+          if (!res.headersSent) sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex OAuth upstream failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+          else res.destroy();
+          return;
+        }
+
+        // 401 → refresh the token ONCE and retry (before any bytes are written).
+        if (up.status === 401 && attempt === 0) {
+          detach();
+          try { await up.body?.cancel(); } catch { /* drain */ }
+          try {
+            auth = await withDeadline(refreshCodexToken(cli.home, auth), tokenTimeoutMs, `codex oauth refresh '${cli.accountId}'`);
+            continue;
+          } catch (e) {
+            codexUpstreamErrors++;
+            log('error', `inference-gateway: codex OAuth refresh failed on '${cli.accountId}': ${(e as Error).message}`);
+            if (!res.headersSent) sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex OAuth token refresh failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+            return;
+          }
+        }
+        if (up.status === 429) codexUpstream429++;
+        else if (up.ok) aimd.recordSuccess();
+
+        const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
+        up.headers.forEach((v, k) => { if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v; });
+        res.writeHead(up.status, outHeaders);
+        if (!up.body) { detach(); res.end(); return; }
+        const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+        nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+        nodeStream.pipe(res);
+        await new Promise<void>((resolve) => {
+          res.on('finish', () => resolve());
+          res.on('close', () => resolve());
+          res.on('error', () => resolve());
+          nodeStream.on('error', () => { res.destroy(); resolve(); });
+          const tearDown = () => { try { nodeStream.destroy(); } catch { /* torn down */ } try { res.destroy(); } catch { /* torn down */ } resolve(); };
+          if (ac.signal.aborted) tearDown();
+          else ac.signal.addEventListener('abort', tearDown, { once: true });
+        });
+        detach();
+        return;
+      }
+    } finally {
+      clearTimeout(ceilingTimer);
+      req.off('aborted', onReqAborted);
+      res.off('close', onResClose);
+    }
+  }
+
   async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
     const adapter = providerAdapters.codex;
     const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
@@ -3486,7 +3634,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     if (cli) {
-      await serveCodexCliBridge(req, res, cli);
+      if (codexOAuthProxyEnabled) await serveCodexOAuthProxy(req, res, cli, url);
+      else await serveCodexCliBridge(req, res, cli);
       return;
     }
 

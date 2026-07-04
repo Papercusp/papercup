@@ -1115,6 +1115,16 @@ export const FLAGS = {
   // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
   // ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
   GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
+  // codex-gateway-oauth-proxy-2026-07-04 (WI-2198, owner-chosen Option B): gates the
+  // codex ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
+  // codex-cli account's native Responses request to chatgpt.com/backend-api/codex with
+  // the OAuth bearer injected from ~/.codex/auth.json (vs the one-shot `codex exec`
+  // bridge that rejects stream:true). DEFAULT OFF — reversible CUTOVER kill-switch: it
+  // routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport that
+  // can only be verified by an owner-attended live canary against production ChatGPT;
+  // direct native auth (the current fleet path) is the fallback. KNOWN_DARK_FLAGS.
+  // OFF ⇒ codex-cli accounts keep the exec bridge (stream:false only).
+  CODEX_GATEWAY_OAUTH_PROXY: "papercusp-codex-gateway-oauth-proxy",
   // queen-capacity-aware-dispatch-2026-06-22: gates the Queen's capacity-aware
   // dispatch (placement keyed on live fleet capacity). DEFAULT OFF — the
   // implementation is in-flight; flips ON at rollout after the :3170 verify.
@@ -1304,6 +1314,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // incomplete — the code is not fully working / unverified on a path that matters
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],
+    [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     // PER_HIVE_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when

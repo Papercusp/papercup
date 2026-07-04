@@ -24,7 +24,15 @@ export function registerBuiltInIntents(): void {
     (args) => {
       const params = (args.params as Record<string, string | null> | undefined) ?? {};
       const mode = (args.mode as 'merge' | 'replace' | undefined) ?? 'merge';
+      // Optional pathname navigation (P-018 GUI tab-tour): `path: '/adv'`
+      // switches the route while params merge as usual. Same-origin only —
+      // a relative path, never a full URL.
+      const path = args.path as string | undefined;
       const u = new URL(window.location.href);
+      if (path !== undefined) {
+        if (!path.startsWith('/')) throw new Error(`set_url: path must start with '/' (got ${JSON.stringify(path)})`);
+        u.pathname = path;
+      }
       if (mode === 'replace') {
         for (const k of Array.from(u.searchParams.keys())) u.searchParams.delete(k);
       }

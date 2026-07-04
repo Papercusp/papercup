@@ -29,7 +29,7 @@
  */
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { cpus, freemem, homedir, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -120,6 +120,32 @@ export function shouldRestart(idleSec, schedSec, freezeSilenceS = FREEZE_SILENCE
   return true; // fires stale AND scheduler also stale (or unreadable) ⇒ genuine freeze
 }
 
+function hostPressureSnapshot() {
+  const cores = Math.max(1, cpus().length || 1);
+  const load1 = loadavg()[0] || 0;
+  const availableBytes = freemem();
+  const totalBytes = totalmem();
+  const loadPerCore = load1 / cores;
+  const availableRatio = totalBytes > 0 ? availableBytes / totalBytes : 0;
+  return {
+    cores,
+    load1,
+    loadPerCore,
+    availableRatio,
+    hasHeadroom: loadPerCore < 0.85 && availableRatio > 0.10,
+  };
+}
+
+export function circuitOpenMessage(reason, restartCount, cap, snapshot = hostPressureSnapshot()) {
+  const host = snapshot
+    ? ` Host snapshot: load1 ${snapshot.load1.toFixed(2)}/${snapshot.cores} cores (${snapshot.loadPerCore.toFixed(2)}/core), memory available ${Math.round(snapshot.availableRatio * 100)}%.`
+    : '';
+  const diagnosis = snapshot?.hasHeadroom
+    ? 'Host has headroom; treat this as a bg-host ticker/event-loop/DBOS stall, not a fleet-wide load problem.'
+    : 'Host pressure may be contributing; verify CPU/memory before shedding fleet load.';
+  return `CIRCUIT OPEN: ${restartCount} restarts in the last hour >= cap ${cap} — NOT restarting (${reason}).${host} ${diagnosis} Investigate papercup-bg-host internals; do not use blanket load reduction as the remediation.`;
+}
+
 /** Read DATABASE_URL out of a process's /proc/<pid>/environ (same-user readable). The bg-host's ACTUAL
  *  running value — robust against .env.local not defining it literally (it doesn't on this box). */
 function readProcEnvUrl(pid, readFile = readFileSync) {
@@ -176,7 +202,7 @@ function restart(reason) {
   }
   while (restartTimes.length && now - restartTimes[0] > 3_600_000) restartTimes.shift();
   if (restartTimes.length >= MAX_RESTARTS_PER_HR) {
-    log(`CIRCUIT OPEN: ${restartTimes.length} restarts in the last hour >= cap ${MAX_RESTARTS_PER_HR} — NOT restarting (${reason}). The box is thrashing; needs human attention (reduce load).`);
+    log(circuitOpenMessage(reason, restartTimes.length, MAX_RESTARTS_PER_HR));
     return;
   }
   lastRestart = now;

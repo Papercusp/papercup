@@ -7,8 +7,14 @@ let parseIdleSec: (s: unknown) => number | null;
 let isFrozen: (idleSec: number | null | undefined, freezeSilenceS?: number) => boolean;
 let resolveDbUrl: (readFile?: (p: string, enc: string) => string) => string | null;
 let shouldRestart: (idleSec: number | null, schedSec: number | null, freezeSilenceS?: number) => boolean;
+let circuitOpenMessage: (
+  reason: string,
+  restartCount: number,
+  cap: number,
+  snapshot?: { cores: number; load1: number; loadPerCore: number; availableRatio: number; hasHeadroom: boolean } | null,
+) => string;
 beforeAll(async () => {
-  ({ parseIdleSec, isFrozen, resolveDbUrl, shouldRestart } = await import('../bghost-watchdog.mjs'));
+  ({ parseIdleSec, isFrozen, resolveDbUrl, shouldRestart, circuitOpenMessage } = await import('../bghost-watchdog.mjs'));
 });
 
 /**
@@ -114,6 +120,23 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
         }),
       ).toBeNull();
       restore(s);
+    });
+  });
+
+  describe('circuitOpenMessage — EI-4027 diagnosis', () => {
+    it('does not misdiagnose a headroom host as fleet load/thrashing', () => {
+      const message = circuitOpenMessage('ticker genuinely frozen', 8, 8, {
+        cores: 128,
+        load1: 25,
+        loadPerCore: 25 / 128,
+        availableRatio: 0.35,
+        hasHeadroom: true,
+      });
+
+      expect(message).toContain('Host has headroom');
+      expect(message).toContain('bg-host ticker/event-loop/DBOS stall');
+      expect(message).toContain('ticker genuinely frozen');
+      expect(message).not.toMatch(/thrashing|reduce load/i);
     });
   });
 });

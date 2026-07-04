@@ -468,9 +468,29 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     );
   }
 
+  // codex-gateway-oauth-proxy-2026-07-04 (WI-2198): flag-gated. ON ⇒ a codex-cli
+  // (ChatGPT-subscription) account serves a STREAMING /v1/responses via the OAuth
+  // reverse-proxy (codex-oauth-proxy.ts) to chatgpt.com/backend-api/codex instead of
+  // the one-shot exec bridge. Fail-safe: a flag read fault ⇒ OFF (exec bridge,
+  // byte-identical to today). Resolved at the launch layer so unit tests default it off.
+  const codexOAuthProxy = await (async () => {
+    try {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      return await getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system');
+    } catch (e) {
+      log('warn', `inference-gateway: codex-oauth-proxy flag read failed (${(e as Error).message}) — exec bridge`);
+      return false;
+    }
+  })();
+  if (codexOAuthProxy) {
+    log('info', 'inference-gateway: codex OAuth streaming proxy ON — codex-cli accounts stream via the ChatGPT backend');
+  }
+
   const gateway = createInferenceGateway({
     pool,
     codexPool,
+    codexOAuthProxy,
     // Getter (not a snapshot) so a reloadPool() that adds/removes a codex-cli account
     // applies to the very next /v1/responses request without a gateway restart.
     codexCliAccounts: () => cliAccountsOf(codexAccounts),

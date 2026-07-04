@@ -576,6 +576,40 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     it('is silent with no rows', () => {
       expect(ceilingJamSignalsFromRows([], opts)).toEqual([]);
     });
+
+    // EI-7215: in-process loopback launches (durable-spawn workers, launch-* blueprints,
+    // Queen/overwatch wakes) NEVER populate last_output_at — so the stream-recency proxy
+    // is inapplicable and they must be EXCLUDED, else every live one reads as a stale debit.
+    it('does NOT fire on a fleet of live in-process launches (the EI-7215 false positive)', () => {
+      // A healthy fleet: durable-spawn implement workers + a launch-* doc-steward,
+      // all old, none streaming (they structurally never do). This is exactly the
+      // state that fired a false-positive critical before the fix.
+      const rows = [
+        { spawn_id: 'durable-spawn:implement:EI-6743:1', harness_slug: 'papercup', started_at: minsAgo(60), last_output_at: null, run_id: 'implement:EI-6743:1' },
+        { spawn_id: 'durable-spawn:implement:EI-6966:1', harness_slug: 'papercup', started_at: minsAgo(45), last_output_at: null, run_id: 'implement:EI-6966:1' },
+        { spawn_id: 'durable-spawn:implement:EI-7204:1', harness_slug: 'papercup', started_at: minsAgo(30), last_output_at: null, run_id: 'implement:EI-7204:1' },
+        { spawn_id: 's-doc-steward-1', harness_slug: 'papercup', started_at: minsAgo(20), last_output_at: null, run_id: 'launch-1783137290156-c0e6f1' },
+      ];
+      expect(ceilingJamSignalsFromRows(rows, opts)).toEqual([]);
+    });
+
+    it('still fires on a genuine bee-spawn jam while ignoring co-running in-process launches', () => {
+      // 4 real invoke-once bee spawns, old + never streamed → a genuine jam,
+      // PLUS 3 live in-process launches that must NOT be counted (neither as
+      // running, streamers, nor jammed).
+      const rows = [
+        ...Array.from({ length: 4 }, (_, i) => ({ spawn_id: `s-bee-${i}`, harness_slug: 'papercup', started_at: minsAgo(60), last_output_at: null as string | null, run_id: `bee-run-${i}` })),
+        ...Array.from({ length: 3 }, (_, i) => ({ spawn_id: `durable-spawn:implement:EI-${i}:1`, harness_slug: 'papercup', started_at: minsAgo(60), last_output_at: null as string | null, run_id: `implement:EI-${i}:1` })),
+      ];
+      const signals = ceilingJamSignalsFromRows(rows, opts);
+      expect(signals).toHaveLength(1);
+      expect(signals[0].source).toBe('spawn-ceiling-jam');
+      // Body reports the 4 EVALUABLE bee rows as running, not all 7.
+      expect(signals[0].body).toContain('4 spawned_agents row(s)');
+      expect(signals[0].body).toContain('s-bee-0');
+      // The in-process launches are never named as jammed.
+      expect(signals[0].body).not.toContain('durable-spawn');
+    });
   });
 
   it('escalation-spike: silent below threshold, ONE signal with per-harness breakdown at/above it', () => {

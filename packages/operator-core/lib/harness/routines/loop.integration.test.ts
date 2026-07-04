@@ -177,6 +177,38 @@ describe('loop surface round-trip (real PG)', () => {
     expect(await deactivateLoop('su-nobody', { sql })).toBe(false);
   });
 
+  it('EI-3748: deactivateLoop clears a stale last_error stamp — the routine can no longer fire, so a residual error is moot', async () => {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+    // Simulate what dbos-executor-reaper.ts stamps on a stuck-fire auto-requeue.
+    await sql`
+      UPDATE harness_shared.routines
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'last_error', 'DBOS routineFire produced no DBOS operation output',
+               'last_error_at', now()::text,
+               'last_error_source', 'dbos-executor-reaper'
+             )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const before = await sql<Array<{ metadata: Record<string, unknown> }>>`
+      SELECT metadata FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}`;
+    expect(before[0]!.metadata.last_error).toBeTruthy();
+
+    expect(await deactivateLoop(OWNER, { sql })).toBe(true);
+
+    const after = await sql<Array<{ metadata: Record<string, unknown> }>>`
+      SELECT metadata FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}`;
+    expect(after[0]!.metadata.last_error).toBeUndefined();
+    expect(after[0]!.metadata.last_error_at).toBeUndefined();
+    expect(after[0]!.metadata.last_error_source).toBeUndefined();
+  });
+
   it('omits costCapCents from payload_template (and status) when no cap given', async () => {
     await materializeLoop({
       workspaceId: WS,
