@@ -1133,10 +1133,12 @@ async function finishUp(base, script, args, skipFinale = false) {
     ok(bold("That's the tour.")) +
       ' Start an agent session any time with ' +
       bold('psu') +
-      ', and re-open this tutorial from the ' +
-      bold('Papercusp Tutorial') +
-      ' icon or ' +
+      ', and re-open this any time from the ' +
+      bold('Papercusp Tutorial & Setup') +
+      ' icon, or ' +
       bold('papercusp tutorial') +
+      ' / ' +
+      bold('papercusp setup') +
       '.',
   );
 }

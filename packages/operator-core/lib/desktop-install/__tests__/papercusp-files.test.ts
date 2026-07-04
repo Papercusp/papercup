@@ -143,10 +143,11 @@ describe('installPapercuspFiles', () => {
     expect(result.papercuspCliPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'papercusp'));
     const cli = await fs.readFile(result.papercuspCliPath, 'utf8');
     expect(cli).toMatch(/^#!\/usr\/bin\/env bash\n/);
-    // `setup` is the primary name; `onboard` a back-compat alias — both run the concierge.
-    expect(cli).toContain(`setup)    shift; exec "node" ${JSON.stringify(launcher)} "$@" ;;`);
-    expect(cli).toContain(`onboard)  shift; exec "node" ${JSON.stringify(launcher)} "$@" ;;`);
+    // `setup` + `tutorial` open the unified shell on their tab (#4); `onboard` is the
+    // back-compat linear concierge.
+    expect(cli).toContain(`setup)    shift; exec "node" ${JSON.stringify(launcher)} --tab=setup "$@" ;;`);
     expect(cli).toContain(`tutorial) shift; exec "node" ${JSON.stringify(launcher)} --tutorial "$@" ;;`);
+    expect(cli).toContain(`onboard)  shift; exec "node" ${JSON.stringify(launcher)} "$@" ;;`);
     expect(cli).toContain('usage: papercusp <setup|tutorial>');
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
   });

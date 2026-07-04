@@ -191,8 +191,9 @@ async function main() {
       case 'done': {
         say(
           'This machine is already set up — onboarding is complete. ' +
-            `Start an agent session any time with ${bold('psu')}, or re-run the tutorial ` +
-            `via the Papercusp Tutorial icon or ${bold('papercusp tutorial')}.`,
+            `Start an agent session any time with ${bold('psu')}, or re-open the ` +
+            `${bold('Papercusp Tutorial & Setup')} icon (also ${bold('papercusp tutorial')} / ` +
+            `${bold('papercusp setup')}).`,
         );
         return 0;
       }
