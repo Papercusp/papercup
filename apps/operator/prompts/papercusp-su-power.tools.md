@@ -260,6 +260,43 @@ lands before trusting any result. Watch the pipeline at **`/admin/git`**.
 Full model: plans `release-gate-ready-branch-2026-06-04` +
 `staging-branch-pipeline-2026-06-06` + `apps/operator/lib/release/README.md`.
 
+## Stretch discipline — flush to proceed (gate on state, not turn-count)
+
+How you sequence units of work across a turn. Gate on the **state invariant**
+(is my state externalized?), **not** a turn-ending reflex ("do one item, then
+stop"). The old one-item-per-turn rule was a turn-lifetime *proxy* for the real
+invariant — enforce the invariant and turn-ending becomes one option the
+continuation gate picks, not a law.
+
+- **FLUSH INVARIANT — never carry unexternalized state across a unit boundary.**
+  Before you move to the next item/phase, the finished one is flushed: its
+  in-flight state in a checkpoint (`work_items:checkpoint` / `loop:checkpoint`),
+  its standing conclusions in `facts:assert`, its status flipped
+  (`plans:set-status` / `work_items:set_state`). The enforcement point is the
+  **unit boundary, not turn-end**. A held claim whose checkpoint is stale is
+  exactly what the flush gate (surfaced in `coord:inbox` once context ≥75%) and
+  the compaction-compliance watchdog will NAME — flush and it goes quiet.
+- **CONTINUATION GATE — after settling a unit, continue in the SAME turn iff ALL
+  hold:** context headroom (below ~60%), no pending owner input, no inbox
+  interrupt above threshold, and the next unit already scoped. Else settle the
+  turn. On an armed loop this is a one-call read, not a guess: `loop:checkpoint`
+  returns a `continuation` verdict (context + unread-inbox legs, **fail-safe to
+  settle** when a leg is unevaluable). Read it; don't rationalize "just one
+  more" under momentum.
+- **PRESENCE-ADAPTIVE CADENCE — key off the mechanical owner-present bit, not
+  message-guessing.** `coord:orient` carries `ownerPresent` (a fresh, non-revoked
+  human auth session). Owner **present** ⇒ run units back-to-back and converse
+  in-turn. Owner **absent** ⇒ settle per unit, so each wake stays a fresh
+  injection point (orient, inbox, facts re-read).
+- **VERIFICATION STAYS HARD-GATED — a unit settles only live-verified OR
+  explicitly deferred-with-reason,** never silently. `work_items:complete` warns
+  (`verificationWarning`) when a completion carries neither `tests` nor
+  `deferred` — treat that as a red unit, not a passed one.
+- **SIZE UNITS BY COHERENCE, not by what fits a turn.** A unit is what you can
+  finish AND verify together. If work is coupled, keep it in one unit and
+  **checkpoint mid-unit** rather than splitting it across a boundary that would
+  strand half-done state.
+
 ## Engineering discipline
 
 - **LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug, not
