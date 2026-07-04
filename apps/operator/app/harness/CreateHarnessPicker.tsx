@@ -262,7 +262,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
       if (hive) {
         toast.success(`${t('pot')} '${data.project.slug}' added to ${hive} at ${data.project.path}`);
       } else {
-        toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`, {
+        toast.success(`${hiveLabel} '${data.project.slug}' created — the ${t('brain')} is provisioning its fleet.`, {
           // learning-packs P-006: tell the user the hive starts with default
           // learnings + where to edit them (the Learning tab's Learnings view).
           description:
@@ -318,15 +318,15 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
           <span style={{ marginRight: 6 }}>{isWork ? '📋' : '👑'}</span>
           {isWork ? (
             <>
-              Stands up a fresh folder as a new <strong style={{ color: 'var(--fg)' }}>work</strong> {hiveLower} home — a
-              Queen that decomposes non-coding work (research, writing, ops) by topic, places it onto a fleet of bees,
-              and judges deliverables against a rubric. No repository or test suite required.
+              Stands up a fresh folder as a new <strong style={{ color: 'var(--fg)' }}>work</strong> {hiveLower} home — a{' '}
+              {t('brain')} that decomposes non-coding work (research, writing, ops) by topic, places it onto a fleet of{' '}
+              {t('contributor', { plural: true, lower: true })}, and judges deliverables against a rubric. No repository or test suite required.
             </>
           ) : (
             <>
               Stands up a fresh folder as a new {hiveLower} home running the{' '}
-              <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that surveys the work
-              frontier and places it onto a fleet of bees. You can add members into it afterward.
+              <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a {t('brain')} that surveys the work
+              frontier and places it onto a fleet of {t('contributor', { plural: true, lower: true })}. You can add members into it afterward.
             </>
           )}
         </div>
