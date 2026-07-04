@@ -27,7 +27,7 @@
  * guard below). See GitSyncStepRunner for the replay-safety contract.
  */
 import { spawn } from 'node:child_process';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
@@ -327,6 +327,80 @@ export function addFailureStrayPaths(output: string): string[] {
   return [...new Set(out)];
 }
 
+/** The `git add`/`git commit` fatal for a held index lock ("Unable to create
+ *  '….git/index.lock': File exists"). Exported for unit testing (a git wording
+ *  change must fail a test, not silently disable the self-heal below). */
+export function isIndexLockFailure(output: string): boolean {
+  return /Unable to create '[^']*index\.lock': File exists/i.test(output);
+}
+
+/** A lock YOUNGER than this is treated as live contention (git rewrites the lock
+ *  file as it builds the new index, so an in-flight writer keeps the mtime fresh);
+ *  older = the writer is dead and the lock is an orphan. git-sync ticks run ~2min
+ *  apart, so a real writer is never this old between ticks. */
+export const STALE_INDEX_LOCK_MS = 90_000;
+
+/**
+ * STALE-LOCK SELF-HEAL (2026-07-04): a git process killed mid-`add -A` leaves
+ * `.git/index.lock` behind, and every subsequent tick then fails with the same
+ * "File exists" fatal — FOREVER, until a human deletes the file (observed live:
+ * 3 consecutive failed ticks + a fleet-wide alert for a 6.8MB orphaned lock).
+ * This clears the lock ONLY when it is provably stale (mtime older than
+ * `staleMs` — an active writer keeps it fresh), so a live racing git process is
+ * never robbed of its lock; a fresh-lock failure stays an error and the NEXT
+ * tick (by which time the orphan has aged past the threshold) heals it. Resolves
+ * the git dir via `rev-parse --absolute-git-dir` so submodules (whose `.git` is
+ * a file, not a dir) work too. Returns true when the caller should retry.
+ */
+export async function clearStaleIndexLock(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: {
+    statMtimeMs?: (p: string) => Promise<number | null>;
+    unlinkFile?: (p: string) => Promise<void>;
+    now?: () => number;
+    staleMs?: number;
+  } = {},
+): Promise<boolean> {
+  const statMtimeMs =
+    deps.statMtimeMs ??
+    (async (p: string) => {
+      try {
+        return (await lstat(p)).mtimeMs;
+      } catch {
+        return null;
+      }
+    });
+  const unlinkFile = deps.unlinkFile ?? unlink;
+  const now = deps.now ?? Date.now;
+  const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
+  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  if (gd.code !== 0) return false;
+  const lockPath = join(gd.stdout.trim(), 'index.lock');
+  const mtime = await statMtimeMs(lockPath);
+  if (mtime === null) return true; // already gone (holder finished/cleaned up) — just retry
+  const ageMs = now() - mtime;
+  if (ageMs < staleMs) {
+    log(
+      `[git-sync] ${repoPath}: index.lock is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it; this tick fails and the next one self-heals if the writer died`,
+    );
+    return false;
+  }
+  try {
+    await unlinkFile(lockPath);
+  } catch (e) {
+    log(
+      `[git-sync] ${repoPath}: could not unlink stale index.lock: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return false;
+  }
+  log(
+    `[git-sync] ${repoPath}: cleared STALE index.lock (${Math.round(ageMs / 1000)}s old — its writer is dead) and retrying (previously: every tick failed until a human removed it)`,
+  );
+  return true;
+}
+
 /**
  * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
  * reads the live submodule tree (`git submodule status --recursive`), never a
@@ -586,6 +660,13 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           `[git-sync] ${repoPath}: 'git add -A' FAILED on embedded/uncommitted repo(s) [${stray.join(', ')}] — excluding + retrying so the rest of the tree still commits (previously: silent strand)`,
         );
         addRes = await runGit(buildAddArgs(stray), repoPath);
+      }
+      // STALE-LOCK SELF-HEAL (2026-07-04): a dead git process's orphaned index.lock
+      // otherwise fails EVERY tick until a human clears it. Provably-stale only —
+      // see clearStaleIndexLock.
+      if (addRes.code !== 0 && isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`)) {
+        const cleared = await clearStaleIndexLock(runGit, repoPath, o.log);
+        if (cleared) addRes = await runGit(buildAddArgs(stray), repoPath);
       }
       if (addRes.code !== 0) {
         return {

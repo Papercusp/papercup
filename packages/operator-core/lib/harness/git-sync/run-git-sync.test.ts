@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGitSync, addFailureStrayPaths, discoverSubmodulesRecursive, type RunGit } from './run-git-sync';
+import {
+  runGitSync,
+  addFailureStrayPaths,
+  discoverSubmodulesRecursive,
+  isIndexLockFailure,
+  clearStaleIndexLock,
+  type RunGit,
+} from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
