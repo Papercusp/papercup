@@ -75,6 +75,7 @@ import {
   recordFire as defaultRecordFire,
   readFireState as defaultReadFireState,
   circuitThreshold as defaultCircuitThreshold,
+  LOOP_TERMINAL_AUTO_PAUSE_STATUS,
 } from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
 import { checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard } from './loop-unreachable-guard';
@@ -441,7 +442,7 @@ export async function reconcileLoopRoutines(
               reason: guard.reason ?? 'unreachable dead-owner loop',
             });
             await runWithWorkspace(row.routine_workspace_id, () =>
-              recordFire(row.install_slug, row.name, 'loop-terminal-unreachable', 'error'),
+              recordFire(row.install_slug, row.name, LOOP_TERMINAL_AUTO_PAUSE_STATUS, 'error'),
             ).catch((e) =>
               console.warn(
                 `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,

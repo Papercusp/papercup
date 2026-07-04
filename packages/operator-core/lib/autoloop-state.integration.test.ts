@@ -35,8 +35,15 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const { recordFire, readFireState, checkFireGate, resetFireErrors, getAutoLoopState, pruneStaleFireState } =
-  await import('./autoloop');
+const {
+  recordFire,
+  readFireState,
+  checkFireGate,
+  resetFireErrors,
+  getAutoLoopState,
+  pruneStaleFireState,
+  LOOP_TERMINAL_AUTO_PAUSE_STATUS,
+} = await import('./autoloop');
 
 let rootSql: postgres.Sql;
 let dbName: string;
@@ -64,6 +71,17 @@ beforeAll(async () => {
       consecutive_errors integer DEFAULT 0 NOT NULL,
       workspace_id text DEFAULT '' NOT NULL,
       CONSTRAINT autoloop_state_pkey PRIMARY KEY (workspace_id, harness_slug, role)
+    )
+  `);
+  // Minimal harness_shared.routines shape (EI-7009): only the columns pruneStaleFireState's
+  // second (EI-7009) prune class JOINs against — id/install_slug/name/active/workspace_id.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.routines (
+      id text PRIMARY KEY,
+      install_slug text NOT NULL,
+      name text NOT NULL,
+      active boolean DEFAULT true NOT NULL,
+      workspace_id text NOT NULL
     )
   `);
   h.sql = rootSql;
@@ -154,5 +172,64 @@ describe('pruneStaleFireState hygiene (autonomous-loop-hardening F6)', () => {
     expect(n).toBeGreaterThanOrEqual(1);
     const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state WHERE workspace_id = ${OTHER}`;
     expect(left.length).toBe(0);
+  });
+
+  describe('EI-7009: auto-paused loop:arm terminal watermark', () => {
+    it('retires a recent, error-carrying row whose matching routine is auto-paused (active=false)', async () => {
+      const PW = 'ws-prune-term';
+      await rootSql`INSERT INTO harness_shared.routines (id, install_slug, name, active, workspace_id)
+          VALUES ('r-dead', '*', 'loop-su-gone', false, ${PW})`;
+      // Recent + error-carrying: class 1 (age+zero-error) would NOT catch this row —
+      // it must be retired ONLY by the EI-7009 terminal-marker class.
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-su-gone', now(), ${LOOP_TERMINAL_AUTO_PAUSE_STATUS}, 7, ${PW})`;
+
+      const n = await pruneStaleFireState({ maxAgeDays: 7 });
+      expect(n).toBeGreaterThanOrEqual(1);
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND harness_slug = '*' AND role = 'loop-su-gone'`;
+      expect(left.length).toBe(0);
+    });
+
+    it('does NOT touch a row with the SAME terminal marker whose routine is still active', async () => {
+      const PW = 'ws-prune-term-active';
+      await rootSql`INSERT INTO harness_shared.routines (id, install_slug, name, active, workspace_id)
+          VALUES ('r-live', '*', 'loop-su-live', true, ${PW})`;
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-su-live', now(), ${LOOP_TERMINAL_AUTO_PAUSE_STATUS}, 7, ${PW})`;
+
+      await pruneStaleFireState({ maxAgeDays: 7 });
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND harness_slug = '*' AND role = 'loop-su-live'`;
+      expect(left.length).toBe(1);
+    });
+
+    it('does NOT touch a row whose routine is inactive but carries a DIFFERENT last_status (a human pause under investigation)', async () => {
+      const PW = 'ws-prune-term-human';
+      await rootSql`INSERT INTO harness_shared.routines (id, install_slug, name, active, workspace_id)
+          VALUES ('r-paused', '*', 'loop-paused-for-review', false, ${PW})`;
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-paused-for-review', now(), 'error: mid-investigation', 5, ${PW})`;
+
+      await pruneStaleFireState({ maxAgeDays: 7 });
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND harness_slug = '*' AND role = 'loop-paused-for-review'`;
+      expect(left.length).toBe(1);
+    });
+
+    it('does NOT touch a row with the terminal marker but NO matching routine row at all', async () => {
+      const PW = 'ws-prune-term-orphan';
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-no-routine-row', now(), ${LOOP_TERMINAL_AUTO_PAUSE_STATUS}, 4, ${PW})`;
+
+      await pruneStaleFireState({ maxAgeDays: 7 });
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND harness_slug = '*' AND role = 'loop-no-routine-row'`;
+      expect(left.length).toBe(1);
+    });
   });
 });
