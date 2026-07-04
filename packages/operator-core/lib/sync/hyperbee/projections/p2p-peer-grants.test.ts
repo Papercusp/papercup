@@ -10,15 +10,33 @@
  *  - registry ↔ producer ↔ projection agreement (the EI-382 / C3 class at the
  *    TS layer: CDC_CAPTURED_TABLES, PEER_LOG_TABLES and
  *    REGISTERED_PROJECTION_TAGS all know the table).
+ *  - WI-1940 (revocation-reaper deferred #3): a LANDED remote fleet-grant
+ *    revocation triggers the FEDERATED reap; a stale/rejected write, a
+ *    non-fleet grantee, an active-status row, or a non-remote apply must not.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type postgres from 'postgres';
+
+// Spy the reaper call while keeping the rest of the module untouched — writeToPg
+// imports reapForeignSessionsForRevocation directly (no injectable seam), so this
+// is the only way to assert the hook fires without a live Postgres.
+vi.mock('../../../p2p/revocation-reaper', async (orig) => ({
+  ...(await orig<typeof import('../../../p2p/revocation-reaper')>()),
+  reapForeignSessionsForRevocation: vi.fn(async () => ({
+    ok: true,
+    reaped: [],
+    receiptsEmitted: 0,
+    receiptFailures: 0,
+  })),
+}));
+
 import {
   _testing,
   isP2pPeerGrantWireRow,
   type P2pPeerGrantWireRow,
   type P2pPeerGrantsProjectionOpts,
 } from './p2p-peer-grants';
+import { reapForeignSessionsForRevocation } from '../../../p2p/revocation-reaper';
 import { outboxRowToLocalWriteOp, CDC_CAPTURED_TABLES } from '../feature-issue-op-keys';
 import { PEER_LOG_TABLES } from '../../../harness-state/table-registry';
 import { REGISTERED_PROJECTION_TAGS } from './register-all';
@@ -177,5 +195,80 @@ describe('registry ↔ producer ↔ projection agreement (EI-382 / C3 class)', (
   it('p2p_grantor_epochs (X6 receiver state) is deliberately NOT federated', () => {
     expect(PEER_LOG_TABLES).not.toContain('p2p_grantor_epochs');
     expect(CDC_CAPTURED_TABLES).not.toContain('p2p_grantor_epochs');
+  });
+});
+
+describe('WI-1940 — federated reap hook (revocation-reaper deferred #3)', () => {
+  /** A tagged-template sql stub whose result carries `.count` (postgres.js shape) —
+   *  `applied` mimics whether the LWW-guarded UPSERT actually touched a row. */
+  const fakeSql = (applied: boolean) =>
+    ((_s: TemplateStringsArray, ..._v: unknown[]) =>
+      Promise.resolve(Object.assign([], { count: applied ? 1 : 0 }))) as unknown as postgres.Sql;
+
+  const remoteOpts = (sql: postgres.Sql): P2pPeerGrantsProjectionOpts => ({
+    workspaceId: 'ws-1',
+    harnessSlug: 'papercup-hive',
+    hiveHomeSlug: 'papercup-hive',
+    sql,
+    resolveAuthorDevice: () => 'device-A',
+    resolveAuthorIdentity: async () => ({ githubUserId: 12345 }),
+  });
+  const remoteProvenance = { origin: 'remote' as const, authorPubkey: 'aa'.repeat(32), ts: 1, fedHlc: undefined };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('fires the reaper for a LANDED remote fleet-grant revocation', async () => {
+    await _testing.writeToPg(
+      remoteOpts(fakeSql(true)),
+      wireRow({ status: 'revoked', grantee_kind: 'fleet', grantee_ref: 'p2p-dist' }),
+      remoteProvenance,
+    );
+    expect(reapForeignSessionsForRevocation).toHaveBeenCalledTimes(1);
+    expect(reapForeignSessionsForRevocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        hiveSlug: 'papercup-hive',
+        responderGithubUserId: 12345,
+        responderDevicePubkey: 'device-A',
+        trigger: { kind: 'grant-revoked', fleetSlug: 'p2p-dist' },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('does NOT reap a rejected/stale write (LWW guard: upsertResult.count === 0)', async () => {
+    await _testing.writeToPg(
+      remoteOpts(fakeSql(false)),
+      wireRow({ status: 'revoked', grantee_kind: 'fleet' }),
+      remoteProvenance,
+    );
+    expect(reapForeignSessionsForRevocation).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reap an ACTIVE grant', async () => {
+    await _testing.writeToPg(
+      remoteOpts(fakeSql(true)),
+      wireRow({ status: 'active', grantee_kind: 'fleet' }),
+      remoteProvenance,
+    );
+    expect(reapForeignSessionsForRevocation).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reap a revoked POOL grant (pool grants have no foreign-session rows)', async () => {
+    await _testing.writeToPg(
+      remoteOpts(fakeSql(true)),
+      wireRow({ status: 'revoked', grantee_kind: 'pool', grantee_ref: 'pool-1' }),
+      remoteProvenance,
+    );
+    expect(reapForeignSessionsForRevocation).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reap a LOCAL-origin apply (the p2p-grant-set route already reaps synchronously)', async () => {
+    await _testing.writeToPg(
+      { ...remoteOpts(fakeSql(true)), hiveHomeSlug: undefined },
+      wireRow({ status: 'revoked', grantee_kind: 'fleet' }),
+      { origin: 'local' as const, authorPubkey: null, ts: 1, fedHlc: undefined },
+    );
+    expect(reapForeignSessionsForRevocation).not.toHaveBeenCalled();
   });
 });

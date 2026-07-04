@@ -123,6 +123,20 @@ timeout count as a red, so a *crashing/hanging* suite is caught in-routine; the 
 specifically closes the "routine not firing at all" axis.) Still open under EI-455: only
 the optional dedup-TTL safety valve (for a hung-but-live executor).
 
+**UPDATE 2026-07-03 — routine-engine stale suppresses symptom alarms (EI-2994).** When
+the root DBOS `routinesTick` engine is itself stale (no `routinesTick` fire in >6min),
+every scheduled routine — including green-checkpoint — will appear to stall downstream.
+To avoid a restart cascade from separate independent alarms on each stuck routine, the
+green-stall watchdog now reads `readRoutineEngineLiveness` (checks the max
+`created_at` of `routinesTick` in `dbos.workflow_status`) and, when the root engine is
+stale, suppresses the fire-stale and verdict-stale alarms — the infra-liveness alarm
+owns the single "background routine engine frozen" escalation and will auto-resolve it.
+If `routineEngine.unknown` (data unavailable), alarms proceed (fail-open). This moves
+the primary detection up the stack to where it belongs: an infra-liveness watchdog at
+the request path (invoked on every API call) will catch the root-cause freeze immediately
+(see `packages/operator-core/lib/release/routine-engine-liveness.ts`), while
+green-stall remains a secondary verification channel for the symptom layer.
+
 This applies to **any** routine, not just green-checkpoint — a `system:git-sync`,
 `release-trigger`, gym, etc. can wedge the same way (a gym cycle wedged 7.5h on a
 dead repro host, 2026-06-12).
