@@ -22,7 +22,11 @@ import {
   resolveModelSpecForOwner,
 } from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
-import { defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
+import {
+  COMPACTION_LIMIT_DEFAULT_1M_CAP,
+  defaultCompactionLimitForSpec,
+  type ModelTier,
+} from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
 
@@ -219,6 +223,10 @@ export interface CompactionComplianceResult {
    *  /compact into their live psu-pty). Subset of overLimit — excludes owners with
    *  no live host, an already-in-flight force (deduped), or the flag OFF. */
   forceCompacted: string[];
+  /** P-017: running sessions whose STALE-above-cap compaction_limit was lowered to
+   *  the current shaped default this pass (a policy change reaching a live session
+   *  without a relaunch). */
+  relimited: Array<{ owner: string; from: number; to: number }>;
   /** owners seeded with a model-derived default limit this pass. */
   seeded: string[];
   /** P-019: owners whose transcript tail carries "Prompt is too long" (dead). */
@@ -238,7 +246,23 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
+  // Lazy per-pass tier menu, HOISTED so the seed pass AND the P-017 re-eval share ONE
+  // workspace-config read: memoized, fail-soft to undefined (⇒ spec-derived defaults only).
+  let tiersPromise: Promise<readonly ModelTier[] | undefined> | null = null;
+  const tierMenu = () =>
+    (tiersPromise ??= (async () => {
+      try {
+        const [{ effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
+          import('../fleet/model-tiers'),
+          import('../agent-config'),
+        ]);
+        const cfg = await readAgentConfig().catch(() => null);
+        return effectiveTierConfig(cfg, null).tiers;
+      } catch {
+        return undefined;
+      }
+    })());
   // Seeding step — one server-side place instead of N spawn paths (D-006).
   // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
   // default) > the argv/fs model resolver (launch argv → session
@@ -259,22 +283,6 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
          AND heartbeat_at > now() - interval '10 minutes'
        LIMIT ${MAX_SEEDS_PER_PASS}
     `;
-    // Lazy per-pass tier menu: one workspace-config read even when many owners
-    // seed; fail-soft to undefined (⇒ spec-derived defaults only).
-    let tiersPromise: Promise<readonly ModelTier[] | undefined> | null = null;
-    const tierMenu = () =>
-      (tiersPromise ??= (async () => {
-        try {
-          const [{ effectiveTierConfig }, { readAgentConfig }] = await Promise.all([
-            import('../fleet/model-tiers'),
-            import('../agent-config'),
-          ]);
-          const cfg = await readAgentConfig().catch(() => null);
-          return effectiveTierConfig(cfg, null).tiers;
-        } catch {
-          return undefined;
-        }
-      })());
     for (const r of unseeded) {
       try {
         const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
@@ -299,8 +307,16 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
     );
   }
   try {
-    const rows = await sql<{ owner_id: string; owner_label: string; compaction_limit: number }[]>`
-      SELECT owner_id, owner_label, compaction_limit
+    const rows = await sql<
+      {
+        owner_id: string;
+        owner_label: string;
+        compaction_limit: number;
+        fleet_slug: string | null;
+        fleet_role: string | null;
+      }[]
+    >`
+      SELECT owner_id, owner_label, compaction_limit, fleet_slug, fleet_role
         FROM harness_shared.coord_presence
        WHERE compaction_limit IS NOT NULL
          AND heartbeat_at > now() - interval '10 minutes'
@@ -318,6 +334,35 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         }
       } catch {
         /* best-effort per owner */
+      }
+      // P-017 live-config reach: a stored limit ABOVE COMPACTION_LIMIT_DEFAULT_1M_CAP (the
+      // ceiling clampCompactionLimit enforces on EVERY config:set-compaction-limit) cannot be a
+      // valid explicit override — it is necessarily a STALE default from a superseded policy (the
+      // 2026-07-04 incident: live members stuck at the old 500k after the cap dropped to 300k/400k,
+      // with no way to push the fix short of a relaunch). Re-derive the current shaped default and
+      // lower to it so a policy change reaches running sessions within one sweep. Cheap-gated on the
+      // >cap check (steady-state passes resolve NOTHING) and one-directional (only lowers), so it
+      // never clobbers an explicit lower override. Mutate r.compaction_limit so the over-limit gate
+      // below re-checks against the corrected limit THIS pass (a now-over session force-compacts).
+      if (r.compaction_limit > COMPACTION_LIMIT_DEFAULT_1M_CAP) {
+        try {
+          const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+          const fresh =
+            (await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember)) ??
+            defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id), { fleetMember });
+          if (fresh < r.compaction_limit) {
+            await setCompactionLimit(r.owner_id, fresh);
+            out.relimited.push({ owner: r.owner_id, from: r.compaction_limit, to: fresh });
+            console.warn(
+              `[compaction-watchdog] re-limited ${r.owner_label} (${r.owner_id}): ` +
+                `${r.compaction_limit} → ${fresh} tokens — stale default above the current policy cap ` +
+                `reached a live session without a relaunch (P-017).`,
+            );
+            r.compaction_limit = fresh;
+          }
+        } catch {
+          /* best-effort per owner */
+        }
       }
       const est = await estimateContextTokensForOwner(r.owner_id);
       if (est == null) continue;

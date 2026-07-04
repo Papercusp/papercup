@@ -81,7 +81,13 @@ import {
  *  `spawned_agents` keyed by the interpolated ownerId (first tag value). */
 function fakeSql(opts: {
   unseeded?: Array<{ owner_id: string; fleet_slug?: string | null; fleet_role?: string | null }>;
-  seeded?: Array<{ owner_id: string; owner_label: string; compaction_limit: number }>;
+  seeded?: Array<{
+    owner_id: string;
+    owner_label: string;
+    compaction_limit: number;
+    fleet_slug?: string | null;
+    fleet_role?: string | null;
+  }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
   /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
   claimFreshness?: Record<
