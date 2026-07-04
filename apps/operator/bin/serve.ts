@@ -348,9 +348,14 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   const dataDir =
     process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, 'embedded-pg-data');
   const dbSqlDir = process.env.PAPERCUSP_PG_SQL_DIR ?? defaultSqlDir();
+  // Pre-migrated PGDATA seed (first-boot fast path). When present + the data dir
+  // is fresh, embedded-postgres-server extracts it instead of running initdb +
+  // the full migration replay (~11s → ~1s). Absent/unset ⇒ normal initdb path.
+  const seedPath = process.env.PAPERCUSP_PG_SEED_PATH;
 
   log(`starting embedded Postgres on :${port} (data=${dataDir})`);
   if (!existsSync(dbSqlDir)) log(`warning: migrations dir not found at ${dbSqlDir}`);
+  if (seedPath && existsSync(seedPath)) log(`pre-migrated seed available at ${seedPath} (used only on a fresh data dir)`);
 
   // Kill/clear any orphaned postgres from a prior unclean exit before the
   // fresh start — otherwise the spawn fails with "lock file already exists"
@@ -378,6 +383,7 @@ async function ensurePostgres(): Promise<PgHandle | null> {
     port,
     dataDir,
     dbSqlDir: existsSync(dbSqlDir) ? dbSqlDir : undefined,
+    seedPath: seedPath && existsSync(seedPath) ? seedPath : undefined,
     extraPostgresSettings,
     onLog: (m: string) => log(`pg: ${m}`),
   })) as PgHandle;
