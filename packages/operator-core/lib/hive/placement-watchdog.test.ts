@@ -81,6 +81,35 @@ describe('buildOpenPlacementSummary', () => {
     });
     expect(summary.items).toHaveLength(20);
   });
+
+  it('EI-6005: sorts recovering items first so a bounded render sample never drops the one item needing action', () => {
+    // 12 cursed rows arrive BEFORE the single recovering row (itemRows order is
+    // whatever the SQL query happened to return) — a naive render that slices
+    // the first N items would show all 12 cursed ids and silently drop the
+    // recovering one if the cap were, say, 12.
+    const itemRows = [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        work_item_id: `WI-CURSED-${i}`,
+        status: 'cursed',
+        fail_count: 3,
+        harness_slug: 'papercup',
+      })),
+      { work_item_id: 'WI-RECOVER-1', status: 'recovering', fail_count: 1, harness_slug: 'papercup' },
+    ];
+    const summary = buildOpenPlacementSummary(
+      [
+        { status: 'cursed', count: 12 },
+        { status: 'recovering', count: 1 },
+      ],
+      itemRows,
+    );
+
+    expect(summary.items[0]).toMatchObject({ workItemId: 'WI-RECOVER-1', status: 'recovering' });
+    // A cap of 12 (matching the cursed count) would previously have dropped the
+    // recovering item entirely; now it's guaranteed to be in any prefix slice.
+    const rendered = summary.items.slice(0, 12);
+    expect(rendered.some((it) => it.status === 'recovering')).toBe(true);
+  });
 });
 
 describe('deriveBeeLiveness (P-020 — reuses the fleet-reclaim thresholds)', () => {

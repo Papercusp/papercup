@@ -121,6 +121,10 @@ describe('scenario registry', () => {
       'queen-Q04-authors-claim-spec',
       'bee-B01-pull-via-get-next',
       'bee-B02-idle-on-empty-frontier',
+      // onboarding-tutor scenario suite (onboarding-tutor target)
+      'onboarding-tutor-OT1-section-protocol',
+      'onboarding-tutor-OT2-progress-checkpoint',
+      'onboarding-tutor-OT3-question-detour',
       // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
       'overwatch-OW01-nudge-not-replace',
       'overwatch-OW02-observe-not-idea',
@@ -157,7 +161,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'sentinel', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch']).toContain(s.target);
+      expect(['operator', 'sentinel', 'oracle', 'architect', 'su', 'queen', 'bee', 'overwatch', 'onboarding-tutor']).toContain(s.target);
     }
   });
 
