@@ -398,6 +398,7 @@ import './harness_docs/verify';
 import './harness_docs/set_overlay';
 import './harness_docs/regenerate';
 import './harness_docs/ingest';
+import './harness_docs/retire';
 
 // SU-agent file-lock coordination — see su-agent-coordination-v3-2026-05-14.md
 import './locks/acquire';

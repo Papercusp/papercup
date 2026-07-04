@@ -315,11 +315,11 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // joiner's member harness lands the owner's epoch-key rows. DARK: the boundary trigger +
     // producer are flag-gated (papercusp-hive-rekey), so the table stays empty until cutover.
     buildHiveEpochKeysProjection(hiveScoped),
-    buildEngineerIssuesProjection(opts),
+    buildEngineerIssuesProjection(guardScoped),
     // plan-federation-regrain-2026-06-13 P-006: per-PART plan federation (tableTag
     // 'plan-parts'). Additive + DARK — receives nothing until papercusp-plan-part-federation
     // is on (capture is flag-gated) and its harness_plans recompose is itself flag-gated.
-    buildHarnessPlanPartsProjection(opts),
+    buildHarnessPlanPartsProjection(guardScoped),
     // p2p-work-distribution-2026-07-02 P-001: P2P capability grants are hive-home-
     // grained (a grant/revocation must land on every member machine, M19) — scope
     // like hive_settings. The projection RECEIVER-ENFORCES the op author's attested

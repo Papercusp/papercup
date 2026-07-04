@@ -152,13 +152,11 @@ export async function defaultRunWorkerChunkLoop(
   if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
     release = await gov.acquire({}, { maxWaitMs: governorMaxWaitMs() });
     if (!release) {
-      // EI-6503: mirror the WI-181 fix already applied to the sibling bee-spawn path
-      // (orchestrator-runner.ts) — don't hard-abort $0 when the inference gateway owns
-      // egress: it does per-account failover + internal retry, so the run reaches a
-      // HEALTHY account anyway. Only with NO gateway egress (no failover safety net) is
-      // the abort correct.
-      const gatewayEgress = !!(extraSpawnEnv.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL);
-      if (!gatewayEgress) {
+      const { abort } = resolveGovernorPauseOutcome({
+        extraSpawnEnvBaseUrl: extraSpawnEnv.ANTHROPIC_BASE_URL,
+        processEnvBaseUrl: process.env.ANTHROPIC_BASE_URL,
+      });
+      if (abort) {
         return { kind: 'aborted', reason: 'agent governor: rate-limit pause exceeded max wait' };
       }
       console.warn('[worker:chunk-loop] spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover');

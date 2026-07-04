@@ -449,10 +449,24 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
 
   const b = brief.bees;
   out.push('');
-  out.push('### Bees');
+  out.push('### Bees (Queen-placed only — NOT the whole fleet)');
   out.push(
     `- running ${b.running} · completed ${b.completed} · churning ${b.churning} · dead claims ${b.deadClaims} · invalid-model failures ${b.invalidModelFailures}`,
   );
+  // EI-6493: this panel counts ONLY nursery rows with child_role='bee'
+  // (gatherLiveBees's own WHERE clause) — su fleet members, autonomous loop
+  // sessions, and other roles (queen/overwatch/scout) are NEVER counted here,
+  // even when very active. A real repro: 20 alive agents in fleet:assignments
+  // with fresh heartbeats and real claims (an su fleet leader + a 4-lane
+  // parallel git-plan fleet) coexisted with this panel reading all-zero,
+  // which read as fleet-wide idleness and triggered a false stall alarm on a
+  // prior wake. Say so explicitly so a reader (or a carry-note) never mistakes
+  // "no Queen-dispatched bees this window" for "nothing is happening".
+  if (b.running === 0) {
+    out.push(
+      "  (zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle; cross-check fleet:assignments/coord:presence before reading this as a stall)",
+    );
+  }
 
   const wf = brief.workFeed;
   out.push('');

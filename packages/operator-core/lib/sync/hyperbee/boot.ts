@@ -928,16 +928,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // a harness NOT on a hive/topic topic (the common boot path, e.g. a private 'local'/'gh' harness)
   // pays ZERO extra getOrgPg cost and is byte-identical to today; only a harness actually peered on a
   // hive topic (where it can receive cross-member content) does the one-shot owner-home lookup.
-  const ownHiveHomeSlug = await (async (): Promise<string | undefined> => {
+  // WI-2105 REV (no-hiveHome fix): resolve the hive-home ONCE for BOTH the projection-rebind
+  // fallback (ownHiveHomeSlug) AND the broader content-guard home (contentGuardHiveHome).
+  const resolvedHiveHomeSlug = await (async (): Promise<string | undefined> => {
     if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
     try {
       const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-      const home = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
-      return home === opts.harnessSlug ? home : undefined;
+      return (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug)) ?? undefined;
     } catch {
       return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
     }
   })();
+  // WI-559/FED-1 projection-REBIND fallback: only the owner booting the HOME harness itself
+  // (home === own slug) may rebind the hive-home projections (hiveScoped) — a member harness
+  // must NOT (it would double-apply the owner's own rows as origin='remote'). IDENTICAL value
+  // to the prior IIFE, so every existing ownHiveHomeSlug ref is preserved.
+  const ownHiveHomeSlug = resolvedHiveHomeSlug === opts.harnessSlug ? resolvedHiveHomeSlug : undefined;
+  // WI-2105 REV content-GUARD home: the member-content guard's member-set lookup needs the
+  // hive-home for ANY hive-peered harness — INCLUDING an owned hive's member harness
+  // (home ≠ own slug, hive owned-not-remote, e.g. hive-canary→papercusp) where ownHiveHomeSlug
+  // is undefined. Threaded as `memberContentHiveHome` (guard-only; does NOT drive the rebind).
+  const contentGuardHiveHome = resolvedHiveHomeSlug;
 
   const buildScopedApply = (hiveHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
@@ -949,6 +960,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // membership guard instead of dropping every cross-member op (no-hiveHome). For a joiner
       // `hiveHomeSlug` is its rebound home (≠ null) so `?? ownHiveHomeSlug` is a no-op.
       hiveHomeSlug: hiveHomeSlug ?? ownHiveHomeSlug,
+      // WI-2105 REV: DECOUPLED content-guard home (member-set lookup) — broader than the
+      // rebind fallback (covers an owned-hive member harness) and never drives hiveScoped.
+      memberContentHiveHome: hiveHomeSlug ?? contentGuardHiveHome,
       resolveAuthorDevice,
       pendingMemberContent,
     });
@@ -978,13 +992,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // exact bug condition (a swarm-bound harness with no resolvable guard hiveHome), so a
   // non-hive / normally-resolved boot records nothing (zero test/alerting impact); getBootHistory
   // reveals it after the next restart without the A-003 env flag.
-  if (opts.swarmBinding && (hiveHomeProjectionSlug ?? ownHiveHomeSlug) == null) {
+  if (opts.swarmBinding && (hiveHomeProjectionSlug ?? contentGuardHiveHome) == null) {
     try {
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
         'merge_error',
-        `hiveHome-resolve NONE→drop-all-cross-member: binding=${opts.swarmBinding.kind} projSlug=${hiveHomeProjectionSlug ?? '<none>'} ownHome=${ownHiveHomeSlug ?? '<none>'}`,
+        `hiveHome-resolve NONE→drop-all-cross-member: binding=${opts.swarmBinding.kind} projSlug=${hiveHomeProjectionSlug ?? '<none>'} guardHome=${contentGuardHiveHome ?? '<none>'}`,
       );
     } catch {
       /* diagnostic must never break boot */
@@ -1027,6 +1041,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // WI-559/FED-1: owner-home fallback (see ownHiveHomeSlug) so the global-registry content
     // projections also engage the WI-259 membership guard on an owner's home harness.
     hiveHomeSlug: hiveHomeProjectionSlug ?? ownHiveHomeSlug,
+    // WI-2105 REV: DECOUPLED content-guard home for the global-registry apply path too.
+    memberContentHiveHome: hiveHomeProjectionSlug ?? contentGuardHiveHome,
     // Drain hook: feed the queue ONLY when the re-key is active (rekeyDeps non-null) — else
     // the hive_epoch_keys projection's onEpochKeyApplied stays undefined (today's behavior).
     ...(rekeyDeps ? { onEpochKeyApplied: recordEpochDrain } : {}),

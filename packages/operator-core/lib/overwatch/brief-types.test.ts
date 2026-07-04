@@ -73,7 +73,9 @@ test('renderOverwatchBrief — every panel + the anomalies section render', () =
   assert.match(out, /### Inbox — coord messages for you/);
   assert.match(out, /- \[message\] queen: re: F-FIX-021 — re-opened, thanks/);
   assert.match(out, /- \[escalation\] owner: keep an eye on the opus bucket/);
-  assert.match(out, /### Bees\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
+  assert.match(out, /### Bees \(Queen-placed only — NOT the whole fleet\)\n- running 4 · completed 11 · churning 2 · dead claims 1 · invalid-model failures 3/);
+  // EI-6493: the zero-caveat only fires when running is actually 0 — this fixture has 4.
+  assert.doesNotMatch(out, /zero here means no Queen-dispatched bee is active/);
   assert.match(out, /### Work feed\n- frontier 7 ready · 5 auto-eligible stuck · 1 dead routine\(s\) · 2 stranded/);
   assert.match(out, /### Tokens \/ gateway\n- paused buckets: opus, sonnet · 3 failover\(s\) · 12 429\(s\) · 1 account\(s\) available/);
   assert.match(out, /### Plans \+ escalations\n- 6 active plan\(s\) · 4 stalled item\(s\) · 2 aging escalation\(s\)/);
