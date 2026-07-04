@@ -1,7 +1,7 @@
 /**
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   diffHealth,
   HEALTH_ENDPOINTS,

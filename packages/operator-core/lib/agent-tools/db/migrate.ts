@@ -11,6 +11,8 @@
 
 import { z } from 'zod';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from '../locks/identity';
@@ -144,23 +146,60 @@ export default defineTool({
           });
         }
         const url = getHarnessAdminUrl();
+        // EI-6962: the previous version ran the file bare (`psql -f <file>`)
+        // and only recorded success in the su_meta coordination-domain
+        // idempotency ledger (recordResourceAction below) — NEVER in
+        // harness_shared.schema_migrations, the table every deploy/boot
+        // actually reads to decide what's already applied. That left the
+        // enabled path (this branch) exactly as unsafe as the withheld
+        // path's own fallback warns against: a future deploy/boot re-runs
+        // the "applied" file, and a lock-contending re-run can trip the
+        // deploy's lock_timeout (the 2026-06-09 ~1h wedge this tool exists
+        // to prevent). Fix: wrap the file in the SAME BEGIN/COMMIT as the
+        // schema_migrations INSERT, mirroring both the withheld-branch's own
+        // documented fallback command above and
+        // embedded-postgres-server/src/migration-runner.js's boot-apply path
+        // — `\i` (not `-f`) so the file still runs through psql's full
+        // meta-command interpreter (dollar-quotes, DO blocks, COPY), keeping
+        // the perf:allow A4 rationale below intact.
+        const sha256 = createHash('sha256').update(readFileSync(args.file, 'utf8')).digest('hex');
+        const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
+        const script =
+          `BEGIN;\n` +
+          `SET LOCAL statement_timeout = 0;\n` +
+          `\\i ${args.file}\n` +
+          `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
+          `COMMIT;\n`;
         // perf:allow A4 — this tool IS the sanctioned dev-only migration
-        // applier: `psql -f` runs full .sql files (dollar-quoted functions,
-        // DO blocks, COPY, \meta-commands) that postgres-js can't, and it's
-        // gated behind PAPERCUSP_ALLOW_DB_MIGRATE + the db-schema lock. Not
-        // runtime/shipped data-plane code. Mirrored in @papercusp/export-state's
-        // no-psql-shellout ALLOW set.
-        const r = spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1', '-f', args.file], {
+        // applier: psql's meta-command interpreter runs full .sql files
+        // (dollar-quoted functions, DO blocks, COPY, \meta-commands) that
+        // postgres-js can't, and it's gated behind PAPERCUSP_ALLOW_DB_MIGRATE
+        // + the db-schema lock. Not runtime/shipped data-plane code. Mirrored
+        // in @papercusp/export-state's no-psql-shellout ALLOW set.
+        const r = spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1'], {
+          input: script,
           encoding: 'utf8',
         });
         if (r.status !== 0) {
           return json({ ok: false, applied: false, exit_code: r.status, stderr: (r.stderr ?? '').slice(-2000) });
         }
-        // Record only on a successful apply (first writer wins).
+        // Record only on a successful apply (first writer wins). This is the
+        // su_meta coordination-domain idempotency ledger (a DIFFERENT record
+        // from the schema_migrations row the script above just committed) —
+        // it backstops a retried/zombie re-apply of the SAME file even when
+        // this tool's own fencing were somehow bypassed (D-001 above).
         await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
           recordResourceAction(tx, coordinationDomain, actionKey, fence.seq),
         );
-        return json({ ok: true, drained: true, applied: true, file: args.file, fence_seq: fence.seq });
+        return json({
+          ok: true,
+          drained: true,
+          applied: true,
+          file: args.file,
+          fence_seq: fence.seq,
+          schema_migrations_recorded: true,
+          sha256,
+        });
       },
     );
 
