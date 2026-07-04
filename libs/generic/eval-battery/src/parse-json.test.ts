@@ -82,3 +82,20 @@ describe('tryParseJson — unrecoverable → null', () => {
     expect(tryParseJson('} then {')).toBeNull();
   });
 });
+
+describe('tryParseJson — whole-document validity precedence (pinned)', () => {
+  // Found by fast-check (gym parse-json.property seed 1619552845, counterexample
+  // [{}, '"', '"']): quote-pair "prose" around a JSON payload makes the ENTIRE
+  // reply a valid JSON *string* — `" {} "` IS the JSON string " {} ". The parser's
+  // documented precedence is whole-document validity FIRST, slice recovery only
+  // when the whole document does not parse. Pinning it here keeps the choice
+  // deliberate: flipping it would break bare-string round-trips (a plain string
+  // value containing "{}" would start parsing as an object).
+  it('a quote-wrapped object parses as the JSON string, not the embedded object', () => {
+    expect(tryParseJson('" {} "')).toBe(' {} ');
+  });
+
+  it('an ESCAPED json-in-string stays a string (no double-unwrap)', () => {
+    expect(tryParseJson('"{\\"a\\":1}"')).toBe('{"a":1}');
+  });
+});

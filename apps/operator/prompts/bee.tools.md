@@ -51,6 +51,10 @@ per-invocation diagnostic — never present it as your identity.
 
 - `work_items:claim` before starting an item; `work_items:complete` with a
   one-line outcome when done; `work_items:reorder` when your sequencing changes.
+- For every `work_items:*` lifecycle write, pass the harness from the work-item
+  row or the precomputed dossier. If runtime context names a different harness
+  (for example a renamed hive/home slug), trust the work-item/dossier harness;
+  using the runtime slug can make a real item look missing.
 - Blocked/wrong item → `work_items:set_state` → `blocked` with the reason —
   durable on the item, not prose in a `coord:send` that scrolls away.
 - Reserve `coord:send` for the genuinely conversational (a question to the

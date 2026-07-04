@@ -1671,10 +1671,15 @@ export function ceilingJamSignalsFromRows(
     const t = v instanceof Date ? v.getTime() : new Date(v).getTime();
     return Number.isNaN(t) ? null : t;
   };
-  const running = rows.length;
+  let running = 0;
   let streamingLive = 0;
   const jammed: string[] = [];
   for (const r of rows) {
+    // EI-7215: in-process loopback launches never populate `last_output_at`, so
+    // this stream-recency detector cannot evaluate them — skip them entirely
+    // (neither counted as running, streaming, nor jammed). See isInProcessLaunchRow.
+    if (isInProcessLaunchRow(r)) continue;
+    running++;
     const outAt = ms(r.last_output_at);
     const streamedRecently = outAt != null && now - outAt <= silentMinutes * 60_000;
     if (streamedRecently) {

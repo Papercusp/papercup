@@ -367,19 +367,27 @@ export function startExecutorReaper(
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
 
-  // EI-3673: `run` used to be `(): void` and fire-and-forget the reap promise with
-  // ONLY a success handler (`void p.then(onSuccess)`, no `.catch`) — a rejection
-  // (a transient PG error, e.g. right after a bg-host restart while the pool is
-  // still reconnecting) became an UNHANDLED PROMISE REJECTION completely outside
-  // managedSetInterval's own tick-wrapping: because `run()` returned `undefined`
-  // synchronously, the tick wrapper (dbos/../scheduled-registry makeTick) never saw
-  // the async work at all, so a failed reap left NO trace in schedule:inventory's
-  // `lastError` — indistinguishable from "the interval never fired". `run` now
-  // RETURNS the promise chain (with a `.catch` that logs and re-throws) so a reap
-  // failure is (a) logged with full context here AND (b) recorded by
-  // managedSetInterval's own tick wrapper as a visible `lastError` — the
-  // regression/health guard this ticket asks for. The next tick still retries per
-  // the interval either way; this only removes the silent-failure blind spot.
+  // EI-3673: `run` used to be `(): void` — it fired `reapDeadExecutorWorkflows(...)`
+  // with `void promise.then(onSuccess)` and RETURNED IMMEDIATELY without waiting for
+  // it. That broke two things managedSetInterval's tick wrapper relies on to make
+  // this reaper's health VISIBLE and safe to overlap:
+  //   1. Re-entrancy: the wrapper's `rec.running` guard (skip a tick if the previous
+  //      one is still running) only holds while it is actually AWAITING the fn's
+  //      returned promise. Since `run()` returned `undefined` synchronously, `running`
+  //      flipped back to false almost instantly — so on a slow reap pass (e.g. many
+  //      queued queries right after a restart, while the pool is still reconnecting)
+  //      a SECOND tick could start concurrently with the first, rather than being
+  //      skipped as intended.
+  //   2. Visibility: schedule:inventory's `lastFireAt`/`fires` (the regression/health
+  //      guard this ticket asks for) were stamped the instant `run()` returned, NOT
+  //      when the reap actually finished — so the recorded fire timing didn't reflect
+  //      real completion, undermining exactly the kind of "did this actually run"
+  //      diagnosis this ticket needed.
+  // `run` now RETURNS the promise chain so the tick wrapper genuinely awaits it —
+  // fixing both. Note `reapDeadExecutorWorkflows` already has its OWN top-level
+  // try/catch (never rejects; logs "reap pass failed (non-fatal)" and returns an
+  // empty result) — so this fix is about overlap-safety + accurate timing, not about
+  // catching a rejection (there isn't one to catch, by design of that function).
   const run = (): Promise<void> => {
     return reapDeadExecutorWorkflows(
       sql,
@@ -387,30 +395,16 @@ export function startExecutorReaper(
       opts.staleSchedulerMs,
       opts.staleRoutineFireNoOutputMs,
       opts.staleRoutineFireOrphanMs,
-    ).then(
-      (r) => {
-        if (r.cancelled > 0 || r.queuePurged > 0) {
-          console.warn(
-            `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
-          );
-        }
-      },
-      (e: unknown) => {
+    ).then((r) => {
+      if (r.cancelled > 0 || r.queuePurged > 0) {
         console.warn(
-          `[dbos-executor-reaper] reap tick FAILED (next interval retries): ${e instanceof Error ? e.message : String(e)}`,
+          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
         );
-        throw e; // re-throw so managedSetInterval records it in schedule:inventory's lastError
-      },
-    );
+      }
+    });
   };
 
-  // Boot reap: `run()` now returns a promise (EI-3673) that re-throws on failure so
-  // managedSetInterval can see it — but THIS call site isn't the interval wrapper, so
-  // nothing else would consume that rejection. `run()`'s own handler already logged
-  // it above; swallow the re-throw here so a boot-time reap failure can't become an
-  // unhandled rejection (matches bootstrap.ts's own "best-effort — must not fail
-  // boot" contract for this call).
-  void run().catch(() => {});
+  void run(); // boot reap — best-effort; reapDeadExecutorWorkflows never rejects (see above)
   if (reaperTimer) reaperTimer.stop();
   reaperTimer = managedSetInterval('dbos-executor-reaper', intervalMs, run, { category: 'watchdog' });
 }
