@@ -237,3 +237,120 @@ describe('findLatestSnapshotIndex + seedCursorFromSnapshots (P-007 reader seedin
     expect(fromZero).toEqual({ 'queue::B': { n: 22 } });
   });
 });
+
+/**
+ * WI-2313 — a MULTI-CHUNK snapshot (the fix for the oversized-block bug) must
+ * behave exactly like the single-op snapshot: seed at chunk 0 of the COMPLETE set,
+ * fold every chunk, land the identical state. And the crash-consistency guard: a
+ * PARTIAL/torn chunk set must NEVER seed the cursor forward (which would silently
+ * skip the ops the missing chunks summarize) — it falls back to a full replay.
+ */
+describe('WI-2313 multi-chunk snapshot fold + crash-consistency', () => {
+  /** A log of `n` distinct keys, snapshotted with a tiny chunk budget so the
+   *  snapshot spans several chunk ops. Returns the log + where chunk 0 landed. */
+  async function makeChunkedLog(keyHex: string, n: number, maxChunkBytes: number) {
+    const log = memLog(keyHex);
+    for (let i = 0; i < n; i++) {
+      await log.append(put('queue', `K${String(i).padStart(3, '0')}`, { pad: 'z'.repeat(80), i }, i + 1));
+    }
+    const snapshotIndex = log.length;
+    const res = await produceLogSnapshot(log, { now: 1000, schemaVersion: 1, maxChunkBytes });
+    return { log, snapshotIndex, res };
+  }
+
+  it('produce chunks the snapshot; fold from chunk 0 == full fold from 0', async () => {
+    const { log, snapshotIndex, res } = await makeChunkedLog('a1'.repeat(32), 24, 500);
+    expect(res.appended).toBe(true);
+    expect(res.chunkCount).toBeGreaterThan(1); // genuinely multi-chunk
+    expect(res.coversUpTo).toBe(snapshotIndex);
+    // A post-snapshot tail op to exercise folding past the whole chunk set.
+    await log.append(put('queue', 'K000', { pad: 'updated', i: 0 }, 5000));
+
+    // The seed lands at chunk 0 (== coversUpTo), NOT a middle/last chunk.
+    expect(await findLatestSnapshotIndex(log, 10_000, 0)).toBe(snapshotIndex);
+
+    const fullFromZero = await foldToPg([log], 0);
+    const fromSnapshot = await foldToPg([log], snapshotIndex);
+    expect(fromSnapshot).toEqual(fullFromZero);
+    // Sanity: the tail update won K000; every other key survived the chunking.
+    expect(Object.keys(fullFromZero)).toHaveLength(24);
+    expect(fullFromZero['queue::K000']).toEqual({ pad: 'updated', i: 0 });
+  });
+
+  it('seedCursorFromSnapshots seeds a fresh cursor at chunk 0 of a complete set; fold matches from-0', async () => {
+    const { log, snapshotIndex } = await makeChunkedLog('a2'.repeat(32), 18, 400);
+    await log.append(put('queue', 'TAIL', { v: 1 }, 9999));
+
+    const fromZero = await foldToPg([log], 0);
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([log], cursor, { maxLookback: 10_000, getTimeoutMs: 0 });
+    expect(cursor.positions.get(log.keyHex)).toBe(snapshotIndex); // chunk 0, not a middle chunk
+
+    const pg = new Map<string, unknown>();
+    await mergeAdmittedLogsIncremental([log], cursor, {
+      getTimeoutMs: 0,
+      maxOpsPerPass: 0,
+      applyImpl: async (env) => {
+        const k = `${env.table}::${env.hbKey}`;
+        if (env.type === 'del') pg.delete(k);
+        else pg.set(k, env.value);
+        return true;
+      },
+    });
+    expect(Object.fromEntries(pg)).toEqual(fromZero);
+  });
+
+  it('CRASH-CONSISTENCY: a partial chunk set (one chunk block absent) does NOT seed forward', async () => {
+    const { log, snapshotIndex, res } = await makeChunkedLog('a3'.repeat(32), 24, 500);
+    expect(res.chunkCount).toBeGreaterThan(2);
+    // Simulate a sparse replica where a MIDDLE chunk block hasn't downloaded yet:
+    // its in-range get() resolves null, but the log length still spans the set.
+    const holeIndex = snapshotIndex + 1; // chunk 1 of the set
+    const holeyView: AdmittedLog = {
+      keyHex: log.keyHex,
+      length: log.length,
+      get: async (i) => (i === holeIndex ? null : log.get(i)),
+    };
+
+    // The set is torn → no complete set found → seed resolves to null (fold from 0),
+    // NEVER a forward seed past the un-folded ops the missing chunk summarizes.
+    expect(await findLatestSnapshotIndex(holeyView, 10_000, 0)).toBeNull();
+
+    const cursor = createMergeCursor();
+    await seedCursorFromSnapshots([holeyView], cursor, { maxLookback: 10_000, getTimeoutMs: 0 });
+    expect(cursor.positions.has(log.keyHex)).toBe(false); // left at 0 — full replay
+  });
+
+  it('CRASH-CONSISTENCY: a torn newer set still falls back to an EARLIER complete set', async () => {
+    // First complete snapshot set, then more ops + a second (newer) set with a
+    // MIDDLE chunk block absent. The seed must skip the torn newer set and land on
+    // the earlier complete one, not fold from 0 or seed into the hole. (The hole is
+    // a MIDDLE chunk, not the tail — the backward scan bails on an unavailable tail
+    // block, the inherited single-op "failed read → fold from 0, safe" behavior.)
+    const log = memLog('a4'.repeat(32));
+    for (let i = 0; i < 20; i++) {
+      await log.append(put('queue', `E${String(i).padStart(3, '0')}`, { pad: 'q'.repeat(80) }, i + 1));
+    }
+    const firstIdx = log.length;
+    const first = await produceLogSnapshot(log, { now: 500, schemaVersion: 1, maxChunkBytes: 500 });
+    expect(first.chunkCount).toBeGreaterThan(1);
+    // Grow the log past the first set, then produce a second (newer) chunked set.
+    for (let i = 20; i < 40; i++) {
+      await log.append(put('queue', `E${String(i).padStart(3, '0')}`, { pad: 'q'.repeat(80) }, i + 1));
+    }
+    const secondIdx = log.length;
+    const second = await produceLogSnapshot(log, { now: 900, schemaVersion: 1, maxChunkBytes: 500 });
+    expect(second.chunkCount).toBeGreaterThan(2); // need a middle chunk (tail stays present)
+
+    // Tear the NEWER set: drop a MIDDLE chunk block (chunk 1); its last chunk (the
+    // scan's entry point) stays present so the scan reaches + rejects the torn set.
+    const holeIndex = secondIdx + 1;
+    const holeyView: AdmittedLog = {
+      keyHex: log.keyHex,
+      length: log.length,
+      get: async (i) => (i === holeIndex ? null : log.get(i)),
+    };
+    // Falls back to the earlier COMPLETE set (chunk 0 at firstIdx), not the torn one.
+    expect(await findLatestSnapshotIndex(holeyView, 10_000, 0)).toBe(firstIdx);
+  });
+});
