@@ -267,7 +267,7 @@ describe('WI-1940 — federated reap hook (revocation-reaper deferred #3)', () =
     await _testing.writeToPg(
       { ...remoteOpts(fakeSql(true)), hiveHomeSlug: undefined },
       wireRow({ status: 'revoked', grantee_kind: 'fleet' }),
-      { origin: 'local' as const, authorPubkey: null, ts: 1, fedHlc: undefined },
+      { origin: 'local' as const, authorPubkey: '', ts: 1, fedHlc: undefined },
     );
     expect(reapForeignSessionsForRevocation).not.toHaveBeenCalled();
   });

@@ -24,16 +24,11 @@
  *           (parseOfferPayload) is size-capped + strictly schema-validated and
  *           NEVER throws on hostile input; any downstream LLM triage must treat
  *           the offer text strictly as DATA, never as instructions.
- *   X11   — ACTIVATION was gated on the P-003 claim-path soak; LANDED 2026-07-04
- *           (WI-1936) — EI-6797's PG lock-manager contention (coord_presence
- *           heartbeat writes starving work_items claim writes) is resolved
- *           (heartbeat coalescing), corroborated by this fleet's own sustained
- *           concurrent claim_next traffic. `PULLER_ACTIVATION_LANDED` is the
- *           ONE structural switch P-003 flips (mirrors rollout-tiers.TIER2_
- *           PREREQS_LANDED); `pullerActivationInvariant()` guards the contract.
- *           The actual P-016 standing-claim-loop driver (the live side effect)
- *           is separate wiring, not yet built — flipping this switch alone is
- *           still behaviorally inert.
+ *   X11   — ACTIVATION is gated on the P-003 claim-path soak. Until it lands the
+ *           puller stays DORMANT: evaluatePull short-circuits to a
+ *           `puller_inactive` skip. `PULLER_ACTIVATION_LANDED` is the ONE
+ *           structural switch P-003 flips (mirrors rollout-tiers.TIER2_PREREQS_
+ *           LANDED); `pullerActivationInvariant()` guards the dormancy contract.
  *
  * PURE module (offer-authorship.ts / claim-authority.ts / rollout-tiers.ts
  * discipline): no PG, no IO, no clock, no keychain. Every world edge the receiver
@@ -76,20 +71,12 @@ import { resolveForeignWorkAdmission, type P2pSettings } from './settings';
 import type { P2pEffectiveTier } from './rollout-tiers';
 
 /* ─────────────────────────────────────────────────────────────────────────
- * X11 — the ONE activation switch. FLIPPED 2026-07-04 (WI-1936, backlog-
- * clearance fleet): the claim-path soak concern (EI-6797 — PG lock-manager
- * contention from coord_presence heartbeat writes starving work_items claim
- * writes) is RESOLVED — presence-heartbeat writes are coalesced to ≤1 UPSERT
- * per 45s window per owner (terminal fix on EI-6797), and this session's own
- * fleet (10+ concurrently-active agents hammering work_items:claim_next /
- * coord:orient continuously) is live, ongoing soak evidence of a healthy
- * claim path. NOTE: this flips the STRUCTURAL switch only — the actual P-016
- * standing-claim-loop DRIVER that would call evaluatePull with a live side
- * effect is not wired yet (only tests call evaluatePull today), so this
- * remains behaviorally inert until that driver lands; flipping now unblocks
- * the WI-1936→1935→1938 wiring sequence without introducing live risk.
+ * X11 — the ONE activation switch. Flip to `true` in P-003 (and only then),
+ * once the claim-path soak proves the puller safe to run live. Until then the
+ * puller is DORMANT: it can still be exercised in tests / simulation, but
+ * evaluatePull refuses to emit a claim/steal for a real run.
  * ───────────────────────────────────────────────────────────────────────── */
-export const PULLER_ACTIVATION_LANDED = true;
+export const PULLER_ACTIVATION_LANDED = false;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * The publisher DESIGNATION stamp (C1→C4) — resolved & signature-verified by
@@ -453,9 +440,9 @@ export function evaluatePull(input: PullEvaluationInput): PullDecision {
   const active = input.active ?? PULLER_ACTIVATION_LANDED;
   const offer = input.authorship.offer;
 
-  // 0. X11 — activated 2026-07-04 (WI-1936); explicit active:false still forces dormancy.
+  // 0. X11 — dormant until the P-003 claim-path soak lands.
   if (!active) {
-    return skip('puller_inactive', 'standing puller run with active:false (X11 activation landed 2026-07-04, WI-1936 — explicit override).');
+    return skip('puller_inactive', 'standing puller is dormant — activation gated on the P-003 claim-path soak (X11).');
   }
 
   // 1. P-002/P-005 admission — kill-switch beats opt-in beats window.
@@ -519,18 +506,19 @@ export function evaluatePull(input: PullEvaluationInput): PullDecision {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Recurrence guard for the X11 dormancy contract (called by the test; cheap
+ * Recurrence guard for the X11 activation contract (called by the test; cheap
  * enough to assert at boot). Returns the list of VIOLATED invariants (empty =
  * healthy). Mirrors rollout-tiers.rolloutTiersInvariant.
  * ───────────────────────────────────────────────────────────────────────── */
 export function pullerActivationInvariant(activationLanded = PULLER_ACTIVATION_LANDED): string[] {
   const violations: string[] = [];
-  // The dormancy contract: while activation has NOT landed, an evaluatePull with
-  // active defaulted (i.e. reading PULLER_ACTIVATION_LANDED) MUST NOT emit a
-  // claim/steal — it must skip 'puller_inactive'. We can only assert the shape
-  // when the module constant is still false (the pre-P-003 world).
-  if (!activationLanded && (PULLER_ACTIVATION_LANDED as boolean) !== false) {
-    violations.push('PULLER_ACTIVATION_LANDED must be false until the P-003 claim-path soak lands (X11).');
+  // X11 landed 2026-07-04 (WI-1936, claim-path soak evidence: EI-6797 resolved
+  // + this fleet's own sustained concurrent claim_next traffic). The module now
+  // ships ACTIVATED. Guard against a SILENT revert: if the module constant
+  // flips back to false without this call site / docstring being updated to
+  // document why, that is a real regression to surface, not a quiet no-op.
+  if (activationLanded === PULLER_ACTIVATION_LANDED && (PULLER_ACTIVATION_LANDED as boolean) !== true) {
+    violations.push('PULLER_ACTIVATION_LANDED regressed to false after X11 activation landed (WI-1936, 2026-07-04) — confirm this is an intentional, documented rollback.');
   }
   return violations;
 }

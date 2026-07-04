@@ -69,6 +69,13 @@ events:await { event: '<key>', note, timeout_sec, on_timeout: 'wake'|'expire' }
 → END YOUR TURN. You are re-invoked when the key fires (or at the deadline).
 ```
 
+**Default timeout behavior:** As of 2026-07-03, the default `on_timeout` is **'wake'**,
+not 'expire' — an undelivered event at the deadline now wakes you with a TIMEOUT marker
+(safe-by-default, await-timeout-fallback-defaults-2026-07-03). This means a caller that
+sets a `timeout_sec` deadline but forgets to name `on_timeout` will be woken to re-orient
+rather than silently lapsing. Every real caller passes 'wake' explicitly, so this changes
+no behavior today — it only guards a future caller who forgets.
+
 Sources fire keys with `events:emit { event, summary, payload, to? }` (agents)
 or `emitAwaitedEvent(...)` (host code). The layering (plan D-001): the
 **source** resolves who an event concerns (a lock grants to ONE waiter and
@@ -242,4 +249,7 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
   `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
   every sugar verb read from); pattern matching is
   `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at
-  `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
+  `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`. **Timeout constants
+  are unified:** `AWAIT_DEFAULT_TIMEOUT_SEC` and `AWAIT_MAX_TIMEOUT_SEC` live in
+  `packages/operator-core/lib/events/await/types.ts` and are imported by all callers
+  (`events:await`, sugar verbs, the pump) to keep them consistent (await-timeout-fallback-defaults-2026-07-03).
