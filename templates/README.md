@@ -72,3 +72,22 @@ npx tsx packages/operator-core/lib/harness/routines/template-gym-runner.ts \
 ```
 
 Run history: `~/.papercusp/template-gym/` (`last-run.json` + `runs.jsonl`).
+
+## Cupboard distribution (landed: P-010)
+
+Each template here is publishable as a **`kind=template` Cupboard listing**
+(repo-backed: the listing points at this dir via `listing_ref = <id>`; nothing
+is flattened or copied at publish time). The loop:
+
+- **Publish**: the `template:publish` agent tool (title ≤200 / description
+  ≤280 — worker caps). D-007 review policy: a template carries GUIDE.md — an
+  instruction-carrying artifact — so listings land **pending** and are publicly
+  invisible until operator approval. The official set uses
+  **"Papercusp Official:"** title prefixes.
+- **Install**: the Cupboard **Templates** tab (`?kind=template`) →
+  `POST /api/cupboard/install-template` → shallow-clone + kit validation
+  (schema + component-catalog pin check — a stale pin fails the install, same
+  rule as the gym) → materialized under **`~/.papercusp/templates/<id>/`**,
+  where the from-template scaffold entry (P-011) reads it.
+- Worker side: D1 migration `010_template_kind.sql`;
+  operator side: `operator-core/lib/cupboard/install-template-core.ts`.

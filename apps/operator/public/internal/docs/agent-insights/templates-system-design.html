@@ -225,7 +225,24 @@ GUIDE.md + starter blueprints + the candidate-set contract template), pinned to
 <code dir="auto">@papercusp/template-kit</code>’s reference manifests by the kit’s test suite (drift fails
 loudly).</li>
 <li><strong>Cupboard/Comb</strong> gets a dedicated <strong>Templates section</strong> (<code dir="auto">kind=template</code>) alongside
-blueprint/plugin/snapshot listings (plan P-010) — it <em>projects</em> from the repo dir.</li>
+blueprint/plugin/snapshot listings (plan P-010) — it <em>projects</em> from the repo dir.
+<strong>Landed (P-010):</strong> <code dir="auto">template</code> is a full listing kind end-to-end. Worker: D1
+migration 010 (the 008-skeleton CHECK rebuild, carrying 009’s <code dir="auto">blueprint_kind</code>)
+<ul>
+<li><code dir="auto">template</code> in the route layer’s <code dir="auto">LISTING_KINDS</code> and — because a template’s
+GUIDE.md is a composition prompt injected into the building agent’s context —
+in <code dir="auto">REVIEW_POLICY_KINDS</code> (D-007: publishes land <code dir="auto">pending</code>, publicly invisible
+until operator approval at <code dir="auto">/admin</code>). Operator: <code dir="auto">template:publish</code> (agent tool —
+lists <code dir="auto">&#x3C;repo>/templates/&#x3C;id>/</code> repo-backed, listing_ref = template id) and
+<code dir="auto">POST /api/cupboard/install-template</code> (resolve listing → shallow-clone →
+kit-validate schema + component-catalog pins → place under
+<code dir="auto">~/.papercusp/templates/&#x3C;id>/</code>, where the P-011 materializer reads it; core:
+<code dir="auto">operator-core/lib/cupboard/install-template-core.ts</code>, DI’d + unit-tested).
+UI: a <strong>Templates</strong> tab in the Cupboard storefront (<code dir="auto">?kind=template</code>). The
+official set publishes under <strong>“Papercusp Official:”</strong> titles (owner directive
+2026-07-04).</li>
+</ul>
+</li>
 <li><strong>Naming caution (D-006):</strong> <code dir="auto">scaffold_harness</code>’s existing spawnable-catalog entries are
 also called “templates”. These must be <strong>unified</strong> — the old spawnables become instances
 of this system — never two meanings of the word in one product.</li>
@@ -262,4 +279,4 @@ history at <code dir="auto">~/.papercusp/template-gym/</code>.</li>
 <p>The work items, dependencies, and open owner forks live in plan
 <strong><code dir="auto">app-templates-2026-07-04</code></strong> (papercusp plan store) — 14 items across design →
 component extraction (<code dir="auto">@papercusp/hive-app-seam</code> first) → template #1 set → consumers →
-Cupboard/menu/persona surfaces.</p> </div> <footer class="sl-flex astro-c52ljnhn"> <div class="meta sl-flex astro-c52ljnhn">  <p>Last updated: <time datetime="2026-07-04T21:26:08.000Z">Jul 4, 2026</time></p> </div> <div class="pagination-links print:hidden astro-3yhbiabb" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-3yhbiabb"> <svg aria-hidden="true" class="astro-3yhbiabb astro-vmvrihrw" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-3yhbiabb"> Previous <br class="astro-3yhbiabb"> <span class="link-title astro-3yhbiabb">Templates — component catalog</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-3yhbiabb"> <svg aria-hidden="true" class="astro-3yhbiabb astro-vmvrihrw" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-3yhbiabb"> Next <br class="astro-3yhbiabb"> <span class="link-title astro-3yhbiabb">Templates — template.yaml schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+Cupboard/menu/persona surfaces.</p> </div> <footer class="sl-flex astro-c52ljnhn"> <div class="meta sl-flex astro-c52ljnhn">  <p>Last updated: <time datetime="2026-07-04T21:31:51.000Z">Jul 4, 2026</time></p> </div> <div class="pagination-links print:hidden astro-3yhbiabb" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-3yhbiabb"> <svg aria-hidden="true" class="astro-3yhbiabb astro-vmvrihrw" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-3yhbiabb"> Previous <br class="astro-3yhbiabb"> <span class="link-title astro-3yhbiabb">Templates — component catalog</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-3yhbiabb"> <svg aria-hidden="true" class="astro-3yhbiabb astro-vmvrihrw" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-3yhbiabb"> Next <br class="astro-3yhbiabb"> <span class="link-title astro-3yhbiabb">Templates — template.yaml schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

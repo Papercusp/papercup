@@ -170,6 +170,20 @@ agent's choices reviewable.
   loudly).
 - **Cupboard/Comb** gets a dedicated **Templates section** (`kind=template`) alongside
   blueprint/plugin/snapshot listings (plan P-010) — it *projects* from the repo dir.
+  **Landed (P-010):** `template` is a full listing kind end-to-end. Worker: D1
+  migration 010 (the 008-skeleton CHECK rebuild, carrying 009's `blueprint_kind`)
+  + `template` in the route layer's `LISTING_KINDS` and — because a template's
+  GUIDE.md is a composition prompt injected into the building agent's context —
+  in `REVIEW_POLICY_KINDS` (D-007: publishes land `pending`, publicly invisible
+  until operator approval at `/admin`). Operator: `template:publish` (agent tool —
+  lists `<repo>/templates/<id>/` repo-backed, listing_ref = template id) and
+  `POST /api/cupboard/install-template` (resolve listing → shallow-clone →
+  kit-validate schema + component-catalog pins → place under
+  `~/.papercusp/templates/<id>/`, where the P-011 materializer reads it; core:
+  `operator-core/lib/cupboard/install-template-core.ts`, DI'd + unit-tested).
+  UI: a **Templates** tab in the Cupboard storefront (`?kind=template`). The
+  official set publishes under **"Papercusp Official:"** titles (owner directive
+  2026-07-04).
 - **Naming caution (D-006):** `scaffold_harness`'s existing spawnable-catalog entries are
   also called "templates". These must be **unified** — the old spawnables become instances
   of this system — never two meanings of the word in one product.

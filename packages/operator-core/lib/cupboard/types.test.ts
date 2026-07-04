@@ -337,10 +337,11 @@ describe('groupListingsByKind (per-Hive rollup, D-005)', () => {
     const groups = groupListingsByKind([
       makeListing({ id: 1, listing_kind: 'plugin' }),
       makeListing({ id: 2, listing_kind: 'harness' }),
+      makeListing({ id: 5, listing_kind: 'template' }),
       makeListing({ id: 3, listing_kind: 'tool-pack' }),
       makeListing({ id: 4, listing_kind: 'blueprint' }),
     ]);
-    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'plugin', 'tool-pack']);
+    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'plugin', 'tool-pack', 'template']);
   });
 
   it('drops empty kinds', () => {
@@ -436,8 +437,8 @@ describe('groupHarnessRowsByHive (hive-first browse, comb-hive-native-sharing P-
 });
 
 describe('isListingKind / listingKindOf — kind resolution', () => {
-  it('isListingKind accepts the 5 canonical kinds, rejects everything else', () => {
-    for (const k of ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack']) {
+  it('isListingKind accepts the 6 canonical kinds, rejects everything else', () => {
+    for (const k of ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template']) {
       expect(isListingKind(k)).toBe(true);
     }
     expect(isListingKind('pack')).toBe(false); // legacy alias is NOT a canonical kind
@@ -464,8 +465,8 @@ describe('listingActionFor — the consumer action per listing kind (per-harness
     expect(listingActionFor(makeListing({}))).toBeNull(); // absent kind → harness, no pubkey
   });
 
-  it('blueprint / plugin / tool-pack / learning-pack all → install', () => {
-    for (const k of ['blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const) {
+  it('blueprint / plugin / tool-pack / learning-pack / template all → install', () => {
+    for (const k of ['blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const) {
       expect(listingActionFor(makeListing({ listing_kind: k }))).toBe('install');
     }
     // the legacy "pack" alias resolves to tool-pack → install

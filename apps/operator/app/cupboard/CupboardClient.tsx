@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -64,7 +64,7 @@ type KindFilter = 'all' | ListingKind;
  *  running-hive 'harness' tab and from harness-blueprints. */
 type ViewFilter = KindFilter | 'tools' | 'hive-blueprint';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'hive-blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'hive-blueprint', 'template', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -79,6 +79,7 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'plugin': return <Plug size={size} />;
     case 'tool-pack': return <Box size={size} />;
     case 'learning-pack': return <Brain size={size} />;
+    case 'template': return <LayoutTemplate size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
@@ -97,6 +98,7 @@ const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
   'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
+  template: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-cool), transparent 88%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 74%)' },
 };
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({
@@ -150,6 +152,7 @@ export default function CupboardClient() {
       harness: t('pot', { plural: true }),
       blueprint: 'Blueprints',
       'hive-blueprint': 'Hive Templates',
+      template: 'Templates',
       plugin: 'Plugins',
       'tool-pack': 'Tool packs',
       'learning-pack': 'Learning Packs',

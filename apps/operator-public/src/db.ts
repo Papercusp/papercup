@@ -13,8 +13,11 @@ import type { Env } from './env.ts';
  *  Migration 008 (learning-packs-2026-06-11 D-005): `pack` was RENAMED
  *  `tool-pack` (a runtime-less code-tool pack) and `learning-pack` (a
  *  distributable set of curated hive learnings) joined. `pack` stays accepted
- *  on the wire as a normalized alias for older clients. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
+ *  on the wire as a normalized alias for older clients. Migration 010
+ *  (app-templates-2026-07-04 P-010 / D-006): `template` joined — a composable
+ *  {components + GUIDE + checks} unit, repo-backed like a blueprint
+ *  (listing_ref = the template id under the repo's templates/ dir). */
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -29,12 +32,13 @@ export function normalizeListingKind(v: unknown): ListingKind | null {
 
 /**
  * Pre-publication review policy (learning-packs D-007): the INSTRUCTION-
- * CARRYING kinds — content injected into agent context (learning packs) or
- * run as agent roles (blueprints) — land `pending` at publish and go public
- * only on operator approval. Code kinds keep install-consent + reactive
- * moderation.
+ * CARRYING kinds — content injected into agent context (learning packs),
+ * run as agent roles (blueprints), or read as the building agent's
+ * composition prompt (a template's GUIDE.md — app-templates P-010) — land
+ * `pending` at publish and go public only on operator approval. Code kinds
+ * keep install-consent + reactive moderation.
  */
-export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['learning-pack', 'blueprint'];
+export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['learning-pack', 'blueprint', 'template'];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 

@@ -40,6 +40,7 @@
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
+    "@papercusp/template-kit": "*",
     "rrule": "^2.8.1",
     "@oddsmith/prospect-contract": "*"
   },

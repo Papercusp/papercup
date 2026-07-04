@@ -61,16 +61,24 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *   learning-pack → install   (a distributable set of curated hive learnings,
  *                              installed into a hive's shared memory through
  *                              the conflict review)
+ *   template      → install   (a composable {components + GUIDE + checks} unit —
+ *                              app-templates-2026-07-04 P-010 / D-006, worker
+ *                              migration 010. Repo-backed like a blueprint:
+ *                              the listing points at `templates/<listing_ref>/`
+ *                              in the repo; installing materializes the dir
+ *                              under ~/.papercusp/templates/<id>/)
  *
  * The `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005):
  * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
  * reproducible clone is the lightweight InstanceSpec, not a published snapshot.
  *
- * Review policy (learning-packs D-007): `learning-pack` + `blueprint` listings
- * publish PENDING and surface publicly only after operator approval — see
- * `review_status` on the row + `isPendingReview()`.
+ * Review policy (learning-packs D-007): `learning-pack` + `blueprint` + `template`
+ * listings publish PENDING and surface publicly only after operator approval — see
+ * `review_status` on the row + `isPendingReview()`. (A template carries GUIDE.md —
+ * a composition prompt injected into the building agent's context — so it is an
+ * instruction-carrying kind by D-007's own criterion.)
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -94,6 +102,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'plugin':
     case 'tool-pack':
     case 'learning-pack':
+    case 'template':
       return 'install';
   }
 }
