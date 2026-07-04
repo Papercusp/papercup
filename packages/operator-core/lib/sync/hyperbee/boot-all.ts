@@ -85,6 +85,46 @@ function key(workspaceId: string, harnessSlug: string): string {
 let defaultBootHarness: ((opts: BootHarnessOpts) => Promise<BootedHarnessHandle>) | null = null;
 let defaultSkipSendSideWiring = false;
 
+// ── Routing-decision latch (WI-2105) ─────────────────────────────────────────
+//
+// THE RACE this closes (bg-host, 2026-07-03): a caller reached
+// `bootSingleHarness` in the window between process start and
+// `bootSubstrateWithFallback` installing the defaults above (~75s on bg-host —
+// the wrapper waits on migrations + the substrate boot-gate first, while DBOS
+// routines are already ticking). With `defaultBootHarness` still null the call
+// booted a FULL in-process engine, cached its handle (the later sidecar sweep
+// then short-circuited on it: `alreadyBooted=1`), and held the canonical
+// corestore lock — leaving TWO concurrent substrate instances for the harness
+// (main process + sidecar), each with its own store / own-log / announcer,
+// racing the outbox drain and churning peer connections at ~1s: the tower↔VM
+// federation outage (WI-2105).
+//
+// Hosts that will decide routing (host-bootstrap, when it will later run
+// `bootSubstrateWithFallback`) arm this latch at process start;
+// `bootSingleHarness` then WAITS for the decision instead of silently
+// defaulting to in-process. Processes that never arm it (tests, the sidecar
+// itself, perf rigs) are byte-identical to before. Bounded: a wedged wrapper
+// degrades LOUDLY to today's in-process behavior instead of deadlocking boots.
+const SUBSTRATE_ROUTING_WAIT_MS = 300_000;
+let routingDecisionPending: Promise<void> | null = null;
+let resolveRoutingDecision: (() => void) | null = null;
+
+/** Arm the routing latch. Call ONLY from a process that will later run
+ *  `bootSubstrateWithFallback` (which settles it via setSubstrateBootDefaults),
+ *  BEFORE any subsystem that could issue a bootSingleHarness starts. */
+export function markSubstrateBootRoutingPending(): void {
+  if (routingDecisionPending) return;
+  routingDecisionPending = new Promise<void>((resolve) => {
+    resolveRoutingDecision = resolve;
+  });
+}
+
+function settleSubstrateBootRouting(): void {
+  resolveRoutingDecision?.();
+  resolveRoutingDecision = null;
+  routingDecisionPending = null;
+}
+
 /**
  * Register the process-global substrate boot defaults. Called once by
  * `bootSubstrateWithFallback`: in SUBSTRATE_SIDECAR mode it installs the remote
@@ -100,12 +140,16 @@ export function setSubstrateBootDefaults(opts: {
 }): void {
   if (opts.bootHarness !== undefined) defaultBootHarness = opts.bootHarness;
   if (opts.skipSendSideWiring !== undefined) defaultSkipSendSideWiring = opts.skipSendSideWiring;
+  // Either mode (sidecar factory installed OR cleared-to-in-process) IS the
+  // routing decision — release any boots waiting on the WI-2105 latch.
+  settleSubstrateBootRouting();
 }
 
 /** Test seam: clear the process-global boot defaults. Never call from production. */
 export function _resetSubstrateBootDefaultsForTests(): void {
   defaultBootHarness = null;
   defaultSkipSendSideWiring = false;
+  settleSubstrateBootRouting();
 }
 
 /** Split a handle-map key back into (workspaceId, harnessSlug). Workspace ids

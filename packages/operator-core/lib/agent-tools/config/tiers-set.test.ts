@@ -38,7 +38,7 @@ describe('config:tiers-set', () => {
           // live-verified 2026-07-02) → its limit clamps to the 158k derived
           // ceiling, NOT the [1m] 500k cap.
           { name: 'lean', spec: 'sonnet', compactionLimit: 900_000 },
-          { name: 'wide', spec: 'opus[1m]:high' }, // derived 500k ([1m] cap, owner directive 2026-07-02)
+          { name: 'wide', spec: 'opus[1m]:high' }, // derived 400k ([1m] cap, owner directive 2026-07-03)
           { name: 'lean', spec: 'haiku' }, // duplicate name — dropped
         ],
       },
@@ -51,7 +51,7 @@ describe('config:tiers-set', () => {
       { name: 'wide', spec: 'opus[1m]:high' },
     ]);
     expect(out.data.droppedInvalid).toBe(1);
-    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(500_000);
+    expect(out.data.tiers[1].effectiveCompactionLimit).toBe(400_000);
     expect(out.data.tiers[1].modelWindow).toBe(1_000_000);
   });
 
@@ -67,7 +67,7 @@ describe('config:tiers-get', () => {
     const out = (await getTool.handler({}, {} as never)) as ToolOut;
     expect(out.data.stored).toBe(false);
     const std = out.data.tiers.find((t) => t.name === 'standard')!;
-    expect(std.effectiveCompactionLimit).toBe(500_000); // sonnet alias → sonnet-5 → 500k cap
+    expect(std.effectiveCompactionLimit).toBe(400_000); // sonnet alias → sonnet-5 → 400k cap
     expect(std.compactionLimitSource).toBe('model-default');
   });
 
