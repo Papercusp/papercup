@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Default (public / Pot) favicon = the Papercup cup mark. The Swarm skin
+         swaps in a bee favicon at runtime via HiveThemeBridge, but only when the
+         THE_HIVE testing flag is on (it appends a later <link rel="icon">, which
+         wins); flag off leaves this cup. restore-pot-lexicon P-011. -->
+    <link rel="icon" type="image/svg+xml" href="/brand/papercup/favicon.svg" />
     <title>Papercusp Operator</title>
     <script>
       (() => {

@@ -249,13 +249,23 @@ for them.
   current-epoch-only member — which is **still correct and still delta-efficient** (they
   catch up live from the boundary forward).
 
-**Recommendation:** make it an explicit **hive policy** — "grant newly-admitted members
-past-epoch read keys" — and default it **ON for the canonical dogfood hive** (a new
-member is *trusted*; the cut-off exists to fence out *removed* members, not new ones).
-`manifest.cutAtEpoch` lets restore assert the member holds a key for the seed's epoch
-before trusting decryptability; if not, that store's ops defer to the live path. This
-policy question is the one item that should get an explicit owner nod in P-005 before
-the git-seed encryption lands.
+**RATIFIED (owner, 2026-07-04, D-009) — and, on grounding the code, already the
+guaranteed default, so no new key-distribution code is needed.** The owner-side
+`grantEpochKeysToMembers` (`hive-epoch-boundary-wiring.ts`) **already wraps EVERY
+epoch key `[0..current]` to a newly-admitted member**, unconditionally — a documented
+*correctness* property ("Why [0..current], not current-only"), because content is
+encrypted once per epoch and never re-encrypted, so a current-epoch-only joiner could
+read *zero* pre-join content. Restricting new members to the current epoch is explicitly
+called out there as a *deferred* forward-secrecy policy that nobody has built. So a
+newly-admitted member holds keys for every epoch the seed spans, and the corestore
+seed's epoch-ciphertext decrypts for free — and where a key hasn't arrived yet, the
+existing **decrypt-gate defers the op and drains it on key arrival** (`hive-epoch-op-gate.ts`),
+so a seeded op for a not-yet-keyed epoch is never lost. P-005b therefore reduces to a
+**named regression tripwire** (`seed-past-epoch-key-guarantee.test.ts`) that locks the
+`[0..current]` grant as a seed dependency: if the deferred forward-secrecy policy is ever
+implemented, that test fails and forces wiring the `manifest.cutAtEpoch` gate (defer a
+store to the cold path when the member lacks its epoch key) *first*. `manifest.cutAtEpoch`
+is carried for exactly that future guard.
 
 ## Cold path stays first-class (D-007)
 
