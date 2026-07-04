@@ -29,8 +29,19 @@
  *
  * DISTINCT from `work_items:reorder`, which ranks ONE bee's already-CLAIMED work-list
  * (a per-assignee queue, post-claim). This sets the GLOBAL backlog order (pre-claim).
- * Feature-family only — issue-family items (bugs/changes) aren't the dispatched backlog,
- * so a set on one is a no-op returning `applicable: false`.
+ *
+ * ⚠ STALE-CLAIM CORRECTION (found live, 2026-07-04): this used to say "feature-family
+ * only — a set on an issue-family item is a no-op returning applicable:false." That is
+ * OUT OF DATE. Since SCHEDULER_ISSUES_CLAIMABLE (P-007, work-item-deps-and-readiness-
+ * 2026-06-22) joined issue-family (bug/change/task) items into the SAME dispatched
+ * backlog, `setWorkItemPriority` writes `feature_order` on the `harness_shared.work_items`
+ * BASE row for them too (see work-items.ts ~L2164-2182) — confirmed empirically: calling
+ * this on an issue-family item now returns `applicable:true, written:true`, NOT a no-op.
+ * The EI-6835 promotion gotcha above therefore applies to issue-family items EXACTLY the
+ * same way (verified against 3 live issue-family items this session — a "sink to
+ * priority:5" attempt promoted them ahead of the unprioritized pool, then reverted to
+ * null). `schedulerIssuesClaimableEnabled()` gates this — check that flag if this ever
+ * reads as a no-op again; do not assume "issue-family = no-op" from memory.
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): steer ONE item inline
  * ({ workItem, priority?|position? }) or MANY (items:[{ workItem, priority?, position?,
@@ -73,11 +84,11 @@ export default defineTool({
   name: 'work_items:set_priority',
   profile: 'engineer',
   description:
-    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal or issue-family item returns ok:true but writes nothing. ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
+    "The Queen's steer-don't-dispatch lever: set one or many work-items' BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Single: { workItem, priority?|position? }; many via items:[…] (each: explicit priority, position:'top'|'bottom', or priority:null to clear). Returns { ok, results:[…], counts:{ ok, failed, written, proposed } }. Gate on `written` (or counts.written/proposed), NOT `ok`: a non-lease-holder proposal returns ok:true but writes nothing (issue-family items too). ⚠ EI-6835: `priority`/`position:'bottom'` set an EXPLICIT value, which under NULLS LAST ALWAYS sorts BEFORE the (usually much larger) unprioritized pool — do NOT use a 'large number' or 'bottom' to try to DEPRIORITIZE an item; that PROMOTES it instead. To deprioritize, clear it (`priority: null`) or (feature-family) flip it to `blocked`.",
   guidance: {
     when: "The Queen steering the SHARED backlog: promote/demote what the fleet claims next via position:'top'/'bottom' or an explicit integer; reprioritize several via items:[…]. Multi-Swarm: only the steering-lease holder commits (others get proposed:true).",
     notWhen:
-      "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order, feature-family only. To DEPRIORITIZE, don't use this — see the EI-6835 warning above.",
+      "Ranking a single bee's already-claimed work-list (work_items:reorder), pinning to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). GLOBAL backlog order (incl. issue-family). To DEPRIORITIZE, don't use this — see the EI-6835 warning above.",
     chaining:
       "work_items:list (the backlog) → set_priority { workItem, position:'top' } → the next claim_next pulls it first.",
     seeAlso: [

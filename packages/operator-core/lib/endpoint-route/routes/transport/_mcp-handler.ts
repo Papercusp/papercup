@@ -665,7 +665,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         remoteAddr,
         userAgent,
       });
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[spawn-signing] rejected MCP request: ${v.reason} (role=${url.searchParams.get('role')}, ` +
           `harness=${url.searchParams.get('harness')}, spawn=${url.searchParams.get('spawn')})`,
@@ -688,7 +688,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // Soft-warn period: allow unsigned URLs but log so we can see the
     // transition progress.
     if (url.searchParams.has('role') || url.searchParams.has('spawn')) {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         '[spawn-signing] accepting UNSIGNED spawn URL (set PAPERCUSP_REQUIRE_SPAWN_SIG=1 to reject). ' +
           `role=${url.searchParams.get('role')} harness=${url.searchParams.get('harness')} ` +
@@ -888,7 +888,7 @@ async function buildMcpToolContext(
             method: 'notifications/papercusp/event',
             params: { progressToken, event: name, data: wireData },
           }).catch((err) => {
-            // eslint-disable-next-line no-console
+             
             console.warn(`[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`);
           });
           // Spec-compliance: also fire the standard progress notification
@@ -899,7 +899,7 @@ async function buildMcpToolContext(
               method: 'notifications/progress',
               params: { progressToken, ...(data as Record<string, unknown>) },
             }).catch((err) => {
-              // eslint-disable-next-line no-console
+               
               console.warn(`[mcp-tool] sendNotification(progress) failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
@@ -928,7 +928,7 @@ async function buildMcpToolContext(
         method: 'notifications/tools/list_changed',
         params: {},
       }).catch((err) => {
-        // eslint-disable-next-line no-console
+         
         console.warn(`[mcp-tool] sendNotification(tools/list_changed) failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     }
@@ -1005,7 +1005,7 @@ async function buildMcpToolContext(
     requestedStructured,
     requestedDelta,
     log: (msg) => {
-      // eslint-disable-next-line no-console
+       
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
     },
     progress,
@@ -1638,7 +1638,7 @@ const handler = createMcpHandler(
                 };
               }
             } catch (err) {
-              // eslint-disable-next-line no-console
+               
               console.warn(
                 `[mcp-replay] lookup failed for ${toolName} (key=${idempotencyKey}): ` +
                   (err instanceof Error ? err.message : String(err)),
@@ -1704,7 +1704,7 @@ const handler = createMcpHandler(
                     result: result as StoredMcpResult,
                   });
                 } catch (err) {
-                  // eslint-disable-next-line no-console
+                   
                   console.warn(
                     `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
                       (err instanceof Error ? err.message : String(err)),

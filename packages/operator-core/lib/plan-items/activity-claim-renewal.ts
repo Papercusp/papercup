@@ -76,7 +76,7 @@ async function renewForOwner(owner: string): Promise<void> {
       await runWithWorkspace(workspaceId, () => renewOwnerActivityClaims(workspaceId, owner));
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[plan-item-claim] activity renewal failed for',
       owner,

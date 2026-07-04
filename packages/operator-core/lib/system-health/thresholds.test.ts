@@ -282,7 +282,7 @@ describe('deployStatus', () => {
 
 describe('plansStatus', () => {
   const pl = (o: Partial<PlansHealth> = {}): PlansHealth => ({
-    active: 2, started: 1, shipped: 5, draft: 1, itemsDone: 3, itemsTotal: 8, stalledPlans: 0, ...o,
+    active: 2, started: 1, shipped: 5, draft: 1, itemsDone: 3, itemsTotal: 8, stalledPlans: 0, startedDraft: 0, ...o,
   });
   it('warn on a stalled started plan', () => {
     expect(plansStatus(pl({ stalledPlans: 1 }))).toBe('warn');
@@ -326,7 +326,8 @@ describe('autonomyStatus', () => {
 describe('overwatchStatus — the who-watches-the-watcher panel (#15, D-004)', () => {
   const ow = (o: Partial<OverwatchPanelHealth> = {}): OverwatchPanelHealth => ({
     flagEnabled: true, started: true, alive: true, armed: true, cadenceSec: 600,
-    lastWakeAt: 0, nextFireAt: 0, staleForMs: 60_000, watchdogFires24h: 0, ...o,
+    lastWakeAt: 0, nextFireAt: 0, staleForMs: 60_000, watchdogFires24h: 0,
+    scorecardEmission: null, scorecardSkipped: false, ...o,
   });
   it('unknown (greyed) when the flag is off — the intended default-off state, NOT a failure', () => {
     expect(overwatchStatus(ow({ flagEnabled: false, started: false }))).toBe('unknown');

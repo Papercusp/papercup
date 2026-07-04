@@ -239,7 +239,7 @@ describe('P-011 scale — readiness over a 10k-node / ~30k-edge acyclic DAG', ()
     cache.invalidateByTag(WS, g.items[0]!.id);
     sweep();
     const elapsedMs = Date.now() - start;
-    // eslint-disable-next-line no-console
+     
     console.log(`[P-011 scale] ${N} nodes / ~${TARGET_EDGES} edges, two cached sweeps + one bump in ${elapsedMs}ms`);
     expect(elapsedMs).toBeLessThan(5_000);
   });

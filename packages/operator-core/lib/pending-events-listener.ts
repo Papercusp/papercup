@@ -75,12 +75,12 @@ function onNotify(payload: string): void {
       try {
         h(evt);
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error("[pending_events_listener] handler threw:", err);
       }
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error("[pending_events_listener] bad payload:", err);
   }
 }
@@ -99,7 +99,7 @@ async function ensureStarted(): Promise<void> {
       await listenerSql.listen("pending_events_inserted", onNotify);
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error("[pending_events_listener] failed to start:", err);
     started = false;
     listenerSql = null;

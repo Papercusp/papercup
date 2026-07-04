@@ -113,7 +113,7 @@ async function writeToPg(
     // stays EMPTY even though B admitted + drained the owner log. This is the apply-side twin
     // of the owner-LOG bootstrap-admit; a mismatch on the live trace pins the rebind gap.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[A-003] hive-members-drop own=${opts.harnessSlug} row.hive_home=${row.hive_home_slug} ` +
           `(cross-Hive: projection NOT bound to hive-home → roster row dropped)`,

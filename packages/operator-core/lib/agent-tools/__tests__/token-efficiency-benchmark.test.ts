@@ -29,7 +29,7 @@ function reduction(label: string, value: unknown): { pct: number; lossless: bool
   const checked = encodeToonChecked(value);
   const toon = tokens(checked.text);
   const pct = (json - toon) / json;
-  // eslint-disable-next-line no-console
+   
   console.log(`[token-bench] ${label.padEnd(32)} json=${String(json).padStart(5)} toon=${String(toon).padStart(5)} save=${(pct * 100).toFixed(1)}% lossless=${checked.lossless}`);
   return { pct, lossless: checked.lossless };
 }

@@ -82,7 +82,7 @@ function fakeDeps(over: Partial<DrillCycleDeps> = {}) {
     scope: 'harness:red-queen-sandbox',
     title: 'Smoke test failing in harness red-queen-sandbox',
     severity: 'major' as const,
-    state: 'open',
+    state: 'open' as const,
     createdAt: '2026-06-12T10:00:00.000Z',
     updatedAt: '2026-06-12T10:00:00.000Z',
     watchdogKey: KEY,

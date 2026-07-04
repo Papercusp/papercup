@@ -240,9 +240,18 @@ export function armEngineDeathSentinel(intervalMs: number = ENGINE_DEATH_SENTINE
     capture: captureImprovement,
     log: (m) => console.log(`[red-queen-sentinel] ${m}`),
   };
-  sentinelTimer = managedSetInterval('red-queen-engine-death', intervalMs, () => runEngineDeathSentinelPass(deps), {
-    category: 'watchdog',
-  });
+  sentinelTimer = managedSetInterval(
+    'red-queen-engine-death',
+    intervalMs,
+    // managedSetInterval's callback is `() => void | Promise<void>` — runEngineDeathSentinelPass()
+    // resolves a richer { checked, verdict?, captured? } shape. `.then(() => {})` (no rejection
+    // handler) collapses the RESOLVED type to void while still PROPAGATING a rejection, so
+    // managedSetInterval's own tick tracking (rec.entry.lastError) keeps seeing sentinel
+    // failures — swallowing the rejection here (a bare `.catch`) would silently blind that
+    // tracking, which is exactly the failure class this sentinel exists to catch.
+    () => runEngineDeathSentinelPass(deps).then(() => {}),
+    { category: 'watchdog' },
+  );
 }
 
 /** Disarm (tests). */

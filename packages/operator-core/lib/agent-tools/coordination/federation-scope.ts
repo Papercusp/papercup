@@ -73,7 +73,7 @@ export async function resolveWorkspaceHiveScope(
   try {
     scope = await resolveUncached(workspaceId, deps);
   } catch (e) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[federation-scope] resolve failed for ws=${workspaceId} (send stays local):`,
       e instanceof Error ? e.message : String(e),

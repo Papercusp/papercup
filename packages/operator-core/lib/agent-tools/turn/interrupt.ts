@@ -252,7 +252,7 @@ async function writeInterruptAudit(
       [id, Date.now(), actor, action, subject, JSON.stringify(details), workspaceId],
     );
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[turn:interrupt] audit write failed:', err);
   }
 }

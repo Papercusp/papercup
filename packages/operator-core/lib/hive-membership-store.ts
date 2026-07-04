@@ -469,7 +469,7 @@ export async function upsertHiveMember(
     } catch {
       /* boot-history unavailable — the console.error below still surfaces it */
     }
-    // eslint-disable-next-line no-console
+     
     console.error(
       `[hive-rekey] grantEpochKeysToMembers on upsertHiveMember failed (best-effort): ${detail}`,
     );

@@ -70,7 +70,7 @@ export function tryConsumeFederatedWake(
   if (w.spent.length + want > cap) {
     if (now - w.warnedAt > WINDOW_MS) {
       w.warnedAt = now;
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[federated-wake-rate] author device ${key.slice(0, 12)}… exceeded ${cap} federated wakes/hour — ` +
           'further wakes suppressed this window (messages still delivered; recipients see them next turn).',

@@ -96,7 +96,7 @@ export async function tryConsumeMemberMessageRate(input: {
   if ((opsPerMin != null && w.minute.length >= opsPerMin) || (rowsPerHour != null && w.hour.length >= rowsPerHour)) {
     if (now - w.warnedAt > HOUR_MS) {
       w.warnedAt = now;
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[member-rate-gate] device ${input.devicePubkey.slice(0, 12)}… exceeded the hive policy message rate — further messages quarantined this window.`,
       );

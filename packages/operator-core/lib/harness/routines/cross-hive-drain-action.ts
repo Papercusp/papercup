@@ -44,7 +44,7 @@ export async function runCrossHiveDrainTick(
 
   const reconciled = await ensureCrossHiveBoundariesWired(ctx.workspaceId, ensureOpts);
   if (reconciled.wired.length > 0 || reconciled.closed.length > 0) {
-    // eslint-disable-next-line no-console
+     
     console.log(
       `[cross-hive-drain] reconcile: wired=[${reconciled.wired.join(', ')}] closed=[${reconciled.closed.join(', ')}]`,
     );
@@ -63,14 +63,14 @@ export async function runCrossHiveDrainTick(
       delivered += out.delivered;
       pendingTotal += out.pending;
       if (out.delivered > 0 || out.failedPeers.length > 0) {
-        // eslint-disable-next-line no-console
+         
         console.log(
           `[cross-hive-drain] ${b.workspaceId}/${b.hiveSlug}: delivered=${out.delivered} ` +
             `pending=${out.pending} offlinePeers=${out.failedPeers.length} backedOff=${out.backedOffPeers.length}`,
         );
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[cross-hive-drain] drain failed for ${b.workspaceId}/${b.hiveSlug}: ${e instanceof Error ? e.message : e}`,
       );

@@ -26,7 +26,12 @@ type PlanRow = {
   status: string | null;
 };
 
-function planSourceFrom(row: PlanRow, topics: string[]): RationaleSource {
+/** The 'plan' branch of the {@link RationaleSource} union — narrowed so callers of
+ *  {@link gatherPlanSource}/{@link gatherAllPlanSources} (which always build a plan
+ *  record) get `decisions`/`planTitle` etc. without re-narrowing on `kind` themselves. */
+type PlanRationaleSource = Extract<RationaleSource, { kind: 'plan' }>;
+
+function planSourceFrom(row: PlanRow, topics: string[]): PlanRationaleSource {
   const parsed = parsePlan(row.content, { filePath: `${row.plan_slug}.md` });
   return {
     kind: 'plan',
@@ -52,7 +57,7 @@ function planSourceFrom(row: PlanRow, topics: string[]): RationaleSource {
 export async function gatherPlanSource(
   slug: string,
   harness?: string,
-): Promise<RationaleSource | null> {
+): Promise<PlanRationaleSource | null> {
   const { sql } = getOrgPg();
   const rows = harness
     ? await sql<PlanRow[]>`

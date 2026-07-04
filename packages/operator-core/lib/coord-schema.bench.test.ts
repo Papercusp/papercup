@@ -72,7 +72,7 @@ function fixture(): Array<CoordLineSource & { legacySummary: string }> {
 
 function report(label: string, before: number, after: number): void {
   const cut = (100 * (1 - after / before)).toFixed(1);
-  // eslint-disable-next-line no-console
+   
   console.log(`── ${label}: legacy ${before} tok → positional ${after} tok  (-${cut}%)`);
 }
 

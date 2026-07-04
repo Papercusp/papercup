@@ -339,6 +339,7 @@ const plansData = (o: Partial<PlansHealth> = {}): PlansHealth => ({
   itemsDone: 0,
   itemsTotal: 0,
   stalledPlans: 0,
+  startedDraft: 0,
   ...o,
 });
 

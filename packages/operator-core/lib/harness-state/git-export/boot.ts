@@ -120,7 +120,7 @@ export async function bootGitExportForHarnesses(
         }),
       );
     } catch (e) {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[git-export] boot failed for ${h.workspaceId}::${h.harnessSlug}:`,
         e instanceof Error ? e.message : String(e),
@@ -137,11 +137,11 @@ export async function bootGitExportForHarnesses(
     );
     gcDeleted = gc.deleted;
     if (gc.deleted > 0) {
-      // eslint-disable-next-line no-console
+       
       console.log(`[git-export] GC'd ${gc.deleted} orphan outbox row(s) from ${gc.orphans.length} non-registry harness(es)`);
     }
   } catch (e) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[git-export] orphan GC failed (non-fatal):', e instanceof Error ? e.message : String(e));
   }
   return { globals, handles, harnesses: harnesses.length, gcDeleted };

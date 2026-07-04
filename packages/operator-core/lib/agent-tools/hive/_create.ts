@@ -536,7 +536,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           // other (genuine) failure as a warn. The live witness path has the parent, so the owner still
           // mints epoch-0 at create (members=1 proven live).
           if (!/hive_members_hive_fkey|foreign key|violates/i.test(msg)) {
-            // eslint-disable-next-line no-console
+             
             console.warn(`[hive:create] owner self-row upsert failed (${opts.slug}): ${msg}`);
           }
         }

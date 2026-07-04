@@ -23,6 +23,7 @@ import {
   type EscalationRecord,
   type EscalationResolvedEvent,
 } from '@papercusp/coordination/core';
+import type { Sql, TransactionSql } from 'postgres';
 import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import type { AgentIdentity } from './identity';
 import { FLAGS } from '@papercusp/flags';
@@ -93,6 +94,107 @@ function withRepeatMetadata(
   };
 }
 
+function buildOpenEscalationRecord(
+  identity: AgentIdentity,
+  input: OpenEscalationInput & { meta?: EscalationMeta; harness_slug?: string },
+  dedup: EscalationDedupIdentity,
+  nowIso: string,
+): EscalationRecord {
+  const env: EscalationRecord = {
+    ts: nowIso,
+    msg_id: newMsgId(),
+    from: identity.ownerId,
+    to: ['human'],
+    kind: 'escalation',
+    severity: input.severity,
+    summary: input.summary,
+    resolved: null,
+  };
+  Object.assign(env, {
+    [OPEN_ESCALATION_DEDUP_KIND_KEY]: dedup.dedupKind,
+    [OPEN_ESCALATION_LAST_SEEN_KEY]: nowIso,
+    [OPEN_ESCALATION_REPEAT_COUNT_KEY]: 1,
+    [OPEN_ESCALATION_SUBJECT_SIGNATURE_KEY]: dedup.subjectSignature,
+  });
+  if (input.body !== undefined) env.body = input.body;
+  if (input.plan_slug !== undefined) env.plan_slug = input.plan_slug;
+  if (input.options !== undefined) env.options = input.options;
+  if (input.harness_slug !== undefined) env.harness_slug = input.harness_slug;
+  if (input.meta) Object.assign(env, input.meta);
+  return env;
+}
+
+async function bumpProjectionDuplicateWithSql(
+  sql: Sql | TransactionSql,
+  workspaceId: string,
+  dedup: EscalationDedupIdentity,
+  nowIso: string,
+): Promise<EscalationRecord | null> {
+  const rows = await sql<{ body: EscalationRecord }[]>`
+    UPDATE harness_shared.coord_open_escalations
+       SET body = jsonb_set(
+             jsonb_set(
+               body,
+               '{repeatCount}',
+               to_jsonb(COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1),
+               true
+             ),
+             '{lastSeenTs}',
+             to_jsonb(${nowIso}::text),
+             true
+           )
+     WHERE workspace_id = ${workspaceId}
+       AND body->>'dedupKind' = ${dedup.dedupKind}
+       AND body->>'subjectSignature' = ${dedup.subjectSignature}
+    RETURNING body
+  `;
+  return rows[0]?.body ?? null;
+}
+
+async function insertEscalationEventWithSql(
+  sql: Sql | TransactionSql,
+  workspaceId: string,
+  env: EscalationRecord,
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
+    VALUES (${workspaceId}, ${'escalations'}, NULL, ${env.msg_id}, ${JSON.stringify(env)}::text::jsonb, ${env.harness_slug ?? null})
+    ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+    DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
+  `;
+}
+
+async function openEscalationWithPgDedupLock(
+  identity: AgentIdentity,
+  input: OpenEscalationInput & { meta?: EscalationMeta; harness_slug?: string },
+  dedup: EscalationDedupIdentity,
+  nowIso: string,
+): Promise<EscalationRecord | null> {
+  if (!coordHasPgFastPath()) return null;
+  try {
+    const sql = coordSql();
+    const ws = coordWorkspaceId();
+    return await sql.begin(async (tx) => {
+      // EI-6840: serialize the first-writer check+insert. Without this, N
+      // request workers can all miss the open projection before any trigger has
+      // inserted a row, then append N identical escalation events.
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtextextended(
+          ${`coord-escalation-dedup:${ws}:${dedup.dedupKind}:${dedup.subjectSignature}`},
+          0
+        ))
+      `;
+      const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso);
+      if (bumped) return bumped;
+      const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
+      await insertEscalationEventWithSql(tx, ws, env);
+      return env;
+    });
+  } catch {
+    return null;
+  }
+}
+
 async function tryBumpProjectionDuplicate(
   dedup: EscalationDedupIdentity,
   nowIso: string,
@@ -101,25 +203,7 @@ async function tryBumpProjectionDuplicate(
   try {
     const sql = coordSql();
     const ws = coordWorkspaceId();
-    const rows = await sql<{ body: EscalationRecord }[]>`
-      UPDATE harness_shared.coord_open_escalations
-         SET body = jsonb_set(
-               jsonb_set(
-                 body,
-                 '{repeatCount}',
-                 to_jsonb(COALESCE(NULLIF(body->>'repeatCount', '')::int, 1) + 1),
-                 true
-               ),
-               '{lastSeenTs}',
-               to_jsonb(${nowIso}::text),
-               true
-             )
-       WHERE workspace_id = ${ws}
-         AND body->>'dedupKind' = ${dedup.dedupKind}
-         AND body->>'subjectSignature' = ${dedup.subjectSignature}
-      RETURNING body
-    `;
-    return rows[0]?.body ?? null;
+    return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso);
   } catch {
     return null;
   }
@@ -159,32 +243,14 @@ export async function openEscalation(
 ): Promise<EscalationRecord> {
   const nowIso = new Date().toISOString();
   const dedup = escalationDedupIdentity(input);
+  const locked = await openEscalationWithPgDedupLock(identity, input, dedup, nowIso);
+  if (locked) return locked;
   const bumped = await tryBumpProjectionDuplicate(dedup, nowIso);
   if (bumped) return bumped;
   const existing = await findOpenDuplicate(dedup);
   if (existing) return withRepeatMetadata(existing, dedup, nowIso, repeatCountOf(existing as Record<string, unknown>) + 1);
 
-  const env: EscalationRecord = {
-    ts: nowIso,
-    msg_id: newMsgId(),
-    from: identity.ownerId,
-    to: ['human'],
-    kind: 'escalation',
-    severity: input.severity,
-    summary: input.summary,
-    resolved: null,
-  };
-  Object.assign(env, {
-    [OPEN_ESCALATION_DEDUP_KIND_KEY]: dedup.dedupKind,
-    [OPEN_ESCALATION_LAST_SEEN_KEY]: nowIso,
-    [OPEN_ESCALATION_REPEAT_COUNT_KEY]: 1,
-    [OPEN_ESCALATION_SUBJECT_SIGNATURE_KEY]: dedup.subjectSignature,
-  });
-  if (input.body !== undefined) env.body = input.body;
-  if (input.plan_slug !== undefined) env.plan_slug = input.plan_slug;
-  if (input.options !== undefined) env.options = input.options;
-  if (input.harness_slug !== undefined) env.harness_slug = input.harness_slug;
-  if (input.meta) Object.assign(env, input.meta);
+  const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
   await coordLog.putEvent('escalations', env.msg_id, env);
   return env;
 }

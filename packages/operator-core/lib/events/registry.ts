@@ -46,7 +46,7 @@ function engine(): ReactionEngine {
     e = new ReactionRegistry<ToolInvocationEvent, string>({
       keyOf,
       onError: (err, rule) => {
-        // eslint-disable-next-line no-console
+         
         console.warn(
           `[events] rule "${rule.id}" condition threw: ${err instanceof Error ? err.message : String(err)}`,
         );

@@ -35,9 +35,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
 
-/** Reservation discipline starts here (2026-06 dispatch: migrations ≥215 go
- *  through db:next-migration). Earlier numbers predate the ledger. */
-export const ENFORCED_FROM = 215;
+/**
+ * Reservation discipline starts here. Originally 215 (2026-06 dispatch), but
+ * this lint's own SCAN was never wired into an automated gate (EI-6843) — only
+ * a manual `npm run lint:migrations` invoked it, which nobody ran — so real
+ * violations (3 duplicate-NNN pairs, 41 raw-tx-control files, ~75 unreserved
+ * numbers) accumulated PAST 215 ungated for months, all already applied and
+ * ledgered (immutable — editing them now would break their recorded
+ * checksums). Re-baselined to the current on-disk max (2026-07-04) so this
+ * boundary reflects reality: everything through 493 is grandfathered as
+ * already-tolerated legacy, and enforcement is now WIRED into the automated
+ * suite (lint-migrations.test.ts's "real sql/ directory" describe block, which
+ * `test:affected`/the green-checkpoint gate runs on every candidate) so a
+ * FUTURE violation is caught immediately instead of silently repeating this
+ * exact gap. Bump this again only when deliberately re-grandfathering more
+ * historical debt — never to silence a genuinely NEW violation. */
+export const ENFORCED_FROM = 494;
 
 /**
  * Strip dollar-quoted bodies ($$…$$ / $tag$…$tag$), quoted strings, and
@@ -95,8 +108,20 @@ export function findRawTxControl(sqlText) {
   return hits;
 }
 
-/** Group migration filenames by numeric prefix; return duplicate groups. */
-export function duplicateNumberGroups(filenames) {
+/**
+ * Group migration filenames by numeric prefix; return duplicate groups whose
+ * number is ≥ `enforcedFrom` (default ENFORCED_FROM). A duplicate BELOW that
+ * line is pre-existing, already-applied, ledgered history — the runner keys
+ * applied migrations by full FILENAME (not just the numeric prefix), so a
+ * historical same-number pair with distinct names never actually collided at
+ * runtime; it's a human-ambiguity smell, not a live defect, and renaming an
+ * already-applied file now would break its recorded checksum. Grandfathering
+ * mirrors the same enforcedFrom boundary the tx-control + reservation checks
+ * already use (EI-6843: the boundary must track reality, not just intent — it
+ * was stale for years while this lint went unrun, letting real duplicates
+ * accumulate ungated; see ENFORCED_FROM's own history note).
+ */
+export function duplicateNumberGroups(filenames, enforcedFrom = ENFORCED_FROM) {
   const byNum = new Map();
   for (const f of filenames) {
     const m = /^(\d+)-/.exec(f);
@@ -106,7 +131,7 @@ export function duplicateNumberGroups(filenames) {
     byNum.get(n).push(f);
   }
   return [...byNum.entries()]
-    .filter(([, files]) => files.length > 1)
+    .filter(([num, files]) => files.length > 1 && num >= enforcedFrom)
     .map(([num, files]) => ({ num, files: files.sort() }));
 }
 

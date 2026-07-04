@@ -39,7 +39,7 @@ export class SwarmWorkItemReplicaAuthority implements WorkItemReplicaAuthority {
       // Fail-open (cross-machine, no transport / unreachable): the op ran locally
       // and the redundancy group may transiently split until the authority is
       // reachable again. Surface the warning (D-004). On a single box never fires.
-      // eslint-disable-next-line no-console
+       
       console.warn(`[work-item-replica] authority fail-open for hive ${hiveSlug}: ${res.warning}`);
     }
     return res.value;

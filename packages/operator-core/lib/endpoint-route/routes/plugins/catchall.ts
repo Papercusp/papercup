@@ -32,7 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const HOST_EXTRAS: HttpToolHostExtras = {
   deps: PROJECTED_DEPS,
   log: (line, ctx) => {
-    // eslint-disable-next-line no-console
+     
     console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);
   },
   spawn: pluginSpawnImpl,

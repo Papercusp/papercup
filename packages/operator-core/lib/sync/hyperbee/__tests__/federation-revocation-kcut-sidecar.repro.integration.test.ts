@@ -533,14 +533,14 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         const anyKeys = await orgDb.adminSql`SELECT epoch, member_device_pubkey FROM harness_shared.hive_epoch_keys WHERE workspace_id = ${WORKSPACE_ID}`;
         const anyPlans = await orgDb.adminSql`SELECT plan_slug, origin FROM harness_shared.harness_plans WHERE workspace_id = ${WORKSPACE_ID}`;
         const ownerOps = await readOwnLogOps(owner.handle);
-        // eslint-disable-next-line no-console
+         
         console.log('[KCUT-DIAG] admittedOwner=', admittedOwner,
           'ownLogLen=', owner.handle.ownLog.length,
           'ownerOpTables=', ownerOps.map((o) => `${o.table}/${o.hbKey}/e${o.epoch ?? '-'}`),
           'B.keys=', anyKeys, 'B.plans=', anyPlans,
           'pending=', bPending.size(), 'drainQueue=', bDrainQueue.length,
           'idB.dev=', idB.devicePubkey.slice(0, 12));
-        // eslint-disable-next-line no-console
+         
         console.log('[KCUT-DIAG] B boot events:',
           listBootHistory({ workspaceId: WORKSPACE_ID, harnessSlug: JOINER_SLUG, limit: 60 })
             .map((e) => `${e.kind}:${e.message ?? ''}`).join(' | '));

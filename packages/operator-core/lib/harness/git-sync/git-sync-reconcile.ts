@@ -202,10 +202,10 @@ export function ensureGitSyncRoutinesReconciledOnce(
     for (const workspaceId of workspaceIds) {
       const r = await reconcileGitSyncRoutines({ workspaceId, ...seams });
       if (r.error) {
-        // eslint-disable-next-line no-console
+         
         console.warn(`[git-sync-reconcile] sweep failed for workspace '${workspaceId}': ${r.error}`);
       } else if (r.seeded.length || r.unseeded.length || r.skipped.some((s) => s.reason.startsWith('error:'))) {
-        // eslint-disable-next-line no-console
+         
         console.log(
           `[git-sync-reconcile] boot sweep (${workspaceId}): seeded=[${r.seeded.join(', ')}]` +
             // P-014: an eligible-but-unseeded registered repo is a blind-spot
@@ -219,7 +219,7 @@ export function ensureGitSyncRoutinesReconciledOnce(
     }
   })().catch((e) => {
     // unreachable (reconcileGitSyncRoutines never throws) — belt and braces
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[git-sync-reconcile] boot sweep crashed: ${e instanceof Error ? e.message : String(e)}`,
     );

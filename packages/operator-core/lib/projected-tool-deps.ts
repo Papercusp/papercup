@@ -97,7 +97,10 @@ async function readQuotaStateImpl(
   ctx: UnifiedToolContext,
   windowKey: string,
 ): Promise<{ count: number } | null> {
-  if (!ctx.workspaceId) return null;
+  // Captured into a local so the narrowing survives into the `sql.begin` closure below —
+  // TS does not narrow a property access (`ctx.workspaceId`) across a function boundary.
+  const workspaceId = ctx.workspaceId;
+  if (!workspaceId) return null;
   // P-003: telemetry writes are deferred (see below), so a prior call's
   // tool_invocations row may still be queued. Drain it before counting so a
   // quota'd tool never under-counts. Cheap — only quota'd tools reach here
@@ -106,7 +109,7 @@ async function readQuotaStateImpl(
   try {
     const { sql } = getOrgPg();
     const result = await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ctx.workspaceId]);
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
       return await tx.unsafe(
         `SELECT count(*)::int AS n FROM harness_shared.tool_invocations
           WHERE workspace_id = $1
@@ -114,13 +117,15 @@ async function readQuotaStateImpl(
             AND role = $3
             AND window_key = $4
             AND status = 'ok'`,
-        [ctx.workspaceId, toolName, ctx.role ?? '', windowKey],
+        [workspaceId, toolName, ctx.role ?? '', windowKey],
       );
     });
-    const n = (result as Array<{ n: number }>)[0]?.n ?? 0;
+    // postgres.js's tx.unsafe() resolves a RowList<Row[]> whose structural shape doesn't
+    // sufficiently overlap with `{n:number}[]` for a direct `as` cast — go through `unknown`.
+    const n = (result as unknown as Array<{ n: number }>)[0]?.n ?? 0;
     return { count: n };
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(`[projected-tool-deps] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
@@ -235,7 +240,7 @@ export async function flushPendingTelemetry(): Promise<void> {
               }
             });
           } catch (err) {
-            // eslint-disable-next-line no-console
+             
             console.warn(
               `[projected-tool-deps] telemetry flush batch failed (${rows.length} rows): ${err instanceof Error ? err.message : String(err)}`,
             );
@@ -404,7 +409,7 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
     telemetryQueue.splice(0, telemetryQueue.length - maxPending);
     telemetryDropped++;
     if (telemetryDropped === 1 || telemetryDropped % 1000 === 0) {
-      // eslint-disable-next-line no-console
+       
       console.warn(`[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`);
     }
   }

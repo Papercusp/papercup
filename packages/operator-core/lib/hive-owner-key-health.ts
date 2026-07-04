@@ -137,7 +137,7 @@ async function defaultRecentlyAlerted(ref: OwnedHiveKeyMissingRef): Promise<bool
 }
 
 const defaultDeps: OwnerKeyHealthDeps = {
-  // eslint-disable-next-line no-console
+   
   warn: (msg: string) => console.warn(msg),
   escalate: defaultEscalate,
   recentlyAlerted: defaultRecentlyAlerted,

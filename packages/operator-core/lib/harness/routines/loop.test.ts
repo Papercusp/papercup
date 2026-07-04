@@ -12,6 +12,7 @@ vi.mock('@papercusp/db-org', () => ({
 import {
   materializeLoop,
   buildLoopWakePrompt,
+  detectDrivenWorkItemId,
   loopRoutineName,
   computeLoopStall,
   LOOP_WAKE_ACTION,
@@ -160,6 +161,42 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     });
     expect(both).toContain('COLD loop');
     expect(both).toContain('GATED loop');
+  });
+
+  it('WI-2429 fix A: a COLD loop driving a workItem names it concretely in the prompt (not the soft "if you hold one")', () => {
+    const withItem = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold', workItem: 'WI-2339',
+    });
+    const without = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold' });
+    expect(withItem.startsWith(without)).toBe(true); // superset — the concrete line is appended
+    expect(withItem).toContain('DRIVING work-item WI-2339');
+    expect(withItem).toContain("work_items:complete { id:'WI-2339'");
+  });
+
+  it('WI-2429 fix A: a WARM loop ignores workItem in the prompt (the concrete mandate is cold-only)', () => {
+    const warm = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm', workItem: 'WI-2339' });
+    expect(warm).not.toContain('DRIVING work-item');
+  });
+});
+
+describe('detectDrivenWorkItemId (WI-2429 fix A — goal auto-detect)', () => {
+  it('returns the single WI-/EI-/F- id a goal names', () => {
+    expect(detectDrivenWorkItemId('root-cause WI-2339 and fix it')).toBe('WI-2339');
+    expect(detectDrivenWorkItemId('drive EI-7284 to green')).toBe('EI-7284');
+    expect(detectDrivenWorkItemId('implement F-12')).toBe('F-12');
+  });
+  it('normalizes a lower-case id to canonical upper-case', () => {
+    expect(detectDrivenWorkItemId('work wi-2339')).toBe('WI-2339');
+  });
+  it('returns null when the goal names NO work-item id', () => {
+    expect(detectDrivenWorkItemId('keep the fleet healthy')).toBeNull();
+    expect(detectDrivenWorkItemId('')).toBeNull();
+  });
+  it('returns null when the goal is AMBIGUOUS (multiple distinct ids) — never guess which is driven', () => {
+    expect(detectDrivenWorkItemId('reconcile WI-1 against WI-2')).toBeNull();
+  });
+  it('a repeated single id is still unambiguous (one distinct id)', () => {
+    expect(detectDrivenWorkItemId('WI-5: continue WI-5')).toBe('WI-5');
   });
 });
 

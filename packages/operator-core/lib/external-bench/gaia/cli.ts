@@ -52,7 +52,7 @@ function has(flag: string): boolean {
   return process.argv.includes(flag);
 }
 function log(...a: unknown[]): void {
-  // eslint-disable-next-line no-console
+   
   console.log(...a);
 }
 
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
 const invokedDirectly = process.argv[1] && /gaia[/\\]cli\.ts$/.test(process.argv[1]);
 if (invokedDirectly) {
   main().catch((e) => {
-    // eslint-disable-next-line no-console
+     
     console.error(e instanceof Error ? e.stack : String(e));
     process.exitCode = 1;
   });

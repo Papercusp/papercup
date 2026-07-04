@@ -194,6 +194,55 @@ export default defineTool({
     // softText fields (P-002): never bounced on length — clamp to cap here.
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
+    const carry = args.carry ?? 'warm';
+
+    // WI-2429 fix A — auto-claim the work-item this loop DRIVES, at arm time, so it is
+    // HELD from wake 1. Then the per-item work_items:checkpoint death-resilience net
+    // engages (a successor/reclaimer inherits the item + its checkpoint if the session
+    // dies — the exact WI-2339 silent-halt risk), and the cold-wake prompt can name the
+    // item concretely instead of the soft "if you hold a work-item" the cold-auto
+    // experiment measured agents ignoring. An explicit `workItem` is honored for ANY
+    // carry; goal auto-detect is scoped to COLD loops (the death-resilience scenario) so
+    // warm-loop behaviour stays byte-identical unless the arming agent opts in. The claim
+    // NEVER steals a live peer's item (claimWorkItem's compare-and-claim only takes an
+    // unheld/self-held row), so a conflict/not-found is a non-fatal NOTE, never a failed
+    // arm — arming already succeeded; this is best-effort on top.
+    const explicit = args.workItem?.trim();
+    const drivenCandidate =
+      (explicit ? explicit.toUpperCase() : undefined) ??
+      (carry === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined);
+    let claimedWorkItem: string | null = null;
+    let workItemClaim:
+      | { id: string; claimed: true }
+      | { id: string; claimed: false; reason: string; holder?: string }
+      | null = null;
+    if (drivenCandidate) {
+      try {
+        const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
+        if (wi) {
+          claimedWorkItem = drivenCandidate;
+          workItemClaim = { id: drivenCandidate, claimed: true };
+        } else {
+          // claimWorkItem returns a bare null for three outcomes — re-read + classify
+          // for an accurate, actionable note (mirrors work_items:claim's claimOne).
+          const current = await getWorkItem(drivenCandidate, harness);
+          const failure = classifyClaimFailure(current, ownerId);
+          workItemClaim =
+            failure.reason === 'conflict'
+              ? { id: drivenCandidate, claimed: false, reason: 'claim_conflict', holder: failure.holder }
+              : failure.reason === 'not_found'
+                ? { id: drivenCandidate, claimed: false, reason: 'not_found' }
+                : { id: drivenCandidate, claimed: false, reason: 'not_claimable' };
+        }
+      } catch (e) {
+        workItemClaim = {
+          id: drivenCandidate,
+          claimed: false,
+          reason: `error: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+    }
+
     const kickoff =
       wakePrompt ??
       buildLoopWakePrompt({
@@ -201,8 +250,11 @@ export default defineTool({
         intervalSec: args.intervalSec,
         harness,
         goal,
-        carry: args.carry ?? 'warm',
+        carry,
         continuation: args.continuation ?? 'settle',
+        // Only name the item in the wake prompt if we ACTUALLY hold it — a conflicted /
+        // not-found candidate must not tell the agent "you hold X".
+        workItem: claimedWorkItem,
       });
 
     const loop = await materializeLoop({
@@ -244,12 +296,23 @@ export default defineTool({
         }
       : null;
 
-    const note =
+    const baseNote =
       reachability && !reachability.reachable
         ? `⚠ Armed, but NOT wake-reachable: ${reachability.warning ?? reachability.summary} The loop row exists, but fires will NOT reach you as a fresh turn until this is fixed (re-arm from a managed/console/psu-hosted session). loop:status shows live reachability; loop:end stops it.`
         : reachability && reachability.warning
           ? `Armed (wake path: ${reachability.channel}). ⚠ ${reachability.warning} End your turn — the engine re-wakes ~${args.intervalSec}s after each turn settles. Stop with loop:end.`
           : `Armed (wake path: ${reachability?.channel ?? 'unverified'}). End your turn — the engine will re-wake this session ~${args.intervalSec}s after each turn settles. Stop anytime with loop:end.`;
+
+    // WI-2429 fix A — surface the auto-claim outcome so the arming agent sees it took (or
+    // why it didn't). A conflict/not-found never fails the arm; it's an advisory tail.
+    const claimNote = workItemClaim
+      ? workItemClaim.claimed
+        ? ` 📌 Auto-claimed work-item ${workItemClaim.id} for this loop — held from wake 1; refresh its work_items:checkpoint each wake (your death-resilience anchor: a successor inherits it if this session dies).`
+        : workItemClaim.reason === 'claim_conflict'
+          ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — already held by ${workItemClaim.holder}. Coordinate with them (coord:send); the loop is armed regardless.`
+          : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
+      : '';
+    const note = baseNote + claimNote;
 
     return {
       content: [
@@ -269,7 +332,9 @@ export default defineTool({
               costCapCents: args.costCapCents ?? null,
               firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
               customWakePrompt: wakePrompt != null,
+              workItem: claimedWorkItem,
             },
+            workItemClaim,
             reachability: reachabilityOut,
             note,
           }),

@@ -232,7 +232,7 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
       out.push({ ref: `${r.plan_slug}#${r.id ?? ''}`, kind: 'decision', text: r.title });
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[scout/cycle-deps] readNoveltyCorpus failed:', err instanceof Error ? err.message : err);
   }
   return out;

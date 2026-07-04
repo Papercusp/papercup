@@ -303,7 +303,7 @@ function trackAnnounceReflush(entry: AnnounceReflushEntry): void {
 
 function announceDebug(message: string): void {
   if (process.env.PAPERCUSP_ANNOUNCE_DEBUG !== '1') return;
-  // eslint-disable-next-line no-console
+   
   console.info(`[announce-debug] ${message}`);
 }
 

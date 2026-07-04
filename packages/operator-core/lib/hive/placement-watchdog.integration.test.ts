@@ -114,6 +114,23 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     sql = db.adminSql;
+    // EI-6650: summarizeOpenPlacements (unlike reconcileOneHive above, which takes
+    // `sql` as an explicit param) calls the module-level `getOrgPg()` internally, so
+    // without env-routing it a la _org-test-db.ts's own doc comment / the established
+    // pattern (hive-canary-action.integration.test.ts etc.) it silently connects to
+    // whatever getOrgPg() falls back to (discovery file / native :5432) — NOT this
+    // throwaway test DB — making every summarizeOpenPlacements assertion in this file
+    // vacuously true (querying an unrelated, likely-empty DB) rather than actually
+    // exercising the query against the seeded rows.
+    process.env.HARNESS_DATABASE_URL = db.appDsn;
+    process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
+    process.env.DATABASE_URL = db.adminDsn;
+    // getOrgPg()'s client is a lazy module-level singleton that only rebuilds when
+    // `_adminClient` is null — setting the env vars above does nothing if something
+    // already built it against the native-fallback DSN earlier in this worker. Force
+    // a rebuild against the just-set env so it actually targets this throwaway DB.
+    const { _resetForTests } = await import('@papercusp/db-org');
+    await _resetForTests();
   }, 120_000);
   afterAll(async () => {
     await db?.cleanup();
@@ -239,11 +256,6 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-SUMMARY-STILL-RECOVERING', status: 'in_progress', takenBy: null });
 
     const summary = await summarizeOpenPlacements(WS, HIVE);
-    console.log('DEBUG summary', JSON.stringify(summary));
-    const rawUnit = await sql`SELECT feature_id, status, workspace_id, harness_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-SUMMARY-STILL-RECOVERING'`;
-    console.log('DEBUG rawUnit', JSON.stringify(rawUnit));
-    const rawPlacement = await sql`SELECT work_item_id, status, workspace_id, install_slug FROM harness_shared.hive_placements WHERE work_item_id = 'F-SUMMARY-STILL-RECOVERING'`;
-    console.log('DEBUG rawPlacement', JSON.stringify(rawPlacement));
 
     expect(summary.recovering).toBe(1);
     expect(summary.items).toEqual([

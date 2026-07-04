@@ -41,7 +41,7 @@ export function recordBatchNudgeFire(fire: BatchNudgeFire): Promise<void> {
   })().catch((err: unknown) => {
     if (!warnedOnce) {
       warnedOnce = true;
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[code-run-nudge-telemetry] fire insert failed (further failures silent): ` +
           (err instanceof Error ? err.message : String(err)),

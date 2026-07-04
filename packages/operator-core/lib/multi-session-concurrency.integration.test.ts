@@ -173,7 +173,7 @@ describe('C3 capstone — N-session concurrency: zero loss / dup / misroute', ()
       live = false;
     }
     if (!live) {
-      // eslint-disable-next-line no-console
+       
       console.info('[capstone] papercusp_su not reachable — skipping the locks channel');
       return;
     }

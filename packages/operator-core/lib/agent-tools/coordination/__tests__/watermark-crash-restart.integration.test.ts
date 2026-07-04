@@ -71,7 +71,7 @@ try {
   await ensureCoordWatermarksTable(bootSql);
   pgOk = true;
 } catch (e) {
-  // eslint-disable-next-line no-console
+   
   console.error('[watermark-crash-restart] PG not reachable, skipping:', (e as Error)?.message);
 }
 

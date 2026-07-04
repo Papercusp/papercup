@@ -196,9 +196,17 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
   if (process.env.PAPERCUSP_SINGLE_PRIMARY_GUARD === '0') return { stop() {} };
   const envMs = Number(process.env.PAPERCUSP_SINGLE_PRIMARY_GUARD_MS);
   const intervalMs = opts.intervalMs ?? (Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_INTERVAL_MS);
-  const timer = managedSetInterval('single-primary-check', intervalMs, () => runSinglePrimaryCheck().catch(() => {}), {
-    category: 'watchdog',
-  });
+  const timer = managedSetInterval(
+    'single-primary-check',
+    intervalMs,
+    () => {
+      // managedSetInterval's callback is `() => void | Promise<void>` — runSinglePrimaryCheck()
+      // resolves a richer { fired, verdict, selfCleared } shape, so discard it via a block body
+      // (no return) rather than an expression-bodied arrow, which would leak the resolved type.
+      void runSinglePrimaryCheck().catch(() => {});
+    },
+    { category: 'watchdog' },
+  );
   return {
     stop() {
       timer.stop();

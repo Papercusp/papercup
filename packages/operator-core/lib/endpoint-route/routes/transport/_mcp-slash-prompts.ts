@@ -138,7 +138,7 @@ export async function auditSlashPromptGet(
       ],
     );
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[mcp][slash] audit write failed:', err);
   }
 }
