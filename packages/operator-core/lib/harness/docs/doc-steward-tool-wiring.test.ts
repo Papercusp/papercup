@@ -15,37 +15,37 @@
  * needed. Mirrors the COORD_ROLES "consumer half" test in coordination/roles.test.ts.
  */
 import { describe, test, expect } from 'vitest';
-import { AGENT_ROLES, SU_ROLES } from '@papercusp/agent-mcp';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../../agent-tools/coordination/roles';
 
 const DOC_STEWARD = 'doc-steward';
 
 describe('doc-steward tool wiring (EI-6643)', () => {
   test('doc-steward is a registered agent role (AGENT_ROLES)', () => {
+    // Unregistered → every role-gated allowlist silently dropped it (the EI-6643 root cause).
     expect(AGENT_ROLES as readonly string[]).toContain(DOC_STEWARD);
   });
 
-  test('doc-steward carries the documenter-equivalent SU + coord surface', () => {
-    // SU_ROLES → docs:get/outline/search resolve; COORD_ROLES → coord:* + work_items:* resolve.
-    expect(SU_ROLES as readonly string[]).toContain(DOC_STEWARD);
+  test('doc-steward is a coord role (work_items:get + coord:escalate resolve for its URL)', () => {
     expect(COORD_ROLES as readonly string[]).toContain(DOC_STEWARD);
   });
 
-  test('every tool the doc-steward persona calls admits the doc-steward role', async () => {
-    // Capability alone is not enough; the tool's agentRoles allowlist must include the
+  test('every platform tool the doc-steward persona calls admits the doc-steward role', async () => {
+    // Registration alone is not enough; each tool's agentRoles allowlist must include the
     // caller's role for a role-scoped (signed) doc-steward URL, else it fails
-    // `role_not_allowed` with no other signal. Verify the whole persona toolset, not assume.
-    const [{ default: docsGet }, { default: harnessDocsVerify }, { default: harnessDocsList }, { default: workItemsGet }, { default: coordEscalate }] =
+    // `role_not_allowed` with no other signal. Verify the whole persona toolset, don't assume.
+    // (docs:get is deliberately NOT here — the persona reads the file / harness_docs:list, and
+    // granting docs:* via SU_ROLES would strip the native file/git tools the steward needs.)
+    const [{ default: harnessDocsVerify }, { default: harnessDocsList }, { default: workItemsGet }, { default: coordEscalate }] =
       await Promise.all([
-        import('../../agent-tools/docs/get.js'),
         import('../../agent-tools/harness_docs/verify.js'),
         import('../../agent-tools/harness_docs/list.js'),
         import('../../agent-tools/work_items/get.js'),
         import('../../agent-tools/coordination/tools/escalate.js'),
       ]);
-    // The freshness-clear tool (harness_docs:verify) is the load-bearing one — without it
-    // a fixed doc re-flags every sweep forever.
-    for (const tool of [docsGet, harnessDocsVerify, harnessDocsList, workItemsGet, coordEscalate]) {
+    // harness_docs:verify is the load-bearing one — without it a fixed doc re-flags every
+    // sweep forever (the doc-steward's whole reason to exist).
+    for (const tool of [harnessDocsVerify, harnessDocsList, workItemsGet, coordEscalate]) {
       expect(tool.agentRoles, `${tool.name} must admit ${DOC_STEWARD}`).toContain(DOC_STEWARD);
     }
   });

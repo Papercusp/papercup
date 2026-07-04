@@ -109,11 +109,15 @@ export const AGENT_ROLES = [
   // freshness sweep when a doc's anchored code drifts: it re-syncs the prose to the
   // current code and `harness_docs:verify`s it. Registered late, same class as the
   // launch-fixer family above (queen/sentinel/content-fixer/release-fixer): the role
-  // existed ONLY in the blueprint, so every role-gated allowlist (SU_ROLES / COORD_ROLES
-  // / the harness_docs:* + docs:* tools it needs) filtered it out — a doc-steward spawn
-  // got a near-empty MCP catalog with NONE of docs:*/harness_docs:*/work_items:*/coord:*
-  // and no ToolSearch to load them, forcing a blind fallback to scripts/mcp-call.mjs
-  // (EI-6643). Its persona ships at blueprints/base/prompts/doc-steward.md.
+  // existed ONLY in the blueprint, so every role-gated allowlist filtered it out — a
+  // doc-steward spawn got a near-empty MCP catalog with NONE of harness_docs:* /
+  // work_items:* / coord:* and no ToolSearch to load them, forcing a blind fallback to
+  // scripts/mcp-call.mjs (EI-6643). The fix wires it into COORD_ROLES (work_items:get,
+  // coord:escalate) + the harness_docs:* allowlists (verify clears the drift flag). It is
+  // deliberately NOT in SU_ROLES — that would pull it into the fleet capability-cutover
+  // (SU_ROLES ∪ {bee}) and STRIP the native file-read/edit/git it uses to fix docs; its
+  // persona reads the file / harness_docs:list, not the SU-gated docs:get. Persona ships
+  // at blueprints/base/prompts/doc-steward.md.
   'doc-steward',
   // The SENTINEL — the fleet watcher split out of the overloaded "operator"
   // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
@@ -230,11 +234,6 @@ export const SU_ROLES = [
   'queen',
   'documenter',
   'curator',
-  // The doc-steward is a documenter SPECIALIZED for drift-healing (EI-6643) — it needs
-  // the same docs:*/read surface documenter has (docs:get/outline/search are [...SU_ROLES]).
-  // Prompt-constrained to docs-only (blueprints/base/prompts/doc-steward.md); NOT added to
-  // SU_WRITE_ROLES/OPERATOR_CONFIG_WRITE_ROLES (it is not operator-config-write authority).
-  'doc-steward',
 ] as const satisfies readonly BuiltinAgentRole[];
 
 /**

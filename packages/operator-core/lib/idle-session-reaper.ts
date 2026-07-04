@@ -430,6 +430,16 @@ export async function findIdleLiveSessions(
         FROM harness_shared.coord_presence p
         JOIN harness_shared.adv_sessions s ON s.coord_owner_id = p.owner_id AND s.ended_at IS NULL
        WHERE p.heartbeat_at IS NOT NULL`;
+    // WI-1967 — Windows conservative-on-stale (mirrors runIdleSessionReap). When
+    // the on-desktop window signal is UNAVAILABLE (Windows host + no fresh
+    // renderer push), we cannot tell which live sessions have an open wt.exe
+    // terminal, so NONE may be live-idle-terminated this sweep — fold every
+    // candidate owner into the busy set. Windows-only + additive: Linux/macOS
+    // (windowSignalUnknown always false) is unchanged, and this only ever spares
+    // more, never terminates more.
+    if (onDesktop?.windowSignalUnknown === true) {
+      for (const r of rows) if (r.coord_owner_id) busyOwners.add(r.coord_owner_id);
+    }
     const nowMs = Date.now();
     const candidates: Array<LiveIdleCandidate & { advSessionId: number }> = rows.map((r) => ({
       advSessionId: r.id,

@@ -111,7 +111,11 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   console.log(
     `[idle-session-reaper] scanned ${r.scanned} open session(s) → ` +
       `${r.dryRun ? 'WOULD end' : 'ended'} ${r.reaped} dead-process ghost(s), ` +
-      `kept ${r.keptLive} live (${r.keptOnDesktop} on-desktop/hard-exempt)` +
+      `kept ${r.keptLive} live (${r.keptOnDesktop} on-desktop/hard-exempt` +
+      (r.keptWindowSignalUnknown > 0
+        ? `, ${r.keptWindowSignalUnknown} spared: Windows on-desktop signal stale (GUI reporter down)`
+        : '') +
+      `)` +
       (r.reapedIds.length
         ? ` [ids: ${r.reapedIds.slice(0, 20).join(',')}${r.reapedIds.length > 20 ? ',…' : ''}]`
         : ''),
