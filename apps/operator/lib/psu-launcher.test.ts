@@ -544,6 +544,8 @@ describe('psu-launcher arg parsing', () => {
       profile: null,
       // drain-mode P-003: named operating mode, default none.
       mode: null,
+      // agent-allocation P-005: delegated seat template ref, default none.
+      seat: null,
       // su-context-size-variants (WI-1282): defaults to null (each client's native default).
       contextSize: null,
       personaTier: null,
@@ -607,6 +609,7 @@ describe('psu-launcher arg parsing', () => {
       launchedBy: null,
       profile: null,
       mode: null,
+      seat: null,
       contextSize: null,
       personaTier: null,
       force: false,
@@ -926,6 +929,28 @@ describe('psu-launcher arg parsing', () => {
       parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
     );
     expect(plain).not.toHaveProperty('mode');
+  });
+
+  it('agent-allocation P-005: parseArgs takes --seat=<ref>; freshSuBootstrapBody forwards seat + records --seat= in launch_argv', () => {
+    // The missing client leg P-006 caught live (2026-07-03): fleet:launch-on-plan
+    // emitted --seat=<ref> but parseArgs dropped it, so bootstrap-su never saw
+    // body.seat and consumeSeatAtBoot (mig 487) never recorded — the seat cap
+    // was delegated but unenforced.
+    expect(parseArgs([]).seat).toBeNull();
+    expect(parseArgs(['--seat=haiku:low:AUTO']).seat).toBe('haiku:low:AUTO');
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=f1', '--seat=haiku:low:AUTO']),
+    );
+    expect(body.seat).toBe('haiku:low:AUTO');
+    expect(body.launch_argv).toContain('--seat=haiku:low:AUTO');
+
+    // No seat ⇒ the field is absent (byte-identical non-seat body).
+    const plain2 = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+    );
+    expect(plain2).not.toHaveProperty('seat');
   });
 
   it('roleBootstrapBody folds a chosen account into role launches', () => {

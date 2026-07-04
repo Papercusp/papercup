@@ -427,25 +427,15 @@ try:
 except Exception:
     glance = None
 
-# 🧠 <model>·<effort> chip — the model + settings the human asked to see (e.g. opus[1m]·xhigh). Settings
-# are read ONLY in a real session (gated off in fixture/test mode) so a dev's ~/.claude/settings.json
-# can't leak into the deterministic render tests; the model still comes from the piped session JSON
-# there. ADDITIVE + FAIL-OPEN: both bits unknown ⇒ no chip.
-# Settings source: a real session reads ~/.claude/settings.json; fixture/test mode reads an
-# optional inline-JSON seam (PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE) so the settings-fallback and
-# [1m]-reinforcement paths are deterministically testable without touching a dev's real file.
-if fixture:
-    try:
-        _sraw = os.environ.get('PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE')
-        _settings = json.loads(_sraw) if _sraw else {}
-    except Exception:
-        _settings = {}
-else:
-    _settings = _user_settings()
-_sj = _session_json(stdin_raw)
-_mlabel, _meffort = model_bits(_sj, _settings)
-mchip = model_chip(_mlabel, _meffort)
-mtitle = model_title(_mlabel, _meffort)
+# 🧠 model chip / OS-title model tag — REMOVED 2026-07-03 (owner directive, WI-2124). A model that's
+# always correct across every backend needs schema work not worth doing, and a possibly-stale/incorrect
+# model is worse than showing none. So the statusline body + OS title carry NO model. The helper fns
+# (model_bits / _compact_model / model_chip / model_title / _same_family / _user_settings /
+# _session_json) stay DEFINED above for a trivial re-enable if a reliable cross-backend source lands.
+# The 4 usage sites (`if mchip: parts.append(mchip)` ×2, `set_title(term_title(..., mtitle))` ×2)
+# no-op naturally: mchip falsy ⇒ never appended; mtitle '' ⇒ term_title's `if model_tag` skips it.
+mchip = None
+mtitle = ''
 
 if not isinstance(glance, dict) or 'wake' not in glance:
     # No parseable glance. Fixture mode: an activity-shaped payload (no 'wake'

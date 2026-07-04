@@ -237,10 +237,11 @@ try:
     except Exception:
         glance = None
 
-    # Full title = the SAME assembly the Claude statusline writes (fleets 👑/👤 + colour
-    # squares, loop chip, model·effort, id, objective) — WI-1963 title parity. The model
-    # comes from the launch spec env (codex/omp have no live model object like CC's stdin).
-    title = term_title(glance, model_tag_from_spec(model_spec))
+    # Full title = the SAME assembly the Claude statusline writes (fleets 👑/👤 + colour squares,
+    # loop chip, id, objective) — WI-1963 title parity. Model display REMOVED 2026-07-03 (owner
+    # directive, WI-2124): better none than a possibly-stale model. model_tag_from_spec + the
+    # PAPERCUSP_MODEL plumbing stay defined for a trivial re-enable if a reliable source lands.
+    title = term_title(glance)
     # Strip control chars that could break out of the OSC string (defensive).
     title = ''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b')
     if not title:

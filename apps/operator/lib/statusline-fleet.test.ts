@@ -323,67 +323,28 @@ describe('statusline-fleet render (fixture mode)', () => {
     self: { objective: null },
   };
 
-  it('renders the 🧠 <model>·<effort> chip from the piped session JSON (model.display_name + effort)', () => {
+  // ── Model display REMOVED 2026-07-03 (owner directive, WI-2124): better to show nothing than a
+  //    possibly-stale/incorrect model. The 🧠 chip must NEVER render — not from the piped live model,
+  //    not from a persisted launch settings.model. (The helper fns stay defined in the script for a
+  //    trivial re-enable if a reliable cross-backend model source ever lands.) ──
+  it('WI-2124: no 🧠 model chip even with a live model piped on stdin', () => {
     const out = render(quietGlance, {}, JSON.stringify({
       model: { display_name: 'Opus 4.8 (1M context)', id: 'claude-opus-4-8' },
       effort: 'xhigh',
     }));
-    // family + the [1m] 1M-context marker + the reasoning-effort setting — the model+settings the human asked to see.
-    expect(out).toContain('🧠 opus[1m]·xhigh');
-  });
-
-  it('compacts a non-1M model with no [1m] marker (sonnet·medium)', () => {
-    const out = render(quietGlance, {}, JSON.stringify({
-      model: { display_name: 'Sonnet 4.5', id: 'claude-sonnet-4-5' },
-      effort: 'medium',
-    }));
-    expect(out).toContain('🧠 sonnet·medium');
-    expect(out).not.toContain('[1m]');
-  });
-
-  it('model present but effort absent → chip shows the model alone (no trailing separator)', () => {
-    const out = render(quietGlance, {}, JSON.stringify({ model: { display_name: 'Opus 4.8 (1M context)' } }));
-    expect(out).toContain('🧠 opus[1m]');
-    expect(out).not.toContain('opus[1m]·');
-  });
-
-  it('no session-JSON model (fixture/no-stdin shape) → no 🧠 chip, render unchanged', () => {
-    // No settings-fixture env here, so settings stay empty (a dev's ~/.claude/settings.json is
-    // read ONLY in a real, non-fixture session) — nothing to derive a label from.
-    expect(render(quietGlance)).not.toContain('🧠');
-  });
-
-  // ── #1 model accuracy: the LIVE model is authoritative; the stale launch spec must not leak ──
-  it('#1: a stale launch settings.model does NOT contaminate the LIVE model (opus→sonnet drops [1m])', () => {
-    // The reported bug: after /model-switching to a non-1M sonnet, the persisted launch spec
-    // (opus[1m]:xhigh) still marked the live model [1m] and could override its family.
-    const out = render(
-      quietGlance,
-      { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'opus[1m]:xhigh', effortLevel: 'high' }) },
-      JSON.stringify({ model: { display_name: 'Sonnet 4.5', id: 'claude-sonnet-4-5' } }),
-    );
-    expect(out).toContain('🧠 sonnet·high'); // live sonnet wins; effort still from settings
+    expect(out).not.toContain('🧠');
     expect(out).not.toContain('opus');
-    expect(out).not.toContain('[1m]');
   });
 
-  it('#1: settings.model [1m] REINFORCES the live model ONLY when the family matches', () => {
-    const out = render(
-      quietGlance,
-      { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'opus[1m]:xhigh' }) },
-      JSON.stringify({ model: { display_name: 'Opus 4.8', id: 'claude-opus-4-8' }, effort: 'xhigh' }),
-    );
-    // display_name 'Opus 4.8' carries no '1m', but the launch spec opus[1m] is the SAME family → [1m] applies.
-    expect(out).toContain('🧠 opus[1m]·xhigh');
-  });
-
-  it('#1: with NO live model piped, the label falls back wholly to the launch settings.model', () => {
+  it('WI-2124: no 🧠 model chip even with a persisted launch settings.model', () => {
     const out = render(
       quietGlance,
       { PAPERCUSP_STATUSLINE_SETTINGS_FIXTURE: JSON.stringify({ model: 'sonnet[1m]:high', effortLevel: 'high' }) },
-      '{}',
+      JSON.stringify({ model: { display_name: 'Sonnet 4.5', id: 'claude-sonnet-4-5' }, effort: 'medium' }),
     );
-    expect(out).toContain('🧠 sonnet[1m]·high');
+    expect(out).not.toContain('🧠');
+    expect(out).not.toContain('sonnet');
+    expect(out).not.toContain('[1m]');
   });
 });
 

@@ -99,6 +99,7 @@ async function resolveSpawnRecordLimit(
   sql: Sql,
   ownerId: string,
   tierMenu: () => Promise<readonly ModelTier[] | undefined>,
+  fleetMember = false,
 ): Promise<number | null> {
   try {
     const rows = await sql<{ model_spec: string | null; model_tier: string | null }[]>`
@@ -115,9 +116,9 @@ async function resolveSpawnRecordLimit(
       const tier = tiers?.find((t) => t.name === row.model_tier);
       // parseTiers already clamped a stored explicit limit to the spec's window.
       if (tier?.compactionLimit != null) return tier.compactionLimit;
-      if (tier?.spec) return defaultCompactionLimitForSpec(tier.spec);
+      if (tier?.spec) return defaultCompactionLimitForSpec(tier.spec, { fleetMember });
     }
-    if (row.model_spec) return defaultCompactionLimitForSpec(row.model_spec);
+    if (row.model_spec) return defaultCompactionLimitForSpec(row.model_spec, { fleetMember });
     return null;
   } catch {
     return null;
@@ -151,8 +152,15 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
   // settings.json) > the conservative 200k-window default (~158k). An agent's
   // own config:set-compaction-limit overwrites this at any time.
   try {
-    const unseeded = await sql<{ owner_id: string }[]>`
-      SELECT owner_id
+    // fleet_slug/fleet_role ride the presence row (mig 418 projection of
+    // fleet_membership_events): a named-fleet MEMBER (any role but 'leader')
+    // seeds the leaner [1m] member default (owner directive 2026-07-03) —
+    // its state reconstructs cheaply from the work-item, so a smaller window
+    // cuts per-wake cache spend; leaders keep the full default.
+    const unseeded = await sql<
+      { owner_id: string; fleet_slug: string | null; fleet_role: string | null }[]
+    >`
+      SELECT owner_id, fleet_slug, fleet_role
         FROM harness_shared.coord_presence
        WHERE compaction_limit IS NULL
          AND heartbeat_at > now() - interval '10 minutes'
@@ -176,10 +184,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       })());
     for (const r of unseeded) {
       try {
-        const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu);
+        const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+        const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember);
         const limit =
           fromSpawn ??
-          defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id));
+          defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id), {
+            fleetMember,
+          });
         await setCompactionLimit(r.owner_id, limit);
         out.seeded.push(r.owner_id);
       } catch {

@@ -338,26 +338,52 @@ export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /**
  * Preemptive compaction cap for `[1m]`-window sessions: they run on the full
- * 1M window but papercusp compacts them at 500k to bound token spend (owner
- * directive 2026-07-02) — 500k is ample for a leanly-scoped task, and its ×1.2
- * overshoot (600k) stays well under the 1M − margin ceiling.
+ * 1M window but papercusp compacts them at 400k to bound token spend (owner
+ * directive 2026-07-03, revised down from the original 500k of 2026-07-02:
+ * a live 500k leader session measured its non-compactable per-turn baseline
+ * at ~100k, so 400k keeps ~300k of working runway — task-quality-identical to
+ * 500k at ~25% lower cache-read cost per turn). The ×1.2 overshoot (480k)
+ * stays well under the 1M − margin ceiling.
  */
-export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 500_000;
+export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
+
+/**
+ * Leaner `[1m]` DEFAULT for named-fleet MEMBERS (owner directive 2026-07-03):
+ * a member runs short pull-item→work→complete loops whose state is cheap to
+ * reconstruct (it lives on the work-item / carry-note), so more-frequent
+ * compactions cost little — while every wake re-reads the whole context, so
+ * a smaller window directly cuts per-turn cache spend. LEADERS keep the full
+ * COMPACTION_LIMIT_DEFAULT_1M_CAP: long-lived supervision state is expensive
+ * to re-derive after compaction. This shapes the seeded DEFAULT only — an
+ * explicit config:set-compaction-limit still clamps to the SPEC ceiling
+ * (clampCompactionLimit → COMPACTION_LIMIT_DEFAULT_1M_CAP), never to this.
+ */
+export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 300_000;
 
 /**
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
  * 200k window → 158,000. EXCEPTION: a `[1m]`-carrying spec is capped at
- * 500,000 (owner directive 2026-07-02) so it compacts preemptively despite the
- * 1M window. Keyed on the `[1m]` MARKER, not the family name: a bare `sonnet`
- * / `opus` launch that skipped normalization really runs a 200k auto-compact
- * window in CC (live-verified 2026-07-02), so its soft limit must be 158k —
- * below CC's own ~167k auto trigger — or papercusp never compacts cleanly and
- * CC compacts mid-task instead.
+ * 400,000 — 300,000 when `opts.fleetMember` (owner directive 2026-07-03) —
+ * so it compacts preemptively despite the 1M window. Keyed on the `[1m]`
+ * MARKER, not the family name: a bare `sonnet` / `opus` launch that skipped
+ * normalization really runs a 200k auto-compact window in CC (live-verified
+ * 2026-07-02), so its soft limit must be 158k — below CC's own ~167k auto
+ * trigger — or papercusp never compacts cleanly and CC compacts mid-task
+ * instead. `opts.fleetMember` (fleet_role != 'leader' on a named-fleet
+ * presence row) shapes only the [1m] leg — role never changes a real-window
+ * derivation.
  */
-export function defaultCompactionLimitForSpec(spec?: string | null): number {
-  if (spec?.includes('[1m]')) return COMPACTION_LIMIT_DEFAULT_1M_CAP;
+export function defaultCompactionLimitForSpec(
+  spec?: string | null,
+  opts?: { fleetMember?: boolean },
+): number {
+  if (spec?.includes('[1m]')) {
+    return opts?.fleetMember
+      ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
+      : COMPACTION_LIMIT_DEFAULT_1M_CAP;
+  }
   const window = modelWindowForSpec(spec);
   const raw = (window - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
   return Math.floor(raw / 1000) * 1000;

@@ -290,4 +290,16 @@ describe('plan-execution delegationSatisfied — delegating LEADER via fleet:lau
     expect(c.passed).toBe(true);
     expect(c.metrics.delegationPath).not.toBe(true);
   });
+
+  it('NEGATIVE CONTROL: FAILS plan-execution when the leader talks about delegating but never calls fleet:launch-on-plan (no delegation, no traditional work)', () => {
+    const t = parseTranscript([
+      modelChange('maxwell1500/ornith-35b:IQ3_M'),
+      userMsg('You are the LEADER. Implement this plan by launching a fleet.'),
+      toolCall('plans_get', { slug: 'p' }),
+      asstText('I will launch a fleet with 2 members - option B.'),
+    ]);
+    const c = byId(t, ORNITH_CTX)['plan-execution'];
+    expect(c.passed).toBe(false);
+    expect(c.metrics.delegationPath).not.toBe(true);
+  });
 });

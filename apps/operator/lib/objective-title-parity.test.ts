@@ -84,8 +84,9 @@ const base = {
   tips: [],
 };
 
-// A live Claude model whose display_name compacts to the SAME tag the codex spec produces:
-// display_name 'Opus 4.8 (1M context)' + effort xhigh → 'opus[1m]/xhigh'  ==  spec 'opus[1m]:xhigh'.
+// Model display was REMOVED from both titles 2026-07-03 (owner directive, WI-2124). We still feed a
+// live-model stdin (Claude) and a launch model spec (codex/omp) that USED to render a model tag, to
+// prove neither title surfaces the model any more AND that the two stay byte-identical without it.
 const CC_STDIN = JSON.stringify({ model: { display_name: 'Opus 4.8 (1M context)' }, effort: 'xhigh' });
 const CODEX_SPEC = 'opus[1m]:xhigh';
 
@@ -107,7 +108,8 @@ describe('Codex/OMP title ⟷ Claude statusline title PARITY (WI-1963 #3)', () =
     expect(cx).toBe(cc);
     // sanity: the shared shape actually rendered (not two empty strings agreeing)
     expect(cc).toContain('👑 roman 🟪');
-    expect(cc).toContain('opus[1m]/xhigh');
+    expect(cc).not.toContain('opus'); // WI-2124: model no longer in the title (even with a model stdin/spec fed)
+    expect(cc).not.toContain('[1m]');
     expect(cc).toContain('⟳2m');
     expect(cc).toContain('su-9859e');
   });
@@ -137,15 +139,18 @@ describe('Codex/OMP title ⟷ Claude statusline title PARITY (WI-1963 #3)', () =
   });
 });
 
-describe('Codex/OMP objective-title hook — standalone render', () => {
-  it('renders the model from PAPERCUSP_MODEL even with no live model object', () => {
+describe('Codex/OMP objective-title hook — model REMOVED (WI-2124)', () => {
+  it('does NOT render a model tag even when PAPERCUSP_MODEL is set', () => {
     const glance = { ...base, self: { objective: null } };
-    expect(codexTitle(glance, 'sonnet:medium')).toContain('sonnet/medium');
+    const title = codexTitle(glance, 'sonnet:medium');
+    expect(title).not.toContain('sonnet');
+    expect(title).not.toContain('/medium');
+    expect(title).toBe('su-9859e'); // just the id — no model
   });
 
-  it('a bare 1M family spec keeps its [1m] marker in the title', () => {
+  it('a bare 1M family spec produces no [1m] marker in the title', () => {
     const glance = { ...base, self: { objective: null } };
-    expect(codexTitle(glance, 'opus[1m]')).toContain('opus[1m]');
+    expect(codexTitle(glance, 'opus[1m]')).not.toContain('[1m]');
   });
 
   it('no model + no glance detail still anchors the title with the id', () => {
