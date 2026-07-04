@@ -77,6 +77,23 @@ function ensureOmpHindsightConfig(): void {
   setOmpConfig('hindsight.autoRetain', 'true');
 }
 
+/** Disable the `eval` shell builtin for omp-su AGENT sessions (ornith Iter-6,
+ *  2026-07-04 / WI-2382). `eval` (python/js code-exec) is a REAL omp builtin — NOT the
+ *  "hallucinated tool" psu-launcher's weak-model-tool-tier comment long claimed. A weak
+ *  local model (ornith IQ3_M) reflexively reaches for `eval` to "call" MCP tools as code
+ *  and then DOOM-LOOPS on it: sessions 10234/10239 called it 56-80× despite the
+ *  coord-hook block AND an escalating copy-pasteable steer — message-based fixes cannot
+ *  break the reflex. Removing the tool from the surface does: with eval.py/eval.js off,
+ *  omp stops presenting the tool, so the model is forced onto tools:invoke / Bash (which
+ *  it wields fine — session 10241 claimed + verified normally the moment eval was gone).
+ *  omp-su is ALWAYS an agent (never a human typing as themselves), so disabling it here
+ *  is correct; a human who wants `eval` can re-enable per-session (`omp config set eval.py
+ *  true`) or use a different profile. */
+function ensureOmpAgentToolTierConfig(): void {
+  setOmpConfig('eval.py', 'false');
+  setOmpConfig('eval.js', 'false');
+}
+
 /** Resolve the directory `omp` lives in (so the wrapper lands on the
  *  same PATH); fallback to ~/.local/bin. */
 function resolveWrapperDir(home = homedir()): string {
@@ -213,6 +230,7 @@ export async function ensureOmpSuInstalled(): Promise<void> {
 
     await ensurePapercuspBootstrap();
     ensureOmpHindsightConfig();
+    ensureOmpAgentToolTierConfig();
 
     // Skip if the bootstrap files are already in place — fast path on reboot.
     const { playbookPath: playbookDest, coordPath: coordDest } =
