@@ -544,18 +544,22 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
   // WI-1872 (1): the compaction completion-wait needs a DIFFERENT (generous)
   // cap than the gate's own construction-time capMs (sized for a wake turn) —
   // waitAtPrompt(overrideCapMs) lets one gate instance serve both budgets.
+  // (Small millisecond scale throughout, mirroring the existing DEFERS test
+  // above — the fake `now()` advances in fixed 10ms ticks per call, and each
+  // loop iteration's setTimeout is a REAL wait sized off the FAKE deadline
+  // delta, so a large capMs here would balloon into a very slow real test.)
   it('waitAtPrompt(overrideCapMs) uses the override instead of the gate\'s own capMs', async () => {
     let t = 0;
     const g = makeAgentBusyGate({
       lastOutputAt: () => t, // perpetually busy
       quietMs: 1_000_000,
-      capMs: 30, // the gate's OWN (small) cap — must be ignored here
+      capMs: 20, // the gate's OWN (small) cap — must be ignored here
       now: () => (t += 10),
     });
-    const r = await g.waitAtPrompt(1000); // a much larger override
+    const r = await g.waitAtPrompt(80); // a larger override
     expect(r.deferred).toBe(true);
     expect(r.reason).toBe('agent-busy');
-    expect(t).toBeGreaterThanOrEqual(1000); // ran the OVERRIDE budget, not the 30ms one
+    expect(t).toBeGreaterThanOrEqual(80); // ran the OVERRIDE budget, not the 20ms one
   });
 
   it('waitAtPrompt() with no override still uses the gate\'s own capMs (back-compat)', async () => {
@@ -563,12 +567,12 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
     const g = makeAgentBusyGate({
       lastOutputAt: () => t,
       quietMs: 1_000_000,
-      capMs: 30,
+      capMs: 20,
       now: () => (t += 10),
     });
     const r = await g.waitAtPrompt();
     expect(r.deferred).toBe(true);
-    expect(t).toBeLessThan(200); // stayed close to the small 30ms cap, not a large one
+    expect(t).toBeLessThan(80); // stayed close to the small 20ms cap, not the 80ms override
   });
 
   // WI-1872 (2): the START-RACE fix — waitUntilBusy resolves the moment output
