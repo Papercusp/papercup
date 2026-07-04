@@ -269,6 +269,19 @@ async function main() {
           `You're all set — handing you to your agent now. ` +
             dim('(same window; the tutorial continues right here)'),
         );
+        // P-005: render the tutor launch-context server-side and thread it
+        // through the env seam buildHandoffArgs reads. Failure is non-fatal —
+        // the session still launches, just without the tutor brief.
+        try {
+          const lc = await api(
+            base,
+            `/desktop/onboarding-launch-context?agent=${mapFrameworkToAgent(session.chosen)}` +
+              `&mode=${args.tutorialOnly ? 'tutorial' : 'first-run'}`,
+          );
+          if (lc?.path) process.env.PAPERCUSP_ONBOARD_LAUNCH_CONTEXT = lc.path;
+        } catch (e) {
+          say(dim(`(couldn't prepare the tutorial brief: ${e?.message ?? e} — launching anyway)`));
+        }
         const code = await new Promise((resolve) => {
           const child = spawn('psu', buildHandoffArgs(session.chosen), { stdio: 'inherit' });
           child.on('exit', (c) => resolve(c ?? 0));

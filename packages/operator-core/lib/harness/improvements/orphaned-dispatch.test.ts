@@ -165,6 +165,15 @@ describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT fal
     expect(isLaneBreakageOrphan(r)).toBe(false);
   });
 
+  it('WI-2162: a worker-timeout orphan (resolved_by …-timeout) is NOT lane breakage (the invoke route clock, not a crash) — the fix for the 17+ duplicate EIs', () => {
+    const r = row({
+      id: 'd-to', itemId: 'EI-7203', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge-timeout',
+      fireError: 'worker exit 143 after 2702s [worker-timeout death 1/2; attempt 1 not charged]: Let me check for any existing plan/design',
+    });
+    expect(isLaneBreakageOrphan(r)).toBe(false);
+    expect(buildOrphanedDispatchSignals([r], { nowMs: NOW })).toEqual([]);
+  });
+
   it('a GENUINE non-env worker death (attempt charged) DOES signal — the lane may be broken', () => {
     const r = row({
       id: 'd4', itemId: 'EI-4', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'worker-exit-backedge',
