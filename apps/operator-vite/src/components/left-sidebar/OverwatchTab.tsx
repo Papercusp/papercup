@@ -27,6 +27,7 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Activity, AlertTriangle, CheckCircle2, Clock3, Eye, History, Pause, Play, ShieldCheck, XCircle } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 import ModelOverride from './ModelOverride';
 import { useModelOverride } from './useModelOverride';
 import type {
@@ -100,6 +101,7 @@ async function runOverwatchControl(tool: 'overwatch:start' | 'overwatch:pause', 
 }
 
 export default function OverwatchTab({ active }: { active: boolean }) {
+  const t = useLexicon();
   const snap = useSyncQuery<OverwatchBrief>({ queryName: 'overwatch.snapshot', args: {}, staleTime: 15_000 });
   const ctrl = useSyncQuery<OverwatchControlState>({ queryName: 'overwatch.controlState', args: {}, staleTime: 15_000 });
   const live = useSyncQuery<OverwatchLiveness>({ queryName: 'overwatch.liveness', args: {}, staleTime: 15_000 });
@@ -192,7 +194,7 @@ export default function OverwatchTab({ active }: { active: boolean }) {
             </span>
           </div>
           {slug && (
-            <Tooltip label="Supervised hive">
+            <Tooltip label={`Supervised ${t('pot', { lower: true })}`}>
               <span className="pc-owsb__hive">{slug}</span>
             </Tooltip>
           )}

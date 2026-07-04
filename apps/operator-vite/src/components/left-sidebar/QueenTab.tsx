@@ -322,7 +322,7 @@ export default function QueenTab({ active }: { active: boolean }) {
   /** Serialized, fail-soft write (the optimistic fields are already in `view`). */
   const enqueue = (patch: Record<string, unknown>) => {
     if (!home) {
-      setErr('No home hive found — start a hive first.');
+      setErr(`No home ${t('pot', { lower: true })} found — start a ${t('pot', { lower: true })} first.`);
       return;
     }
     inflightRef.current += 1;

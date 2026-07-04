@@ -33,6 +33,9 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) =>
     opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult,
 }));
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
+// routed "Supervised {pot}" tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import OverwatchTab from './OverwatchTab';
 
