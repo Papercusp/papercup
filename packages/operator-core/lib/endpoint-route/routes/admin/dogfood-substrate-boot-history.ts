@@ -94,9 +94,7 @@ const get = defineTool({
     const harnessSlug = url.searchParams.get('harness_slug') ?? undefined;
     const rawKinds = url.searchParams.get('kinds');
     const kinds = rawKinds
-      ? (rawKinds.split(',').filter((k) =>
-          (VALID_KINDS as ReadonlyArray<string>).includes(k),
-        ) as BootHistoryKind[])
+      ? (rawKinds.split(',').filter((k) => VALID_KINDS.has(k)) as BootHistoryKind[])
       : undefined;
     const rawLimit = Number.parseInt(
       url.searchParams.get('limit') ?? '50',

@@ -58,7 +58,11 @@ export default defineTool({
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many edges at once'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.rel)), {
-      message: 'pass { id, rel, target… } for one, or items:[…] for many',
+      // EI-7049: the ellipsis truncated the actual required field name, costing a
+      // failed retry (a caller without the schema loaded guessed a literal `target`
+      // field, which doesn't exist — only target_id / target_kind+target_ref do).
+      // Name them exactly; never elide a required field name in an error hint.
+      message: 'pass { id, rel, target_id } (or target_kind + target_ref instead of target_id) for one, or items:[…] for many',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);

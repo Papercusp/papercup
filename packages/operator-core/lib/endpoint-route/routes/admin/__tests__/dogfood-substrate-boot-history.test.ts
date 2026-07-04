@@ -197,6 +197,43 @@ describe('query-string → ListBootHistoryOpts mapping', () => {
     ]);
   });
 
+  it('WI-1953 regression: allows the previously-missing kinds (epoch_*, peer_unrevoked, peer_cap_near, replication_*, announce_clock_skew, join_*) — these used to be silently dropped', async () => {
+    await route[0].handler(
+      reqWith(
+        'kinds=' +
+          [
+            'join_started',
+            'join_succeeded',
+            'peer_cap_near',
+            'peer_unrevoked',
+            'replication_stalled',
+            'replication_frozen',
+            'announce_clock_skew',
+            'epoch_gate_built',
+            'epoch_gate_seen',
+            'epoch_defer',
+            'epoch_decrypt_fail',
+            'epoch_applied',
+          ].join(','),
+      ),
+      ctx(),
+    );
+    expect(lastOpts().kinds).toEqual([
+      'join_started',
+      'join_succeeded',
+      'peer_cap_near',
+      'peer_unrevoked',
+      'replication_stalled',
+      'replication_frozen',
+      'announce_clock_skew',
+      'epoch_gate_built',
+      'epoch_gate_seen',
+      'epoch_defer',
+      'epoch_decrypt_fail',
+      'epoch_applied',
+    ]);
+  });
+
   it('kinds absent → undefined (no kind filter)', async () => {
     await route[0].handler(reqWith('workspace_id=x'), ctx());
     expect(lastOpts().kinds).toBeUndefined();
