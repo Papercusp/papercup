@@ -74,6 +74,12 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // owner-attended live canary against production ChatGPT; direct native auth is the
   // fallback. Pending-flip (count 10 → 11).
   'papercusp-codex-gateway-oauth-proxy',
+  // 2026-07-04 — onboarding preview features (deterministic-onboarding-tutorial P-001,
+  // owner-directed): gates tutorial items whose backing feature isn't ready (telemetry
+  // consent, mobile pairing, auto-update channel) so a fresh install never sees them.
+  // case: incomplete; default-OFF is the intended production state (ON = testers only).
+  // Count 11 → 12; well under DARK_FLAGS_HIGH_WATERMARK (22), so no watermark bump.
+  'papercusp-onboarding-preview-features',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -184,7 +190,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // + papercusp-codex-gateway-oauth-proxy (2026-07-04, WI-2198 Option B — dark until the canary).
     // Graduated to default-ON and removed from the snapshot: papercusp-queen-warm-session
     // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met).
-    expect(offCount).toBe(11);
+    // 2026-07-04 — papercusp-onboarding-preview-features (deterministic-onboarding-tutorial
+    // P-001, owner-directed): gates not-ready tutorial items. Count 11 → 12.
+    expect(offCount).toBe(12);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

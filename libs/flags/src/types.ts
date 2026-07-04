@@ -1213,6 +1213,15 @@ export const FLAGS = {
   // /setup); the GUI wizard stays reachable at /setup?force=1 either way.
   ONBOARDING_AGENT_FIRST: "papercusp-onboarding-agent-first",
 
+  // DEFAULT OFF (owner-directed 2026-07-04, deterministic-onboarding-tutorial-2026-07-04
+  // P-001): the onboarding tutorial references features whose backing implementation is
+  // NOT ready yet — telemetry consent (anonymized crash reports), mobile pairing (pair a
+  // phone for notifications / remote control), and the auto-update channel. This flag
+  // gates those PREVIEW items: OFF ⇒ the tutorial + optional-setup flow omit them entirely
+  // (what every fresh install sees), ON ⇒ testers see them to exercise the not-yet-shipped
+  // surfaces. KNOWN_DARK_FLAGS (case: incomplete). Flip ON only to test the preview items.
+  ONBOARDING_PREVIEW_FEATURES: "papercusp-onboarding-preview-features",
+
   // DEFAULT ON (owner-directed 2026-06-23, ship-papercusp-as-single-hive): on first
   // boot a PACKAGED desktop install clones github.com/Papercusp/papercup and creates
   // the `papercusp` dogfood hive (Papercusp building itself), then homes on it. Safe
@@ -1315,6 +1324,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
     [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
+    [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
     // PER_HIVE_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
     // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
     // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
