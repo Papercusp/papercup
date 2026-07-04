@@ -262,3 +262,10 @@ import './human-queue-digest-action';
 // sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).
 import './autonomy-trust-scan-action';
+// app-templates-2026-07-04 P-009: the TEMPLATE gym (distinct from the hive role
+// gym above) — every 6h re-verify the templates⇄consumer-#1 anti-rot union
+// (materialization verbatim-copy, docs⇄catalog drift, kit pins, template-side
+// suite, quartermaster's materialized checks); a standing RED auto-files ONE
+// template-drift work-item (stable watchdogKey). Advisory, never gates. Seeded
+// ACTIVE (seed-template-gym-routine.ts).
+import './template-gym-action';

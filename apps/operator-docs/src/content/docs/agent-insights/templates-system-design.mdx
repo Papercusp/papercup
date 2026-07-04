@@ -179,7 +179,12 @@ agent's choices reviewable.
 - **Consumer #1** is the **2-hive ops construction** itself: retrofit quartermaster so its
   agentic plane + app skeleton are materialized/validated *from* the templates
   ("as-if-template-built" made literal). Validates against reality first, and stops our
-  own apps drifting from the pattern.
+  own apps drifting from the pattern. **Landed (P-013):** quartermaster consumes
+  `@papercusp/hive-app-seam` (`libs/hive-app-seam`) for its agentic plane, and carries
+  `packages/template-checks/` — the four portable suites copied verbatim + its
+  checks-config + a `DECISIONS.md` disclosing every GUIDE decision point; the union runs
+  green from the quartermaster root via `npm run template-checks` (unconfigured runs
+  skip, so the root suite stays safe).
 - **Consumer #2** is a **new simple greenfield app** (owner picks it after #1 lands) — the
   true no-hand-holding test, because a retrofit lets author knowledge leak in.
 - **Template gym:** a cadence routine rebuilds consumer #1's composition from the
