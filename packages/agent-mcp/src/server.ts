@@ -124,6 +124,40 @@ function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input: unknow
 }
 
 /**
+ * EI-7068: some MCP clients double-encode tool arguments — instead of sending
+ * the real arguments object, they JSON.stringify the WHOLE thing and wrap it
+ * under a single top-level `args` key: `{ args: '{"content":"...","kind":"x"}' }`.
+ * Every tool's Zod schema then sees its real fields as undefined at the top
+ * level and rejects with invalid_args — indistinguishable, from a single
+ * tool's schema, from the caller simply omitting required fields. This is a
+ * TRANSPORT-layer client bug, not any one tool's problem (patching per-tool
+ * schemas to accept it would just spread the workaround), so it's detected +
+ * unwrapped ONCE here, before per-tool validation.
+ *
+ * Guarded narrowly so it can never misfire on a tool that legitimately has its
+ * own `args` field: only unwraps when the incoming object's ONLY own key is
+ * literally "args" AND that value is a string which JSON.parses to a plain
+ * (non-null, non-array) object. Anything else (a real args:{...} object field,
+ * extra sibling keys, non-JSON string, array/primitive) passes through
+ * untouched and hits normal per-tool validation as before.
+ */
+export function unwrapDoubleEncodedArgs(input: unknown): unknown {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return input;
+  const keys = Object.keys(input as Record<string, unknown>);
+  if (keys.length !== 1 || keys[0] !== 'args') return input;
+  const raw = (input as { args: unknown }).args;
+  if (typeof raw !== 'string') return input;
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(raw);
+  } catch {
+    return input;
+  }
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return input;
+  return candidate;
+}
+
+/**
  * Run a tool by name with bearer-derived principal. The single entry
  * point used by both the MCP transport handler and in-process callers
  * (Operator/Oracle).
@@ -146,8 +180,10 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
       },
     };
   }
-  // Validate args via the tool's Standard Schema validator.
-  const parsed = await standardValidate(tool.args, opts.args);
+  // Validate args via the tool's Standard Schema validator. EI-7068: unwrap a
+  // degenerate double-encoded { args: "<json-string>" } shape FIRST, so a
+  // client bug at the transport layer doesn't 400 every tool it touches.
+  const parsed = await standardValidate(tool.args, unwrapDoubleEncodedArgs(opts.args));
   if (!parsed.ok) {
     return {
       ok: false,

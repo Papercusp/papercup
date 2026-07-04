@@ -37,7 +37,7 @@ vi.mock('@papercusp/tooldef', () => ({
   lookupPrompt: vi.fn(() => undefined),
 }));
 
-import { dispatch } from './server';
+import { dispatch, unwrapDoubleEncodedArgs } from './server';
 import { resolveBearer } from './auth';
 import { withWorkspace } from '@papercusp/db-org';
 import { lookup, standardValidate } from '@papercusp/tooldef';
@@ -152,6 +152,66 @@ describe('dispatch — control flow', () => {
     expect(ctx.principal).toBe(principalA);
     expect(ctx.tx).toBe(FAKE_TX);
     expect(res.response).toMatchObject({ data: { ws: 'ws-A', tx: FAKE_TX } });
+  });
+});
+
+describe('unwrapDoubleEncodedArgs — EI-7068 client double-encoding fix', () => {
+  it('unwraps { args: "<json-object-string>" } to the parsed object', () => {
+    expect(unwrapDoubleEncodedArgs({ args: '{"content":"hi","kind":"note"}' })).toEqual({
+      content: 'hi',
+      kind: 'note',
+    });
+  });
+
+  it('passes through a normal args object unchanged', () => {
+    const normal = { content: 'hi', kind: 'note' };
+    expect(unwrapDoubleEncodedArgs(normal)).toBe(normal);
+  });
+
+  it('does NOT unwrap when there are sibling keys alongside "args" (not the degenerate shape)', () => {
+    const withSibling = { args: '{"a":1}', other: 'field' };
+    expect(unwrapDoubleEncodedArgs(withSibling)).toBe(withSibling);
+  });
+
+  it('does NOT unwrap a LEGITIMATE args:{...} object field (only a STRING value triggers it)', () => {
+    const realArgsField = { args: { nested: true } };
+    expect(unwrapDoubleEncodedArgs(realArgsField)).toBe(realArgsField);
+  });
+
+  it('does NOT unwrap when the args string is not valid JSON', () => {
+    const bad = { args: 'not json {' };
+    expect(unwrapDoubleEncodedArgs(bad)).toBe(bad);
+  });
+
+  it('does NOT unwrap when the parsed JSON is an array or a primitive', () => {
+    expect(unwrapDoubleEncodedArgs({ args: '[1,2,3]' })).toEqual({ args: '[1,2,3]' });
+    expect(unwrapDoubleEncodedArgs({ args: '"just a string"' })).toEqual({ args: '"just a string"' });
+    expect(unwrapDoubleEncodedArgs({ args: '42' })).toEqual({ args: '42' });
+  });
+
+  it('passes through non-object input (null, array, primitive) unchanged', () => {
+    expect(unwrapDoubleEncodedArgs(null)).toBeNull();
+    expect(unwrapDoubleEncodedArgs(undefined)).toBeUndefined();
+    expect(unwrapDoubleEncodedArgs([1, 2])).toEqual([1, 2]);
+    expect(unwrapDoubleEncodedArgs('str')).toBe('str');
+  });
+
+  it('dispatch integration: a double-encoded call still reaches the handler with real fields', async () => {
+    // standardValidate is mocked to just echo whatever object it receives as `.value`
+    // (not literally what production Zod does, but sufficient to prove dispatch
+    // handed the UNWRAPPED object to validation, not the degenerate wrapper).
+    vi.mocked(standardValidate).mockImplementation(async (_schema: unknown, value: unknown) => ({
+      ok: true,
+      value,
+    }) as never);
+    const res = await dispatch({
+      toolName: 'test:echo',
+      args: { args: '{"x":1}' },
+      bearer: 'b',
+    });
+    expect(res.ok).toBe(true);
+    const [value] = handler.mock.calls[0];
+    expect(value).toEqual({ x: 1 });
   });
 });
 
