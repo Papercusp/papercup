@@ -923,6 +923,21 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
     expect(k).toContain('plans:get');
   });
 
+  it('bakes the literal slug + harness into the plan kickoff (ornith 10115: no slug ⇒ parked on ask)', async () => {
+    const { deriveKickoffPrompt } = await import('../routes/agent-mcp/bootstrap-su');
+    const k = deriveKickoffPrompt({
+      planSlug: 'p1',
+      harnessSlug: 'papercusp',
+      autoMode: false,
+      launchContextPath: null,
+    });
+    expect(k).toContain('handed the plan `p1`');
+    expect(k).toContain('{ slug: "p1", harness: "papercusp" }');
+    // slug-only launches still name the slug
+    const bare = deriveKickoffPrompt({ planSlug: 'p1', autoMode: true, launchContextPath: null });
+    expect(bare).toContain('{ slug: "p1" }');
+  });
+
   it('AUTO prepends the activation to whichever base applies (brief / bare)', async () => {
     const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, LAUNCH_CONTEXT_KICKOFF } = await import('../routes/agent-mcp/bootstrap-su');
     const withBrief = deriveKickoffPrompt({ planSlug: null, autoMode: true, launchContextPath: '/b.md' });

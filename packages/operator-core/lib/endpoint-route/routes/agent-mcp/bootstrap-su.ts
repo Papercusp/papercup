@@ -518,6 +518,10 @@ export const LAUNCH_CONTEXT_KICKOFF =
  */
 export function deriveKickoffPrompt(opts: {
   planSlug: string | null;
+  /** Harness the plan lives in — baked into the kickoff's literal plans:get args
+   *  next to the slug (weak-model guard: ornith session 10115 parked on an `ask`
+   *  because the kickoff said "the plan" without naming it). */
+  harnessSlug?: string | null;
   autoMode: boolean;
   launchContextPath: string | null;
   /** drain-mode P-003: DRAIN launch — the DRAIN activation REPLACES the plain AUTO
@@ -525,7 +529,10 @@ export function deriveKickoffPrompt(opts: {
   drainMode?: boolean;
 }): string | null {
   const base = opts.planSlug
-    ? deriveLaunchPromptText(null, opts.autoMode)
+    ? deriveLaunchPromptText(null, opts.autoMode, {
+        slug: opts.planSlug,
+        harness: opts.harnessSlug ?? null,
+      })
     : opts.launchContextPath
       ? LAUNCH_CONTEXT_KICKOFF
       : null;
@@ -1334,7 +1341,7 @@ const post = defineTool({
     // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
     // pure + tested) — shared with plans:launch's headless kickoff via
     // ./launch-prompt, so the two never drift.
-    const kickoffPrompt = deriveKickoffPrompt({ planSlug, autoMode, launchContextPath, drainMode });
+    const kickoffPrompt = deriveKickoffPrompt({ planSlug, harnessSlug, autoMode, launchContextPath, drainMode });
 
     const result: BootstrapSuResult = {
       status: 'ok',

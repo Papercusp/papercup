@@ -28,6 +28,39 @@ describe('deriveLaunchPromptText', () => {
       expect(text).toContain('`## Now`');
     }
   });
+
+  // Weak-model guard (ornith session 10115, 2026-07-03): the kickoff must carry the
+  // literal plans:get args — an agent handed "the plan" with no slug parked on an
+  // interactive `ask` asking which plan to read.
+  it('bakes the exact plans:get args into the AUTO kickoff when a plan ref is supplied', () => {
+    const text = deriveLaunchPromptText(null, true, { slug: 'my-plan', harness: 'papercusp' });
+    expect(text).toContain('advance the plan `my-plan`');
+    expect(text).toContain('{ slug: "my-plan", harness: "papercusp" }');
+    expect(text).toContain('do NOT ask which plan');
+    expect(text).toContain('`## Now`');
+  });
+
+  it('bakes the exact plans:get args into the routing-gate kickoff when a plan ref is supplied', () => {
+    const text = deriveLaunchPromptText(null, false, { slug: 'my-plan', harness: 'papercusp' });
+    expect(text).toContain('handed the plan `my-plan`');
+    expect(text).toContain('{ slug: "my-plan", harness: "papercusp" }');
+    expect(text).toContain('routing gate');
+  });
+
+  it('omits the harness arg when the plan ref has none', () => {
+    const text = deriveLaunchPromptText(null, true, { slug: 'my-plan' });
+    expect(text).toContain('{ slug: "my-plan" }');
+  });
+
+  it('appends the plan pointer to a custom note, and leaves a plan-less note verbatim', () => {
+    const withPlan = deriveLaunchPromptText('fix the auth test', true, {
+      slug: 'my-plan',
+      harness: 'papercusp',
+    });
+    expect(withPlan.startsWith('fix the auth test')).toBe(true);
+    expect(withPlan).toContain('{ slug: "my-plan", harness: "papercusp" }');
+    expect(deriveLaunchPromptText('fix the auth test')).toBe('fix the auth test');
+  });
 });
 
 describe('deriveLaunchTitle', () => {

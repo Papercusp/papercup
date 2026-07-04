@@ -140,12 +140,15 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
     // than fail it (launched_by is NOT NULL).
   }
 
-  const promptText = deriveLaunchPromptText(input.note);
+  const launchHarnessSlug = resolveCtxHarnessSlug(sctx);
+  const promptText = deriveLaunchPromptText(input.note, true, {
+    slug: input.slug,
+    harness: launchHarnessSlug ?? null,
+  });
   const title = deriveLaunchTitle(input.note, bundle.title);
   const note = (input.note ?? '').trim() || null;
 
   // 4. Insert the plan_runs row — the canonical record of the launch.
-  const launchHarnessSlug = resolveCtxHarnessSlug(sctx);
   const runId = await insertPlanRun({
     planSlug: input.slug,
     ...(launchHarnessSlug ? { harnessSlug: launchHarnessSlug } : {}),
