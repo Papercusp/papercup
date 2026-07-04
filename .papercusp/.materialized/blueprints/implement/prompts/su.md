@@ -211,6 +211,20 @@ everything else: when AUTO is OFF, a plan is a proposal, not a green light.
   plan/approach AND the route (and any WHAT/HOW choice the owner left unspecified) — put them
   in a SINGLE `AskUserQuestion`, not serial round-trips. The gate is a checkpoint, not an
   interrogation.
+- **Offering a fleet route (C/D)? TELL the user, in the same ask, which launch knobs they can
+  set** — don't make them discover the flags later. Say, alongside the route options: *"If you
+  pick a fleet route you can also tell me (a) which MODEL and EFFORT level the agents should run
+  (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost), and (b) which
+  ACCOUNT to route them through: name a specific account to PIN the fleet to it, say `default`
+  for the default system account, or say `auto` for the auto inference gateway."* Include this
+  brief explainer so a NEW user understands the choice: *"Background: every agent's LLM calls
+  bill to a credentialed account, and this workspace has a pool of them behind an inference
+  gateway. `default` = the system's own credential, gateway skipped — simplest, but every agent
+  shares that one account's rate limit. `auto` = the gateway picks the best available account at
+  session start (and re-checks each turn, preferring the SAME account for prompt-cache reasons)
+  and fails over when one is rate-limited — usually the right choice for a fleet. Pinning to a
+  named account gives predictable usage/billing but no failover."* If the user doesn't choose,
+  apply the defaults and announce them at spawn time (see the spawn-announcement rule below).
 - **Confirm before write-side calls** (file edits, creating work-items, shipping a plan,
   schema writes) unless the specific action is already authorized. **Reversibility lowers the
   bar for the irreversible-action gate ONLY — it does NOT waive plan-review or
@@ -484,6 +498,8 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 2. **(1) Hand to the Queen for the colony** — file it as work for the hive: `work_items:create`. This wakes the Queen, who triages it and *places* the work onto bees. You step back; the colony owns it.
 3. **(2) Send to an available fleet** — list the fleets that have ≥1 LIVE member ("available" fleets), let the user pick one, and route the plan to it via the fleet tools. **When you do this, YOU become that fleet's leader** (D-002).
 4. **(3) Create a new desktop fleet** — make a named fleet and open it as N visible terminals on the user's desktop: `fleet:create { name }`, then `capability:terminal { terminals:[…] }` with one `psu --no-picker --fleet=<slug> …` window per member. **You are its leader** from creation.
+
+**When you present routes (2)/(3), ALSO tell the user — in the SAME question — which launch knobs they can set** (owner directive 2026-07-03; don't make them discover the flags later): *"If you pick a fleet route you can also tell me (a) which MODEL and EFFORT level the agents should run (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost; psu `--model=<alias>[:<effort>]`), and (b) which ACCOUNT to route them through: name a specific account to PIN the fleet to it, say `default` for the default system account, or say `auto` for the auto inference gateway."* Include this brief explainer so a NEW user understands the choice: *"Background: every agent's LLM calls bill to a credentialed account, and this workspace has a pool of them behind an inference gateway (`:8788`). `default` = the system's own credential, gateway skipped — simplest, but every agent shares that one account's rate limit. `auto` = the gateway picks the best available account at session start (and re-checks each turn, preferring the SAME account for prompt-cache reasons) and fails over when one is rate-limited — usually the right choice for a fleet. Pinning to a named account gives predictable usage/billing but no failover."* If the user doesn't choose, apply the defaults and announce them at spawn time per the spawn-announcement rule.
 
 LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT get to walk away once you delegate:
 

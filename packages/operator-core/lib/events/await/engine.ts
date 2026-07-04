@@ -43,6 +43,12 @@ import {
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
+import {
+  recordTimeoutFires,
+  summarizeTimeoutFires,
+  TIMEOUT_WAKE_GUIDANCE,
+  TIMEOUT_WAKE_SUMMARY,
+} from './timeout-fallback';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -464,12 +470,29 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
     if (wakes.length > 0) {
       await insertDeliveries({
         awaits: wakes,
-        payload: { timeout: true },
-        summary: 'await deadline passed without the event firing',
+        // P-004: the non-event is a prompt to RECONCILE, not to give up — carry the
+        // re-orient/re-arm guidance so the woken agent reconciles instead of re-hanging.
+        payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE },
+        summary: TIMEOUT_WAKE_SUMMARY,
         workspaceId: ws,
       });
     }
-    log(`fired ${timedOut.length} timed-out awaits`);
+    // P-003 detector: group this sweep's timeout-fires by key family and accumulate
+    // across sweeps — a family that keeps timing out (with ~no event ever) is a
+    // systematic dead-drop (mistyped key / dead or renamed emitter) the fallback
+    // would otherwise silently mask. Log the per-sweep breakdown; warn loudly the
+    // first time a family's lifetime total crosses the threshold.
+    const families = summarizeTimeoutFires(timedOut);
+    log(
+      `fired ${timedOut.length} timed-out awaits — by key family: ` +
+        families.map((f) => `${f.family}×${f.count}`).join(', '),
+    );
+    for (const c of recordTimeoutFires(families)) {
+      log(
+        `⚠ DEAD-DROP suspected: key family "${c.family}" has timed out ${c.total}× (process lifetime) — ` +
+          'a mistyped key, a dead/renamed emitter, or an event that never fires. Investigate the emit side.',
+      );
+    }
   }
 
   const lapsed = await expireLapsedAwaits(ws);
