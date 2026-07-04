@@ -134,6 +134,29 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it('EI-6694 real shape: a dead loop:arm owner loop, all three axes, at the HIGHEST real streak (220) is NOT re-escalated', () => {
+    // EI-6694 (loop-su-9e3ca906-101d-4933-a3e1-3ab4034a4fce@*): the pinned su session ended
+    // cleanly (exit 0) 2026-06-21; the loop then stuck-backstopped 220 consecutive times (5-min
+    // interval) before its routine went active:false, its last fire freezing 2026-07-01 (~3 days
+    // stale). All three exclusion axes apply at once — loop:arm OWNER loop (target_owner_id
+    // non-null, its own dead-owner escalation), routine auto-paused (active:false), and a >6h-stale
+    // frozen watermark. This is the HIGHEST real-world streak pinned in this file (prior max was
+    // EI-6698 at 175), so it guards against a future change that (wrongly) gated any of the three
+    // guards below some streak ceiling — which would re-open this exact escalation.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-9e3ca906-101d-4933-a3e1-3ab4034a4fce',
+        consecutive_errors: 220,
+        last_status: 'loop-stuck-backstop',
+        routine_active: false,
+        routine_target_owner_id: 'su-9e3ca906-101d-4933-a3e1-3ab4034a4fce',
+        last_fired_at: new Date(NOW - 3 * 24 * HOUR_MS).toISOString(), // ~3 days stale frozen watermark
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
