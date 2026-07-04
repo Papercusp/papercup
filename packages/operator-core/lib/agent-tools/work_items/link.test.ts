@@ -35,6 +35,27 @@ beforeEach(() => {
   guardM.mockResolvedValue(null); // default: no cycle
 });
 
+describe('work_items:link args schema (EI-7049)', () => {
+  it('rejects a call missing id/rel/items with a message naming the EXACT field (no truncated ellipsis)', () => {
+    const r = tool.args.safeParse({});
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const msg = r.error.issues[0]?.message ?? '';
+      // The bug: "target…" elided the actual field name. `items:[…]` is a fine,
+      // non-eliding ellipsis (it denotes "array contents"), so only ban the
+      // specific truncated-field form, not every ellipsis in the message.
+      expect(msg).not.toContain('target…');
+      expect(msg).toContain('target_id');
+      expect(msg).toContain('target_kind');
+      expect(msg).toContain('target_ref');
+    }
+  });
+
+  it('accepts a well-formed single-shorthand call (id + rel present, target checked later by the handler)', () => {
+    expect(tool.args.safeParse({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T' }).success).toBe(true);
+  });
+});
+
 describe('work_items:link handler (bulk keyed-array)', () => {
   it('inline single edge links once and returns one result', async () => {
     const b = await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T' });
