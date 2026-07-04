@@ -52,6 +52,11 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // progresses (or is freed/reclaimed) the stalled signal simply stops, so its
   // absence reliably means resolution.
   'stalled-claim',
+  // EI-5994: collectLoopStalledSignals filters `r.active = true` — once the dead-owner
+  // reaper (loop-unreachable-guard / autoPauseLoopRoutine) deactivates the routine, this
+  // signal STOPS firing immediately and unconditionally (not just recency-gated), so its
+  // absence reliably means the underlying loop is gone/paused, not merely quiet.
+  'loop-stalled',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */

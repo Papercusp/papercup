@@ -247,7 +247,16 @@ export function matchGlob(pattern: string, value: string): boolean {
  * auto). Shared vocabulary with the known-open aging escalation's infra-class
  * (D-004 — the shorter aging threshold keys off the same set). PROPOSED (P-004).
  */
-export const INFRA_SIGNAL_SOURCES: readonly string[] = ['service-down', 'fire-circuit-open', 'migration-drift'];
+export const INFRA_SIGNAL_SOURCES: readonly string[] = [
+  'service-down',
+  'fire-circuit-open',
+  'migration-drift',
+  // EI-5994: a dead-owner engine loop (loop:arm) parked with no completion signal is an
+  // environment/session-liveness fact (the owner's process/wake-channel died), not a
+  // product idea a worker can code-fix — misrouting it to ideaType:product/triageDecision:place
+  // was the second half of the mis-triage this closes.
+  'loop-stalled',
+];
 
 /** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */
 export const INFRA_PATH_PATTERNS: readonly string[] = [

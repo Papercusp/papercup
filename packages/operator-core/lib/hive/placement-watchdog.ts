@@ -1495,6 +1495,15 @@ export function buildOpenPlacementSummary(
       summary.items.push({ workItemId: r.work_item_id, status: r.status, failCount: r.fail_count, harness: r.harness_slug });
     }
   }
+  // EI-6005: the wake-brief renders only `caps.placements`-many items (a bounded
+  // sample) — with cursed items commonly outnumbering the rare 'recovering' one,
+  // an itemRows-order truncation could silently drop the ONE item that actually
+  // needs action ("re-place NOW") while still showing every merely-cursed id
+  // ("STOP re-placing"). Sort recovering FIRST (then stranded, then cursed) so the
+  // truncated sample always includes every recovering item before any lower-
+  // priority one is shown.
+  const PRIORITY: Record<string, number> = { recovering: 0, stranded: 1, cursed: 2 };
+  summary.items.sort((a, b) => (PRIORITY[a.status] ?? 3) - (PRIORITY[b.status] ?? 3));
   return summary;
 }
 
