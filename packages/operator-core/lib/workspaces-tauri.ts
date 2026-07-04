@@ -31,6 +31,27 @@ export function isDesktop(): boolean {
   return isDesktopRuntime();
 }
 
+/**
+ * Tauri v2's app (non-plugin) commands are LOCAL-CONTENT-ONLY: `__TAURI_INTERNALS__` is
+ * injected on EVERY origin the desktop shell can navigate to (dev/prod/staging/local), but
+ * the runtime's ACL only grants app commands on the dev shell's `devUrl` origin. On every
+ * other origin `commands.workspaces*()` throws `"<cmd> not allowed. Command not found"` /
+ * `"...Plugin not found"` BEFORE the Rust handler ever runs — see
+ * agent-insights/env-switcher-bar-one-in-webview-bar-tauri-sourced.mdx (the same mechanism
+ * already fixed there for `list_envs` / `wsl_status`). WI-2143: `isDesktopRuntime()` alone
+ * can't tell dev from a remote origin, so every desktop-first call below used to let this
+ * denial propagate as an uncaught error (a recurring "workspaces: workspaces_list not
+ * allowed. Command not found" toast on every WorkspaceSwitcher mount on a non-dev origin).
+ * Because the handler never ran on a denial, falling back to the HTTP path — which performs
+ * the exact same `registry.json` read/mutation — is always safe (no double-effect risk).
+ * Narrowly matched so a GENUINE desktop-side error (e.g. `r.status === 'error'`) still
+ * surfaces to the caller instead of silently degrading.
+ */
+function isAclDeniedError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /not allowed\.\s*(Command|Plugin) not found/i.test(msg);
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -44,25 +65,38 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function listWorkspaces(): Promise<WorkspaceRegistry> {
   if (isDesktopRuntime()) {
-    return commands.workspacesList() as Promise<Registry>;
+    try {
+      return (await commands.workspacesList()) as Registry;
+    } catch (e) {
+      if (!isAclDeniedError(e)) throw e;
+      // ACL-denied on a non-dev origin — fall through to the HTTP path below.
+    }
   }
   return http<WorkspaceRegistry>('/api/workspaces');
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {
   if (isDesktopRuntime()) {
-    const r = await commands.workspacesCreate(name);
-    if (r.status === 'error') throw new Error(r.error);
-    return r.data;
+    try {
+      const r = await commands.workspacesCreate(name);
+      if (r.status === 'error') throw new Error(r.error);
+      return r.data;
+    } catch (e) {
+      if (!isAclDeniedError(e)) throw e;
+    }
   }
   return http<Workspace>('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
   if (isDesktopRuntime()) {
-    const r = await commands.workspacesRename(id, name);
-    if (r.status === 'error') throw new Error(r.error);
-    return;
+    try {
+      const r = await commands.workspacesRename(id, name);
+      if (r.status === 'error') throw new Error(r.error);
+      return;
+    } catch (e) {
+      if (!isAclDeniedError(e)) throw e;
+    }
   }
   await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -72,9 +106,13 @@ export async function renameWorkspace(id: string, name: string): Promise<void> {
 
 export async function deleteWorkspace(id: string): Promise<void> {
   if (isDesktopRuntime()) {
-    const r = await commands.workspacesDelete(id);
-    if (r.status === 'error') throw new Error(r.error);
-    return;
+    try {
+      const r = await commands.workspacesDelete(id);
+      if (r.status === 'error') throw new Error(r.error);
+      return;
+    } catch (e) {
+      if (!isAclDeniedError(e)) throw e;
+    }
   }
   await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
@@ -99,10 +137,18 @@ export function resolveWorkspaceSwitchTarget(id: string, opts?: { resetTo?: stri
   return opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
 }
 export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
+  let handledByDesktop = false;
   if (isDesktopRuntime()) {
-    const r = await commands.workspacesSwitch(id);
-    if (r.status === 'error') throw new Error(r.error);
-  } else {
+    try {
+      const r = await commands.workspacesSwitch(id);
+      if (r.status === 'error') throw new Error(r.error);
+      handledByDesktop = true;
+    } catch (e) {
+      if (!isAclDeniedError(e)) throw e;
+      // ACL-denied on a non-dev origin — fall through to the HTTP path below.
+    }
+  }
+  if (!handledByDesktop) {
     await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   }
   if (typeof window !== 'undefined') {

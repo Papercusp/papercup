@@ -55,6 +55,14 @@ export const CORESTORE_SEED_KIND = 'corestore';
 /** `.replicate()` is typed loosely upstream; it returns a duplex stream. */
 type Pipeable = { pipe<T extends Pipeable>(dest: T): T; destroy(): void };
 
+/** `store.get()` is typed loosely upstream (`unknown`); narrow at the boundary. */
+interface ReadableCore {
+  readonly length: number;
+  ready(): Promise<void>;
+  update(opts?: { wait?: boolean }): Promise<void>;
+  get(i: number, opts?: { wait?: boolean }): Promise<unknown>;
+}
+
 /** Context for {@link createCorestoreSeedProvider}.cut (build/release time). */
 export interface CorestoreCutContext {
   /** The live/quiescent source store to cut from (the owner's store). */
@@ -105,7 +113,7 @@ async function dirSize(root: string): Promise<number> {
 
 /** Open a core by key in `store` and pull every block into local storage. */
 async function downloadFullCore(store: Corestore, keyHex: string): Promise<number> {
-  const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' });
+  const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
   await core.ready();
   await core.update({ wait: true });
   const len: number = core.length;
@@ -145,13 +153,12 @@ export function createCorestoreSeedProvider(): SeedProvider {
       }
       const hash = await hashDir(stagingDir);
       const sizeBytes = await dirSize(stagingDir);
-      const meta: CorestoreSeedMeta = { coreKeys: [...coreKeys], coreLengths };
       const entry: SeedStoreEntry = {
         kind: CORESTORE_SEED_KIND,
         hash,
         sizeBytes,
         source: { type: 'resource', path: stagingDir },
-        meta,
+        meta: { coreKeys: [...coreKeys], coreLengths },
       };
       return { entry, payload: { path: stagingDir } };
     },
@@ -182,7 +189,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
       await seedStore.ready();
       // Pre-open each core in the seed store so it is served over replication.
       for (const keyHex of coreKeys) {
-        const c = seedStore.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' });
+        const c = seedStore.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
         await c.ready();
       }
       const { teardown } = pipeReplicate(seedStore, target);

@@ -39,6 +39,8 @@ interface ConvertEventData {
   status?: string;
   workItem?: { id?: string; harness?: string | null };
   planItem?: { plan?: string; item?: string; status?: string | null };
+  /** EI-7189: set when the item's prior (just-lapsed) claim holder still looks alive. */
+  priorHolderWarning?: { owner: string; ownerLabel: string | null; sessionState: string };
 }
 
 /**
@@ -112,11 +114,18 @@ export default defineTool({
       render: (e) => {
         const d = dataOf(e);
         const verb = d.status === 'resumed' ? 'resumed' : 'converted →';
+        // EI-7189: when the item's prior claim just lapsed but its owner still looks
+        // alive, surface that in the PICKUP BROADCAST itself — not just the caller's
+        // own tool result — so the (possibly still-working) prior holder sees the
+        // heads-up fleet-wide, the same channel that caught the WI-2086 collision.
+        const warn = d.priorHolderWarning
+          ? ` ⚠️ prior holder '${d.priorHolderWarning.ownerLabel ?? d.priorHolderWarning.owner}' still ${d.priorHolderWarning.sessionState} — coordinate before continuing`
+          : '';
         return {
           category: 'claim',
           summary: `⛏ ${d.planItem?.plan}#${d.planItem?.item} ${verb} ${d.workItem?.id} — picked up${
             e.ctx.uiClientId ? ` (${e.ctx.uiClientId})` : ''
-          }`,
+          }${warn}`,
           ...(d.planItem?.plan ? { plan_slug: d.planItem.plan } : {}),
           to: ['*'],
         };

@@ -204,6 +204,48 @@ describe('workspaces-tauri', () => {
     expect(navigateClient).not.toHaveBeenCalled();
   });
 
+  it('falls back to the HTTP path when the desktop command is ACL-denied (WI-2143 — remote-origin, e.g. prod/staging/local, not the dev devUrl)', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesList.mockRejectedValue(new Error('workspaces_list not allowed. Command not found'));
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    await expect(listWorkspaces()).resolves.toEqual({ current: 'alpha', workspaces: [{ id: 'alpha', name: 'Alpha' }] });
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces', expect.objectContaining({ cache: 'no-store' }));
+  });
+
+  it('falls back to the HTTP path on ACL-denied desktop errors for create/rename/delete too', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesCreate.mockRejectedValue(new Error('workspaces_create not allowed. Command not found'));
+    commands.workspacesRename.mockRejectedValue(new Error('workspaces_rename not allowed. Plugin not found'));
+    commands.workspacesDelete.mockRejectedValue(new Error('workspaces_delete not allowed. Command not found'));
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ id: 'beta', name: 'Beta' }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { createWorkspace, renameWorkspace, deleteWorkspace } = await import('../workspaces-tauri');
+
+    await expect(createWorkspace('Beta')).resolves.toEqual({ id: 'beta', name: 'Beta' });
+    await expect(renameWorkspace('beta', 'Beta 2')).resolves.toBeUndefined();
+    await expect(deleteWorkspace('beta')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to the HTTP switch path (and still navigates) when the desktop switch command is ACL-denied', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesSwitch.mockRejectedValue(new Error('workspaces_switch not allowed. Command not found'));
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { switchWorkspace } = await import('../workspaces-tauri');
+
+    await switchWorkspace('gamma', { resetTo: '/harness?ws=gamma' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/switch', expect.objectContaining({ method: 'POST' }));
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=gamma', { hard: true });
+  });
+
   it('surfaces web/static path fetch failures', async () => {
     vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({ error: 'boom' }) }));
     const {

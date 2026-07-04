@@ -24,10 +24,10 @@ agent too — usually the one you asked to create the fleet — and its job is
 supervision: notice a dead or stuck member, relaunch it, keep dependencies
 honest, and report milestones to you.
 
-**Presence** is how everyone knows who's alive: each agent heartbeats, and
-any agent (or the GUI) can ask "who is on what right now?" A member that
-goes silent gets its claimed work reclaimed automatically — a crashed
-terminal never strands a task.
+**Presence** is how everyone knows who's alive: each agent heartbeats, so
+the leader (or you, in the GUI) can see at a glance who's online and step in
+the moment a member goes quiet — which is exactly when its claims expire and
+its work returns to the queue, the same claim-safety you met with work items.
 
 Fleets are visible things: named, listed in the GUI, and persistent — you
 can kill every window tonight and re-launch members onto the same fleet

@@ -77,28 +77,13 @@ function ensureOmpHindsightConfig(): void {
   setOmpConfig('hindsight.autoRetain', 'true');
 }
 
-/** Disable the `eval` shell builtin for omp-su AGENT sessions (ornith Iter-6,
- *  2026-07-04 / WI-2382). `eval` (python/js code-exec) is a REAL omp builtin — NOT the
- *  "hallucinated tool" psu-launcher's weak-model-tool-tier comment long claimed. A weak
- *  local model (ornith IQ3_M) reflexively reaches for `eval` to "call" MCP tools as code
- *  and then DOOM-LOOPS on it: sessions 10234/10239 called it 56-80× despite the
- *  coord-hook block AND an escalating copy-pasteable steer — message-based fixes cannot
- *  break the reflex. Removing the tool from the surface does: with eval.py/eval.js off,
- *  omp stops presenting the tool, so the model is forced onto tools:invoke / Bash (which
- *  it wields fine — session 10241 claimed + verified normally the moment eval was gone).
- *  omp-su is ALWAYS an agent (never a human typing as themselves), so disabling it here
- *  is correct; a human who wants `eval` can re-enable per-session (`omp config set eval.py
- *  true`) or use a different profile. */
-function ensureOmpAgentToolTierConfig(): void {
-  // Disable EVERY eval-shell language, not just py/js — a weak model reaches for `eval` by
-  // reflex regardless of language, and leaving eval.rb/eval.jl enabled leaves the same
-  // doom-loop attractor half-open (the omp `eval` builtin is still presented). All four off
-  // ⇒ omp stops presenting the tool at all (ornith iter10 completion, 2026-07-04 / WI-2382).
-  setOmpConfig('eval.py', 'false');
-  setOmpConfig('eval.js', 'false');
-  setOmpConfig('eval.rb', 'false');
-  setOmpConfig('eval.jl', 'false');
-}
+// NOTE (eval-disable scoping, 2026-07-04 / WI-2382): the `eval` builtin doom-loop fix for weak
+// local models (ornith IQ3_M reaches for `eval` to run MCP calls as code and loops 56–80× — fatal)
+// used to live here as a GLOBAL `omp config set eval.*=false`. That leaked the disable into the
+// user's OWN direct (non-psu) omp sessions. It now lives PER-SESSION in psu-launcher's
+// `writeOmpSessionConfigDir` (string-surgery on the isolated PI_CONFIG_DIR copy), so eval is off
+// only for psu-launched agent sessions and the user's global ~/.omp keeps eval enabled. The
+// coord-hook `isEvalCall` execution-block (agent-session-gated) remains as defense-in-depth.
 
 /** Resolve the directory `omp` lives in (so the wrapper lands on the
  *  same PATH); fallback to ~/.local/bin. */
@@ -236,7 +221,6 @@ export async function ensureOmpSuInstalled(): Promise<void> {
 
     await ensurePapercuspBootstrap();
     ensureOmpHindsightConfig();
-    ensureOmpAgentToolTierConfig();
 
     // Skip if the bootstrap files are already in place — fast path on reboot.
     const { playbookPath: playbookDest, coordPath: coordDest } =

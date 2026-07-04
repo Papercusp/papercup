@@ -45,7 +45,7 @@ import {
   type WorkItem,
   type WorkItemKind,
 } from '../work-items';
-import { claimPlanItem } from './liveness';
+import { claimPlanItem, type PriorHolderWarning } from './liveness';
 import type { LivenessMode, PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 
@@ -117,6 +117,9 @@ export type ConvertPlanItemResult =
       mode: LivenessMode;
       viaAssignment: boolean;
       planItem: { plan: string; item: string; status: string | null; text: string | null };
+      /** EI-7189: set when the item's prior (just-lapsed) claim holder still looks
+       *  alive — a heads-up to coordinate before continuing, NOT a refusal. */
+      priorHolderWarning?: PriorHolderWarning;
     }
   | { status: 'refused'; reason: string; assignee?: string }
   | { status: 'conflict'; conflict: PlanItemClaim };
@@ -323,6 +326,7 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
       mode: claimRes.mode,
       viaAssignment: claimRes.viaAssignment,
       planItem,
+      priorHolderWarning: claimRes.priorHolderWarning,
     };
   }
 
@@ -381,5 +385,6 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     mode: claimRes.mode,
     viaAssignment: claimRes.viaAssignment,
     planItem,
+    priorHolderWarning: claimRes.priorHolderWarning,
   };
 }

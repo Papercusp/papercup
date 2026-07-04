@@ -280,11 +280,42 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(written).toContain('default: papercusp-gateway/claude-sonnet-4-6');
   });
 
-  it('default (no opts) copies config.yml VERBATIM (discovery untouched)', () => {
+  it('default (no opts) leaves discovery untouched (config copied, eval-off block appended)', () => {
     writeOmpSessionConfigDir('sess1', {}, home);
     const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
     expect(written).toContain('discoveryMode: mcp-only'); // unchanged
     expect(written).toContain('discoveryMode: true');
+  });
+
+  it('disables the eval builtin (py/js/rb/jl → false) in the per-session config (WI-2382 scoping fix)', () => {
+    // AGENT_CFG has NO eval: block — the surgery must APPEND a canonical all-off one so the weak
+    // local model can never doom-loop on eval. This replaces the former GLOBAL omp-config disable.
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect(written).toContain('eval:');
+    for (const lang of ['py', 'js', 'rb', 'jl']) {
+      expect(written).toMatch(new RegExp(`\\n\\s+${lang}:\\s*false`));
+    }
+  });
+
+  it('does NOT mutate the user’s global ~/.omp config (eval stays as the user set it)', () => {
+    // The scoping guarantee the owner asked for: a user’s own DIRECT (non-psu) omp keeps eval.
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const globalCfg = readFileSync(join(home, '.omp', 'agent', 'config.yml'), 'utf8');
+    expect(globalCfg).toBe(AGENT_CFG); // untouched — no eval: block injected into the global
+    expect(globalCfg).not.toContain('eval:');
+  });
+
+  it('FLIPS an inherited eval:on block to off (remove-then-append, no duplicate key)', () => {
+    // A user who had eval ENABLED globally: the copy must still come out disabled, exactly once.
+    const withEval =
+      AGENT_CFG + 'eval:\n  py: true\n  js: true\n  rb: true\n  jl: true\n';
+    writeFileSync(join(home, '.omp', 'agent', 'config.yml'), withEval);
+    writeOmpSessionConfigDir('sess1', {}, home);
+    const written = readFileSync(agentPath('sess1', 'config.yml'), 'utf8');
+    expect((written.match(/^eval:/gm) ?? []).length).toBe(1); // exactly one eval: block
+    expect(written).not.toMatch(/\n\s+py:\s*true/); // no leftover on-value
+    expect(written).toMatch(/\n\s+py:\s*false/);
   });
 
   it('carries the faithful model registry + auth so model resolution survives relocation', () => {

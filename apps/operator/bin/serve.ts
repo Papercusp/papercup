@@ -506,6 +506,21 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`${sig} — shutting down`);
+    // WI-2667: a hung graceful stop must NEVER leave this process alive. On
+    // 2026-07-04 (packaged Mac dogfood) SIGTERM ran this handler — the sync
+    // cleanup below stopped PG, but the async `await pg.stop()` never resolved
+    // (pg_ctl stalled on the already-dying postmaster), so `process.exit(0)`
+    // never ran. The operator stayed alive ~1h45m with PG down and every
+    // background loop (DBOS executor, append-heavy invalidator, watchdogs)
+    // flailing against a dead DB — an endless error storm — AND, because the
+    // process never exited, launchd KeepAlive never respawned it, so PG never
+    // came back. A ref'd hard deadline guarantees exit regardless of any
+    // stalled await, which also restores crash-recovery (exit → launchd
+    // respawn → fresh boot brings PG back up).
+    const forceExit = setTimeout(() => {
+      log(`${sig} — shutdown deadline exceeded; force-exiting`);
+      process.exit(0);
+    }, 4000);
     try {
       server?.close?.();
     } catch {
@@ -522,6 +537,7 @@ async function main(): Promise<void> {
     // this completes; the sync work above already covered the essentials.
     void (async () => {
       if (pg) await pg.stop().catch(() => {});
+      clearTimeout(forceExit);
       process.exit(0);
     })();
   };

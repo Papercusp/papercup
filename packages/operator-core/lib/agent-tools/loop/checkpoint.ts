@@ -24,6 +24,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveHiveHomeSlug } from '../../hive/wake';
 import { setLoopCarryNote, renderCarryNote } from '../../carry-note';
+import { getLoopStatus } from '../../harness/routines/loop';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
@@ -99,11 +100,22 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
-    // Resolve the harness the loop lives under exactly like loop:arm (explicit arg →
-    // scoped session harness → home hive), so the carry-note scope key matches the one
-    // the wake executor reads (loopScope(harness, ownerId)). No `?? ''` collapse — an
-    // empty namespace would collide across hives.
-    const harness = args.harness ?? ctx.harnessSlug ?? resolveHiveHomeSlug(undefined, undefined);
+    // WI-2148: the carry-note scope key MUST match what the cold-wake READER resolves —
+    // and the reader gets `harness` from the ColdLoopMarker the FIRE stamped on the wake
+    // payload, which is the ARMED ROUTINE's fixed `install_slug` (loop.ts's getLoopStatus),
+    // NOT the checkpointing session's own ctx.harnessSlug. Those two can legitimately
+    // differ wake-to-wake for the SAME loop (observed live: wakes 1-3 wrote
+    // 'loop:*:<owner>', wake-4 wrote 'loop:papercusp:<owner>' because ctx.harnessSlug
+    // resolved differently across wakes) — writing under the session's transient harness
+    // instead of the routine's fixed one creates a SECOND, stale-diverging carry_notes row;
+    // a cold reset that resolves the note by the routine's install_slug then reads whichever
+    // row is stale. Resolve from the armed routine FIRST (the single source of truth the
+    // reader also uses); only fall back to the old session-context chain when no routine is
+    // armed yet (e.g. a checkpoint written before the first loop:arm — an edge case, since
+    // loop:checkpoint's whole purpose assumes an armed loop already exists).
+    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
+    const harness =
+      armedRoutine?.harnessSlug ?? args.harness ?? ctx.harnessSlug ?? resolveHiveHomeSlug(undefined, undefined);
     if (!harness) {
       return {
         content: [

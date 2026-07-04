@@ -133,6 +133,11 @@ export const commands = {
 	 *  sibling operators a webview can't (CORS).
 	 */
 	listEnvs: () => __TAURI_INVOKE<EnvInfo[]>("list_envs"),
+	/**
+	 *  Tauri command form — for an in-webview trigger (menu item, button), not just
+	 *  the global shortcut.
+	 */
+	openDocsSearchPalette: () => __TAURI_INVOKE<void>("open_docs_search_palette"),
 };
 
 /* Types */

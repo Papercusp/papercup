@@ -1269,6 +1269,17 @@ export function writeOmpSessionConfigDir(sessionId, opts = {}, home = homedir())
         .replace(/^(\s*discoveryMode:\s*)(?:mcp-only|all|auto)\s*$/gm, '$1off')
         .replace(/^(\s*discoveryMode:\s*)true\s*$/gm, '$1false');
     }
+    // Disable the `eval` builtin (py/js/rb/jl) in THIS psu agent session's config copy ONLY — never
+    // the user's global ~/.omp, which keeps eval for their own DIRECT (non-psu) omp use. A weak local
+    // model reflexively runs MCP calls as `eval` code and DOOM-LOOPS on it (WI-2382 iter4/5: 56–80×,
+    // fatal); removing it from the surface is the fix that works (a coord-hook execution-block alone
+    // doesn't stop the model REACHING for it). This replaces the former GLOBAL `omp config set
+    // eval.*=false` in ensure-omp-su, which leaked the disable into the user's own non-psu omp (owner
+    // scoping fix 2026-07-04 / WI-2382). Remove any inherited `eval:` block, then append a canonical
+    // all-off one — deterministic whether the copied global had eval on, off, or absent.
+    cfg = cfg.replace(/^eval:[ \t]*\n(?:[ \t]+\S.*\n?)*/gm, '');
+    if (!cfg.endsWith('\n')) cfg += '\n';
+    cfg += 'eval:\n  py: false\n  js: false\n  rb: false\n  jl: false\n';
     writeFileSync(join(dstAgent, 'config.yml'), cfg, { mode: 0o600 });
     // Faithful model registry + auth so model resolution + provider baseUrls survive the
     // relocation (the data root collapses onto the relocated configRoot; missing registry ⇒

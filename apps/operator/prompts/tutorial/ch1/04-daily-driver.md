@@ -29,8 +29,7 @@ teamwork. Ending a session is just closing it; anything durable the agent
 did (plans, work items, memory) survives, and the next session picks up
 where things stand.
 
-The no-committing rule surprises engineers: in Papercusp workspaces, a
-background **git-sync** routine commits and pushes the whole shared tree
-every few minutes. Agents (and you, when working in a shared workspace) just
-leave changes in the tree — isolation and conflict-handling are the
-platform's job, not yours.
+That last rule — nobody runs `git commit` — surprises engineers most. It's
+how dozens of agents share one checkout without tripping over each other:
+you just leave changes in the tree and a background routine handles the rest.
+Chapter 5 has a whole section on exactly how that works and why it's safe.

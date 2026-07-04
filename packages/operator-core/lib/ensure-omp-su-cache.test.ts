@@ -119,16 +119,17 @@ describe('ensureOmpSuInstalled — single-flight cache', () => {
     const p2 = mod.ensureOmpSuInstalled();
     await Promise.all([p1, p2]);
 
-    // The heavy bootstrap (installPapercuspFiles) + the 9 omp-config shellouts
-    // (5 hindsight + 4 eval-tool-tier) ran exactly once despite two concurrent
-    // callers — the single-flight guard, not two re-runs.
+    // The heavy bootstrap (installPapercuspFiles) + the 5 omp-config shellouts
+    // (hindsight only: memory.backend + 4 hindsight.*) ran exactly once despite two
+    // concurrent callers — the single-flight guard, not two re-runs. (The eval-tool-tier
+    // disable moved to psu-launcher's per-session config, WI-2382 scoping fix.)
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(9);
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
 
     // A THIRD call after settle still reuses the cache (no re-run).
     await mod.ensureOmpSuInstalled();
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(9);
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
   });
 
   it('HOLDS the cache on rejection — a failing run is not retried by the next call', async () => {
@@ -171,16 +172,17 @@ describe('ensureOmpSuInstalled — platform guard', () => {
 });
 
 describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
-  it('fires the 9 `omp config set` shellouts (omp on PATH) with the hindsight + eval-tool-tier keys', async () => {
+  it('fires the 5 `omp config set` shellouts (omp on PATH) with the hindsight keys only', async () => {
     setPlatform('linux');
     const mod = await import('./ensure-omp-su');
 
     await mod.ensureOmpSuInstalled();
 
-    // 9 keys: memory.backend + 4 hindsight.* (ensureOmpHindsightConfig), then eval.py/js/rb/jl
-    // (ensureOmpAgentToolTierConfig — disables the eval builtin in EVERY language for weak agent
-    // sessions so they can't doom-loop on it, WI-2382) — each a separate `omp config set`.
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(9);
+    // 5 keys: memory.backend + 4 hindsight.* (ensureOmpHindsightConfig) — each a separate `omp
+    // config set`. The eval-tool-tier disable is NO LONGER set here: it moved to psu-launcher's
+    // per-session config (writeOmpSessionConfigDir string-surgery) so eval is off only for psu
+    // agent sessions and the user's global ~/.omp keeps eval enabled (WI-2382 scoping fix).
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
     const keysSet = execFileSyncSpy.mock.calls.map((c) => {
       const argv = c[1] as string[];
       return argv[2]; // omp config set <key> <value>
@@ -191,10 +193,6 @@ describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
       'hindsight.scoping',
       'hindsight.autoRecall',
       'hindsight.autoRetain',
-      'eval.py',
-      'eval.js',
-      'eval.rb',
-      'eval.jl',
     ]);
     // Each is an `omp config set …` invocation.
     for (const call of execFileSyncSpy.mock.calls) {
@@ -203,11 +201,9 @@ describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
     }
     // memory.backend → hindsight specifically.
     expect(execFileSyncSpy.mock.calls[0][1]).toEqual(['config', 'set', 'memory.backend', 'hindsight']);
-    // eval-tool-tier: the eval builtin is disabled in EVERY language (py/js/rb/jl → false) for
-    // agent sessions so no eval-shell variant is left as a doom-loop attractor.
+    // NO eval.* shellout fires here anymore (moved to per-session psu-launcher config).
     for (const lang of ['eval.py', 'eval.js', 'eval.rb', 'eval.jl']) {
-      const call = execFileSyncSpy.mock.calls.find((c) => (c[1] as string[])[2] === lang);
-      expect(call?.[1]).toEqual(['config', 'set', lang, 'false']);
+      expect(execFileSyncSpy.mock.calls.find((c) => (c[1] as string[])[2] === lang)).toBeUndefined();
     }
   });
 

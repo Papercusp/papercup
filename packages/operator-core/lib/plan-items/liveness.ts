@@ -39,6 +39,8 @@ import {
   type LivenessMode,
 } from './claims';
 import { workGroupExists, isWorkGroupMember } from './work-group';
+import { getPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
+import { fetchWakeability, deriveSessionState, type SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 // ── 1. Liveness mode (shared-ness) ──────────────────────────────────────────────
 
@@ -93,8 +95,52 @@ export interface ClaimPlanItemOpts {
   ttlSec?: number;
 }
 
+/** EI-7189: surfaced when the item's PREVIOUS claim had just lapsed (TTL-expired,
+ *  not released) yet its owner still looks alive — the WI-2086 double-start
+ *  signature (a busy agent's claim ages out from under them while they keep
+ *  working, and the next claimant sails in with zero warning). Advisory only:
+ *  never blocks the claim, just tells the new holder to coordinate first. */
+export interface PriorHolderWarning {
+  owner: string;
+  ownerLabel: string | null;
+  sessionState: SessionState;
+  note: string;
+}
+
+/**
+ * PURE: should a just-stolen LAPSED claim warn the new claimant that its previous
+ * owner still looks alive? Exported for unit tests — the presence/wakeability FETCH
+ * that produces `priorSessionState` is the untested IO seam (best-effort, mirrors
+ * presence-wakeability.ts's own fetchWakeability/deriveSessionState split: the
+ * decision is pure, the lookup is glue).
+ */
+export function priorHolderStillLive(
+  priorClaim: Pick<PlanItemClaim, 'owner' | 'expired'> | null,
+  callerOwner: string,
+  priorSessionState: SessionState | null,
+): boolean {
+  if (!priorClaim || !priorClaim.expired) return false; // nothing lapsed to warn about
+  if (priorClaim.owner === callerOwner) return false; // reclaiming your OWN lapsed lease
+  return priorSessionState === 'live' || priorSessionState === 'parked';
+}
+
+/** IO glue: this owner's coordinator-facing session state, or null when presence
+ *  is unknown (no row / a lookup failure) — treated as "can't tell", never a warning. */
+async function sessionStateForOwner(ownerId: string): Promise<SessionState | null> {
+  try {
+    const presence = await getPresence(ownerId);
+    if (!presence) return null;
+    const stale = Date.now() - Date.parse(presence.heartbeatAt) > PRESENCE_STALE_MS;
+    const wake = await fetchWakeability([ownerId]);
+    const signals = wake.get(ownerId) ?? { wakeable: false, liveTurn: false };
+    return deriveSessionState({ stale, wakeable: signals.wakeable, liveTurn: signals.liveTurn });
+  } catch {
+    return null; // best-effort — never blocks or fails the claim
+  }
+}
+
 export type ClaimPlanItemResult =
-  | { status: 'claimed'; claim: PlanItemClaim; mode: LivenessMode; viaAssignment: boolean }
+  | { status: 'claimed'; claim: PlanItemClaim; mode: LivenessMode; viaAssignment: boolean; priorHolderWarning?: PriorHolderWarning }
   | { status: 'conflict'; conflict: PlanItemClaim }
   | { status: 'refused'; reason: string; assignee?: string };
 
@@ -131,6 +177,30 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     }
   }
 
+  // EI-7189: peek at any prior claim BEFORE stealing it — best-effort, advisory
+  // only. A presence-check failure (or the prior claim simply not existing / not
+  // lapsed / same owner) never blocks anything; it only ever adds a warning field.
+  let priorHolderWarning: PriorHolderWarning | undefined;
+  try {
+    const prior = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
+    if (prior && prior.expired && prior.owner !== opts.owner) {
+      const state = await sessionStateForOwner(prior.owner);
+      if (priorHolderStillLive(prior, opts.owner, state)) {
+        priorHolderWarning = {
+          owner: prior.owner,
+          ownerLabel: prior.ownerLabel,
+          sessionState: state as SessionState,
+          note:
+            `plan item ${opts.itemId}'s previous claim lapsed (TTL) but its owner ` +
+            `'${prior.ownerLabel ?? prior.owner}' still looks ${state} — coordinate before ` +
+            `continuing (they may be mid-build/mid-edit; a TTL lapse does not mean they stopped).`,
+        };
+      }
+    }
+  } catch {
+    /* advisory-only — never blocks the claim */
+  }
+
   const res = await acquireClaim({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
@@ -143,7 +213,7 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
     livenessMode: mode,
     ttlSec: opts.ttlSec,
   });
-  if (res.ok) return { status: 'claimed', claim: res.claim, mode, viaAssignment };
+  if (res.ok) return { status: 'claimed', claim: res.claim, mode, viaAssignment, priorHolderWarning };
   return { status: 'conflict', conflict: res.conflict };
 }
 

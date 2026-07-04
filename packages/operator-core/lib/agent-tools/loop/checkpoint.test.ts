@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const setLoopCarryNote = vi.fn();
+const getLoopStatus = vi.fn();
 // Mock the store: a sentinel renderCarryNote keeps this test about ROUTING (structured →
 // render, raw → passthrough), not renderCarryNote's exact output (covered in carry-note's
 // own tests). Fully mocked ⇒ no @papercusp/db-org / PG pulled into a unit test.
@@ -22,6 +23,11 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller', workspaceId: 'ws-1' })),
 }));
 vi.mock('../../hive/wake', () => ({ resolveHiveHomeSlug: vi.fn(() => 'home-hive') }));
+// WI-2148: the fix under test — loop:checkpoint resolves harness from the ARMED routine
+// (getLoopStatus) FIRST, so it matches whatever the cold-wake reader resolves. Default
+// (most tests): no armed routine found (null) ⇒ falls through to the old arg/ctx/home-hive
+// chain, preserving every pre-existing test's behavior unchanged.
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
 
 const tool = (await import('./checkpoint')).default;
 
@@ -34,6 +40,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   setLoopCarryNote.mockResolvedValue('stored-note');
+  getLoopStatus.mockResolvedValue(null); // default: no armed routine found
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
@@ -81,6 +88,34 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     await call({ next: 'x', harness: 'other-harness' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'other-harness' }),
+      expect.any(String),
+    );
+  });
+
+  // WI-2148: the actual bug — the checkpoint WRITER must key its carry-note under the
+  // SAME harness the cold-wake READER resolves (the armed routine's fixed install_slug),
+  // never the checkpointing session's own transient ctx.harnessSlug. A live incident showed
+  // wakes 1-3 writing under harness '*' and wake-4 writing under 'papercusp' for the SAME
+  // loop, purely because ctx.harnessSlug resolved differently — creating two diverging
+  // carry_notes rows and risking a cold reset resuming from the stale one.
+  it("WI-2148: resolves harness from the ARMED ROUTINE's install_slug, not ctx.harnessSlug — even when they disagree", async () => {
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: '*' } as never);
+    // ctx says 'papercusp' (as if this wake's session context resolved differently than the
+    // routine it was armed under) — the routine's '*' must still win, since that's what the
+    // reader will resolve the note by.
+    await call({ next: 'x' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
+    expect(getLoopStatus).toHaveBeenCalledWith('su-caller');
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: '*', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+  });
+
+  it('WI-2148: falls back to args/ctx/home-hive when getLoopStatus errors (fail-open, never blocks a checkpoint write)', async () => {
+    getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
+    await call({ next: 'x' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'papercusp' }),
       expect.any(String),
     );
   });
