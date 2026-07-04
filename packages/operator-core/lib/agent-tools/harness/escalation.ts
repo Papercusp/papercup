@@ -28,12 +28,22 @@ export default defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],
-  args: z.object({
-    slug: z.string().min(1),
-    phase: z.string().optional(),
-  }),
+  args: z
+    .object({
+      slug: z.string().min(1).optional().describe('Harness slug (alias: harness).'),
+      // EI-7146: this tool's id-arg was `slug`-only while the common cross-tool
+      // convention for a harness-scoped call (docs:*, plans:*, work_items:list,
+      // harness:overview's own `harness` param) is `harness` — a caller guessing
+      // the dominant name got a bare zod validation error. Accept both; `slug`
+      // stays primary (matches the sibling harness:status/hive:get bulk-id
+      // convention this tool was built to mirror).
+      harness: z.string().min(1).optional().describe('Harness slug — alias for `slug`.'),
+      phase: z.string().optional(),
+    })
+    .refine((a) => Boolean(a.slug || a.harness), { message: 'pass `slug` (or `harness`)' }),
   async handler(args) {
-    const result = await getEscalation(args.slug, args.phase);
+    const slug = (args.slug ?? args.harness) as string;
+    const result = await getEscalation(slug, args.phase);
     if (!result.ok) {
       return {
         content: [

@@ -1665,26 +1665,36 @@ describe('suWrapperExtraArgs ⟷ applyRoleModel model:effort CLI-flag PARITY (EI
   // inline) — by using a non-family model (haiku) so both sides start from the
   // same bare spec and the comparison isolates the model:effort→flag mapping
   // this drift guard actually cares about.
+  // codex accepts BOTH `-m` and `--model` (short/long alias pair) — applyRoleModel
+  // always emits the long form, suWrapperExtraArgs the short form. Functionally
+  // equivalent, not the divergence this guard cares about (the EFFORT handling
+  // is), so normalize both to `-m` before comparing.
   function appliedFlags(bin: 'claude' | 'codex' | 'omp', spec: string): string[] {
     const cmd = applyRoleModel(bin, 'x', spec);
-    return cmd.slice(bin.length).trim().split(/\s+/).filter(Boolean);
+    return cmd
+      .slice(bin.length)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((t) => (t === '--model' ? '-m' : t));
   }
+  const normalize = (args: string[]): string[] => args.map((t) => (t === '--model' ? '-m' : t));
 
   it('codex: identical argv for every spec vector (the 2026-07-03 effort-drop this ticket tracks)', () => {
     for (const spec of ['gpt-5.5', 'gpt-5.5:low', 'gpt-5.5:high', 'gpt-5.5:xhigh', 'gpt-5.5:max']) {
-      expect(appliedFlags('codex', spec), spec).toEqual(suWrapperExtraArgs('codex', { model: spec }));
+      expect(appliedFlags('codex', spec), spec).toEqual(normalize(suWrapperExtraArgs('codex', { model: spec })));
     }
   });
 
   it('claude (non-1M-family spec): identical argv', () => {
     for (const spec of ['haiku', 'haiku:low', 'haiku:high', 'haiku:max', 'anthropic.claude-3-5-sonnet-20241022-v2:0']) {
-      expect(appliedFlags('claude', spec), spec).toEqual(suWrapperExtraArgs('claude', { model: spec }));
+      expect(appliedFlags('claude', spec), spec).toEqual(normalize(suWrapperExtraArgs('claude', { model: spec })));
     }
   });
 
   it('omp: identical argv — verbatim passthrough, never split (EI-7138: applyRoleModel used to split it, dropping the effort)', () => {
     for (const spec of ['opus', 'opus:high', 'sonnet:xhigh', 'vendor/model:7b']) {
-      expect(appliedFlags('omp', spec), spec).toEqual(suWrapperExtraArgs('omp', { model: spec }));
+      expect(appliedFlags('omp', spec), spec).toEqual(normalize(suWrapperExtraArgs('omp', { model: spec })));
     }
   });
 });

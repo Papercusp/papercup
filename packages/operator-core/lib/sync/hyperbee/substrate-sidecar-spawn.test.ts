@@ -148,6 +148,43 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     expect(getSubstrateSidecarProcess()).toBe(second);
   });
 
+  // WI-2030: an unexpected death's log line must carry the captured stderr
+  // inline, so a reader scanning a busy/aggregated log for "died" learns WHY
+  // without separately hunting down the nearby stderr-passthrough lines.
+  it('includes a stderr tail in the death log on an unexpected post-ready exit', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeChild();
+    const second = makeChild();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+    first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+    await ready;
+
+    first.stderr.emit('data', Buffer.from('Failed to connect to bus: No medium found\n'));
+    first.emit('exit', 1);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[substrate-sidecar\] died \(exit code 1\) — stderr tail: Failed to connect to bus: No medium found$/),
+    );
+  });
+
+  it('says "no stderr captured" when the process died silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeChild();
+    const second = makeChild();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+    first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+    await ready;
+
+    first.emit('exit', 137);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[substrate-sidecar\] died \(exit code 137\) — no stderr captured$/),
+    );
+  });
+
   // WI-1877: the respawn only restarts the PROCESS — nothing re-boots the
   // harnesses onto it unless a listener acts on the notification below.
   describe('onSidecarRespawned (WI-1877)', () => {

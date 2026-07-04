@@ -165,11 +165,17 @@ describe('flags public routes — mutate ship gates, auth:public (P-013)', () =>
       expect(setFlagOverride).toHaveBeenCalledWith(key, null);
       expect(publishFlagChange).toHaveBeenCalledWith(key);
     });
-    it('maps a setFlag backend failure to 502', async () => {
+    it('falls back to the PG override store when PostHog is configured but unreachable (EI-7088)', async () => {
+      const key = ALL_FLAG_KEYS[0];
       setFlag.mockResolvedValue({ ok: false, reason: 'posthog_down' });
-      const res = await app().request('/flags/set', post({ key: ALL_FLAG_KEYS[0], enabled: true }));
-      expect(res.status).toBe(502);
-      expect(publishFlagChange).not.toHaveBeenCalled();
+      const res = await app().request('/flags/set', post({ key, enabled: true }));
+      // EI-7088: ANY setFlag failure (not just "not configured") now falls back
+      // to the PG override store, so a PostHog outage doesn't block runtime
+      // flag toggling. The 502-on-both-failing case is covered below.
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, key, enabled: true, backend: 'pg-override' });
+      expect(setFlagOverride).toHaveBeenCalledWith(key, true);
+      expect(publishFlagChange).toHaveBeenCalledWith(key);
     });
     it('falls back to the PG override store when PostHog is not configured (P-070)', async () => {
       const key = ALL_FLAG_KEYS[0];

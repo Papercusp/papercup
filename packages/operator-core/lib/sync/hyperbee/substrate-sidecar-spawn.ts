@@ -338,7 +338,17 @@ export async function spawnSubstrateSidecar(
       // crash — warning "died" here is misleading noise (and trips
       // vitest-fail-on-console). Only warn for an UNEXPECTED exit.
       if (!deliberateStop) {
-        console.warn(`[substrate-sidecar] died (${msg})`);
+        // WI-2030: the captured stderr (already streamed line-by-line via the
+        // '[substrate-sidecar-err]' passthrough above) is inline-correlated
+        // with the death event here too — on a busy/aggregated log a reader
+        // scanning for "died" previously had to separately hunt down the
+        // nearby stderr lines to learn WHY; a possibly-red-herring first line
+        // (e.g. a headless-container dbus warning) could otherwise be mistaken
+        // for the real exit reason with no tail to check it against.
+        const stderrTail = stderr.trim().slice(-500);
+        console.warn(
+          `[substrate-sidecar] died (${msg})${stderrTail ? ` — stderr tail: ${stderrTail}` : ' — no stderr captured'}`,
+        );
       }
       const launchFailed = isScopeLaunchFailure(code);
       if (sidecarProcess === child) {
