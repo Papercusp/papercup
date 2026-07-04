@@ -125,7 +125,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
   if (!hiveHomeSlug) {
     return (
       <div className="pc-advpanel__empty">
-        Cross-member browse shows every hive member’s features + plans. Select a hive (all-mode) to see its rollup.
+        Cross-member browse shows every {t('pot', { lower: true })} member&rsquo;s features + plans. Select a {t('pot', { lower: true })} (all-mode) to see its rollup.
       </div>
     );
   }
@@ -157,7 +157,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
           placeholder="Filter title / id / member…"
           value={search}
           onChange={(e) => void setSearch(e.target.value)}
-          aria-label="Filter hive content"
+          aria-label={`Filter ${t('pot', { lower: true })} content`}
         />
         <Tooltip label="Refresh">
           <button
@@ -167,7 +167,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
               featuresQ.invalidate?.();
               plansQ.invalidate?.();
             }}
-            aria-label="Refresh hive content"
+            aria-label={`Refresh ${t('pot', { lower: true })} content`}
           >
             <RefreshCw size={13} aria-hidden />
           </button>
@@ -183,7 +183,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
       ) : tab === 'features' ? (
         visibleFeatures.length === 0 ? (
           <div className="pc-advpanel__empty">
-            No federated features in this hive yet — peer members’ features land here live as they sync.
+            No federated features in this {t('pot', { lower: true })} yet — peer members&rsquo; features land here live as they sync.
           </div>
         ) : (
           <ul className="pc-hivecontent__list" role="list">

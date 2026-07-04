@@ -153,7 +153,9 @@ describe('HiveContentPanel (adv:hive-content)', () => {
         </NuqsTestingAdapter>
       </TooltipProvider>,
     );
-    await waitFor(() => screen.getByText(/No federated features in this hive yet/i));
+    // Copy is routed through the lexicon (echoed key 'pot'), and the {t(...)}
+    // interpolation splits the sentence across text nodes — match a stable prefix.
+    await waitFor(() => screen.getByText(/No federated features in this/i));
   });
 
   it('shows the no-hive empty state and disables the queries when there is no hive home slug', async () => {
@@ -164,7 +166,7 @@ describe('HiveContentPanel (adv:hive-content)', () => {
         </NuqsTestingAdapter>
       </TooltipProvider>,
     );
-    await waitFor(() => screen.getByText(/Select a hive/i));
+    await waitFor(() => screen.getByText(/Cross-member browse shows every/i));
     // Both byHive queries are disabled (no slug) → no fetch fired.
     expect(syncCalls.some((c) => c.queryName === 'featuresConsolidated.byHive' && c.enabled === false)).toBe(true);
     expect(syncCalls.some((c) => c.queryName === 'plans.byHive' && c.enabled === false)).toBe(true);

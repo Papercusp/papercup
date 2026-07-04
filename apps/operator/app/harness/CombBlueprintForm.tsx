@@ -249,7 +249,7 @@ export function CombBlueprintForm({ onBack, onCreated, hiveLabel }: CombBlueprin
         return;
       }
       const data = (await res.json()) as { project: { slug: string; path: string } };
-      toast.success(`${hiveLabel} '${data.project.slug}' created from ${selected.title} — the Queen is provisioning its fleet.`);
+      toast.success(`${hiveLabel} '${data.project.slug}' created from ${selected.title} — the ${t('brain')} is provisioning its fleet.`);
       onCreated(data.project.slug);
     } catch (err: unknown) {
       setCreateError((err as Error).message ?? 'Network error');
