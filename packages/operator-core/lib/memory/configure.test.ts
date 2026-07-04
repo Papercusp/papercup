@@ -45,6 +45,7 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
     localInstalled,
     buildOpenAi,
     buildLocal,
+    isOpenAiRecentlyExhausted: () => false, // not in cooldown by default (EI-3381) — its own describe block below covers the cooldown branch
     ...overrides,
   };
   return { deps, buildOpenAi, buildLocal, resolveKey, localInstalled };
@@ -160,6 +161,81 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(res.mode).toBe('local');
     expect(resolveKey).not.toHaveBeenCalled();
     expect(buildOpenAi).not.toHaveBeenCalled();
+  });
+
+  describe('EI-3381 — auto prefers local during an OpenAI post-failure cooldown', () => {
+    it('auto + key present + in cooldown + local installed → local (NOT openai)', async () => {
+      const { deps, buildOpenAi, buildLocal } = makeDeps({
+        readPreference: async () => 'auto',
+        resolveKey: async () => 'sk-key', // a valid key exists...
+        localInstalled: async () => true,
+        isOpenAiRecentlyExhausted: () => true, // ...but openai just failed hard
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('local');
+      expect(buildLocal).toHaveBeenCalled();
+      expect(buildOpenAi).not.toHaveBeenCalled();
+    });
+
+    it('auto + in cooldown + local NOT installed → still falls through to openai (no embedder left otherwise)', async () => {
+      const { deps, buildOpenAi, buildLocal } = makeDeps({
+        readPreference: async () => 'auto',
+        resolveKey: async () => 'sk-key',
+        localInstalled: async () => false, // no local escape hatch available
+        isOpenAiRecentlyExhausted: () => true,
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('openai'); // trying a possibly-still-bad key beats no embedder at all
+      expect(buildOpenAi).toHaveBeenCalledWith('sk-key');
+      expect(buildLocal).not.toHaveBeenCalled();
+    });
+
+    it('auto + in cooldown + NO key + local installed → local (same as the no-key case, just reached via the cooldown leg)', async () => {
+      const { deps, buildLocal } = makeDeps({
+        readPreference: async () => 'auto',
+        resolveKey: async () => '',
+        localInstalled: async () => true,
+        isOpenAiRecentlyExhausted: () => true,
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('local');
+      expect(buildLocal).toHaveBeenCalled();
+    });
+
+    it('openai-FORCED preference ignores the cooldown entirely (an explicit override, not an auto pick)', async () => {
+      const { deps, buildOpenAi, buildLocal } = makeDeps({
+        readPreference: async () => 'openai',
+        resolveKey: async () => 'sk-key',
+        localInstalled: async () => true,
+        isOpenAiRecentlyExhausted: () => true, // must be irrelevant to a forced preference
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('openai');
+      expect(buildOpenAi).toHaveBeenCalledWith('sk-key');
+      expect(buildLocal).not.toHaveBeenCalled();
+    });
+
+    it('local-FORCED preference is unaffected by cooldown state either way (already local, nothing to change)', async () => {
+      const { deps } = makeDeps({
+        readPreference: async () => 'local',
+        localInstalled: async () => true,
+        isOpenAiRecentlyExhausted: () => true,
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('local');
+    });
+
+    it('auto + NOT in cooldown behaves exactly as before (openai wins when a key exists)', async () => {
+      const { deps, buildOpenAi } = makeDeps({
+        readPreference: async () => 'auto',
+        resolveKey: async () => 'sk-key',
+        localInstalled: async () => true,
+        isOpenAiRecentlyExhausted: () => false,
+      });
+      const res = await resolveEmbedderWith(deps);
+      expect(res.mode).toBe('openai');
+      expect(buildOpenAi).toHaveBeenCalled();
+    });
   });
 });
 
