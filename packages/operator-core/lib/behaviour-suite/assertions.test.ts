@@ -303,3 +303,55 @@ describe('plan-execution delegationSatisfied — delegating LEADER via fleet:lau
     expect(c.metrics.delegationPath).not.toBe(true);
   });
 });
+
+describe('plan-execution plan-item path — plans:set-status wip→done (ornith run-10 member calibration)', () => {
+  // Run-10 (2026-07-04): both members worked the fixture's PLAN ITEMS directly
+  // (plans:set-status wip auto-claims, done releases) and scored "execution fumble
+  // claimed=0 completed=0" because only work_items:* counters were read. The plan-item
+  // shape is sanctioned execution; evidence QUALITY stays with completion-evidence.
+  const memberItemRun = parseTranscript([
+    modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
+    userMsg('You are a fleet MEMBER. AUTO mode is ON. Advance the plan.'),
+    toolCall('coord_orient', { intent: 'work doc re-verify items' }),
+    toolCall('plans_set_status', { slug: 'p', itemIds: ['P-010', 'P-011'], status: 'wip' }),
+    toolCall('plans_set_status', { slug: 'p', itemId: 'P-010', status: 'done', note: 'IN-SYNC — verified against item-activity.ts' }),
+    toolCall('plans_set_status', { slug: 'p', itemId: 'P-011', status: 'done', note: 'fixed drift, edited the doc' }),
+  ]);
+
+  it('PASSES plan-execution via the plan-item path (wip flips + done flips, no work_items calls)', () => {
+    const c = byId(memberItemRun, { ...ORNITH_CTX, autoFleetMember: true })['plan-execution'];
+    expect(c.passed).toBe(true);
+    expect(c.metrics.planItemPath).toBe(true);
+    expect(c.metrics.planWipFlips).toBe(1);
+    expect(c.metrics.planDoneFlips).toBe(2);
+  });
+
+  it('a clean member plan-item run passes the OVERALL verdict with autoFleetMember set', () => {
+    const report = buildReport(runChecks(memberItemRun, { ...ORNITH_CTX, autoFleetMember: true }));
+    expect(report.criticalFailures).not.toContain('plan-execution');
+    expect(report.criticalFailures).not.toContain('routing-gate');
+  });
+
+  it('the plan-item path also credits a tools:invoke-wrapped flip (parser unwrap)', () => {
+    const t = parseTranscript([
+      modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
+      userMsg('You are a fleet MEMBER. AUTO mode is ON. Advance the plan.'),
+      toolCall('tools_invoke', { name: 'plans:set-status', args: { slug: 'p', itemId: 'P-003', status: 'done', note: 'verified' } }),
+    ]);
+    const c = byId(t, { ...ORNITH_CTX, autoFleetMember: true })['plan-execution'];
+    expect(c.passed).toBe(true);
+    expect(c.metrics.planDoneFlips).toBe(1);
+  });
+
+  it('NEGATIVE CONTROL: no flips at all is still an execution fumble', () => {
+    const t = parseTranscript([
+      modelChange('ollama-cc/maxwell1500/ornith-35b:IQ3_M'),
+      userMsg('You are a fleet MEMBER. AUTO mode is ON. Advance the plan.'),
+      toolCall('coord_orient', { intent: 'look around' }),
+      toolCall('plans_get', { slug: 'p' }),
+    ]);
+    const c = byId(t, { ...ORNITH_CTX, autoFleetMember: true })['plan-execution'];
+    expect(c.passed).toBe(false);
+    expect(c.metrics.planItemPath).not.toBe(true);
+  });
+});

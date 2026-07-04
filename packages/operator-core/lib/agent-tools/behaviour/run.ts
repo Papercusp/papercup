@@ -45,12 +45,13 @@ const CHECK_CATALOG = [
   { id: 'completion-evidence', critical: false, checks: 'Completions cite real edits/verification, not bare status flips.' },
 ] as const;
 
-function ctxFromArgs(a: { expectedModelSubstr?: string; expectedWorkItemIds?: string[]; cloudModelSubstrs?: string[]; fleetExpected?: boolean }): BehaviourContext {
+function ctxFromArgs(a: { expectedModelSubstr?: string; expectedWorkItemIds?: string[]; cloudModelSubstrs?: string[]; fleetExpected?: boolean; autoFleetMember?: boolean }): BehaviourContext {
   return {
     expectedModelSubstr: a.expectedModelSubstr ?? 'ornith',
     expectedWorkItemIds: a.expectedWorkItemIds,
     cloudModelSubstrs: a.cloudModelSubstrs,
     fleetExpected: a.fleetExpected,
+    autoFleetMember: a.autoFleetMember,
   };
 }
 
@@ -89,6 +90,7 @@ export const behaviourRunTool = defineTool({
       expectedWorkItemIds: z.array(z.string()).optional().describe('Work-item ids that legitimately belong to the plan (the scope boundary for scope-adherence).'),
       cloudModelSubstrs: z.array(z.string()).optional().describe('Substrings that mark a cloud/hosted fallback (override the default claude/sonnet/opus/gpt/gemini set).'),
       fleetExpected: z.boolean().optional().describe('Whether this run was routed to launch a fleet (governs whether fleet-launch applies vs n/a).'),
+      autoFleetMember: z.boolean().optional().describe('This run is an AUTO-on fleet MEMBER (spawned by fleet:launch-on-plan): the A/B/C routing gate is n/a for it — a member correctly starts working without presenting options (WI-1849).'),
     })
     .refine((a) => (a.mode ?? 'score') === 'launch' ? Boolean(a.planSlug) : Boolean(a.sessionId || a.transcriptPath), {
       message: 'score mode needs `sessionId` or `transcriptPath`; launch mode needs `planSlug`.',

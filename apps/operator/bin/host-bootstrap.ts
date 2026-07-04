@@ -625,6 +625,19 @@ export function runBootstrap(): void {
     );
   }
 
+  // WI-2105: this host WILL decide substrate routing (bootSubstrateWithFallback
+  // below — but only after migrations + boot-gate, a multi-second window in
+  // which DBOS routines already tick). Arm the routing latch NOW so an early
+  // bootSingleHarness WAITS for the decision instead of silently booting a
+  // duplicate in-process engine beside the sidecar (the 2026-07-03 bg-host
+  // tower↔VM outage: alreadyBooted=1 = the raced in-process engine).
+  if (backgroundWorkers && !utilityHost) {
+    const { markSubstrateBootRoutingPending } = await import(
+      '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
+    );
+    markSubstrateBootRoutingPending();
+  }
+
   // [infra-perf-reliability-audit-round4 P-014] Boot the event-loop-lag gauge on the
   // BACKGROUND primary too. The request plane (startRequestServers) boots it on every
   // HTTP worker, but in cluster mode the bg-host primary serves no HTTP — so it ran the
