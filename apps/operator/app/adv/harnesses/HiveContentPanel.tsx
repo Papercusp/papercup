@@ -28,6 +28,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { useLexicon } from '@/lib/useLexicon';
 
 /** A federated feature row (featuresConsolidated.byHive = harness_features_consolidated). */
 interface HiveFeatureRow {
@@ -63,6 +64,7 @@ function matchesSearch(haystack: Array<string | null | undefined>, needle: strin
 }
 
 export default function HiveContentPanel({ params, api }: PanelComponentProps) {
+  const t = useLexicon();
   // The dock auto-binds `harnessSlug` to the active route slug for every panel
   // (HarnessesDock rebinds it on slug-switch), so read it FIRST — same convention
   // as MemberWorkPanel. In scope=all that slug is the HIVE HOME; in single-harness
@@ -111,8 +113,8 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
   useEffect(() => {
     if (!hiveHomeSlug) return;
     const n = tab === 'features' ? visibleFeatures.length : visiblePlans.length;
-    api.setTitle(`Hive content · ${hiveHomeSlug} (${n})`);
-  }, [hiveHomeSlug, tab, visibleFeatures.length, visiblePlans.length, api]);
+    api.setTitle(`${t('pot')} content · ${hiveHomeSlug} (${n})`);
+  }, [hiveHomeSlug, tab, visibleFeatures.length, visiblePlans.length, api, t]);
 
   function drillToMember(memberSlug: string, selId?: string): void {
     // Browse → drill: focus that member harness; the Detail pane opens `selId`.

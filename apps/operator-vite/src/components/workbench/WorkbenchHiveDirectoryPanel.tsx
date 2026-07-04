@@ -21,10 +21,12 @@
 
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { panelRegistry } from '@/app/harness/dock/panel-registry';
+import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface HiveRow {
   hiveId: string;

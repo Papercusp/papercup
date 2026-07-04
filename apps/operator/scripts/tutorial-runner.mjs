@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 /**
- * tutorial-runner.mjs — the DETERMINISTIC Papercusp tutorial
+ * tutorial-runner.mjs — the unified Papercusp **Tutorial | Setup** shell
  * (deterministic-onboarding-tutorial-2026-07-04 P-004/P-005;
- *  tutorial-polish-and-docs-search-2026-07-04 #1/#2/#4).
+ *  tutorial-polish-and-docs-search-2026-07-04 #1/#2/#4;
+ *  tutorial-setup-batch-2026-07-04 #4 — the tabbed shell).
+ *
+ * Two always-visible tabs — **Tutorial** (the deterministic tour) and **Setup**
+ * (the concierge folded into a re-entrant checklist) — with GLOBAL hotkeys live on
+ * every screen: Tab ⇄ switch tab · ^S/"/" search · "#" jump to chapter · "?" ask.
+ * Interactively driven by a custom @inquirer/core keypress prompt (shellScreen); the
+ * high-level select can't intercept those keys. Non-TTY (piped/CI) degrades to the
+ * legacy sequential typed walk. Both `papercusp tutorial` and `papercusp setup` open
+ * this shell (different default tab); the first-run linear concierge (onboard-launcher)
+ * hands off here at graduation.
  *
  * The tutorial used to be 100% agent-driven: an LLM read a prompt + content pack and
  * "figured out" how to print each section, interpret [1]/[2], drive the GUI tabs, and
