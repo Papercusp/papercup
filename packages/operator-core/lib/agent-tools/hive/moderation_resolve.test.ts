@@ -59,7 +59,7 @@ describe('hive:moderation_resolve handler (bulk keyed-array, P-006)', () => {
       ['r1', 'actioned'],
       ['r2', 'dismissed'],
     ]);
-    expect(h.loadHivePubkey).toHaveBeenCalledTimes(1);
+    expect(h.isCanonicalHiveOwner).toHaveBeenCalledTimes(1);
   });
 
   it('a missing report fails ONLY that item (batch ok:true)', async () => {
