@@ -48,6 +48,8 @@ import {
   resetEvalBlockBudget,
   isAskCall,
   askBlockReason,
+  isIrcCall,
+  ircBlockReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -581,6 +583,56 @@ describe('onToolCall ask guard (agent sessions only)', () => {
       input: { question: 'ok' },
     });
     expect(r.reason ?? '').not.toContain('ask-blocked');
+  });
+});
+
+describe('isIrcCall + ircBlockReason (native irc-distraction guard, ornith iter11 / WI-2382)', () => {
+  it('matches the bare `irc` builtin in every spelling, strips a group prefix', () => {
+    expect(isIrcCall('irc')).toBe(true);
+    expect(isIrcCall('IRC')).toBe(true); // case-insensitive
+    expect(isIrcCall('x:irc')).toBe(true); // strips a group prefix
+  });
+  it('does NOT sweep up unrelated tools whose name merely contains "irc"', () => {
+    expect(isIrcCall('circ')).toBe(false);
+    expect(isIrcCall('irc_send')).toBe(false); // bare verb `ircsend`, not `irc`
+    expect(isIrcCall('search')).toBe(false);
+    expect(isIrcCall('plans:get')).toBe(false);
+    expect(isIrcCall('')).toBe(false);
+  });
+  it('the reason redirects to coord:presence + the kickoff plan read', () => {
+    const r = ircBlockReason();
+    expect(r).toContain('irc-blocked');
+    expect(r).toContain('coord:presence');
+    expect(r).toContain('plans:get');
+  });
+});
+
+describe('onToolCall irc guard (agent sessions only)', () => {
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+  });
+  afterEach(() => {
+    resetToolCallLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const ircCall = () =>
+    onToolCall({ type: 'tool_call', toolName: 'irc', toolCallId: 'i', input: {} });
+
+  it('blocks an `irc` call on #1 for an agent session, redirecting to coord:presence', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await ircCall();
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('irc-blocked');
+    expect(r.reason).toContain('coord:presence');
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    expect((await ircCall()).block).toBeUndefined();
   });
 });
 

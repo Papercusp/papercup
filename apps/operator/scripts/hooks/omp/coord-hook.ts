@@ -1743,6 +1743,33 @@ export function askBlockReason(): string {
   );
 }
 
+/** True when the agent is invoking OMP's native `irc` inter-agent chat builtin. It is NOT wired to
+ *  the papercusp coordination bus (coord:*), so it always returns "No other agents" — a weak local
+ *  model (ornith IQ3_M) reflexively reaches for it at KICKOFF to "find peers" and burns several
+ *  turns (iter11, 2026-07-04 / WI-2382: 5× before the loop-breaker caught it) before it lands on
+ *  the plan read. Same class as `ask`/`eval`: no omp-config disable, and the `--tools` whitelist
+ *  also gates the papercusp MCP tools, so a tool-NAME block here is the structural lever. Strips a
+ *  `group:` prefix so a namespaced verb (e.g. `x:irc`) is not swept up. Pure. */
+export function isIrcCall(toolName: string): boolean {
+  const bare = (toolName || '').toLowerCase().replace(/[_-]/g, '').replace(/^.*:/, '');
+  return bare === 'irc';
+}
+
+/** The redirect returned when an agent session invokes the native `irc` builtin. papercusp agents
+ *  coordinate through the `coord:*` MCP tools, never omp's native chat: `coord:presence` for live
+ *  peers, `coord:send` to message one, `coord:orient` for your own assignments + inbox. At KICKOFF
+ *  you do not need peers at all — read your plan and go through your routing gate. Pure. */
+export function ircBlockReason(): string {
+  return (
+    'irc-blocked: the native `irc` inter-agent chat tool is DISABLED for papercusp agent sessions — ' +
+    'it is not wired to the papercusp coordination bus, so it always returns "No other agents" and ' +
+    'only wastes turns. To see live peers use `coord:presence`; to message one use `coord:send`; for ' +
+    'your own assignments + inbox use `coord:orient`. But at KICKOFF you do not need peers — read ' +
+    'your plan with `tools:invoke {name:"plans:get", args:{slug, harness}}` and go through your ' +
+    'routing gate. Do not call `irc` again.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -1855,6 +1882,17 @@ export async function onToolCall(
   // backstop if it ever repeats. Owner sessions unrestricted (D-003).
   if (isAgentSession() && isAskCall(event.toolName)) {
     return { block: true, reason: askBlockReason() };
+  }
+
+  // irc-distraction guard (ornith iter11, 2026-07-04 / WI-2382): OMP's native `irc` inter-agent
+  // chat builtin is NOT wired to the papercusp coord bus (coord:*), so it always returns "No other
+  // agents" — a weak local model reaches for it at KICKOFF to "find peers" and burns several turns
+  // (iter11: 5× before the generic loop-breaker caught it) before reading its plan. Same class as
+  // eval/ask (no omp-config disable; `--tools` gates the MCP tools too), so block by tool-NAME on
+  // call #1 and redirect onto coord:presence / the plan read. Fires before the generic loop-breaker
+  // so it wins at call #1 rather than after 3 wasted repeats. Owner sessions unrestricted (D-003).
+  if (isAgentSession() && isIrcCall(event.toolName)) {
+    return { block: true, reason: ircBlockReason() };
   }
 
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the

@@ -53,8 +53,19 @@ const SESSION_EXTRACTION_MODEL =
 const DEFAULT_MAX_TOKENS = 4096;
 /** Wide enough for a cold-cache first call plus one 529 retry (the
  *  runHaiku rationale), narrow enough that a wedged call can't stall a
- *  remember() indefinitely. */
-const DEFAULT_TIMEOUT_MS = 60_000;
+ *  remember() indefinitely.
+ *
+ *  EI-7178: MUST stay comfortably below the outer MCP request deadline
+ *  (`_mcp-handler.ts`'s `MCP_DEADLINE_MS`, default 55_000ms) — this used
+ *  to be 60_000ms, LONGER than that outer deadline, so under gateway
+ *  saturation the whole `memory:remember` tool call was always killed by
+ *  the outer 55s timeout BEFORE this internal AbortController could ever
+ *  fire and let `FallbackExtractionLlm`'s cascade fall through to the
+ *  API-key rung — the primary→fallback design existed but could never
+ *  actually engage on a slow (as opposed to throwing) primary call.
+ *  40_000ms leaves ~15s of margin for the rest of remember()'s own work
+ *  (mem0's own retry/dedup, the DB write) inside the 55s outer budget. */
+const DEFAULT_TIMEOUT_MS = 40_000;
 
 /** One completed turn on the stateless transport. */
 export interface SessionTurnResult {
