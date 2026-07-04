@@ -215,6 +215,16 @@ export interface SampleReplicationLivenessOpts {
    * durable-EI reporter). Pass explicitly in unit tests.
    */
   onStallEpisode?: (episode: ReplicationStallEpisode) => void;
+  /**
+   * EI-7110: recovery sink override — fires when a log transitions OUT of an
+   * alarmed no_replicator state (a live replicator peer is seen again after
+   * having stalled past grace). Omit for the module default (auto-resolves the
+   * durable EI `fileReplicationStallEi` filed for the stall). Pass explicitly
+   * in unit tests. Scoped to the no_replicator axis only for now — `frozen` /
+   * `connected_never_replicated` recovery-reporting is a follow-up (those EIs
+   * still require manual verification + close until then).
+   */
+  onRecovery?: (recovery: ReplicationStallEpisode) => void;
 }
 
 /**
@@ -231,6 +241,26 @@ export function setReplicationStallEpisodeReporterForTests(
   fn: ((episode: ReplicationStallEpisode) => void) | null,
 ): void {
   episodeReporter = fn;
+}
+
+/**
+ * EI-7110: module-level RECOVERY reporter seam — the counterpart to
+ * episodeReporter above. Without this, a durable EI filed for a stall (P-004 /
+ * WI-1840) never auto-clears even once the underlying replication recovers:
+ * `sampleReplicationLiveness` already resets the in-process `alarmedX` latch on
+ * recovery (so a FUTURE stall re-fires), but nothing ever told the durable EI
+ * the stall is over — it just sits open forever, needing a human/agent to
+ * manually re-verify + close it (the exact toil this closes: EI-7110 was hit
+ * by a fleet member 20h after the stall likely self-healed, unable to cheaply
+ * confirm current status). Production default: auto-resolve the matching open
+ * EI via a LAZY dynamic import (same pattern as defaultEpisodeReporter).
+ */
+let episodeRecoveredReporter: ((recovery: ReplicationStallEpisode) => void) | null = null;
+
+export function setReplicationStallRecoveryReporterForTests(
+  fn: ((recovery: ReplicationStallEpisode) => void) | null,
+): void {
+  episodeRecoveredReporter = fn;
 }
 
 function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
@@ -287,6 +317,32 @@ function reportEpisode(episode: ReplicationStallEpisode): void {
   }
 }
 
+function defaultRecoveryReporter(recovery: ReplicationStallEpisode): void {
+  try {
+    console.error(
+      `[replication-liveness] recovered (${recovery.kind}) harness=${recovery.harnessSlug} ${recovery.detail}`,
+    );
+  } catch {
+    /* diagnostic-only */
+  }
+  // Auto-resolve the durable EI the stall filed (best-effort; a resolve miss
+  // just leaves the EI open for manual triage, same as before this existed).
+  // Lazy import so the pure module never statically links PG.
+  void import('./replication-stall-ei')
+    .then((m) => m.resolveReplicationStallEi(recovery))
+    .catch(() => {
+      /* resolution is best-effort; the registry verdict already reads 'live' */
+    });
+}
+
+function reportRecovery(recovery: ReplicationStallEpisode): void {
+  try {
+    (episodeRecoveredReporter ?? defaultRecoveryReporter)(recovery);
+  } catch {
+    /* never let a reporter throw back into the merge pass */
+  }
+}
+
 /**
  * Feed one merge-pass observation of an admitted REMOTE log. Call once per
  * remote log per pass (boot.ts mergeOnePass). Never throws.
@@ -300,6 +356,7 @@ export function sampleReplicationLiveness(
   const now = opts.nowMs ?? Date.now();
   const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
   const onEpisode = opts.onStallEpisode ?? reportEpisode;
+  const onRecovery = opts.onRecovery ?? reportRecovery;
 
   let logs = registry.get(hKey(workspaceId, harnessSlug));
   if (!logs) {
@@ -342,8 +399,26 @@ export function sampleReplicationLiveness(
   if (sample.peersCount !== undefined) {
     st.peersCount = sample.peersCount;
     if (sample.peersCount > 0) {
+      // EI-7110: capture BOTH the prior alarm state and the stall duration
+      // BEFORE overwriting lastNonZeroPeersMs — only a genuine alarm→recovered
+      // transition is worth reporting (a log that never alarmed, or that was
+      // merely flapping within grace, has no open EI to auto-resolve).
+      const wasAlarmed = st.alarmedNoReplicator;
+      const priorStallMs = st.lastNonZeroPeersMs !== null ? now - st.lastNonZeroPeersMs : 0;
       st.lastNonZeroPeersMs = now;
       st.alarmedNoReplicator = false; // recovered — a future stall re-fires
+      if (wasAlarmed) {
+        onRecovery({
+          workspaceId,
+          harnessSlug,
+          logKeyHex: sample.keyHex,
+          kind: 'no_replicator',
+          stalledForMs: priorStallMs,
+          detail:
+            `log=${sample.keyHex.slice(0, 12)}… regained a live replicator peer after ` +
+            `${Math.round(priorStallMs / 1000)}s with none`,
+        });
+      }
     } else if (
       st.lastNonZeroPeersMs !== null &&
       !st.alarmedNoReplicator &&

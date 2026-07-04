@@ -86,7 +86,17 @@ export default defineTool({
     // INTO this fleet, from the nursery (countRunningFleetBees — reliable + presence-
     // independent) rather than the roster's presence-labeled split, which under-counted a
     // bee that had not yet written its presence fleet label.
-    const { members: memberCount } = splitFleetRosterCounts(roster);
+    // EI-7137: splitFleetRosterCounts's own contract is "a set of LIVE fleet-roster
+    // entries" — but `roster` here is the FULL roster (every presence row tagged with
+    // this fleet_slug, including ones EI-5858's wakeability reconciliation has already
+    // marked sessionState:'ended'). Passing it in unfiltered let memberCount count dead
+    // former members forever (observed live: memberCount=19 for a 10-live fleet after a
+    // wave died). `sessionState==='ended'` is the authoritative dead signal (a stale-but-
+    // still-heartbeating row can otherwise mask a dead session — see EI-5858) — filter
+    // those out before counting, but keep them in the full `members[]` list below (still
+    // wants full visibility, including who died, for the leader/owner reading this).
+    const liveRoster = roster.filter((m) => m.sessionState !== 'ended');
+    const { members: memberCount } = splitFleetRosterCounts(liveRoster);
     return json({
       ok: true,
       slug: fleet.fleetSlug,

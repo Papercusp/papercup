@@ -108,6 +108,27 @@ describe('fleet:status', () => {
     expect(out.members).toHaveLength(3);
   });
 
+  // EI-7137: an `ended` former member (a dead wave, presence row not yet reaped) must
+  // not inflate memberCount forever — but stays visible in the full `members[]` list.
+  it('excludes sessionState:"ended" entries from memberCount but keeps them in members[]', async () => {
+    h.listFleetRoster.mockResolvedValueOnce([
+      { agentId: 'su-live1', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'live' },
+      { agentId: 'su-live2', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'parked' },
+      // A dead prior-wave member: heartbeat may still look fresh, but wakeability
+      // reconciliation (EI-5858) has already determined the session truly ended.
+      { agentId: 'su-dead1', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
+      { agentId: 'su-dead2', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
+      { agentId: 's-bee1', agentRole: 'bee', fleetRole: 'member', alive: true, sessionState: 'live' },
+    ]);
+    const out = parse(await invoke({ fleet: 'rocket' }));
+    expect(out.memberCount).toBe(2); // su-live1 + su-live2 only — the 2 ended rows excluded
+    // The full roster (all 5, including the dead ones) is still surfaced for visibility.
+    expect(out.members).toHaveLength(5);
+    expect(out.members.map((m: { agentId: string }) => m.agentId).sort()).toEqual(
+      ['s-bee1', 'su-dead1', 'su-dead2', 'su-live1', 'su-live2'].sort(),
+    );
+  });
+
   it('includes harness completion stats when `harness` is provided', async () => {
     const out = parse(await invoke({ fleet: 'rocket', harness: 'papercusp' }));
     expect(h.getCompletionIntegrityStats).toHaveBeenCalledWith('papercusp');
