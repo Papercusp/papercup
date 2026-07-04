@@ -52,7 +52,10 @@ vi.mock('../agent-tools/coordination/escalations', () => ({
 // P-012: the force-compact rung's deps. FLAGS is stubbed to the one key the watchdog reads.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagMock }));
 vi.mock('@papercusp/flags', () => ({
-  FLAGS: { COMPACTION_WATCHDOG_FORCE_COMPACT: 'papercusp-compaction-watchdog-force-compact' },
+  FLAGS: {
+    COMPACTION_WATCHDOG_FORCE_COMPACT: 'papercusp-compaction-watchdog-force-compact',
+    CONTEXT_GAUGE: 'papercusp-context-gauge',
+  },
 }));
 vi.mock('../events/await/psu-pty-discovery', () => ({
   findLiveHost: findLiveHostMock,
@@ -75,6 +78,11 @@ import {
   resetContextDeathEscalationsForTests,
   resetForceCompactedForTests,
 } from './compaction-compliance-watchdog';
+import {
+  getContextUsage,
+  isContextGaugeEnabled,
+  resetContextUsageCacheForTests,
+} from './context-usage-cache';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
@@ -118,6 +126,7 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   resetForceCompactedForTests();
+  resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -421,5 +430,36 @@ describe('context-death detector (context-trimming-tiers P-019)', () => {
     const again = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(again.contextDeaths).toEqual(['dead']);
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', () => {
+  const seeded = [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 300_000 }];
+
+  it('mirrors each estimated session into the in-process gauge cache', async () => {
+    estimateMock.mockResolvedValue(210_000); // 70% of 300k
+    expect(getContextUsage('hot')).toBeNull();
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.estimated).toEqual(['hot']);
+    expect(getContextUsage('hot')).toEqual({ tokens: 210_000, limit: 300_000 });
+  });
+
+  it('does not cache a session whose estimate is unresolvable (null)', async () => {
+    estimateMock.mockResolvedValue(null);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.estimated).toEqual([]);
+    expect(getContextUsage('hot')).toBeNull();
+  });
+
+  it('mirrors FLAGS.CONTEXT_GAUGE into the sync gauge switch each pass', async () => {
+    estimateMock.mockResolvedValue(210_000);
+    expect(isContextGaugeEnabled()).toBe(true); // default
+    getFlagMock.mockResolvedValue(false); // gauge (and force) flag OFF this pass
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(isContextGaugeEnabled()).toBe(false);
+    // Flag flipped back ON reaches the switch on the next sweep.
+    getFlagMock.mockResolvedValue(true);
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(isContextGaugeEnabled()).toBe(true);
   });
 });
