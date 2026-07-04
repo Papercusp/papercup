@@ -1866,3 +1866,101 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
     expect(readdirSync(scopedDir).length).toBeGreaterThan(0);
   });
 });
+
+// ── WI-2105 REV (no-hiveHome) regression ─────────────────────────────────────
+// An OWNED-hive member harness — home ≠ own slug, hive owned-not-remote (the live
+// tower's `hive-canary` folding the `papercusp` hive it LOCALLY OWNS) — must resolve
+// the member-content-guard home so cross-member REV content APPLIES instead of
+// dropping with 'no-hiveHome'. Pre-fix the guard home was `hiveHomeProjectionSlug ??
+// ownHiveHomeSlug`, and for an owned-hive member BOTH are null/undefined (the joiner
+// rebind is null because the hive is owned-not-remote; ownHiveHomeSlug is undefined
+// because home ≠ own slug) → the boot-time `hiveHome-resolve NONE→drop-all-cross-member`
+// diagnostic fires and EVERY cross-member op drops (this is the WI-559/FED-1 gap — its
+// ownHiveHomeSlug fix only covered home===own-slug). The DECOUPLED fix threads
+// `contentGuardHiveHome` (= hiveHomeSlugForHarness, independent of the home===own-slug
+// rebind gate) as the guard home, so the diagnostic no longer fires — while the
+// projection REBIND (hiveScoped) still keys off ownHiveHomeSlug, so an owned-hive member
+// does NOT double-apply the owner's own rows as origin='remote'. Observed through the
+// durable boot-history diagnostic (`kind:'merge_error'`), the same seam a live restart
+// surfaces via getBootHistory. `hiveHomeSlugForHarnessOverride` is the new test seam
+// (closes the pre-existing WI-559 untestable owner-home path — a dynamic import, no seam).
+describe('bootHarnessSubstrate — WI-2105 owned-hive member content-guard home', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-wi2105-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  // Mirrors the live tower: a member harness whose hive-home is a DIFFERENT, LOCALLY-OWNED hive.
+  const MEMBER_HARNESS_SLUG = 'hive-canary';
+  const OWNED_HIVE_HOME_SLUG = 'papercusp';
+  const HIVE_PUBKEY = Buffer.alloc(32, 11).toString('base64');
+
+  function dropAllDiag(workspaceId: string) {
+    return listBootHistory({
+      workspaceId,
+      harnessSlug: MEMBER_HARNESS_SLUG,
+      kinds: ['merge_error'],
+    }).filter((e) => (e.message ?? '').includes('hiveHome-resolve'));
+  }
+
+  it('FIX: an owned-hive member harness resolves the content-guard home (no drop-all-cross-member)', async () => {
+    const workspaceId = 'ws-wi2105-fix';
+    const joiner = makeAnnounceIdentityOverride('wi2105-owner', 9801, 'kc-wi2105-owner');
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug: MEMBER_HARNESS_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      // The hive is OWNED, not remote-joined → the joiner rebind resolves NULL (as in prod).
+      joinerHiveHomeSlugOverride: async () => null,
+      // The owned hive's home slug ≠ this member harness's own slug → ownHiveHomeSlug is
+      // undefined, but the DECOUPLED content-guard home resolves it (the WI-2105 fix).
+      hiveHomeSlugForHarnessOverride: async () => OWNED_HIVE_HOME_SLUG,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    // contentGuardHiveHome resolved ('papercusp') → the guard home is set → no drop-all diagnostic.
+    expect(dropAllDiag(workspaceId)).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL: a genuinely-unresolvable hive-home still trips the drop-all diagnostic', async () => {
+    const workspaceId = 'ws-wi2105-neg';
+    const joiner = makeAnnounceIdentityOverride('wi2105-neg', 9802, 'kc-wi2105-neg');
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug: MEMBER_HARNESS_SLUG,
+      swarmBinding: { kind: 'hive', hive_pubkey: HIVE_PUBKEY },
+      swarmOverride: makeFakeSwarm(),
+      swarmRefreshMs: 0,
+      swarmJoinRetryMs: 0,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail',
+      loadHiveMembersOverride: async () => [],
+      joinerHiveHomeSlugOverride: async () => null,
+      // BOTH homes unresolvable → contentGuardHiveHome undefined → the diagnostic MUST fire,
+      // proving the resolution (not a dead diagnostic) is what silences the positive case.
+      hiveHomeSlugForHarnessOverride: async () => null,
+      announceIdentityOverride: joiner.override,
+    });
+    cleanups.push(() => handle.close());
+
+    const fired = dropAllDiag(workspaceId);
+    expect(fired).toHaveLength(1);
+    const msg = fired[0]?.message ?? '';
+    expect(msg).toContain('hiveHome-resolve NONE→drop-all-cross-member');
+    expect(msg).toContain('guardHome=<none>');
+  });
+});
