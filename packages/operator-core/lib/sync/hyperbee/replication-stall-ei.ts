@@ -110,6 +110,17 @@ export async function fileReplicationStallEi(
 ): Promise<string | null> {
   const title = replicationStallEiTitle(episode);
   if (inFlight.has(title)) return null;
+  // Vitest safety gate (EI-6987): replication-liveness.ts fires this as an
+  // unawaited best-effort side effect of the merge pass — including from a
+  // UNIT TEST that boots a real (test-scoped) substrate handle to exercise
+  // the stall-DETECTION logic (boot.test.ts's 'ws-stall-1'/'s-stall-1'
+  // fixture), not the EI-filing path. Without a deps override that hit
+  // defaultDeps()'s REAL createIssue() against production PG, filing a
+  // severity:major escalation from test fixture data straight into the real
+  // backlog. A test that DOES want to exercise real filing passes its own
+  // `deps` (the existing DI seam below) to opt back in — mirrors the same
+  // gate in cache/cached-read.ts.
+  if (process.env.VITEST && !deps) return null;
   inFlight.add(title);
   try {
     const d = deps ?? (await defaultDeps());

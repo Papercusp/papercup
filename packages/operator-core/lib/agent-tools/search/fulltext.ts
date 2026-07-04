@@ -17,7 +17,7 @@ import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { rerankProseHits } from './rerank';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
+const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'work_item', 'all'] as const;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
@@ -31,13 +31,13 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    'Search workspace prose (escalations, brainstorm notes, older operator turns) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.',
+    'Search workspace prose (escalations, brainstorm notes, older operator turns, and — with scope:["work_item"] — bug/change/task issue titles+bodies) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.',
   guidance: {
-    when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets.',
+    when: 'User references prose past the chat history budget ("remember when we decided pricing", "the X discussion from last week"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets. Also: BEFORE filing a new bug/change work-item, pass scope:["work_item"] to dedup-check against existing EI-* issues by title/body keyword — cheaper and more scalable than work_items:list + grep past ~500 items.',
     notWhen:
-      'For STRUCTURED queries on harness state, features, tasks, issues, or messages — use the dedicated tools (harness:status, tasks:list, etc). They are faster and more precise when the schema matches the query. For CODE recall, use `gitnexus:query`. For tasks/goals/projects text, use `search:query`.',
+      'For STRUCTURED queries on harness state, features, tasks, or messages — use the dedicated tools (harness:status, tasks:list, etc). They are faster and more precise when the schema matches the query. For CODE recall, use `gitnexus:query`. For tasks/goals/projects text, use `search:query`. `scope:["work_item"]` only covers the ISSUE family (bug/change/task, engineer_issues) — feature-family (F-NNN) work-items are not in this corpus.',
     chaining:
-      'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit. The result `excerpt` is just the first 200 chars for ranking display.',
+      'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit; pair `scope:["work_item"]` hits with `work_items:get { id }` for the full record. The result `excerpt` is just the first 200 chars for ranking display.',
     seeAlso: [
       'search:semantic (embedding-based recall)',
       'search:query (structured tasks / goals / projects rows)',
@@ -55,10 +55,15 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
+    // EI-6984: 'work_item' is opt-in only, kept OUT of the historic no-scope default
+    // (unscoped callers keep the same 4-source result shape they've always gotten) —
+    // but an EXPLICIT scope:['all'] means "every source", so it expands to all five.
     const scope =
-      args.scope?.includes('all') || !args.scope?.length
-        ? ['escalations', 'brainstorm', 'turns', 'decisions']
-        : args.scope;
+      args.scope?.includes('all')
+        ? ['escalations', 'brainstorm', 'turns', 'decisions', 'work_item']
+        : !args.scope?.length
+          ? ['escalations', 'brainstorm', 'turns', 'decisions']
+          : args.scope;
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
 
     const { results, totalHits } = await runFullTextSearch(sources, {
