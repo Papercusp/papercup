@@ -91,7 +91,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
       side="bottom"
       align="start"
       sideOffset={4}
-      ariaLabel="New plan in hive"
+      ariaLabel={`New plan in ${potLabel}`}
       contentStyle={{
         minWidth: 220,
         display: 'flex',
@@ -119,7 +119,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
       </button>
       }
     >
-        <div role="menu" aria-label="New plan in hive" style={{ display: 'flex', flexDirection: 'column' }}>
+        <div role="menu" aria-label={`New plan in ${potLabel}`} style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: "0", color: 'var(--fg-mute)', padding: '4px 8px' }}>
             New plan in…
           </div>
@@ -146,7 +146,7 @@ export default function NewPlanButton({ resolvedHarnessSlug, projects, launching
               {h.member ? `↳ ${h.label}` : h.label}
             </button>
           ))}
-          <Tooltip label="Draft at the workspace level (no owning hive) — explicit, not the silent default"><button
+          <Tooltip label={`Draft at the workspace level (no owning ${potLabel}) — explicit, not the silent default`}><button
             type="button"
             role="menuitem"
             className="pc-plans__newplan-item"

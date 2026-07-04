@@ -2,6 +2,7 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 /**
  * DecisionLog — the shared Queen decision-ledger feed
  * (queue-authorization-redesign-2026-06-14 P-003).
@@ -223,6 +224,7 @@ export default function DecisionLog({
   onSelectRow,
   externalDetail,
 }: DecisionLogProps) {
+  const t = useLexicon();
   const args = useMemo(
     () => ({
       layer,
@@ -375,7 +377,7 @@ export default function DecisionLog({
               {relativeTime(row.ts)}
             </span>
             {showUndo && row.tripwireId ? (
-              <Tooltip label="Undo: reject this auto-decision (owner thumbs-down) and demote the category one step. The literal action-revert lands with the queen execution layer."><button
+              <Tooltip label={`Undo: reject this auto-decision (owner thumbs-down) and demote the category one step. The literal action-revert lands with the ${t('brain', { lower: true })} execution layer.`}><button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); void onUndo(row); }}
                 disabled={reverting === row.tripwireId}

@@ -18,6 +18,7 @@
 import { useCallback, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
+import { useLexicon } from '@/lib/useLexicon';
 import { toast } from 'sonner';
 
 /* Wire type — mirrors TrustedUser (operator-core/lib/trust/user-trust-list.ts),
@@ -93,6 +94,7 @@ const removeBtnStyle: CSSProperties = {
 };
 
 export default function TrustSettingsPage() {
+  const t = useLexicon();
   const { data, loading, error } = useSyncQuery<TrustedUser>({ queryName: 'trust.list' });
   const rows = useMemo<TrustedUser[]>(() => data ?? [], [data]);
 
@@ -162,7 +164,7 @@ export default function TrustSettingsPage() {
     <div>
       <h1>Trusted users</h1>
       <p className="pc-settings-intro">
-        GitHub users whose <strong>verified</strong> remote work may auto-run in shared hives without
+        GitHub users whose <strong>verified</strong> remote work may auto-run in shared {t('pot', { plural: true, lower: true })} without
         per-item approval. Trusting a user is a security grant you control — an unverified author is
         never auto-admitted regardless. Identify users by their numeric GitHub user id.
       </p>

@@ -281,13 +281,13 @@ export function CombBlueprintForm({ onBack, onCreated, hiveLabel }: CombBlueprin
         {createError && <ErrorBanner message={createError} />}
         <label style={{ display: 'block', marginBottom: 14 }}>
           <FieldLabel>{hiveLabel} slug</FieldLabel>
-          <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" />
-          <Hint>Lowercase, hyphens OK. Used as the folder name + the hive id.</Hint>
+          <input ref={slugRef} type="text" placeholder={`my-${hiveLower}`} style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" />
+          <Hint>Lowercase, hyphens OK. Used as the folder name + the {hiveLower} id.</Hint>
         </label>
         <label style={{ display: 'block', marginBottom: 14 }}>
           <FieldLabel>Parent directory <span style={{ color: 'var(--fg-mute)' }}>(optional)</span></FieldLabel>
           <input ref={parentDirRef} type="text" placeholder="~/.papercusp/hives" style={inputStyle} />
-          <Hint>Where the hive’s home folder is created. Leave blank for the default (~/.papercusp/hives).</Hint>
+          <Hint>Where the {hiveLower}&rsquo;s home folder is created. Leave blank for the default (~/.papercusp/hives).</Hint>
         </label>
         <label style={{ display: 'block', marginBottom: 14 }}>
           <FieldLabel>Learning pack</FieldLabel>

@@ -12,6 +12,10 @@ vi.mock('@papercusp/sync', () => ({
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the routed
+// undo-tooltip copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import DecisionLog from './DecisionLog';
 
 /** Render under a nuqs testing adapter (DecisionLog reads `?decision=<id>` for
