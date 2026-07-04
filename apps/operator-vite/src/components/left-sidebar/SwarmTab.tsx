@@ -355,8 +355,8 @@ export default function SwarmTab({ active }: { active: boolean }) {
 
       {beeAgents.length > 0 && (
         <div className="pclsb-sec" data-testid="swarm-bees">
-          <div className="pclsb-sec__head">🐝 Bees ({beeAgents.length})</div>
-          {beeAgents.map((r) => renderAgentRow(r, '🐝'))}
+          <div className="pclsb-sec__head">☕ Bees ({beeAgents.length})</div>
+          {beeAgents.map((r) => renderAgentRow(r, '☕'))}
         </div>
       )}
     </div>

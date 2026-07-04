@@ -119,7 +119,7 @@ describe('canFocusWindow (pure — focus-button guard)', () => {
 describe('agentGlyph (pure)', () => {
   it('maps kind/role to the colony glyph, · for unknown', () => {
     expect(agentGlyph({ agentPaneKind: 'queen', role: null })).toBe('♛');
-    expect(agentGlyph({ agentPaneKind: null, role: 'bee' })).toBe('🐝');
+    expect(agentGlyph({ agentPaneKind: null, role: 'bee' })).toBe('☕');
     expect(agentGlyph({ agentPaneKind: null, role: 'sentinel' })).toBe('🛡');
     expect(agentGlyph({ agentPaneKind: null, role: 'mystery' })).toBe('·');
   });

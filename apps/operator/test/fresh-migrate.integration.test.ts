@@ -142,6 +142,45 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     }
   });
 
+  it('WI-2668: unqualified `harness_features` resolves via the harness_shared fallback view when no per-harness schema exists (migration 497)', async () => {
+    // A fresh-migrated DB has ONLY harness_shared — no per-harness `harness_<slug>`
+    // schemas — which is exactly the packaged/federated (embedded) operator shape.
+    // getHarnessPg(slug) opens a client with a connect-time search_path of
+    // [harness_<slug>, harness_shared, papercusp_shared, public] so the ~20 legacy
+    // call sites issuing UNQUALIFIED `SELECT ... FROM harness_features` resolve. With
+    // no per-harness schema AND no fallback, that name is unresolvable and PG logs
+    // `relation "harness_features" does not exist` in a tight loop (measured: 644 of
+    // 4000 server-log lines on the Mac dogfood VM). Migration 497 adds
+    // harness_shared.harness_features (a view over harness_features_consolidated),
+    // always next in the search_path, so the name resolves on a consolidated-only
+    // operator. (On tower the real per-harness table shadows it — not exercisable
+    // here, since a fresh DB has no per-harness schema.)
+    const u = new URL(adminUri);
+    const appUri = `postgresql://harness_app:harness_app_pwd@${u.hostname}:${u.port}/${dbName}`;
+    const app = postgres(appUri, { max: 1, onnotice: () => {} });
+    try {
+      // Mirror getHarnessPg's search_path with a DELIBERATELY ABSENT per-harness
+      // schema first (nonexistent schemas in a search_path are silently skipped).
+      await app.unsafe(
+        `SET search_path TO "harness_no_such_slug", harness_shared, papercusp_shared, public`,
+      );
+      // The exact unqualified shape parseFeatures / the features routes issue. Before
+      // 497 this REJECTED with relation-does-not-exist; it must now resolve.
+      await expect(
+        app.unsafe(`SELECT * FROM harness_features WHERE harness_slug = $1 ORDER BY feature_id`, [
+          'any-slug',
+        ]),
+      ).resolves.toBeDefined();
+      // …and the resolved relation is the shared fallback view specifically.
+      const [{ rel }] = await app.unsafe(
+        `SELECT to_regclass('harness_shared.harness_features')::text AS rel`,
+      );
+      expect(rel).toBe('harness_shared.harness_features');
+    } finally {
+      await app.end({ timeout: 5 });
+    }
+  });
+
   it('is idempotent — a second run applies nothing', async () => {
     const second = await applyPendingMigrations({ client: sql, sqlDir: SQL_DIR });
     expect(second.appliedCount).toBe(0);

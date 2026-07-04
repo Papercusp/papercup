@@ -230,7 +230,7 @@ export function KindPill({
 export const AGENT_KIND_GLYPH: Record<string, string> = {
   queen: '♛',
   overwatch: '👁', // overwatch-role-2026-06-15 B-01 — must match apps/tui agent_pane_kind.rs
-  bee: '🐝',
+  bee: '☕',
   sentinel: '🛡',
   planner: '📋',
   su: '🛠',

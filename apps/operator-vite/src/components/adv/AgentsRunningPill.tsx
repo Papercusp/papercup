@@ -214,7 +214,7 @@ interface RosterResponse {
 const KIND_GLYPH: Record<string, string> = {
   queen: '♛',
   overwatch: '👁',
-  bee: '🐝',
+  bee: '☕',
   sentinel: '🛡',
   planner: '📋',
   su: '🛠',
