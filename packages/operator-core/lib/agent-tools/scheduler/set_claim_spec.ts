@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { fetchWakeability } from '../coordination/presence-wakeability';
 
 /**
  * The coding-FACTORY push-pipeline roles: each is HANDED a FEATURE_ID by the orchestrator
@@ -60,6 +61,35 @@ export function claimSpecInertWarning(beeId: string, spawnedRole: string | null)
     '(it will never select any work). Claim-specs steer SELF-PULLING agents: a coding-hive bee ' +
     '(role="bee"), the queen, or an su fleet leader/member instructed to pull via get_next. ' +
     'Did you mean to push a FEATURE_ID to this factory role, or to steer a self-puller instead?'
+  );
+}
+
+/**
+ * Pure advisory decision (unit-testable without PG): EI-6079 — `fleet:assignments`
+ * can show a bee as alive/present (a fresh nursery heartbeat, or presence written
+ * at launch) while it has NOT YET registered a live `coord:inbox-wake:<id>` await
+ * (e.g. a just-spawned session still in its launch→first-await window — the
+ * `recorded` sessionState in presence-wakeability.ts) or has already lost it (a
+ * dead/reaped row). Either way, `scheduler:set_claim_spec` steering that bee looks
+ * like it worked (the spec write itself always succeeds — the resolver doesn't
+ * care whether anyone will ever apply it), but a SUBSEQUENT `coord:send { wake:
+ * "required" }` warm-inject silently returns `woken:0`: the placement layer
+ * believes warm reuse is available when the wake layer cannot actually reach the
+ * session. Surfacing that mismatch HERE, at spec-set time, is the earliest point
+ * a caller can catch it — instead of discovering it only after a wake attempt
+ * fails. Advisory only (mirrors claimSpecInertWarning): never blocks the write,
+ * since the bee may simply not have reached its first await YET and will be
+ * wakeable moments later.
+ */
+export function claimSpecWakeabilityWarning(beeId: string, wakeable: boolean | null): string | null {
+  if (wakeable !== false) return null; // true, or unknown (null) — never cry wolf on a lookup miss
+  return (
+    `beeId "${beeId}" has NO live coord:inbox-wake standing await right now — a subsequent ` +
+    'coord:send { wake:"required" } warm-inject to this bee will return woken:0 even though ' +
+    "fleet:assignments may show it alive (EI-6079: a fresh spawn hasn't reached its first await " +
+    'yet, or the session already ended/was reaped). The spec is stored regardless (it applies ' +
+    'whenever the bee next calls scheduler:get_next), but do not rely on warm-injecting THIS bee ' +
+    'until coord:presence shows it wakeable — relaunch/re-check instead of assuming reuse.'
   );
 }
 
@@ -211,6 +241,24 @@ export default defineTool({
       // Append — never clobber the store's WI-1564 strand warning.
       out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;
     }
+
+    // EI-6079: best-effort wakeability check, same advisory-only posture as the
+    // role warning above — a lookup failure or unknown result NEVER warns (null
+    // reads as "don't know", not "not wakeable"), so this can never cry wolf on a
+    // transient PG hiccup or a resolution the wakeability query doesn't cover.
+    if (!args.fleet) {
+      let wakeable: boolean | null = null;
+      try {
+        wakeable = (await fetchWakeability([targetBeeId])).get(targetBeeId)?.wakeable ?? null;
+      } catch {
+        wakeable = null;
+      }
+      const wakeWarning = claimSpecWakeabilityWarning(targetBeeId, wakeable);
+      if (wakeWarning) {
+        out.warning = out.warning ? `${out.warning as string}\n${wakeWarning}` : wakeWarning;
+      }
+    }
+
     return { data: out };
   },
 });
