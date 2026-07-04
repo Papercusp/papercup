@@ -30,6 +30,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
   id: "papercusp-ops-hives",
   version: "0.1.0",
   scope: "aspect",
+  category: "agentic",
   summary:
     "The judgment plane quartermaster and oddsmith instantiate: a domain hive + an -ops hive over it " +
     "(the Queen surveying a backlog and placing member harnesses), crossing into the app at exactly ONE " +
@@ -54,6 +55,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     { id: "app-tables", prompt: "Which app tables does ingested contract output land in, and what is the app-plane read model over them?" },
   ],
   composesWith: ["tauri-desktop-shell", "agentic-desktop-app"],
+  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
   checks: [
     { id: "confinement-guard", run: "checks/confinement-guard.test.ts", summary: "no hive role holds cart/checkout/vault/approvals-write-analog capabilities" },
     { id: "seam-round-trip", run: "checks/seam-round-trip.test.ts", summary: "enqueue → complete with payload → contract parse gate ingests → app table row exists" },
@@ -66,6 +68,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
   id: "tauri-desktop-shell",
   version: "0.1.0",
   scope: "aspect",
+  category: "shell",
   summary:
     "The deterministic app chassis: a thin Tauri 2 shell (a HOST, not the app) spawning a Node/Hono " +
     "sidecar that serves the SPA + /api on a free localhost port, embedded Postgres with migrations on " +
@@ -84,6 +87,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
     { id: "app-identity", prompt: "App name, bundle identifier, app-home directory, and release channels (feeds tauri.conf + tauri-release-kit config)." },
   ],
   composesWith: ["papercusp-ops-hives", "agentic-desktop-app"],
+  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
   checks: [
     { id: "boot-e2e", run: "checks/boot-e2e.test.ts", summary: "composed app builds, sidecar spawns, discovery file written, health returns 200" },
   ],
@@ -97,6 +101,7 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   id: "agentic-desktop-app",
   version: "0.1.0",
   scope: "app",
+  category: "app",
   summary:
     "The two-plane agentic desktop app quartermaster and oddsmith instantiate: papercusp-ops-hives " +
     "(judgment plane + the ONE seam) composed onto tauri-desktop-shell (the deterministic chassis), plus " +
@@ -108,6 +113,14 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
     { id: "domain", prompt: "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point." },
   ],
   composesWith: ["papercusp-ops-hives", "tauri-desktop-shell"],
+  // P-015: requires is the HARD pinned edge — composing/installing this app
+  // template pulls both aspects in; the checks union covers the closure.
+  // (P-022 later re-layers this onto the non-agentic 'desktop-app' template.)
+  requires: [
+    { id: "papercusp-ops-hives", version: "0.1.0" },
+    { id: "tauri-desktop-shell", version: "0.1.0" },
+  ],
+  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml"],
   checks: [
     { id: "composition-integrity", run: "checks/composition-integrity.test.ts", summary: "the composed set resolves (composeTemplates ok: pins consistent, one app scope) and the union of checks is what CI runs" },
   ],

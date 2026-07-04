@@ -4,6 +4,7 @@
 id: tauri-desktop-shell
 version: "0.1.0"
 scope: aspect
+category: shell
 summary: >-
   The deterministic app chassis: a thin Tauri 2 shell (a HOST, not the app)
   spawning a Node/Hono sidecar that serves the SPA + /api on a free localhost
@@ -33,6 +34,10 @@ decisionPoints:
 composesWith:
   - papercusp-ops-hives
   - agentic-desktop-app
+docs:
+  - agent-insights/templates-system-design
+  - agent-insights/templates-template-yaml
+  - agent-insights/templates-component-catalog
 checks:
   - id: boot-e2e
     run: checks/boot-e2e.test.ts

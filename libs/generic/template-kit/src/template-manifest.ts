@@ -29,6 +29,38 @@ import type { ComponentManifest } from "./component-manifest.js";
 /** D-006: a whole-app scaffold vs a capability composed INTO an app. */
 export type TemplateScope = "app" | "aspect";
 
+/**
+ * The BROWSE axis (owner directive 2026-07-04 / P-015) — orthogonal to
+ * `scope` (the STRUCTURAL axis): what shelf the template sits on in the
+ * Cupboard Templates section. A flat validated enum so a typo fails the
+ * manifest, not the storefront.
+ */
+export const TEMPLATE_CATEGORIES = [
+  "app", // whole-app scaffolds (scope: app)
+  "agentic", // hives / agent-orchestration aspects
+  "shell", // desktop chassis / host aspects
+  "data", // data layer + data sync aspects
+  "search", // search/rerank aspects
+  "ui", // UI library aspects
+  "release", // release pipeline aspects
+  "design", // brand/design adoption aspects
+] as const;
+export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
+
+/**
+ * A HARD, version-pinned reference to another OFFICIAL template (owner
+ * directive 2026-07-04 / P-015): `requires` is a composition DEPENDENCY —
+ * installing/composing this template pulls the referenced template in, and
+ * the checks union covers the whole requires-closure. Contrast `composesWith`,
+ * which stays a soft design-affinity declaration (no edge, no pin).
+ */
+export interface TemplateRequireRef {
+  /** The required template's id (kebab-case). */
+  id: string;
+  /** Exact semver pin; must match the required template's current version. */
+  version: string;
+}
+
 /** A version-pinned reference to a catalog component — never a vendored copy. */
 export interface TemplateComponentRef {
   /** Component catalog id (kebab-case). */
@@ -62,6 +94,8 @@ export interface TemplateManifest {
   version: string;
   /** app (whole-app scaffold) | aspect (composed into an app) — D-006. */
   scope: TemplateScope;
+  /** The browse axis — which Cupboard Templates shelf (P-015; orthogonal to scope). */
+  category: TemplateCategory;
   /** One-paragraph human description (the Cupboard listing text). */
   summary: string;
   /**
@@ -80,6 +114,18 @@ export interface TemplateManifest {
   decisionPoints: TemplateDecisionPoint[];
   /** Template ids this template is designed to stack with (semantics = P-014; may be empty). */
   composesWith: string[];
+  /**
+   * HARD version-pinned official cross-template dependencies (P-015).
+   * Composing/installing this template pulls in its whole requires-closure;
+   * the checks union covers the closure. Optional — absent means none.
+   */
+  requires?: TemplateRequireRef[];
+  /**
+   * Canonical /internal/docs page slugs for the building agent to consult
+   * when the GUIDE is not enough (P-015; the dogfooding rule — you are
+   * building ON a live papercusp, its docs are served on your install).
+   */
+  docs?: string[];
   /** The acceptance suite. Non-empty — checks are the load-bearing replacement for the old deterministic generator. */
   checks: TemplateCheck[];
 }
@@ -87,6 +133,10 @@ export interface TemplateManifest {
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const SCOPES: readonly string[] = ["app", "aspect"];
+const CATEGORIES: readonly string[] = TEMPLATE_CATEGORIES;
+// A docs entry is a /internal/docs page slug: kebab segments, "/" separators
+// (e.g. "agent-insights/templates-system-design").
+const DOC_SLUG = /^[a-z0-9]+(-[a-z0-9]+)*(\/[a-z0-9]+(-[a-z0-9]+)*)*$/;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -104,6 +154,9 @@ export function validateTemplateManifest(raw: unknown): { ok: boolean; errors: s
   if (typeof raw.id !== "string" || !KEBAB.test(raw.id)) errors.push("id: required kebab-case string");
   if (typeof raw.version !== "string" || !SEMVER.test(raw.version)) errors.push("version: required semver string (x.y.z)");
   if (typeof raw.scope !== "string" || !SCOPES.includes(raw.scope)) errors.push(`scope: required one of ${SCOPES.join("|")}`);
+  if (typeof raw.category !== "string" || !CATEGORIES.includes(raw.category)) {
+    errors.push(`category: required one of ${CATEGORIES.join("|")} (the Cupboard browse axis — P-015)`);
+  }
   if (typeof raw.summary !== "string" || raw.summary.trim() === "") errors.push("summary: required non-empty string");
 
   if (!Array.isArray(raw.components)) {
@@ -164,6 +217,35 @@ export function validateTemplateManifest(raw: unknown): { ok: boolean; errors: s
     errors.push("composesWith: required string[] (may be empty)");
   } else {
     for (const t of raw.composesWith) if (!KEBAB.test(t)) errors.push(`composesWith: '${t}' is not kebab-case`);
+  }
+
+  if (raw.requires !== undefined) {
+    if (!Array.isArray(raw.requires)) {
+      errors.push("requires: must be an array of { id, version } when present (hard pinned template deps — P-015)");
+    } else {
+      const seen = new Set<string>();
+      raw.requires.forEach((r, i) => {
+        if (!isRecord(r)) {
+          errors.push(`requires[${i}]: must be an object { id, version }`);
+          return;
+        }
+        if (typeof r.id !== "string" || !KEBAB.test(r.id)) errors.push(`requires[${i}].id: required kebab-case string`);
+        if (typeof r.version !== "string" || !SEMVER.test(r.version)) errors.push(`requires[${i}].version: required exact semver pin (x.y.z)`);
+        if (typeof r.id === "string") {
+          if (r.id === raw.id) errors.push(`requires[${i}]: a template cannot require itself ('${r.id}')`);
+          if (seen.has(r.id)) errors.push(`requires[${i}]: duplicate requires ref '${r.id}'`);
+          seen.add(r.id);
+        }
+      });
+    }
+  }
+
+  if (raw.docs !== undefined) {
+    if (!isStringArray(raw.docs)) {
+      errors.push("docs: must be string[] when present (/internal/docs page slugs — P-015)");
+    } else {
+      for (const d of raw.docs) if (!DOC_SLUG.test(d)) errors.push(`docs: '${d}' is not a doc slug (kebab segments, '/' separators)`);
+    }
   }
 
   if (!Array.isArray(raw.checks) || raw.checks.length === 0) {

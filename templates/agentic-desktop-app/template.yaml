@@ -5,6 +5,7 @@
 id: agentic-desktop-app
 version: "0.1.0"
 scope: app
+category: app
 summary: >-
   The two-plane agentic desktop app quartermaster and oddsmith instantiate:
   papercusp-ops-hives (judgment plane + the ONE seam) composed onto
@@ -23,6 +24,15 @@ decisionPoints:
 composesWith:
   - papercusp-ops-hives
   - tauri-desktop-shell
+# P-015: HARD pinned deps — composing/installing this app template pulls both
+# aspects in; the checks union covers the closure. (P-022 re-layers onto the
+# non-agentic desktop-app template once it exists.)
+requires:
+  - { id: papercusp-ops-hives, version: 0.1.0 }
+  - { id: tauri-desktop-shell, version: 0.1.0 }
+docs:
+  - agent-insights/templates-system-design
+  - agent-insights/templates-template-yaml
 checks:
   - id: composition-integrity
     run: checks/composition-integrity.test.ts

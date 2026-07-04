@@ -25,6 +25,7 @@ const VALID_YAML = [
   'id: neat-template',
   'version: 0.1.0',
   'scope: aspect',
+  'category: data',
   'summary: a neat test template',
   'components:',
   '  - { id: hive-app-seam, version: 0.1.0 }',

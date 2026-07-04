@@ -13,6 +13,18 @@ Worked examples to keep open while you build:
 `quartermaster/blueprints/` + `quartermaster/packages/contracts` (primary),
 `oddsmith/blueprints/` + `@oddsmith/contracts` (the origin of the pattern).
 
+## MUST — consult the live papercusp docs when this GUIDE is not enough
+
+You are building ON a live papercusp install (we dogfood papercusp in
+papercusp). If anything in this GUIDE is insufficient — a component's API, a
+seam convention, a release step — do NOT guess:
+
+- read the papercusp documentation served on your install at **`/internal/docs`**
+  (start with the `agent-insights` section; this template's `template.yaml`
+  `docs:` list names its canonical pages), and
+- inspect the **operator app** itself — it is a running reference instance of
+  every pattern these templates encode.
+
 ## The construction (orientation)
 
 Two planes. The **deterministic plane** (ordinary code: ingest, storage,

@@ -5,6 +5,7 @@
 id: papercusp-ops-hives
 version: "0.1.0"
 scope: aspect
+category: agentic
 summary: >-
   The judgment plane quartermaster and oddsmith instantiate: a domain hive +
   an -ops hive over it (the Queen surveying a backlog and placing member
@@ -46,6 +47,10 @@ decisionPoints:
 composesWith:
   - tauri-desktop-shell
   - agentic-desktop-app
+docs:
+  - agent-insights/templates-system-design
+  - agent-insights/templates-template-yaml
+  - agent-insights/templates-component-catalog
 checks:
   - id: confinement-guard
     run: checks/confinement-guard.test.ts

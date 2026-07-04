@@ -30,7 +30,13 @@ A **template** is a distributable unit of:
    packages — never vendored copies).
 2. **Guidance** — `GUIDE.md`, a composition prompt written for the *building agent*, in
    MUST / SHOULD / FREE tiers, with **declared decision points** where agent judgment is
-   explicitly invited.
+   explicitly invited. **Every GUIDE MUST carry the docs-consultation preamble** (owner
+   directive 2026-07-04 / P-016): when the GUIDE is insufficient, the building agent
+   consults the papercusp docs served on its install at `/internal/docs` and the operator
+   app itself — we dogfood papercusp in papercusp, so a live reference instance is always
+   present. The manifest's `docs:` list (P-015) names the template's canonical pages.
+   Template AUTHORS: copy the preamble block from an existing GUIDE — it is part of the
+   template anatomy, not optional prose.
 3. **Checks** — `checks/`, the acceptance suite any composition must pass. This is the
    load-bearing replacement for the deterministic generator, not decoration.
 

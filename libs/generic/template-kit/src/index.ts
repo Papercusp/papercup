@@ -21,16 +21,20 @@ export {
 export { COMPONENT_CATALOG } from "./catalog.js";
 export {
   parseTemplateManifest,
+  TEMPLATE_CATEGORIES,
   validateTemplateAgainstCatalog,
   validateTemplateManifest,
+  type TemplateCategory,
   type TemplateCheck,
   type TemplateComponentRef,
   type TemplateDecisionPoint,
   type TemplateManifest,
+  type TemplateRequireRef,
   type TemplateScope,
 } from "./template-manifest.js";
 export {
   composeTemplates,
+  resolveRequiresClosure,
   validateTemplateSet,
   type ComposedFrom,
   type TemplateComposition,

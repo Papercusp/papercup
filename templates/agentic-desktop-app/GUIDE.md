@@ -16,6 +16,18 @@ and "done" is the **union of all three templates' checks going green**
 (`composeTemplates` in `@papercusp/template-kit` computes the union; that
 additive rule is what keeps free-form composition safe).
 
+## MUST — consult the live papercusp docs when this GUIDE is not enough
+
+You are building ON a live papercusp install (we dogfood papercusp in
+papercusp). If anything in this GUIDE is insufficient — a component's API, a
+seam convention, a release step — do NOT guess:
+
+- read the papercusp documentation served on your install at **`/internal/docs`**
+  (start with the `agent-insights` section; this template's `template.yaml`
+  `docs:` list names its canonical pages), and
+- inspect the **operator app** itself — it is a running reference instance of
+  every pattern these templates encode.
+
 ## MUST
 
 - Walk **`domain` first** (below), then EVERY decision point of both aspects —

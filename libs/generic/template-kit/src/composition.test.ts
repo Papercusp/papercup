@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeTemplates, validateTemplateSet } from "./composition.js";
+import { composeTemplates, resolveRequiresClosure, validateTemplateSet } from "./composition.js";
 import {
   AGENTIC_DESKTOP_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
@@ -13,6 +13,7 @@ function aspect(id: string, over: Partial<TemplateManifest> = {}): TemplateManif
     id,
     version: "1.0.0",
     scope: "aspect",
+    category: "data",
     summary: `${id} aspect`,
     components: [{ id: `${id}-lib`, version: "1.0.0" }],
     contracts: [],
@@ -139,5 +140,64 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     expect(AGENTIC_DESKTOP_APP_TEMPLATE.composesWith.sort()).toEqual(
       ["papercusp-ops-hives", "tauri-desktop-shell"],
     );
+  });
+});
+
+describe("P-015 — requires: hard pinned cross-template deps", () => {
+  it("validateTemplateSet resolves requires refs and checks the pin", () => {
+    const b = aspect("b");
+    const a = aspect("a", { requires: [{ id: "b", version: "1.0.0" }] });
+    expect(validateTemplateSet([a, b])).toEqual({ ok: true, errors: [] });
+    expect(validateTemplateSet([a]).errors.join(";")).toContain("requires unknown template 'b'");
+    const stale = aspect("a", { requires: [{ id: "b", version: "9.9.9" }] });
+    expect(validateTemplateSet([stale, b]).errors.join(";")).toContain("stale pin");
+  });
+
+  it("composeTemplates enforces closure completeness (requires satisfied IN the selection)", () => {
+    const b = aspect("b");
+    const a = aspect("a", { requires: [{ id: "b", version: "1.0.0" }] });
+    expect(composeTemplates([a, b]).ok).toBe(true);
+    const missing = composeTemplates([a]);
+    expect(missing.ok).toBe(false);
+    expect(missing.errors.join(";")).toContain("not in the composition");
+    const wrongPin = composeTemplates([aspect("a", { requires: [{ id: "b", version: "2.0.0" }] }), b]);
+    expect(wrongPin.ok).toBe(false);
+    expect(wrongPin.errors.join(";")).toContain("stale pin");
+  });
+
+  it("resolveRequiresClosure expands roots dep-first, deduped", () => {
+    const c = aspect("c");
+    const b = aspect("b", { requires: [{ id: "c", version: "1.0.0" }] });
+    const a = aspect("a", { requires: [{ id: "b", version: "1.0.0" }, { id: "c", version: "1.0.0" }] });
+    const res = resolveRequiresClosure([a], [a, b, c]);
+    expect(res.ok).toBe(true);
+    expect(res.templates.map((t) => t.id)).toEqual(["c", "b", "a"]);
+    // the closure then composes clean
+    expect(composeTemplates(res.templates).ok).toBe(true);
+  });
+
+  it("resolveRequiresClosure errors on unknown ref, stale pin, and cycles", () => {
+    const a = aspect("a", { requires: [{ id: "ghost", version: "1.0.0" }] });
+    expect(resolveRequiresClosure([a], [a]).errors.join(";")).toContain("unknown template 'ghost'");
+
+    const b = aspect("b");
+    const stale = aspect("a", { requires: [{ id: "b", version: "0.0.9" }] });
+    expect(resolveRequiresClosure([stale], [stale, b]).errors.join(";")).toContain("stale pin");
+
+    const x = aspect("x", { requires: [{ id: "y", version: "1.0.0" }] });
+    const y = aspect("y", { requires: [{ id: "x", version: "1.0.0" }] });
+    expect(resolveRequiresClosure([x], [x, y]).errors.join(";")).toContain("requires cycle");
+  });
+
+  it("the reference set: agentic-desktop-app's requires-closure = the 3-way split, composing green", () => {
+    const res = resolveRequiresClosure([AGENTIC_DESKTOP_APP_TEMPLATE], REFERENCE_TEMPLATES);
+    expect(res.ok).toBe(true);
+    expect(new Set(res.templates.map((t) => t.id))).toEqual(
+      new Set(["agentic-desktop-app", "papercusp-ops-hives", "tauri-desktop-shell"]),
+    );
+    expect(res.templates[res.templates.length - 1]!.id).toBe("agentic-desktop-app"); // deps first
+    const composed = composeTemplates(res.templates);
+    expect(composed.ok).toBe(true);
+    expect(composed.composition!.appTemplateId).toBe("agentic-desktop-app");
   });
 });

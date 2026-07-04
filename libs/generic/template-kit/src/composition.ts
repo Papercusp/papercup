@@ -86,12 +86,75 @@ export function validateTemplateSet(entries: unknown[]): { ok: boolean; errors: 
     ids.add(m.id);
     manifests.push(m);
   });
+  const byId = new Map(manifests.map((m) => [m.id, m]));
   for (const m of manifests) {
     for (const ref of m.composesWith) {
       if (!ids.has(ref)) errors.push(`'${m.id}' composesWith unknown template '${ref}'`);
     }
+    // requires is a HARD pinned edge (P-015): the target must exist in the set
+    // AND its current version must match the pin — a mismatched pin is rot.
+    for (const req of m.requires ?? []) {
+      const target = byId.get(req.id);
+      if (!target) {
+        errors.push(`'${m.id}' requires unknown template '${req.id}'`);
+      } else if (target.version !== req.version) {
+        errors.push(
+          `'${m.id}' requires '${req.id}@${req.version}' but the set has ${target.version} (stale pin — update the requirer or the target)`,
+        );
+      }
+    }
   }
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Expand a selection of ROOT templates to its full requires-CLOSURE against a
+ * registry (P-015: `requires` is a hard pinned dependency, so composing an
+ * app template pulls its requirements in automatically; the checks union then
+ * covers the closure). Pure + deterministic: dependencies come before their
+ * dependents, each template appears once, root order is otherwise preserved.
+ * Errors on an unknown ref, a version-mismatched pin, or a requires cycle.
+ */
+export function resolveRequiresClosure(
+  roots: TemplateManifest[],
+  registry: TemplateManifest[],
+): { ok: boolean; errors: string[]; templates: TemplateManifest[] } {
+  const errors: string[] = [];
+  const byId = new Map(registry.map((m) => [m.id, m]));
+  for (const r of roots) if (!byId.has(r.id)) byId.set(r.id, r);
+
+  const ordered: TemplateManifest[] = [];
+  const done = new Set<string>();
+  const inStack = new Set<string>();
+
+  const visit = (m: TemplateManifest, chain: string[]): void => {
+    if (done.has(m.id)) return;
+    if (inStack.has(m.id)) {
+      errors.push(`requires cycle: ${[...chain, m.id].join(" → ")}`);
+      return;
+    }
+    inStack.add(m.id);
+    for (const req of m.requires ?? []) {
+      const target = byId.get(req.id);
+      if (!target) {
+        errors.push(`'${m.id}' requires unknown template '${req.id}' (not in the registry)`);
+        continue;
+      }
+      if (target.version !== req.version) {
+        errors.push(
+          `'${m.id}' requires '${req.id}@${req.version}' but the registry has ${target.version} (stale pin)`,
+        );
+        continue;
+      }
+      visit(target, [...chain, m.id]);
+    }
+    inStack.delete(m.id);
+    done.add(m.id);
+    ordered.push(m);
+  };
+
+  for (const r of roots) visit(r, []);
+  return { ok: errors.length === 0, errors, templates: errors.length === 0 ? ordered : [] };
 }
 
 /**
@@ -117,6 +180,26 @@ export function composeTemplates(
     errors.push(
       `at most ONE app-scope template per composition — got ${appTemplates.map((t) => `'${t.id}'`).join(", ")}`,
     );
+  }
+
+  // Closure completeness (P-015): every selected template's `requires` must be
+  // satisfied WITHIN the selection, at the pinned version — an app template's
+  // hard deps cannot be silently dropped from its composition. (Callers expand
+  // a selection first via resolveRequiresClosure.)
+  const selected = new Map(templates.map((t) => [t.id, t]));
+  for (const t of templates) {
+    for (const req of t.requires ?? []) {
+      const target = selected.get(req.id);
+      if (!target) {
+        errors.push(
+          `'${t.id}' requires '${req.id}@${req.version}' which is not in the composition — expand via resolveRequiresClosure`,
+        );
+      } else if (target.version !== req.version) {
+        errors.push(
+          `'${t.id}' requires '${req.id}@${req.version}' but the composition has ${target.version} (stale pin)`,
+        );
+      }
+    }
   }
 
   // Component pin consistency: same component id at two versions = conflict.

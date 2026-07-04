@@ -19,6 +19,7 @@ function valid(): TemplateManifest {
     id: "my-template",
     version: "1.0.0",
     scope: "aspect",
+    category: "data",
     summary: "A test template.",
     components: [{ id: "hive-app-seam", version: "0.1.0" }],
     contracts: ["my-contract"],
@@ -109,7 +110,7 @@ describe("parseTemplateManifest", () => {
 
   it("throws ONE error listing every problem", () => {
     expect(() => parseTemplateManifest({ ...valid(), id: "Bad Id", checks: [] })).toThrow(
-      /^invalid template manifest: id: required kebab-case string; checks:/,
+      /^invalid template manifest: id: required kebab-case string; .*checks:/,
     );
   });
 });
@@ -172,5 +173,38 @@ describe("REFERENCE_TEMPLATES (the retro-fitted quartermaster manifests — P-00
     expect(TAURI_DESKTOP_SHELL_TEMPLATE.components.map((c) => c.id).sort()).toEqual(
       ["embedded-postgres-server", "hono-host", "tauri-release-kit", "tauri-shell"],
     );
+  });
+});
+
+describe("P-015 schema extensions — category / requires / docs", () => {
+  it("category is required and enum-validated", () => {
+    const { category: _drop, ...noCategory } = valid();
+    expect(validateTemplateManifest(noCategory).errors.join(";")).toContain("category: required one of");
+    expect(validateTemplateManifest({ ...valid(), category: "bogus" }).ok).toBe(false);
+    for (const c of ["app", "agentic", "shell", "data", "search", "ui", "release", "design"]) {
+      expect(validateTemplateManifest({ ...valid(), category: c }).ok).toBe(true);
+    }
+  });
+
+  it("requires: optional; entries must be pinned { id, version }, unique, non-self", () => {
+    expect(validateTemplateManifest(valid()).ok).toBe(true); // absent ok
+    expect(validateTemplateManifest({ ...valid(), requires: [{ id: "other-tpl", version: "1.0.0" }] }).ok).toBe(true);
+    expect(validateTemplateManifest({ ...valid(), requires: "not-an-array" }).ok).toBe(false);
+    expect(validateTemplateManifest({ ...valid(), requires: [{ id: "other-tpl" }] }).errors.join(";")).toContain("exact semver pin");
+    expect(validateTemplateManifest({ ...valid(), requires: [{ id: "other-tpl", version: "^1.0.0" }] }).ok).toBe(false); // ranges rejected
+    expect(validateTemplateManifest({ ...valid(), requires: [{ id: "my-template", version: "1.0.0" }] }).errors.join(";")).toContain("cannot require itself");
+    expect(
+      validateTemplateManifest({
+        ...valid(),
+        requires: [{ id: "x-tpl", version: "1.0.0" }, { id: "x-tpl", version: "1.0.0" }],
+      }).errors.join(";"),
+    ).toContain("duplicate requires ref");
+  });
+
+  it("docs: optional; entries must be /internal/docs slugs", () => {
+    expect(validateTemplateManifest({ ...valid(), docs: ["agent-insights/templates-system-design"] }).ok).toBe(true);
+    expect(validateTemplateManifest({ ...valid(), docs: ["Not A Slug"] }).ok).toBe(false);
+    expect(validateTemplateManifest({ ...valid(), docs: ["/leading-slash"] }).ok).toBe(false);
+    expect(validateTemplateManifest({ ...valid(), docs: "one-doc" }).ok).toBe(false);
   });
 });

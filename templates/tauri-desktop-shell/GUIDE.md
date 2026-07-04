@@ -10,6 +10,18 @@ template's `checks/` green (plus every composed template's — union rule).
 Worked examples: `quartermaster/apps/desktop` (primary: `src-tauri/src/main.rs`,
 `bin/serve.ts`, `src/_hono/`), the oddsmith equivalents.
 
+## MUST — consult the live papercusp docs when this GUIDE is not enough
+
+You are building ON a live papercusp install (we dogfood papercusp in
+papercusp). If anything in this GUIDE is insufficient — a component's API, a
+seam convention, a release step — do NOT guess:
+
+- read the papercusp documentation served on your install at **`/internal/docs`**
+  (start with the `agent-insights` section; this template's `template.yaml`
+  `docs:` list names its canonical pages), and
+- inspect the **operator app** itself — it is a running reference instance of
+  every pattern these templates encode.
+
 ## The construction (orientation)
 
 The Rust shell is a **HOST, not the app**: it picks a free port, spawns the
