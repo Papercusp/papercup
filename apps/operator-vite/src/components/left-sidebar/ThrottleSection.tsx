@@ -34,6 +34,7 @@ import { ChevronDown, ChevronRight, Cpu, Gauge, Moon, TrendingUp, Users } from '
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
+import { useLexicon } from '@/lib/useLexicon';
 import OverridableSetting from '../override/OverridableSetting';
 
 /** The idle background activities the owner can gate (mirrors owner-steering.ts
@@ -160,6 +161,7 @@ export default function ThrottleSection({
   onToggleIdle: (kind: IdleKind, enabled: boolean) => void;
   onSetAutoScaleOut: (enabled: boolean) => void;
 }) {
+  const t = useLexicon();
   const [open, setOpen] = useQueryState('qThrottle', parseAsBoolean.withDefault(true));
   const baselineQ = useSyncQuery<ModelTier>({ queryName: 'agentConfig.modelTiersBaseline', args: {}, staleTime: 60_000 });
   const tiers = baselineQ.data ?? [];
@@ -224,11 +226,11 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Users size={11} aria-hidden />
-              <OverridableSetting label="Max concurrent bees" isOverridden={maxBees != null} badgeStyle="inline" />
+              <OverridableSetting label={`Max concurrent ${t('contributor', { plural: true, lower: true })}`} isOverridden={maxBees != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__knobrow">
-              <DraftNumberInput value={maxBees} ariaLabel="Max concurrent bees" min={1} busy={busy} onCommit={onSetMaxBees} />
-              <span className="pc-queen__presetlabel">bees</span>
+              <DraftNumberInput value={maxBees} ariaLabel={`Max concurrent ${t('contributor', { plural: true, lower: true })}`} min={1} busy={busy} onCommit={onSetMaxBees} />
+              <span className="pc-queen__presetlabel">{t('contributor', { plural: true, lower: true })}</span>
               {maxBees != null && (
                 <button type="button" className="pc-queen__chip" onClick={() => onSetMaxBees(null)} disabled={busy}>clear</button>
               )}
@@ -246,20 +248,20 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Cpu size={11} aria-hidden />
-              <OverridableSetting label="Cap bees at tier" isOverridden={!!beeTier} badgeStyle="inline" />
+              <OverridableSetting label={`Cap ${t('contributor', { plural: true, lower: true })} at tier`} isOverridden={!!beeTier} badgeStyle="inline" />
             </div>
             <Select
               className="pc-queen__select"
               value={beeTier ?? '_none'}
               disabled={busy || tiers.length === 0}
-              ariaLabel="Cap bees at model tier"
+              ariaLabel={`Cap ${t('contributor', { plural: true, lower: true })} at model tier`}
               onChange={(value) => onSetBeeTierCap(value === '_none' ? null : value)}
               options={[
                 { value: '_none', label: 'No cap (any tier)' },
-                ...tiers.map((t) => ({ value: t.name, label: `${t.name} · ${t.spec}` })),
+                ...tiers.map((tier) => ({ value: tier.name, label: `${tier.name} · ${tier.spec}` })),
               ]}
             />
-            <span className="pc-queen__hint">A ceiling — bees never run above this tier. Finer per-tier models: the Model tiers section above.</span>
+            <span className="pc-queen__hint">A ceiling — {t('contributor', { plural: true, lower: true })} never run above this tier. Finer per-tier models: the Model tiers section above.</span>
           </div>
 
           {/* Idle activities */}

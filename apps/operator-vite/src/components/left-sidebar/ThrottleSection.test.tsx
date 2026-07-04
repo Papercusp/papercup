@@ -46,6 +46,9 @@ vi.mock('@/app/harness/Select', () => ({
     </select>
   ),
 }));
+// Lexicon resolver mocked to ECHO its key (t('contributor') → 'contributor') —
+// isolates the bee→Cup labels from the THE_HIVE flag hook (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import ThrottleSection, {
   effectiveCadence,
@@ -112,8 +115,8 @@ describe('ThrottleSection rendering + writes', () => {
     expect(screen.getByText('Throttle')).toBeTruthy();
     expect(screen.getByText('defaults')).toBeTruthy();
     expect(screen.getByLabelText('Wake cadence floor (seconds)')).toBeTruthy();
-    expect(screen.getByLabelText('Max concurrent bees')).toBeTruthy();
-    expect(screen.getByLabelText('Cap bees at model tier')).toBeTruthy();
+    expect(screen.getByLabelText('Max concurrent contributor')).toBeTruthy();
+    expect(screen.getByLabelText('Cap contributor at model tier')).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'Gym idle activity' })).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'Auto scale-out the account pool' })).toBeTruthy();
   });
@@ -128,7 +131,7 @@ describe('ThrottleSection rendering + writes', () => {
   it('typing a max-bees value and blurring commits it (floored, ≥1)', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    const input = screen.getByLabelText('Max concurrent bees');
+    const input = screen.getByLabelText('Max concurrent contributor');
     fireEvent.change(input, { target: { value: '4' } });
     fireEvent.blur(input);
     expect(props.onSetMaxBees).toHaveBeenCalledWith(4);
@@ -146,7 +149,7 @@ describe('ThrottleSection rendering + writes', () => {
   it('the tier-cap select writes the chosen tier name (a ceiling on the bee role)', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    fireEvent.change(screen.getByLabelText('Cap bees at model tier'), { target: { value: 'std' } });
+    fireEvent.change(screen.getByLabelText('Cap contributor at model tier'), { target: { value: 'std' } });
     expect(props.onSetBeeTierCap).toHaveBeenCalledWith('std');
   });
 
