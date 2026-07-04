@@ -305,6 +305,7 @@ import desktopLocalModelStatus from './desktop/local-model-status';
 import desktopPreflight from './desktop/preflight';
 import desktopOnboardingLaunchContext from './desktop/onboarding-launch-context';
 import desktopOnboardingStatus from './desktop/onboarding-status';
+import desktopTutorialScript from './desktop/tutorial-script';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
 import desktopSetupWizardState from './desktop/setup-wizard-state';
@@ -743,6 +744,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopPreflight as AnyRoute[]),
   ...flatten(desktopOnboardingLaunchContext as AnyRoute),
   ...flatten(desktopOnboardingStatus as AnyRoute),
+  ...flatten(desktopTutorialScript as AnyRoute),
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),
   ...flatten(desktopSetupWizardState as AnyRoute[]),

@@ -151,6 +151,45 @@ export function loadTutorialPack(root: string): TutorialSection[] {
 }
 
 /**
+ * Chapter titles. The pack files carry chapter NUMBERS only; these human titles
+ * come from the owner-ratified curriculum (onboarding-tutor.md). Kept here so BOTH
+ * the deterministic tutorial runner and the fallback tutor render identical names.
+ * The Finale (GUI walkthrough) is not a numbered chapter — it is the gui-tab-tour.
+ */
+export const CHAPTER_TITLES: Readonly<Record<number, string>> = {
+  1: 'Orientation',
+  2: 'Directing work',
+  3: 'The colony',
+  4: 'Agent cognition & learning',
+  5: 'The platform',
+  6: 'Under construction (aspirational p2p)',
+};
+
+export interface TutorialChapter {
+  number: number;
+  title: string;
+  /** Section ids in this chapter, in delivery order. */
+  sectionIds: string[];
+}
+
+/** Group loaded sections into ordered chapters (each with its title + section ids). */
+export function chaptersFrom(sections: TutorialSection[]): TutorialChapter[] {
+  const byChapter = new Map<number, string[]>();
+  for (const s of sections) {
+    const list = byChapter.get(s.chapter) ?? [];
+    list.push(s.id);
+    byChapter.set(s.chapter, list);
+  }
+  return [...byChapter.keys()]
+    .sort((a, b) => a - b)
+    .map((number) => ({
+      number,
+      title: CHAPTER_TITLES[number] ?? `Chapter ${number}`,
+      sectionIds: byChapter.get(number)!,
+    }));
+}
+
+/**
  * Render the index the tutor prompt receives via {{TUTORIAL_PACK_INDEX}}:
  * per chapter, one line per section pointing at its pack FILE (the tutor
  * reads it on arrival) + the doc slugs it is grounded in.
