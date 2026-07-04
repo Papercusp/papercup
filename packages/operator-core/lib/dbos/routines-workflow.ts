@@ -535,12 +535,16 @@ async function routinesTickImpl(): Promise<void> {
   // bit-rot. This sweep forces a periodic REAL cold join (seed disabled) so the
   // cold path stays proven, and records/alerts pass-or-fail (debounced via the
   // shared hive_watchdog_fires ledger). DEFAULT DISABLED (a cold join is heavy) —
-  // a canary/release env opts in via PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC; the
-  // heavy executor is wired at P-010. Fail-soft; disabled ⇒ a complete no-op.
+  // a canary/release env opts in via PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC. The
+  // heavy executor (P-010 live-wire 3) is wired here: it resolves the registered
+  // rig cold-join spawn at call time, so a non-rig host with the canary (deliberately)
+  // enabled surfaces an honest 'error' alert instead of a fake pass. Fail-soft;
+  // disabled ⇒ a complete no-op (the executor is never invoked below the interval gate).
   await DBOS.runStep(
     async () => {
       const { runColdJoinCanarySweep } = await import('../sync/hyperbee/cold-join-canary');
-      const result = await runColdJoinCanarySweep({ log: (m) => console.warn(m) });
+      const { defaultColdJoinExecutor } = await import('../sync/hyperbee/cold-join-executor');
+      const result = await runColdJoinCanarySweep({ coldJoin: defaultColdJoinExecutor, log: (m) => console.warn(m) });
       if (result.outcome === 'failed' || result.outcome === 'error') {
         console.warn(`[cold-join-canary] ${result.outcome}: ${result.reason}`);
       }

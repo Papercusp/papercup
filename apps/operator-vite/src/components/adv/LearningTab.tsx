@@ -1145,13 +1145,16 @@ function BakeoffTrendView() {
 
 /** Rail → human label + accent for the routed-ideas rows. The canonical set is
     RoutedRail ('plan' | 'gym' | 'improvement' | 'instance') — open set, render
-    whatever arrives. */
-const RAIL_META: Record<string, { label: string; desc: string; color: string }> = {
-  plan: { label: 'plan draft', desc: 'A draft plan awaiting Queen/owner triage — open it in the Create tab', color: 'var(--accent-strong, var(--accent))' },
-  gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: '#34d399' },
-  improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: '#a78bfa' },
-  instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
-};
+    whatever arrives. Built per-render from the active lexicon so the agent-noun
+    in the plan-draft copy tracks the FLAGS.THE_HIVE pack (restore-pot-lexicon P-006). */
+function railMeta(t: ReturnType<typeof useLexicon>): Record<string, { label: string; desc: string; color: string }> {
+  return {
+    plan: { label: 'plan draft', desc: `A draft plan awaiting ${t('brain')}/owner triage — open it in the Create tab`, color: 'var(--accent-strong, var(--accent))' },
+    gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: '#34d399' },
+    improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: '#a78bfa' },
+    instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
+  };
+}
 
 /** The grade a row should display: an in-flight optimistic owner write wins,
     then the snapshot's stored grade, else null (ungraded). */
@@ -1169,8 +1172,12 @@ const GRADE_MEANING: Record<number, string> = {
   5: 'excellent — counts as a full win for this lens',
 };
 
-/** Attribution label per C-1's graded_by values ('owner' | 'Queen'). */
-const graderLabel = (gradedBy: string): string => (gradedBy === 'owner' ? 'Owner' : gradedBy);
+/** Attribution label per C-1's graded_by values ('owner' | 'Queen'). The raw
+    auto-grader value is 'Queen'; it's routed to the active lexicon's brain word
+    for display so the public (Pot) build never surfaces the swarm noun
+    (restore-pot-lexicon P-006). */
+const graderLabel = (gradedBy: string, brainWord: string): string =>
+  gradedBy === 'owner' ? 'Owner' : gradedBy === 'Queen' ? brainWord : gradedBy;
 
 /** The tool-proxy response envelope varies (the parsed result | {result} | MCP
     content text) — unwrap whichever the dispatcher returns. */
@@ -1307,8 +1314,8 @@ function ThroughputView() {
         <div className="pc-learning__empty pc-learning__empty--card">
           <strong>No throughput recorded yet</strong>
           <span>
-            The Queen hive loop records a tick every ~30s while a hive is <strong>started</strong> with queued work.
-            Start a hive (or wait for its next wake) and its placement metrics appear here.
+            The {t('brain')} {t('pot', { lower: true })} loop records a tick every ~30s while a {t('pot', { lower: true })} is <strong>started</strong> with queued work.
+            Start a {t('pot', { lower: true })} (or wait for its next wake) and its placement metrics appear here.
           </span>
         </div>
       ) : (
@@ -1325,7 +1332,7 @@ function ThroughputView() {
               <div className="pc-learning__flow" aria-label={`${h.hiveSlug} throughput health`}>
                 <span
                   className={`pc-learning__flowchip ${h.operatingWell ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
-                  title="The hive whose Queen-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements)."
+                  title={`The ${t('pot', { lower: true })} whose ${t('brain')}-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements).`}
                 >
                   <Activity size={11} aria-hidden />
                   {h.hiveSlug}
@@ -1371,29 +1378,29 @@ function ThroughputView() {
               ) : null}
 
               <div className="pc-learning__scoreboard" aria-label={`${h.hiveSlug} throughput`}>
-                <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint="Ready work waiting for placement (todo items) — the queue the Queen pours from." />
+                <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint={`Ready work waiting for placement (todo items) — the queue the ${t('brain')} pours from.`} />
                 <Stat
-                  label="bees busy"
+                  label={`${t('contributor', { plural: true, lower: true })} busy`}
                   value={m ? `${m.beesBusy}/${m.beesCap}` : '—'}
                   tone={saturated ? 'human' : 'good'}
-                  hint="Live placed bees vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006)."
+                  hint={`Live placed ${t('contributor', { plural: true, lower: true })} vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006).`}
                 />
-                <Stat label="utilization" value={m ? `${utilPct}%` : '—'} hint="Fleet utilization: bees busy ÷ cap." />
-                <Stat label="placed / wake" value={m ? m.placements : '—'} tone="auto" hint="Bees newly placed since the previous tick — how fast the Queen fans work out." />
-                <Stat label="completed" value={m ? m.completed : '—'} tone="auto" hint="Bees that finished in the tick window." />
-                <Stat label="avg complete" value={formatDurationMs(m?.mttcMs)} hint="Mean-time-to-complete over bees that finished — how long a placement takes." />
+                <Stat label="utilization" value={m ? `${utilPct}%` : '—'} hint={`Fleet utilization: ${t('contributor', { plural: true, lower: true })} busy ÷ cap.`} />
+                <Stat label="placed / wake" value={m ? m.placements : '—'} tone="auto" hint={`${t('contributor', { plural: true })} newly placed since the previous tick — how fast the ${t('brain')} fans work out.`} />
+                <Stat label="completed" value={m ? m.completed : '—'} tone="auto" hint={`${t('contributor', { plural: true })} that finished in the tick window.`} />
+                <Stat label="avg complete" value={formatDurationMs(m?.mttcMs)} hint={`Mean-time-to-complete over ${t('contributor', { plural: true, lower: true })} that finished — how long a placement takes.`} />
                 <Stat
                   label="stuck"
                   value={m ? m.stuckCount : '—'}
                   {...(m && m.stuckCount > 0 ? { tone: 'human' as const } : {})}
-                  hint="Placed bees with a stale heartbeat — placements that stopped advancing and need a recovery wake (the placement watchdog, P-020)."
+                  hint={`Placed ${t('contributor', { plural: true, lower: true })} with a stale heartbeat — placements that stopped advancing and need a recovery wake (the placement watchdog, P-020).`}
                 />
-                <Stat label="questions" value={rungTotal} hint="Bee questions resolved this window, split by rung below. Lights up when the question-ladder (B-10/B-17) lands; 0 until then." />
+                <Stat label="questions" value={rungTotal} hint={`${t('contributor')} questions resolved this window, split by rung below. Lights up when the question-ladder (B-10/B-17) lands; 0 until then.`} />
               </div>
 
               {rungTotal > 0 ? (
                 <div className="pc-learning__flow" aria-label={`${h.hiveSlug} question rungs`}>
-                  <span className="pc-learning__flowchip" title="Where bee questions resolved: bee-self / peer-vote / Queen / owner. The lower the rung, the less the owner was needed.">
+                  <span className="pc-learning__flowchip" title={`Where ${t('contributor', { lower: true })} questions resolved: ${t('contributor', { lower: true })}-self / peer-vote / ${t('brain')} / owner. The lower the rung, the less the owner was needed.`}>
                     <HelpCircle size={11} aria-hidden />
                     question rungs
                   </span>
@@ -1412,7 +1419,7 @@ function ThroughputView() {
       <button
         type="button"
         className="pc-learning__refresh"
-        aria-label="Reload hive throughput"
+        aria-label={`Reload ${t('pot', { lower: true })} throughput`}
         disabled={sync.fetching || soak.fetching}
         onClick={() => {
           sync.invalidate();
@@ -1426,6 +1433,8 @@ function ThroughputView() {
 }
 
 function ScoutView() {
+  const t = useLexicon();
+  const RAIL_META = railMeta(t);
   const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
@@ -1650,11 +1659,11 @@ function ScoutView() {
                           className="pc-learning__gradechip"
                           title={
                             eff.feedback
-                              ? `Graded by ${graderLabel(eff.gradedBy)}: “${eff.feedback}”`
-                              : `Graded by ${graderLabel(eff.gradedBy)} — click the stars to regrade (your grade always wins)`
+                              ? `Graded by ${graderLabel(eff.gradedBy, t('brain'))}: “${eff.feedback}”`
+                              : `Graded by ${graderLabel(eff.gradedBy, t('brain'))} — click the stars to regrade (your grade always wins)`
                           }
                         >
-                          ★{eff.grade} · {graderLabel(eff.gradedBy)}
+                          ★{eff.grade} · {graderLabel(eff.gradedBy, t('brain'))}
                         </span>
                       ) : null}
                       <Tooltip label={eff?.feedback ? `Edit the grading note: “${eff.feedback}”` : 'Grade with a note — ideators read recent notes next cycle'}>
@@ -1775,6 +1784,7 @@ function KnowledgeView() {
 type HiveLearningRowT = HiveLearningsSnapshot['rows'][number];
 
 function LearningsView({ hive }: { hive: string }) {
+  const t = useLexicon();
   // P-042: the hive selection now lives at the TAB level (`?lhive=`, the shared
   // lens) — passed in as `hive`/`hives` instead of owned here, so the same
   // selection drives Improvements + Gym too. The origin filter (`?lpack=`) stays
@@ -1918,7 +1928,7 @@ function LearningsView({ hive }: { hive: string }) {
             onChange={(v: string) => void setLpack(v)}
             options={[
               { value: 'all', label: 'everything' },
-              { value: 'organic', label: 'hive-learned only' },
+              { value: 'organic', label: `${t('pot', { lower: true })}-learned only` },
               ...(snap?.packs ?? []).map((p) => ({ value: p.packId, label: `pack: ${p.packId}` })),
             ]}
           />
@@ -1926,7 +1936,7 @@ function LearningsView({ hive }: { hive: string }) {
       </div>
 
       <div className="pc-learning__scoreboard" aria-label="Learnings summary">
-        <Stat label="learnings" value={snap ? rows.length : '—'} hint="Everything in this hive's shared memory pool — every agent in the hive recalls these." />
+        <Stat label="learnings" value={snap ? rows.length : '—'} hint={`Everything in this ${t('pot', { lower: true })}'s shared memory pool — every agent in the ${t('pot', { lower: true })} recalls these.`} />
         {(snap?.packs ?? []).map((p) => (
           <Stat
             key={p.packId}
@@ -1936,7 +1946,7 @@ function LearningsView({ hive }: { hive: string }) {
             hint={`Seeded from the ${p.packId} learning pack — ${p.present} present (${p.modified} edited), ${p.notPresent} not seeded or removed.`}
           />
         ))}
-        <Stat label="hive-learned" value={snap ? snap.organicCount : '—'} tone="good" hint="Conventions and gotchas this hive's agents (or you) recorded — not from a pack." />
+        <Stat label={`${t('pot', { lower: true })}-learned`} value={snap ? snap.organicCount : '—'} tone="good" hint={`Conventions and gotchas this ${t('pot', { lower: true })}'s agents (or you) recorded — not from a pack.`} />
       </div>
 
       {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
@@ -2026,7 +2036,7 @@ function LearningsView({ hive }: { hive: string }) {
       {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
       {rows.length > 80 && (
         <p className="pc-learning__empty" style={{ color: 'var(--warn, #f59e0b)' }}>
-          This hive carries {rows.length} learnings across {(snap?.packs ?? []).length} pack
+          This {t('pot', { lower: true })} carries {rows.length} learnings across {(snap?.packs ?? []).length} pack
           {(snap?.packs ?? []).length === 1 ? '' : 's'} — more than fits one turn&rsquo;s memory budget, so the least
           turn-relevant are withheld. Consider pruning duplicates or muting a pack.
         </p>
@@ -2054,7 +2064,7 @@ function LearningsView({ hive }: { hive: string }) {
                 {item.existing && (
                   <div style={{ flex: 1, minWidth: 220 }}>
                     <div style={{ fontSize: 10.5, color: 'var(--fg-mute)', marginBottom: 2 }}>
-                      existing ({item.existing.organic ? 'hive-learned' : `pack: ${item.existing.packId ?? '?'}`})
+                      existing ({item.existing.organic ? `${t('pot', { lower: true })}-learned` : `pack: ${item.existing.packId ?? '?'}`})
                     </div>
                     <div style={{ whiteSpace: 'pre-wrap' }}>{item.existing.text}</div>
                   </div>
@@ -2105,18 +2115,18 @@ function LearningsView({ hive }: { hive: string }) {
       {hive === '' ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Brain size={20} aria-hidden />
-          <strong>No hives yet</strong>
-          <span>Create a hive and it starts with a default learning pack — curated working wisdom its agents inherit from the first wake. It appears here, fully editable.</span>
+          <strong>No {t('pot', { plural: true, lower: true })} yet</strong>
+          <span>Create a {t('pot', { lower: true })} and it starts with a default learning pack — curated working wisdom its agents inherit from the first wake. It appears here, fully editable.</span>
         </div>
       ) : sync.loading && !snap ? (
-        <p className="pc-learning__empty">Loading the hive&rsquo;s shared memory…</p>
+        <p className="pc-learning__empty">Loading the {t('pot', { lower: true })}&rsquo;s shared memory…</p>
       ) : snap?.unavailable ? (
         <p className="pc-learning__empty">Memory store unavailable — try reloading.</p>
       ) : filtered.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Brain size={20} aria-hidden />
           <strong>Nothing here yet</strong>
-          <span>This hive&rsquo;s shared memory is empty for this filter. Seeded pack learnings and agent-recorded conventions both land here.</span>
+          <span>This {t('pot', { lower: true })}&rsquo;s shared memory is empty for this filter. Seeded pack learnings and agent-recorded conventions both land here.</span>
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -2138,7 +2148,7 @@ function LearningsView({ hive }: { hive: string }) {
                       {r.packState === 'modified' ? ' · edited' : ''}
                     </span>
                   ) : (
-                    <span title={`Recorded by ${r.createdBy ?? 'an agent'} — this hive's own learning`}>hive-learned{r.createdBy ? ` · ${r.createdBy}` : ''}</span>
+                    <span title={`Recorded by ${r.createdBy ?? 'an agent'} — this ${t('pot', { lower: true })}'s own learning`}>{t('pot', { lower: true })}-learned{r.createdBy ? ` · ${r.createdBy}` : ''}</span>
                   )}
                   {r.kind ? <span>{r.kind}</span> : null}
                 </span>
@@ -2147,7 +2157,7 @@ function LearningsView({ hive }: { hive: string }) {
                 <Tooltip label="Edit the learning text">
                   <button type="button" style={actionBtn} onClick={() => void edit(r)}>edit</button>
                 </Tooltip>
-                <Tooltip label="Remove this learning from the hive's memory">
+                <Tooltip label={`Remove this learning from the ${t('pot', { lower: true })}'s memory`}>
                   <button type="button" style={actionBtn} onClick={() => void forget(r)}>remove</button>
                 </Tooltip>
               </span>

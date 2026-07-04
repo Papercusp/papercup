@@ -194,6 +194,11 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot', t('brain') → 'brain',
+// t('contributor') → 'contributor') — isolates the routed copy from the THE_HIVE
+// flag hook so assertions pin the ROUTED KEY, not a pack word (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import LearningTab from './LearningTab';
 
 beforeEach(() => {
@@ -394,7 +399,7 @@ describe('LearningTab — Benchmark view', () => {
 
   it('renders the Hive-eval empty state when there are no Hive-eval generations', () => {
     render(<LearningTab />); // hiveEvalResult defaults to empty instances
-    expect(screen.getByText('No Hive-eval generations yet')).toBeTruthy();
+    expect(screen.getByText('No pot-eval generations yet')).toBeTruthy();
   });
 });
 
@@ -450,8 +455,10 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
     render(<LearningTab />);
     // 5 stars per row × 2 rows — each star is a radio named "Grade N of 5".
     expect(screen.getAllByRole('radio', { name: 'Grade 3 of 5' }).length).toBe(2);
-    // idea-2 is Queen-graded ★4 in the fixture → the attribution chip (D-004 wording).
-    expect(screen.getByText('★4 · Queen')).toBeTruthy();
+    // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
+    // value) → the attribution chip routes it through the lexicon; under the echo
+    // mock t('brain') → 'brain' (restore-pot-lexicon P-006).
+    expect(screen.getByText('★4 · brain')).toBeTruthy();
     // idea-1 is ungraded → no chip; its note button reads "grade with a note".
     expect(screen.getByRole('button', { name: 'Grade with a note' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Edit the grading note' })).toBeTruthy();
