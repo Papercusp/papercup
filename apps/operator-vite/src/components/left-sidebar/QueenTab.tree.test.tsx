@@ -97,9 +97,9 @@ describe('QueenTab nested steering tree', () => {
   it('renders the Steering scope tree with hive nodes (no flat Eligible-hives/plans sections)', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(screen.getByText('Steering scope')).toBeTruthy();
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
-    expect(screen.getByRole('checkbox', { name: 'Toggle hive papercup-hive' })).toBeTruthy();
-    expect(screen.queryByRole('checkbox', { name: 'Toggle hive pot-b' })).toBeNull();
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
+    expect(screen.getByRole('checkbox', { name: 'Toggle pot papercup-hive' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Toggle pot pot-b' })).toBeNull();
     expect(H.fetchMock.mock.calls.some((c) => String((c as unknown[])[0]).includes('/projects/lite'))).toBe(false);
     // The legacy flat section titles are gone.
     expect(screen.queryByText('Eligible hives')).toBeNull();
@@ -108,9 +108,9 @@ describe('QueenTab nested steering tree', () => {
 
   it('select-all scopes only hives that currently have plans', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select every hive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select every pot' }));
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
@@ -121,8 +121,8 @@ describe('QueenTab nested steering tree', () => {
 
   it('toggling a hive writes eligibleHives + targets the home hive', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
     expect(name).toBe('hive:set-steering');
@@ -134,8 +134,8 @@ describe('QueenTab nested steering tree', () => {
   it('a plan under an UNCHECKED hive is disabled — the contradiction is unrepresentable', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
     // pot-a is unchecked; expand it to reveal its plans.
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
-    const carets = screen.getAllByRole('button', { name: 'Expand hive' });
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand pot' }).length).toBeGreaterThan(0));
+    const carets = screen.getAllByRole('button', { name: 'Expand pot' });
     // order: papercup-hive(0), pot-a(1); hives with no plans are hidden.
     fireEvent.click(carets[1]);
     const planA = await screen.findByRole('checkbox', { name: 'Plan A' });
@@ -144,26 +144,26 @@ describe('QueenTab nested steering tree', () => {
 
   it('keeps a manually expanded hive open across parent rerenders', async () => {
     const { rerender } = render(<QueenTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand pot' }).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand pot' })[1]);
     expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
 
     rerender(<QueenTab active={true} />);
 
-    expect(screen.getByRole('button', { name: 'Collapse hive' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Collapse pot' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
   });
 
   it('keeps an expanded hive open when its scope checkbox is toggled', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand hive' }).length).toBeGreaterThan(0));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Expand hive' })[1]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Expand pot' }).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand pot' })[1]);
     expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle hive pot-a' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' }));
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
-    expect(screen.getByRole('button', { name: 'Collapse hive' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Collapse pot' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
   });
 
@@ -185,13 +185,13 @@ describe('QueenTab nested steering tree', () => {
     // pot-a checked, but plan-b (papercup-hive, excluded) is eligible → dead.
     H.steeringResult = { data: [steering({ eligibleHives: ['pot-a'], eligiblePlans: ['plan-a', 'plan-b'] })], loading: false, error: null, invalidate: vi.fn() };
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    expect(await screen.findByText(/eligible plan.*excluded hive/i)).toBeTruthy();
+    expect(await screen.findByText(/eligible plan.*excluded pot/i)).toBeTruthy();
   });
 
   it('surfaces an unassigned (no-hive) plan, non-checkable', async () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    expect(await screen.findByText('No hive — not steerable')).toBeTruthy();
-    const unassigned = screen.getByText('No hive — not steerable').closest('.pc-queen__tree-unassigned') as HTMLElement;
+    expect(await screen.findByText('No pot — not steerable')).toBeTruthy();
+    const unassigned = screen.getByText('No pot — not steerable').closest('.pc-queen__tree-unassigned') as HTMLElement;
     expect(within(unassigned).getByText('Orphan')).toBeTruthy();
     expect(within(unassigned).queryByRole('checkbox')).toBeNull();
   });

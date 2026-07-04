@@ -21,6 +21,7 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { Crown } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface PlacementSummary {
   recovering: number;
@@ -88,6 +89,7 @@ function countdown(iso: string | null, now: number): string {
 const TONE: Record<QueenState, string> = { running: 'live', parked: 'ok', stalled: 'warn', stopped: 'mute' };
 
 export default function QueenHeartbeat({ homeSlug }: { homeSlug?: string }) {
+  const t = useLexicon();
   const q = useSyncQuery<HiveControlState>({ queryName: 'hive.controlState', args: {}, staleTime: 10_000 });
   const [now, setNow] = useState(() => Date.now());
 
@@ -104,20 +106,24 @@ export default function QueenHeartbeat({ homeSlug }: { homeSlug?: string }) {
 
   const rows = (q.data ?? []) as HiveControlState[];
   const row = (homeSlug ? rows.find((r) => r.slug === homeSlug) : undefined) ?? rows[0];
-  const { state, label } = deriveQueenState(row, now);
+  const { state, label: derivedLabel } = deriveQueenState(row, now);
+  // The only lexicon-bearing derived label is the no-row "No hive" case; the rest
+  // ('Running'/'Alive'/'Paused'/'Stalled?') are noun-free. deriveQueenState is a
+  // pure (hook-less) helper, so route that one label here at the render site.
+  const label = row ? derivedLabel : `No ${t('pot', { lower: true })}`;
   const tone = TONE[state];
   const pl = row?.placements;
   const recovering = (pl?.items ?? []).filter((i) => i.status === 'recovering').slice(0, 3);
 
   return (
     <TooltipPrimitive.Provider delayDuration={250}>
-      <section className={`pc-qh pc-qh--${tone}`} aria-label="Queen status">
+      <section className={`pc-qh pc-qh--${tone}`} aria-label={`${t('brain')} status`}>
         <div className="pc-qh__top">
           <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' || state === 'parked' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
           <Crown size={13} aria-hidden />
           <span className="pc-qh__state">{label}</span>
           {row?.slug && (
-            <Tooltip label="The home Queen">
+            <Tooltip label={`The home ${t('brain')}`}>
               <span className="pc-qh__slug">{row.slug}</span>
             </Tooltip>
           )}

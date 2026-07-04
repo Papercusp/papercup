@@ -12,6 +12,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 const H = vi.hoisted(() => ({ result: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() } }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
+// Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
+// — isolates from the THE_HIVE flag hook (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import QueenHeartbeat, { deriveQueenState, type HiveControlState } from './QueenHeartbeat';
 

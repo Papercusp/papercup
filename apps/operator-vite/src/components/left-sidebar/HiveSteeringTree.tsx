@@ -186,29 +186,29 @@ export default function HiveSteeringTree({
       <div className="pc-queen__section-head">
         <ListChecks size={12} aria-hidden />
         <span className="pc-queen__section-title">Steering scope</span>
-        <span className="pc-queen__count">{restricted ? `${tree.hives.filter((h) => h.checked).length} hive${tree.hives.filter((h) => h.checked).length === 1 ? '' : 's'}` : 'no restriction'}</span>
+        <span className="pc-queen__count">{restricted ? `${checkedCount} ${hiveNoun(checkedCount)}` : 'no restriction'}</span>
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} aria-label="Select every hive">all</button>
+        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} aria-label={`Select every ${t('pot', { lower: true })}`}>all</button>
         <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} aria-label="Clear the scope">none</button>
       </div>
 
       <div className={`pc-queen__scope${restricted ? ' pc-queen__scope--restricted' : ''}`}>
         {restricted
-          ? 'Queen works ONLY the checked hives — check a hive for all its plans, or expand it to narrow to specific plans. Uncheck all to remove the restriction.'
-          : 'Nothing checked → Queen may work ANY hive/plan. Check a hive to scope her; expand it to pick specific plans.'}
+          ? `${t('brain')} works ONLY the checked ${t('pot', { plural: true, lower: true })} — check a ${t('pot', { lower: true })} for all its plans, or expand it to narrow to specific plans. Uncheck all to remove the restriction.`
+          : `Nothing checked → ${t('brain')} may work ANY ${t('pot', { lower: true })}/plan. Check a ${t('pot', { lower: true })} to scope her; expand it to pick specific plans.`}
       </div>
 
       {illegalCount > 0 && (
         <div className="pc-queen__tree-illegal" role="alert">
           <AlertTriangle size={12} aria-hidden />
-          {illegalCount} eligible plan{illegalCount === 1 ? '' : 's'} {illegalCount === 1 ? 'is' : 'are'} in an excluded hive — ignored by the Queen. Cleared on your next change.
+          {illegalCount} eligible plan{illegalCount === 1 ? '' : 's'} {illegalCount === 1 ? 'is' : 'are'} in an excluded {t('pot', { lower: true })} — ignored by the {t('brain')}. Cleared on your next change.
         </div>
       )}
 
       {loading ? (
-        <div className="pc-queen__placeholder">Loading hives + plans…</div>
+        <div className="pc-queen__placeholder">Loading {t('pot', { plural: true, lower: true })} + plans…</div>
       ) : tree.hives.length === 0 ? (
-        <div className="pc-queen__placeholder">No hives with plans.</div>
+        <div className="pc-queen__placeholder">No {t('pot', { plural: true, lower: true })} with plans.</div>
       ) : (
         <ul className="pc-queen__plans pc-queen__tree">
           {tree.hives.map((hive) => (
@@ -230,18 +230,18 @@ export default function HiveSteeringTree({
         <div className="pc-queen__tree-unassigned">
           <div className="pc-queen__tree-unassigned-head">
             <AlertTriangle size={11} aria-hidden />
-            <span>No hive — not steerable</span>
+            <span>No {t('pot', { lower: true })} — not steerable</span>
             <span className="pc-queen__count">{tree.unassigned.length}</span>
           </div>
           <ul className="pc-queen__plans pc-queen__tree-plans pc-queen__tree-plans--off">
             {tree.unassigned.map((p) => (
               <li key={p.slug} className="pc-queen__plan pc-queen__tree-plan">
                 <span className="pc-queen__planslug" title={p.slug}>{p.title}</span>
-                <span className="pc-queen__planstatus" data-status="stale">no hive</span>
+                <span className="pc-queen__planstatus" data-status="stale">no {t('pot', { lower: true })}</span>
               </li>
             ))}
           </ul>
-          <span className="pc-queen__hint">These plans aren&apos;t under any hive (e.g. created at the workspace scope). Move them into a hive to steer them.</span>
+          <span className="pc-queen__hint">These plans aren&apos;t under any {t('pot', { lower: true })} (e.g. created at the workspace scope). Move them into a {t('pot', { lower: true })} to steer them.</span>
         </div>
       )}
 

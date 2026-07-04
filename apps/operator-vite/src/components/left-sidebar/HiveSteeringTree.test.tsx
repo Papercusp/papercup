@@ -19,6 +19,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import HiveSteeringTree, { type HiveSteeringTreeProps } from './HiveSteeringTree';
 import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
 
+// Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
+// — isolates from the THE_HIVE flag hook; classic pack renders 'Brain'/'Pot(s)' at
+// runtime (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 function plan(over: Partial<TreePlan> = {}): TreePlan {
   return {
     slug: 'p-1',
@@ -65,18 +70,18 @@ afterEach(cleanup);
 describe('<HiveSteeringTree> states', () => {
   it('renders the loading placeholder', () => {
     render(<HiveSteeringTree {...makeProps({ loading: true })} />);
-    expect(screen.getByText(/Loading hives \+ plans/)).toBeTruthy();
+    expect(screen.getByText(/Loading pot \+ plans/)).toBeTruthy();
   });
 
   it('renders the empty placeholder when there are no hives', () => {
     render(<HiveSteeringTree {...makeProps()} />);
-    expect(screen.getByText('No hives with plans.')).toBeTruthy();
+    expect(screen.getByText('No pot with plans.')).toBeTruthy();
   });
 
   it('shows "no restriction" + the open scope copy when nothing is checked', () => {
     render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
     expect(screen.getByText('no restriction')).toBeTruthy();
-    expect(screen.getByText(/Queen may work ANY hive\/plan/)).toBeTruthy();
+    expect(screen.getByText(/brain may work ANY pot\/plan/)).toBeTruthy();
   });
 
   it('shows the restricted hive count + restricted scope copy when a hive is checked', () => {
@@ -85,15 +90,15 @@ describe('<HiveSteeringTree> states', () => {
         {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }) })}
       />,
     );
-    expect(screen.getByText('1 hive')).toBeTruthy();
-    expect(screen.getByText(/Queen works ONLY the checked hives/)).toBeTruthy();
+    expect(screen.getByText('1 pot')).toBeTruthy();
+    expect(screen.getByText(/brain works ONLY the checked pot/)).toBeTruthy();
   });
 
   it('renders the illegal-plan alert when illegalCount > 0', () => {
     render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }), illegalCount: 2 })} />);
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('2 eligible plans');
-    expect(alert.textContent).toContain('excluded hive');
+    expect(alert.textContent).toContain('excluded pot');
   });
 });
 
@@ -150,7 +155,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
         {...makeProps({ tree: tree({ hives: [hive({ plans: [plan()] })] }), onToggleHive })}
       />,
     );
-    fireEvent.click(screen.getByLabelText('Toggle hive hive-a'));
+    fireEvent.click(screen.getByLabelText('Toggle pot hive-a'));
     expect(onToggleHive).toHaveBeenCalledWith('hive-a');
   });
 
@@ -175,7 +180,7 @@ describe('<HiveSteeringTree> header chips + unassigned', () => {
     render(
       <HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }), onSetAllHives })} />,
     );
-    fireEvent.click(screen.getByLabelText('Select every hive'));
+    fireEvent.click(screen.getByLabelText('Select every pot'));
     expect(onSetAllHives).toHaveBeenCalledWith(true);
   });
 
@@ -193,8 +198,8 @@ describe('<HiveSteeringTree> header chips + unassigned', () => {
         })}
       />,
     );
-    expect(screen.getByText(/No hive — not steerable/)).toBeTruthy();
+    expect(screen.getByText(/No pot — not steerable/)).toBeTruthy();
     expect(screen.getByText('Orphan Plan')).toBeTruthy();
-    expect(screen.getByText('no hive')).toBeTruthy();
+    expect(screen.getByText('no pot')).toBeTruthy();
   });
 });
