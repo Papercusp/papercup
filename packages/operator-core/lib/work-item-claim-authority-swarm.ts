@@ -44,7 +44,7 @@ export class SwarmWorkItemClaimAuthority implements WorkItemClaimAuthority {
       // Fail-open (cross-machine, no transport / unreachable): the lease was taken
       // locally and the P-005 reconcile is the backstop. Surface the warning (D-007).
       // On a single box this never fires.
-       
+      // eslint-disable-next-line no-console
       console.warn(`[work-item-claim] authority fail-open for hive ${hiveSlug}: ${res.warning}`);
     }
     return res.value;

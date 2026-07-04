@@ -143,7 +143,7 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
         await drainGitExportOnce(opts);
       } while (runAgain && !stopped);
       if (consecutiveFailures > 0) {
-         
+        // eslint-disable-next-line no-console
         console.log(
           `[git-export-drain] recovered for ${wantPayload} after ${consecutiveFailures} failure(s)`,
         );
@@ -155,7 +155,7 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
       const delay = drainBackoffMs(consecutiveFailures, pollMs > 0 ? pollMs : DEFAULT_GIT_POLL_MS);
       backoffUntil = Date.now() + delay;
       if (shouldLogDrainFailure(consecutiveFailures)) {
-         
+        // eslint-disable-next-line no-console
         console.error(
           `[git-export-drain] drain failed for ${wantPayload} (failure #${consecutiveFailures}, next retry in ${Math.round(delay / 1000)}s):`,
           e instanceof Error ? e.message : String(e),
@@ -173,7 +173,7 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
     if (payload === wantPayload) void drainSafely();
   });
   void Promise.resolve(listenReq).catch((e: unknown) => {
-     
+    // eslint-disable-next-line no-console
     console.error(
       `[git-export-drain] LISTEN setup failed for ${wantPayload}:`,
       e instanceof Error ? e.message : String(e),

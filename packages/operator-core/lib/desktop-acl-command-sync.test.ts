@@ -81,7 +81,7 @@ if (!present) {
   // Loud, not silent (repo convention): a checkout without the desktop
   // submodule can't run this guard. Everywhere the submodule IS present
   // (the canonical tree + CI submodule-init) the assertions below gate.
-   
+  // eslint-disable-next-line no-console
   console.warn(
     '[desktop-acl-command-sync] papercusp-desktop submodule not checked out — ACL command-sync guard SKIPPED',
   );

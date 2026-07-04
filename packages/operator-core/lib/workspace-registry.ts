@@ -90,7 +90,7 @@ function warnGlobalFallbackInRequest(global: string): void {
   const site = (new Error().stack ?? '').split('\n')[3]?.trim() ?? 'unknown';
   if (warnedRequestFallbackSites.has(site)) return;
   warnedRequestFallbackSites.add(site);
-   
+  // eslint-disable-next-line no-console
   console.warn(
     `[workspace] activeWorkspaceId() fell back to the global '${global}' INSIDE a ` +
       `request scope — the request carried no x-papercusp-workspace/?ws=, so it resolved ` +

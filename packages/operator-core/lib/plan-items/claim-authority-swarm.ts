@@ -36,7 +36,7 @@ export class SwarmClaimAuthority implements ClaimAuthority {
     if (res.warning) {
       // Fail-open (cross-machine, no transport): the lease was taken locally and git
       // is the backstop. Surface the warning (D-004). On a single box this never fires.
-       
+      // eslint-disable-next-line no-console
       console.warn(`[plan-item-claim] authority fail-open for ${harnessSlug}: ${res.warning}`);
     }
     return res.value;

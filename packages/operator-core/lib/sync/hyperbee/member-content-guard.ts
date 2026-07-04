@@ -113,7 +113,7 @@ function traceMemberDecision(
   sourceLogDevicePubkey: string | null | undefined,
 ): MemberContentDecision {
   if (process.env.PAPERCUSP_A003_TRACE === '1') {
-     
+    // eslint-disable-next-line no-console
     console.error(
       `[A-003] member-guard ${decision} (${reason}): own=${opts.harnessSlug} row=${rowHarnessSlug} ` +
         `hiveHome=${opts.hiveHomeSlug ?? '<none>'} ` +

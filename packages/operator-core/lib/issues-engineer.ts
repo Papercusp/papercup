@@ -268,8 +268,8 @@ const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state,
   terminal_completion_ref, created_at, updated_at`;
 
 const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
-function completionEvidenceJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify(evidence) : null;
+function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
+  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence }) : null;
 }
 
 /** Allocate the next globally-unique EI-<n> id. */
@@ -609,16 +609,16 @@ export async function setIssueState(
     }
   }
   const { sql } = getOrgPg();
-  const evidenceJson = completionEvidenceJson(opts.completionEvidence);
+  const evidencePayloadJson = completionEvidencePayloadJson(opts.completionEvidence);
   const rows = isTerminal
     ? await sql<IssueRowDb[]>`
         UPDATE harness_shared.engineer_issues
            SET state = ${state}, origin = 'local', updated_at = now(),
                assignee = NULL, assigned_at = NULL,
                terminal_owner = ${by ?? null}, terminal_completion_ref = ${completionRef ?? null},
-               payload = CASE WHEN ${evidenceJson}::jsonb IS NULL
+               payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                               THEN payload
-                              ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${TERMINAL_COMPLETION_EVIDENCE_KEY}::text, ${evidenceJson}::jsonb))
+                              ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                          END
          WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
         RETURNING ${sql.unsafe(ISSUE_COLS)}`

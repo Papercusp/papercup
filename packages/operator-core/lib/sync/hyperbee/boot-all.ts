@@ -274,7 +274,7 @@ export async function ensureSendSideWired(
         await wireOutbox(handle);
         outboxWired.add(k);
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.error(
           `[boot-all] outbox wiring failed for ${k} (boot still succeeded; ` +
             `will retry on the next boot pass):`,
@@ -290,7 +290,7 @@ export async function ensureSendSideWired(
         await wirePresence(handle);
         presenceWired.add(k);
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.error(
           `[boot-all] presence wiring failed for ${k} (boot still succeeded; ` +
             `will retry on the next boot pass):`,
@@ -379,7 +379,7 @@ async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]
     else dead.push(p.slug);
   }
   if (dead.length > 0) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       `[boot-all] workspace '${workspaceId}': skipping ${dead.length} registry ` +
         `entr${dead.length === 1 ? 'y' : 'ies'} with missing project path ` +
@@ -558,7 +558,7 @@ export async function bootSingleHarness(
       }),
     ]);
     if (outcome === 'timeout') {
-       
+      // eslint-disable-next-line no-console
       console.error(
         `[boot-all] substrate routing still undecided after ${SUBSTRATE_ROUTING_WAIT_MS}ms — ` +
           `booting ${k} IN-PROCESS (duplicate-engine risk; check bootSubstrateWithFallback)`,
@@ -683,13 +683,13 @@ export async function bootSingleHarness(
               lastAccess.set(k, Date.now());
               evicted.delete(k);
             }
-             
+            // eslint-disable-next-line no-console
             console.info(
               `[hyperbee-substrate] (${k}) late boot ADOPTED after '${errMsg}' — registering handle + wiring send-side`,
             );
             if (!skipSendSideWiring) await ensureSendSideWired(handle, opts.wireSendSide);
           } else {
-             
+            // eslint-disable-next-line no-console
             console.info(
               `[hyperbee-substrate] (${k}) late boot superseded by a newer boot — closing it to release the corestore`,
             );
@@ -733,7 +733,7 @@ export async function bootAllHarnessesForActiveWorkspace(
     } catch (e) {
       // LOUD per-workspace failure (audit P-078): the old FS read returned []
       // on any error — a silent zero-boot. Other workspaces still boot.
-       
+      // eslint-disable-next-line no-console
       console.error(
         `[boot-all] harness discovery failed for workspace '${wsId}' — booting NOTHING for it:`,
         e instanceof Error ? e.message : String(e),

@@ -610,7 +610,7 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       const winnerSide = lwwGreater(localA!, localB!);
       expect(winnerSide, 'the two local writes tied on HLC+fed_ts — make the gap larger').not.toBe('tie');
       const winnerStatus = winnerSide === 'a' ? 'status-A-early' : 'status-B-late';
-       
+      // eslint-disable-next-line no-console
       console.log(
         `[concurrent-same-key] A.fed_hlc=${localA!.fed_hlc} A.fed_ts=${localA!.fed_ts} | ` +
           `B.fed_hlc=${localB!.fed_hlc} B.fed_ts=${localB!.fed_ts} → winner=${winnerSide} (${winnerStatus})`,
@@ -646,7 +646,7 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       // not just the same value — so a SUBSEQUENT concurrent write resolves identically on
       // both. (This is the D-001 invariant: the wire op carries the author's fed_hlc, so the
       // remote peer materialises the SAME fed_hlc the author's local row holds.)
-       
+      // eslint-disable-next-line no-console
       console.log(
         `[concurrent-same-key] converged A.fed_hlc=${converged!.a.fed_hlc} B.fed_hlc=${converged!.b.fed_hlc}`,
       );

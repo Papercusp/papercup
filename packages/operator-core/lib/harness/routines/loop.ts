@@ -118,9 +118,12 @@ export const COLD_LOOP_WAKE_ADDENDUM = [
   '  • if you hold a work-item, REFRESH work_items:checkpoint { id, checkpoint } at least as often as the',
   '    carry-note — the ITEM checkpoint is INHERITED by a successor/reclaimer when your session dies, while the',
   '    loop-note is not; it is your real death-resilience anchor, not a nice-to-have.',
-  '  • if you reached a DURABLE conclusion this wake (a confirmed root cause / repro, a decision, a system bug),',
-  '    facts:assert it — a standing fact is folded VERBATIM into every future orient/brief, so the next cold wake',
-  '    (and every peer) starts already knowing it. A conclusion left only in the carry-note dies with the loop.',
+  '  • reached a DURABLE conclusion this wake (a confirmed root cause / repro, a decision, a system bug)? You MUST',
+  '    facts:assert it. ⚠ A work-item COMMENT (or a checkpoint) does NOT satisfy this and is the exact trap to',
+  '    avoid: a comment is NEVER folded into orient, so the next cold wake and every peer start BLIND to your',
+  "    conclusion. The reflex \"I already wrote it up in a comment\" is precisely why conclusions get lost — a fact",
+  '    is the ONLY write folded VERBATIM into every future orient/brief. Comment too if you want an audit trail,',
+  '    but the facts:assert is the non-negotiable one; a conclusion left only in a comment/carry-note dies with the loop.',
 ].join('\n');
 
 /**
@@ -147,12 +150,51 @@ export const GATED_LOOP_WAKE_ADDENDUM = [
   'win comes from N-units-per-turn, not from a faster wake cadence.',
 ].join('\n');
 
+/**
+ * Detect the single work-item a loop is DRIVING from its free-text goal (WI-2429
+ * fix A auto-detect leg). Matches a WI-/EI-/F- id and returns it ONLY when the
+ * goal names exactly ONE distinct such id — a goal that mentions several (or none)
+ * is ambiguous, so we return null rather than guess which one the loop drives (the
+ * arming agent can still name it explicitly via loop:arm { workItem }). Pure +
+ * exported for unit tests. Case-insensitive match, normalized to the canonical
+ * upper-case id. Note: the returned id is a CANDIDATE — the caller's claim step
+ * is what confirms it exists and is claimable (claimWorkItem never steals a live
+ * peer's item), so a false-positive like a stray "F-16" simply fails the claim
+ * non-fatally.
+ */
+export function detectDrivenWorkItemId(goal: string): string | null {
+  const matches = String(goal ?? '').match(/\b(?:WI|EI|F)-\d+\b/gi);
+  if (!matches || matches.length === 0) return null;
+  const distinct = [...new Set(matches.map((m) => m.toUpperCase()))];
+  return distinct.length === 1 ? distinct[0] : null;
+}
+
+/**
+ * A CONCRETE driven-work-item mandate (WI-2429 fix A), appended to a cold loop's
+ * wake prompt when the loop drives a known, auto-claimed work-item. The generic
+ * cold addendum says "IF you hold a work-item, refresh its checkpoint" — a soft
+ * conditional the cold-auto experiment measured agents ignoring (WI-2429). Since
+ * the loop now auto-CLAIMS the item at arm time, that condition is already TRUE,
+ * so we can name the id and make the mandate unmissable instead of hypothetical.
+ */
+function renderDrivenWorkItemLine(workItem: string): string {
+  return [
+    '',
+    `📌 This loop is DRIVING work-item ${workItem} — auto-claimed to you at arm time, so you ALREADY HOLD it. That`,
+    `turns the work_items:checkpoint mandate above from an "if" into a REQUIREMENT each wake: work_items:checkpoint`,
+    `{ id:'${workItem}', checkpoint } is the ONE piece of in-flight state a successor/reclaimer INHERITS if this`,
+    'session dies mid-work — refresh it before every turn ends, at least as often as the carry-note. Finish it with',
+    `work_items:complete { id:'${workItem}', … } when the goal is done (then loop:end).`,
+  ].join('\n');
+}
+
 /** Interpolate the default wakeup prompt with this loop's specifics. For a cold loop
  *  (`carry:'cold'`) the COLD_LOOP_WAKE_ADDENDUM is appended so the pre-anchor warm wakes
- *  bootstrap the first carry-note; for a gated loop (`continuation:'gated'`) the
- *  GATED_LOOP_WAKE_ADDENDUM is appended so the agent runs multi-unit turns behind the
- *  continuation gate. A plain warm/settle loop is byte-identical to before. The two
- *  addenda compose (a cold gated loop gets both). */
+ *  bootstrap the first carry-note, and — when the loop drives a known auto-claimed
+ *  work-item (`workItem`) — a CONCRETE per-item checkpoint mandate (WI-2429 fix A); for a
+ *  gated loop (`continuation:'gated'`) the GATED_LOOP_WAKE_ADDENDUM is appended so the
+ *  agent runs multi-unit turns behind the continuation gate. A plain warm/settle loop is
+ *  byte-identical to before. The addenda compose (a cold gated loop gets both). */
 export function buildLoopWakePrompt(opts: {
   ownerId: string;
   intervalSec: number;
@@ -160,12 +202,16 @@ export function buildLoopWakePrompt(opts: {
   goal: string;
   carry?: 'warm' | 'cold';
   continuation?: 'settle' | 'gated';
+  /** The work-item this loop drives (auto-claimed at arm time, WI-2429 fix A). When set on
+   *  a cold loop, its per-item checkpoint mandate is named concretely in the wake prompt. */
+  workItem?: string | null;
 }): string {
   let prompt = DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
     .replace(/\{harness\}/g, opts.harness)
     .replace(/\{ownerId\}/g, opts.ownerId)
     .replace(/\{goal\}/g, opts.goal);
   if (opts.carry === 'cold') prompt += COLD_LOOP_WAKE_ADDENDUM;
+  if (opts.carry === 'cold' && opts.workItem) prompt += renderDrivenWorkItemLine(opts.workItem);
   if (opts.continuation === 'gated') prompt += GATED_LOOP_WAKE_ADDENDUM;
   return prompt;
 }

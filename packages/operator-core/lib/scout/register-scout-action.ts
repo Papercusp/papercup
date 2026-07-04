@@ -72,7 +72,7 @@ export async function resolveArchive(scope: { workspaceId: string; harnessSlug: 
   try {
     return await withArchiveResolveTimeout(activeArchiveBuilder(scope), scoutArchiveResolveTimeoutMs());
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn('[register-scout-action] archive unavailable — gym rail no-ops this cycle:', err instanceof Error ? err.message : err);
     return noopArchive;
   }
@@ -265,7 +265,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       try {
         await archive.flush();
       } catch (err) {
-         
+        // eslint-disable-next-line no-console
         console.warn('[register-scout-action] archive flush failed:', err instanceof Error ? err.message : err);
       }
     }

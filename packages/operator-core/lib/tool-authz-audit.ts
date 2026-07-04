@@ -40,7 +40,7 @@ export async function recordToolAuthzEvent(event: AuthAuditEvent): Promise<void>
       )
     `;
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn('[tool-authz-audit] write failed:', (err as Error).message);
   }
 }

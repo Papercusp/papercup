@@ -220,7 +220,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
       try {
         gossip.joinTopic(deriveInviteTopic(hive.inviteSecret));
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(`[hive-directory] failed to join invite topic for ${hive.hiveId}: ${e instanceof Error ? e.message : e}`);
       }
     }
@@ -250,7 +250,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
     try {
       await publishHiveToDirectory(dir, hive, opts.owner);
     } catch (e) {
-       
+      // eslint-disable-next-line no-console
       console.warn(`[hive-directory] failed to publish hive ${hive.hiveId}: ${e instanceof Error ? e.message : e}`);
     }
   }
@@ -431,7 +431,7 @@ export async function wireHiveDirectoryForWorkspace(
     await reconcilePublicHiveListings(ownedHives, workspaceId, opts.republish);
     return _wiring;
   } catch (e) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       `[hive-directory] boot-join skipped for workspace ${workspaceId}: ${e instanceof Error ? e.message : e}`,
     );

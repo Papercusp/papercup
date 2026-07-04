@@ -229,7 +229,7 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
     });
   } catch (err) {
     // Never fail the request because of audit-write failure; but log loud.
-     
+    // eslint-disable-next-line no-console
     console.warn('[spawn-signing] audit write failed', err);
   }
 }

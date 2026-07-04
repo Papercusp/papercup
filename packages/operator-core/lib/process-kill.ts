@@ -57,7 +57,7 @@ async function writeAudit(
   } catch (err) {
     // Audit failures must not block the operation, but we should log
     // loudly so they're visible in dev.
-     
+    // eslint-disable-next-line no-console
     console.warn('[processes:kill] audit write failed:', err);
   }
 }

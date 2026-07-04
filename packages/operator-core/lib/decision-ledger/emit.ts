@@ -165,7 +165,7 @@ export function buildDecisionLedgerRow(event: PostInvokeEvent): DecisionLedgerRo
 /** Fire-and-forget entry point wired into PROJECTED_DEPS.postInvoke. Never throws. */
 export function recordDecisionLedger(event: PostInvokeEvent): void {
   void recordDecisionLedgerImpl(event).catch((err) => {
-     
+    // eslint-disable-next-line no-console
     console.warn(`[decision-ledger] emit failed: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
@@ -218,7 +218,7 @@ async function recordDecisionLedgerImpl(event: PostInvokeEvent): Promise<void> {
     // drives a governed dispatch). Warn loudly on any real insert failure. Mirrors
     // the expirable-registry.ts / work-items.ts 42P01-swallow precedent. (EI-499)
     if ((err as { code?: string })?.code !== '42P01') {
-       
+      // eslint-disable-next-line no-console
       console.warn(`[decision-ledger] insert failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

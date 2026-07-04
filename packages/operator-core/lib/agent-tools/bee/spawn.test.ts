@@ -151,18 +151,49 @@ describe('bee:spawn tool — bee work-item reservation', () => {
     expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-456', { harness: 'papercup' });
   });
 
-  it('does not launch when the bee work item reservation loses the claim race', async () => {
+  it('does not launch when an EXPLICIT `feature` reservation loses the claim race (deliberate ask fails loud)', async () => {
     h.claimWorkItem.mockResolvedValue(null);
 
     const out = parse(await (spawnTool as any).handler({
       role: 'bee',
       harness: 'papercup',
+      feature: 'WI-789',
       brief: 'Pick up WI-789.',
     }, CTX));
 
     expect(out.ok).toBe(false);
     expect(out.error).toContain('could not be claimed');
     expect(h.spawnAgentInHarness).not.toHaveBeenCalled();
+  });
+
+  // WI-1670: an id merely INFERRED from brief prose (no explicit `feature`) is a
+  // heuristic convenience, not a deliberate pin — a failed claim on it must never
+  // wedge the whole spawn (the observed bug: the SAME brief text re-extracts the
+  // SAME already-actively-held id on every retry, permanently rejecting a plain
+  // role="bee" spawn). It should degrade to a task-less, self-pulling bee instead.
+  it('degrades to a task-less self-pulling bee when an INFERRED (not explicit) work item loses the claim race', async () => {
+    h.claimWorkItem.mockResolvedValue(null);
+    h.spawnAgentInHarness.mockImplementation(async (input: any) => ({
+      ok: true,
+      spawnId: input.spawnId,
+      harness: input.harness,
+      projectDir: '/tmp',
+      error: null,
+    }));
+
+    const out = parse(await (spawnTool as any).handler({
+      role: 'bee',
+      harness: 'papercup',
+      brief: 'The current top item WI-789 is already held — skip it and self-pull the next one.',
+    }, CTX));
+
+    expect(out.ok).toBe(true);
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-789', expect.stringMatching(/^s-/), { harness: 'papercup' });
+    const [[spawnInput]] = h.spawnAgentInHarness.mock.calls;
+    // No item was actually reserved — the bee boots task-less and self-pulls.
+    expect(spawnInput.featureId).toBeNull();
+    expect(spawnInput.itemId).toBeNull();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
   });
 });
 

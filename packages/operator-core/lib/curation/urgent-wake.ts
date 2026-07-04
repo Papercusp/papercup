@@ -38,7 +38,7 @@ export function makeDebouncedRunner(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
   const warn = (err: unknown): void => {
-     
+    // eslint-disable-next-line no-console
     console.warn('[curation] urgent wake runner failed:', err instanceof Error ? err.message : err);
   };
   const fire = (): void => {
@@ -112,7 +112,7 @@ export function startCurationUrgentWake(opts: { runTick?: () => void | Promise<v
     const { trigger, cancel } = makeDebouncedRunner(runner, opts.debounceMs ?? URGENT_DEBOUNCE_MS);
     const unsub = onCoordInbox(() => trigger());
     active = { cancel, unsub };
-     
+    // eslint-disable-next-line no-console
     console.log('[curation] urgent wake armed (coord_inbox → urgent tick)');
   } finally {
     starting = false;

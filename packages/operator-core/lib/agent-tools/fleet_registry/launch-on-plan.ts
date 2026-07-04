@@ -171,6 +171,55 @@ export function resolveFleetAgent(opts: {
  *  every worker, so exactly ONE call per fleet can win the window. */
 const RELAUNCH_SUPPRESS_MS = 300_000;
 
+export interface FleetLaunchCapacityClamp {
+  requestedOpenCount: number;
+  openCount: number;
+  clamped: boolean;
+  reachable: boolean;
+  healthyAccounts: number | null;
+  dispatchBudget: number | null;
+  recommendedHeadroom: number | null;
+  reason: string;
+}
+
+function floorCap(n: number | null | undefined): number | null {
+  return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
+}
+
+/**
+ * EI-6805: a relaunch/top-up wave must not only warn about capacity, it must
+ * clamp the number of NEW terminals it opens to the shared capacity oracle.
+ * Missing/unreachable capacity fails open so an observability outage never
+ * strands a fleet; a reachable zero-headroom report suppresses the top-up.
+ */
+export function clampFleetTopUpToCapacity(
+  requestedOpenCount: number,
+  report: Pick<ReturnType<typeof buildCapacityReport>, 'reachable' | 'healthyAccounts' | 'dispatchBudget' | 'recommendedHeadroom'>,
+): FleetLaunchCapacityClamp | null {
+  const requested = Math.max(0, Math.floor(requestedOpenCount));
+  if (!report.reachable) return null;
+  const healthyAccounts = floorCap(report.healthyAccounts);
+  const dispatchBudget = floorCap(report.dispatchBudget);
+  const recommendedHeadroom = floorCap(report.recommendedHeadroom);
+  const caps = [healthyAccounts, dispatchBudget, recommendedHeadroom].filter((n): n is number => n != null);
+  if (caps.length === 0) return null;
+  const capacityHeadroom = Math.min(...caps);
+  const openCount = Math.min(requested, capacityHeadroom);
+  const clamped = openCount < requested;
+  return {
+    requestedOpenCount: requested,
+    openCount,
+    clamped,
+    reachable: true,
+    healthyAccounts,
+    dispatchBudget,
+    recommendedHeadroom,
+    reason: clamped
+      ? `capacity-clamped top-up ${requested}→${openCount} (healthyAccounts=${healthyAccounts ?? 'n/a'}, dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'})`
+      : `capacity-ok top-up ${requested} (healthyAccounts=${healthyAccounts ?? 'n/a'}, dispatchBudget=${dispatchBudget ?? 'n/a'}, recommendedHeadroom=${recommendedHeadroom ?? 'n/a'})`,
+  };
+}
+
 /**
  * Build the scripted psu launch command for one fleet member working a plan. Pure +
  * exported for tests. `--no-picker --plan` is what triggers the EI-5503 auto-kickoff, so a
@@ -585,7 +634,55 @@ export default defineTool({
       });
     }
     // Only the DEFICIT opens — a leader asking for 2 with 1 alive gets 1, never a stacked 3.
-    const openCount = count - liveMembers;
+    let openCount = count - liveMembers;
+    const requestedOpenCount = openCount;
+
+    let capacityClamp: FleetLaunchCapacityClamp | null = null;
+    let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
+    try {
+      const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), {
+        clampArmed: true,
+        headroom: openCount,
+      });
+      capacityClamp = clampFleetTopUpToCapacity(openCount, capacity);
+      if (capacityClamp) openCount = capacityClamp.openCount;
+      sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
+    } catch {
+      capacityClamp = null;
+      sizingAdvisory = null;
+    }
+    if (openCount <= 0) {
+      const lines = [
+        `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${requestedOpenCount}, but capacity allows 0 new member terminals now.`,
+        capacityClamp?.reason ?? 'capacity report unavailable',
+        'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
+        `Until the plan \`${args.plan}\` is drained, your standing job each cycle:`,
+      ];
+      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      return json({
+        ok: true,
+        fleet: fleetSlug,
+        leaderRole,
+        plan: args.plan,
+        harness,
+        agent,
+        account: args.account?.trim() || null,
+        requested: count,
+        liveMembers,
+        requestedOpenCount,
+        capacityClamp,
+        sizingAdvisory,
+        memberBaselineApplied: false,
+        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
+        memberLaunchContextPath: null,
+        briefReadError: null,
+        opened: [],
+        failed: [],
+        relaunchSuppressed: true,
+        capacitySuppressed: true,
+        message: lines.join('\n'),
+      });
+    }
 
     // Idempotency guard (P-005): a weak model that re-fires launch-on-plan (the 9896 "take
     // leadership" fumble, the 2026-07-03 7×-re-fire) must NOT open a second wave. The claim is
@@ -778,19 +875,12 @@ export default defineTool({
       }
     }
 
-    let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
-    try {
-      const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), { clampArmed: false });
-      sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
-    } catch {
-      sizingAdvisory = null;
-    }
-
     const lines: string[] = [];
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
+    if (capacityClamp?.clamped) lines.push(capacityClamp.reason);
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No member terminals opened for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) — ${command}`);
@@ -846,6 +936,9 @@ export default defineTool({
         // P-005: the seat pin this wave launched from (null = a plain, non-seat launch).
         seats: seatPin ? { ...seatPin, requested: count, launched: opened.length } : null,
         requested: count,
+        liveMembers,
+        requestedOpenCount,
+        capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: baselineApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),

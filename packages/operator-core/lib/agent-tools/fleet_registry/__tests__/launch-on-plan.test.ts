@@ -79,6 +79,7 @@ import tool, {
   memberLaunchCommand,
   composeMemberLaunchContext,
   renderMemberBaseline,
+  clampFleetTopUpToCapacity,
   MEMBER_BASELINE_RULES,
   LEADER_STANDING_JOB,
   LEADER_AUTO_MODE_DIRECTIVE,
@@ -238,6 +239,37 @@ describe('memberLaunchCommand', () => {
     expect(notWarnedPayload.ok).toBe(true);
     expect(notWarnedPayload.sizingAdvisory).toBeNull();
     expect(notWarnedPayload.message).not.toMatch(/Sizing advisory:/);
+  });
+});
+
+describe('clampFleetTopUpToCapacity', () => {
+  it('clamps the requested top-up to the tightest reachable capacity signal', () => {
+    expect(
+      clampFleetTopUpToCapacity(4, {
+        reachable: true,
+        healthyAccounts: 2,
+        dispatchBudget: 3,
+        recommendedHeadroom: 4,
+      }),
+    ).toMatchObject({
+      requestedOpenCount: 4,
+      openCount: 2,
+      clamped: true,
+      healthyAccounts: 2,
+      dispatchBudget: 3,
+      recommendedHeadroom: 4,
+    });
+  });
+
+  it('fails open when the gateway headroom report is unreachable', () => {
+    expect(
+      clampFleetTopUpToCapacity(4, {
+        reachable: false,
+        healthyAccounts: null,
+        dispatchBudget: null,
+        recommendedHeadroom: null,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -464,6 +496,67 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.message).toContain('deficit top-up: 1 already live of the 2 requested');
+  });
+
+  it('capacity-clamps the DEFICIT before opening terminals (3 requested, 0 alive, 1 safe slot → 1 opened)', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    fetchGatewayHeadroomMock.mockResolvedValue({
+      reachable: true,
+      utilization: 0.1,
+      utilizationPct: 10,
+      paused: false,
+      rejected: false,
+      inFlight: 0,
+      queueDepth: 0,
+      priorityTiers: {
+        healthyAccounts: 1,
+        tier1Reserve: 0,
+        tiers: [{ tier: 3, cap: 1, inFlight: 0, queued: 0 }],
+      },
+    });
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    const res = await tool.handler(
+      { name: 'Capacity Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.requestedOpenCount).toBe(3);
+    expect(payload.capacityClamp).toMatchObject({ requestedOpenCount: 3, openCount: 1, clamped: true });
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.message).toContain('capacity-clamped top-up 3→1');
+  });
+
+  it('suppresses a top-up without burning a launch wave when reachable capacity is zero', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockClear();
+    fetchGatewayHeadroomMock.mockResolvedValue({
+      reachable: true,
+      utilization: 1,
+      utilizationPct: 100,
+      paused: true,
+      rejected: true,
+      inFlight: 1,
+      queueDepth: 4,
+      priorityTiers: {
+        healthyAccounts: 0,
+        tier1Reserve: 0,
+        tiers: [{ tier: 3, cap: 0, inFlight: 0, queued: 0 }],
+      },
+    });
+    const res = await tool.handler(
+      { name: 'Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.capacitySuppressed).toBe(true);
+    expect(payload.opened).toEqual([]);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(claimFleetLaunchSlot).not.toHaveBeenCalled();
   });
 
   it('does not count the CALLER (the leader) as a live member', async () => {

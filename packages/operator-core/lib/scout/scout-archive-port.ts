@@ -108,7 +108,7 @@ export async function buildScoutArchivePort(opts: BuildScoutArchivePortOptions):
             rationale: e.rationale ?? null,
           });
         } catch (err) {
-           
+          // eslint-disable-next-line no-console
           console.warn('[scout-archive-port] flush upsert failed:', err instanceof Error ? err.message : err);
         }
       }

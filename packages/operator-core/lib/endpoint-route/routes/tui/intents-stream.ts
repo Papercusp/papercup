@@ -78,7 +78,7 @@ export default defineTool({
               if (rows.length === DRAIN_LIMIT) dirty = true; // full page — keep draining
             } while (dirty && !sink.closed);
           } catch (e) {
-             
+            // eslint-disable-next-line no-console
             console.warn('[tui-intents] drain error', e);
           } finally {
             draining = false;

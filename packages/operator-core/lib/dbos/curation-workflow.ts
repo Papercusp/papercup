@@ -60,7 +60,7 @@ async function curationTickImpl(): Promise<void> {
         });
       });
     } catch (e) {
-       
+      // eslint-disable-next-line no-console
       console.warn(`[curation] tick failed for workspace ${ws}:`, e instanceof Error ? e.message : e);
     }
   }

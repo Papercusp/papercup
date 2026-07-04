@@ -145,7 +145,7 @@ async function reconcileWorkspace(
       ? await opts.listHives(workspaceId)
       : await (await import('./hive-directory-meta')).listOwnedHiveMeta(workspaceId);
   } catch (e) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       `[cross-hive-boot] owned-hive listing failed for workspace ${workspaceId} — leaving boundaries as-is: ` +
         `${e instanceof Error ? e.message : e}`,
@@ -168,7 +168,7 @@ async function reconcileWorkspace(
       /* non-fatal */
     }
     out.closed.push(entry.hiveSlug);
-     
+    // eslint-disable-next-line no-console
     console.log(`[cross-hive-boot] boundary closed for ${workspaceId}/${entry.hiveSlug} (no longer published)`);
   }
 
@@ -190,7 +190,7 @@ async function reconcileWorkspace(
       // boundary through the shared registry — never a second transport.
       registerCrossHiveBoundary(workspaceId, meta.hiveId, entry.wiring);
       out.wired.push(meta.hiveId);
-       
+      // eslint-disable-next-line no-console
       console.log(
         `[cross-hive-boot] boundary live for ${workspaceId}/${meta.hiveId} ` +
           `(${meta.visibility}; pubkey ${entry.hivePubkey.slice(0, 8)}…)`,
@@ -202,7 +202,7 @@ async function reconcileWorkspace(
       }
     } catch (e) {
       out.skipped.push(meta.hiveId);
-       
+      // eslint-disable-next-line no-console
       console.warn(
         `[cross-hive-boot] boundary wire failed for ${workspaceId}/${meta.hiveId} (skipped): ` +
           `${e instanceof Error ? e.message : e}`,

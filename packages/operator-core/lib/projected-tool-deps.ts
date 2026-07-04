@@ -120,7 +120,7 @@ async function readQuotaStateImpl(
     const n = (result as Array<{ n: number }>)[0]?.n ?? 0;
     return { count: n };
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn(`[projected-tool-deps] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
@@ -235,7 +235,7 @@ export async function flushPendingTelemetry(): Promise<void> {
               }
             });
           } catch (err) {
-             
+            // eslint-disable-next-line no-console
             console.warn(
               `[projected-tool-deps] telemetry flush batch failed (${rows.length} rows): ${err instanceof Error ? err.message : String(err)}`,
             );
@@ -404,7 +404,7 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
     telemetryQueue.splice(0, telemetryQueue.length - maxPending);
     telemetryDropped++;
     if (telemetryDropped === 1 || telemetryDropped % 1000 === 0) {
-       
+      // eslint-disable-next-line no-console
       console.warn(`[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`);
     }
   }

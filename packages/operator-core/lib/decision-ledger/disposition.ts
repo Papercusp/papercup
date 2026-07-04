@@ -227,7 +227,7 @@ export async function recordDecisionDisposition(
     }
     return id;
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       `[decision-ledger] disposition insert failed: ${err instanceof Error ? err.message : String(err)}`,
     );

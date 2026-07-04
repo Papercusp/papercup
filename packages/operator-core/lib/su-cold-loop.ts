@@ -143,8 +143,10 @@ export function renderColdWakeInjection(carryNote: string): string {
     'The carry-note dies with your session — so also persist what must OUTLIVE it:',
     '  • holding a work-item? REFRESH work_items:checkpoint { id, checkpoint } — a successor/reclaimer INHERITS it',
     '    if you die (the carry-note does not); refresh it at least as often as this note.',
-    '  • reached a durable conclusion (root cause, repro, decision, a bug worth filing)? facts:assert it — it is',
-    '    folded into every future orient, so the next wake and every peer start already knowing it.',
+    '  • reached a durable conclusion (root cause, repro, decision, a bug worth filing)? You MUST facts:assert it.',
+    '    ⚠ A work-item COMMENT does NOT count — it is never folded into orient, so the next wake and every peer stay',
+    '    BLIND to it. A fact is the ONLY thing folded VERBATIM into every future orient — don\'t let a comment stand',
+    '    in for it (that reflex is exactly how conclusions get lost across cold wakes).',
     'If the goal is DONE or you are blocked, call loop:end instead of leaving the loop spinning.',
   ].join('\n');
 }

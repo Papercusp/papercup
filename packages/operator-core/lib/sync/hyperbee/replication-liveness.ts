@@ -243,7 +243,7 @@ function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
   const eventName =
     episode.kind === 'frozen' ? 'replication_frozen' : 'replication_stalled';
   try {
-     
+    // eslint-disable-next-line no-console
     console.error(
       `[replication-liveness] ${eventName} (${episode.kind}) harness=${episode.harnessSlug} ${episode.detail}`,
     );

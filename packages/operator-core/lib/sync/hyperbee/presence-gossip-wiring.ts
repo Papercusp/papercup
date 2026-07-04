@@ -250,7 +250,7 @@ export async function registerPresenceGossipTopic(input: {
     s.gossip.joinTopic(Buffer.from(input.topicHex, 'hex'));
     return true;
   } catch (e) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       `[presence-gossip] topic registration failed for ${input.topicHex.slice(0, 12)}… (presence stays log-path):`,
       e instanceof Error ? e.message : String(e),

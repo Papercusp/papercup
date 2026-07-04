@@ -132,23 +132,42 @@ export default defineTool({
       reservedSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const claim = await claimWorkItem(workItemId, reservedSpawnId, { harness: args.harness ?? undefined });
       if (!claim) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                spawn_id: reservedSpawnId,
-                harness: args.harness ?? null,
-                project_dir: null,
-                error: `spawn rejected: work item ${workItemId} could not be claimed for the new bee`,
-                next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry bee:spawn.',
-              }),
-            },
-          ],
-        };
+        // WI-1670: an id EXPLICITLY named via `feature` is a deliberate ask — fail
+        // loud, the caller should learn it wasn't honored (the pre-existing
+        // behavior). An id merely INFERRED from free-text `brief` prose
+        // (inferSingleWorkItemId is a best-effort regex over whatever WI-/F- token
+        // appears FIRST in the text — including one the caller mentioned only to
+        // say "skip this") is a heuristic convenience, not a pin: when that
+        // inferred id is already live-claimed by someone else, the whole spawn
+        // used to wedge on it every retry (same brief text → same extracted id →
+        // same rejection), even though role="bee" is documented as
+        // self-pulling. Degrade instead: drop the inferred id and spawn the bee
+        // task-less so it self-pulls its own work via scheduler:get_next /
+        // work_items:claim_next once it boots, rather than rejecting the spawn
+        // over a claim it was never explicitly asked to reserve.
+        if (args.feature) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  spawn_id: reservedSpawnId,
+                  harness: args.harness ?? null,
+                  project_dir: null,
+                  error: `spawn rejected: work item ${workItemId} could not be claimed for the new bee`,
+                  next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry bee:spawn.',
+                }),
+              },
+            ],
+          };
+        }
+        // Fall through task-less: reservedSpawnId/reservedWorkItemId stay as-is
+        // (spawnId still uses the pre-minted reservedSpawnId; featureId/itemId
+        // fall back to null since reservedWorkItemId was never set below).
+      } else {
+        reservedWorkItemId = workItemId;
       }
-      reservedWorkItemId = workItemId;
     }
     // Named-fleet placement (fleet-color-schemes): resolve the fleet (create-if-
     // absent, so the Queen need not fleet:create first — she becomes its leader)

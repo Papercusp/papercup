@@ -152,7 +152,7 @@ export async function gatherGraderFeedbackPriming(
     const rows = await (opts.readRows ? opts.readRows() : readRoutedIdeas(opts));
     return formatGraderFeedbackPriming(rows, opts);
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn(
       '[scout/ideator-feedback-priming] graded-ledger read failed — no grader priming this cycle:',
       err instanceof Error ? err.message : err,

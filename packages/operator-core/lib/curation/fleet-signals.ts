@@ -99,7 +99,7 @@ async function safe<T>(fn: () => Promise<T[]>, label: string): Promise<T[]> {
   try {
     return await fn();
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn(`[curation] reader "${label}" failed:`, err instanceof Error ? err.message : err);
     return [];
   }

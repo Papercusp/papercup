@@ -268,8 +268,15 @@ change the approach first.
 be a file.** No plain-JSON state files, no module-scoped TTL `Map`s, no "PG
 mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
 
-- **Schema = migrations only; NO runtime DDL.** Add an idempotent migration in
-  `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), then
+- **Schema = migrations only; NO runtime DDL.** ⚠ **Pick the migration number
+  via the atomic allocator — NEVER `ls sql/ | tail` by eye.** On this
+  heavily-parallel fleet, two agents racing an `ls`-then-write gap WILL pick
+  the same NNN (EI-6843 — cost a rename + every in-code reference + re-verify
+  when caught). Run `node scripts/next-migration.mjs --name <slug> --intent
+  "..."` (or `npm run db:next-migration --`) FIRST — it reserves the number
+  atomically under an advisory lock (`harness_shared.migration_reservations`)
+  and prints the exact path to write. Then add the idempotent migration at
+  `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), and run
   `node libs/papercusp/libs/db/scripts/pull-schema.mjs`. Never an `ensureXxx()`
   / inline `CREATE TABLE`. `000-baseline.sql` is frozen/generated.
 - **Never hardcode `localhost:5432`** — resolve via `getHarnessAdminUrl()`.

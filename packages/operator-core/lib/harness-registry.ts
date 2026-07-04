@@ -323,7 +323,7 @@ async function auditRegistryWrite(
       ],
     );
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn('[harness-registry] audit write failed:', err);
   }
 }
@@ -340,7 +340,7 @@ export async function saveHarnessRegistry(
   // downstream find(p=>p.slug===…) non-deterministic). A clean input is
   // unchanged; a collapse is logged so the offending caller is traceable.
   const next = dedupeProjectsBySlug(reg.projects ?? [], (slug) =>
-     
+    // eslint-disable-next-line no-console
     console.warn(`[harness-registry] saveHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
   );
   const prev = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
@@ -391,7 +391,7 @@ function notifyRegistryChanged(): void {
       bustProjectsLiteCache();
       await notifySyncInvalidate('harnessProjects.lite', {});
     } catch (err) {
-       
+      // eslint-disable-next-line no-console
       console.warn('[harness-registry] sync invalidate failed:', err);
     }
   })();
@@ -433,7 +433,7 @@ export async function mutateHarnessRegistry(
       // duplicate slug last-write-wins inside the tx, so the committed row is
       // always one entry per slug regardless of the mutator's discipline.
       const dedupedProjects = dedupeProjectsBySlug(mutated.projects ?? [], (slug) =>
-         
+        // eslint-disable-next-line no-console
         console.warn(`[harness-registry] mutateHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
       );
       nextCount = dedupedProjects.length;

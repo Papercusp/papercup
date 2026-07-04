@@ -247,7 +247,7 @@ const confirmPromotion = defineTool({
         }
       } catch (e) {
         // Smoke-build infra failed — don't block the promotion; merge succeeded.
-         
+        // eslint-disable-next-line no-console
         console.warn(`[promotion] smoke-build skipped due to error: ${(e as Error).message}`);
       }
     }

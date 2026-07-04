@@ -239,6 +239,11 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-SUMMARY-STILL-RECOVERING', status: 'in_progress', takenBy: null });
 
     const summary = await summarizeOpenPlacements(WS, HIVE);
+    console.log('DEBUG summary', JSON.stringify(summary));
+    const rawUnit = await sql`SELECT feature_id, status, workspace_id, harness_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-SUMMARY-STILL-RECOVERING'`;
+    console.log('DEBUG rawUnit', JSON.stringify(rawUnit));
+    const rawPlacement = await sql`SELECT work_item_id, status, workspace_id, install_slug FROM harness_shared.hive_placements WHERE work_item_id = 'F-SUMMARY-STILL-RECOVERING'`;
+    console.log('DEBUG rawPlacement', JSON.stringify(rawPlacement));
 
     expect(summary.recovering).toBe(1);
     expect(summary.items).toEqual([

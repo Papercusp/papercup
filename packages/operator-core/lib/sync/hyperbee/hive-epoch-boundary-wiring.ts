@@ -436,21 +436,21 @@ export async function reconcileOwnedHiveEpochKeys(
       );
       if (r.applied) {
         reconciled += 1;
-         
+        // eslint-disable-next-line no-console
         console.info(
           `[hive-epoch-key-reconcile] backfilled ${hiveHomeSlug} epoch[0..${current}] for ${liveDevices.length} member device(s) (${r.distributed} key rows)`,
         );
       } else {
         // A gap was found but the grant did NOT run — name the cause (no-author = not the owner
         // box; flag-disabled; no-fresh-members). This is the queryable signal a stuck hive needs.
-         
+        // eslint-disable-next-line no-console
         console.info(
           `[hive-epoch-key-reconcile] gap in ${hiveHomeSlug} epoch=${current} NOT healed: ${r.reason ?? 'unknown'}`,
         );
       }
     } catch (e) {
       // best-effort per hive — one hive's failure must not abort the sweep
-       
+      // eslint-disable-next-line no-console
       console.info(
         `[hive-epoch-key-reconcile] ${hiveHomeSlug} threw (skipped): ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -458,7 +458,7 @@ export async function reconcileOwnedHiveEpochKeys(
   }
   // Only log when there was real work (a gap found / healed) — steady-state sweeps stay silent.
   if (gapsFound > 0) {
-     
+    // eslint-disable-next-line no-console
     console.info(
       `[hive-epoch-key-reconcile] sweep: scanned=${hives.length} gaps=${gapsFound} reconciled=${reconciled}`,
     );

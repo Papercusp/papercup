@@ -110,7 +110,7 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
 
       // The lag is the artifact (the P-013 probe productionizes it); the
       // assertion is only a generous ceiling so a real regression still trips.
-       
+      // eslint-disable-next-line no-console
       console.log(
         `[P-006] storm=${TOTAL_WRITES} writes, drains=${drives}, A-drain+B-converge lag=${(lagMs / 1000).toFixed(1)}s`,
       );

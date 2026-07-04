@@ -593,7 +593,7 @@ const invoke = defineTool({
       try {
         actionsResult = await dispatchActionsBlockFromOutput(project.slug, project.path, agentOutput);
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(`[invoke ${project.slug}/${role}] actions dispatch failed:`, e);
       }
     }

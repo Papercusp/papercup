@@ -39,7 +39,7 @@ export async function recordFlagAudit(
     );
   } catch (err) {
     // Best-effort: the flip already succeeded; never block it on the audit.
-     
+    // eslint-disable-next-line no-console
     console.warn('[flags] audit write failed:', (err as Error)?.message);
   }
 }

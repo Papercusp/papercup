@@ -101,7 +101,7 @@ export default defineTool({
               if (rows.length === DRAIN_LIMIT) dirty = true;
             } while (dirty && !sink.closed);
           } catch (e) {
-             
+            // eslint-disable-next-line no-console
             console.warn('[activity-stream] drain error', e);
           } finally {
             draining = false;

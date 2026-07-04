@@ -60,7 +60,7 @@ export function handleToolInvoked(pe: PostInvokeEvent): void {
     event = normalizeEvent(pe);
   } catch (err) {
     // Normalization must never break the trigger. (Pure code; defensive.)
-     
+    // eslint-disable-next-line no-console
     console.warn(`[events] normalize failed for ${pe.toolName}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
@@ -119,7 +119,7 @@ export function emitSystemEvent(opts: {
       ...(opts.cause ? { cause: opts.cause } : {}),
     };
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn(`[events] system-event build failed for ${opts.tool}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
@@ -239,7 +239,7 @@ function matchAndRun(event: ToolInvocationEvent): void {
     actions = matchReactions(event);
   } catch (err) {
     // Matching must never break the trigger. (Pure code; defensive.)
-     
+    // eslint-disable-next-line no-console
     console.warn(`[events] match failed for ${event.tool}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }

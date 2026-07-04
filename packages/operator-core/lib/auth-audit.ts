@@ -90,7 +90,7 @@ export async function recordAuthEvent(event: AuthAuditEvent): Promise<void> {
       )
     `;
   } catch (err) {
-     
+    // eslint-disable-next-line no-console
     console.warn('[auth-audit] write failed:', (err as Error).message);
   }
 }

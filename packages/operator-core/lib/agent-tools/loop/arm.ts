@@ -29,8 +29,10 @@ import { resolveHiveHomeSlug } from '../../hive/wake';
 import {
   materializeLoop,
   buildLoopWakePrompt,
+  detectDrivenWorkItemId,
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
+import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import {
   probeWakeReachability,
@@ -95,6 +97,13 @@ export default defineTool({
       .optional()
       .describe(
         'Advanced: a custom per-wake instruction, replacing the default "create + self-assign your work_items, work them, set_state" template. Most loops should omit this. Auto-truncated to 4000 chars if longer.',
+      ),
+    workItem: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'The WI-/EI-/F- work-item this loop is DRIVING. It is auto-CLAIMED for the loop owner at arm time (WI-2429), so the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer\'s item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and claimed the same way.',
       ),
     carry: z
       .enum(['warm', 'cold'])

@@ -445,7 +445,7 @@ export async function joinHiveAsView(
   try {
     await rekeyHarness(opts.workspaceId, hiveSlug);
   } catch (e) {
-     
+    // eslint-disable-next-line no-console
     console.error(
       `[join-hive] 2c′ home-view boot/rekey FAILED for ${hiveSlug} — the joiner's hive-home ` +
         `outbox stays undrained until restart: ${e instanceof Error ? e.message : String(e)}`,
@@ -461,7 +461,7 @@ export async function joinHiveAsView(
       // failed is stranded on the gh:<repo_id> topic — connected to nothing the
       // owner announces on — until a restart, and this swallow was the only
       // trace. Say so loudly + stamp the member detail the caller returns.
-       
+      // eslint-disable-next-line no-console
       console.error(
         `[join-hive] 2c rekey FAILED for member ${m.slug} — member may be stranded off the hive topic until restart: ${e instanceof Error ? e.message : String(e)}`,
       );

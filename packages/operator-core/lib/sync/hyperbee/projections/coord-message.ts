@@ -190,7 +190,7 @@ async function writeToPg(
           opts.sql,
         );
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] quarantine write failed for ${row.msg_id} (message NOT applied either way):`,
           e instanceof Error ? e.message : String(e),
@@ -361,7 +361,7 @@ async function writeToPg(
         });
         fanWoken = typeof (fan as { woken?: unknown })?.woken === 'number' ? (fan as { woken: number }).woken : 0;
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated wake fan failed for ${row.msg_id} (message persisted; recipient sees it next turn):`,
           e instanceof Error ? e.message : String(e),
@@ -411,7 +411,7 @@ async function writeToPg(
           }
         }
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated reply-wake failed for ${row.msg_id} (reply persisted; original sender sees it next turn):`,
           e instanceof Error ? e.message : String(e),
@@ -441,7 +441,7 @@ async function writeToPg(
           });
         }
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] federated event re-fire failed for ${row.msg_id} (row persisted; local watchers miss this firing):`,
           e instanceof Error ? e.message : String(e),
@@ -496,7 +496,7 @@ async function writeToPg(
           },
         );
       } catch (e) {
-         
+        // eslint-disable-next-line no-console
         console.warn(
           `[coord-message] delivery receipt failed for ${row.msg_id} (message applied; sender falls back to reply/inbox confirmation):`,
           e instanceof Error ? e.message : String(e),

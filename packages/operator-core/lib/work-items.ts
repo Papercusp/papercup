@@ -255,13 +255,20 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
     }
   }
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
-  const v = (obj as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  let v = (obj as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v) as unknown;
+    } catch {
+      return null;
+    }
+  }
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   return v as CompletionVerificationEvidence;
 }
 
-function completionEvidenceJson(evidence: CompletionVerificationEvidence | undefined): string | null {
-  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify(evidence) : null;
+function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
+  return evidence && Object.keys(evidence).length > 0 ? JSON.stringify({ [TERMINAL_COMPLETION_EVIDENCE_KEY]: evidence }) : null;
 }
 
 /** Allocate the next kind-independent WI-NNN id (D-008). */
@@ -1056,7 +1063,7 @@ export async function setWorkItemState(
       }
     }
     const { sql } = getOrgPg();
-    const evidenceJson = completionEvidenceJson(opts.completionEvidence);
+    const evidencePayloadJson = completionEvidencePayloadJson(opts.completionEvidence);
     // D-007: a genuine terminal success/drop resets the stale-reclaim requeue
     // counter, so a later legitimate re-open starts fresh with the full cap.
     const resetRequeue = isTerminal;
@@ -1076,9 +1083,9 @@ export async function setWorkItemState(
              updated_ts = ${Date.now()},
              terminal_owner = ${opts.by ?? null},
              terminal_completion_ref = ${opts.completionRef ?? null},
-             payload = CASE WHEN ${evidenceJson}::jsonb IS NULL
+             payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                             THEN payload
-                            ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || jsonb_build_object(${TERMINAL_COMPLETION_EVIDENCE_KEY}::text, ${evidenceJson}::jsonb))
+                            ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`

@@ -460,7 +460,7 @@ export default defineTool({
           // Non-fatal — origin degrades to null. Logged because a silent miss here
           // cost a live debugging session (2026-06-11): the Create tab's scout
           // filter quietly matches nothing when this read breaks.
-           
+          // eslint-disable-next-line no-console
           console.warn(
             "[plans:list] scout-provenance read failed — origin omitted:",
             err instanceof Error ? err.message : err,

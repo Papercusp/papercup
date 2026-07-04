@@ -152,7 +152,7 @@ describe('Brief F / Scenario 6 — scale: many peers × large history', () => {
       expect(m.idleApplied).toBe(0);
 
       // Belt-and-braces (LOGGED for the findings matrix; asserted only loosely).
-       
+      // eslint-disable-next-line no-console
       console.log(
         `[scale] ${peers}p × ${opsPerPeer} ops: backfill=${m.backfillMs.toFixed(0)}ms ` +
           `(${m.passes} pass) idle=${m.idleMs.toFixed(2)}ms decoded=${m.totalDecoded} ` +
@@ -186,7 +186,7 @@ describe('Brief F / Scenario 3 — long-offline peer rejoins after a large gap, 
       expect(idle.applied).toBe(0);
       expect(idle.caughtUp).toBe(true);
     }
-     
+    // eslint-disable-next-line no-console
     console.log(
       `[backfill] 50k-op gap: backfill=${m.backfillMs.toFixed(0)}ms idle=${m.idleMs.toFixed(2)}ms ` +
         `winners=${cursor.winners.size} rssΔ=${m.rssDeltaMb.toFixed(1)}MB`,
