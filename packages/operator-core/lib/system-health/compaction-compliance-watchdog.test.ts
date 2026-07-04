@@ -56,6 +56,11 @@ function fakeSql(opts: {
   unseeded?: Array<{ owner_id: string; fleet_slug?: string | null; fleet_role?: string | null }>;
   seeded?: Array<{ owner_id: string; owner_label: string; compaction_limit: number }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
+  /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
+  claimFreshness?: Record<
+    string,
+    Array<{ work_item_id: string; acquired_ms: string; last_activity_ms: string; checkpoint_updated_ms: string | null }>
+  >;
 }) {
   return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
@@ -65,6 +70,8 @@ function fakeSql(opts: {
       const rec = opts.spawnRecords?.[String(values[0])];
       return Promise.resolve(rec ? [rec] : []);
     }
+    // P-003 freshness read: `c.owner = ${owner}` is the first interpolated value.
+    if (q.includes('work_item_claims')) return Promise.resolve(opts.claimFreshness?.[String(values[0])] ?? []);
     return Promise.resolve([]);
   }) as never;
 }
@@ -161,6 +168,43 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     expect(out.estimated).toEqual(['hot', 'cool']);
     expect(out.overLimit).toEqual(['hot']);
     expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000);
+  });
+
+  it('P-003: SURFACES an over-limit session\'s unflushed (stale-checkpoint) claim, and skips a fresh one', async () => {
+    estimateMock.mockImplementation(async () => 170_000); // over 158k
+    const now = Date.now();
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 158_000 }],
+        claimFreshness: {
+          hot: [
+            // never-checkpointed, held 20 min ⇒ stale 'never'
+            { work_item_id: 'WI-500', acquired_ms: String(now - 20 * 60_000), last_activity_ms: String(now), checkpoint_updated_ms: null },
+            // checkpointed 30s ago ⇒ fresh, NOT surfaced
+            { work_item_id: 'WI-501', acquired_ms: String(now - 60 * 60_000), last_activity_ms: String(now), checkpoint_updated_ms: String(now - 30_000) },
+          ],
+        },
+      }),
+    );
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.unflushedClaims).toEqual([
+      { owner: 'hot', workItemId: 'WI-500', reason: 'never', staleMs: expect.any(Number) },
+    ]);
+  });
+
+  it('P-003: a session UNDER its limit is never scanned for unflushed claims', async () => {
+    estimateMock.mockImplementation(async () => 40_000); // under 158k
+    const now = Date.now();
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [{ owner_id: 'cool', owner_label: 'su · cool', compaction_limit: 158_000 }],
+        claimFreshness: {
+          cool: [{ work_item_id: 'WI-9', acquired_ms: String(now - 60 * 60_000), last_activity_ms: String(now), checkpoint_updated_ms: null }],
+        },
+      }),
+    );
+    expect(out.overLimit).toEqual([]);
+    expect(out.unflushedClaims).toEqual([]); // under limit ⇒ the claim read never runs
   });
 });
 

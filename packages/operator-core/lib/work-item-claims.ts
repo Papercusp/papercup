@@ -22,6 +22,7 @@
  *
  * NOT federated. NO RLS (coord-family); org handle + workspace_id filter.
  */
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItemClaimAuthority } from './work-item-claim-authority';
 
@@ -477,10 +478,14 @@ export interface ClaimCheckpointFreshness {
  * Ordered newest-active first. NOT federated; coord-family, workspace+owner filtered.
  */
 export async function listActiveClaimFreshnessForOwner(
-  workspaceId: string,
+  workspaceId: string | null,
   owner: string,
+  opts: { sql?: Sql } = {},
 ): Promise<ClaimCheckpointFreshness[]> {
-  const { sql } = getOrgPg();
+  // `workspaceId` null ⇒ any workspace (owner is a globally-unique session uuid, so the
+  // owner predicate alone is exact — used by the fleet-wide P-003 surface). `opts.sql` lets a
+  // caller with its own handle (the compaction watchdog's injected seam) reuse this reader.
+  const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<
     {
       work_item_id: string;
@@ -497,7 +502,8 @@ export async function listActiveClaimFreshnessForOwner(
              WHERE cn.scope = 'workitem:' || c.harness_slug || ':' || c.work_item_id
                AND cn.note IS NOT NULL)                            AS checkpoint_updated_ms
       FROM harness_shared.work_item_claims c
-     WHERE c.workspace_id = ${workspaceId} AND c.owner = ${owner}
+     WHERE c.owner = ${owner}
+       AND ${workspaceId != null ? sql`c.workspace_id = ${workspaceId}` : sql`TRUE`}
        AND c.expires_ts > clock_timestamp()
      ORDER BY c.last_activity_ts DESC
   `;

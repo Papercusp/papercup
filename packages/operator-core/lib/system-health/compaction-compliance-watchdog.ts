@@ -23,6 +23,8 @@ import {
 } from '../compaction-usage';
 import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import { defaultCompactionLimitForSpec, type ModelTier } from '../agent-config-constants';
+import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
+import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -134,6 +136,10 @@ export interface CompactionComplianceResult {
   seeded: string[];
   /** P-019: owners whose transcript tail carries "Prompt is too long" (dead). */
   contextDeaths: string[];
+  /** flush-to-proceed P-003: over-limit sessions holding a work-item claim whose checkpoint is
+   *  stale (unflushed work about to be lost to a compaction/reclaim). SURFACED, never seized
+   *  (D-008). One entry per (owner, stale claim). */
+  unflushedClaims: Array<{ owner: string; workItemId: string; reason: StaleClaim['reason']; staleMs: number }>;
 }
 
 /**
@@ -145,7 +151,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [], contextDeaths: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
   // Seeding step — one server-side place instead of N spawn paths (D-006).
   // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
   // default) > the argv/fs model resolver (launch argv → session
@@ -232,12 +238,32 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       out.estimated.push(r.owner_id);
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         out.overLimit.push(r.owner_id);
+        // flush-to-proceed P-003 SURFACE (not seize, D-008): a session over its compaction limit
+        // that holds a work-item whose CHECKPOINT is stale is about to lose unflushed work to the
+        // imminent compaction/reclaim — the exact failure the discipline targets. Name it (reusing
+        // the P-002 classifier over a fleet-wide freshness read on the watchdog's own sql seam) so
+        // the loss is visible in the over-limit warning + the result. Best-effort; auto-reclaim is
+        // deliberately NOT wired here. Owner is a globally-unique session uuid ⇒ null workspace.
+        let unflushed: StaleClaim[] = [];
+        try {
+          const fresh = await listActiveClaimFreshnessForOwner(null, r.owner_id, { sql });
+          unflushed = classifyStaleClaims(fresh, Date.now());
+          for (const s of unflushed) {
+            out.unflushedClaims.push({ owner: r.owner_id, workItemId: s.workItemId, reason: s.reason, staleMs: s.staleMs });
+          }
+        } catch {
+          /* best-effort per owner */
+        }
         if (!overLimitOwners.has(r.owner_id)) {
           overLimitOwners.add(r.owner_id);
+          const flushNote =
+            unflushed.length > 0
+              ? ` HOLDING UNFLUSHED WORK: ${unflushed.map((s) => s.workItemId).join(', ')} — its checkpoint is stale, so a compaction/reclaim here loses that state (flush-to-proceed P-003).`
+              : '';
           console.warn(
             `[compaction-watchdog] ${r.owner_label} (${r.owner_id}) is over its compaction limit: ` +
               `~${est}/${r.compaction_limit} tokens (${Math.round((est / r.compaction_limit) * 100)}%) — ` +
-              `should have called session:request_compaction.`,
+              `should have called session:request_compaction.${flushNote}`,
           );
         }
       } else {
