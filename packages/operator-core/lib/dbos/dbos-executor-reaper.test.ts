@@ -1,6 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { clearStaleReaperLastError, reapDeadExecutorWorkflows, REAPER_LAST_ERROR_SOURCE } from './dbos-executor-reaper';
+import { clearStaleReaperLastError, reapDeadExecutorWorkflows, startExecutorReaper, REAPER_LAST_ERROR_SOURCE } from './dbos-executor-reaper';
+
+// Capture the tick fn `startExecutorReaper` registers with managedSetInterval, so a
+// reap-tick failure can be invoked directly instead of waiting on a real interval —
+// mirrors how the production code actually calls it (EI-3673 regression coverage).
+let capturedTick: (() => void | Promise<void>) | null = null;
+vi.mock('@papercusp/scheduled-registry', () => ({
+  managedSetInterval: vi.fn((_name: string, _intervalMs: number, fn: () => void | Promise<void>) => {
+    capturedTick = fn;
+    return { stop: vi.fn() };
+  }),
+}));
 
 type Call = { text: string; values: unknown[] };
 

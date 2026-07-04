@@ -184,6 +184,7 @@ export async function publishSeatOfferForDelegation(
     cancelReason: opts.removed ? 'delegation-removed' : null,
     workOffer: null,
     authorship: null,
+    spawnRequest: null,
     seat: opts.removed
       ? // Carry the last-published payload on cancel (the count no longer
         // matters; a junk existing record falls back to the caller's trio).

@@ -143,6 +143,13 @@ const SEAT_FIELD_MAX = 64;
 const HOST_LABEL_MAX = 120;
 const CANCEL_REASON_MAX = 500;
 const SEAT_COUNT_MAX = 1000;
+/** Mirrors launch-on-plan's MAX_MEMBERS: >12 desktop windows in one honor is
+ *  heavy + almost always a mistake — a bigger wave is several requests. */
+const SPAWN_REQUEST_COUNT_MAX = 12;
+const PLAN_SLUG_MAX = 120;
+const REQUESTER_OWNER_ID_MAX = 120;
+/** A brief, not a book — the host composes it UNDER the member baseline. */
+const LAUNCH_CONTEXT_MAX = 8000;
 
 function isPositiveInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
@@ -175,6 +182,49 @@ function coerceSeatPayload(raw: unknown): { ok: true; seat: SeatOfferPayload } |
   };
 }
 
+function coerceSpawnRequestPayload(
+  raw: unknown,
+): { ok: true; spawnRequest: SpawnRequestPayload } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: "record.spawnRequest must be a JSON object for kind 'spawn_request'" };
+  }
+  const s = raw as Record<string, unknown>;
+  if (!isPositiveInt(s.targetPublisherGithubUserId)) {
+    return { ok: false, error: 'record.spawnRequest.targetPublisherGithubUserId must be a positive integer (X9: numeric id, never a login)' };
+  }
+  if (typeof s.targetOfferId !== 'string' || s.targetOfferId.length > OFFER_ID_MAX || !OFFER_ID_RE.test(s.targetOfferId)) {
+    return { ok: false, error: `record.spawnRequest.targetOfferId must match ${OFFER_ID_RE} (≤${OFFER_ID_MAX} chars)` };
+  }
+  if (!isPositiveInt(s.count) || s.count > SPAWN_REQUEST_COUNT_MAX) {
+    return { ok: false, error: `record.spawnRequest.count must be an integer 1..${SPAWN_REQUEST_COUNT_MAX} — a bigger wave is several requests` };
+  }
+  if (typeof s.planSlug !== 'string' || s.planSlug.length > PLAN_SLUG_MAX || !FLEET_SLUG_RE.test(s.planSlug)) {
+    return { ok: false, error: `record.spawnRequest.planSlug must match ${FLEET_SLUG_RE} (≤${PLAN_SLUG_MAX} chars)` };
+  }
+  if (typeof s.requesterOwnerId !== 'string' || s.requesterOwnerId.length > REQUESTER_OWNER_ID_MAX || !OFFER_ID_RE.test(s.requesterOwnerId)) {
+    return { ok: false, error: `record.spawnRequest.requesterOwnerId must match ${OFFER_ID_RE} (≤${REQUESTER_OWNER_ID_MAX} chars)` };
+  }
+  if (!isPositiveInt(s.requestedAtMs)) {
+    return { ok: false, error: 'record.spawnRequest.requestedAtMs must be a positive integer (publisher-clock epoch ms)' };
+  }
+  const ctx = s.launchContext === undefined ? null : s.launchContext;
+  if (ctx !== null && (typeof ctx !== 'string' || ctx.trim() === '' || ctx.length > LAUNCH_CONTEXT_MAX)) {
+    return { ok: false, error: `record.spawnRequest.launchContext must be a non-empty string (≤${LAUNCH_CONTEXT_MAX} chars) or null` };
+  }
+  return {
+    ok: true,
+    spawnRequest: {
+      targetPublisherGithubUserId: s.targetPublisherGithubUserId,
+      targetOfferId: s.targetOfferId,
+      count: s.count,
+      planSlug: s.planSlug,
+      requesterOwnerId: s.requesterOwnerId,
+      requestedAtMs: s.requestedAtMs,
+      launchContext: ctx,
+    },
+  };
+}
+
 /**
  * Validate + accept an UNTRUSTED record input (authoring API body / a parsed
  * remote record). CLOSED schema (fleet-directory-schema discipline): this feeds
@@ -199,8 +249,8 @@ export function coerceWorkOfferStoreRecord(
   if (typeof r.fleetSlug !== 'string' || r.fleetSlug.length > FLEET_SLUG_MAX || !FLEET_SLUG_RE.test(r.fleetSlug)) {
     return { ok: false, error: `record.fleetSlug must match ${FLEET_SLUG_RE} (≤${FLEET_SLUG_MAX} chars)` };
   }
-  if (r.kind !== 'work' && r.kind !== 'seat') {
-    return { ok: false, error: "record.kind must be 'work' or 'seat'" };
+  if (r.kind !== 'work' && r.kind !== 'seat' && r.kind !== 'spawn_request') {
+    return { ok: false, error: "record.kind must be 'work', 'seat' or 'spawn_request'" };
   }
   if (typeof r.status !== 'string' || !OFFER_STORE_STATUSES.includes(r.status as OfferStoreStatus)) {
     return { ok: false, error: `record.status must be one of ${OFFER_STORE_STATUSES.join('|')}` };
@@ -216,9 +266,11 @@ export function coerceWorkOfferStoreRecord(
   let workOffer: WorkOffer | null = null;
   let authorship: OfferAuthorship | null = null;
   let seat: SeatOfferPayload | null = null;
+  let spawnRequest: SpawnRequestPayload | null = null;
 
   if (r.kind === 'work') {
     if (r.seat != null) return { ok: false, error: "record.seat must be absent/null for kind 'work'" };
+    if (r.spawnRequest != null) return { ok: false, error: "record.spawnRequest must be absent/null for kind 'work'" };
     if (r.workOffer == null || r.authorship == null) {
       return { ok: false, error: "record.workOffer + record.authorship are required for kind 'work'" };
     }
@@ -244,13 +296,22 @@ export function coerceWorkOfferStoreRecord(
     if (workOffer.fleetSlug !== r.fleetSlug) {
       return { ok: false, error: `record.fleetSlug '${r.fleetSlug}' != workOffer.fleetSlug '${workOffer.fleetSlug}'` };
     }
-  } else {
+  } else if (r.kind === 'seat') {
     if (r.workOffer != null || r.authorship != null) {
       return { ok: false, error: "record.workOffer/authorship must be absent/null for kind 'seat'" };
     }
+    if (r.spawnRequest != null) return { ok: false, error: "record.spawnRequest must be absent/null for kind 'seat'" };
     const s = coerceSeatPayload(r.seat);
     if (!s.ok) return s;
     seat = s.seat;
+  } else {
+    if (r.workOffer != null || r.authorship != null) {
+      return { ok: false, error: "record.workOffer/authorship must be absent/null for kind 'spawn_request'" };
+    }
+    if (r.seat != null) return { ok: false, error: "record.seat must be absent/null for kind 'spawn_request'" };
+    const s = coerceSpawnRequestPayload(r.spawnRequest);
+    if (!s.ok) return s;
+    spawnRequest = s.spawnRequest;
   }
 
   return {
@@ -265,6 +326,7 @@ export function coerceWorkOfferStoreRecord(
       workOffer,
       authorship,
       seat,
+      spawnRequest,
       recordVersion: r.recordVersion,
     },
   };

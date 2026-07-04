@@ -404,7 +404,13 @@ export function startExecutorReaper(
     );
   };
 
-  run(); // boot reap
+  // Boot reap: `run()` now returns a promise (EI-3673) that re-throws on failure so
+  // managedSetInterval can see it — but THIS call site isn't the interval wrapper, so
+  // nothing else would consume that rejection. `run()`'s own handler already logged
+  // it above; swallow the re-throw here so a boot-time reap failure can't become an
+  // unhandled rejection (matches bootstrap.ts's own "best-effort — must not fail
+  // boot" contract for this call).
+  void run().catch(() => {});
   if (reaperTimer) reaperTimer.stop();
   reaperTimer = managedSetInterval('dbos-executor-reaper', intervalMs, run, { category: 'watchdog' });
 }

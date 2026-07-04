@@ -131,7 +131,7 @@ export async function getWorkOffer(
 export interface ListWorkOffersFilter {
   fleetSlug?: string;
   status?: OfferStoreStatus;
-  kind?: 'work' | 'seat';
+  kind?: 'work' | 'seat' | 'spawn_request';
   publisherGithubUserId?: number;
   /** Default false: rows THIS host refused (local_disposition set) are excluded
    *  — the claimable/board read. Pass true for audit/debug reads. */
@@ -274,6 +274,44 @@ export async function putWorkOffer(input: PutWorkOfferInput): Promise<PutWorkOff
     ],
   )) as unknown as WorkOfferDbRow[];
   return { ok: true, stored: rowToStored(rows[0]!) };
+}
+
+/**
+ * Per-OFFER host-local disposition write — the P-009 honor path's atomic claim
+ * + transition on ONE foreign row (the predicate variant below sweeps classes).
+ * Same non-federation contract as setLocalOfferDisposition.
+ *
+ * Two modes:
+ *   expect omitted/null — the CLAIM: set only while the row is still 'open' and
+ *     un-disposed. The `IS NULL` guard is what makes two concurrent honor hooks
+ *     race-safe: exactly one caller sees `true`.
+ *   expect '<value>' — the TRANSITION: move an already-held disposition (e.g.
+ *     'honoring' → 'honored' / 'refused:spawn_failed'), regardless of signed
+ *     status (an outcome must be recordable even past a publisher cancel).
+ * Returns whether THIS call changed the row.
+ */
+export async function setLocalOfferDispositionForOffer(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  publisherGithubUserId: number,
+  offerId: string,
+  disposition: string,
+  opts?: { expect?: string | null },
+  sql?: Sql,
+): Promise<boolean> {
+  const expect = opts?.expect ?? null;
+  const rows = (await pg(sql).unsafe(
+    `UPDATE harness_shared.p2p_work_offers
+        SET local_disposition = $5, updated_at = $6
+      WHERE workspace_id = $1 AND harness_slug = $2
+        AND publisher_github_user_id = $3 AND offer_id = $4
+        AND ${expect === null ? "status = 'open' AND local_disposition IS NULL" : 'local_disposition = $7'}
+      RETURNING offer_id`,
+    expect === null
+      ? [workspaceId, hiveHomeSlug, publisherGithubUserId, offerId, disposition, Date.now()]
+      : [workspaceId, hiveHomeSlug, publisherGithubUserId, offerId, disposition, Date.now(), expect],
+  )) as unknown as Array<{ offer_id: string }>;
+  return rows.length > 0;
 }
 
 /** Which foreign offers a host-local refusal covers — mirrors the reaper's
