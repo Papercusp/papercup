@@ -36,6 +36,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, CalendarClock, Crown, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { useLexicon } from '@/lib/useLexicon';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 import { Checkbox } from '@/app/harness/Checkbox';
@@ -228,6 +229,7 @@ function countLabel(count: number, noun: string): string {
 }
 
 export default function QueenTab({ active }: { active: boolean }) {
+  const t = useLexicon();
   const steeringQ = useSyncQuery<HiveSteeringRow>({ queryName: 'hive.steering', args: {}, staleTime: 15_000 });
   const projectsQ = useSyncQuery<LiteProject>({
     queryName: 'harnessProjects.lite',
@@ -277,9 +279,10 @@ export default function QueenTab({ active }: { active: boolean }) {
   const planRestricted = view.eligiblePlans.length > 0;
   const hiveRestricted = view.eligibleHives.length > 0;
   const pause = pauseStateLabel(view, Date.now());
+  const hiveWord = (n: number) => (n === 1 ? t('pot', { lower: true }) : t('pot', { plural: true, lower: true }));
   const scopeLabel = hiveRestricted || planRestricted
-    ? `${hiveRestricted ? countLabel(view.eligibleHives.length, 'hive') : 'any hive'} · ${planRestricted ? countLabel(view.eligiblePlans.length, 'plan') : 'any plan'}`
-    : 'Any hive · any plan';
+    ? `${hiveRestricted ? `${view.eligibleHives.length} ${hiveWord(view.eligibleHives.length)}` : `any ${t('pot', { lower: true })}`} · ${planRestricted ? countLabel(view.eligiblePlans.length, 'plan') : 'any plan'}`
+    : `Any ${t('pot', { lower: true })} · any plan`;
   const directiveLabel = view.directive?.trim() ? 'Directive set' : 'No directive';
   const tierLabel = view.modelTiers?.length ? `${countLabel(view.modelTiers.length, 'tier')} override` : 'Workspace tiers';
 
@@ -484,11 +487,11 @@ export default function QueenTab({ active }: { active: boolean }) {
       <header className="pc-queen__bar">
         <Crown size={14} aria-hidden />
         <span className="pc-queen__identity">
-          <span className="pc-queen__title">Queen</span>
+          <span className="pc-queen__title">{t('brain')}</span>
           <span className="pc-queen__subtitle">Steering controls</span>
         </span>
         {home && (
-          <Tooltip label="The home Queen this steers">
+          <Tooltip label={`The home ${t('brain')} this steers`}>
             <span className="pc-queen__hive">{home}</span>
           </Tooltip>
         )}
@@ -501,7 +504,7 @@ export default function QueenTab({ active }: { active: boolean }) {
       {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
       <QueenHeartbeat homeSlug={home} />
 
-      <div className="pc-queen__summary" aria-label="Queen steering summary">
+      <div className="pc-queen__summary" aria-label={`${t('brain')} steering summary`}>
         <div className={`pc-queen__summary-item${pause.active ? ' pc-queen__summary-item--warn' : ' pc-queen__summary-item--good'}`}>
           <span className="pc-queen__summary-label">Work</span>
           <span className="pc-queen__summary-value">{pause.active ? pause.label : 'Flowing'}</span>
@@ -585,8 +588,8 @@ export default function QueenTab({ active }: { active: boolean }) {
         </label>
         <div className={`pc-queen__scope${view.includeUnplannedWork ? '' : ' pc-queen__scope--restricted'}`}>
           {view.includeUnplannedWork
-            ? 'The Queen also places work-items with no plan (directly-filed features, ad-hoc items) — not just the eligible plans below.'
-            : 'The Queen works ONLY items from the eligible plans below — loose (non-plan) work is skipped.'}
+            ? `The ${t('brain')} also places work-items with no plan (directly-filed features, ad-hoc items) — not just the eligible plans below.`
+            : `The ${t('brain')} works ONLY items from the eligible plans below — loose (non-plan) work is skipped.`}
         </div>
       </section>
 
@@ -607,19 +610,19 @@ export default function QueenTab({ active }: { active: boolean }) {
           <section className="pc-queen__section">
             <div className="pc-queen__section-head">
               <Network size={12} aria-hidden />
-              <span className="pc-queen__section-title">Eligible hives</span>
+              <span className="pc-queen__section-title">Eligible {t('pot', { plural: true, lower: true })}</span>
               <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={controlsBusy || hiveOptions.length === 0} aria-label="Select every hive">all</button>
-              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={controlsBusy || !hiveRestricted} aria-label="Clear the hive scope">none</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={controlsBusy || hiveOptions.length === 0} aria-label={`Select every ${t('pot', { lower: true })}`}>all</button>
+              <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={controlsBusy || !hiveRestricted} aria-label={`Clear the ${t('pot', { lower: true })} scope`}>none</button>
             </div>
             <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {hiveRestricted
-                ? 'Queen may place ONLY into the checked hives. Uncheck all to remove the scope.'
-                : 'Nothing checked → Queen may place into ANY hive. Check hives to scope where she places work.'}
+                ? `${t('brain')} may place ONLY into the checked ${t('pot', { plural: true, lower: true })}. Uncheck all to remove the scope.`
+                : `Nothing checked → ${t('brain')} may place into ANY ${t('pot', { lower: true })}. Check ${t('pot', { plural: true, lower: true })} to scope where she places work.`}
             </div>
             {hiveOptions.length === 0 ? (
-              <div className="pc-queen__placeholder">Loading hives…</div>
+              <div className="pc-queen__placeholder">Loading {t('pot', { plural: true, lower: true })}…</div>
             ) : (
               <ul className="pc-queen__plans">
                 {hiveOptions.map((h) => {
@@ -649,8 +652,8 @@ export default function QueenTab({ active }: { active: boolean }) {
             </div>
             <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
               {planRestricted
-                ? 'Queen works ONLY the checked plans. Uncheck all to remove the restriction.'
-                : 'Nothing selected → Queen may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).'}
+                ? `${t('brain')} works ONLY the checked plans. Uncheck all to remove the restriction.`
+                : `Nothing selected → ${t('brain')} may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).`}
             </div>
             {plansQ.loading && !plansQ.data ? (
               <div className="pc-queen__placeholder">Loading plans…</div>
