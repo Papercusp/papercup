@@ -477,6 +477,14 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
     '# Refreshed on every boot; do not edit. Execs the bundled Node launcher.\n' +
+    // The agent backend (claude, installed by the official claude.ai/install.sh
+    // into ~/.local/bin) must be resolvable by the launcher's pty.spawn('claude').
+    // The WSL2 distro's login PATH omits ~/.local/bin, so a console-launched psu
+    // failed with `execvp("claude"): No such file or directory` even though the
+    // setup wizard's detectClaude() reported it installed (found live on the
+    // Windows VM 2026-07-04, WI-2149). Prepending here is a harmless no-op on
+    // macOS/Linux, where ~/.local/bin is already on PATH.
+    'export PATH="$HOME/.local/bin:$PATH"\n' +
     `exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@"\n`;
   await fs.writeFile(shimPath, body, { mode: 0o755 });
   // writeFile honors mode only on creation; chmod to guarantee on overwrite.

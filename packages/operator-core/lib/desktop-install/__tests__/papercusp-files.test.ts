@@ -119,6 +119,11 @@ describe('installPapercuspFiles', () => {
     expect(psu).toMatch(/^#!\/usr\/bin\/env bash\n/);
     // No bundled node beside the dev launcher in the fixture → falls back to PATH `node`.
     expect(psu).toContain(`exec "node" ${JSON.stringify(result.psuLauncherSource)} "$@"`);
+    // WI-2149: the shim prepends ~/.local/bin so the launcher's pty.spawn('claude')
+    // resolves the agent installed by claude.ai/install.sh — the WSL2 distro's login
+    // PATH omits ~/.local/bin, which otherwise made a console-launched psu fail with
+    // execvp ENOENT despite the wizard reporting claude installed.
+    expect(psu).toContain('export PATH="$HOME/.local/bin:$PATH"');
     expect((await fs.stat(result.psuPath)).mode & 0o777).toBe(0o755);
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
   });

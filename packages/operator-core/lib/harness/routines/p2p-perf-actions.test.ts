@@ -22,6 +22,14 @@ vi.mock('../improvements/capture-core', () => ({
   captureImprovement: (...args: unknown[]) => captureImprovementMock(...args),
 }));
 
+// EI-7254: the exact-lookup pre-filter — defaults to "nothing already open" so
+// the pre-existing watchdogKey-stability tests below are unaffected; individual
+// tests override this to simulate an already-open standing issue.
+const findIssuesByWatchdogKeysMock = vi.fn().mockResolvedValue([]);
+vi.mock('../../issues-engineer', () => ({
+  findIssuesByWatchdogKeys: (...args: unknown[]) => findIssuesByWatchdogKeysMock(...args),
+}));
+
 describe('classifyNoSummaryRun (EI-5753)', () => {
   it('classifies our own timeout firing as a timeout (human-reviewed perf signal, not a bug)', () => {
     // The killer fired and SIGTERM'd the tree; the tsx wrapper forwarded exit 143.
@@ -79,6 +87,8 @@ describe('classifyNoSummaryRun (EI-5753)', () => {
 describe('fileFindings watchdogKey stability (EI-3909/EI-5846/EI-5829/EI-6585)', () => {
   beforeEach(() => {
     captureImprovementMock.mockClear();
+    findIssuesByWatchdogKeysMock.mockClear();
+    findIssuesByWatchdogKeysMock.mockResolvedValue([]);
   });
 
   function summaryWith(overrides: Partial<RunSummary>): RunSummary {
@@ -167,5 +177,110 @@ describe('fileFindings watchdogKey stability (EI-3909/EI-5846/EI-5829/EI-6585)',
     expect(captureImprovementMock).toHaveBeenCalledTimes(2);
     const keys = captureImprovementMock.mock.calls.map((c) => c[0].watchdogKey);
     expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe('fileFindings exact watchdogKey pre-filter (EI-7254)', () => {
+  beforeEach(() => {
+    captureImprovementMock.mockClear();
+    findIssuesByWatchdogKeysMock.mockClear();
+  });
+
+  function summaryWith(overrides: Partial<RunSummary>): RunSummary {
+    return {
+      runId: 'r1',
+      profile: 'ci',
+      outDir: '/tmp/out',
+      reportPath: '/tmp/out/report.md',
+      scenarioFailures: [],
+      sloViolations: [],
+      regressions: [],
+      artifacts: [],
+      baselineCompared: true,
+      ...overrides,
+    } as RunSummary;
+  }
+
+  it('SKIPS capture entirely when an OPEN issue already carries the exact watchdogKey — even though capture-core\'s own fuzzy search-first dedup is mocked away and would have let it through', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    const key = 'p2p-perf-regression:merge.delta-tick:historySize=1000,seed=1234:deltaTick100Ms';
+    findIssuesByWatchdogKeysMock.mockResolvedValue([
+      { id: 'EI-1', state: 'open', payload: { watchdogKey: key }, updatedAt: new Date().toISOString() },
+    ]);
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick100Ms', baseline: 13.857, current: 90.492, relChange: 5.53 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(findIssuesByWatchdogKeysMock).toHaveBeenCalledWith([key]);
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT skip when the existing issue with the same key is already RESOLVED (not open)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    const key = 'p2p-perf-slo:churn.reconnect-storm:historySize=10000,readers=4,seed=1234,winners=3710';
+    findIssuesByWatchdogKeysMock.mockResolvedValue([
+      { id: 'EI-2', state: 'resolved', payload: { watchdogKey: key }, updatedAt: new Date().toISOString() },
+    ]);
+
+    await fileFindings(
+      summaryWith({
+        sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lookup failure (e.g. no DB) never blocks filing — fails open, same as before the fix', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    findIssuesByWatchdogKeysMock.mockRejectedValue(new Error('no db in this test'));
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick100Ms', baseline: 13.857, current: 90.492, relChange: 5.53 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('files an advisory regression as kind:"change" (human-reviewed), not kind:"bug" (auto-implement-eligible) — EI-7254', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick100Ms', baseline: 13.857, current: 90.492, relChange: 5.53 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    expect(captureImprovementMock.mock.calls[0]![0].kind).toBe('change');
+  });
+
+  it('still files an SLO violation as kind:"bug" (a real regression worth an auto-fix attempt)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    expect(captureImprovementMock.mock.calls[0]![0].kind).toBe('bug');
   });
 });
