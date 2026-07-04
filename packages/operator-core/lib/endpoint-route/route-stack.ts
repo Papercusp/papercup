@@ -275,7 +275,10 @@ export async function runRouteStack(
     status: 'error',
     responseBytes: null,
   };
-  let response: Response;
+  // Initialized (never actually surfaced — both try/catch below always
+  // overwrite it) purely so TS's definite-assignment analysis considers it
+  // safe to read in `finally` (EI-7069 added a `response.headers` read there).
+  let response: Response = errorResponse(500, 'handler_error', 'route stack produced no response');
   try {
     let short: Response | null = null;
     for (const step of stack) {
