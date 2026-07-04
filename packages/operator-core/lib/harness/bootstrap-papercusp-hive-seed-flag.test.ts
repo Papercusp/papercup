@@ -1,37 +1,28 @@
 /**
  * bootstrap-papercusp-hive-seed-flag.test.ts — the P-011 seed-bundle master gate
- * (FLAGS.HIVE_SEED_BUNDLE). Mocks getFlag so the gate's three behaviors are proven
- * without PostHog: honors ON, honors OFF (the runtime kill-switch → cold path), and
- * fails OPEN on a read error (never silently forces cold). Separate file so the flag
- * module-mock does not touch the main bootstrap test's dep-injected graph.
+ * (FLAGS.HIVE_SEED_BUNDLE). Injects the flag reader (the codebase's seam idiom) so
+ * the gate's three behaviors are proven with no PostHog and no module mock: honors
+ * ON, honors OFF (the runtime kill-switch → cold path), and fails OPEN on a read
+ * error (a flags hiccup never silently forces cold).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-const getFlag = vi.fn();
-vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => getFlag(...a) }));
-
+import { describe, it, expect } from 'vitest';
 import { seedBundleEnabled } from './bootstrap-papercusp-hive';
-import { FLAGS } from '@papercusp/flags';
 
 describe('seedBundleEnabled — P-011 seed-bundle master gate', () => {
-  beforeEach(() => getFlag.mockReset());
-
-  it('ON (the default) ⇒ true, read against the system distinctId', async () => {
-    getFlag.mockResolvedValue(true);
-    expect(await seedBundleEnabled()).toBe(true);
-    expect(getFlag).toHaveBeenCalledWith(FLAGS.HIVE_SEED_BUNDLE, 'system');
+  it('ON (the default) ⇒ true', async () => {
+    expect(await seedBundleEnabled(async () => true)).toBe(true);
   });
 
   it('OFF ⇒ false (runtime kill-switch: both restore paths no-op, cold join runs)', async () => {
-    getFlag.mockResolvedValue(false);
-    expect(await seedBundleEnabled()).toBe(false);
+    expect(await seedBundleEnabled(async () => false)).toBe(false);
   });
 
   it('a flag-read THROW ⇒ fails OPEN (true) — a flags hiccup never silently forces cold', async () => {
-    getFlag.mockImplementation(async () => {
-      throw new Error('posthog unreachable');
-    });
-    expect(await seedBundleEnabled()).toBe(true);
+    expect(
+      await seedBundleEnabled(async () => {
+        throw new Error('posthog unreachable');
+      }),
+    ).toBe(true);
   });
 });
