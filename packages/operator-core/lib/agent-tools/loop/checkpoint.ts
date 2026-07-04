@@ -24,6 +24,10 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveHiveHomeSlug } from '../../hive/wake';
 import { setLoopCarryNote, renderCarryNote } from '../../carry-note';
+import { getPresence } from '../coordination/presence';
+import { readInbox } from '../coordination/messages';
+import { readWatermark } from '../coordination/watermarks';
+import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
 
 export default defineTool({
   name: 'loop:checkpoint',
@@ -128,6 +132,36 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     const stored = await setLoopCarryNote({ harness, ownerId, workspaceId: workspaceId ?? undefined }, note);
 
+    // flush-to-proceed-stretch-discipline-2026-07-04 P-005: piggyback the CONTINUATION-GATE
+    // read on the checkpoint the agent already writes at a unit boundary, so settle-vs-continue
+    // is a one-call read (not a separate orient). Two mechanical legs: context headroom (from
+    // the cached presence row) and any unread inbox since the last settle. Best-effort — a read
+    // failure omits the leg (which the gate treats as blocking ⇒ it recommends settling, never a
+    // false "continue"). An unresolvable inbox cursor also stays null (blocking) rather than
+    // counting all history as unread.
+    let continuation: ReturnType<typeof continuationGateFromReads> | undefined;
+    try {
+      const pres = await getPresence(ownerId).catch(() => null);
+      let unreadInbox: number | null = null;
+      try {
+        const wm = await readWatermark(ownerId);
+        const since = wm?.messages_since_ts;
+        if (since) {
+          const unread = await readInbox(ownerId, { since, excludeOwn: true });
+          unreadInbox = unread.length;
+        }
+      } catch {
+        unreadInbox = null;
+      }
+      continuation = continuationGateFromReads({
+        contextTokens: pres?.contextTokens,
+        compactionLimit: pres?.compactionLimit,
+        unreadInbox,
+      });
+    } catch {
+      continuation = undefined;
+    }
+
     return {
       content: [
         {
@@ -138,6 +172,7 @@ export default defineTool({
             ownerId,
             cleared: stored === null,
             length: stored?.length ?? 0,
+            ...(continuation ? { continuation } : {}),
           }),
         },
       ],

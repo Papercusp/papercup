@@ -102,6 +102,12 @@ export default defineTool({
       .describe(
         "Loop lifecycle (su-cold-auto-mode-2026-07-03, D-001 opt-in). 'warm' (DEFAULT) = today's behaviour — each fire re-wakes THIS same warm session in place, context carried. 'cold' = the opt-in fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and stays inert until the cold-auto master gate is enabled (Phase 3). NEVER use 'cold' for an interactive/human-present session (D-005).",
       ),
+    continuation: z
+      .enum(['settle', 'gated'])
+      .optional()
+      .describe(
+        "Continuation policy (flush-to-proceed-stretch-discipline-2026-07-04 P-005). 'settle' (DEFAULT) = today's behaviour — do one iteration's work each wake, then end the turn. 'gated' = the runtime expects MULTIPLE units per turn, each gated by the continuation gate (loop:checkpoint returns the verdict: context headroom below the ceiling? no pending owner input / inbox interrupt?): after settling a unit you flush your checkpoints then continue in-turn while the gate is OPEN, else end the turn. Recovers the per-wake orient/re-read boundary tax by running units back-to-back — arm a LONGER interval for a gated loop. Rides payload_template (no schema change); a settle loop is byte-identical to today.",
+      ),
     costCapCents: z
       .number()
       .int()
@@ -181,7 +187,14 @@ export default defineTool({
     const wakePrompt = clampText(args.wakePrompt, 4000);
     const kickoff =
       wakePrompt ??
-      buildLoopWakePrompt({ ownerId, intervalSec: args.intervalSec, harness, goal, carry: args.carry ?? 'warm' });
+      buildLoopWakePrompt({
+        ownerId,
+        intervalSec: args.intervalSec,
+        harness,
+        goal,
+        carry: args.carry ?? 'warm',
+        continuation: args.continuation ?? 'settle',
+      });
 
     const loop = await materializeLoop({
       workspaceId,
@@ -193,6 +206,7 @@ export default defineTool({
       maxFires: args.maxFires ?? null,
       maxDurationSec: args.maxDurationSec ?? null,
       carry: args.carry ?? 'warm',
+      continuation: args.continuation ?? 'settle',
     });
 
     // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
@@ -242,6 +256,7 @@ export default defineTool({
               intervalSec: args.intervalSec,
               goal,
               carry: args.carry ?? 'warm',
+              continuation: args.continuation ?? 'settle',
               costCapCents: args.costCapCents ?? null,
               firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
               customWakePrompt: wakePrompt != null,

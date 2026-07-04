@@ -123,21 +123,51 @@ export const COLD_LOOP_WAKE_ADDENDUM = [
   '    (and every peer) starts already knowing it. A conclusion left only in the carry-note dies with the loop.',
 ].join('\n');
 
+/**
+ * GATED-continuation addendum (flush-to-proceed-stretch-discipline-2026-07-04 P-005).
+ * Appended to the wake prompt only for a `continuation:'gated'` loop. The default
+ * template tells the agent to do ONE iteration's work and end the turn; a gated loop
+ * inverts that — the runtime EXPECTS multiple units per turn, gated per-unit by the
+ * continuation gate (spec rule 2), so the agent recovers the per-wake orient/re-read
+ * boundary tax by settling several units back-to-back instead of one-per-wake.
+ */
+export const GATED_LOOP_WAKE_ADDENDUM = [
+  '',
+  "🔀 This is a GATED loop (continuation:'gated'): unlike the default one-unit-per-wake cadence, the",
+  'runtime EXPECTS you to run MULTIPLE units in a single turn — gated per unit by the CONTINUATION GATE.',
+  'After you SETTLE each unit (live-verified or explicitly deferred-with-reason):',
+  '  1. FLUSH first — every work-item claim you hold gets a fresh work_items:checkpoint (never carry',
+  '     unexternalized state across a unit boundary; the P-002 flush gate enforces this).',
+  '  2. READ THE GATE — loop:checkpoint returns a `continuation` verdict (context headroom < ceiling?',
+  '     any unread inbox / pending owner input?). CONTINUE in this same turn ONLY when the gate is OPEN',
+  '     AND your next unit is already scoped; otherwise END THE TURN.',
+  '  3. On any pending owner input, an inbox interrupt, or context past the ceiling — settle now; the',
+  '     next wake re-opens the gate on fresh context.',
+  'Because a gated turn does more work, arm a LONGER interval than a one-unit loop — the boundary-tax',
+  'win comes from N-units-per-turn, not from a faster wake cadence.',
+].join('\n');
+
 /** Interpolate the default wakeup prompt with this loop's specifics. For a cold loop
  *  (`carry:'cold'`) the COLD_LOOP_WAKE_ADDENDUM is appended so the pre-anchor warm wakes
- *  bootstrap the first carry-note. A warm loop is byte-identical to before. */
+ *  bootstrap the first carry-note; for a gated loop (`continuation:'gated'`) the
+ *  GATED_LOOP_WAKE_ADDENDUM is appended so the agent runs multi-unit turns behind the
+ *  continuation gate. A plain warm/settle loop is byte-identical to before. The two
+ *  addenda compose (a cold gated loop gets both). */
 export function buildLoopWakePrompt(opts: {
   ownerId: string;
   intervalSec: number;
   harness: string;
   goal: string;
   carry?: 'warm' | 'cold';
+  continuation?: 'settle' | 'gated';
 }): string {
-  const base = DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
+  let prompt = DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE.replace(/\{intervalSec\}/g, String(opts.intervalSec))
     .replace(/\{harness\}/g, opts.harness)
     .replace(/\{ownerId\}/g, opts.ownerId)
     .replace(/\{goal\}/g, opts.goal);
-  return opts.carry === 'cold' ? base + COLD_LOOP_WAKE_ADDENDUM : base;
+  if (opts.carry === 'cold') prompt += COLD_LOOP_WAKE_ADDENDUM;
+  if (opts.continuation === 'gated') prompt += GATED_LOOP_WAKE_ADDENDUM;
+  return prompt;
 }
 
 export interface MaterializeLoopInput {
@@ -162,6 +192,11 @@ export interface MaterializeLoopInput {
    *  so the wake-executor RESETs / periodically RECYCLEs instead of a warm turn. Rides
    *  payload_template (no new column). Downstream stays dormant until the P-007 gate (Phase 3). */
   carry?: 'warm' | 'cold';
+  /** Continuation policy (flush-to-proceed-stretch-discipline-2026-07-04 P-005). 'settle'
+   *  (default, absent) = today's behaviour — one unit per wake, end the turn. 'gated' = the
+   *  runtime expects MULTIPLE units per turn, each gated by the continuation gate (P-005 spec
+   *  rule 2). Rides payload_template (no new column); a settle loop leaves it byte-identical. */
+  continuation?: 'settle' | 'gated';
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -201,6 +236,9 @@ export async function materializeLoop(
   // Only stamp a cold marker (su-cold-auto P-003); a warm loop leaves payload_template
   // byte-identical to today, so an existing warm loop re-armed by an older client is unchanged.
   if (input.carry === 'cold') payloadTemplate.carry = 'cold';
+  // Same convention for the continuation policy (P-005): only stamp 'gated'; a settle loop
+  // leaves payload_template unchanged.
+  if (input.continuation === 'gated') payloadTemplate.continuation = 'gated';
 
   const row = await upsertRoutine(
     sql,
@@ -265,6 +303,10 @@ export interface LoopStatus {
    *  same session in place; 'cold' resets/recycles to the carry-note each wake. Observability so
    *  an operator can see whether a loop is cold and, if it looks lost, re-arm it warm. */
   carry: 'warm' | 'cold';
+  /** Continuation policy (flush-to-proceed P-005): 'settle' (default) ends the turn after one
+   *  unit; 'gated' runs multiple units per turn behind the continuation gate. Observability so an
+   *  operator can see whether a loop is in gated mode. */
+  continuation: 'settle' | 'gated';
   /** Total delivered fires so far (metadata.fire_count) — for a cold loop this is the wakeCount
    *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked. */
   fireCount: number;
@@ -375,6 +417,7 @@ export async function getLoopStatus(
     active: r.active,
     intervalSec,
     carry: pt?.carry === 'cold' ? 'cold' : 'warm',
+    continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     parked,
     nextFireAt: r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null,
