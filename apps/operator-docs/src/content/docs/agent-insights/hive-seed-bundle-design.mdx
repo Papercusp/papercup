@@ -3,7 +3,7 @@ title: "Seed-bundle design — installer-shipped shared-hive snapshot + live-joi
 description: "The P-001 design memo for the generic seed-bundle layer: a checkpoint of a replicated store (git + corestore) shipped in the installer so a fresh install pre-positions bytes, and the UNMODIFIED shared-hive join then transfers only the delta. Defines the SeedProvider interface, the manifest schema, the restore-before-join state machine, the security model (epoch-ciphertext corestore + encrypted-at-rest git seed, keys via admission), and resolves the four open questions (installer size, git-seed encryption envelope, cross-core cut skew, epoch read-cut for new members)."
 discovered: 2026-07-04
 tags: [seed-bundle, snapshot, shared-hive, dogfood, install, hyperbee, corestore, git-bundle, hive-epoch, federation, generic-first, delta-catchup]
-status: published
+status: active
 documents:
   - packages/operator-core/lib/sync/hyperbee/corestore.ts
   - packages/operator-core/lib/sync/hyperbee/boot.ts

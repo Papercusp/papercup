@@ -138,7 +138,7 @@ export default function CupboardDetailPage() {
       }
       toast.success(
         `Learning pack "${d.pack.title}" v${d.pack.version} fetched (${d.pack.itemCount} learnings). ` +
-          'Add it to a hive from the Learning tab → Learnings — incoming learnings go through the conflict review there.',
+          `Add it to a ${t('pot', { lower: true })} from the Learning tab → Learnings — incoming learnings go through the conflict review there.`,
       );
     } catch (e) {
       toast.error(`Fetch crashed: ${(e as Error)?.message ?? String(e)}`);
@@ -490,12 +490,12 @@ export default function CupboardDetailPage() {
         {/* Harness rows are the repo→Hive lookup index (comb-retire D-003). */}
         {kind === 'harness' && action === 'view-hive' && listing.hive_title && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
-            This repo belongs to the hive <strong>{listing.hive_title}</strong> — sharing and joining happen at the hive level.
+            This repo belongs to the {t('pot', { lower: true })} <strong>{listing.hive_title}</strong> — sharing and joining happen at the {t('pot', { lower: true })} level.
           </p>
         )}
         {kind === 'harness' && !action && (
           <p data-testid="cupboard-detail-legacy-note" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
-            Per-harness sharing is retired — this is a legacy listing with no owning hive. Share the hive instead.
+            Per-harness sharing is retired — this is a legacy listing with no owning {t('pot', { lower: true })}. Share the {t('pot', { lower: true })} instead.
           </p>
         )}
 
@@ -519,6 +519,7 @@ export default function CupboardDetailPage() {
  * export shape) — repo-root manifests also resolve.
  */
 function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; listingRef: string | null }) {
+  const t = useLexicon();
   const [items, setItems] = useState<Array<{ name: string; text: string }> | null>(null);
   const [contentsError, setContentsError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -563,8 +564,8 @@ function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; list
         {open ? '▾' : '▸'} Browse the learnings before installing
       </button>
       <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0' }}>
-        These texts are injected into your agents&rsquo; recall once installed into a hive — read them first.
-        Installing also runs a per-item conflict review against the hive&rsquo;s existing learnings.
+        These texts are injected into your agents&rsquo; recall once installed into a {t('pot', { lower: true })} — read them first.
+        Installing also runs a per-item conflict review against the {t('pot', { lower: true })}&rsquo;s existing learnings.
       </p>
       {open && (
         <div style={{ marginTop: 10 }}>
