@@ -1,3 +1,0 @@
-- search "Search this site" [ref=e4]:
-  - textbox "Search" [active] [ref=e5]
-  - button "Clear"

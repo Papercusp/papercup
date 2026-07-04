@@ -61,13 +61,13 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
     id: 'health',
     label: 'Health',
     blurb:
-      'A read-only system dashboard — Queen, agents, token spend, and infrastructure health in one glance. (May be hidden if its feature flag is off.)',
+      'A read-only system dashboard — the orchestrator, agents, token spend, and infrastructure health in one glance. (May be hidden if its feature flag is off.)',
   },
   {
     id: 'frames',
     label: 'Frames',
     blurb:
-      'Live views of deployed agent desktops — the swarm’s actual screens, watchable in real time.',
+      'Live views of deployed agent desktops — their actual screens, watchable in real time.',
   },
   {
     id: 'git',

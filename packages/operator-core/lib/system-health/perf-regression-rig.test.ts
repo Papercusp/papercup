@@ -13,7 +13,9 @@ import {
   PERF_REGRESSION_DISABLED_NOTE,
   type PerfRegressionDeps,
   type PerfRegressionMetrics,
+  type DispatchOrphanRow,
   collectPerfRegressionSnapshot,
+  dispatchOrphanAggregateFromRows,
   dispatchOrphanRateFromAggregate,
   evaluatePerfRegression,
 } from './perf-regression-rig';
@@ -205,9 +207,84 @@ describe('dispatchOrphanRateFromAggregate', () => {
   });
 });
 
+// EI-7534 regression: the orphan-rate numerator must count only GENUINE lane-breakage
+// orphans (reusing isLaneBreakageOrphan), NOT every outcome='orphaned' row. Benign
+// host-restart / worker-timeout / context-overflow / env deaths have their own bounded
+// handling and must not inflate the reliability SLO — else a benign restart storm +
+// worker timeouts false-breach the 60% crit budget (the live snapshot: 28/48 raw = 58%
+// vs 12/48 genuine = 25%).
+describe('dispatchOrphanAggregateFromRows (EI-7534 — genuine-orphan numerator)', () => {
+  const row = (outcome: string | null, resolvedBy: string | null, fireError: string | null = null): DispatchOrphanRow =>
+    ({ outcome: outcome as DispatchOrphanRow['outcome'], resolvedBy, fireError });
+
+  it('excludes every benign worker-death category', () => {
+    const benign: DispatchOrphanRow[] = [
+      row('orphaned', 'host-restart-recovery'),
+      row('orphaned', 'worker-exit-backedge-timeout'),
+      row('orphaned', 'worker-exit-backedge-context-overflow'),
+      row('orphaned', 'worker-exit-backedge-env'),
+      row('orphaned', 'worker-exit-backedge', '[env-failure] rate-limit'), // legacy pre-distinct resolved_by
+      row('orphaned', 'worker-exit-backedge', 'died [context-overflow] mid-fix'), // legacy
+    ];
+    expect(dispatchOrphanAggregateFromRows(benign)).toEqual({ total: benign.length, orphaned: 0 });
+  });
+
+  it('counts genuine lane-breakage orphans (2h catch-all + a plain non-env worker crash)', () => {
+    const genuine: DispatchOrphanRow[] = [
+      row('orphaned', 'orphaned-dispatch-collector'), // the 2h timeout catch-all
+      row('orphaned', 'worker-exit-backedge', 'segfault'), // a real non-env crash
+    ];
+    expect(dispatchOrphanAggregateFromRows(genuine)).toEqual({ total: 2, orphaned: 2 });
+  });
+
+  it('ignores non-orphaned outcomes but keeps them in the sample (the denominator)', () => {
+    const rows: DispatchOrphanRow[] = [
+      row('fixed', 'su-loopback'),
+      row('needs-human', 'improvement-runner'),
+      row('fire-failed', 'system'),
+      row(null, null), // still open — not terminal
+      row('orphaned', 'worker-exit-backedge', 'crash'), // the one genuine orphan
+    ];
+    expect(dispatchOrphanAggregateFromRows(rows)).toEqual({ total: 5, orphaned: 1 });
+  });
+
+  it('does not false-breach the crit budget when benign deaths dominate (the live 48/28/12 shape)', () => {
+    const rows: DispatchOrphanRow[] = [
+      ...Array.from({ length: 11 }, () => row('orphaned', 'worker-exit-backedge', 'crash')), // genuine
+      ...Array.from({ length: 10 }, () => row('orphaned', 'host-restart-recovery')), // benign
+      ...Array.from({ length: 6 }, () => row('orphaned', 'worker-exit-backedge-timeout')), // benign
+      row('orphaned', 'orphaned-dispatch-collector'), // genuine
+      ...Array.from({ length: 20 }, () => row('fixed', 'su-loopback')), // resolved
+    ];
+    const agg = dispatchOrphanAggregateFromRows(rows);
+    expect(agg).toEqual({ total: 48, orphaned: 12 });
+
+    // Raw (pre-fix) counting would be 28/48 ≈ 0.58 → past the 0.60-adjacent crit band and
+    // firing warn/crit; the genuine rate is 0.25 — below BOTH the warn (0.30) and crit (0.60).
+    const { rate } = dispatchOrphanRateFromAggregate(agg);
+    expect(rate).toBeCloseTo(0.25, 5);
+    expect(rate!).toBeLessThan(B.dispatchOrphanRateWarnPct);
+    const { signals } = evaluatePerfRegression({ ...healthy, dispatchOrphanRate: rate, dispatchSample: agg.total });
+    expect(signals.some((s) => s.key === 'dispatch-orphan-rate')).toBe(false);
+  });
+});
+
 // ── IO wrapper: flag gate + dormant-tolerance + persistence ──────────────────
 
 /** A fake `sql` tagged-template that routes each query by a matcher → rows (or throws). */
+/**
+ * Raw improvement_dispatches rows for the fakeSql (readDispatchOrphanRate now fetches
+ * per-row death-cause fields, not an aggregate count): `total` rows, `orphaned` of them
+ * GENUINE lane-breakage orphans (a plain non-env worker crash), the rest resolved 'fixed'.
+ */
+function dispatchRows(total: number, orphaned: number): unknown[] {
+  return Array.from({ length: total }, (_, i) =>
+    i < orphaned
+      ? { outcome: 'orphaned', resolved_by: 'worker-exit-backedge', fire_error: 'crash' }
+      : { outcome: 'fixed', resolved_by: 'su-loopback', fire_error: null },
+  );
+}
+
 function fakeSql(handlers: { match: RegExp; rows?: unknown[]; throws?: Error }[]): {
   sql: Sql;
   readonly inserts: number;
@@ -281,7 +358,7 @@ describe('collectPerfRegressionSnapshot — flag gate', () => {
 describe('collectPerfRegressionSnapshot — healthy tick persists, emits nothing', () => {
   it('reads metrics, INSERTs a snapshot, emits no signals', async () => {
     const fake = fakeSql([
-      { match: /improvement_dispatches/i, rows: [{ total: 100, orphaned: 3 }] },
+      { match: /improvement_dispatches/i, rows: dispatchRows(100, 3) },
       { match: /coord_open_escalations/i, rows: [{ n: 7 }] },
     ]);
     const out = await collectPerfRegressionSnapshot(
@@ -295,7 +372,7 @@ describe('collectPerfRegressionSnapshot — healthy tick persists, emits nothing
 
   it('includes optional /adv UI perf metrics when a sampler provides them', async () => {
     const fake = fakeSql([
-      { match: /improvement_dispatches/i, rows: [{ total: 100, orphaned: 3 }] },
+      { match: /improvement_dispatches/i, rows: dispatchRows(100, 3) },
       { match: /coord_open_escalations/i, rows: [{ n: 7 }] },
     ]);
     const out = await collectPerfRegressionSnapshot(
@@ -315,7 +392,7 @@ describe('collectPerfRegressionSnapshot — healthy tick persists, emits nothing
 describe('collectPerfRegressionSnapshot — a breach files', () => {
   it('a regressed orphan rate emits a critical signal AND persists the snapshot', async () => {
     const fake = fakeSql([
-      { match: /improvement_dispatches/i, rows: [{ total: 100, orphaned: 91 }] },
+      { match: /improvement_dispatches/i, rows: dispatchRows(100, 91) },
       { match: /coord_open_escalations/i, rows: [{ n: 7 }] },
     ]);
     const out = await collectPerfRegressionSnapshot('ws', depsWith({ sql: () => fake.sql }));
@@ -343,7 +420,7 @@ describe('collectPerfRegressionSnapshot — dormant-tolerance (missing table →
 
   it('a missing snapshot table is a note (the rig never breaks the watchdog tick it rides)', async () => {
     const fake = fakeSql([
-      { match: /improvement_dispatches/i, rows: [{ total: 50, orphaned: 2 }] },
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 2) },
       { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
       {
         match: /perf_regression_snapshots/i,
@@ -357,7 +434,7 @@ describe('collectPerfRegressionSnapshot — dormant-tolerance (missing table →
 
   it('a null loop-lag metric (no monitor on this thread) is noted, not breached', async () => {
     const fake = fakeSql([
-      { match: /improvement_dispatches/i, rows: [{ total: 50, orphaned: 1 }] },
+      { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
       { match: /coord_open_escalations/i, rows: [{ n: 1 }] },
     ]);
     const out = await collectPerfRegressionSnapshot(

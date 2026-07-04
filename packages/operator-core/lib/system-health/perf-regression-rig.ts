@@ -13,9 +13,14 @@
  *   1. event-loop-lag p95 (ms)   — `currentLoopLag().p95Ms`, the per-thread saturation
  *                                  signal (reuses perf-budgets.ts PERF_BUDGETS thresholds).
  *   2. PG connection saturation  — `pgHealth().saturationPct` (server-wide).
- *   3. dispatch-orphan rate      — % of recent improvement_dispatches with
- *                                  outcome='orphaned' over a recent window. THE one that
- *                                  silently regressed to 91% — the rig's reason to exist.
+ *   3. dispatch-orphan rate      — % of recent improvement_dispatches that orphaned from
+ *                                  GENUINE LANE BREAKAGE over a recent window (excludes
+ *                                  benign host-restart / worker-timeout / context-overflow /
+ *                                  env deaths — the same `isLaneBreakageOrphan` predicate the
+ *                                  orphan collector uses, so the SLO and the collector can't
+ *                                  drift: EI-7534 was a false crit-breach because this rate
+ *                                  counted all outcome='orphaned' rows). THE one that silently
+ *                                  regressed to 91% — the rig's reason to exist.
  *   4. coord backlog             — open-escalation count (coord_open_escalations).
  *   5. /adv tab switch median    — app-side time to selected tab (EI-3034).
  *   6. /adv first contentful paint — app-side boot FCP (EI-3034).
@@ -40,6 +45,8 @@ import { currentLoopLag } from '../event-loop-lag-monitor';
 import { pgHealth } from '../dev-data';
 import { PERF_BUDGETS } from './perf-budgets';
 import type { CollectorResult, WatchdogSignal } from '../harness/improvements/watchdog';
+import type { ImprovementDispatchRow, DispatchOutcome } from '../harness/improvements/dispatch-ledger';
+import { isLaneBreakageOrphan } from '../harness/improvements/orphaned-dispatch';
 
 // ── SLO budgets (exported tunables) ──────────────────────────────────────────
 //
@@ -303,8 +310,27 @@ export function evaluatePerfRegression(
 export interface DispatchOrphanAggregate {
   /** Total dispatches in the recent window. */
   total: number;
-  /** Of those, how many reached outcome='orphaned'. */
+  /** Of those, how many orphaned from GENUINE lane breakage (isLaneBreakageOrphan). */
   orphaned: number;
+}
+
+/** The dispatch-row fields the orphan-rate needs — the read-side of {@link ImprovementDispatchRow}. */
+export type DispatchOrphanRow = Pick<ImprovementDispatchRow, 'outcome' | 'resolvedBy' | 'fireError'>;
+
+/**
+ * Pure: window rows → { total, orphaned } for the SLO. `orphaned` counts ONLY genuine
+ * lane-breakage orphans — it reuses `isLaneBreakageOrphan`, the SAME predicate the orphan
+ * collector uses, so benign host-restart / worker-timeout / context-overflow / env deaths
+ * (each with its own bounded handling) never inflate the reliability SLO. Before EI-7534 this
+ * rate counted every outcome='orphaned' row, so a host-restart storm + worker timeouts (both
+ * benign) falsely breached the 60% crit budget while the real lane-breakage rate was ~25%.
+ */
+export function dispatchOrphanAggregateFromRows(rows: readonly DispatchOrphanRow[]): DispatchOrphanAggregate {
+  let orphaned = 0;
+  for (const r of rows) {
+    if (r.outcome === 'orphaned' && isLaneBreakageOrphan(r)) orphaned += 1;
+  }
+  return { total: rows.length, orphaned };
 }
 
 /**
@@ -376,18 +402,24 @@ export async function readDispatchOrphanRate(
   budgets: PerfRegressionBudgets = PERF_REGRESSION_BUDGETS,
 ): Promise<{ rate: number | null; sample: number } | { dormant: string }> {
   try {
-    const rows = await sql<{ total: number | string; orphaned: number | string }[]>`
-      SELECT count(*)::int AS total,
-             count(*) FILTER (WHERE outcome = 'orphaned')::int AS orphaned
+    // Fetch the window's death-cause fields (not a raw count) so the orphan numerator can
+    // reuse `isLaneBreakageOrphan` — the ONE predicate the orphan collector uses — instead
+    // of re-encoding the benign-category list in SQL (that duplication is exactly how the
+    // SLO drifted from the collector and false-breached on benign deaths, EI-7534). The
+    // window is 24h and the lane's cadence is low, so the row read is small and bounded.
+    const rows = await sql<{ outcome: string | null; resolved_by: string | null; fire_error: string | null }[]>`
+      SELECT outcome, resolved_by, fire_error
         FROM harness_shared.improvement_dispatches
        WHERE workspace_id = ${workspaceId}
          AND fired_at > now() - make_interval(hours => ${budgets.dispatchOrphanWindowHours})`;
-    const r = rows[0];
-    if (!r) return { rate: null, sample: 0 };
-    return dispatchOrphanRateFromAggregate(
-      { total: Number(r.total), orphaned: Number(r.orphaned) },
-      budgets.dispatchOrphanMinSample,
+    const agg = dispatchOrphanAggregateFromRows(
+      rows.map((r) => ({
+        outcome: (r.outcome ?? null) as DispatchOutcome | null,
+        resolvedBy: r.resolved_by,
+        fireError: r.fire_error,
+      })),
     );
+    return dispatchOrphanRateFromAggregate(agg, budgets.dispatchOrphanMinSample);
   } catch (e) {
     if (isMissingTableError(e, 'improvement_dispatches')) {
       return { dormant: 'dormant: improvement_dispatches not migrated yet (mig 238)' };

@@ -175,7 +175,14 @@
       window.addEventListener('DOMContentLoaded', () => {
         new PagefindUI({
           element: '#search',
-          bundlePath: 'pagefind/',
+          // ABSOLUTE bundlePath — Pagefind loads its engine via
+          // `import(`${bundlePath}pagefind.js`)`. A relative `pagefind/` becomes a
+          // BARE module specifier ("pagefind/pagefind.js") the browser refuses to
+          // resolve → the search silently never runs (WI-2648 shipped this way).
+          // The palette is always served at /internal/docs/search-palette.html with
+          // the index sibling at /internal/docs/pagefind/, in dev AND the packaged
+          // Server, so this absolute path is stable across every host.
+          bundlePath: '/internal/docs/pagefind/',
           showSubResults: true,
           showImages: false,
           autofocus: true,

@@ -187,8 +187,14 @@ export interface OrphanSignalOpts {
  *     self-amplifying noise.
  * INCLUDED (genuine breakage): the 2h orphan collector's catch-all + a genuine non-env
  * worker crash — a worker that actually died/hung for a reason that IS about the lane.
+ *
+ * Presumes the caller already established `outcome === 'orphaned'` (it only reads the
+ * death-cause fields). Takes a structural Pick so non-collector consumers — e.g. the
+ * perf-regression rig's dispatch-orphan-rate SLO — can share this ONE predicate over
+ * bare ledger rows instead of re-encoding the benign-category list (the exact drift that
+ * let the SLO count benign timeout/host-restart deaths as regressions — EI-7534).
  */
-export function isLaneBreakageOrphan(r: ImprovementDispatchRow): boolean {
+export function isLaneBreakageOrphan(r: Pick<ImprovementDispatchRow, 'resolvedBy' | 'fireError'>): boolean {
   if (
     r.resolvedBy === 'host-restart-recovery' ||
     r.resolvedBy === 'worker-exit-backedge-env' ||
