@@ -102,6 +102,54 @@ export async function revokePowerUserSession(authSessionId: string): Promise<voi
   `;
 }
 
+/**
+ * Freshness window for the owner-present signal (flush-to-proceed-stretch-discipline-2026-07-04
+ * P-004): a human power-user session whose last auth refresh (which bumps `last_seen_at` — see
+ * getActivePowerUserSession) landed within this window counts the owner as PRESENT. The OMP/web
+ * client refreshes its short-TTL access token on a periodic cadence while a human is logged in,
+ * so a fresh `last_seen_at` is a MECHANICAL "the owner has a live authenticated session" signal —
+ * not the message-provenance inference P-004 replaces. Generous enough (20 min) to bridge one
+ * refresh gap without flapping "absent" while a human is still at the console.
+ */
+export const OWNER_PRESENCE_FRESH_MS = 20 * 60_000;
+
+export interface OwnerPresence {
+  /** A non-revoked power-user session refreshed within the freshness window exists. */
+  present: boolean;
+  /** ms since the most-recently-seen active session's last_seen_at (null when none exist). */
+  lastSeenAgoMs: number | null;
+  /** count of non-revoked sessions for the workspace. */
+  activeSessions: number;
+}
+
+/**
+ * The mechanical owner-present read (P-004): is a human power-user session live for this
+ * workspace? PRESENT iff a non-revoked session's `last_seen_at` is within `freshMs`. Used by
+ * coord:orient (and any wake-time bootstrap) so presence-adaptive cadence keys off this signal
+ * instead of inferring from who sent the last message. Injectable clock/window for tests.
+ */
+export async function readOwnerPresence(
+  workspaceId: string,
+  opts: { freshMs?: number; now?: number } = {},
+): Promise<OwnerPresence> {
+  const freshMs = opts.freshMs ?? OWNER_PRESENCE_FRESH_MS;
+  const now = opts.now ?? Date.now();
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ last_seen_at: Date | string | null; n: string }>>`
+    SELECT max(last_seen_at) AS last_seen_at, count(*)::text AS n
+      FROM harness_shared.power_user_sessions
+     WHERE workspace_id = ${workspaceId}
+       AND revoked_at IS NULL
+  `;
+  const r = rows[0];
+  const activeSessions = r?.n ? Number(r.n) : 0;
+  if (!r?.last_seen_at) return { present: false, lastSeenAgoMs: null, activeSessions };
+  const lastSeenMs =
+    r.last_seen_at instanceof Date ? r.last_seen_at.getTime() : new Date(r.last_seen_at).getTime();
+  const lastSeenAgoMs = now - lastSeenMs;
+  return { present: lastSeenAgoMs <= freshMs, lastSeenAgoMs, activeSessions };
+}
+
 /** Active (non-revoked) sessions for a workspace — for the v2 admin UI. */
 export async function listActivePowerUserSessions(
   workspaceId: string,

@@ -36,6 +36,8 @@ import { hardText, LIMITS } from '../../limits';
 import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
+import { readOwnerPresence } from '../../../power-user-sessions';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -127,6 +129,13 @@ export interface OrientResult {
    *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
    *  failed fold. The auto-catch-up at wake. */
   fleetCatchUp?: { fleet: string; total: number; recent: unknown[] } | null;
+  /** ownerPresent (flush-to-proceed-stretch-discipline-2026-07-04 P-004): whether a human
+   *  power-user session is live for this workspace (readOwnerPresence — a fresh, non-revoked
+   *  auth session), so presence-adaptive cadence keys off a MECHANICAL signal rather than
+   *  inferring from who sent the last message. `present:true` ⇒ owner is around: run units
+   *  back-to-back and converse; `present:false` ⇒ owner absent: settle per unit so wakes stay
+   *  injection points. null when the read failed; absent when the handler did not resolve it. */
+  ownerPresent?: { present: boolean; lastSeenAgoMs: number | null; activeSessions: number } | null;
 }
 
 /**
@@ -145,6 +154,10 @@ export async function composeOrient(
    *  the handler (best-effort); injected here so the composition stays IO-free +
    *  unit-testable. Omitted / 'auto' ⇒ nothing withheld. */
   driveMode?: string,
+  /** ownerPresent (P-004): resolved by the handler (a DB read over power_user_sessions) and
+   *  INJECTED so composeOrient stays IO-free + unit-testable. Folded verbatim into the result
+   *  when provided; undefined ⇒ the leg is absent (e.g. a test that doesn't exercise it). */
+  ownerPresent?: OrientResult['ownerPresent'],
 ): Promise<OrientResult> {
   const me = await call('fleet:assignments', {
     ...(ownerId ? { agent: ownerId } : {}),
@@ -173,6 +186,9 @@ export async function composeOrient(
     me,
     claimable,
     inbox: { summary: inbox?.summary, recent: inbox?.entries },
+    // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
+    // leg absent; the handler passes null on a read failure).
+    ...(ownerPresent !== undefined ? { ownerPresent } : {}),
   };
 
   // ── memory:search recall — only when a query is available (a query-less recall is
@@ -422,7 +438,19 @@ export default defineTool({
         driveMode = undefined;
       }
     }
-    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode);
+    // P-004: resolve the MECHANICAL owner-present bit (a fresh, non-revoked human power-user
+    // session for this workspace) so presence-adaptive cadence keys off it, not message
+    // provenance. Best-effort — a read failure passes null (leg present-but-null), never breaks
+    // orientation. Cheap single aggregate read; runs once per orient.
+    let ownerPresent: OrientResult['ownerPresent'] = null;
+    try {
+      const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
+      const op = await readOwnerPresence(ws);
+      ownerPresent = { present: op.present, lastSeenAgoMs: op.lastSeenAgoMs, activeSessions: op.activeSessions };
+    } catch {
+      ownerPresent = null;
+    }
+    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode, ownerPresent);
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
