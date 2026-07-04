@@ -986,6 +986,7 @@ function ClaimRollupPill({ claimed, total }: { claimed: number; total: number })
  * title with a claim rollup; the primary action enters the per-Hive rollup.
  */
 export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOpen: () => void }) {
+  const t = useLexicon();
   const title = group.hiveTitle ?? listingRepoSlug(group.members[0]) ?? 'Untitled hive';
   const repos = group.members.map(listingRepoSlug).filter(Boolean);
   const shown = repos.slice(0, 4);
@@ -1044,9 +1045,9 @@ export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOp
           className="pc-button"
           style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
         >
-          <Hexagon size={13} /> View Hive
+          <Hexagon size={13} /> View {t('pot')}
         </button>
-        <Tooltip label="Member-repo listings on this page of results — the hive may list more.">
+        <Tooltip label={`Member-repo listings on this page of results — the ${t('pot', { lower: true })} may list more.`}>
           <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <Users size={11} /> {group.members.length}
           </span>

@@ -440,7 +440,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       if (hive) {
         toast.success(`${t('pot')} '${data.project.slug}' linked in place — ${data.project.path} (folder not moved)`);
       } else {
-        toast.success(`${hiveLabel} '${data.project.slug}' created — linked in place, the Queen is provisioning its fleet.`, {
+        toast.success(`${hiveLabel} '${data.project.slug}' created — linked in place, the ${t('brain')} is provisioning its fleet.`, {
           description:
             data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
               ? `Started with ${data.seededLearnings.count} default learnings (${data.seededLearnings.packId}) — review & edit them in the Learning tab.`
@@ -494,8 +494,8 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
         >
           <span style={{ marginRight: 6 }}>👑</span>
           <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> as a new {hiveLower} home
-          running the <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a Queen that
-          surveys the work frontier and places it onto a fleet of bees. Your repo stays where it is; nothing
+          running the <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a {t('brain')} that
+          surveys the work frontier and places it onto a fleet of {t('contributor', { plural: true, lower: true })}. Your repo stays where it is; nothing
           is moved or copied. You can add members into it afterward.
         </div>
       )}
@@ -794,7 +794,7 @@ function buildSections(opts: {
           key: 'work-hive',
           step: 'work-hive',
           label: `Start a work ${hiveLower}`,
-          description: `A fresh ${hiveLower} for non-coding work — the Queen judges deliverables, no repo needed.`,
+          description: `A fresh ${hiveLower} for non-coding work — the ${t('brain')} judges deliverables, no repo needed.`,
           icon: '📋',
         },
       ],
@@ -857,6 +857,7 @@ function ForkToggle({
   hiveScope: string | null;
   hiveLabel: string;
 }) {
+  const t = useLexicon();
   const lower = hiveLabel.toLowerCase();
   if (!hiveScope) return null;
   const btn = (active: boolean): React.CSSProperties => ({
@@ -880,7 +881,7 @@ function ForkToggle({
           Add to {hiveScope}
         </button>
       </Tooltip>
-      <Tooltip label={`Stand up a new ${lower} home running the Queen blueprint`}>
+      <Tooltip label={`Stand up a new ${lower} home running the ${t('brain')} blueprint`}>
         <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')}>
           New {lower}
         </button>

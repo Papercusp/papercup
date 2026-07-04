@@ -33,8 +33,10 @@
  * First-run:    launched by the concierge at handoff (deterministic tutorial)
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
+import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for tests)
