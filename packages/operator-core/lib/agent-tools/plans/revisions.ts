@@ -18,14 +18,13 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { fill_workspace_id_from_projects, resolvePlanScope } from './source';
+import { resolvePlanScope } from './source';
 import { hashPlanContent } from './content-hash';
 import {
   resolveAgentIdentity,
   type AgentIdentity,
   type ResolveIdentityCtx,
 } from '../coordination/identity';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 /** Who authored a revision. `human` = a person driving the
  *  `/admin/plans` editor or operator chat; `agent` = an agent's own
@@ -107,31 +106,22 @@ export async function recordPlanRevision(
     const authorKind = classifyAuthor(args.identity);
     const createdAt = Date.now();
 
-    const harnessSlug = args.harnessSlug?.trim() || operatorHomeHarnessSlug();
-    // WI-148: resolve the revision's workspace from the SAME projects source of
-    // truth resolvePlanScope uses, instead of a silent `|| DEFAULT_WORKSPACE_ID`.
-    // An explicit workspaceId still wins (withPlanLock threads the resolved
-    // scope through). Otherwise fill_workspace_id_from_projects resolves it —
-    // for papercup that still lands at DEFAULT_WORKSPACE_ID (via the helper, not
-    // a silent ||). For an unresolvable NON-papercup slug the helper returns null
-    // / throws (same-name collision); revision recording is best-effort (D-014),
-    // so we warn+skip in that case rather than crash the plan write that already
-    // succeeded — the outer try/catch turns a throw into the same return null.
+    // WI-1992: resolve (workspaceId, harnessSlug) through the SAME resolvePlanScope
+    // every reader (listPlanRevisions / countPlanRevisions / latestPlanRevision)
+    // uses. The old manual path kept the RAW slug — so a write under the retired
+    // 'papercup' alias landed at a PG key the operatorHomeHarnessSlug()-resolved
+    // readers never look at (a silent write/read asymmetry: seq allocation
+    // succeeded, every read returned []), and a member slug never collapsed to
+    // its Hive home. An explicit workspaceId still wins (resolvePlanScope honors
+    // it in both the operator-home and concrete-slug branches). Best-effort
+    // (D-014) survives: resolvePlanScope THROWS for an unregistered harness —
+    // the outer catch turns that into warn + null, same contract as before.
+    const rawSlug = args.harnessSlug?.trim();
     const explicitWs = args.workspaceId?.trim();
-    let workspaceId: string;
-    if (explicitWs) {
-      workspaceId = explicitWs;
-    } else {
-      const resolved = await fill_workspace_id_from_projects(harnessSlug);
-      if (resolved === null) {
-        console.warn(
-          `[plan_revisions] skipping revision for ${args.planSlug}: harness ` +
-            `'${harnessSlug}' has no workspace in harness_shared.projects (best-effort, D-014).`,
-        );
-        return null;
-      }
-      workspaceId = resolved;
-    }
+    const { workspaceId, harnessSlug } = await resolvePlanScope({
+      ...(rawSlug ? { harnessSlug: rawSlug } : {}),
+      ...(explicitWs ? { workspaceId: explicitWs } : {}),
+    });
     const seq = await withWorkspace(workspaceId, async (tx) => {
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is

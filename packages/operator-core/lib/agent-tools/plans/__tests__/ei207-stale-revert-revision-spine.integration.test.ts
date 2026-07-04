@@ -23,7 +23,7 @@
  * Runs against the integration-tier baseline schema DB (all migrations applied,
  * so the mig-214 stamp trigger is live) via the shared plans fixture.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
 import { planRevisionCapture, listPlanRevisions, type PlanRevisionCtx } from '../revisions';
@@ -33,7 +33,12 @@ import {
   buildHarnessPlansProjection,
   type HarnessPlanRow,
 } from '../../../sync/hyperbee/projections/harness-plans';
-import { setupPlanPgFixture, cleanupPlans, type PlanPgFixture } from './_pg-tool-fixture';
+import {
+  setupPlanPgFixture,
+  cleanupPlans,
+  registerHarnessProject,
+  type PlanPgFixture,
+} from './_pg-tool-fixture';
 
 // Throwaway harness slug so this never collides with — or deletes — real plan rows.
 const HARNESS = `zzz-ei207-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -134,6 +139,14 @@ beforeAll(async () => {
   admin = fx.admin;
   wsId = fx.workspaceId;
 }, 60_000);
+
+// Re-register before EVERY test: resolvePlanScope is Hive-scoped (WI-1992 — a
+// concrete slug must resolve to a Hive home or the plan tools THROW), and
+// cleanupPlans (afterEach, below) deliberately deletes the synthetic hives
+// identity row, so a beforeAll-only registration would strand test 2+.
+beforeEach(async () => {
+  await registerHarnessProject(admin, wsId, HARNESS);
+});
 
 afterEach(async () => {
   await cleanupPlans(admin, wsId, HARNESS);

@@ -36,6 +36,10 @@ import {
   isShellTool,
   noteShellCall,
   shellBudgetReason,
+  FLEET_LAUNCH_CALLS_PER_SESSION,
+  isFleetLaunchCall,
+  resetFleetLaunchBudget,
+  fleetLaunchBudgetReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -433,6 +437,102 @@ describe('onToolCall shell budget (agent sessions only)', () => {
     delete process.env.PAPERCUSP_AGENT_SESSION;
     for (let n = 1; n <= SHELL_CALLS_PER_TURN_LIMIT + 5; n++) {
       expect((await wanderingBash(n)).block).toBeUndefined();
+    }
+  });
+});
+
+describe('isFleetLaunchCall + fleetLaunchBudgetReason (session fleet-launch budget)', () => {
+  it('recognizes every surface spelling of the launch verb', () => {
+    expect(isFleetLaunchCall('mcp__papercusp_su_fleet_launch_on_plan', {})).toBe(true);
+    expect(isFleetLaunchCall('fleet:launch-on-plan', {})).toBe(true);
+    expect(isFleetLaunchCall('fleet_launch_on_plan', {})).toBe(true);
+    expect(
+      isFleetLaunchCall('mcp__papercusp_su_tools_invoke', { name: 'fleet:launch-on-plan' }),
+    ).toBe(true);
+    expect(isFleetLaunchCall('mcp__papercusp_su_tools_invoke', { name: 'plans:get' })).toBe(false);
+    expect(isFleetLaunchCall('fleet_status', {})).toBe(false);
+    expect(isFleetLaunchCall('bash', { command: 'fleet_launch_on_plan' })).toBe(false);
+  });
+  it('the steer says supervise-instead and forbids re-calling', () => {
+    const r = fleetLaunchBudgetReason(3);
+    expect(r).toContain('fleet-launch budget');
+    expect(r).toContain('fleet:status');
+    expect(r).toMatch(/do not re-call/i);
+  });
+});
+
+describe('onToolCall fleet-launch budget (agent sessions only, session-cumulative)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+    resetToolCallLoopState();
+    resetFleetLaunchBudget();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    resetFleetLaunchBudget();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  // Run-10 shape: launch re-calls INTERLEAVED with loop:checkpoint, so the
+  // consecutive-identical breaker never sees a run — only the budget catches it.
+  const launchCall = (n: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_fleet_launch_on_plan',
+      toolCallId: `fl${n}`,
+      input: { name: 'ornith-verify-2', plan: 'p', count: 2, i: `attempt ${n}` },
+    });
+  const checkpointCall = (n: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_loop_checkpoint',
+      toolCallId: `cp${n}`,
+      input: { did: `d${n}` },
+    });
+
+  it('run-10: blocks the launch call past the session budget even when interleaved', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    expect((await launchCall(1)).block).toBeUndefined();
+    expect((await checkpointCall(1)).block).toBeUndefined();
+    expect((await launchCall(2)).block).toBeUndefined();
+    expect((await checkpointCall(2)).block).toBeUndefined();
+    const third = await launchCall(3);
+    expect(third.block).toBe(true);
+    expect(third.reason).toContain('fleet-launch budget');
+  });
+
+  it('the budget survives turn_start (session-cumulative, not per-turn)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    await launchCall(1);
+    await launchCall(2);
+    resetToolCallLoopState(); // turn_start resets ONLY the turn-scoped counters
+    const third = await launchCall(3);
+    expect(third.block).toBe(true);
+  });
+
+  it('catches the tools:invoke-wrapped launch too', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const wrapped = (n: number) =>
+      onToolCall({
+        type: 'tool_call',
+        toolName: 'mcp__papercusp_su_tools_invoke',
+        toolCallId: `w${n}`,
+        input: { name: 'fleet:launch-on-plan', args: { plan: 'p', count: 2, i: `a${n}` } },
+      });
+    expect((await wrapped(1)).block).toBeUndefined();
+    expect((await wrapped(2)).block).toBeUndefined();
+    expect((await wrapped(3)).block).toBe(true);
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    for (let n = 1; n <= FLEET_LAUNCH_CALLS_PER_SESSION + 3; n++) {
+      expect((await launchCall(n)).block).toBeUndefined();
     }
   });
 });

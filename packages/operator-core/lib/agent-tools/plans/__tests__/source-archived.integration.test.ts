@@ -23,7 +23,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { readAllPlans, listPlanRows, listPlanFiles, getPlanRow } from '../source';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
-import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
+import {
+  setupPlanPgFixture,
+  seedPlan,
+  registerHarnessProject,
+  type PlanPgFixture,
+} from './_pg-tool-fixture';
 
 const STAMP = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const HARNESS_A = `zzz-arch-a-${STAMP}`;
@@ -75,13 +80,23 @@ beforeAll(async () => {
   // Harness A: one live + one archived plan.
   await seedPlan(admin, WS, HARNESS_A, LIVE_SLUG, planBody(LIVE_SLUG));
   await seedArchived(HARNESS_A, ARCHIVED_SLUG, planBody(ARCHIVED_SLUG));
-  // Harness B: deliberately left empty — the isolation control.
+  // Harness B: REGISTERED (its own Hive home — resolvePlanScope is Hive-scoped
+  // post-WI-1992 and THROWS for an unregistered slug) but deliberately left
+  // empty of plans — the isolation control: reads under B must return
+  // null/empty, never leak A's rows.
+  await registerHarnessProject(admin, WS, HARNESS_B);
 }, 180_000);
 
 afterAll(async () => {
   await admin`
     DELETE FROM harness_shared.harness_plans
      WHERE workspace_id = ${WS} AND harness_slug IN (${HARNESS_A}, ${HARNESS_B})
+  `.catch(() => {});
+  // Drop the synthetic Hive-home identities registerHarnessProject/seedPlan
+  // seeded (the baseline DB is shared by the whole run — leave no trace).
+  await admin`
+    DELETE FROM harness_shared.hives
+     WHERE workspace_id = ${WS} AND home_slug IN (${HARNESS_A}, ${HARNESS_B})
   `.catch(() => {});
   await fx?.dispose();
 });

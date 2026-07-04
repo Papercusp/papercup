@@ -71,6 +71,7 @@ import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes (same as _pg-tool-fixture)
 import { _resetUrlCacheForTests } from '../../../../libs/papercusp/libs/db/src/connection';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { registerHarnessProject } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { runScoutCycle, type ScoutCycleResult } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
@@ -261,6 +262,12 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
     _resetUrlCacheForTests();
     await _resetForTests();
+
+    // Register HARNESS (projects row + a synthetic Hive-home identity row):
+    // resolvePlanScope is Hive-scoped (WI-1992) and the broad rail's
+    // createScoutPlanDraft writes a REAL harness_plans row — an unregistered
+    // concrete slug now THROWS instead of resolving.
+    await registerHarnessProject(db.adminSql, WS, HARNESS);
 
     fakeLlm = makeFakeScoutLlm({
       responders: [ideatorResponder, criticResponder, recombineResponder],

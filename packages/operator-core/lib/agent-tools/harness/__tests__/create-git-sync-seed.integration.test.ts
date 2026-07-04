@@ -18,7 +18,11 @@ const MAKE_CTX = () =>
     log: vi.fn(),
     signal: new AbortController().signal,
     progress: vi.fn(),
-    workspaceId: 'default',
+    // create.ts resolves the workspace via resolveConcreteWorkspaceId(ctx.workspaceId, …) —
+    // the REQUEST's workspace wins over the global active one (workspace-scoping discipline).
+    // The seeder expectations below assert THIS value threads through; the mocked
+    // activeWorkspaceId('ws-test') is only the ctx-less fallback.
+    workspaceId: 'ws-test',
     harnessSlug: 'x',
     role: 'architect' as const,
     runId: 'run_T',

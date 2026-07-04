@@ -27,6 +27,7 @@ import { getSubstrateIpcClient } from './substrate-ipc-client';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import {
   bootAllHarnessesForActiveWorkspace,
+  closeInProcessBootedHarnesses,
   enableSubstrateEvictionTracking,
   gatherBootedHarnessFacts,
   evictBootedHarnessEngine,
@@ -201,6 +202,16 @@ export async function bootSubstrateWithFallback(
     // booted IN-PROCESS, so the sidecar never wired its outbox drain → content
     // captured + peer_connected but federation = 0 (the live cross-machine bug).
     setSubstrateBootDefaults({ bootHarness: sidecarBootHarness, skipSendSideWiring: true });
+    // WI-2105: tear down any engine that raced in-process before this decision
+    // (see markSubstrateBootRoutingPending) so the sweep re-boots it via the
+    // sidecar — left alive it is a SECOND concurrent substrate instance whose
+    // announcer/drainer races the sidecar's (the tower↔VM federation outage).
+    const tookOver = await closeInProcessBootedHarnesses();
+    if (tookOver.length > 0) {
+      console.warn(
+        `[substrate-boot] closed ${tookOver.length} in-process engine(s) booted before sidecar routing decided: ${tookOver.join(', ')}`,
+      );
+    }
     const result = await bootAllHarnessesForActiveWorkspace({
       ...opts,
       skipSendSideWiring: true,

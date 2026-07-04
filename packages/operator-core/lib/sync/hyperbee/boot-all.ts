@@ -545,6 +545,26 @@ export async function bootSingleHarness(
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
+  // WI-2105: a boot arriving before this process's substrate routing is decided
+  // (host-bootstrap armed the latch; bootSubstrateWithFallback hasn't installed
+  // the defaults yet) WAITS — defaulting to in-process here is exactly the
+  // duplicate-engine race. Explicit per-call factories (the sweep) skip the wait.
+  if (!opts.bootHarness && routingDecisionPending) {
+    const outcome = await Promise.race([
+      routingDecisionPending.then(() => 'decided' as const),
+      new Promise<'timeout'>((resolve) => {
+        const t = setTimeout(() => resolve('timeout'), SUBSTRATE_ROUTING_WAIT_MS);
+        t.unref?.();
+      }),
+    ]);
+    if (outcome === 'timeout') {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[boot-all] substrate routing still undecided after ${SUBSTRATE_ROUTING_WAIT_MS}ms — ` +
+          `booting ${k} IN-PROCESS (duplicate-engine risk; check bootSubstrateWithFallback)`,
+      );
+    }
+  }
   // SUBSTRATE_SIDECAR routing: an explicit per-call opt wins; else the process-global
   // default (set by bootSubstrateWithFallback). In sidecar mode this is the remote
   // factory + skipSendSideWiring:true so a standalone publish/join boots through the
@@ -869,6 +889,33 @@ export async function closeBootedHarness(
     // close errors are non-fatal; the handle is gone from the map
   }
   return true;
+}
+
+/** WI-2105 sidecar takeover: close every IN-PROCESS (non-remote) booted handle.
+ *  Called by bootSubstrateWithFallback right after it installs the sidecar
+ *  routing defaults — an engine that raced in-process before the decision
+ *  (latch-timeout straggler, a direct bootHarnessSubstrate import) is torn down
+ *  so the sweep re-boots it through the sidecar; leaving it alive means TWO
+ *  concurrent substrate instances for that harness (the WI-2105 outage class).
+ *  Remote (sidecar-backed) handles are untouched. */
+export async function closeInProcessBootedHarnesses(): Promise<string[]> {
+  const closed: string[] = [];
+  for (const [k, handle] of [...handles.entries()]) {
+    if (handle instanceof RemoteBootedHarnessHandle) continue;
+    handles.delete(k);
+    outboxWired.delete(k);
+    presenceWired.delete(k);
+    wiringInflight.delete(k);
+    lastAccess.delete(k);
+    evicted.delete(k);
+    try {
+      await handle.close();
+    } catch {
+      // close errors are non-fatal; the handle is out of the map either way
+    }
+    closed.push(k);
+  }
+  return closed;
 }
 
 export interface RebootHarnessResult {

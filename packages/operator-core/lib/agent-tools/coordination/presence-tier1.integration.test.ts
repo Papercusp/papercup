@@ -10,7 +10,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
 import { fetchPresenceTier1 } from './presence-tier1';
-import { setWakeMode } from './wake-mode';
+import { getDefaultWakeMode, setWakeMode } from './wake-mode';
 
 const OWNER = `tier1-it-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -63,7 +63,7 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.model).toBeNull(); // no running spawned_agents row for this owner
   });
 
-  it('an unclaimed owner gets empty defaults (no rows, default wake mode)', async () => {
+  it('an unclaimed owner gets empty defaults (no rows, inherits the global default wake mode)', async () => {
     if (!ready) return;
     const map = await fetchPresenceTier1([OWNER]); // nothing seeded for OWNER this case
     const e = map.get(OWNER);
@@ -71,7 +71,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.claimedItems).toEqual([]);
     expect(e!.awaitingEvent).toBe(false);
     expect(e!.model).toBeNull();
-    expect(e!.wakeMode).toBe('auto'); // global default (no override)
+    // The semantic under test: NO per-owner override → falls through to the GLOBAL default.
+    // Assert against the live global default, NOT the factory 'auto' — this runs against the
+    // shared PG, and the owner can (deliberately) set the global default to 'manual' at any
+    // time (as on 2026-07-03, which red-pinned the gate on the old hardcoded expectation).
+    expect(e!.wakeMode).toBe(await getDefaultWakeMode());
   });
 
   it('empty ownerIds short-circuits to an empty map', async () => {

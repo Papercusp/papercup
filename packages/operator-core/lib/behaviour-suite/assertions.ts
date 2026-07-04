@@ -120,29 +120,43 @@ export function checkRoutingGate(t: NormTranscript, ctx: BehaviourContext = {}):
 }
 
 /** 4. Correct plan execution: item→work-item, claim→in_progress→complete; NOT set_state 'passed' direct.
- *  Also: a cleanly-launched fleet satisfies execution for a delegating LEADER (WI-1850). */
-export function checkPlanExecution(t: NormTranscript): BehaviourCheck {
+ *  Also: a cleanly-launched fleet satisfies execution for a delegating LEADER (WI-1850); and
+ *  working plan items DIRECTLY (plans:set-status wip auto-claims → done) is the sanctioned shape
+ *  for fixture-plan runs — fleet members + route-A solos — which the work_items:* counters cannot
+ *  see (ornith run-10 2026-07-04: both members scored "execution fumble claimed=0 completed=0"
+ *  despite genuinely working the items). Evidence QUALITY of those flips stays with
+ *  completion-evidence — this check only recognizes the path. */
+export function checkPlanExecution(t: NormTranscript, ctx: BehaviourContext = {}): BehaviourCheck {
+  void ctx; // reserved for role-aware calibration; all paths currently apply to every role
   const claimed = calls(t, 'work_items:claim').length + calls(t, 'work_items:claim_next').length;
   const toInProgress = t.toolCalls.filter((c) => c.name === 'work_items:set_state' && /in_progress|wip/.test(c.argsRaw)).length;
   const completed = calls(t, 'work_items:complete').length;
   // the anti-pattern: set_state directly to a terminal 'passed' (completion-integrity rejects it)
   const passedDirect = t.toolCalls.filter((c) => c.name === 'work_items:set_state' && /"state"\s*:\s*"passed"|passed/.test(c.argsRaw)).length;
   const rejected = t.toolResults.some((r) => /completion-integrity.*terminal transition rejected|→ 'passed' rejected/i.test(r.text));
-  
+
   // Delegating LEADER: a clean fleet launch satisfies plan-execution
   const fleetLaunchOnPlan = calls(t, 'fleet:launch_on_plan').length > 0;
   const delegationSatisfied = fleetLaunchOnPlan && claimed === 0;
-  
+
   // Traditional path: claimed + completed, no direct set_state passed
   const traditionalSatisfied = claimed > 0 && completed > 0 && passedDirect === 0;
-  
-  const passed = traditionalSatisfied || delegationSatisfied;
+
+  // Plan-item path: worked the plan's own items via plans:set-status (wip auto-claims; done
+  // releases). tools:invoke-wrapped calls are already unwrapped by the parser.
+  const planWipFlips = t.toolCalls.filter((c) => c.name === 'plans:set_status' && /"status"\s*:\s*"wip"/.test(c.argsRaw)).length;
+  const planDoneFlips = t.toolCalls.filter((c) => c.name === 'plans:set_status' && /"status"\s*:\s*"done"/.test(c.argsRaw)).length;
+  const planItemSatisfied = planDoneFlips > 0 && passedDirect === 0;
+
+  const passed = traditionalSatisfied || delegationSatisfied || planItemSatisfied;
   return mk('plan-execution', true, passed, passed
-    ? delegationSatisfied 
+    ? delegationSatisfied
       ? `delegated execution via fleet:launch-on-plan (claimed=${claimed} completed=${completed})`
-      : `claim(${claimed}) → in_progress(${toInProgress}) → complete(${completed}), no direct set_state passed`
-    : `execution fumble — claimed=${claimed} completed=${completed} setStatePassedDirect=${passedDirect} integrityRejected=${rejected}`,
-    { metrics: { claimed, toInProgress, completed, passedDirect, integrityRejected: rejected, delegationPath: delegationSatisfied } });
+      : traditionalSatisfied
+        ? `claim(${claimed}) → in_progress(${toInProgress}) → complete(${completed}), no direct set_state passed`
+        : `worked plan items directly (wip flips=${planWipFlips}, done flips=${planDoneFlips}, no integrity dodge)`
+    : `execution fumble — claimed=${claimed} completed=${completed} planDoneFlips=${planDoneFlips} setStatePassedDirect=${passedDirect} integrityRejected=${rejected}`,
+    { metrics: { claimed, toInProgress, completed, passedDirect, integrityRejected: rejected, delegationPath: delegationSatisfied, planWipFlips, planDoneFlips, planItemPath: planItemSatisfied } });
 }
 
 /** 5. Scope adherence: work ONLY the plan's items; no invented "Phase 2" / unrelated backlog. */
@@ -235,7 +249,7 @@ export function runChecks(t: NormTranscript, ctx: BehaviourContext = {}): Behavi
     checkModelRouting(t, ctx),
     checkContextFit(t),
     checkRoutingGate(t, ctx),
-    checkPlanExecution(t),
+    checkPlanExecution(t, ctx),
     checkScopeAdherence(t, ctx),
     checkLockDiscipline(t),
     checkFleetLaunch(t, ctx),

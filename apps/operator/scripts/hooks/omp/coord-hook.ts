@@ -1578,6 +1578,56 @@ export function resetToolCallLoopState(): void {
   _shellCallsThisTurn = 0;
 }
 
+/** SESSION-cumulative fleet-launch budget (ornith run-10, 2026-07-04): leader
+ *  session 10127 re-called fleet:launch-on-plan 20× in one session. Every re-call
+ *  was absorbed by the PG launch-slot guard ("a re-call opens NO new members for
+ *  300s") — but the model kept re-issuing it between loop:checkpoint calls, so the
+ *  CONSECUTIVE-identical breaker never saw a run ≥3, and a third of the leader's
+ *  turns burned on no-op launches instead of supervision. The launch verb is
+ *  one-shot by design: after this many calls in one session, further launch calls
+ *  are blocked with a supervise-instead steer. Deliberately NOT turn-reset — the
+ *  budget covers the process lifetime (2 allows one genuine retry after an error). */
+export const FLEET_LAUNCH_CALLS_PER_SESSION = 2;
+let _fleetLaunchCalls = 0;
+
+/** True for a fleet:launch-on-plan call in ANY surface spelling — the direct MCP
+ *  name (hyphen or underscore verb) or a tools:invoke wrapper whose inner `name`
+ *  is the launch verb. Pure. */
+export function isFleetLaunchCall(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/-/g, '_');
+  const t = norm(toolName);
+  if (t.includes('fleet_launch_on_plan') || t.includes('fleet:launch_on_plan')) return true;
+  if (t.endsWith('tools_invoke') || t === 'tools:invoke') {
+    const inner = input && typeof input.name === 'string' ? norm(input.name) : '';
+    return inner.includes('fleet_launch_on_plan') || inner.includes('fleet:launch_on_plan');
+  }
+  return false;
+}
+
+/** Count a fleet-launch call for this session; returns the new cumulative total. */
+export function noteFleetLaunchCall(): number {
+  return ++_fleetLaunchCalls;
+}
+
+/** Test seam: reset the session-cumulative fleet-launch budget. */
+export function resetFleetLaunchBudget(): void {
+  _fleetLaunchCalls = 0;
+}
+
+/** The supervise-instead steer returned once the fleet-launch budget is spent. Pure. */
+export function fleetLaunchBudgetReason(count: number): string {
+  return (
+    `fleet-launch budget: this session has already called fleet:launch-on-plan ${count - 1} ` +
+    'times — your fleet EXISTS, and a re-call opens NO new members (the launch slot is held). ' +
+    'STOP calling it. Supervise instead: fleet:status { fleet } for the roster, plans:get for ' +
+    'item progress, coord:send to steer members. If you genuinely need MORE members, ask your ' +
+    'launcher/owner via coord:send first — do not re-call the launch tool.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -1684,6 +1734,16 @@ export async function onToolCall(
     // specific bash guards (git/scheduler) so those still win at call #1.
     if (isShellTool(event.toolName) && noteShellCall() > SHELL_CALLS_PER_TURN_LIMIT) {
       return { block: true, reason: shellBudgetReason(_shellCallsThisTurn) };
+    }
+    // Session-cumulative fleet-launch budget (ornith run-10): the launch verb is
+    // one-shot; a weak leader re-calling it between checkpoints dodges the
+    // consecutive-identical breaker (each repeat is non-adjacent). Past the budget,
+    // block with a supervise-instead steer. Counted across turns on purpose.
+    if (
+      isFleetLaunchCall(event.toolName, event.input) &&
+      noteFleetLaunchCall() > FLEET_LAUNCH_CALLS_PER_SESSION
+    ) {
+      return { block: true, reason: fleetLaunchBudgetReason(_fleetLaunchCalls) };
     }
   }
 
