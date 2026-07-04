@@ -31,6 +31,11 @@ export default defineTool({
   args: z.object({
     installSlug: z.string().max(120).optional().describe('Filter to one install slug.'),
     name: z.string().max(200).optional().describe('Filter to one routine name.'),
+    q: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Free-text filter — case-insensitive substring match against name OR install slug.'),
   }),
   // context-trimming-tiers P-023: rows are already lean scalars — trimmed just
   // drops the two rarely-read columns and caps rows with a loud notice row
@@ -67,6 +72,8 @@ export default defineTool({
     const ws = activeWorkspaceId();
     const slug = args.installSlug ?? null;
     const name = args.name ?? null;
+    const q = args.q ?? null;
+    const qLike = q ? `%${q}%` : null;
     const rows = await sql<
       Array<{
         install_slug: string;
@@ -84,6 +91,7 @@ export default defineTool({
        WHERE workspace_id = ${ws}
          AND (${slug}::text IS NULL OR install_slug = ${slug})
          AND (${name}::text IS NULL OR name = ${name})
+         AND (${qLike}::text IS NULL OR name ILIKE ${qLike} OR install_slug ILIKE ${qLike})
        ORDER BY install_slug, name`;
     const iso = (d: Date | null): string | null =>
       d && !Number.isNaN(new Date(d).getTime()) ? new Date(d).toISOString() : null;

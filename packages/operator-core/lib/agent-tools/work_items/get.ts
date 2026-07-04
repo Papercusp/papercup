@@ -15,6 +15,7 @@ import { COORD_ROLES } from "../coordination/roles";
 import { getWorkItem, getWorkItemDetail } from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { getWorkItemCheckpoint } from "../../work-item-checkpoint";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -29,7 +30,7 @@ export default defineTool({
   name: "work_items:get",
   profile: "engineer",
   description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -97,9 +98,23 @@ export default defineTool({
               ? getWorkItemDetail(id, args.harness)
               : getWorkItem(id, args.harness),
         );
-        return workItem
-          ? { ok: true as const, id, workItem }
-          : { ok: false as const, id, error: `work_item '${id}' not found` };
+        if (!workItem) {
+          return { ok: false as const, id, error: `work_item '${id}' not found` };
+        }
+        // EI-7252: an in-flight checkpoint (work_items:checkpoint → carry-note scope
+        // `workitem:<harness>:<id>`) was previously INVISIBLE here — an investigator
+        // (or a compacted successor) reading work_items:get had no way to know one
+        // existed and would wrongly conclude state was lost. Surface it directly;
+        // read-only, uncached (checkpoints change out-of-band of the harness_features_
+        // consolidated tags this tool's cache is keyed on, so a cached copy could go
+        // stale) and cheap (single indexed row lookup, null when never checkpointed).
+        const checkpoint = workItem.harness
+          ? await getWorkItemCheckpoint({
+              harness: workItem.harness,
+              workItemId: workItem.id,
+            }).catch(() => null)
+          : null;
+        return { ok: true as const, id, workItem, checkpoint };
       },
       { keyOf: (id) => ({ id }) },
     );

@@ -288,6 +288,13 @@ async function main(): Promise<void> {
   if (failed) process.exitCode = 1;
   else if (args.gate && (regressionCount > 0 || sloViolations.length > 0)) process.exitCode = 1;
   else if (args.sloOnly && sloViolations.length > 0) process.exitCode = 1;
+
+  // Scenarios can leave hyperswarm/corestore internals (DHT sockets, gc
+  // timers) open even after every peer/handle we own has been closed — the
+  // report + artifacts are already on disk at this point (EI-7253), so force
+  // the exit rather than hang waiting for those to drain. Same idiom as
+  // peer-child.ts's spawned-child main().
+  process.exit(process.exitCode ?? 0);
 }
 
 void main();

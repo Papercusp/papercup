@@ -358,6 +358,18 @@ before adding tests. Infra (Vitest 4, testcontainers PG, Docker required, CI,
 property tests, knip, quarantine, secrets):
 [repo-conventions § test infrastructure](/internal/docs/system/repo-conventions).
 
+**npm only — never `pnpm`/`yarn` in this repo, even for a single-package test
+run.** This is an **npm workspaces** monorepo (root `package.json`'s
+`preinstall` runs `only-allow npm`); there is no `pnpm-workspace.yaml`. Running
+e.g. `pnpm --dir packages/operator-core test` doesn't see npm's workspace
+linking for internal `@papercusp/*` packages (they resolve via a plain `"*"`
+version range, no `workspace:` protocol) — pnpm instead tries to fetch them
+from the public registry and fails on the first private/unpublished one (e.g.
+`@papercusp/audio-dsp`), a confusing error unrelated to your change (EI-7243).
+If you need to run a single test file directly instead of via `npm run
+test:affected`, use the root-installed binary: `node_modules/.bin/vitest run
+<path/to/file.test.ts>` from the repo root.
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright

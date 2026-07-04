@@ -87,6 +87,13 @@ export interface HarnessFeatureRow {
   wave?: string | null;
   deprecation_reason?: string | null;
   completion_ref?: unknown;            // JSONB blob — opaque to projection
+  /**
+   * work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): the "who did
+   * it + what proves it" pair recorded at the terminal-state choke point. OPTIONAL
+   * on the wire (pre-432 history lacks them → writeToPg maps absent → NULL).
+   */
+  terminal_owner?: string | null;
+  terminal_completion_ref?: string | null;
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -124,6 +131,8 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.feature_order !== undefined && !isNumberOrNull(r.feature_order)) return false;
   if (r.swarm_affinity !== undefined && !isStringOrNull(r.swarm_affinity)) return false;
   if (r.redundancy !== undefined && !isNumberOrNull(r.redundancy)) return false;
+  if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
+  if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }
@@ -246,6 +255,7 @@ async function writeToPg(
        item_kind, feature_order, swarm_affinity, redundancy, payload,
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
+       terminal_owner, terminal_completion_ref,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -270,6 +280,7 @@ async function writeToPg(
        ${row.source_plan_slug ?? null}, ${row.source_plan_item_ids ?? null}::text[],
        ${row.see_also ?? []}::text[], ${row.wave ?? null}, ${row.deprecation_reason ?? null},
        ${row.completion_ref == null ? null : JSON.stringify(normalizeJsonbInput(row.completion_ref))}::text::jsonb,
+       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -316,6 +327,8 @@ async function writeToPg(
       wave = EXCLUDED.wave,
       deprecation_reason = EXCLUDED.deprecation_reason,
       completion_ref = EXCLUDED.completion_ref,
+      terminal_owner = EXCLUDED.terminal_owner,
+      terminal_completion_ref = EXCLUDED.terminal_completion_ref,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,

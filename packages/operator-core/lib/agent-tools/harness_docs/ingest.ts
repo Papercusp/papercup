@@ -29,7 +29,7 @@ export default defineTool({
   },
   capability: 'docs:write',
   requirePrincipal: false,
-  agentRoles: ['operator', 'documenter', 'bee'],
+  agentRoles: ['operator', 'documenter', 'doc-steward', 'bee'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

@@ -19,6 +19,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
+import { isIdOnlySelector } from '../../../scheduler/claim-spec';
 
 /** Wire-shape of a federated bee_claim_specs row. Defensive on every field. */
 export interface BeeClaimSpecRow {
@@ -120,14 +121,20 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // id_only (mig 389) is a DENORMALIZED observability tripwire the sender's own
+  // setClaimSpec computes via isIdOnlySelector(spec) — recompute it here from the
+  // federated `spec` itself rather than carrying it on the wire, so a peer's copy
+  // is never stale relative to its own spec value (federated-column-completeness
+  // integration.test.ts).
+  const idOnly = isIdOnlySelector(row.spec as { view?: { filter?: unknown } });
   await sql`
     INSERT INTO harness_shared.bee_claim_specs
       (workspace_id, bee_id, spec, revision, updated_by, harness_slug,
-       origin, author_pubkey, fed_ts, fed_hlc, updated_at)
+       origin, author_pubkey, fed_ts, fed_hlc, updated_at, id_only)
     VALUES
       (${opts.workspaceId}, ${row.bee_id}, ${JSON.stringify(row.spec)}::text::jsonb,
        ${row.revision}, ${row.updated_by}, ${row.harness_slug},
-       ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc}, now())
+       ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc}, now(), ${idOnly})
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
       spec          = EXCLUDED.spec,
       revision      = EXCLUDED.revision,
@@ -137,7 +144,8 @@ async function writeToPg(
       author_pubkey = EXCLUDED.author_pubkey,
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc,
-      updated_at    = now()
+      updated_at    = now(),
+      id_only       = EXCLUDED.id_only
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,

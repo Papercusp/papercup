@@ -305,6 +305,33 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── assigneeMismatchWarning: wrong-id-grab footgun (EI-7264) ─────────────────────────────
+  // A fast multi-wake loop's own tracking-task ids and peers' work-item ids flow through the
+  // same coord broadcast stream — nothing visually distinguishes them. WARN (never block) when
+  // the caller completing an item is not its current assignee, so a wrong-id grab is caught
+  // before it lands on someone else's active work.
+  describe('assigneeMismatchWarning — wrong-id-grab footgun (EI-7264)', () => {
+    it('warns when the item is currently assigned to someone else', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-someone-else' });
+      const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
+      expect(r.assigneeMismatchWarning).toMatch(/su-someone-else/);
+      expect(r.assigneeMismatchWarning).toMatch(/su-tester/); // the caller's own id
+      expect(r.assigneeMismatchWarning).toContain('F-12');
+    });
+
+    it('does NOT warn when the caller is the current assignee', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-tester' });
+      const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
+      expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when the item is unclaimed (assignee null)', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: null });
+      const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
+      expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+  });
+
   // ── verificationWarning: settled-but-unverified lint (flush-to-proceed P-006) ────────────
   // A settled unit is VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent.
   // SOFT warning, not a hard reject (D-005 / EI-24: a finished completion is never lost).

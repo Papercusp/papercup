@@ -200,6 +200,12 @@ describe('outboxRowToLocalWriteOp — features', () => {
       wave: null,
       deprecation_reason: null,
       completion_ref: null,
+      // work-items-corrupted-issue-rows-cleanup / EI-6992: terminal_owner +
+      // terminal_completion_ref federate alongside the other terminal-transition
+      // columns. NULL here because this fixture's source row predates them →
+      // mapper maps absent → null (real-value federation is covered elsewhere).
+      terminal_owner: null,
+      terminal_completion_ref: null,
     });
   });
 

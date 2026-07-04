@@ -4,7 +4,7 @@
  * verified at deploy against a live OMP runtime.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -62,6 +62,12 @@ import {
   REFLEXIVE_BLOCK_ESCALATE_AFTER,
   noteReflexiveBlock,
   resetReflexiveBlockBudget,
+  STALL_WATCHDOG_MS,
+  STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS,
+  pokeStallWatchdog,
+  disarmStallWatchdog,
+  noteStallToolInFlight,
+  _stallWatchdogArmed,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -741,6 +747,96 @@ describe('noteReflexiveBlock + resetReflexiveBlockBudget (shared reflexive-block
     } finally {
       setHaltForTest(prevHalt);
     }
+  });
+});
+
+describe('stall watchdog (ornith failure mode #5 — silence, not a loop / WI-2382)', () => {
+  // The watchdog uses real timers; fake them so a test asserts the ~6-min halt
+  // without waiting, and swap the halt seam so it never SIGTERMs the runner.
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  let halts: string[];
+  let prevHalt: (reason: string) => void;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    disarmStallWatchdog();
+    noteStallToolInFlight(false);
+    halts = [];
+    prevHalt = setHaltForTest((r) => halts.push(r));
+    process.env.PAPERCUSP_AGENT_SESSION = '1'; // agent session — watchdog is armable
+  });
+  afterEach(() => {
+    disarmStallWatchdog();
+    noteStallToolInFlight(false);
+    setHaltForTest(prevHalt);
+    vi.useRealTimers();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  it('arms on poke and halts after STALL_WATCHDOG_MS of silence (the wedge)', () => {
+    pokeStallWatchdog();
+    expect(_stallWatchdogArmed()).toBe(true);
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS - 1);
+    expect(halts).toHaveLength(0); // not yet
+    vi.advanceTimersByTime(1);
+    expect(halts).toHaveLength(1);
+    expect(halts[0]).toContain('stall-watchdog');
+    expect(_stallWatchdogArmed()).toBe(false); // cleared itself on halt
+  });
+
+  it('a poke before the deadline RESETS the countdown (progress = no halt)', () => {
+    pokeStallWatchdog();
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS - 1);
+    pokeStallWatchdog(); // an event landed just in time
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS - 1);
+    expect(halts).toHaveLength(0); // the reset gave it a fresh full window
+    vi.advanceTimersByTime(1);
+    expect(halts).toHaveLength(1);
+  });
+
+  it('EXTENDS (does not kill) while a legit tool is in flight, up to the cap', () => {
+    noteStallToolInFlight(true); // a long build/test is running
+    pokeStallWatchdog();
+    // Each window elapses but the tool is still in flight → extend, not halt.
+    for (let i = 0; i < STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS; i++) {
+      vi.advanceTimersByTime(STALL_WATCHDOG_MS);
+      expect(halts).toHaveLength(0);
+    }
+    // One more window past the extension cap → a hung tool still halts.
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS);
+    expect(halts).toHaveLength(1);
+    expect(halts[0]).toContain('stall-watchdog');
+  });
+
+  it('a finished long tool is NOT killed, but a later stall still is', () => {
+    noteStallToolInFlight(true);
+    pokeStallWatchdog();
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS); // one extension (tool still running)
+    expect(halts).toHaveLength(0);
+    // tool_result fires: clear in-flight + rearm — the slow tool completed cleanly.
+    noteStallToolInFlight(false);
+    pokeStallWatchdog();
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS - 1);
+    expect(halts).toHaveLength(0);
+    vi.advanceTimersByTime(1); // now genuinely wedged between events
+    expect(halts).toHaveLength(1);
+  });
+
+  it('is NEVER armed for the owner’s own sessions (marker unset — D-003)', () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    pokeStallWatchdog();
+    expect(_stallWatchdogArmed()).toBe(false);
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS * (STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS + 5));
+    expect(halts).toHaveLength(0);
+  });
+
+  it('disarm clears an armed watchdog so it cannot fire (clean shutdown)', () => {
+    pokeStallWatchdog();
+    expect(_stallWatchdogArmed()).toBe(true);
+    disarmStallWatchdog();
+    expect(_stallWatchdogArmed()).toBe(false);
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS * 2);
+    expect(halts).toHaveLength(0);
   });
 });
 

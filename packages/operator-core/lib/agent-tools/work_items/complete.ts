@@ -105,6 +105,20 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
 
+  // EI-7264: a fast multi-wake self-sustaining loop creates+completes its own tracking
+  // task each wake, while PEER fleet members' work-item ids flow through the exact same
+  // coord broadcast stream — nothing visually distinguishes "an id I just created" from
+  // "an id a peer just mentioned". A near-miss: an agent skipped its own create step and
+  // called complete on a peer's actively-held item, briefly flipping its state. WARN (never
+  // block — this tool's whole contract is record-and-warn, EI-24) when the caller is not the
+  // item's current assignee, so the caller catches a wrong-id grab before it lands elsewhere.
+  const assigneeMismatchWarning =
+    existing.assignee && existing.assignee !== ident.ownerId
+      ? `completing ${it.id} but it is currently assigned to '${existing.assignee}', not you ('${ident.ownerId}') — ` +
+        `if you grabbed this id from a peer's coord broadcast instead of your own claimed/created item, stop and ` +
+        `re-check before this lands on someone else's active work.`
+      : undefined;
+
   // TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006). A feature
   // work-item being moved to a TERMINAL state must have every plan-derived test-requiring
   // VAL passing. Flag-gated (FLAGS.TEST_COMPLETION_GATE, default OFF → inert) and FAIL-OPEN
@@ -207,6 +221,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     ...(stateError ? { stateError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
+    ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
   };
 }
 

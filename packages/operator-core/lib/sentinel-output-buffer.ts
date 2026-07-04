@@ -16,6 +16,7 @@
  * app). LOCAL APP USER ONLY (owner constraint) — not the P2P voice-channel system.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { withPgRetry } from './pg-transient-retry';
 
 /** Keep the queue bounded — a stalled consumer must not grow it without limit. */
 const MAX = 32;
@@ -52,13 +53,21 @@ export async function pushSentinelSay(text: string): Promise<void> {
  */
 export async function drainSentinelSays(): Promise<string[]> {
   try {
+    // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776): the DELETE…RETURNING
+    // is issued in the connect phase, so a connect timeout means it provably never
+    // ran — safe to re-issue this mutating drain. Absorbs the self-healing pooler
+    // blip that otherwise logged a hard failure every tick; a sustained outage still
+    // exhausts retries and hits the catch below.
     const { sql } = getOrgPg();
-    const rows = await sql<{ line: string }[]>`
-      WITH drained AS (
-        DELETE FROM harness_shared.sentinel_says RETURNING id, line
-      )
-      SELECT line FROM drained ORDER BY id ASC
-    `;
+    const rows = await withPgRetry(
+      () => sql<{ line: string }[]>`
+        WITH drained AS (
+          DELETE FROM harness_shared.sentinel_says RETURNING id, line
+        )
+        SELECT line FROM drained ORDER BY id ASC
+      `,
+      { label: 'drainSentinelSays' },
+    );
     return rows.map((r) => r.line);
   } catch (e) {
     console.warn(`[sentinel-output-buffer] drainSentinelSays failed: ${String(e).slice(0, 160)}`);

@@ -63,6 +63,20 @@ describe('routines:list', () => {
     expect(b.count).toBe(1);
     expect(b.routines[0]).toMatchObject({ name: 'git-sync', cron: '0 */10 * * * *', active: true, lastFiredAt: null });
   });
+
+  // EI-7242: `q` was previously not a recognized arg at all — zod silently
+  // stripped it and the query ran unfiltered (the whole catalog came back).
+  it('accepts a `q` free-text filter and passes it through as an ILIKE pattern (EI-7242)', async () => {
+    await listTool.handler({ q: 'git-sync' } as never, { role: 'su' } as never);
+    const flatArgs = sqlMock.mock.calls.flat();
+    expect(flatArgs).toContain('%git-sync%');
+  });
+
+  it('omits the `q` filter (passes null) when not provided — no accidental narrowing', async () => {
+    await listTool.handler({} as never, { role: 'su' } as never);
+    const flatArgs = sqlMock.mock.calls.flat();
+    expect(flatArgs.some((v) => typeof v === 'string' && v.startsWith('%') && v.endsWith('%'))).toBe(false);
+  });
 });
 
 describe('routines:set', () => {

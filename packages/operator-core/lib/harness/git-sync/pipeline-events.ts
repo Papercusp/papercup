@@ -19,6 +19,7 @@
 import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { withPgRetry } from '../../pg-transient-retry';
 
 export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'content_fixer' | 'green_checkpoint' | 'deploy' | 'release_fixer';
 
@@ -147,13 +148,19 @@ export async function summarizePipelineWindow(
 ): Promise<PipelineWindowSummary> {
   const sinceMs = Date.now() - windowSeconds * 1000;
   try {
-    const rows = await db(sql)<{ kind: string; status: string; n: number }[]>`
-      SELECT kind, status, count(*)::int AS n
-        FROM harness_shared.pipeline_events
-       WHERE install_slug = ${slug}
-         AND created_at >= now() - make_interval(secs => ${windowSeconds})
-       GROUP BY kind, status
-    `;
+    // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776) — this is a read-only
+    // count, so re-issuing it is trivially safe; absorbs the self-healing pooler blip
+    // that otherwise logged a hard failure. A sustained outage still hits the catch.
+    const rows = await withPgRetry(
+      () => db(sql)<{ kind: string; status: string; n: number }[]>`
+        SELECT kind, status, count(*)::int AS n
+          FROM harness_shared.pipeline_events
+         WHERE install_slug = ${slug}
+           AND created_at >= now() - make_interval(secs => ${windowSeconds})
+         GROUP BY kind, status
+      `,
+      { label: 'summarizePipelineWindow' },
+    );
     return foldPipelineWindow(rows, sinceMs);
   } catch (e) {
     console.warn(`[pipeline-events] summarize failed: ${e instanceof Error ? e.message : e}`);
@@ -164,13 +171,17 @@ export async function summarizePipelineWindow(
 /** Most-recent events for `slug` (newest first) — the Git tab's timeline. */
 export async function recentPipelineEvents(slug: string, limit = 25, sql?: Sql): Promise<PipelineEventRow[]> {
   try {
-    const rows = await db(sql)<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }[]>`
-      SELECT id::text, kind, status, detail, created_at
-        FROM harness_shared.pipeline_events
-       WHERE install_slug = ${slug}
-       ORDER BY created_at DESC
-       LIMIT ${Math.min(Math.max(limit, 1), 200)}
-    `;
+    // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776) — read-only, safe to re-issue.
+    const rows = await withPgRetry(
+      () => db(sql)<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }[]>`
+        SELECT id::text, kind, status, detail, created_at
+          FROM harness_shared.pipeline_events
+         WHERE install_slug = ${slug}
+         ORDER BY created_at DESC
+         LIMIT ${Math.min(Math.max(limit, 1), 200)}
+      `,
+      { label: 'recentPipelineEvents' },
+    );
     return rows.map((r) => ({
       id: r.id,
       kind: r.kind as PipelineEventKind,

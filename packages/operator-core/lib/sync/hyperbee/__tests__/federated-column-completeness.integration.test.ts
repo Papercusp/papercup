@@ -96,6 +96,9 @@ const PROVENANCE = new Set<string>([
   'author_pubkey', // projection stamps from the op's writerPubkey
   'verified_author_github_user_id', // projection derives via verified hive_members attestation (features; P-008)
   'schema_version', // rides the op envelope, not the row value
+  'owner_author_pubkey', // harness_plans (mig 414/P-018-D-012): projection binds from the VERIFIED
+  // source-log device on first authorized remote write (harness-plans.ts ownerToBind), preserved
+  // across later overwrites — never carried from the mapper's row value.
 ]);
 
 /**
@@ -131,6 +134,12 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // the 10 content/lineage columns formerly REVIEW-tagged here are now FEDERATED
     // (toFeatureValue mapper + harness-features projection INSERT/UPSERT), so they
     // are removed from NOT_FEDERATED and this test now asserts they cross A→B.
+    // work-item-release-cooldown-2026 (mig 485): per-machine claim-cooldown
+    // bookkeeping (releaseWorkItem's UPDATE stamps these on the row IT frees) —
+    // same call as assignee_rank/rank_writer/rank_updated_at above, local work-list
+    // state, not content.
+    last_released_by: 'per-machine claim-cooldown bookkeeping, local work state (mig 485)',
+    last_released_at: 'per-machine claim-cooldown bookkeeping, local work state (mig 485)',
   },
   harness_issues_consolidated: {
     // Issues federate every content column — only PROVENANCE is local. (Empty.)
@@ -251,6 +260,47 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp; the federated content is record_json + signature',
     updated_at: 'machine-local row timestamp; the federated content is record_json + signature',
   },
+  agent_facts: {
+    // F1-4/P-012 (mig 461/462): the federated subset is scope/scope_ref/key/body/
+    // source_ref/expires_at/retracted_at/created_by (toAgentFactValue). Timestamps
+    // are machine-local; source_hive is deliberately receiver-stamped from the
+    // admitted log identity (never trusted from a sender-claimed value).
+    created_at: 'machine-local row timestamp',
+    updated_at: 'machine-local row timestamp',
+    source_hive: 'receiver-stamped from the admitted log identity — never carried (a sender-claimed source is never trusted)',
+  },
+  gym_qd_archive: {
+    // F1-2/F1-5 (mig 464/465): the federated subset is niche_key/candidate_id/scope/
+    // domain/risk/fitness/descriptor/rationale/federatable/outcome_record/updated_at
+    // (toGymQdEliteValue). created_at is machine-local (this row's local insert time).
+    created_at: 'machine-local row timestamp (the federated cursor is updated_at, carried by the mapper)',
+  },
+  bee_claim_specs: {
+    // P-016 (mig 438): federated subset is spec/revision/updated_by. updated_at is
+    // machine-local. id_only is a DENORMALIZED observability tripwire the projection
+    // now recomputes locally from the federated `spec` via isIdOnlySelector (never
+    // carried on the wire — see bee-claim-spec.ts writeToPg).
+    updated_at: 'machine-local row timestamp',
+    id_only: 'denormalized tripwire recomputed locally from `spec` via isIdOnlySelector (bee-claim-spec.ts), not carried on the wire',
+  },
+  gate_verdicts: {
+    // shared-hive-release-gate federation: the federated subset is the signed
+    // verdict fields (repo_key/staging_sha/shard_id/inputs_hash/verdict/duration_ms/
+    // device_pubkey/verdict_ts/sig — toGateVerdictValue). created_at is machine-local
+    // (the federated timestamp is verdict_ts, carried by the mapper).
+    created_at: 'machine-local row timestamp (federated time is verdict_ts, carried by the mapper)',
+  },
+  p2p_peer_grants: {
+    // P-001 (mig 463): the federated subset is the grantor-signed record fields
+    // (toP2pPeerGrantValue). Only the row timestamps are machine-local.
+    created_at: 'machine-local row timestamp',
+    updated_at: 'machine-local row timestamp',
+  },
+  p2p_receipts: {
+    // P-004 (mig 468): the federated subset is the receipt fields (toP2pReceiptValue).
+    // Only the row timestamp is machine-local (receipt_ts is the federated time).
+    created_at: 'machine-local row timestamp (federated time is receipt_ts, carried by the mapper)',
+  },
 };
 
 /** Run the REAL mapper over a synthetic full-column row and return the keys it
@@ -296,11 +346,15 @@ afterAll(async () => {
 });
 
 describe('federated CDC tables — every column federates or is documented-local (column-drift guard)', () => {
-  it('sanity: the CDC-captured set is the 17 known federated tables', () => {
+  it('sanity: the CDC-captured set is the 25 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    // 17 = 14 prior + hive_reports + hive_pending_joins (EN-3) + hive_epoch_keys (re-key).
-    expect(CDC_CAPTURED_TABLES.length).toBe(17);
+    // 25 = 17 prior + 8 added since (p2p_fleet_directory/p2p_work_offers already
+    // carried their own NOT_FEDERATED coverage when added; agent_facts,
+    // gym_qd_archive, bee_claim_specs, gate_verdicts, p2p_peer_grants, p2p_receipts
+    // did not — restored here, WI-2233). This count is a TRIPWIRE, not a target:
+    // bump it AND add the new table's NOT_FEDERATED/mapper coverage together.
+    expect(CDC_CAPTURED_TABLES.length).toBe(25);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

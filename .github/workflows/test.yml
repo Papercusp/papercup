@@ -221,6 +221,18 @@ jobs:
       - name: Lint TSC type errors (gates new errors, allows pre-existing baseline)
         run: npm run lint:tsc
 
+      # Vite externalized-module guard (EI-7275): a `vite build` warning "Module
+      # node:* has been externalized for browser compatibility" means a Node-only
+      # module reached the SPA's entry graph — the externalized stub THROWS on
+      # property ACCESS at module-eval time, blanking the whole app the instant
+      # a route evaluates it (shipped for real on 2026-07-04: tooldef's
+      # run-script.ts statically imported node:worker_threads). GATING on a NEW
+      # warning above the committed baseline count
+      # (apps/operator-vite/.externalized-warnings-baseline.json); a shrink-only
+      # ratchet, updated only intentionally (npm run lint:vite-externalized -- --update).
+      - name: Lint vite build for new externalized-module warnings
+        run: npm run lint:vite-externalized
+
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
       # truth (PRs that forget to re-run pull-schema fail here).

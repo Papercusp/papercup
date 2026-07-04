@@ -28,6 +28,7 @@ import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { IMPORTANCE_LEVELS, type Importance } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from '../workspace-registry';
+import { withPgRetry } from '../pg-transient-retry';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
@@ -599,7 +600,10 @@ export async function surveyHive(
     Promise.all(
       planSlugs.map(async (slug) => {
         try {
-          return await deps.listPlanRows(slug);
+          // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776): a read-only plan
+          // list, safe to re-issue. Absorbs the self-healing pooler blip that made a
+          // live Queen wake skip a member's plan; a sustained outage still logs below.
+          return await withPgRetry(() => deps.listPlanRows(slug), { label: 'hive-survey.listPlanRows' });
         } catch (err) {
           console.warn(`[hive-survey] plan read failed for '${slug}' — skipped:`, err instanceof Error ? err.message : err);
           return [] as PlanIndexRow[];

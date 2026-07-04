@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1782965291732
+updated_at: 1783204831958
 _body: "content"
 ---
 
@@ -16,4 +16,6 @@ _body: "content"
 [2026-07-01T00:00:00Z] worker EI-5965: "routine-failure:routine:<name>" watchdog EIs are usually PHANTOM. Verify before fixing: query harness_shared.routines for that name — if active=true, next_fire_at is a real future ts (parked = next_fire_at='infinity'), and last_fired_at > last_error_at, the dbos-executor-reaper just cancelled a transiently-stuck fire and re-fired successfully (last_error source=dbos-executor-reaper, "produced no DBOS operation output" = reaper doing its job, not a wedge). 7+ active routines share the identical reaper error at once; 64 such EIs were open. Resolve `fixed` with the query as evidence. The real dampen-the-watchdog / DBOS-executor fix is a protected STOP surface (self-improvement loop + scheduler). Reuse recipe ei-596x phantom routine-failure verification.
 
 [2026-07-02T04:07:00Z] worker EI-6062: diagnoseClaimNextMiss (work-items.ts) undercounted issue-family backlog in BOTH halves; pendingUnclaimed was patched earlier but readyUnclaimed still read only the feature floor (claimFloorsWhereSql over harness_features_consolidated) — a ready issue-only backlog reported readyUnclaimed:0 (misdiagnosed "blocked/gated, don't retry"). Fix: fold in an issue-ready count mirroring claimNextIssueWorkItem's WHERE (affinity + excludeRedundant + inline blocker-terminality). NB: SCHEDULER_ISSUES_CLAIMABLE defaults ON, so a "gate off" test must set the flag false explicitly.
+
+[2026-07-04T22:45:00Z] worker EI-6693: chronic-autoloop-failure EIs for a `loop-su-<uuid>@*` row are a data-hygiene class, not a code bug. Reproduce: JOIN autoloop_state↔routines on (name, workspace_id) — a dead-owner loop:arm loop has routine active=false + non-null target_owner_id + stale last_fired_at, so selectChronicFailures already triple-excludes it (skipped-paused/skipped-loop-arm/skipped-stale). Resolution = `autoloop:control reset-errors {harness:<any real>, role:<the loop-su-uuid>}` (resetErrorScopes adds the '*' scope, EI-6753) → resolve fixed. Class durable-fix already landed (EI-6727/EI-6765); don't touch watchdog/scheduler code.
 

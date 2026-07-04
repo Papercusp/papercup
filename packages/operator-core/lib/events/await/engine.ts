@@ -20,6 +20,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { withPgRetry } from '../../pg-transient-retry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
@@ -443,7 +444,12 @@ export function startAwaitSweeper(): void {
 /** One tick of the sweeper: sweepOnce per background workspace (P-020). */
 export async function sweepAllWorkspaces(): Promise<void> {
   for (const ws of backgroundWorkspaceIds()) {
-    await runWithWorkspace(ws, () => sweepOnce(ws)).catch(
+    // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776). The sweeper is documented
+    // restart-safe (all state is PG, every op state-guarded), so re-running it is
+    // equivalent to the next tick — and a CONNECT_TIMEOUT fires in the connect phase, so
+    // little-to-no work happened before the throw. Absorbs the self-healing pooler blip;
+    // a sustained outage still exhausts retries and logs `sweep failed` below.
+    await withPgRetry(() => runWithWorkspace(ws, () => sweepOnce(ws)), { label: `await-sweep:${ws}` }).catch(
       (e: unknown) => log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`),
     );
   }

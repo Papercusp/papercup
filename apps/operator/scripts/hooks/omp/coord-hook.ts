@@ -2558,14 +2558,22 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_end', async () => {
+    pokeStallWatchdog(); // heartbeat: turn completed
     await safe(() => onTurnEnd(), undefined);
   });
 
   pi.on('tool_call', async (event) => {
+    // heartbeat: a tool is starting — mark it in flight so a long-but-legit tool
+    // (build/test) EXTENDS the watchdog instead of tripping it, then rearm.
+    noteStallToolInFlight(true);
+    pokeStallWatchdog();
     return safe(() => onToolCall(event), {});
   });
 
   pi.on('tool_result', async (event) => {
+    // heartbeat: the tool finished — clear in-flight and rearm the countdown.
+    noteStallToolInFlight(false);
+    pokeStallWatchdog();
     // 1. Release the lock acquired for this tool (existing behavior).
     await safe(() => onToolResult(event), undefined);
     // 2. Mid-turn coord delivery — surface messages that arrived since turn
@@ -2593,6 +2601,7 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('session_shutdown', async () => {
+    disarmStallWatchdog(); // clean shutdown ⇒ tear down the watchdog (no false stall-halt)
     await safe(() => onSessionShutdown(), undefined);
   });
 }

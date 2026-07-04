@@ -48,6 +48,13 @@ export interface EngineerIssueRow {
   linked_feature_id: string | null;
   created_by: string | null;
   created_at: string; // ISO string
+  /**
+   * work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): the "who did
+   * it + what proves it" pair recorded at the terminal-state choke point. OPTIONAL
+   * on the wire (pre-432 history lacks them → dropped on write → NULL).
+   */
+  terminal_owner?: string | null;
+  terminal_completion_ref?: string | null;
 }
 
 function isString(v: unknown): v is string {
@@ -76,6 +83,8 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (!isStringOrNull(r.linked_feature_id)) return false;
   if (!isStringOrNull(r.created_by)) return false;
   if (!isString(r.created_at)) return false;
+  if (r.terminal_owner !== undefined && !isStringOrNull(r.terminal_owner)) return false;
+  if (r.terminal_completion_ref !== undefined && !isStringOrNull(r.terminal_completion_ref)) return false;
   // payload is jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
 }
@@ -175,7 +184,7 @@ async function writeToPg(
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
-       created_ts, updated_ts, ts)
+       created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref)
     VALUES
       (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
        ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
@@ -183,7 +192,8 @@ async function writeToPg(
        COALESCE((extract(epoch FROM ${row.created_at}::timestamptz) * 1000)::bigint,
                 (extract(epoch FROM now()) * 1000)::bigint),
        (extract(epoch FROM now()) * 1000)::bigint,
-       (extract(epoch FROM now()) * 1000)::bigint)
+       (extract(epoch FROM now()) * 1000)::bigint,
+       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,
@@ -196,7 +206,9 @@ async function writeToPg(
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,
       fed_hlc       = EXCLUDED.fed_hlc,
-      updated_ts    = EXCLUDED.updated_ts
+      updated_ts    = EXCLUDED.updated_ts,
+      terminal_owner = EXCLUDED.terminal_owner,
+      terminal_completion_ref = EXCLUDED.terminal_completion_ref
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,

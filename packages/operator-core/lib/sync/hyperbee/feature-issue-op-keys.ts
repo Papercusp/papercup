@@ -344,6 +344,13 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     wave: strOrNull(row.wave),
     deprecation_reason: strOrNull(row.deprecation_reason),
     completion_ref: row.completion_ref ?? null,
+    // work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): the "who did
+    // it + what proves it" pair recorded at the setWorkItemState choke point.
+    // Must federate — else a peer never sees the completion evidence for a
+    // terminal item (column-completeness guard, federated-column-completeness.
+    // integration.test.ts).
+    terminal_owner: strOrNull(row.terminal_owner),
+    terminal_completion_ref: strOrNull(row.terminal_completion_ref),
   };
 }
 
@@ -710,6 +717,11 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     created_at: typeof row.created_at === 'string' && row.created_at
       ? row.created_at
       : new Date().toISOString(),
+    // work-item-completion-integrity-2026-07-01 (WI-1403 / EI-5269): same pair as
+    // toFeatureValue above — must federate so a peer sees who resolved/closed an
+    // issue-family item and the evidence.
+    terminal_owner: strOrNull(row.terminal_owner),
+    terminal_completion_ref: strOrNull(row.terminal_completion_ref),
   };
 }
 
