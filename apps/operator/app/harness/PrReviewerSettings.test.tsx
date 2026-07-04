@@ -26,6 +26,10 @@ vi.mock('./Select', () => ({
   ),
 }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the routed
+// ownership-hint copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import {
   PrReviewerSettings, toggleToPayload, auditActionLabel, auditActionTone, formatAuditDetail,
 } from './PrReviewerSettings';

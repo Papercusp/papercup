@@ -149,7 +149,7 @@ export default function CupboardClient() {
       all: 'All',
       harness: t('pot', { plural: true }),
       blueprint: 'Blueprints',
-      'hive-blueprint': 'Hive Templates',
+      'hive-blueprint': `${t('pot')} Templates`,
       plugin: 'Plugins',
       'tool-pack': 'Tool packs',
       'learning-pack': 'Learning Packs',
@@ -538,7 +538,7 @@ export default function CupboardClient() {
         >
           {hive
             ? isHivePubkeyRef(hive)
-              ? `No ${t('cupboard')} listings found for this hive on this page${q ? ` matching "${q}"` : ''}.`
+              ? `No ${t('cupboard')} listings found for this ${t('pot', { lower: true })} on this page${q ? ` matching "${q}"` : ''}.`
               : `No listings found for ${t('pot')} "${hive}"${q ? ` matching "${q}"` : ''}.`
             : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>

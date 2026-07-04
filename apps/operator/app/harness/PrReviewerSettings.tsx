@@ -20,6 +20,7 @@ import { toast } from 'sonner';
 import { ShieldCheck, Trash2, ScrollText, GitMerge } from 'lucide-react';
 import { Modal } from './Modal';
 import { Select } from './Select';
+import { useLexicon } from '@/lib/useLexicon';
 import type { PrMergeMethod } from '@papercusp/operator-core/lib/pr-host/types';
 
 // ─── Wire shapes (mirror routes/harness/pr-reviewer-settings.ts) ──
@@ -188,6 +189,7 @@ interface Props {
 }
 
 export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
+  const t = useLexicon();
   const [data, setData] = useState<PrReviewerSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -298,9 +300,9 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
                 label="Enable PR-reviewer role"
                 hint={
                   data?.grantedByOwnership
-                    ? `Granted by hive ownership${data.inheritedFrom ? ` (home '${data.inheritedFrom}')` : ''} — you created this hive, so you review its PRs. Flipping it here writes an explicit per-harness setting.`
+                    ? `Granted by ${t('pot', { lower: true })} ownership${data.inheritedFrom ? ` (home '${data.inheritedFrom}')` : ''} — you created this ${t('pot', { lower: true })}, so you review its PRs. Flipping it here writes an explicit per-harness setting.`
                     : data?.inheritedFrom
-                      ? `Inherited from hive home '${data.inheritedFrom}' — flipping it here writes an explicit setting for this harness.`
+                      ? `Inherited from ${t('pot', { lower: true })} home '${data.inheritedFrom}' — flipping it here writes an explicit setting for this harness.`
                       : 'Master switch. When off, no auto-review or auto-merge fires.'
                 }
                 checked={!!settings?.pr_reviewer_role_enabled}
