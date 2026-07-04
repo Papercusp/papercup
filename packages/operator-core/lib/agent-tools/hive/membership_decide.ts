@@ -6,14 +6,17 @@
  * devices) + mark 'approved' (federates the decision back). Deny → mark 'denied';
  * the joiner is NEVER trust-admitted.
  *
- * AUTHORITY: the OWNING SWARM (holds the Hive private key — loadHivePubkey != null),
- * the same keypair-native owner gate revokeHiveContributor / hive-policy-author use.
- * A claimed viewer on a non-owning Swarm cannot decide (it isn't the canonical owner).
+ * AUTHORITY: the OWNING SWARM — the CANONICAL owner (isCanonicalHiveOwner), not
+ * merely "holds ANY hive-identity key" (WI-2000: a divergent/stale local key —
+ * the WI-1981 epoch-poison class — must never authorize a membership decision;
+ * `loadHivePubkey != null` alone can't tell a canonical owner from a poisoned
+ * joiner box). Same canonical-ownership gate revokeHiveContributor /
+ * hive-policy-author use. A claimed viewer on a non-owning Swarm cannot decide.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
-import { loadHivePubkey } from '../../identity/hive-keypair';
+import { isCanonicalHiveOwner } from '../../hive-identity';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { approvePendingJoin, denyPendingJoin } from '../../hive-membership-admission';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
@@ -66,9 +69,10 @@ export default defineTool({
       ctx.principal?.workspaceId,
     );
 
-    // Owner gate (once for the batch): only the Swarm that holds the Hive private key may decide.
-    const ownerPubkey = await loadHivePubkey(workspaceId, args.hive).catch(() => null);
-    if (!ownerPubkey) {
+    // Owner gate (once for the batch): only the CANONICAL owner Swarm may decide
+    // (WI-2000: a divergent/stale local key must never pass this gate).
+    const isOwner = await isCanonicalHiveOwner(workspaceId, args.hive).catch(() => false);
+    if (!isOwner) {
       return text({ ok: false, code: 'not_owner', detail: 'this Swarm does not hold the Hive private key' });
     }
     const identity = await resolveLocalGithubIdentity();

@@ -196,6 +196,11 @@ describe('evaluateInvariants', () => {
   };
   const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
   const TTL_H = OPERATIONAL_ESCALATION_TTL_MS / 3_600_000;
+  // EI-7087: the invariant's effective threshold is TTL + a reconcile-cadence grace
+  // (see ESCALATION_RECONCILE_GRACE_MS) — assert against the EFFECTIVE boundary, not
+  // the bare TTL, so these tests track what the check actually fires on.
+  const GRACE_H = ESCALATION_RECONCILE_GRACE_MS / 3_600_000;
+  const EFFECTIVE_H = TTL_H + GRACE_H;
   /** An OPERATIONAL escalation (system/infra-emitter, option-less) opened `h` hours ago. */
   const opEsc = (h: number, from = 'system') => ({ ts: hoursAgo(h), from, hasOptions: false });
 
@@ -206,7 +211,7 @@ describe('evaluateInvariants', () => {
   it('each check fires past its threshold with a STABLE dedup title', () => {
     const snap: InvariantSnapshot = {
       openHandoffTs: [hoursAgo(13), hoursAgo(1)], // 1 stuck, 1 fresh
-      openEscalations: [opEsc(TTL_H + 1)], // operational, past the reconcile TTL
+      openEscalations: [opEsc(EFFECTIVE_H + 1)], // operational, past TTL + reconcile grace
       longExpiredLocks: 2,
       presenceGhosts: 3,
       wakeQueueDepth: 51,
@@ -232,6 +237,16 @@ describe('evaluateInvariants', () => {
       openHandoffTs: [hoursAgo(11)], // under the 12h stuck-handoff window
       openEscalations: [opEsc(TTL_H - 1)], // operational, still within the reconcile TTL
     };
+    expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+  });
+
+  it('EI-7087: an escalation past the bare TTL but still within the reconcile-cadence grace does not fire', () => {
+    // This is the exact false-positive this fix closes: an operational escalation
+    // that crossed the 48h TTL boundary between two hourly reconcile ticks is, by
+    // construction, still "open" when the invariant checks — but the reconcile sweep
+    // is working fine and will drain it at its very next tick. Only past TTL+grace
+    // is a genuine drain-failure signal.
+    const snap = { ...cleanSnap, openEscalations: [opEsc(TTL_H + GRACE_H / 2)] };
     expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
@@ -261,9 +276,10 @@ describe('evaluateInvariants', () => {
       ),
     ).toEqual([]);
 
-    // OPERATIONAL escalations PAST the reconcile TTL = the reconcile sweep is failing: ONE violation.
+    // OPERATIONAL escalations PAST the reconcile TTL (+ grace) = the reconcile sweep is
+    // genuinely failing: ONE violation.
     const v = evaluateInvariants(
-      { ...cleanSnap, openEscalations: [opEsc(TTL_H + 1, 'steering-lease'), opEsc(TTL_H + 5, 'system')] },
+      { ...cleanSnap, openEscalations: [opEsc(EFFECTIVE_H + 1, 'steering-lease'), opEsc(EFFECTIVE_H + 5, 'system')] },
       DEFAULT_THRESHOLDS,
       NOW,
     );

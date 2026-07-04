@@ -1,7 +1,8 @@
 /**
  * membership_decide.test.ts — hive:membership_decide HANDLER, bulk keyed-array
  * contract (bulk-endpoint-standardization-2026-06-21 P-006). The owner gate
- * (loadHivePubkey), the local-identity resolve, and the admission store
+ * (isCanonicalHiveOwner — WI-2000: the canonical-ownership check, not merely
+ * "holds ANY key"), the local-identity resolve, and the admission store
  * (approve/denyPendingJoin) are mocked. Pins the inline n=1 form, the items:[…]
  * many form (per-item results keyed by githubUserId, heterogeneous
  * decision/reason), the owner gate firing ONCE for the batch, and a
@@ -12,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  loadHivePubkey: vi.fn(),
+  isCanonicalHiveOwner: vi.fn(),
   resolveIdentity: vi.fn(),
   approve: vi.fn(),
   deny: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('../../workspace-registry', () => ({
   resolveConcreteWorkspaceId: (...c: Array<string | null | undefined>) =>
     c.find((x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== '*') ?? 'default',
 }));
-vi.mock('../../identity/hive-keypair', () => ({ loadHivePubkey: h.loadHivePubkey }));
+vi.mock('../../hive-identity', () => ({ isCanonicalHiveOwner: h.isCanonicalHiveOwner }));
 vi.mock('../../identity/resolve-local-github-identity', () => ({ resolveLocalGithubIdentity: h.resolveIdentity }));
 vi.mock('../../hive-membership-admission', () => ({ approvePendingJoin: h.approve, denyPendingJoin: h.deny }));
 
@@ -39,7 +40,7 @@ const env = async (args: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.loadHivePubkey.mockResolvedValue('PUBKEY'); // this Swarm owns the Hive
+  h.isCanonicalHiveOwner.mockResolvedValue(true); // this Swarm owns the Hive
   h.resolveIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 7, githubLogin: 'owner', token: 't' });
   h.approve.mockImplementation(async ({ githubUserId }: { githubUserId: number }) => ({ ok: true, status: 'approved', member: { githubUserId } }));
   h.deny.mockImplementation(async ({ githubUserId }: { githubUserId: number }) => ({ ok: true, status: 'denied', pending: { githubUserId } }));
@@ -47,7 +48,7 @@ beforeEach(() => {
 
 describe('hive:membership_decide handler (bulk keyed-array, P-006)', () => {
   it('owner gate fails the WHOLE call when this Swarm does not hold the key', async () => {
-    h.loadHivePubkey.mockResolvedValue(null);
+    h.isCanonicalHiveOwner.mockResolvedValue(false);
     const b = await env({ hive: 'sheets', githubUserId: 42, decision: 'approve' });
     expect(b).toMatchObject({ ok: false, code: 'not_owner' });
   });
@@ -72,7 +73,7 @@ describe('hive:membership_decide handler (bulk keyed-array, P-006)', () => {
       [42, 'approved'],
       [43, 'denied'],
     ]);
-    expect(h.loadHivePubkey).toHaveBeenCalledTimes(1); // owner gate once for the batch
+    expect(h.isCanonicalHiveOwner).toHaveBeenCalledTimes(1); // owner gate once for the batch
     expect(h.deny).toHaveBeenCalledWith(expect.objectContaining({ githubUserId: 43, reason: 'spam' }));
   });
 

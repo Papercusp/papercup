@@ -4,12 +4,14 @@
  * changes the report's STATUS; the actual content-hide / member-ban are separate
  * owner actions (hive:takedown / hive:ban_member).
  *
- * AUTHORITY: the owning Swarm (holds the Hive key).
+ * AUTHORITY: the CANONICAL owning Swarm (isCanonicalHiveOwner — WI-2000: not
+ * merely "holds ANY hive-identity key", which a divergent/stale local key
+ * (the WI-1981 epoch-poison class) would also satisfy).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { loadHivePubkey } from '../../identity/hive-keypair';
+import { isCanonicalHiveOwner } from '../../hive-identity';
 import { setReportStatus } from '../../hive-reports-store';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
