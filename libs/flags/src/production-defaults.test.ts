@@ -85,6 +85,17 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // the-hive flips to default-OFF. case: parked (BUILT + kept, but cut from public V1 —
   // reachable only via the TESTING-gated BrandSwitcher, P-004). Count 12 → 13.
   'papercusp-the-hive',
+  // 2026-07-04 (EI-7230) — NOT a new post-inversion darkening: a BUG-FIX correction.
+  // watchdog-auto-close's own code comment (watchdog-and-exposed-systems-improvement-
+  // 2026-06-18 P-009) has ALWAYS said "DEFAULT OFF — auto-closing real improvement items
+  // autonomously is unsafe until the owner reviews," predating even this snapshot's
+  // 2026-06-29 capture date — but it was never actually added to the old hand-written
+  // FLAG_DEFAULTS literal, so it silently resolved true both before AND after the
+  // inversion (hence its ABSENCE from this snapshot up to now, which only pins what was
+  // ACTUALLY false pre-inversion). Adding it here + to DARK_FLAGS restores its always-
+  // intended default-OFF, so the watchdog goes back to escalate-only until the owner
+  // reviews the auto-close criteria. Count 13 → 14.
+  'papercusp-watchdog-auto-close',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the

@@ -541,7 +541,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on bee:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the queen — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu."
+          description={`The effort-level menu per-task model picks resolve against: the ${t('brain', { lower: true })} passes a tier name on bee:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the ${t('brain', { lower: true })} — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu.`}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
@@ -550,7 +550,7 @@ export default function AgentSettingsPage() {
               <span style={{ width: 170 }}>Model spec</span>
               <span style={{ width: 130 }}>Backend</span>
               <span style={{ width: 100 }}>Compact @</span>
-              <span>When to use (the queen&apos;s rubric)</span>
+              <span>When to use (the {t('brain', { lower: true })}&apos;s rubric)</span>
             </div>
             {tierRows.map((row, i) => (
               <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -618,7 +618,7 @@ export default function AgentSettingsPage() {
                   className="pc-input"
                   wrapperStyle={{ flex: 1, minWidth: 180 }}
                   style={{ fontSize: 13, padding: '2px 6px' }}
-                  placeholder="when the queen should pick this tier"
+                  placeholder={`when the ${t('brain', { lower: true })} should pick this tier`}
                   aria-label={`Tier ${i + 1} when-to-use guidance`}
                   maxLength={300}
                   value={row.when}

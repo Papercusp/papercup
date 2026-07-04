@@ -351,7 +351,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
     expect(screen.getByTestId('cupboard-hive-visibility').getAttribute('data-visibility')).toBe('public');
     fireEvent.click(screen.getByTestId('cupboard-hive-join'));
     await waitFor(() =>
-      expect(screen.getByTestId('cupboard-hive-join-msg').textContent).toContain("Joined hive 'demo-hive' — 2/2"),
+      expect(screen.getByTestId('cupboard-hive-join-msg').textContent).toContain("Joined pot 'demo-hive' — 2/2"),
     );
     const joinCall = fetchMock.mock.calls.find((c) => String(c[0]).includes('join-hive'))!;
     expect(JSON.parse(String((joinCall[1] as RequestInit).body))).toMatchObject({ hiveId: 'demo' });
@@ -363,7 +363,7 @@ describe('HiveRollupHeaderCard — the hive as the joinable unit (P-001/P-003)',
     await waitFor(() => expect(screen.getByTestId('cupboard-hive-join-unavailable')).toBeTruthy());
     expect(screen.queryByTestId('cupboard-hive-join')).toBeNull();
     expect(screen.getByTestId('cupboard-hive-invite-input')).toBeTruthy();
-    expect(screen.getByTestId('cupboard-hive-join-unavailable').textContent).toContain('isn’t announcing');
+    expect(screen.getByTestId('cupboard-hive-join-unavailable').textContent).toContain("isn't announcing");
   });
 
   it('claim rollup + Claim CTA drive the loopback claim proxy for unclaimed members (P-003)', async () => {

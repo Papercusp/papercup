@@ -108,6 +108,32 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it('EI-6698 real shape: a loop:arm owner loop deactivated via a NON-terminal path (active:false, last_status still loop-stuck-backstop) at a record streak (175) is NOT re-escalated', () => {
+    // EI-6698 (loop-su-5bd1ad27…@*): the pinned su session died; the loop stuck-backstopped
+    // 175 consecutive times (10-min interval, ~29h) before its routine went active:false —
+    // but via a NON-terminal path (metadata last_error_source: dbos-executor-reaper), so
+    // next_fire_at stayed at the parked 'infinity' sentinel and last_status stayed
+    // 'loop-stuck-backstop' rather than the WI-1399 terminal marker 'loop-terminal-unreachable'.
+    // Every prior all-3-axes pin (EI-6718) carries the terminal marker; this one proves the
+    // suppression is INDEPENDENT of last_status text — it hits the loop:arm-owner AND
+    // routine_active:false AND staleness axes at once regardless of HOW the routine was paused.
+    // Guards against a future change that (wrongly) gated the paused/loop-arm skip on the exact
+    // terminal-marker string, which would re-open this record-streak escalation flood. Highest
+    // real-world streak pin in the file (prior stuck-backstop max was 36).
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-5bd1ad27-2015-4f78-b2c6-c91f2a1d4ea2',
+        consecutive_errors: 175,
+        last_status: 'loop-stuck-backstop', // NON-terminal — routine deactivated by a different path
+        routine_active: false,
+        routine_target_owner_id: 'su-5bd1ad27-2015-4f78-b2c6-c91f2a1d4ea2',
+        last_fired_at: new Date(NOW - 3 * 24 * HOUR_MS).toISOString(), // ~3 days stale frozen watermark
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);

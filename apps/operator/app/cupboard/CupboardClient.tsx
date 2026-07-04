@@ -608,13 +608,13 @@ export default function CupboardClient() {
               <Collapsible.Trigger asChild>
                 <button style={{ ...ghostButtonStyle, gap: 4 }} data-testid="cupboard-legacy-toggle">
                   <ChevronRight size={13} className="pc-collapsible-chevron" />
-                  Legacy listings ({browseSplit.legacy.length}) — pre-hive shared harnesses
+                  Legacy listings ({browseSplit.legacy.length}) — pre-{t('pot', { lower: true })} shared harnesses
                 </button>
               </Collapsible.Trigger>
               <Collapsible.Content>
                 <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: '10px 0' }}>
-                  These listings predate hives, and per-harness joining is retired — they are
-                  reference rows only. Sharing and joining happen at the hive level now.
+                  These listings predate {t('pot', { plural: true, lower: true })}, and per-harness joining is retired — they are
+                  reference rows only. Sharing and joining happen at the {t('pot', { lower: true })} level now.
                 </p>
                 <div style={gridStyle}>
                   {browseSplit.legacy.map((listing) => (
@@ -1125,7 +1125,7 @@ export function HiveRollupHeaderCard({
   const title =
     members.find((m) => m.hive_title)?.hive_title ??
     announce?.title ??
-    (isHivePubkeyRef(hiveRef) ? 'Hive' : hiveRef);
+    (isHivePubkeyRef(hiveRef) ? t('pot') : hiveRef);
   const claimedCount = members.filter((m) => m.claim_status === 'claimed').length;
   const unclaimed = members.filter((m) => m.claim_status === 'unclaimed');
   const joinable = !!announce && announce.memberLinks.length > 0;
@@ -1156,14 +1156,14 @@ export function HiveRollupHeaderCard({
       const okCount = body.members?.filter((m) => m.ok).length ?? 0;
       setJoinMsg(
         res.ok && body.ok
-          ? `Joined hive '${body.hiveSlug}' — ${okCount}/${announce.memberLinks.length} member(s)`
+          ? `Joined ${t('pot', { lower: true })} '${body.hiveSlug}' — ${okCount}/${announce.memberLinks.length} member(s)`
           : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
       );
     } catch (e) {
       setJoinMsg(`Join failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     setJoining(false);
-  }, [announce]);
+  }, [announce, t]);
 
   // Claim every unclaimed member listing through the loopback proxy; the
   // worker is the enforcement point, so report its per-repo verdicts honestly.
@@ -1214,7 +1214,7 @@ export function HiveRollupHeaderCard({
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (res.ok && body.ok) {
-        setInviteMsg('Invite topic joined — waiting for the hive to announce. Refreshing…');
+        setInviteMsg(`Invite topic joined — waiting for the ${t('pot', { lower: true })} to announce. Refreshing…`);
         setTimeout(() => void loadDirectory(), 1500);
       } else {
         setInviteMsg(`Invite failed: ${body.error ?? `HTTP ${res.status}`}`);
@@ -1222,7 +1222,7 @@ export function HiveRollupHeaderCard({
     } catch (e) {
       setInviteMsg(`Invite failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [inviteLink, loadDirectory]);
+  }, [inviteLink, loadDirectory, t]);
 
   return (
     <div
@@ -1283,7 +1283,7 @@ export function HiveRollupHeaderCard({
 
       {dirRows === null ? (
         <span style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Checking the hive directory…
+          <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Checking the {t('pot', { lower: true })} directory…
         </span>
       ) : joinable ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1300,7 +1300,7 @@ export function HiveRollupHeaderCard({
             {joining ? (
               <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Joining…</>
             ) : (
-              <><Hexagon size={13} /> Join hive</>
+              <><Hexagon size={13} /> Join {t('pot', { lower: true })}</>
             )}
           </button>
           {joinMsg && (
@@ -1316,10 +1316,10 @@ export function HiveRollupHeaderCard({
           <span style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <AlertTriangle size={12} />
             {announce
-              ? 'This hive announces topics only — a full member join link is required to join from here.'
+              ? `This ${t('pot', { lower: true })} announces topics only — a full member join link is required to join from here.`
               : dirError
-                ? `The hive directory is unreachable (${dirError}) — joining needs a live announce.`
-                : 'This hive isn’t announcing on the directory from here — it may be invite-only, offline, or not yet discovered.'}
+                ? `The ${t('pot', { lower: true })} directory is unreachable (${dirError}) — joining needs a live announce.`
+                : `This ${t('pot', { lower: true })} isn't announcing on the directory from here — it may be invite-only, offline, or not yet discovered.`}
           </span>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <input
