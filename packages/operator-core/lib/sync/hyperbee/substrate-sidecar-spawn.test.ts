@@ -147,4 +147,106 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     await vi.runAllTicks();
     expect(getSubstrateSidecarProcess()).toBe(second);
   });
+
+  // WI-1877: the respawn only restarts the PROCESS — nothing re-boots the
+  // harnesses onto it unless a listener acts on the notification below.
+  describe('onSidecarRespawned (WI-1877)', () => {
+    it('fires a registered listener after a crash-triggered respawn SUCCEEDS', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const first = makeChild();
+      const second = makeChild();
+      spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const fired: number[] = [];
+      onSidecarRespawned(() => fired.push(1));
+
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+      expect(fired).toEqual([]); // the FIRST (non-respawn) spawn never fires it
+
+      first.emit('exit', 137); // unexpected crash → schedules a respawn
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(fired).toEqual([]); // not yet — the new sidecar isn't ready
+
+      second.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      // Flush the microtask queue: notifySidecarRespawned() runs inside a
+      // `.then()` chained onto spawnSubstrateSidecar's returned promise, which
+      // resolves synchronously here but whose continuation is still a queued
+      // microtask (vi.runAllTicks() only drains fake-timer ticks, not real
+      // Promise microtasks).
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fired).toEqual([1]); // fires exactly once the respawned sidecar is ready
+    });
+
+    it('never fires for a deliberate stop (no crash, no respawn)', async () => {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+
+      const fired: number[] = [];
+      onSidecarRespawned(() => fired.push(1));
+
+      const { stopSubstrateSidecar } = await import('./substrate-sidecar-spawn');
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      const stopPromise = stopSubstrateSidecar();
+      child.emit('exit', 0); // the deliberate-stop exit
+      await stopPromise;
+      await vi.runAllTicks();
+      expect(fired).toEqual([]);
+    });
+
+    it('an unsubscribe fn stops further notifications', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const first = makeChild();
+      const second = makeChild();
+      spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const fired: number[] = [];
+      const unsubscribe = onSidecarRespawned(() => fired.push(1));
+      unsubscribe();
+
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+      first.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(1000);
+      second.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await vi.runAllTicks();
+      expect(fired).toEqual([]);
+    });
+
+    it('one throwing listener never blocks another from firing', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const first = makeChild();
+      const second = makeChild();
+      spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const fired: number[] = [];
+      onSidecarRespawned(() => {
+        throw new Error('boom');
+      });
+      onSidecarRespawned(() => fired.push(1));
+
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+      first.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(1000);
+      second.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(fired).toEqual([1]);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('onSidecarRespawned listener threw'),
+        expect.any(String),
+      );
+    });
+  });
 });

@@ -235,48 +235,58 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect((await statusOf('F-014')).taken_by).toBeNull();
   });
 
-  it('releases orphaned task work-items from the canonical work_items table', async () => {
-    await seedTaskItem('WI-TASK-1', 'su-dead-task-holder', 30);
+  // EI-6992: a 'task' item_kind is ISSUE-family (familyOf('task') === 'issue'), so in
+  // real production use it only ever carries the issue vocabulary (open/resolved/
+  // closed — written by createIssue/setIssueState), never the feature vocabulary
+  // (todo/wip/done) these tests used to seed. The reaper must NEVER touch an
+  // issue-family row's status — only clear taken_by/taken_at — regardless of what
+  // that status is; see the `freed-issue` StaleClaimAction doc for why (the reaper
+  // was previously writing feature-vocabulary literals onto these rows, silently
+  // corrupting them out of their valid open|resolved|closed vocabulary).
+  it('releases an orphaned issue-family (task) row from the canonical work_items table WITHOUT touching its status', async () => {
+    await seedTaskItem('WI-TASK-1', 'su-dead-task-holder', 30, 'open');
     await markKnown('su-dead-task-holder');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released).toHaveLength(1);
     expect(r.released[0]).toMatchObject({
       feature_id: 'WI-TASK-1',
       item_kind: 'task',
+      former_status: 'open',
+      new_status: 'open',
       former_taken_by: 'su-dead-task-holder',
       reason: 'dead',
-      action: 'freed-todo',
+      action: 'freed-issue',
     });
-    expect(await workItemStatusOf('WI-TASK-1')).toMatchObject({ status: 'todo', taken_by: null });
+    expect(await workItemStatusOf('WI-TASK-1')).toMatchObject({ status: 'open', requeue_count: 0, taken_by: null });
   });
 
-  it('requeues mid-flight task work-items, bounded by the same cap', async () => {
-    await seedTaskItem('WI-TASK-2', 'su-dead-task-holder-2', 30, 'wip');
+  it('a dead-held issue-family (task) row keeps its status verbatim — never requeued to the feature `todo`/`wip` vocabulary, and requeue_count never increments', async () => {
+    await seedTaskItem('WI-TASK-2', 'su-dead-task-holder-2', 30, 'open', 2);
     await markKnown('su-dead-task-holder-2');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'WI-TASK-2',
       item_kind: 'task',
-      former_status: 'wip',
-      new_status: 'todo',
-      action: 'requeued',
-      requeue_count: 1,
+      former_status: 'open',
+      new_status: 'open',
+      action: 'freed-issue',
+      requeue_count: 2,
     });
-    expect(await workItemStatusOf('WI-TASK-2')).toMatchObject({ status: 'todo', requeue_count: 1, taken_by: null });
+    expect(await workItemStatusOf('WI-TASK-2')).toMatchObject({ status: 'open', requeue_count: 2, taken_by: null });
   });
 
-  it('frees terminal task work-items without requeueing them', async () => {
-    await seedTaskItem('WI-TASK-3', 'su-dead-task-holder-3', 30, 'done');
+  it('a terminal (resolved) issue-family (task) row is freed but its status is untouched (never coerced to a feature terminal literal)', async () => {
+    await seedTaskItem('WI-TASK-3', 'su-dead-task-holder-3', 30, 'resolved');
     await markKnown('su-dead-task-holder-3');
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released[0]).toMatchObject({
       feature_id: 'WI-TASK-3',
       item_kind: 'task',
-      former_status: 'done',
-      new_status: 'done',
-      action: 'freed-terminal',
+      former_status: 'resolved',
+      new_status: 'resolved',
+      action: 'freed-issue',
     });
-    expect(await workItemStatusOf('WI-TASK-3')).toMatchObject({ status: 'done', taken_by: null });
+    expect(await workItemStatusOf('WI-TASK-3')).toMatchObject({ status: 'resolved', taken_by: null });
   });
 
   it('a mid-flight NULL-taken_at dead-holder claim is requeued → todo (EI-2534)', async () => {
