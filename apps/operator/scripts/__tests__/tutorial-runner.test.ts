@@ -2,29 +2,36 @@ import { describe, expect, it } from 'vitest';
 // @ts-expect-error — plain .mjs module (same pattern as the other script tests)
 import {
   OPTION_LINE,
+  SHELL_TABS,
   buildQaCommand,
   buildQaPrompt,
   chapterEmoji,
+  defaultTab,
   firstIndexOfChapter,
   installedQaBackends,
   interpretReply,
+  nextTab,
   parseArgs,
   renderProgressBar,
+  renderTabBar,
+  resolveShellKey,
   resumeIndex,
   searchSections,
   sectionChoices,
+  setupChecklist,
 } from '../tutorial-runner.mjs';
 
 describe('parseArgs', () => {
-  it('parses tutorial / operator-url / agent', () => {
-    expect(parseArgs(['--tutorial', '--agent=codex', '--operator-url=http://x:3070'])).toEqual({
+  it('parses tutorial / operator-url / agent / tab', () => {
+    expect(parseArgs(['--tutorial', '--agent=codex', '--operator-url=http://x:3070', '--tab=setup'])).toEqual({
       tutorial: true,
       agent: 'codex',
       operatorUrl: 'http://x:3070',
+      tab: 'setup',
     });
   });
-  it('defaults to first-run with no agent', () => {
-    expect(parseArgs([])).toEqual({ tutorial: false, agent: null, operatorUrl: null });
+  it('defaults to first-run with no agent / no tab', () => {
+    expect(parseArgs([])).toEqual({ tutorial: false, agent: null, operatorUrl: null, tab: null });
   });
 });
 
@@ -196,5 +203,100 @@ describe('chapterEmoji', () => {
     expect(chapterEmoji(1)).toBe('🧭');
     expect(chapterEmoji(3)).toBe('🐝');
     expect(chapterEmoji(99)).toBe('📘');
+  });
+});
+
+// ── Unified Tutorial|Setup shell (#4 + B2-#1) ──
+// chalk may emit color codes in CI; strip them and assert on plain substrings.
+const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+describe('nextTab / defaultTab / SHELL_TABS — the tab model (#4)', () => {
+  it('SHELL_TABS lists both tabs, tutorial first', () => {
+    expect(SHELL_TABS).toEqual(['tutorial', 'setup']);
+  });
+  it('nextTab toggles', () => {
+    expect(nextTab('tutorial')).toBe('setup');
+    expect(nextTab('setup')).toBe('tutorial');
+  });
+  it('defaultTab: explicit --tab wins, else the tutorial tab', () => {
+    expect(defaultTab({ tab: 'setup' })).toBe('setup');
+    expect(defaultTab({ tab: 'tutorial' })).toBe('tutorial');
+    expect(defaultTab({ tutorial: true })).toBe('tutorial'); // `papercusp tutorial`
+    expect(defaultTab({})).toBe('tutorial'); // first-run handoff → the tour
+    expect(defaultTab({ tab: 'bogus' })).toBe('tutorial'); // unknown → safe default
+  });
+});
+
+describe('renderTabBar — the always-visible tab bar + shortcut hints (#4 + B2-#1)', () => {
+  it('brackets the ACTIVE tab (owner-chosen mockup) so it reads without color', () => {
+    const t = strip(renderTabBar('tutorial'));
+    expect(t).toContain('[ Tutorial ]');
+    expect(t).not.toContain('[ Setup');
+    const s = strip(renderTabBar('setup'));
+    expect(s).toContain('[ Setup ]');
+    expect(s).not.toContain('[ Tutorial ]');
+  });
+  it('shows a ✓ on Setup once setup is complete', () => {
+    expect(strip(renderTabBar('tutorial', { setupComplete: true }))).toContain('Setup ✓');
+    expect(strip(renderTabBar('tutorial', { setupComplete: false }))).not.toContain('Setup ✓');
+  });
+  it('advertises every global shortcut with an icon hint (B2-#1)', () => {
+    const bar = strip(renderTabBar('tutorial'));
+    expect(bar).toContain('Tab'); // switch
+    expect(bar).toContain('search');
+    expect(bar).toContain('chapters');
+    expect(bar).toContain('ask');
+    expect(bar).toContain('🔍'); // the requested "ctrl+s with a search icon"
+  });
+});
+
+describe('resolveShellKey — global hotkeys live on every screen (B2-#1)', () => {
+  it('Tab → switch tab', () => {
+    expect(resolveShellKey({ name: 'tab' })).toBe('tab');
+  });
+  it('Ctrl+S OR "/" → search (some terminals swallow ^S as XOFF)', () => {
+    expect(resolveShellKey({ ctrl: true, name: 's' })).toBe('search');
+    expect(resolveShellKey({ sequence: '/' })).toBe('search');
+  });
+  it('"#" → jump to chapter, "?" → ask a question', () => {
+    expect(resolveShellKey({ sequence: '#' })).toBe('jump');
+    expect(resolveShellKey({ sequence: '?' })).toBe('ask');
+  });
+  it('non-shortcut keys (arrows, enter, plain letters) are NOT globals', () => {
+    expect(resolveShellKey({ name: 'up' })).toBeNull();
+    expect(resolveShellKey({ name: 'down' })).toBeNull();
+    expect(resolveShellKey({ name: 'return' })).toBeNull();
+    expect(resolveShellKey({ sequence: 'x', name: 'x' })).toBeNull();
+    expect(resolveShellKey({ name: 's' })).toBeNull(); // plain 's' (no ctrl) is not search
+    expect(resolveShellKey(null)).toBeNull();
+  });
+});
+
+describe('setupChecklist — the Setup-tab status model (#4)', () => {
+  it('a signed-in framework marks framework + signin done; embeddings stays optional until saved', () => {
+    const steps = setupChecklist(
+      { claudeInstalled: true, claudeSignedIn: true, embeddingsKeyPresent: false },
+      { claude: 'Claude Code' },
+    );
+    const byKey = Object.fromEntries(steps.map((s) => [s.key, s.status]));
+    expect(byKey).toEqual({ framework: 'done', signin: 'done', embeddings: 'optional' });
+    expect(steps.find((s) => s.key === 'framework')!.detail).toContain('Claude Code');
+  });
+  it('installed-but-not-signed-in → signin is a TODO', () => {
+    const steps = setupChecklist({ codexInstalled: true, codexSignedIn: false }, { codex: 'Codex' });
+    const byKey = Object.fromEntries(steps.map((s) => [s.key, s.status]));
+    expect(byKey.framework).toBe('done');
+    expect(byKey.signin).toBe('todo');
+  });
+  it('a fresh machine → framework + signin TODO; embeddings saved → done', () => {
+    expect(setupChecklist({}, {}).map((s) => s.status)).toEqual(['todo', 'todo', 'optional']);
+    const withKey = setupChecklist(
+      { claudeInstalled: true, claudeSignedIn: true, embeddingsKeyPresent: true },
+      {},
+    );
+    expect(withKey.find((s) => s.key === 'embeddings')!.status).toBe('done');
+  });
+  it('degrades gracefully with no snapshot', () => {
+    expect(setupChecklist(undefined).map((s) => s.key)).toEqual(['framework', 'signin', 'embeddings']);
   });
 });

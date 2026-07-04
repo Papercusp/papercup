@@ -33,7 +33,6 @@
  * First-run:    launched by the concierge at handoff (deterministic tutorial)
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core';
@@ -577,19 +576,6 @@ async function resolveQaBackend(script, prompts, cached) {
   return { agent, bin: script.agentBinaries?.[agent] ?? null };
 }
 
-/**
- * No agent backend is installed, so live Q&A can't run (B2-#3b). Point the user
- * at setup to install one. (In the unified Setup|Tutorial shell this becomes an
- * automatic switch to the Setup tab — tutorial-setup-batch #4.)
- */
-function routeToSetupForBackend() {
-  say(
-    `You'll need an agent backend installed to ask live questions. Run ${bold('papercusp setup')} ` +
-      'to install one (Claude, Codex, or OMP), then re-open the tutorial. ' +
-      dim('Everything else in the tutorial works without it.'),
-  );
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 // Phase A — optional setup (deterministic; the not-ready items are already
 // filtered out server-side unless the preview flag is on).
@@ -1095,121 +1081,44 @@ async function main() {
       ? { agent: args.agent, bin: script.agentBinaries[args.agent] }
       : null;
 
-  say(
-    args.tutorial
-      ? bold('The Papercusp tutorial — welcome back.')
-      : bold("You're set up. Here's a quick tour of Papercusp — about 10 minutes."),
-  );
+  // ── Unified Tutorial | Setup shell (#4) ──
+  // Shared, MUTABLE state so a Tab-switch preserves tutorial position + progress
+  // across tabs (you resume the same section you left).
+  const shell = {
+    base,
+    args,
+    prompts,
+    interactive,
+    script,
+    sections,
+    setupComplete: false,
+    qaBackend,
+    activeTab: defaultTab(args),
+    tut: {
+      idx: resumeIndex(sections, script.progress),
+      completed: new Set(script.progress?.completed_ids ?? []),
+      lastChapter: null,
+      shownIdx: -1,
+      entered: false,
+    },
+    setup: {
+      entered: false,
+      // The Setup tab's own concierge session; seed the picked framework from --agent
+      // so a first-run handoff doesn't re-ask which framework.
+      session: {
+        chosen: args.agent === 'omp' ? 'omp-meridian' : args.agent || null,
+        forcePick: false,
+        embeddingsSkipped: false,
+      },
+    },
+  };
 
-  // Phase A — optional setup (first-run only; the required steps are already done).
-  if (!args.tutorial) {
-    await runOptionalSetup(base, script.optionalSetup, prompts);
-  }
-
-  // Opening position: resume menu when there's prior progress or in tutorial mode.
-  let idx = resumeIndex(sections, script.progress);
-  const hasProgress = Boolean(script.progress?.last_section_id) && idx > 0 && idx < sections.length;
-  if (args.tutorial || hasProgress) {
-    const resumeCh = hasProgress
-      ? script.chapters.find((c) => c.number === sections[idx].chapter)
-      : null;
-    const choice = await chapterMenu(
-      script,
-      prompts,
-      hasProgress,
-      resumeCh ? `Chapter ${resumeCh.number} — ${resumeCh.title}` : null,
-    );
-    if (choice === '__finish') {
-      await finishUp(base, script, args);
-      return 0;
-    }
-    if (choice === '__begin') idx = 0;
-    else if (choice === '__resume') {
-      /* keep computed idx */
-    } else {
-      const chNum = Number(choice);
-      const ci = firstIndexOfChapter(sections, chNum);
-      idx = ci >= 0 ? ci : 0;
-    }
-  }
-
-  const completed = new Set(script.progress?.completed_ids ?? []);
-  let lastChapter = null;
-
-  // The deterministic section walk.
-  while (idx < sections.length) {
-    const s = sections[idx];
-    if (s.chapter !== lastChapter) {
-      const ch = script.chapters.find((c) => c.number === s.chapter);
-      const bar = totalChapters ? dim(`  ${renderProgressBar(s.chapter, totalChapters, 12)}`) : '';
-      say(
-        accent(bold(`${chapterEmoji(s.chapter)}  Chapter ${s.chapter}${ch ? ` — ${ch.title}` : ''}`)) +
-          bar,
-      );
-      lastChapter = s.chapter;
-    }
-    // Brief, VERBATIM from the content pack. No LLM. Friendly reveal.
-    process.stdout.write(`\n${bold(s.title)}\n`);
-    await typeOut(s.brief);
-
-    let advanced = false;
-    while (!advanced) {
-      // Interactive TTY → arrow-key select (#1). Non-TTY → typed fallback.
-      let action;
-      let typedQuestion = null;
-      if (interactive) {
-        action = await select({ message: 'What next?', choices: sectionChoices(s), loop: false });
-      } else {
-        const reply = interpretReply(await input({ message: OPTION_LINE }));
-        action = reply.kind;
-        // The typed fallback already carries the question text — don't re-prompt.
-        if (reply.kind === 'question') typedQuestion = reply.text;
-      }
-
-      if (action === 'continue') {
-        completed.add(s.id);
-        await saveProgress(base, s.id, [...completed]);
-        idx += 1;
-        advanced = true;
-      } else if (action === 'details') {
-        say(s.details || dim('(no extra details for this section — ask a question if you like)'));
-      } else if (action === 'search') {
-        const target = await searchTutorial(script, prompts);
-        if (typeof target === 'number' && target >= 0) {
-          idx = target;
-          lastChapter = null; // re-print the chapter header on the jump
-          advanced = true;
-        }
-      } else if (action === 'question') {
-        const q = typedQuestion ?? (await input({ message: '💬 Your question:' }))?.trim();
-        if (q) {
-          const backend = await resolveQaBackend(script, prompts, qaBackend);
-          if (!backend) {
-            routeToSetupForBackend(); // B2-#3b: no agent installed → point at setup
-          } else {
-            qaBackend = backend; // cache the session's choice so we don't re-prompt (B2-#3)
-            await answerQuestion(backend.agent, backend.bin, s, q);
-          }
-        }
-      } else if (action === 'menu') {
-        const choice = await chapterMenu(script, prompts, false, null);
-        if (choice === '__finish') {
-          await finishUp(base, script, args);
-          return 0;
-        }
-        idx = choice === '__begin' ? 0 : Math.max(0, firstIndexOfChapter(sections, Number(choice)));
-        lastChapter = null;
-        advanced = true;
-      } else if (action === 'finish') {
-        await finishUp(base, script, args);
-        return 0;
-      }
-    }
-  }
-
-  // Reached the natural end → the finale, then graduate.
-  runFinale(script);
-  await finishUp(base, script, args, /* skipFinale */ true);
+  // Interactive: the full tabbed shell with global hotkeys (Tab / ^S / # / ?).
+  // Non-TTY (piped / CI — no raw keypresses): the legacy sequential walk — optional
+  // setup then the Tutorial via the typed fallback; the Setup tab is TTY-only.
+  if (interactive) return runShell(shell);
+  if (!args.tutorial) await runOptionalSetup(base, script.optionalSetup, prompts);
+  await runTutorialTab(shell);
   return 0;
 }
 
