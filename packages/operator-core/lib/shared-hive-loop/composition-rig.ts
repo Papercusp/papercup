@@ -499,6 +499,12 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       .join('\n'),
   );
 
+  // Migration 495 added drained_log_key so outbox-drain can attribute each drained
+  // row to the live own-log key and detect prior-era orphan tails. The composition
+  // rig uses a sliced baseline/migration subset, so keep the fixture schema aligned
+  // with the current drain writer.
+  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
+
   // WI-1644 (part 3): SCHEDULER_MAINTAINED_READY reads live as ON in this test
   // environment (flags are NOT mocked here), so claimFloorsWhereSql's
   // useMaintainedReady branch queries harness_shared.work_item_blocked — the

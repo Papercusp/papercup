@@ -12,7 +12,7 @@ vi.mock('../../coord-liveness-config', () => ({
   readCoordLivenessConfig: vi.fn(),
   writeCoordLivenessConfig: vi.fn(),
   setCoordLivenessConfig: vi.fn(),
-  COORD_LIVENESS_DEFAULTS: { handoffTtlMs: 43_200_000, reclaimGraceMs: 600_000, reclaimRequeueCap: 3, sessionReaperGraceMs: 600_000 },
+  COORD_LIVENESS_DEFAULTS: { handoffTtlMs: 43_200_000, reclaimGraceMs: 600_000, reclaimParkedGraceMs: 1_800_000, reclaimRequeueCap: 3, sessionReaperGraceMs: 600_000 },
 }));
 vi.mock('../../gateway-control/control-harness', () => ({
   runControlMutation: vi.fn(async (spec: any, opts: any = {}) => {
@@ -42,7 +42,12 @@ beforeEach(() => {
 describe('work_items:reclaim_config', () => {
   it('get returns overrides (null when unset) + defaults', async () => {
     const b = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
-    expect(b).toMatchObject({ reclaimGraceMs: null, reclaimRequeueCap: null, defaults: { reclaimGraceMs: 600_000, reclaimRequeueCap: 3 } });
+    expect(b).toMatchObject({
+      reclaimGraceMs: null,
+      reclaimParkedGraceMs: null,
+      reclaimRequeueCap: null,
+      defaults: { reclaimGraceMs: 600_000, reclaimParkedGraceMs: 1_800_000, reclaimRequeueCap: 3 },
+    });
   });
 
   it('is operator-authority gated', async () => {
@@ -59,6 +64,12 @@ describe('work_items:reclaim_config', () => {
   it('applies a valid patch and verifies', async () => {
     const b = body(await tool.handler({ op: 'set', reclaimGraceMs: 300_000, reclaimRequeueCap: 5 } as never, { role: 'operator' } as never));
     expect(writeM).toHaveBeenCalledWith({ reclaimGraceMs: 300_000, reclaimRequeueCap: 5 });
+    expect(b).toMatchObject({ ok: true, applied: true, verify: { ok: true } });
+  });
+
+  it('applies the reclaimParkedGraceMs knob (WI-2689 churn fix)', async () => {
+    const b = body(await tool.handler({ op: 'set', reclaimParkedGraceMs: 2_700_000 } as never, { role: 'operator' } as never));
+    expect(writeM).toHaveBeenCalledWith({ reclaimParkedGraceMs: 2_700_000 });
     expect(b).toMatchObject({ ok: true, applied: true, verify: { ok: true } });
   });
 

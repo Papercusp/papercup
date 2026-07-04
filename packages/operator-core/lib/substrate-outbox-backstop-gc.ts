@@ -67,14 +67,14 @@ export const EPHEMERAL_UNDRAINED_RETENTION_MS = 2 * 60 * 60 * 1000;
  *  an old live process still emits one during rollout, then reap it so the
  *  outbox health invariant measures drainable backlog instead of permanent
  *  wildcard residue. */
-export const WILDCARD_UNDRAINED_RETENTION_MS = 10 * 60 * 1000;
+export const WILDCARD_UNDRAINED_RETENTION_MS = 5 * 60 * 1000;
 
 /** Undrained rows whose (workspace_id, harness_slug) pair is not in the current
  *  harness registry are orphaned for the same reason as wildcard rows: no drain
  *  loop can be started for a non-existent registry project. Keep a grace window
  *  for registry/write-order races, then reap them so the health check focuses on
  *  drainable backlog. */
-export const NON_REGISTRY_UNDRAINED_RETENTION_MS = 10 * 60 * 1000;
+export const NON_REGISTRY_UNDRAINED_RETENTION_MS = 5 * 60 * 1000;
 
 /** SQL LIKE patterns identifying one-shot EPHEMERAL test-hive slugs whose captures
  *  will never drain. Kept deliberately narrow (only the unambiguous one-shot

@@ -472,6 +472,63 @@ describe('reclaimStaleWorkItemClaims', () => {
   });
 });
 
+// WI-2689 (reclaim-churn fix): a holder whose keepalive lapsed but whose coord_presence
+// row still beat RECENTLY (within the parked grace, past the short live window) is a
+// loop-dropped member about to be re-armed, NOT a dead one. Reaping its claim at the bare
+// live grace produced the claim→release→reclaim ping-pong that dominated the dedup/churn
+// ratio (WI-2118 reclaimed 3x+). The parked grace holds such a holder back until its beat
+// ages past the window — protecting the resumable, still promptly reaping the truly dead.
+describe('WI-2689 parked-grace (reclaim-churn fix)', () => {
+  it('feature reaper: a holder that BEAT within the parked grace is NOT reaped, even past the live window', async () => {
+    await seedItem('F-PK1', 'su-parked-1', 30); // claim 30 min old — past the 10-min live grace
+    // Heartbeat 15 min ago: past the 10-min live window (not "alive") but within the 30-min parked window.
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-1', now() - interval '15 minutes')`;
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect((await statusOf('F-PK1')).taken_by).toBe('su-parked-1');
+  });
+
+  it('feature reaper: once the beat ages past the parked grace, the holder IS reaped (bounded, not indefinite)', async () => {
+    await seedItem('F-PK2', 'su-parked-2', 40);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-2', now() - interval '45 minutes')`;
+    const r = await reclaimStaleWorkItemClaims(sql);
+    expect(r.released.map((c) => c.feature_id)).toEqual(['F-PK2']);
+    expect(r.released[0]).toMatchObject({ reason: 'dead' });
+  });
+
+  it('feature reaper: a parkedGraceMs override == base grace disables the extra protection (configurable backoff)', async () => {
+    await seedItem('F-PK3', 'su-parked-3', 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-3', now() - interval '15 minutes')`;
+    // parkedGraceMs 10m == base grace → the 15-min-stale beat is now past it → reaped.
+    const r = await reclaimStaleWorkItemClaims(sql, { parkedGraceMs: 10 * 60_000 });
+    expect(r.released.map((c) => c.feature_id)).toEqual(['F-PK3']);
+  });
+
+  it('feature reaper: parkedGraceMs is clamped to be ≥ graceMs (a parked holder never waits LESS)', async () => {
+    await seedItem('F-PK4', 'su-parked-4', 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-4', now() - interval '15 minutes')`;
+    // Absurdly small parkedGraceMs (1m) is clamped UP to graceMs (20m); the 15-min beat is
+    // inside 20m → still protected. Without the clamp it would (wrongly) reap.
+    const r = await reclaimStaleWorkItemClaims(sql, { graceMs: 20 * 60_000, parkedGraceMs: 60_000 });
+    expect(r.released).toHaveLength(0);
+  });
+
+  it('issue reaper: a recently-parked assignee (beat within parked grace) is NOT reaped', async () => {
+    await seedIssue('EI-PK1', 'bug', 'su-parked-issue', 30);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-issue', now() - interval '15 minutes')`;
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released).toHaveLength(0);
+    expect(await assigneeOf('EI-PK1')).toBe('su-parked-issue');
+  });
+
+  it('issue reaper: the same assignee is reaped once its beat ages past the parked grace', async () => {
+    await seedIssue('EI-PK2', 'change', 'su-parked-issue-2', 40);
+    await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-parked-issue-2', now() - interval '45 minutes')`;
+    const r = await reclaimStaleIssueClaims(sql);
+    expect(r.released.map((c) => c.issue_id)).toEqual(['EI-PK2']);
+  });
+});
+
 describe('reclaimStaleIssueClaims (issue-family reaper, GAP 2 / P-005 / D-009)', () => {
   it('a dead-holder OPEN bug → assignee cleared, returned to the open pool', async () => {
     await seedIssue('EI-1', 'bug', 'opspawn-dead-bug', 30);

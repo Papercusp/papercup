@@ -299,6 +299,7 @@ const staleClaimSweepCheck: PeriodicCheck = {
     const includeStalled = await getFlag(FLAGS.RECLAIM_STALLED, 'system');
     const r = await reclaimStaleWorkItemClaims(sql, {
       graceMs: livenessCfg.reclaimGraceMs,
+      parkedGraceMs: livenessCfg.reclaimParkedGraceMs,
       requeueCap: livenessCfg.reclaimRequeueCap,
       includeStalled,
     });
@@ -390,7 +391,13 @@ const staleClaimSweepCheck: PeriodicCheck = {
 
     // The issue-family reaper — clear dead holders off OPEN bug/change issues
     // (same alias-aware liveness), returning them to the open pool (P-005 / D-009).
-    const ir = await reclaimStaleIssueClaims(sql);
+    // WI-2689: thread the SAME reclaim overrides the feature reaper gets (this path
+    // previously took none, so the configurable grace + parked-grace churn fix never
+    // reached issue-family claims — WI-2118-class change items).
+    const ir = await reclaimStaleIssueClaims(sql, {
+      graceMs: livenessCfg.reclaimGraceMs,
+      parkedGraceMs: livenessCfg.reclaimParkedGraceMs,
+    });
     if (ir.released.length > 0) {
       console.warn(
         `[stale-claims] reaped ${ir.released.length} issue-family claim(s) from dead holders ` +

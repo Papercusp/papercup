@@ -150,13 +150,15 @@ export interface OutboxHealth {
 
 export async function scanOutboxHealth(
   sql: postgres.Sql,
-  opts: { maxDepth: number; maxAgeMs: number; nowMs?: number },
+  opts: { maxDepth: number; maxAgeMs: number; nowMs?: number; workspaceId?: string; harness?: string },
 ): Promise<OutboxHealth> {
   const nowMs = opts.nowMs ?? Date.now();
   const rows = await sql<Array<{ depth: number; oldest_ts: number | null }>>`
     SELECT COUNT(*)::int AS depth, MIN(ts) AS oldest_ts
       FROM harness_shared.substrate_outbox
-     WHERE drained_at IS NULL`;
+     WHERE drained_at IS NULL
+       AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
+       AND (${opts.harness ?? null}::text IS NULL OR harness_slug = ${opts.harness ?? null})`;
   const depth = Number(rows[0]?.depth ?? 0);
   const oldest = rows[0]?.oldest_ts == null ? null : Number(rows[0].oldest_ts);
   const age = oldest == null ? null : Math.max(0, nowMs - oldest);
@@ -291,6 +293,8 @@ export async function runSharedHiveMonitorPass(opts: {
     maxDepth: opts.slo?.outboxMaxDepth ?? 10_000,
     maxAgeMs: opts.slo?.outboxMaxAgeMs ?? 30 * 60_000,
     nowMs,
+    workspaceId: opts.workspaceId,
+    harness: opts.harness,
   });
   for (const b of outbox.breaches) {
     incidents.push({ kind: 'outbox-health', title: b, detail: outbox });

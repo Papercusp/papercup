@@ -19,6 +19,7 @@ import Corestore from 'corestore';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -80,7 +81,7 @@ async function initFixtureRepo(dir: string): Promise<void> {
   await g(dir, ['commit', '-qm', 'main tip']);
   // A branch off main carrying a big blob, unreachable from HEAD.
   await g(dir, ['checkout', '-q', '-b', 'heavy']);
-  writeFileSync(join(dir, 'big.bin'), 'x'.repeat(512 * 1024)); // 512 KiB
+  writeFileSync(join(dir, 'big.bin'), randomBytes(512 * 1024)); // 512 KiB, INCOMPRESSIBLE (git can't pack it away)
   await g(dir, ['add', '.']);
   await g(dir, ['commit', '-qm', 'heavy branch blob']);
   await g(dir, ['checkout', '-q', 'main']); // HEAD back on the small tip

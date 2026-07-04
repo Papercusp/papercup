@@ -129,6 +129,26 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
       expect(healthy.undrainedDepth).toBe(0);
       expect(healthy.breaches).toEqual([]);
 
+      // Regression for EI-7179: orphaned / unbooted scopes can legitimately sit
+      // in substrate_outbox until the global backstop GC horizon. A monitor pass
+      // for one live hive must not file an outbox-health incident for another
+      // harness's debris.
+      await b.sql`
+        INSERT INTO harness_shared.substrate_outbox
+          (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+        VALUES
+          (${rig.workspaceId}, 'other-harness', 'harness_features', 'put', 'F-OTHER', '{}'::jsonb,
+           ${Date.now() - 60 * 60_000}, NULL)`;
+      const globalOther = await scanOutboxHealth(b.sql, { maxDepth: 0, maxAgeMs: 1 });
+      expect(globalOther.undrainedDepth).toBeGreaterThan(0);
+      const scopedOther = await scanOutboxHealth(b.sql, {
+        maxDepth: 0,
+        maxAgeMs: 1,
+        workspaceId: rig.workspaceId,
+        harness: HARNESS,
+      });
+      expect(scopedOther.undrainedDepth).toBe(0);
+
       // ════ 4. P-013: the convergence-lag probe ════
       const probe = await measureConvergenceLag({
         write: async () => {
@@ -164,6 +184,7 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
       const kinds = report.incidents.map((i) => i.kind).sort();
       expect(kinds).toContain('double-completion'); // F-501 is still contested on B
       expect(kinds).toContain('presence-ghost'); // the dead swarm anchors a live lease
+      expect(kinds).not.toContain('outbox-health'); // unrelated harness debris is outside this pass
       expect(filed).toEqual(report.incidents); // every incident reached the sink
     },
     240_000,
