@@ -52,6 +52,33 @@ describe('resolveStage', () => {
     expect(resolveStage(snap({ setupFinished: true }))).toEqual({ stage: 'done' });
   });
 
+  it('tutorial re-entry: a FINISHED machine resolves to handoff, not done (P-014)', () => {
+    const s = snap({ setupFinished: true, claudeInstalled: true, claudeSignedIn: true });
+    expect(resolveStage(s, { tutorial: true })).toEqual({ stage: 'handoff', framework: 'claude' });
+  });
+
+  it('tutorial re-entry never re-nags for the embeddings key', () => {
+    const s = snap({
+      setupFinished: true,
+      claudeInstalled: true,
+      claudeSignedIn: true,
+      embeddingsKeyPresent: false, // user skipped it during first-run
+    });
+    expect(resolveStage(s, { tutorial: true })).toEqual({ stage: 'handoff', framework: 'claude' });
+  });
+
+  it('tutorial re-entry on a finished machine whose backend VANISHED walks setup again', () => {
+    // e.g. the CLI was uninstalled since graduation — the tutorial still needs an agent.
+    const s = snap({ setupFinished: true });
+    expect(resolveStage(s, { tutorial: true })).toMatchObject({ stage: 'pick' });
+    expect(
+      resolveStage(snap({ setupFinished: true, claudeInstalled: true }), {
+        tutorial: true,
+        chosen: 'claude',
+      }),
+    ).toEqual({ stage: 'login', framework: 'claude' });
+  });
+
   it('pick when nothing installed and nothing chosen', () => {
     expect(resolveStage(snap())).toEqual({
       stage: 'pick',

@@ -11,6 +11,8 @@
  *   ?chosen=<claude|codex|omp-meridian>   the user's picked framework
  *   ?forcePick=1                          decline the pre-detection auto-skip
  *   ?embeddingsSkipped=1                  user skipped the embeddings-key step
+ *   ?tutorial=1                           tutorial re-entry (P-014): finished
+ *                                         machines resolve to handoff, not done
  *
  * Keeping resolution server-side means the .mjs concierge needs no TS import
  * of the resolver — it just polls this endpoint (~5s) and acts on `stage`.
@@ -55,6 +57,7 @@ export function parseOnboardingQuery(url: string, os: string): ResolveOpts {
     chosen,
     forcePick: q.get('forcePick') === '1',
     embeddingsSkipped: q.get('embeddingsSkipped') === '1',
+    tutorial: q.get('tutorial') === '1',
     os,
   };
 }

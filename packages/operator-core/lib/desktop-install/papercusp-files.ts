@@ -49,6 +49,9 @@ export interface InstallPaths {
   psuPath: string;
   /** ~/.papercusp/bin/ptool — defineTool CLI shim → the bundled ptool.mjs. */
   ptoolPath: string;
+  /** ~/.papercusp/bin/papercusp — `papercusp <onboard|tutorial>` dispatcher →
+   *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
+  papercuspCliPath: string;
 }
 
 export interface InstallResult extends InstallPaths {
@@ -71,10 +74,14 @@ export interface InstallResult extends InstallPaths {
   psuShimWritten: boolean;
   /** True when the `ptool` shim was written. */
   ptoolShimWritten: boolean;
+  /** True when the `papercusp` dispatcher shim was written (P-014). */
+  papercuspCliWritten: boolean;
   /** Resolved psu launcher the shim points at. Empty when not found. */
   psuLauncherSource: string;
   /** Resolved ptool launcher the shim points at. Empty when not found. */
   ptoolLauncherSource: string;
+  /** Resolved onboarding-concierge launcher the dispatcher points at. Empty when not found. */
+  onboardLauncherSource: string;
   /** Shell-profile files updated to put ~/.papercusp/bin on PATH (empty if none). */
   pathProfilesUpdated: string[];
 }
@@ -478,6 +485,36 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
 }
 
 /**
+ * Write the `papercusp` end-user dispatcher shim (agent-first-onboarding
+ * P-014): `papercusp onboard` runs the terminal onboarding concierge,
+ * `papercusp tutorial` re-opens the guided tutorial (concierge --tutorial).
+ * Same node-resolution rules as writeShim. The Linux .deb writes a system
+ * twin at /usr/bin/papercusp (deb/postinstall.sh); this per-user copy covers
+ * macOS + dev boxes, where installPapercuspFiles is the install path.
+ */
+async function writeDispatcherShim(shimPath: string, launcherPath: string): Promise<boolean> {
+  const bundledNode = path.join(path.dirname(path.dirname(launcherPath)), 'bin', 'node');
+  const nodeCmd = (await pathExists(bundledNode)) ? bundledNode : 'node';
+  const body =
+    '#!/usr/bin/env bash\n' +
+    '# papercusp CLI dispatcher — managed by Papercusp.app (installPapercuspFiles).\n' +
+    '# Refreshed on every boot; do not edit.\n' +
+    'cmd="${1:-}"\n' +
+    'case "$cmd" in\n' +
+    `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
+    `  tutorial) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tutorial "$@" ;;\n` +
+    '  *)\n' +
+    '    echo "usage: papercusp <onboard|tutorial>"\n' +
+    '    echo "  onboard   first-run setup + tutorial"\n' +
+    '    echo "  tutorial  re-open the guided tutorial"\n' +
+    '    exit 2 ;;\n' +
+    'esac\n';
+  await fs.writeFile(shimPath, body, { mode: 0o755 });
+  await fs.chmod(shimPath, 0o755);
+  return true;
+}
+
+/**
  * Ensure ~/.papercusp/bin is on the user's shell PATH so `psu` / `ptool` work in
  * ANY terminal the user opens — not only the in-app "+" console (which sets PATH
  * itself). Appends an idempotent, marker-guarded block to the common login +
@@ -586,6 +623,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     binDir,
     psuPath: path.join(binDir, 'psu'),
     ptoolPath: path.join(binDir, 'ptool'),
+    papercuspCliPath: path.join(binDir, 'papercusp'),
   };
 }
 
@@ -604,6 +642,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   );
   const ptoolLauncherSource = await firstExisting(
     cliLauncherCandidates(operatorAppRoot, explicitRoot, ['ptool.mjs']),
+  );
+  // Onboarding concierge — bundled (onboard.mjs) first, dev source second (P-014).
+  const onboardLauncherSource = await firstExisting(
+    cliLauncherCandidates(operatorAppRoot, explicitRoot, ['onboard.mjs', 'onboard-launcher.mjs']),
   );
 
   const paths = resolveInstallPaths(home);
@@ -645,11 +687,16 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const ptoolShimWritten = ptoolLauncherSource
     ? await writeShim(paths.ptoolPath, ptoolLauncherSource, 'defineTool CLI (ptool)')
     : false;
+  const papercuspCliWritten = onboardLauncherSource
+    ? await writeDispatcherShim(paths.papercuspCliPath, onboardLauncherSource)
+    : false;
   // Put ~/.papercusp/bin on the user's shell PATH so psu/ptool resolve in ANY
   // terminal they open (the in-app "+" console sets PATH itself, but a plain
   // Terminal does not). Only when a shim actually landed.
   const pathProfilesUpdated =
-    psuShimWritten || ptoolShimWritten ? await ensureBinOnPath(home, paths.binDir) : [];
+    psuShimWritten || ptoolShimWritten || papercuspCliWritten
+      ? await ensureBinOnPath(home, paths.binDir)
+      : [];
 
   // Link any user-installed agent CLIs (claude/codex) into the psu bin dir so
   // `psu → <agent>` launches out of the box — without this, a fresh install
@@ -666,8 +713,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     extensionSource: extensionWritten && extensionSource ? extensionSource : '',
     psuShimWritten,
     ptoolShimWritten,
+    papercuspCliWritten,
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
+    onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',
     pathProfilesUpdated,
   };
 }

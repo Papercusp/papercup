@@ -97,6 +97,14 @@ export interface ResolveOpts {
   embeddingsSkipped?: boolean;
   /** `process.platform` of the host (default: 'linux'). */
   os?: string;
+  /**
+   * Tutorial re-entry (`papercusp tutorial` / the Papercusp Tutorial icon,
+   * P-014): a FINISHED machine proceeds to handoff (mode=tutorial) instead of
+   * `done`, and the embeddings nag never re-fires. An UNfinished machine
+   * still walks pick→install→login first — the tutorial needs a working
+   * agent backend either way.
+   */
+  tutorial?: boolean;
 }
 
 /**
@@ -110,7 +118,7 @@ export interface ResolveOpts {
 export function resolveStage(s: OnboardingSnapshot, opts: ResolveOpts = {}): OnboardingStage {
   const os = opts.os ?? 'linux';
   const frameworks = allowedFrameworks(os);
-  if (s.setupFinished) return { stage: 'done' };
+  if (s.setupFinished && !opts.tutorial) return { stage: 'done' };
 
   const chosen = opts.chosen && frameworks.includes(opts.chosen) ? opts.chosen : null;
   if (!chosen) {
@@ -137,7 +145,7 @@ function afterAuth(
   s: OnboardingSnapshot,
   opts: ResolveOpts,
 ): OnboardingStage {
-  if (!s.embeddingsKeyPresent && !opts.embeddingsSkipped) {
+  if (!s.embeddingsKeyPresent && !opts.embeddingsSkipped && !opts.tutorial) {
     return { stage: 'embeddings', framework: f };
   }
   return { stage: 'handoff', framework: f };

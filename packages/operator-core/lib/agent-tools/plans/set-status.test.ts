@@ -6,6 +6,8 @@ import {
   truncateInlineNote,
   isTerminalStatus,
   releaseTerminalGrips,
+  terminalFlipConflict,
+  type HolderInfo,
 } from './set-status';
 
 // P-020 (planning-attention-importance): plans:set-status pushes a
@@ -220,6 +222,48 @@ describe('releaseTerminalGrips (EI-2298)', () => {
     expect(out.assignmentReleased).toBe(false);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
+  });
+});
+
+// WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an
+// AGENT who is not the item's live claim holder is refused — the prevention leg the
+// close path historically lacked (ornith run-10: a member bulk-flipped items its
+// sibling held). These cover the pure decision; the getClaim glue is a thin read.
+describe('terminalFlipConflict (WI-2156)', () => {
+  const peer: HolderInfo = {
+    owner: 'su-peer',
+    ownerLabel: 'peer · su-peer',
+    intent: 'verifying P-003',
+    expiresTs: '2026-07-04T10:00:00Z',
+    expired: false,
+  };
+  it('BLOCKS a terminal flip when a LIVE peer holds the item (returns the holder)', () => {
+    const c = terminalFlipConflict({ status: 'done', agentOwnerId: 'su-me', holder: peer });
+    expect(c).not.toBeNull();
+    expect(c?.owner).toBe('su-peer');
+    expect(c?.intent).toBe('verifying P-003');
+    // dropped is terminal too
+    expect(terminalFlipConflict({ status: 'dropped', agentOwnerId: 'su-me', holder: peer })).not.toBeNull();
+  });
+  it('ALLOWS closing your OWN held item (holder === caller)', () => {
+    const mine: HolderInfo = { ...peer, owner: 'su-me', ownerLabel: 'me' };
+    expect(terminalFlipConflict({ status: 'done', agentOwnerId: 'su-me', holder: mine })).toBeNull();
+  });
+  it('ALLOWS when the peer claim is EXPIRED/lapsed (a dead peer never wedges closure)', () => {
+    expect(
+      terminalFlipConflict({ status: 'done', agentOwnerId: 'su-me', holder: { ...peer, expired: true } }),
+    ).toBeNull();
+  });
+  it('ALLOWS a human/principal caller (agentOwnerId null — the guard binds agents, not the owner)', () => {
+    expect(terminalFlipConflict({ status: 'done', agentOwnerId: null, holder: peer })).toBeNull();
+  });
+  it('ALLOWS when the item is unheld (no claim)', () => {
+    expect(terminalFlipConflict({ status: 'done', agentOwnerId: 'su-me', holder: null })).toBeNull();
+  });
+  it('is a NO-OP for non-terminal flips — the wip path owns that claim (no double-guard)', () => {
+    expect(terminalFlipConflict({ status: 'wip', agentOwnerId: 'su-me', holder: peer })).toBeNull();
+    expect(terminalFlipConflict({ status: 'blocked', agentOwnerId: 'su-me', holder: peer })).toBeNull();
+    expect(terminalFlipConflict({ status: 'needs-human', agentOwnerId: 'su-me', holder: peer })).toBeNull();
   });
 });
 

@@ -33,6 +33,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
+import { getClaim } from '../../plan-items/claims';
 import { convertPlanItem } from '../../plan-items/convert';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -170,6 +171,43 @@ export function truncateInlineNote(note: string | undefined): {
 /** A terminal status — the item is finished; it is held + assigned by no one. */
 export function isTerminalStatus(status: string): boolean {
   return status === 'done' || status === 'dropped';
+}
+
+/** The minimal claim shape the terminal-flip guard reads (a subset of PlanItemClaim). */
+export interface HolderInfo {
+  owner: string;
+  ownerLabel: string | null;
+  intent: string;
+  expiresTs: string;
+  expired: boolean;
+}
+
+/**
+ * WI-2156 (completion-integrity, terminal-flip holdership): decide whether an AGENT's
+ * terminal flip (done/dropped) must be REFUSED because a LIVE peer holds the item's
+ * claim. The `wip` path claims-before-work and rejects a live peer claim, but the close
+ * path historically skipped the check — so any agent could terminal-flip an item a live
+ * peer was mid-verifying, voiding its lease and recording a completion the flipper never
+ * did (ornith run-10: one member bulk-flipped 6 items its sibling held). This is the
+ * prevention leg; the behaviour-suite only catches such bare flips post-hoc.
+ *
+ * Pure + injectable (like shouldPushNeedsHuman / releaseTerminalGrips) so the rule is
+ * unit-tested without the PG/lock path. Returns the blocking holder, or null to ALLOW.
+ * Allow when: the flip is non-terminal; there is no agent caller (a human / `principal`
+ * session — the guard binds agents, not the owner); the item is unheld; the claim is
+ * expired/lapsed (a dead peer must never wedge closure — the SAME liveness the wip path
+ * uses); or the caller IS the holder (closing your own held item is the completion path).
+ */
+export function terminalFlipConflict(opts: {
+  status: string;
+  agentOwnerId: string | null;
+  holder: HolderInfo | null;
+}): { owner: string; ownerLabel: string | null; intent: string; expiresTs: string } | null {
+  if (!isTerminalStatus(opts.status)) return null;
+  if (!opts.agentOwnerId) return null;
+  const h = opts.holder;
+  if (!h || h.expired || h.owner === opts.agentOwnerId) return null;
+  return { owner: h.owner, ownerLabel: h.ownerLabel, intent: h.intent, expiresTs: h.expiresTs };
 }
 
 /**
@@ -349,6 +387,34 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
+  // WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an
+  // AGENT who is NOT the item's live claim holder is REFUSED with the same per-item
+  // claim_conflict shape as the wip path — you cannot close (and silently void the lease
+  // on) an item a live peer is mid-verifying. Humans/principal callers are exempt
+  // (agentId is null for them, above). Read-then-decide: the plan lock below still
+  // serializes the actual byte write; this pre-lock read matches the wip path's own
+  // claim-before-flip ordering, and the TTL liveness means a dead peer's lapsed claim
+  // never wedges closure. A getClaim hiccup fails OPEN (holder null → allow) so a
+  // coordination-store blip never blocks a legitimate completion.
+  if (agentId && isTerminalStatus(it.status)) {
+    const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+    const holder = await getClaim(scope.workspaceId, scope.harnessSlug, it.slug, it.itemId).catch(
+      () => null,
+    );
+    const conflict = terminalFlipConflict({ status: it.status, agentOwnerId: agentId.ownerId, holder });
+    if (conflict) {
+      return {
+        ok: false,
+        slug: it.slug,
+        itemId: it.itemId,
+        error: 'claim_conflict',
+        reason: `${it.status} refused — ${conflict.ownerLabel ?? conflict.owner} holds a live claim on this item; only the holder closes it`,
+        holder: conflict,
+        hint: 'a live peer is working this item — coordinate with the holder (coord:send) and let them close it, or pick another item; fleet:assignments { plan } shows who holds what',
+      };
+    }
+  }
+
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
     it.slug,
@@ -517,7 +583,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with a per-item claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one). Single: { slug, itemId, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, itemId, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
+    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with a per-item claim_conflict when a live peer holds it); flipping to done/dropped releases your claim AND clears the item's assignment (a finished item is held + assigned by no one) — but is likewise rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot close someone else's in-flight work; coordinate or let the holder close it). Single: { slug, itemId, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, itemId, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
   guidance: {
     when: "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:

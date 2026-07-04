@@ -101,6 +101,7 @@ async function fetchStage(base, session) {
   if (session.chosen) q.set('chosen', session.chosen);
   if (session.forcePick) q.set('forcePick', '1');
   if (session.embeddingsSkipped) q.set('embeddingsSkipped', '1');
+  if (session.tutorial) q.set('tutorial', '1'); // P-014: finished machine → handoff, not done
   const qs = q.toString();
   return api(base, `/desktop/onboarding-status${qs ? `?${qs}` : ''}`);
 }
@@ -129,9 +130,15 @@ async function main() {
     chosen: args.framework,
     forcePick: false,
     embeddingsSkipped: false,
+    tutorial: args.tutorialOnly,
   };
 
-  say(bold(INTRO_BANNER));
+  // Tutorial re-entry gets a one-liner, not the first-run setup banner.
+  say(
+    args.tutorialOnly
+      ? bold('Re-opening the Papercusp tutorial — one moment.')
+      : bold(INTRO_BANNER),
+  );
 
   let announcedWait = false;
   for (;;) {
@@ -155,7 +162,8 @@ async function main() {
       case 'done': {
         say(
           'This machine is already set up — onboarding is complete. ' +
-            `Start an agent session any time with ${bold('psu')}, or re-run the tutorial via the Papercusp Tutorial icon.`,
+            `Start an agent session any time with ${bold('psu')}, or re-run the tutorial ` +
+            `via the Papercusp Tutorial icon or ${bold('papercusp tutorial')}.`,
         );
         return 0;
       }
@@ -254,20 +262,28 @@ async function main() {
 
       case 'handoff': {
         // Pre-detection auto-skip lands here without a pick — confirm it.
+        // Tutorial re-entry auto-accepts: the user asked for the tutorial,
+        // not a framework decision (pass --framework=… to override).
         if (!session.chosen) {
-          const useIt = await confirm({
-            message: `Found ${labels[stage.framework]} already installed and signed in — use it?`,
-            default: true,
-          });
-          if (!useIt) {
-            session.forcePick = true;
-            break;
+          if (args.tutorialOnly) {
+            session.chosen = stage.framework;
+          } else {
+            const useIt = await confirm({
+              message: `Found ${labels[stage.framework]} already installed and signed in — use it?`,
+              default: true,
+            });
+            if (!useIt) {
+              session.forcePick = true;
+              break;
+            }
+            session.chosen = stage.framework;
           }
-          session.chosen = stage.framework;
         }
         say(
-          `You're all set — handing you to your agent now. ` +
-            dim('(same window; the tutorial continues right here)'),
+          args.tutorialOnly
+            ? `Handing you to ${bold(labels[session.chosen])} — the tutorial continues right here.`
+            : `You're all set — handing you to your agent now. ` +
+                dim('(same window; the tutorial continues right here)'),
         );
         // P-005: render the tutor launch-context server-side and thread it
         // through the env seam buildHandoffArgs reads. Failure is non-fatal —

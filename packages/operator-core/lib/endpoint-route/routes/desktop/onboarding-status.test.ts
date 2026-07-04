@@ -9,19 +9,21 @@ describe('parseOnboardingQuery', () => {
       chosen: null,
       forcePick: false,
       embeddingsSkipped: false,
+      tutorial: false,
       os: 'linux',
     });
   });
 
   it('parses a valid chosen framework + flags', () => {
     const parsed = parseOnboardingQuery(
-      `${URL_BASE}?chosen=omp-meridian&forcePick=1&embeddingsSkipped=1`,
+      `${URL_BASE}?chosen=omp-meridian&forcePick=1&embeddingsSkipped=1&tutorial=1`,
       'linux',
     );
     expect(parsed).toEqual({
       chosen: 'omp-meridian',
       forcePick: true,
       embeddingsSkipped: true,
+      tutorial: true,
       os: 'linux',
     });
   });
