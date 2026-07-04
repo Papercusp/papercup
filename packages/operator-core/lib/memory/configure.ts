@@ -83,6 +83,41 @@ const EMBED_BACKOFF_BASE_MS = 500;
 const EMBED_BACKOFF_CAP_MS = 3_000; // per-attempt ceiling (exponential / no-hint path)
 const EMBED_RESET_JITTER_MS = 2_500; // spread post-reset retries across this window (anti-herd)
 
+// ── Single-key exhaustion fallback (EI-3381) ─────────────────────────────────────────────────
+// The org's shared OpenAI embed key/quota can be drained by load OUTSIDE this process (another
+// machine/service on the same org key, or a genuine billing stop) — the retry loop above rides
+// out a SHORT spike on the SAME embedder, but a SUSTAINED exhaustion (openai_embed_quota_exhausted,
+// or the retry budget exhausting because the reset window is longer than we can wait) means every
+// memory:remember/search call keeps hard-failing for as long as the drain lasts, even though a
+// local (BGE-ONNX) embedder may be installed and perfectly able to serve the request. Track the
+// most recent such failure and let the 'auto' cascade (resolveEmbedderWith) prefer local for a
+// short cooldown window afterward, rather than repeatedly re-trying a key it just learned is dead.
+// Bounded, disclosed tradeoff: memories embedded during a cooldown window land in the LOCAL vec
+// table (mode='local'), so a search issued during that same window will not see older
+// openai-embedded memories (they live in a different per-mode vec table) — reduced recall BREADTH
+// for the outage's duration, never a hard failure. A full fix (one shared table / re-embed) is the
+// larger follow-up this ticket's other options describe; this is the narrow, safe lever available
+// without a data migration or new routing infra.
+const OPENAI_EMBED_COOLDOWN_MS = Number(process.env.PAPERCUSP_EMBED_FALLBACK_COOLDOWN_MS) || 60_000;
+let openAiEmbedCooldownUntilMs = 0;
+
+/** Record an OpenAI embed failure severe enough to prefer local for a while (a hard quota/billing
+ *  stop, or the retry budget exhausting entirely). Exported as a seam for tests (GAP 4). */
+export function markOpenAiEmbedFailure(now: number = Date.now()): void {
+  openAiEmbedCooldownUntilMs = now + OPENAI_EMBED_COOLDOWN_MS;
+}
+
+/** Is OpenAI embedding in its post-failure cooldown (the 'auto' cascade should prefer local)?
+ *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
+export function isOpenAiEmbedInCooldown(now: number = Date.now()): boolean {
+  return now < openAiEmbedCooldownUntilMs;
+}
+
+/** Test-only reset so cooldown state from one test can't leak into the next. */
+export function __resetOpenAiEmbedCooldownForTest(): void {
+  openAiEmbedCooldownUntilMs = 0;
+}
+
 // Dodge bundler static analysis — @huggingface/transformers is an
 // optional, lazily-resolved dependency (only present when local mode is
 // in play).

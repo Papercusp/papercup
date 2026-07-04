@@ -31,6 +31,11 @@ let blueprintOutput: { kind: string } | undefined;
 // own behavior is pinned in git-sync-routine.test.ts / seed-hive-release-routines.test.ts.
 let gitSyncSeedCalls: Array<{ installSlug: string }>;
 let releaseSeedCalls: Array<{ hiveSlug: string }>;
+// EI-3388: capture what `operatorResolveExtends` was called with, so we can assert
+// createHiveHarness threads an existingPath repo's `.papercusp/blueprints` in as a
+// local resolver tier (mirroring harness:create's `path` -> localDirs pattern) instead
+// of the old unconditional `localDirs: []`.
+let resolveExtendsCalls: Array<{ localDirs?: string[] }>;
 
 beforeEach(() => {
   vi.resetModules();
@@ -48,7 +53,18 @@ beforeEach(() => {
   blueprintOutput = { kind: 'artifacts' };
   gitSyncSeedCalls = [];
   releaseSeedCalls = [];
+  resolveExtendsCalls = [];
 
+  vi.doMock('../../blueprint/installed-blueprints', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../blueprint/installed-blueprints')>();
+    return {
+      ...actual,
+      operatorResolveExtends: (opts: { localDirs?: string[] } = {}) => {
+        resolveExtendsCalls.push(opts);
+        return actual.operatorResolveExtends(opts);
+      },
+    };
+  });
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
     saveHarnessRegistry: async (reg: { projects: Entry[] }) => {
