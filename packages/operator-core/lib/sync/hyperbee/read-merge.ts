@@ -476,6 +476,66 @@ export async function seedCursorFromSnapshots(
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * WI-2105 REV fix — durable merge-cursor persistence (PG-cursor)
+ * ------------------------------------------------------------------ */
+
+/**
+ * WI-2105 — injected persistence seam for merge-cursor positions. Keeps this
+ * module free of a live PG dependency: boot.ts wires a Postgres-backed store
+ * (harness_shared.substrate_merge_cursor, resolved via getHarnessAdminUrl —
+ * never a hardcoded localhost), tests inject an in-memory fake. `load`/`save`
+ * are keyed by (workspaceId, harnessSlug) that the store closes over, so this
+ * interface speaks only the per-log keyHex→position map.
+ */
+export interface MergeCursorStore {
+  /** All persisted positions for this (workspace, harness): keyHex → next index. */
+  load(): Promise<Map<string, number>>;
+  /** Upsert the given positions. Best-effort; may throw — the caller isolates it. */
+  save(positions: ReadonlyMap<string, number>): Promise<void>;
+}
+
+/**
+ * WI-2105 REV fix — seed a merge cursor's per-log positions from PG BEFORE the
+ * first fold, so a bg-host restart RESUMES each log's fold where it left off
+ * instead of re-folding from 0. Only seeds a log with NO in-memory position yet
+ * (idempotent; never rewinds a live fold) and only to a position > 0. Unlike
+ * `seedCursorFromSnapshots` (own-log-only, requires the log be snapshottable by
+ * this peer), this resumes ANY admitted log — including an orphaned peer log the
+ * tower can no longer snapshot (the e06b8704 case that WI-2313 could not fix).
+ *
+ * CRASH-CONSISTENCY: the persisted position is written persist-AFTER-apply (see
+ * `persistCursor` and the boot `onCursorAdvance` hook), so it never points past a
+ * durably-applied op. Seeding at it therefore skips ONLY ops whose projection
+ * writes already committed; re-folding from it would re-apply idempotently
+ * (LWW put/del), so seeding is strictly safe and strictly cheaper. A load
+ * failure is the caller's to isolate → leaves positions at 0 (full re-fold,
+ * slower but correct).
+ */
+export async function seedCursorFromPg(cursor: MergeCursor, store: MergeCursorStore): Promise<void> {
+  const saved = await store.load();
+  for (const [keyHex, position] of saved) {
+    if (position > 0 && !cursor.positions.has(keyHex)) {
+      cursor.positions.set(keyHex, position);
+    }
+  }
+}
+
+/**
+ * WI-2105 REV fix — persist a merge cursor's positions to PG. Call STRICTLY
+ * AFTER the ops up to those positions have been applied (persist-after-apply):
+ * a crash between apply and persist then RE-folds the last batch (idempotent
+ * LWW) rather than SKIPPING it — that ordering is the whole correctness argument
+ * for PG-cursor (17c98, mr5ymwgw). Thin pass-through over the injected store so
+ * the boot `onCursorAdvance` hook and any future caller share one code path.
+ */
+export async function persistCursor(
+  positions: ReadonlyMap<string, number>,
+  store: MergeCursorStore,
+): Promise<void> {
+  await store.save(positions);
+}
+
 /**
  * Does `env` beat the stored winner? EXACTLY mirrors `lwwPick(prev, env)` (prev wins ties
  * through the final source-key tiebreak's `>=`), so an incremental fold across any
@@ -597,6 +657,20 @@ export interface IncrementalMergeOpts {
   maxOpsPerPass?: number;
   /** Fires once per pass per log that still has backlog beyond this pass. */
   onBacklog?: (keyHex: string, position: number, length: number) => void;
+  /**
+   * WI-2105 REV fix — fired DURING a pass (at `MERGE_PERSIST_EVERY_OPS` cadence)
+   * and after each log that advanced, with the cursor's CURRENT positions, so
+   * the caller can persist fold progress to PG. Fired only after the ops up to
+   * those positions have been applied (persist-after-apply — each apply above
+   * awaited its projection commit), so a crash re-folds the last batch
+   * idempotently rather than skipping it. Intra-pass on purpose: a single pass
+   * over a large backlog can outlast the 240s bg-host watchdog and never return,
+   * so persisting only after the pass returned would capture nothing (the
+   * WI-2105 restart loop). Awaited but best-effort — a throw is swallowed by the
+   * merge so a failing persist can never abort a pass (the next persist re-writes
+   * the latest positions).
+   */
+  onCursorAdvance?: (positions: ReadonlyMap<string, number>) => Promise<void> | void;
 }
 
 export interface IncrementalMergeResult {
@@ -669,11 +743,13 @@ export async function mergeAdmittedLogsIncremental(
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;
+  const onCursorAdvance = opts?.onCursorAdvance;
 
   let applied = 0;
   let decoded = 0;
   let caughtUp = true;
   let opsSinceYield = 0;
+  let opsSincePersist = 0;
 
   // EI-79 step 3: detect a TRUNCATED log (length < its cursor) BEFORE folding.
   // A shrunk log means ops we already counted as winners may be gone, so a
@@ -713,6 +789,21 @@ export async function mergeAdmittedLogsIncremental(
         opsSinceYield = 0;
         await yieldToEventLoop();
       }
+      // WI-2105 REV fix (persist-after-apply): checkpoint the cursor at the
+      // persist cadence. ops [from, pos) have all applied (each apply awaited a
+      // projection commit), so next-to-read = pos — persisting `pos` never
+      // points past a durably-applied op; a crash re-folds [persisted, pos)
+      // idempotently (LWW). Intra-pass because a large-backlog pass can outlast
+      // the 240s bg-host watchdog and never return.
+      if (onCursorAdvance && ++opsSincePersist >= MERGE_PERSIST_EVERY_OPS) {
+        opsSincePersist = 0;
+        cursor.positions.set(log.keyHex, pos);
+        try {
+          await onCursorAdvance(cursor.positions);
+        } catch {
+          // best-effort: a failed persist must never abort the merge pass
+        }
+      }
       // Distinguish "op resolved (possibly version-dropped)" from
       // "unavailable" — only the former may advance the cursor.
       let op: PeerLogOp | null;
@@ -746,6 +837,16 @@ export async function mergeAdmittedLogsIncremental(
       if (await applyRecordingWinner(cursor, groupKey, env, apply)) applied++;
     }
     cursor.positions.set(log.keyHex, pos);
+    // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —
+    // the pass's applies committed above). Guarded on `pos > from` so an
+    // unchanged log doesn't churn PG each 1Hz tick.
+    if (onCursorAdvance && pos > from) {
+      try {
+        await onCursorAdvance(cursor.positions);
+      } catch {
+        // best-effort: a failed persist must never abort the merge pass
+      }
+    }
     if (pos < log.length) {
       caughtUp = false;
       try {
