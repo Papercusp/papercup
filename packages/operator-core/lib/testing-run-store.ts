@@ -25,6 +25,57 @@ import { randomUUID } from 'node:crypto';
 import { relative as pathRelative, posix } from 'node:path';
 import { inferWorkspaceRoot } from './testing-domain-glob';
 import { resolveGitContext } from './testing-branch-resolve';
+import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
+
+/**
+ * EI-4940 — a host-saturation-era test timeout ("Test timed out in 60000ms")
+ * is indistinguishable from a genuine red in the Tests-tab history: 16 of 24
+ * "failing" files in a real triage were saturation artifacts (WI-1089's
+ * overnight event-loop/RSS incident) that passed fresh on the recovered box.
+ * Stamp each row with the host's event-loop-lag p95 + process RSS AT PERSIST
+ * TIME (both processes here run INSIDE the operator: the harness run route
+ * runs vitest in-process, and this store's own fallback-row persist runs in
+ * the operator's own process right after its spawned child closes) — a
+ * reviewer (or a future auto-retry / Tests-tab badge) can then tell "the host
+ * was saturated when this ran" apart from "this is a real red" with no
+ * re-run. NULL means no monitor was running on this process — absence of
+ * signal, never a claim the host was calm.
+ */
+function captureSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
+  const lag = currentLoopLag();
+  return {
+    loopLagP95Ms: lag ? lag.p95Ms : null,
+    rssMb: Math.round((process.memoryUsage().rss / 1_048_576) * 10) / 10,
+  };
+}
+
+/** A `Test timed out in <N>ms` failure (vitest/jest's own message shape) —
+ *  the failure class WI-1089's saturation incident actually produced. Exported
+ *  for reuse (the eventual Tests-tab badge, or an agent triaging a red set). */
+export const TIMEOUT_FAILURE_RE = /test timed out|timed out in \d+\s*ms|exceeded timeout of \d+\s*ms/i;
+
+/**
+ * EI-4940 — is this failing row LIKELY a host-saturation artifact rather than
+ * a genuine bug? Both conditions must hold: the row is a FAILURE that reads
+ * like a bare timeout (not an assertion/structural error — those are real
+ * regardless of host load), AND the host's event-loop lag was in the CRITICAL
+ * band at persist time (the same band `isLoopSaturated()` uses LIVE — reused
+ * here, not reinvented, so the threshold has one source of truth).
+ *
+ * A `false` verdict does NOT mean "definitely a real bug" — it means this
+ * heuristic found no saturation signal; a `loopLagP95Ms: null` row (no monitor
+ * running when it was recorded, e.g. an older row) always reads false, which
+ * is the conservative direction (never HIDES a real red as "just saturation").
+ */
+export function isLikelySaturationArtifact(row: {
+  status: string;
+  outputTail?: string | null;
+  loopLagP95Ms?: number | null;
+}): boolean {
+  if (row.status !== 'fail' && row.status !== 'error') return false;
+  if (row.loopLagP95Ms == null || classifyLoopPressure(row.loopLagP95Ms) !== 'critical') return false;
+  return TIMEOUT_FAILURE_RE.test(row.outputTail ?? '');
+}
 
 export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error';
 
@@ -182,15 +233,16 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
     // dogfood/admin-ui path — both columns are nullable (migration 413).
     const harnessSlug = process.env.PAPERCUSP_TEST_RUN_HARNESS || null;
     const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || null;
+    const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb)
         VALUES
           (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
-           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId})
+           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => { /* swallow — D-007 */ });
@@ -366,6 +418,10 @@ export async function persistHarnessTestRuns(
   const source = params.source ?? 'admin-ui';
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
+  // Captured ONCE for the whole persist call (the run's persist moment), not
+  // per-file-row — the lag gauge already windows/averages, and a re-sample per
+  // row would be noise without adding signal.
+  const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
   let written = 0;
   try {
     let sql = params.sql;
@@ -378,10 +434,10 @@ export async function persistHarnessTestRuns(
         Promise.resolve(
           sql`
             INSERT INTO harness_shared.test_runs
-              (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id)
+              (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb)
             VALUES
               (${row.filePath}, ${'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
-               ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId})
+               ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb})
           `,
         ),
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),

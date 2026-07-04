@@ -401,6 +401,37 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].body).toContain('oversized blob');
   });
 
+  it('routine-failure (EI-5302): a loop routine\'s dbos-executor-reaper self-heal requeue is SUPPRESSED (loop-stalled already covers a real wedge)', () => {
+    const signals = routineFailureSignalsFromRows([
+      {
+        name: 'loop-su-abc123',
+        last_error: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+        is_loop: true,
+        last_error_source: 'dbos-executor-reaper',
+      },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('routine-failure (EI-5302): a loop routine with a NON-reaper error still fires (the exclusion is source-specific, not a blanket loop exemption)', () => {
+    const signals = routineFailureSignalsFromRows([
+      { name: 'loop-su-def456', last_error: 'some genuine crash', is_loop: true, last_error_source: 'runner' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['routine:loop-su-def456']);
+  });
+
+  it('routine-failure (EI-5302): a NON-loop routine with a reaper-sourced error still fires (only loop+reaper together is suppressed)', () => {
+    const signals = routineFailureSignalsFromRows([
+      { name: 'git-sync', last_error: 'produced no DBOS operation output', is_loop: false, last_error_source: 'dbos-executor-reaper' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['routine:git-sync']);
+  });
+
+  it('routine-failure (EI-5302): the body no longer names git-sync as a false example (was mis-triggering the git-sync human-gate keyword)', () => {
+    const signals = routineFailureSignalsFromRows([{ name: 'loop-su-xyz', last_error: 'crash' }]);
+    expect(signals[0].body).not.toContain('git-sync');
+  });
+
   it('loop-stalled (P1b): one signal per parked-dead loop, harness-scoped, citing the runbook', () => {
     const signals = loopStalledSignalsFromRows([
       { id: 'rt-1', name: 'loop-su-x', install_slug: 'papercusp', target_owner_id: 'su-x', interval_sec: 120, parked_secs: 2400 },

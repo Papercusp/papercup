@@ -105,22 +105,28 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   const res = await dispatchProjectedTool(projected!, tool, args, ctx() as never, PROJECTED_DEPS);
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
-  const parsed = text ? JSON.parse(text) : {};
-  // plans:start now returns the house bulk envelope `{ ok, results:[…], counts }`
-  // via _bulk's bulkContent (bulk-endpoint-standardization-2026-06-21); the
-  // per-item result we assert against (slug, status, transitioned, …) lives in
-  // results[0] for a single-slug call. hive:declare-wake still returns a flat
-  // `{ ok, mode, eventRules, … }`, which lacks results/counts and is passed
-  // through unchanged. Unwrap only the bulk envelope.
+  const parsed: unknown = text ? JSON.parse(text) : {};
+  // EI-7217: every defineTool handler now returns the canonical `{ data }`
+  // envelope (definetool-token-optimization-adoption P-006/D-008), one level
+  // OUTSIDE whatever the handler itself returns — plans:start's bulk envelope
+  // `{ ok, results:[…], counts }` (bulk-endpoint-standardization-2026-06-21)
+  // and hive:declare-wake's flat `{ ok, mode, eventRules, … }` alike. This test
+  // used to unwrap only the bulk shape directly off `parsed`; now everything is
+  // nested one level deeper under `.data` first. Unwrap `.data` unconditionally
+  // (when present), THEN unwrap the bulk envelope if that's what's inside.
+  const inner: unknown =
+    parsed && typeof parsed === 'object' && 'data' in (parsed as Record<string, unknown>)
+      ? (parsed as { data: unknown }).data
+      : parsed;
   if (
-    parsed &&
-    typeof parsed === 'object' &&
-    Array.isArray((parsed as { results?: unknown }).results) &&
-    (parsed as { counts?: unknown }).counts !== undefined
+    inner &&
+    typeof inner === 'object' &&
+    Array.isArray((inner as { results?: unknown }).results) &&
+    (inner as { counts?: unknown }).counts !== undefined
   ) {
-    return ((parsed as { results: Record<string, unknown>[] }).results[0] ?? {});
+    return ((inner as { results: Record<string, unknown>[] }).results[0] ?? {});
   }
-  return parsed;
+  return (inner as Record<string, unknown>) ?? {};
 }
 
 const insertPlan = async (slug: string) =>

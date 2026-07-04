@@ -1029,26 +1029,54 @@ export async function collectMigrationDriftSignals(
   }];
 }
 
-interface RoutineFailureRow { name: string; last_error: string | null }
-/** Pure: routines carrying a recorded error → signals. */
+/** The dbos-executor-reaper's stamped `metadata.last_error_source` — a self-heal
+ *  requeue, not a genuine wedge (EI-5302). Mirrors REAPER_LAST_ERROR_SOURCE in
+ *  dbos/dbos-executor-reaper.ts (duplicated as a literal to avoid a cross-module
+ *  import cycle in this pure-signal file; keep in sync if that constant changes). */
+const REAPER_SELF_HEAL_ERROR_SOURCE = 'dbos-executor-reaper';
+
+interface RoutineFailureRow {
+  name: string;
+  last_error: string | null;
+  /** true for a `loop:arm` interval-loop routine (`reschedule_interval_sec IS NOT NULL`). */
+  is_loop?: boolean;
+  /** `metadata.last_error_source` — identifies WHO stamped the error. */
+  last_error_source?: string | null;
+}
+/**
+ * Pure: routines carrying a recorded error → signals — EXCEPT a loop routine
+ * whose error was stamped by the dbos-executor-reaper's own self-heal requeue
+ * (EI-5302): that is the reaper recovering a stuck fire (working as designed),
+ * already surfaced — if it's a REAL wedge — by the separate loop-stalled
+ * collector. Flagging it here too double-reports every self-healed loop as a
+ * MAJOR bug, churning the auto-implement queue with noise (27 live instances
+ * observed 2026-06-30). A non-loop routine (git-sync, green-checkpoint, …) is
+ * unaffected — this exclusion only applies when BOTH is_loop and the reaper
+ * source match.
+ */
 export function routineFailureSignalsFromRows(rows: RoutineFailureRow[]): WatchdogSignal[] {
   return rows
     .filter((r) => (r.last_error ?? '').trim().length > 0)
+    .filter((r) => !(r.is_loop && r.last_error_source === REAPER_SELF_HEAL_ERROR_SOURCE))
     .map((r) => ({
       source: 'routine-failure' as const,
       key: `routine:${r.name}`,
       title: `Background routine "${r.name}" is failing`,
       body:
         `Watchdog signal (routine-failure): the background routine "${r.name}" recorded an error and may be ` +
-        `silently wedged (e.g. git-sync no longer pushing).\n\nLast error: ${(r.last_error ?? '').slice(0, 600)}`,
+        `silently wedged (the underlying cause varies by routine — check metadata.last_error_source).\n\n` +
+        `Last error: ${(r.last_error ?? '').slice(0, 600)}`,
       severity: 'major' as const,
       kind: 'bug' as const,
     }));
 }
-/** routine-failure: an ACTIVE background routine with a recorded `metadata.last_error`. */
+/** routine-failure: an ACTIVE background routine with a recorded `metadata.last_error`,
+ *  excluding a loop's reaper-self-heal requeue (EI-5302 — see routineFailureSignalsFromRows). */
 export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSignal[]> {
   const rows = await sql<RoutineFailureRow[]>`
-    SELECT name, metadata->>'last_error' AS last_error
+    SELECT name, metadata->>'last_error' AS last_error,
+           (reschedule_interval_sec IS NOT NULL) AS is_loop,
+           metadata->>'last_error_source' AS last_error_source
       FROM harness_shared.routines
      WHERE active = true AND COALESCE(metadata->>'last_error', '') <> ''
      LIMIT 20`;
