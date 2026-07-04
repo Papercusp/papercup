@@ -49,6 +49,7 @@ import type { PlanPartWireRow } from './projections/harness-plan-parts';
 import type { P2pPeerGrantWireRow } from './projections/p2p-peer-grants';
 import type { P2pReceiptWireRow } from './projections/p2p-receipts';
 import type { FleetDirectoryRow } from './projections/fleet-directory';
+import type { WorkOfferWireRow } from './projections/work-offers';
 import type { AgentFactWireRow } from './projections/agent-facts';
 import type { GymQdEliteWireRow } from './projections/gym-qd-elites';
 
@@ -158,6 +159,12 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // (projections/fleet-directory.ts); key == '<owner_ghid>/<fleet_slug>' (the generated
   // fleet_dir_fed_key column, mig 476).
   p2p_fleet_directory: 'p2p-fleet-directory',
+  // p2p-work-distribution-2026-07-02 (P-102 store leg, WI-1935): the publisher-SIGNED
+  // offer store — hive-home-scoped, receiver-verified (attested-device signature must
+  // resolve to the record's publisher). Projection 'p2p-work-offers'
+  // (projections/work-offers.ts); key == '<publisher_ghid>/<offer_id>' (the generated
+  // offer_fed_key column, mig 490). local_disposition is host-local and never federates.
+  p2p_work_offers: 'p2p-work-offers',
 };
 
 /**
@@ -579,6 +586,27 @@ function toFleetDirectoryValue(row: Record<string, unknown>): FleetDirectoryRow 
   };
 }
 
+/** Map an outbox `row` jsonb to the `WorkOfferWireRow` the p2p-work-offers projection
+ *  INSERT consumes (P-102 store leg, WI-1935) — the publisher-signed federated subset
+ *  (harness_slug = the Hive home, record_json = the canonical signed JSON TEXT — the
+ *  exact bytes the signature covers, never jsonb). local_disposition is DELIBERATELY
+ *  absent: a host-local refusal never crosses the wire (mig 490). The projection
+ *  verifies the device signature + device→publisher attestation before applying. */
+function toWorkOfferValue(row: Record<string, unknown>): WorkOfferWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    publisher_github_user_id: numOrZero(row.publisher_github_user_id),
+    offer_id: String(row.offer_id ?? ''),
+    record_json: String(row.record_json ?? ''),
+    signer_device_pubkey: String(row.signer_device_pubkey ?? ''),
+    signature: String(row.signature ?? ''),
+    record_version: numOrZero(row.record_version),
+    fleet_slug: String(row.fleet_slug ?? ''),
+    offer_kind: String(row.offer_kind ?? ''),
+    status: String(row.status ?? ''),
+  };
+}
+
 /** Map an outbox `row` jsonb to the `ReportWireRow` the hive-reports projection INSERT
  *  consumes (EN-3 / P-MOD). The federated subset of harness_shared.hive_reports —
  *  harness_slug = the Hive home (demux), report_id = the peer-log key, the reporter
@@ -944,6 +972,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'p2p_fleet_directory':
       value = toFleetDirectoryValue(row);
+      break;
+    case 'p2p_work_offers':
+      value = toWorkOfferValue(row);
       break;
     case 'agent_facts':
       value = toAgentFactValue(row);

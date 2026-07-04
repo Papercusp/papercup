@@ -20,6 +20,10 @@ import { emitUsageEvent, rollupForContributor } from './usage-events';
 
 const SLUG = 'usagetest';
 const USER = 4242;
+// Explicit workspace via the documented emit seam: resolveWorkspaceForHarness
+// THROWS for a harness registered nowhere (D-003 fail-loud), and this fresh
+// test DB has no projects/registry rows for 'usagetest'.
+const WS = 'default';
 
 let db: FreshPgDb;
 
@@ -39,6 +43,7 @@ describe('usage-events runtime — real Postgres', () => {
         ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
         schema_version  BIGINT NOT NULL DEFAULT 1,
         origin          TEXT NOT NULL DEFAULT 'local',
+        workspace_id    TEXT NOT NULL,
         PRIMARY KEY (harness_slug, event_id)
       );
     `);
@@ -52,7 +57,7 @@ describe('usage-events runtime — real Postgres', () => {
     await expect(
       emitUsageEvent(
         { harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'feature_authored', ref_id: 'F-1', payload: { title: 'do the thing', tags: ['a', 'b'] } },
-        { sql: db.sql },
+        { sql: db.sql, workspaceId: WS },
       ),
     ).resolves.toMatchObject({ event_id: expect.any(String) });
     const rows = await db.sql`
@@ -69,7 +74,7 @@ describe('usage-events runtime — real Postgres', () => {
   it('stores a null payload as SQL NULL', async () => {
     await emitUsageEvent(
       { harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'pr_opened', ref_id: '7', payload: null },
-      { sql: db.sql },
+      { sql: db.sql, workspaceId: WS },
     );
     const rows = await db.sql`SELECT payload FROM harness_shared.contributor_usage_events WHERE harness_slug = ${SLUG}`;
     expect(rows[0].payload).toBeNull();
@@ -77,16 +82,16 @@ describe('usage-events runtime — real Postgres', () => {
 
   it('is idempotent on a re-emitted event_id (P-070d)', async () => {
     const input = { harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'feature_authored' as const, payload: { title: 'x' } };
-    await emitUsageEvent(input, { sql: db.sql, eventId: 'FIXED01' });
-    await emitUsageEvent(input, { sql: db.sql, eventId: 'FIXED01' }); // re-emit → no-op
+    await emitUsageEvent(input, { sql: db.sql, workspaceId: WS, eventId: 'FIXED01' });
+    await emitUsageEvent(input, { sql: db.sql, workspaceId: WS, eventId: 'FIXED01' }); // re-emit → no-op
     const rows = await db.sql`SELECT count(*)::int AS n FROM harness_shared.contributor_usage_events WHERE harness_slug = ${SLUG}`;
     expect(rows[0].n).toBe(1);
   });
 
   it('rollupForContributor aggregates per-kind counts + last_event_ts over real rows', async () => {
-    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'feature_authored', payload: { title: 'a' } }, { sql: db.sql });
-    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'agent_run_completed', payload: { run_id: 'r1' } }, { sql: db.sql });
-    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'agent_run_completed', payload: { run_id: 'r2' } }, { sql: db.sql });
+    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'feature_authored', payload: { title: 'a' } }, { sql: db.sql, workspaceId: WS });
+    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'agent_run_completed', payload: { run_id: 'r1' } }, { sql: db.sql, workspaceId: WS });
+    await emitUsageEvent({ harness_slug: SLUG, github_user_id: USER, device_pubkey: 'pk', kind: 'agent_run_completed', payload: { run_id: 'r2' } }, { sql: db.sql, workspaceId: WS });
     const r = await rollupForContributor(USER, SLUG, { sql: db.sql });
     expect(r.counts.feature_authored).toBe(1);
     expect(r.counts.agent_run_completed).toBe(2);

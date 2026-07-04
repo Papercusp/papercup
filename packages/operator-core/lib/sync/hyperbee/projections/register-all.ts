@@ -51,6 +51,7 @@ import { buildBeeClaimSpecProjection } from './bee-claim-spec';
 import { buildGateVerdictProjection } from './gate-verdicts';
 import { buildHivePolicyProjection } from './hive-policy';
 import { buildFleetDirectoryProjection } from './fleet-directory';
+import { buildWorkOffersProjection } from './work-offers';
 import { buildHiveReportsProjection } from './hive-reports';
 import { buildHivePendingJoinsProjection } from './hive-pending-joins';
 import { buildP2pPeerGrantsProjection } from './p2p-peer-grants';
@@ -207,6 +208,11 @@ export const REGISTERED_PROJECTION_TAGS = [
   // hive-home-grained, receiver-verified (attested-device sig; hive key only for the
   // H10 force-archive). Inert until records are authored.
   'p2p-fleet-directory',
+  // p2p-work-distribution-2026-07-02 P-102 store leg (WI-1935): the publisher-SIGNED
+  // offer store — hive-home-grained, receiver-verified (attested-device sig must
+  // resolve to the record's publisher). Inert until offers are authored (the D-005
+  // seat-offer publish on resource:delegate is the first production author).
+  'p2p-work-offers',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -304,6 +310,10 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // record demuxes on the Hive home + its verify resolves attestations there) —
     // scope to hiveScoped so a joiner receives + verifies directory records.
     buildFleetDirectoryProjection(hiveScoped),
+    // P-102 store leg (WI-1935): offers are hive-home-grained like the directory
+    // (the fleet owner's machines must receive them; verify resolves attestations
+    // on the Hive home) — scope to hiveScoped.
+    buildWorkOffersProjection(hiveScoped),
   ] as TableProjection<unknown>[];
 }
 

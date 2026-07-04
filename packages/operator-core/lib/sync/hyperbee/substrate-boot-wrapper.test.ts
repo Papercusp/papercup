@@ -42,6 +42,7 @@ const bootAll = vi.fn(async (opts?: { bootHarness?: (o: any) => Promise<any>; sk
 const setBootDefaults = vi.fn();
 vi.mock('./boot-all', () => ({
   bootAllHarnessesForActiveWorkspace: (opts?: unknown) => bootAll(opts as Parameters<typeof bootAll>[0]),
+  closeInProcessBootedHarnesses: async () => [],
   enableSubstrateEvictionTracking: () => enableTracking(),
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
