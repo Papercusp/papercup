@@ -125,10 +125,24 @@ export function resolvePackRoot(
 }
 
 /**
+ * Process-lifetime cache of the parsed pack, keyed by root. The pack files are
+ * immutable in a packaged build, and this loader is on the tutorial-script
+ * endpoint's hot path (re-read on every `papercusp tutorial` launch — 31 file
+ * reads + parses each time). Set PAPERCUSP_RELOAD_PROMPTS=1 to bypass the cache
+ * in dev (mirrors the repo's prompt hot-reload convention).
+ */
+const packCache = new Map<string, TutorialSection[]>();
+
+/**
  * Load + validate the whole pack, sorted by (chapter, order, id).
- * Throws on any malformed file or duplicate section id.
+ * Throws on any malformed file or duplicate section id. Memoized per root
+ * (see packCache) — a cache hit skips all filesystem work.
  */
 export function loadTutorialPack(root: string): TutorialSection[] {
+  if (!process.env.PAPERCUSP_RELOAD_PROMPTS) {
+    const cached = packCache.get(root);
+    if (cached) return cached;
+  }
   const sections: TutorialSection[] = [];
   for (const entry of readdirSync(root).sort()) {
     const dir = join(root, entry);
@@ -145,9 +159,11 @@ export function loadTutorialPack(root: string): TutorialSection[] {
     if (prior) throw new Error(`duplicate section id ${s.id}: ${prior} and ${s.file}`);
     seen.set(s.id, s.file);
   }
-  return sections.sort(
+  const result = sections.sort(
     (a, b) => a.chapter - b.chapter || a.order - b.order || a.id.localeCompare(b.id),
   );
+  packCache.set(root, result);
+  return result;
 }
 
 /**

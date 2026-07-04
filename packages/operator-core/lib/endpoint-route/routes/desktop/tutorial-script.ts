@@ -20,7 +20,7 @@ import { platform } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { detectBinaries } from '../../../agent-bin-detect';
+import { detectBinariesCached } from '../../../agent-bin-detect';
 import {
   chaptersFrom,
   loadTutorialPack,
@@ -34,6 +34,15 @@ import type { SetupWizardState } from './setup-wizard-state';
 
 /** The core ~10-minute tour (owner-ratified curriculum): chapters 1 + 2 + the finale. */
 const CORE_CHAPTERS = [1, 2] as const;
+
+/** Resolve `p`, but fall back to `fallback` if it hasn't settled within `ms` — so a
+ *  slow/unreachable dependency can't stall the tutorial's first paint (perf #1). */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
 
 export default defineTool({
   method: 'GET',
@@ -49,9 +58,17 @@ export default defineTool({
     const wizard =
       (await readOperatorState<SetupWizardState>('setup_wizard_state').catch(() => null)) ?? null;
     const distinctId = wizard?.install_id ?? 'onboarding';
-    const previewEnabled = await getFlag(FLAGS.ONBOARDING_PREVIEW_FEATURES, distinctId).catch(
-      () => false,
-    );
+
+    // previewEnabled (a flag read that can touch PostHog) and agentBinaries (4
+    // subprocess probes) are independent — resolve them CONCURRENTLY, and time-box
+    // the flag so a slow/unreachable flag backend can't stall first paint. The pack
+    // load below is memoized (see tutorial-pack). (perf #1)
+    const [previewEnabled, agentBinaries] = await Promise.all([
+      withTimeout(getFlag(FLAGS.ONBOARDING_PREVIEW_FEATURES, distinctId), 750, false).catch(
+        () => false,
+      ),
+      detectBinariesCached(),
+    ]);
 
     const root = resolvePackRoot();
     const sections = root ? loadTutorialPack(root) : [];

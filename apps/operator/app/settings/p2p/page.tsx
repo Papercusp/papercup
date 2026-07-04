@@ -29,6 +29,7 @@ import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import { Checkbox } from '../../harness/Checkbox';
 
@@ -426,6 +427,7 @@ function AddGrantForm({
 }
 
 export default function P2pSettingsPage() {
+  const t = useLexicon();
   const { data: settingsData, error: settingsError } = useSyncQuery<P2pSettingsLayers>({
     queryName: 'p2p.settings',
   });
@@ -493,7 +495,7 @@ export default function P2pSettingsPage() {
     <div>
       <h1>P2P work sharing</h1>
       <p className="pc-settings-intro">
-        Opt this host into pull-based work hand-off across hive peers — and control exactly what it
+        Opt this host into pull-based work hand-off across {t('pot', { lower: true })} peers — and control exactly what it
         accepts. Accepting foreign work requires BOTH a capability grant from you (Peers, below) and
         this host&apos;s opt-in; everything defaults to off. Settings here are host-local — your machine&apos;s
         sovereignty; grants federate, your opt-in does not.
@@ -601,13 +603,13 @@ export default function P2pSettingsPage() {
               <p key={m.hiveHomeSlug} style={{ fontSize: 12.5, margin: '4px 0' }}>
                 <span style={redBadge}>MISSING</span>{' '}
                 <span style={muteStyle}>
-                  this device has no live attestation on hive <strong>{m.hiveHomeSlug}</strong> — attest it
+                  this device has no live attestation on {t('pot', { lower: true })} <strong>{m.hiveHomeSlug}</strong> — attest it
                   before it can offer or accept P2P work there.
                 </span>
               </p>
             ))}
             {devices.length === 0 && missing.length === 0 && (
-              <p style={muteStyle}>No hive memberships found for this identity in the workspace.</p>
+              <p style={muteStyle}>No {t('pot', { lower: true })} memberships found for this identity in the workspace.</p>
             )}
             {devices.map((d) => (
               <div key={`${d.hiveHomeSlug}:${d.devicePubkey}`} style={{ fontSize: 12.5, padding: '4px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -617,7 +619,7 @@ export default function P2pSettingsPage() {
                   {d.isThisDevice && <strong> (this device)</strong>}
                 </span>
                 <span style={muteStyle}>
-                  hive {d.hiveHomeSlug}
+                  {t('pot', { lower: true })} {d.hiveHomeSlug}
                   {d.attestedAtMs ? ` · attested ${fmtTs(d.attestedAtMs)}` : ''}
                 </span>
               </div>
@@ -634,31 +636,31 @@ export default function P2pSettingsPage() {
             <Select
               value={hive ?? ''}
               onChange={(v) => void setHiveParam(v || null)}
-              ariaLabel="Hive for grants"
+              ariaLabel={`${t('pot')} for grants`}
               options={hiveOptions.map((s) => ({ value: s, label: s }))}
             />
           )}
         </div>
         <p style={{ ...muteStyle, margin: '0 0 10px' }}>
-          Grants are issued by YOU (your numeric GitHub id), keyed per hive, resolved only through
+          Grants are issued by YOU (your numeric GitHub id), keyed per {t('pot', { lower: true })}, resolved only through
           attested devices. Presets: Observer (chat) · Collaborator (+steer) · Delegate (+work-offer,
           wake) · Operator (+spawn). A capability downgrade is revocation-class and bumps your
           grantor epoch.
         </p>
         {!hive ? (
           <div style={pendingNote} role="status">
-            No hive memberships resolved for this identity — join or create a hive first; grants
-            attach to a hive.
+            No {t('pot', { lower: true })} memberships resolved for this identity — join or create a {t('pot', { lower: true })} first; grants
+            attach to a {t('pot', { lower: true })}.
           </div>
         ) : grantsError ? (
           <div style={pendingNote} role="alert">
-            Couldn&apos;t read grants for hive {hive}: {grantsError.message} — nothing is granted while
+            Couldn&apos;t read grants for {t('pot', { lower: true })} {hive}: {grantsError.message} — nothing is granted while
             this read is unavailable (structurally inert).
           </div>
         ) : (
           <>
             {grantRows.length === 0 ? (
-              <p style={muteStyle}>No capability grants on hive {hive} yet.</p>
+              <p style={muteStyle}>No capability grants on {t('pot', { lower: true })} {hive} yet.</p>
             ) : (
               <div style={{ overflowX: 'auto', marginBottom: 10 }}>
                 <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 560 }}>
