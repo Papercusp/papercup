@@ -3,7 +3,7 @@ id: ch5-07-comb
 chapter: 5
 order: 7
 title: Comb — sharing learning between hives
-docSlugs:
+docSlugs: system/learning-packs
 ---
 
 ## Brief

@@ -3,7 +3,7 @@ id: ch2-05-modes
 chapter: 2
 order: 5
 title: Modes — AUTO, COLD AUTO, IDEATE, DRAIN
-docSlugs:
+docSlugs: agents/session-modes
 ---
 
 ## Brief

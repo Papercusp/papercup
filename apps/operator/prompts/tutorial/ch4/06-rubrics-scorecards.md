@@ -3,7 +3,7 @@ id: ch4-06-rubrics-scorecards
 chapter: 4
 order: 6
 title: Rubrics & scorecards — how the system measures quality
-docSlugs:
+docSlugs: system/rubrics-scorecards
 ---
 
 ## Brief

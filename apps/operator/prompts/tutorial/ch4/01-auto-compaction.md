@@ -3,7 +3,7 @@ id: ch4-01-auto-compaction
 chapter: 4
 order: 1
 title: Auto-compaction — how agents outlive their context window
-docSlugs:
+docSlugs: agents/compaction
 ---
 
 ## Brief

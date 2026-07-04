@@ -218,6 +218,14 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
       sourceRole: 'system',
       dedupScope: 'open',
       createdBy: 'system:p2p-perf',
+      // EI-3909/EI-5846/EI-5829/EI-6585: without a stable watchdogKey, dedup
+      // falls back to fuzzy title-similarity — and this title embeds the live
+      // p95Ms, which differs almost every run, so cross-run dedup effectively
+      // never matched. Result: hundreds of near-duplicate EIs for the SAME
+      // recurring SLO violation. Key on scenario+params only (never the live
+      // numbers) so a standing violation truly files once, per the module's
+      // own doc-comment intent.
+      watchdogKey: `p2p-perf-slo:${v.scenario}:${v.paramsKey}`,
     }).catch(() => {
       // capture-core declines duplicates — exactly what we want for a standing
       // violation; any other failure must not break the routine.
@@ -238,6 +246,13 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
       sourceRole: 'system',
       dedupScope: 'open',
       createdBy: 'system:p2p-perf',
+      // Same fix as the SLO-violation capture above: the title embeds the live
+      // baseline→current numbers (never identical two runs running), which
+      // defeated fuzzy title dedup and produced 800+ near-duplicate EIs for
+      // this one recurring regression (EI-3909 et al.). Key on scenario +
+      // params + metric only — stable across every run that re-detects the
+      // SAME regressed metric.
+      watchdogKey: `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,
     }).catch(() => {
       /* dedup-decline / capture failure never breaks the routine */
     });

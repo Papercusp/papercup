@@ -3,7 +3,7 @@ id: ch4-04-observations
 chapter: 4
 order: 4
 title: Observations — agents filing what they notice
-docSlugs:
+docSlugs: system/observations
 ---
 
 ## Brief

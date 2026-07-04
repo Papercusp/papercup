@@ -3,7 +3,7 @@ id: ch4-02-checkpoints-facts
 chapter: 4
 order: 2
 title: Carry tools — checkpoints & facts
-docSlugs:
+docSlugs: coordination/checkpoints-and-facts
 ---
 
 ## Brief
