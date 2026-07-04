@@ -39,9 +39,19 @@ const overLimitOwners = new Set<string>();
 /** P-019 context-death dedup: one coord escalation per dead owner per process. */
 const contextDeathEscalated = new Set<string>();
 
+/** P-012 force-compact dedup: inject /compact ONCE per over-limit crossing;
+ *  cleared when the owner recovers (est back under limit) so a later crossing
+ *  re-arms it. A failed inject is NOT recorded, so it retries next pass. */
+const forceCompactedOwners = new Set<string>();
+
 /** Test seam (P-019). */
 export function resetContextDeathEscalationsForTests(): void {
   contextDeathEscalated.clear();
+}
+
+/** Test seam (P-012). */
+export function resetForceCompactedForTests(): void {
+  forceCompactedOwners.clear();
 }
 
 /**
@@ -85,6 +95,79 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
     console.warn(
       `[compaction-watchdog] context-death escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
+  }
+}
+
+/** P-012 force-compact `/compact` FOCUS — the summarizer preserve-hint (mirrors
+ *  session:request-compaction's DEFAULT_FOCUS; the watchdog can't know the unit of
+ *  work, so it names the standing preserve set). */
+const FORCE_COMPACT_FOCUS =
+  'keep the identity block, the active plan and its open items, unverified claims awaiting owner ' +
+  'confirmation, owner-gated walls, and any in-flight work-item checkpoint; drop resolved tool output ' +
+  'and superseded state.';
+/** The continuation-turn text opened on the compacted context (WI-1804 auto-continue
+ *  hosts) — re-orient first (a compaction is a stale-snapshot boundary). */
+const FORCE_COMPACT_CONTINUE_NOTE =
+  'The compaction watchdog compacted you because you ran PAST your soft context limit without ' +
+  'self-compacting. This is a fresh turn on the compacted context: first re-run coord:orient to ' +
+  'reconcile live fleet/claim/inbox state, then resume your current unit of work.';
+
+/**
+ * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE-COMPACT
+ * rung. An over-limit session has ignored the per-turn reminder (rendered since 85%)
+ * AND crossed its own soft limit, so the watchdog TYPES `/compact` into its OWN live
+ * psu-pty TUI — idle-gated by the host (mode:'turn'/'compact' runs AFTER the current
+ * turn ends), so it is safe to fire mid-turn. This catches a non-self-managing session
+ * at ~100% instead of letting it drift toward the model window (the 2026-07-04 836k
+ * incident). Best-effort; returns true only when the inject actually reached a live host.
+ *
+ * Flag-gated (COMPACTION_WATCHDOG_FORCE_COMPACT, default ON) — a runtime kill-switch
+ * for this invasive rung. No live psu-pty host (a dead/beating session, or a non-psu
+ * host) ⇒ false, no-op: the context-death detector (P-019) + the mechanical CC
+ * autoCompactWindow cap (P-014, set at launch) cover those. Dynamic imports mirror
+ * escalateContextDeath so the sweep stays dependency-light + the deps stay mockable.
+ */
+async function maybeForceCompact(
+  ownerId: string,
+  ownerLabel: string,
+  est: number,
+  limit: number,
+): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    if (!(await getFlag(FLAGS.COMPACTION_WATCHDOG_FORCE_COMPACT, 'system'))) return false;
+  } catch {
+    return false; // flag infra unavailable ⇒ do NOT force (fail-safe)
+  }
+  try {
+    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+      '../events/await/psu-pty-discovery'
+    );
+    const host = findLiveHost(ownerId);
+    if (!host) return false;
+    const ok = hostSupports(host, 'compact')
+      ? await injectIntoHost(host.sock, {
+          mode: 'compact',
+          data: FORCE_COMPACT_CONTINUE_NOTE,
+          focus: FORCE_COMPACT_FOCUS,
+        })
+      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${FORCE_COMPACT_FOCUS}` });
+    if (ok) {
+      console.warn(
+        `[compaction-watchdog] FORCE-COMPACTED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
+          `(${Math.round((est / limit) * 100)}%) — injected /compact after it ran past its soft limit ` +
+          `without self-compacting (P-012).`,
+      );
+    }
+    return ok;
+  } catch (e) {
+    console.warn(
+      `[compaction-watchdog] force-compact inject failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return false;
   }
 }
 
@@ -132,6 +215,10 @@ export interface CompactionComplianceResult {
   estimated: string[];
   /** owners currently over their compaction_limit. */
   overLimit: string[];
+  /** P-012: over-limit owners the watchdog FORCE-COMPACTED this pass (injected
+   *  /compact into their live psu-pty). Subset of overLimit — excludes owners with
+   *  no live host, an already-in-flight force (deduped), or the flag OFF. */
+  forceCompacted: string[];
   /** owners seeded with a model-derived default limit this pass. */
   seeded: string[];
   /** P-019: owners whose transcript tail carries "Prompt is too long" (dead). */
@@ -151,7 +238,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
   // Seeding step — one server-side place instead of N spawn paths (D-006).
   // Precedence: the spawn record (explicit tier limit > tier/recorded spec's
   // default) > the argv/fs model resolver (launch argv → session
@@ -266,8 +353,19 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
               `should have called session:request_compaction.${flushNote}`,
           );
         }
+        // P-012 L2 mechanical backstop: the agent ran past its soft limit without
+        // self-compacting — force it now (idle-gated inject into its own psu-pty).
+        // Deduped per crossing; a failed/hostless attempt is NOT recorded, so it
+        // retries next pass until it lands (or the session recovers below).
+        if (!forceCompactedOwners.has(r.owner_id)) {
+          if (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit)) {
+            forceCompactedOwners.add(r.owner_id);
+            out.forceCompacted.push(r.owner_id);
+          }
+        }
       } else {
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
+        forceCompactedOwners.delete(r.owner_id); // re-arm the force for a future crossing
       }
     }
   } catch (e) {

@@ -239,6 +239,17 @@ export const FLAGS = {
   // a terminated wake-armed session is safe because the wake-executor --resumes
   // it. OFF ⇒ a pure no-op (the kill-switch if this ever misfires).
   IDLE_SESSION_REAPER_TERMINATE: "papercusp-idle-session-reaper-terminate",
+  // agent-managed-compaction-2026-07-01 P-012 (L2 mechanical backstop): the
+  // compaction-compliance watchdog's FORCE-COMPACT rung. When ON, a limit-carrying
+  // session that ran PAST its soft compaction limit WITHOUT self-compacting gets
+  // /compact typed into its own live psu-pty TUI (idle-gated: runs after the current
+  // turn, dedup'd per crossing) — the sanctioned backstop for the 2026-07-04 incident
+  // (sonnet[1m] fleet members drifted to 836k because nothing mechanical caught the
+  // ones that ignored every reminder). DEFAULT ON (not in DARK_FLAGS — the owner
+  // directed this fix); OFF disables ONLY this rung (seeding + estimate caching +
+  // context-death detection keep running) ⇒ warn-only, byte-identical to pre-P-012.
+  // The kill-switch if the force-inject ever misfires.
+  COMPACTION_WATCHDOG_FORCE_COMPACT: "papercusp-compaction-watchdog-force-compact",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then
