@@ -56,3 +56,25 @@ describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
     expect(w).toContain('bee-abc123');
   });
 });
+
+describe('claimSpecWakeabilityWarning — EI-6079 warm-inject-miss advisory', () => {
+  it('WARNS when the bee is NOT wakeable (no live coord:inbox-wake await)', () => {
+    const w = claimSpecWakeabilityWarning('bee-x', false);
+    expect(w).toBeTruthy();
+    expect(w).toContain('bee-x');
+    expect(w).toContain('woken:0');
+  });
+
+  it('does NOT warn when the bee IS wakeable (the common/healthy case)', () => {
+    expect(claimSpecWakeabilityWarning('bee-x', true)).toBeNull();
+  });
+
+  it('does NOT warn on an unknown result (a lookup failure) — never cry wolf', () => {
+    expect(claimSpecWakeabilityWarning('bee-x', null)).toBeNull();
+  });
+
+  it('names the beeId so the operator can act on it', () => {
+    const w = claimSpecWakeabilityWarning('bee-abc123', false);
+    expect(w).toContain('bee-abc123');
+  });
+});

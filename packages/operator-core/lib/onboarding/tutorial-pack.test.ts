@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  CHAPTER_TITLES,
+  chaptersFrom,
   loadTutorialPack,
   packIndexMarkdown,
   parseTutorialSection,
@@ -137,5 +139,39 @@ describe.skipIf(!existsSync(PACK_ROOT))('the REAL tutorial content pack', () => 
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+describe('chaptersFrom', () => {
+  it('groups sections into ordered chapters with titles (input order preserved within a chapter)', () => {
+    const sections = [
+      { id: 'ch1-01', chapter: 1, order: 1 },
+      { id: 'ch1-02', chapter: 1, order: 2 },
+      { id: 'ch2-01', chapter: 2, order: 1 },
+    ] as TutorialSection[];
+    const chapters = chaptersFrom(sections);
+    expect(chapters.map((c) => c.number)).toEqual([1, 2]); // ascending
+    expect(chapters[0]).toMatchObject({
+      number: 1,
+      title: CHAPTER_TITLES[1],
+      sectionIds: ['ch1-01', 'ch1-02'],
+    });
+    expect(chapters[1].sectionIds).toEqual(['ch2-01']);
+  });
+
+  it('falls back to "Chapter N" for an unknown chapter number', () => {
+    const chapters = chaptersFrom([{ id: 'x', chapter: 9, order: 1 } as TutorialSection]);
+    expect(chapters[0].title).toBe('Chapter 9');
+  });
+
+  it('the real pack groups into the known chapters, each titled', () => {
+    const root = resolvePackRoot();
+    if (!root) return; // pack not installed on this build — nothing to assert
+    const chapters = chaptersFrom(loadTutorialPack(root));
+    expect(chapters.length).toBeGreaterThan(0);
+    for (const c of chapters) {
+      expect(c.title.trim().length).toBeGreaterThan(0);
+      expect(c.sectionIds.length).toBeGreaterThan(0);
+    }
   });
 });

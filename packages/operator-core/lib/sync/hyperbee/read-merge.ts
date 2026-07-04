@@ -64,6 +64,15 @@ export const DEFAULT_MAX_OPS_PER_AUTHOR = 50_000;
  *  monopolized the loop and burned ~1.5 cores continuously (EI-81). */
 export const MERGE_YIELD_EVERY_OPS = 1000;
 
+/** WI-2105 — persist the merge cursor to PG at most every this-many decoded ops
+ *  DURING a pass (plus once per log at completion). Coarser than the event-loop
+ *  yield cadence so a big fold does ~O(ops/5000) small upserts, not one per
+ *  yield; fine-grained enough that a watchdog restart loses at most this many
+ *  ops of re-fold (all idempotent). Intra-pass because a single large-backlog
+ *  pass can outlast the 240s bg-host watchdog and never return — persisting only
+ *  after the pass returned would capture nothing (the WI-2105 REV restart loop). */
+export const MERGE_PERSIST_EVERY_OPS = 5000;
+
 /** `await` point that defers to the macrotask queue (setImmediate), letting
  *  timers/IO/HTTP run between merge chunks. */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));

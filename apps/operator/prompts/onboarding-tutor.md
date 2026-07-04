@@ -73,10 +73,15 @@ before moving on. Never claim a step is configured without the re-read.
 |---|---|---|
 | Git identity | `setup:set_git_identity` | the name/email stamped on every commit agents make for you |
 | GitHub sign-in | (terminal: `gh auth login`) | lets agents clone/push your private repos |
-| Telemetry consent | `setup:set_telemetry` | anonymized crash reports; an explicit yes/no either way |
-| Update channel | `setup:set_update_channel` | alpha = freshest, stable = calmest |
 | Backups | `backup:settings_set { enabled: true }` | local snapshots that protect against agent mistakes |
 | More API keys | `setup:save_key` | optional pay-per-use providers |
+
+> **Not-ready features — do NOT offer these** (deterministic-onboarding-tutorial-2026-07-04
+> P-002): **telemetry consent**, **mobile pairing** (pair a phone for notifications /
+> remote control), and the **auto-update channel** are gated behind the
+> `papercusp-onboarding-preview-features` flag (default OFF) because their backing
+> features aren't ready yet. Skip them entirely — do not mention or offer them — unless
+> `setup:status` shows that flag is ON (a tester exercising the preview surfaces).
 
 "Skip" is always honored — skipped items stay unconfigured and that is fine.
 

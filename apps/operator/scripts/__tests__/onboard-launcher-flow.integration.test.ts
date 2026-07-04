@@ -129,11 +129,10 @@ function runLauncher(
 
 describe('onboard-launcher scripted flow → handoff (fake agent binary)', () => {
   it(
-    'first-run: install stage streams the installer, handoff execs the fake psu with the P-005 argv',
+    'first-run: install stage streams the installer, then handoff launches the DETERMINISTIC tutorial runner (not psu)',
     async () => {
       const argvFile = path.join(tmp, 'psu-argv-first-run.txt');
       const marker = path.join(tmp, 'install-marker.txt');
-      const lcPath = path.join(tmp, 'tutor-launch-context.md');
       let statusPolls = 0;
       const { server, port, requests } = await startFakeOperator((url) => {
         if (url.pathname === '/api/desktop/onboarding-status') {
@@ -151,8 +150,19 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
             },
           };
         }
-        if (url.pathname === '/api/desktop/onboarding-launch-context') {
-          return { path: lcPath };
+        if (url.pathname === '/api/desktop/tutorial-script') {
+          // Empty pack ⇒ the deterministic runner exits 0 immediately. That is enough
+          // to prove the handoff now launches the RUNNER (not the agentic psu tutor);
+          // the full section walk + graduation is covered by
+          // tutorial-runner-flow.integration.test.ts.
+          return {
+            mode: 'first-run',
+            sections: [],
+            chapters: [],
+            optionalSetup: [],
+            guiTabTour: [],
+            agentBinaries: {},
+          };
         }
         return undefined;
       });
@@ -165,22 +175,15 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
         // The chat framing reached the terminal in order…
         expect(r.stdout).toContain('Welcome to papercusp'); // verbatim intro banner
         expect(r.stdout).toContain('Installing');
-        expect(r.stdout).toContain('handing you to your agent now');
+        expect(r.stdout).toContain('starting the tutorial now'); // new handoff message
         // …the installer SpawnSpec actually RAN (streamed child, not prose)…
         expect(readFileSync(marker, 'utf8')).toContain('done');
-        // …and the FAKE agent binary got exec'd with exactly the P-005 argv,
-        // tutor launch-context threaded through the env seam.
-        const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
-        expect(argv).toEqual([
-          '--no-picker',
-          '--agent=claude',
-          '--no-plan',
-          `--launch-context=${lcPath}`,
-        ]);
-        // The tutor brief was requested for the right agent + mode.
-        const lcReq = requests.find((u) => u.pathname === '/api/desktop/onboarding-launch-context');
-        expect(lcReq?.searchParams.get('agent')).toBe('claude');
-        expect(lcReq?.searchParams.get('mode')).toBe('first-run');
+        // …the DETERMINISTIC runner launched (with an empty pack it says so)…
+        expect(r.stdout).toContain('No tutorial content');
+        // …the handoff hit the tutorial-script endpoint…
+        expect(requests.some((u) => u.pathname === '/api/desktop/tutorial-script')).toBe(true);
+        // …and the agentic psu tutor was NEVER exec'd.
+        expect(existsSync(argvFile)).toBe(false);
         // Every status poll carried the session's chosen framework (resumable
         // stage resolution is fully server-side).
         const polls = requests.filter((u) => u.pathname === '/api/desktop/onboarding-status');
@@ -219,18 +222,24 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
   );
 
   it(
-    'tutorial re-entry (--tutorial): auto-accepts the detected framework and hands off in tutorial mode',
+    'tutorial re-entry (--tutorial): launches the deterministic runner in tutorial mode',
     async () => {
       const argvFile = path.join(tmp, 'psu-argv-tutorial.txt');
-      const lcPath = path.join(tmp, 'tutor-launch-context-tutorial.md');
       const { server, port, requests } = await startFakeOperator((url) => {
         if (url.pathname === '/api/desktop/onboarding-status') {
           // A finished machine in tutorial mode resolves to handoff (P-014),
           // with the detected framework — NO pick, NO confirm.
           return { stage: { stage: 'handoff', framework: 'claude' }, labels: LABELS };
         }
-        if (url.pathname === '/api/desktop/onboarding-launch-context') {
-          return { path: lcPath };
+        if (url.pathname === '/api/desktop/tutorial-script') {
+          return {
+            mode: 'tutorial',
+            sections: [],
+            chapters: [],
+            optionalSetup: [],
+            guiTabTour: [],
+            agentBinaries: {},
+          };
         }
         return undefined;
       });
@@ -239,16 +248,15 @@ describe('onboard-launcher scripted flow → handoff (fake agent binary)', () =>
           PSU_ARGV_FILE: argvFile,
         });
         expect(r.code).toBe(0);
-        expect(r.stdout).toContain('Re-opening the Papercusp tutorial');
-        expect(r.stdout).toContain('the tutorial continues right here');
-        const argv = readFileSync(argvFile, 'utf8').trim().split('\n');
-        expect(argv).toContain('--agent=claude');
-        expect(argv).toContain(`--launch-context=${lcPath}`);
-        // The re-entry flag reached the server both places it matters.
+        expect(r.stdout).toContain('Re-opening the Papercusp tutorial'); // concierge banner
+        expect(r.stdout).toContain('No tutorial content'); // the runner launched (empty pack)
+        // The re-entry flag reached BOTH the status poll and the tutorial-script fetch.
         const poll = requests.find((u) => u.pathname === '/api/desktop/onboarding-status');
         expect(poll?.searchParams.get('tutorial')).toBe('1');
-        const lcReq = requests.find((u) => u.pathname === '/api/desktop/onboarding-launch-context');
-        expect(lcReq?.searchParams.get('mode')).toBe('tutorial');
+        const scriptReq = requests.find((u) => u.pathname === '/api/desktop/tutorial-script');
+        expect(scriptReq?.searchParams.get('tutorial')).toBe('1');
+        // The agentic psu tutor was never exec'd.
+        expect(existsSync(argvFile)).toBe(false);
       } finally {
         server.close();
       }
