@@ -185,6 +185,11 @@ function initialRoleBackends(): Record<string, SurfaceChoice> {
 
 export default function AgentSettingsPage() {
   const t = useLexicon();
+  // ROLE_ROUTING_ROWS is a module-level const, so the role's DISPLAY label routes
+  // here at render (queen→brain). The `role` id (row.role) stays raw (D-001); other
+  // roles (overwatch/scout/su) have no TermKey so their label is unchanged.
+  const displayLabel = (row: { role: string; label: string }): string =>
+    row.role === 'queen' ? t('brain') : row.label;
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
@@ -714,7 +719,7 @@ export default function AgentSettingsPage() {
                 }}
               >
                 <div>
-                  <code>{row.label}</code>
+                  <code>{displayLabel(row)}</code>
                   {row.label !== row.role && (
                     <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
                       role: <code>{row.role}</code>
@@ -724,7 +729,7 @@ export default function AgentSettingsPage() {
                 <div style={{ color: 'var(--fg-mute)', lineHeight: 1.35 }}>{row.description}</div>
                 <Select
                   value={roleBackends[row.role] ?? 'inherit'}
-                  ariaLabel={`Backend for ${row.label}`}
+                  ariaLabel={`Backend for ${displayLabel(row)}`}
                   triggerStyle={{ fontSize: 13 }}
                   options={BACKEND_CHOICE_OPTIONS}
                   onChange={(v) =>
@@ -739,7 +744,7 @@ export default function AgentSettingsPage() {
                   wrapperStyle={{ width: 170 }}
                   style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
                   placeholder="model (optional)"
-                  aria-label={`Model for ${row.label}`}
+                  aria-label={`Model for ${displayLabel(row)}`}
                   value={roleModels[row.role] ?? ''}
                   validate={modelSpecError}
                   onCommit={(m) =>
@@ -754,7 +759,7 @@ export default function AgentSettingsPage() {
                 />
                 <Select
                   value={tierCeilings[row.role] ?? 'none'}
-                  ariaLabel={`Tier ceiling for ${row.label}`}
+                  ariaLabel={`Tier ceiling for ${displayLabel(row)}`}
                   triggerStyle={{ fontSize: 13 }}
                   options={[
                     { value: 'none', label: 'No ceiling' },

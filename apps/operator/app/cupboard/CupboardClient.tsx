@@ -674,6 +674,7 @@ export function ListingCard({
    *  per-row View Hive button is redundant — suppress it. Fork/Install stay. */
   suppressViewHive?: boolean;
 }) {
+  const t = useLexicon();
   const kind = listingKindOf(listing);
   const rawAction = listingActionFor(listing);
   const action = suppressViewHive && rawAction === 'view-hive' ? null : rawAction;
@@ -806,7 +807,7 @@ export function ListingCard({
           className="pc-button"
           style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
         >
-          <ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}
+          <ActionIcon action={action} /> {action === 'view-hive' ? `View ${t('pot')}` : LISTING_ACTION_LABEL[action]}
         </button>
         )}
         {repoSlug && (
@@ -987,7 +988,7 @@ function ClaimRollupPill({ claimed, total }: { claimed: number; total: number })
  */
 export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOpen: () => void }) {
   const t = useLexicon();
-  const title = group.hiveTitle ?? listingRepoSlug(group.members[0]) ?? 'Untitled hive';
+  const title = group.hiveTitle ?? listingRepoSlug(group.members[0]) ?? `Untitled ${t('pot', { lower: true })}`;
   const repos = group.members.map(listingRepoSlug).filter(Boolean);
   const shown = repos.slice(0, 4);
   return (
@@ -1088,6 +1089,7 @@ export function HiveRollupHeaderCard({
   members: HarnessListing[];
   onClaimed: () => void;
 }) {
+  const t = useLexicon();
   const hivePubkey = isHivePubkeyRef(hiveRef)
     ? hiveRef
     : members.find((m) => m.hive_pubkey)?.hive_pubkey ?? null;
@@ -1264,7 +1266,7 @@ export function HiveRollupHeaderCard({
           )}
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <Tooltip label={announce ? 'Member count from the hive’s live directory announce.' : 'Member-repo listings on this page of results — the hive may list more.'}>
+          <Tooltip label={announce ? `Member count from the ${t('pot', { lower: true })}'s live directory announce.` : `Member-repo listings on this page of results — the ${t('pot', { lower: true })} may list more.`}>
             <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <Users size={11} /> {announce ? announce.memberCount : members.length} member{(announce ? announce.memberCount : members.length) === 1 ? '' : 's'}
             </span>

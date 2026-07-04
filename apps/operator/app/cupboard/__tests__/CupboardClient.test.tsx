@@ -17,6 +17,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import * as RadixTooltip from '@radix-ui/react-tooltip';
 import type { ReactElement } from 'react';
+
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
+// routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import { ListingCard, HiveBrowseCard, HiveRollupHeaderCard } from '../CupboardClient';
 import { groupHarnessRowsByHive } from '@papercusp/operator-core/lib/cupboard/types';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
@@ -149,7 +154,8 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
     );
     const btn = screen.getByTestId('cupboard-action');
     expect(btn.getAttribute('data-action')).toBe('view-hive');
-    expect(btn.textContent).toContain('View Hive');
+    // Label routed through the lexicon (echoed key 'pot'), not the hardcoded "Hive".
+    expect(btn.textContent).toContain('View pot');
   });
 
   it('legacy harness row (no hive) → NO primary action (per-harness join retired)', () => {

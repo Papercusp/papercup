@@ -44,13 +44,102 @@ import { createPrompt, isEnterKey, useKeypress, useState } from '@inquirer/core'
 
 /** Parse argv. Pure. */
 export function parseArgs(argv) {
-  const out = { tutorial: false, operatorUrl: null, agent: null };
+  const out = { tutorial: false, operatorUrl: null, agent: null, tab: null };
   for (const a of argv) {
     if (a === '--tutorial') out.tutorial = true;
     else if (a.startsWith('--operator-url=')) out.operatorUrl = a.slice('--operator-url='.length);
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
+    // --tab=setup|tutorial: which tab the unified shell opens on (#4). Bare `papercusp
+    // setup` passes --tab=setup; `papercusp tutorial` passes --tutorial (tutorial tab).
+    else if (a.startsWith('--tab=')) out.tab = a.slice('--tab='.length);
   }
   return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Unified Tutorial|Setup shell — tab model + global hotkeys (owner batch #4 + B2-#1).
+// These are PURE (no chalk) so the tab/keymap/checklist logic is unit-tested.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The two always-visible tabs, in bar order. */
+export const SHELL_TABS = ['tutorial', 'setup'];
+
+/** Toggle to the other tab (Tab key). Pure. */
+export function nextTab(active) {
+  return active === 'tutorial' ? 'setup' : 'tutorial';
+}
+
+/**
+ * Which tab the shell opens on. An explicit `--tab=` wins; otherwise the tour (the
+ * concierge already finished setup at first-run handoff, and `papercusp tutorial`
+ * re-entry wants the tour). `papercusp setup` passes `--tab=setup`. Pure.
+ */
+export function defaultTab(args) {
+  if (args?.tab === 'setup' || args?.tab === 'tutorial') return args.tab;
+  return 'tutorial';
+}
+
+/**
+ * Map a raw keypress (readline key object) to a GLOBAL shell action, or null when the
+ * key isn't a global shortcut (the screen then handles it locally — arrows/enter).
+ * Live on EVERY screen (B2-#1). Pure — tested with synthetic key objects.
+ *   Tab           → 'tab'    (switch tab)
+ *   Ctrl+S or '/' → 'search' ('/' because some terminals swallow Ctrl+S as XOFF)
+ *   '#'           → 'jump'   (jump to a chapter)
+ *   '?'           → 'ask'    (ask a question)
+ */
+export function resolveShellKey(key) {
+  if (!key) return null;
+  if (key.name === 'tab') return 'tab';
+  if (key.ctrl && key.name === 's') return 'search';
+  const seq = key.sequence;
+  if (seq === '/') return 'search';
+  if (seq === '#') return 'jump';
+  if (seq === '?') return 'ask';
+  return null;
+}
+
+/**
+ * The Setup-tab checklist derived from the onboarding-status `snapshot` (#4). Pure —
+ * returns ordered steps { key, label, status: 'done'|'todo'|'optional', detail }. The
+ * Setup tab renders these + offers the incomplete ones as actions. Drives the SAME
+ * stage machine the first-run concierge uses (stage-resolver), so the two never drift.
+ */
+export function setupChecklist(snapshot, labels = {}) {
+  const s = snapshot ?? {};
+  const installed =
+    Boolean(s.claudeInstalled) || Boolean(s.codexInstalled) || Boolean(s.ompInstalled);
+  const signedIn =
+    (s.claudeInstalled && s.claudeSignedIn) ||
+    (s.codexInstalled && s.codexSignedIn) ||
+    (s.ompInstalled && s.ompSignedIn);
+  const which = s.claudeInstalled
+    ? labels.claude ?? 'Claude'
+    : s.codexInstalled
+      ? labels.codex ?? 'Codex'
+      : s.ompInstalled
+        ? labels['omp-meridian'] ?? 'OMP'
+        : null;
+  return [
+    {
+      key: 'framework',
+      label: 'Agent framework',
+      status: installed ? 'done' : 'todo',
+      detail: which ? `${which} installed` : 'none installed yet',
+    },
+    {
+      key: 'signin',
+      label: 'Sign in',
+      status: signedIn ? 'done' : installed ? 'todo' : 'todo',
+      detail: signedIn ? 'signed in' : 'not signed in',
+    },
+    {
+      key: 'embeddings',
+      label: 'Embeddings key',
+      status: s.embeddingsKeyPresent ? 'done' : 'optional',
+      detail: s.embeddingsKeyPresent ? 'saved' : 'recommended — better search & memory',
+    },
+  ];
 }
 
 /**
@@ -221,6 +310,58 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function animOn() {
   return Boolean(process.stdout.isTTY) && process.env.PAPERCUSP_TUTORIAL_NO_ANIM !== '1';
 }
+
+/**
+ * The always-visible tab bar + shortcut hints (owner batch #4 + B2-#1). The active tab
+ * is bracketed `[ Tutorial ]` (the owner-chosen mockup) so it reads even without color.
+ * Uses chalk (auto-degrades to plain). The `[ … ]` marker is what tests key off.
+ */
+export function renderTabBar(activeTab, { setupComplete = false } = {}) {
+  const label = (name, key) => {
+    const text = key === 'setup' && setupComplete ? `${name} ✓` : name;
+    return activeTab === key ? accent(bold(`[ ${text} ]`)) : dim(`  ${text}  `);
+  };
+  const hints = dim('Tab ⇄ switch · ^S 🔍 search · # 📖 chapters · ? 💬 ask');
+  return `${label('Tutorial', 'tutorial')} ${label('Setup', 'setup')}    ${hints}`;
+}
+
+/** Render the Setup-tab checklist (a status glyph per step). Uses chalk. */
+function renderChecklist(steps) {
+  const glyph = { done: ok('✓'), todo: accent('○'), optional: dim('◍') };
+  return steps
+    .map((st) => `  ${glyph[st.status] ?? '·'} ${bold(st.label)} ${dim(`— ${st.detail}`)}`)
+    .join('\n');
+}
+
+/**
+ * The unified-shell SCREEN: a pinned header (tab bar + hints) above an arrow-selectable
+ * menu, with the GLOBAL hotkeys (resolveShellKey) live on EVERY screen (#4 + B2-#1).
+ * Resolves to an action the shell loop dispatches on:
+ *   { key: 'tab' | 'search' | 'jump' | 'ask' }   a global shortcut fired
+ *   { key: 'select', value }                      a menu item was chosen (↑/↓ + ⏎)
+ * Custom @inquirer/core prompt because the high-level `select` can't intercept Tab/^S.
+ */
+const shellScreen = createPrompt((config, done) => {
+  const choices = config.choices ?? [];
+  const [cursor, setCursor] = useState(0);
+  useKeypress((key) => {
+    const global = resolveShellKey(key);
+    if (global) {
+      done({ key: global });
+      return;
+    }
+    if (isEnterKey(key)) {
+      done({ key: 'select', value: choices[cursor]?.value });
+      return;
+    }
+    if (key.name === 'up') setCursor((c) => (c - 1 + choices.length) % choices.length);
+    else if (key.name === 'down') setCursor((c) => (c + 1) % choices.length);
+  });
+  const menu = choices
+    .map((c, i) => `${i === cursor ? accent('❯ ') : '  '}${c.name}`)
+    .join('\n');
+  return `${config.header}\n\n${menu}`;
+});
 
 /** Linear RGB gradient across a string (violet → cyan by default). Pure-ish (uses chalk). */
 function gradient(text, from = [139, 92, 246], to = [34, 211, 238]) {

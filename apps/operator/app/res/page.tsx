@@ -38,6 +38,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { useLexicon } from '@/lib/useLexicon';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { Select } from '../harness/Select';
 import {
@@ -152,6 +153,7 @@ function countFleets(n: ResNode): number {
 const pctKey = (fleetId: string, resId: string) => `${fleetId} ${resId}`;
 
 export default function ResourcesPage() {
+  const t = useLexicon();
   // ── Real data via @papercusp/sync (server-side activeWorkspaceId scoping). ──
   const { data: fleetsData, error: fleetsError } = useSyncQuery<FleetRow>({ queryName: 'fleets.byWorkspace' });
   const { data: accountsData } = useSyncQuery<AccountRow>({ queryName: 'accounts.pool' });
@@ -630,7 +632,7 @@ export default function ResourcesPage() {
       <div className="res-board">
         <div className="res-col">
           <div className="res-colhead">
-            <h2>Hives &amp; fleets</h2>
+            <h2>{t('pot', { plural: true })} &amp; fleets</h2>
             <span className="ct">{countFleets(tree)} fleets</span>
           </div>
           <div className="res-tree">{renderNode(tree)}</div>
