@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * SwarmTab coverage — the colony roster split into SU agents (🛠) and Bees (🐝),
+ * SwarmTab coverage — the colony roster split into SU agents (🛠) and Bees (☕),
  * each row expanding inline to its tasks + plan-progress + comms. Pins: roster
  * (empty/error/live + load pill + intent fallback + stale excluded), the SU/Bee
  * split (by presence `source`), selection (?lsa write + toggle), and the inline

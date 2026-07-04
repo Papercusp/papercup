@@ -25,6 +25,12 @@ export interface CoordLivenessConfig {
   handoffRepingMs?: number;
   /** Override the stale-claim reclaim grace (default STALE_CLAIM_GRACE_MS = STALE_MS = 10m). */
   reclaimGraceMs?: number;
+  /** WI-2689: override the LONGER grace given to a briefly-parked/resumable holder (a
+   *  loop-dropped member whose coord_presence row still beat recently) before its claim
+   *  is reaped — the reclaim-churn fix (default STALE_CLAIM_PARKED_GRACE_MS = 30m; clamped
+   *  ≥ reclaimGraceMs). Raise it if members take longer to re-arm; lower it (toward
+   *  reclaimGraceMs) to reap parked holders more eagerly. */
+  reclaimParkedGraceMs?: number;
   /** Override the requeue cap before a mid-flight claim is dead-lettered (default staleReclaimRequeueCap() = 3). */
   reclaimRequeueCap?: number;
   /** Override the dead-holder plan-item ASSIGNMENT reclaim grace (default
@@ -58,6 +64,7 @@ export const COORD_LIVENESS_DEFAULTS = {
   handoffTtlMs: 12 * 60 * 60 * 1000,
   handoffRepingMs: 30 * 60 * 1000,
   reclaimGraceMs: STALE_MS,
+  reclaimParkedGraceMs: 30 * 60 * 1000,
   reclaimRequeueCap: 3,
   assignmentReclaimGraceMs: 60 * 60 * 1000,
   sessionReaperGraceMs: STALE_MS,

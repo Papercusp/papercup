@@ -5,6 +5,7 @@ import {
   ORPHAN_UNDRAINED_RETENTION_MS,
   EPHEMERAL_UNDRAINED_RETENTION_MS,
   EPHEMERAL_SLUG_PATTERNS,
+  WILDCARD_UNDRAINED_RETENTION_MS,
 } from './substrate-outbox-backstop-gc';
 
 // Pure-logic unit tests for the retention cutoffs. The live DELETE behaviour over a
@@ -17,6 +18,7 @@ describe('backstopGcCutoffs', () => {
     expect(c.drainedBefore).toBe(NOW - DRAINED_RETENTION_MS);
     expect(c.undrainedBefore).toBe(NOW - ORPHAN_UNDRAINED_RETENTION_MS);
     expect(c.ephemeralUndrainedBefore).toBe(NOW - EPHEMERAL_UNDRAINED_RETENTION_MS);
+    expect(c.wildcardUndrainedBefore).toBe(NOW - WILDCARD_UNDRAINED_RETENTION_MS);
     expect(c.ephemeralSlugPatterns).toEqual(EPHEMERAL_SLUG_PATTERNS);
   });
 
@@ -37,5 +39,12 @@ describe('backstopGcCutoffs', () => {
     expect(EPHEMERAL_SLUG_PATTERNS.some((p) => p.startsWith('xbq') || p.startsWith('p016') || p.includes('canary'))).toBe(
       false,
     );
+  });
+
+  it('reaps wildcard harness rows on a short TTL because no concrete drain can own them', () => {
+    expect(WILDCARD_UNDRAINED_RETENTION_MS).toBeLessThan(EPHEMERAL_UNDRAINED_RETENTION_MS);
+    expect(WILDCARD_UNDRAINED_RETENTION_MS).toBeGreaterThan(60_000);
+    const c = backstopGcCutoffs(NOW);
+    expect(c.wildcardUndrainedBefore).toBeGreaterThan(c.ephemeralUndrainedBefore);
   });
 });

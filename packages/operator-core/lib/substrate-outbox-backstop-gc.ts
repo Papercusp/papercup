@@ -23,6 +23,13 @@
  *     EPHEMERAL_UNDRAINED_RETENTION_MS — these never drain (the hive is torn down
  *     after capture) and would otherwise sit the full 48h, so they are reaped
  *     promptly (infra-fail-fast-build-integrity-2026-06-19 P-010).
+ *   - any UNDRAINED row captured under harness_slug='*' older than the short
+ *     WILDCARD_UNDRAINED_RETENTION_MS — wildcard is not a concrete harness and
+ *     therefore no drain loop can ever boot for it (EI-7179).
+ *   - any UNDRAINED row captured under a (workspace_id, harness_slug) pair absent
+ *     from the current harness registry older than NON_REGISTRY_UNDRAINED_RETENTION_MS.
+ *     A non-registry pair has no boot owner, so waiting 48h just leaves the health
+ *     invariant red on rows that cannot drain.
  *
  * It only touches the federation-event QUEUE (substrate_outbox), never the
  * canonical tables (harness_plans / *_consolidated / …). The conservative
@@ -54,6 +61,21 @@ export const ORPHAN_UNDRAINED_RETENTION_MS = 48 * 60 * 60 * 1000;
  *  real scope that merely shares the prefix. */
 export const EPHEMERAL_UNDRAINED_RETENTION_MS = 2 * 60 * 60 * 1000;
 
+/** Undrained rows captured under harness_slug='*' are known-undrainable: the
+ *  substrate boot/drain contract is per concrete harness slug, and work-item
+ *  scope validation now rejects `harness:*`. Keep a short grace window in case
+ *  an old live process still emits one during rollout, then reap it so the
+ *  outbox health invariant measures drainable backlog instead of permanent
+ *  wildcard residue. */
+export const WILDCARD_UNDRAINED_RETENTION_MS = 10 * 60 * 1000;
+
+/** Undrained rows whose (workspace_id, harness_slug) pair is not in the current
+ *  harness registry are orphaned for the same reason as wildcard rows: no drain
+ *  loop can be started for a non-existent registry project. Keep a grace window
+ *  for registry/write-order races, then reap them so the health check focuses on
+ *  drainable backlog. */
+export const NON_REGISTRY_UNDRAINED_RETENTION_MS = 10 * 60 * 1000;
+
 /** SQL LIKE patterns identifying one-shot EPHEMERAL test-hive slugs whose captures
  *  will never drain. Kept deliberately narrow (only the unambiguous one-shot
  *  contract-test pattern) — recurring test routines (xbench/p016/canary) legitimately
@@ -71,6 +93,10 @@ export interface BackstopGcCutoffs {
   undrainedBefore: number;
   /** undrained rows from an ephemeral test-hive slug older than this are GC'd. */
   ephemeralUndrainedBefore: number;
+  /** undrained wildcard rows older than this are GC'd. */
+  wildcardUndrainedBefore: number;
+  /** undrained rows for non-registry harness pairs older than this are GC'd. */
+  nonRegistryUndrainedBefore: number;
   /** the ephemeral-slug LIKE patterns the ephemeral cutoff applies to. */
   ephemeralSlugPatterns: readonly string[];
 }
@@ -82,6 +108,8 @@ export function backstopGcCutoffs(now: number): BackstopGcCutoffs {
     drainedBefore: now - DRAINED_RETENTION_MS,
     undrainedBefore: now - ORPHAN_UNDRAINED_RETENTION_MS,
     ephemeralUndrainedBefore: now - EPHEMERAL_UNDRAINED_RETENTION_MS,
+    wildcardUndrainedBefore: now - WILDCARD_UNDRAINED_RETENTION_MS,
+    nonRegistryUndrainedBefore: now - NON_REGISTRY_UNDRAINED_RETENTION_MS,
     ephemeralSlugPatterns: EPHEMERAL_SLUG_PATTERNS,
   };
 }
@@ -145,6 +173,28 @@ export async function runSubstrateOutboxBackstopGc(
                 )
              OR (drained_at IS NULL     AND ts < ${c.ephemeralUndrainedBefore}
                  AND harness_slug LIKE ANY (${[...c.ephemeralSlugPatterns]}))
+             OR (drained_at IS NULL AND ts < ${c.wildcardUndrainedBefore}
+                 AND harness_slug = '*')
+             OR (
+                  drained_at IS NULL AND ts < ${c.nonRegistryUndrainedBefore}
+                  -- Preserve the same started-hive exemption as the 48h orphan
+                  -- clause: a running-but-not-registry-listed edge case is still
+                  -- a possible owner, while a non-started non-registry pair is
+                  -- provably orphaned.
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM unnest(${startedWs}::text[], ${startedSlugs}::text[]) AS s(ws, slug)
+                     WHERE s.ws = harness_shared.substrate_outbox.workspace_id
+                       AND s.slug = harness_shared.substrate_outbox.harness_slug
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM harness_shared.harness_registry r,
+                           jsonb_array_elements(COALESCE(r.payload->'projects', '[]'::jsonb)) AS project
+                     WHERE r.workspace_id = harness_shared.substrate_outbox.workspace_id
+                       AND project->>'slug' = harness_shared.substrate_outbox.harness_slug
+                  )
+                )
           LIMIT ${BACKSTOP_GC_BATCH}
        )
       RETURNING 1

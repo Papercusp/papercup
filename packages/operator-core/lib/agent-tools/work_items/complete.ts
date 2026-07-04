@@ -279,6 +279,8 @@ export default defineTool({
         state: z.string().min(1).max(40).optional(),
         /** The structured completion record (single-complete shorthand). */
         completion: completionSpec.optional(),
+        /** Optional kind-specific structured output (single-complete shorthand). */
+        outputPayload: z.unknown().optional(),
         items: z.array(itemSpec).min(1).max(100).optional().describe('complete many work-items at once — each { id, completion, state?, harness? }'),
       })
       .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
@@ -309,7 +311,7 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const list: CompleteItem[] = args.items?.length
       ? args.items.map((it) => ({ ...it, harness: it.harness ?? args.harness }))
-      : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion! }];
+      : [{ id: args.id as string, harness: args.harness, state: args.state, completion: args.completion!, outputPayload: args.outputPayload }];
     const env = await runBulk(list, (it) => completeOne(it, ident), { keyOf: (it) => ({ id: it.id }) });
     return bulkContent(env);
   },

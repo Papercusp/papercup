@@ -171,11 +171,16 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
           'any-slug',
         ]),
       ).resolves.toBeDefined();
-      // …and the resolved relation is the shared fallback view specifically.
-      const [{ rel }] = await app.unsafe(
-        `SELECT to_regclass('harness_shared.harness_features')::text AS rel`,
+      // …and the unqualified name resolves to the harness_shared fallback view
+      // SPECIFICALLY (not a stray relation). (to_regclass::text would render the
+      // name minimally — schema omitted because harness_shared is in the
+      // search_path — so resolve the regclass and read its schema directly.)
+      const [{ schema }] = await app.unsafe(
+        `SELECT n.nspname AS schema
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.oid = 'harness_features'::regclass`,
       );
-      expect(rel).toBe('harness_shared.harness_features');
+      expect(schema).toBe('harness_shared');
     } finally {
       await app.end({ timeout: 5 });
     }

@@ -45,7 +45,7 @@ function ChipPill({
 }: {
   meta: StatusMeta;
   Icon?: LucideIcon;
-  /** Text glyph rendered in place of a Lucide icon (e.g. the colony ♛/🐝 vocabulary). */
+  /** Text glyph rendered in place of a Lucide icon (e.g. the colony ♛/☕ vocabulary). */
   glyph?: string;
   size: 'xs' | 'sm';
   showLabel: boolean;

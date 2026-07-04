@@ -446,7 +446,7 @@ export default function ResourcesPage() {
         <div key={n.id} className="res-branch">
           <button type="button" className="res-node" aria-expanded={!isCollapsed} onClick={() => toggleHive(n.id)}>
             <span className="res-chev" aria-hidden="true">▾</span>
-            <span className="res-ico" aria-hidden="true">🐝</span>
+            <span className="res-ico" aria-hidden="true">☕</span>
             <span className="nm">{n.name}</span>
             <span className="who">{n.who}</span>
             <span className="cnt">{fleets} fleet{fleets !== 1 ? 's' : ''}</span>

@@ -78,6 +78,23 @@ type Db = Sql | TransactionSql;
 export const STALE_CLAIM_GRACE_MS = STALE_MS;
 
 /**
+ * WI-2689 (reclaim-churn fix): the LONGER grace given to a holder that is only
+ * BRIEFLY parked / resumable — a session whose keepalive lapsed but whose
+ * coord_presence row is still RECENTLY beating (within this window, yet past the
+ * short live grace). Such a holder is almost always a member whose loop dropped
+ * and is about to be re-armed (members can't self-rearm — a leader re-arms them),
+ * NOT a dead one; reaping its claim at the bare 10-min live grace produced the
+ * claim→release→reclaim ping-pong that dominated the dedup/churn ratio (WI-2118
+ * was reclaimed 3x+). Keying the extra grace on RECENT-beat (not claim age) means
+ * a truly-dead holder — one whose beat is older than this window (e.g. the 1h-
+ * stale dead-bee) — is still reaped promptly; only a holder that beat within this
+ * window is held back. Default 30m (3× the base), configurable via
+ * work_items:reclaim_config → reclaimParkedGraceMs. Clamped ≥ the base grace so a
+ * parked holder never waits LESS than a never-seen one.
+ */
+export const STALE_CLAIM_PARKED_GRACE_MS = 30 * 60 * 1000;
+
+/**
  * WI-1999: long-horizon fallback for claims held by a LOCALLY-UNKNOWN holder.
  * work_items rows FEDERATE across the hive but coord_presence is LOCAL-BY-DESIGN,
  * so a remote node's holder is invisible here — this node's sweep CANNOT
@@ -216,6 +233,25 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
 }
 
 /**
+ * WI-2689: the "briefly-parked / resumable holder" set — coord_presence rows whose
+ * heartbeat is RECENT (within `parkedGraceSec`) but which fell out of the short
+ * live window. A member whose loop dropped keeps a coord_presence row and beat
+ * moments ago; it is about to be re-armed, not dead. The DEAD leg subtracts this
+ * set so such a holder's claim is held back until its beat is genuinely stale
+ * (older than the parked grace), killing the claim→release→reclaim churn. Keyed on
+ * coord_presence only (the member liveness signal) — NOT nursery rows, so a
+ * confirmed-terminal spawn is never re-protected here (the spawn-exit leg still
+ * frees it immediately). `parkedGraceSec` is clamped ≥ the live grace by the caller.
+ */
+export function parkedHolderFragment(sql: Db, parkedGraceSec: number) {
+  return sql`
+      SELECT owner_id AS alias
+        FROM harness_shared.coord_presence
+       WHERE heartbeat_at IS NOT NULL
+         AND (now() - heartbeat_at) < make_interval(secs => ${parkedGraceSec})`;
+}
+
+/**
  * WI-1999: the "locally-KNOWN holder" set — every alias this node has EVER seen,
  * regardless of freshness or lifecycle state (any coord_presence row + every
  * alias of any spawned_agents row). The DEAD reclaim leg requires membership
@@ -267,6 +303,9 @@ export async function reclaimStaleWorkItemClaims(
   sql: Db,
   opts: {
     graceMs?: number;
+    /** WI-2689: longer grace for a briefly-parked/resumable holder (recent coord_presence
+     *  beat, past the live window). Default STALE_CLAIM_PARKED_GRACE_MS; clamped ≥ graceMs. */
+    parkedGraceMs?: number;
     requeueCap?: number;
     includeStalled?: boolean;
     stalledMs?: number;
@@ -275,6 +314,12 @@ export async function reclaimStaleWorkItemClaims(
   } = {},
 ): Promise<StaleClaimSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  // WI-2689: parked grace is never SHORTER than the base grace (a resumable holder must
+  // wait at least as long as a never-seen one), so clamp it up to graceSec.
+  const parkedGraceSec = Math.max(
+    graceSec,
+    Math.round((opts.parkedGraceMs ?? STALE_CLAIM_PARKED_GRACE_MS) / 1000),
+  );
   const stalledSec = Math.max(1, Math.round((opts.stalledMs ?? STALE_CLAIM_GRACE_MS) / 1000));
   const unknownFallbackSec = Math.max(
     1,
@@ -286,6 +331,9 @@ export async function reclaimStaleWorkItemClaims(
   const rows = await sql<ReleasedRow[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
     known_holder AS (${knownHolderFragment(sql)}),
+    -- WI-2689: briefly-parked/resumable holders (recent beat, past the live window) —
+    -- the DEAD leg holds these back until their beat ages past the parked grace.
+    parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
     -- Aliases of RECENTLY-terminal spawns — confirmed dead, no grace (P-003/D-004).
     -- Bounded to the last hour so the cross-join stays tiny (older terminal spawns
     -- were already grace-freed by the DEAD leg).
@@ -326,6 +374,10 @@ export async function reclaimStaleWorkItemClaims(
            -- after the presence-row TTL reap).
            ( (f.taken_at IS NULL OR (now() - f.taken_at) > make_interval(secs => ${graceSec}))
              AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
+             -- WI-2689 parked-grace: a holder that beat within the parked window is
+             -- resumable (loop-dropped member about to re-arm), not dead — hold its
+             -- claim back to stop reclaim churn until its beat ages past that window.
+             AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = f.taken_by)
              AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
                    -- Fallback anchor: taken_at, or updated_ts for a NULL-anchor claim
                    -- (EI-2534 class) — an actively-driven remote item keeps refreshing
@@ -445,11 +497,18 @@ export async function reclaimStaleIssueClaims(
   sql: Db,
   opts: {
     graceMs?: number;
+    /** WI-2689: longer grace for a briefly-parked/resumable assignee (recent coord_presence
+     *  beat). Default STALE_CLAIM_PARKED_GRACE_MS; clamped ≥ graceMs. */
+    parkedGraceMs?: number;
     /** WI-1999: override the never-seen-here holder fallback horizon (tests). */
     unknownHolderFallbackMs?: number;
   } = {},
 ): Promise<StaleIssueSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_CLAIM_GRACE_MS) / 1000));
+  const parkedGraceSec = Math.max(
+    graceSec,
+    Math.round((opts.parkedGraceMs ?? STALE_CLAIM_PARKED_GRACE_MS) / 1000),
+  );
   const unknownFallbackSec = Math.max(
     1,
     Math.round((opts.unknownHolderFallbackMs ?? STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS) / 1000),
@@ -457,6 +516,9 @@ export async function reclaimStaleIssueClaims(
   const released = await sql<ReleasedIssueClaim[]>`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
     known_holder AS (${knownHolderFragment(sql)}),
+    -- WI-2689: briefly-parked/resumable assignees — held back from reaping (see the
+    -- feature reaper for the churn rationale; parity so the two reapers never diverge).
+    parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
     dead AS (
       SELECT e.workspace_id, e.issue_id, e.kind,
              e.assignee AS former_assignee, e.assigned_by
@@ -467,6 +529,8 @@ export async function reclaimStaleIssueClaims(
          AND e.state = 'open'
          AND e.kind IN ('bug', 'change')   -- D-009: exclude task (delegate binding)
          AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = e.assignee)
+         -- WI-2689 parked-grace: skip a resumable assignee that beat within the window.
+         AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = e.assignee)
          -- WI-1999 remote-holder guard (see reclaimStaleWorkItemClaims): engineer_issues
          -- federate, presence does not — never presume a never-seen-here assignee dead
          -- before the long-horizon fallback.

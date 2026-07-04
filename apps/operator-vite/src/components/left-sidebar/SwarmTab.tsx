@@ -1,6 +1,6 @@
 /**
  * Swarm / Colony tab — the live fleet roster, split into SU agents (🛠) and Bees
- * (🐝) with the zellij dock glyphs. Each row EXPANDS inline on click to that
+ * (☕) with the zellij dock glyphs. Each row EXPANDS inline on click to that
  * agent's task-list + plan-progress + recent comms (owner ask 2026-06-23):
  *
  *   1. expandable rows — tasks/plans/comms live under the agent, not in a

@@ -50,6 +50,7 @@ const item = { id: 'F-12', kind: 'feature', family: 'feature', state: 'in_progre
 beforeEach(() => {
   getWorkItem.mockReset();
   setWorkItemState.mockReset();
+  mergeWorkItemOutputPayload.mockReset();
   // Default: gate flag OFF + (when consulted) gate OK — reproduces today's behavior. The
   // flag mock MUST resolve a promise so the `.catch(() => false)` guard in completeOne works.
   getFlag.mockReset();
@@ -133,6 +134,20 @@ describe('work_items:complete (keyed-array)', () => {
     getWorkItem.mockResolvedValue(item);
     const r = await one({ id: 'F-12', completion: { summary: 's' } });
     expect(r.completion.workItem).toBe('F-12');
+  });
+
+  it('persists outputPayload onto the work-item row for sidecar reads (EI-7214)', async () => {
+    const outputPayload = { signalId: 'sig-1', score: 0.87 };
+    getWorkItem.mockResolvedValue(item);
+    const r = await one({
+      id: 'F-12',
+      harness: 'papercup',
+      completion: { summary: 'analysis complete', tests: 'unit fixture' },
+      outputPayload,
+    });
+
+    expect(mergeWorkItemOutputPayload).toHaveBeenCalledWith('F-12', outputPayload, { harness: 'papercup' });
+    expect(r.outputPayload).toEqual(outputPayload);
   });
 
   it('returns the completion-boundary reflect step (self-learning P-001/B)', async () => {
