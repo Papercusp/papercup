@@ -972,19 +972,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
   // WI-2105 REV diag (DURABLE, not env-gated): the effective member-content-guard
   // hiveHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? ownHiveHomeSlug.
-  // If it resolves '<none>', decideMemberContentOp drops EVERY cross-member op with
-  // 'no-hiveHome' — the tower↔VM REV-leg drop when the owner folds a hive via a NON-home
-  // harness (hive-canary ≠ its hive-home). Recorded once at boot so getBootHistory reveals
-  // it after the next restart without the A-003 env flag.
-  try {
-    recordBootEvent(
-      opts.workspaceId,
-      opts.harnessSlug,
-      'merge_error',
-      `hiveHome-resolve: binding=${opts.swarmBinding?.kind ?? '<none>'} projSlug=${hiveHomeProjectionSlug ?? '<none>'} ownHome=${ownHiveHomeSlug ?? '<none>'} → guardHiveHome=${(hiveHomeProjectionSlug ?? ownHiveHomeSlug) ?? '<NONE→drop-all-cross-member>'}`,
-    );
-  } catch {
-    /* diagnostic must never break boot */
+  // When it resolves undefined FOR A HIVE-PEERED HARNESS, decideMemberContentOp drops EVERY
+  // cross-member op with 'no-hiveHome' — the tower↔VM REV-leg drop when the owner folds a
+  // hive via a NON-home harness (hive-canary ≠ its hive-home 'papercusp'). Fires ONLY on that
+  // exact bug condition (a swarm-bound harness with no resolvable guard hiveHome), so a
+  // non-hive / normally-resolved boot records nothing (zero test/alerting impact); getBootHistory
+  // reveals it after the next restart without the A-003 env flag.
+  if (opts.swarmBinding && (hiveHomeProjectionSlug ?? ownHiveHomeSlug) == null) {
+    try {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'merge_error',
+        `hiveHome-resolve NONE→drop-all-cross-member: binding=${opts.swarmBinding.kind} projSlug=${hiveHomeProjectionSlug ?? '<none>'} ownHome=${ownHiveHomeSlug ?? '<none>'}`,
+      );
+    } catch {
+      /* diagnostic must never break boot */
+    }
   }
 
   // ── C-001 re-key apply deps (shared-hive-rekey-2026-06-19, su-ee7e9) ── Built ONCE here

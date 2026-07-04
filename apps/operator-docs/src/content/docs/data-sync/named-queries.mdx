@@ -46,6 +46,7 @@ registry's *shape* changed.
 Today the registry is
 `REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the "v2"
 resolver) — a flat `Record<string, QueryEntry>` (~51 entries as of 2026-07-04) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
+`'snapshotsConsolidated.bySlug'`, `'storage.usage'`, …), each entry pairing
 a Zod `argsSchema` with an async `resolve(args)` that runs a normal
 drizzle/PG query and returns a flat row array. There is no `defineQueries`
 namespace object, no ZQL, and no separate `schema.ts`/publication step — a
@@ -70,6 +71,7 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 | `snapshotsConsolidated.bySlug` | `SnapshotRow[]` | `{ harnessSlug }` |
 | `harnessProjects.lite` | `ProjectRow[]` | (none) |
 | `harnessWorkspaces.byHarness` | `WorkspaceRow[]` | `{ harnessSlug }` |
+
 `featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259 P-006/D-010) and `.byPlanSlug`.
 
 The doc text claiming a `needsReview` variant, a `.bySourcePlan` form, or a `.all` form is drift —
