@@ -159,7 +159,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, seat: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -288,6 +288,12 @@ export function parseArgs(argv) {
     // (→ leader) is only offered through the interactive picker.
     else if (a === '--fleet') pendingFleet = true;
     else if (a.startsWith('--fleet=')) { out.fleet = a.slice('--fleet='.length); out.fleetRole = 'member'; }
+    // agent-allocation P-005 (launch-from-seats): the delegated agent_slot template
+    // this member consumes ('<model>:<effort>:<account>', emitted by
+    // fleet:launch-on-plan as `--seat=<ref>`). Forwarded to bootstrap-su, which
+    // records the consumption (mig 487) and REFUSES the boot when the fleet's
+    // delegated seats are exhausted — the flag only makes sense with `--fleet`.
+    else if (a.startsWith('--seat=')) out.seat = a.slice('--seat='.length) || null;
     // fleet-auto-mode (WI-1356): start the session in AUTO mode (the persona's
     // act/don't-ask/loop-until-done standing state). A fleet member has no human at
     // its keyboard, so `--fleet` defaults AUTO ON (see effectiveAutoMode); `--auto`
@@ -2887,6 +2893,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   // A joined fleet (--fleet=<slug>) or a new fleet's derived slug (picker → fleetName).
   const fleetSlug = args.fleet || (args.fleetName ? fleetSlugFromName(args.fleetName) : null);
   if (fleetSlug) argv.push(`--fleet=${fleetSlug}`);
+  if (args.seat) argv.push(`--seat=${args.seat}`);
   if (args.mode) argv.push(`--mode=${args.mode}`);
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
@@ -2930,6 +2937,10 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     ...(args.fleetRole ? { fleet_role: args.fleetRole } : {}),
     ...(args.fleetName ? { fleet_name: args.fleetName } : {}),
     ...(args.fleetScheme ? { fleet_scheme: args.fleetScheme } : {}),
+    // agent-allocation P-005 (launch-from-seats): the delegated agent_slot template
+    // this member consumes — bootstrap-su records it (consumeSeatAtBoot, mig 487)
+    // and refuses the boot with seats_exhausted when the fleet's cap is reached.
+    ...(args.seat ? { seat: args.seat } : {}),
     ...(args.launchContext ? { launch_context: args.launchContext } : {}),
     // solo-launch-provenance: who launched this session — bootstrap-su bakes it
     // into the system prompt + PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact.
