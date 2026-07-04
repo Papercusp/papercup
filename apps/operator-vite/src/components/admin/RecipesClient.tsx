@@ -25,6 +25,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSyncQuery } from '@papercusp/sync';
 import { readListTotal, listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Beaker, GitMerge, TrendingUp } from 'lucide-react';
+import { useLexicon } from '@/lib/useLexicon';
 import type { CodeRecipeRow } from '@papercusp/operator-core/lib/code-recipes-store';
 import type {
   PromoteCandidate,
@@ -95,6 +96,7 @@ function ToolBadges({ tools }: { tools: string[] }) {
 }
 
 export default function RecipesClient() {
+  const t = useLexicon();
   const recipesQ = useSyncQuery<CodeRecipeRow>({ queryName: 'codeRecipes', args: {}, staleTime: 30_000 });
   const candidatesQ = useSyncQuery<CandidatesEnvelope>({
     queryName: 'recipeCandidates',
@@ -179,8 +181,8 @@ export default function RecipesClient() {
           <div>
             <h2>Code recipes</h2>
             <p>
-              Reusable code:run scripts captured on successful runs, shared across your hive. Read-only — promote, merge,
-              and retire are the Queen&apos;s actions.
+              Reusable code:run scripts captured on successful runs, shared across your {t('pot', { lower: true })}. Read-only — promote, merge,
+              and retire are the {t('brain')}&apos;s actions.
             </p>
           </div>
         </div>

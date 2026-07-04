@@ -824,7 +824,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             </div>
             <Hint>
               Share this with people you invite — it is not shown again.
-              {publish?.inviteLink ? ' Invitees paste it under “I have a hive invite”.' : ''}
+              {publish?.inviteLink ? ` Invitees paste it under "${hiveLabel} invite".` : ''}
             </Hint>
           </div>
         )}

@@ -80,6 +80,10 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the routed intro
+// copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import RecipesClient from './RecipesClient';
 
 afterEach(() => cleanup());
