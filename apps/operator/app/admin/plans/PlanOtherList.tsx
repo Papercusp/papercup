@@ -147,6 +147,7 @@ export default function PlanOtherList({
   );
   // P-007: selected autonomy-category filter (nuqs array; new Queue view only).
   const [catFilter, setCatFilter] = useQueryState('qcat', parseAsArrayOf(parseAsString).withDefault([]));
+  const t = useLexicon();
 
   const planList = planFilters ?? [];
   const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all', includePlanItems ?? false);
@@ -159,7 +160,7 @@ export default function PlanOtherList({
     ? allItems.filter((i) => i.category != null && catActive.includes(i.category))
     : allItems;
   // A1: authorizer buckets in the new Queue view, else the legacy plan/harness groups.
-  const sections = groupByAuthorizer ? byAuthorizer(baseItems) : planSections(otherGroups);
+  const sections = groupByAuthorizer ? byAuthorizer(baseItems, t) : planSections(otherGroups);
 
   // Auto-expand the selected item's section (mirrors the Plans tab). The ref
   // token stops us reopening a section the user just collapsed while the
@@ -273,7 +274,7 @@ export default function PlanOtherList({
                 <div className="pc-queue__section-head">
                   <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
                   <a className="pc-queue__queen-link" href="/settings/autonomy">
-                    Let the Queen handle these →
+                    {`Let the ${t('brain')} handle these →`}
                   </a>
                 </div>
               ) : (
@@ -284,7 +285,7 @@ export default function PlanOtherList({
                   {s.items.map((it) => {
                     const itemKey = planItemSelKey(it);
                     const isSel = itemKey ? selectedItem === itemKey : selected === it.id;
-                    const why = groupByAuthorizer ? whyLine(it) : null;
+                    const why = groupByAuthorizer ? whyLine(it, t) : null;
                     return (
                       <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
                         <Tooltip label={it.title}><button
@@ -390,6 +391,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
   const [answerOpen, setAnswerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState<AskChoiceAnswered | undefined>(undefined);
+  const t = useLexicon();
 
   if (!item) {
     return (
@@ -405,7 +407,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
     ? `${item.planSlug} · ${kindLabel}`
     : `${item.harnessSlug ?? 'harness'} · ${kindLabel}`;
   // A1 (P-005): who must sign off + why, surfaced in the detail pane too.
-  const why = whyLine(item);
+  const why = whyLine(item, t);
 
   // The shared card surfaces this item's options; terminal picks dispatch to
   // the durable backend, navigate picks open a sub-surface (inline chat / the
@@ -505,7 +507,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
             <>
               {' · '}
               <a className="pc-queue__queen-link" href="/settings/autonomy">
-                Let the Queen handle these →
+                {`Let the ${t('brain')} handle these →`}
               </a>
             </>
           ) : null}

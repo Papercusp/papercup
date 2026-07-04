@@ -13,9 +13,14 @@
  * Sections are Radix Collapsibles (collapsed by default), so each test expands
  * the target section before asserting/clicking its rows.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { withNuqsTestingAdapter, type UrlUpdateEvent } from 'nuqs/adapters/testing';
+
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the routed
+// authorizer/why-line copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import PlanOtherList from './PlanOtherList';
 import type { AttentionGroup, AttentionItem } from './plans-api';
 
