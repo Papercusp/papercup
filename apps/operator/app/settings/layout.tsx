@@ -6,6 +6,7 @@ import RouteLink from '../_components/RouteLink';
 import { Select } from '../harness/Select';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { useLexicon } from '@/lib/useLexicon';
 
 const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
@@ -92,7 +93,16 @@ const SETTINGS_LINKS = SETTINGS_GROUPS.flatMap((group) => group.links);
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
   const router = useRouter();
+  const t = useLexicon();
   const [query, setQuery] = useState('');
+
+  // The nav label is defined in a module-level const (SETTINGS_GROUPS), so the
+  // product-vocabulary word is routed at render time — 'Hive customization' →
+  // '{Pot} customization' (restore-pot-lexicon-public-release P-007). The
+  // `keywords` array keeps 'hive' as a search alias, so the entry is still
+  // discoverable under either lexicon.
+  const labelFor = (link: SettingsLink): string =>
+    link.href === '/settings/hive-customization' ? `${t('pot')} customization` : link.label;
   const [wizardProgress, setWizardProgress] = useState<{
     finishedAt: string | null;
     completed: number;

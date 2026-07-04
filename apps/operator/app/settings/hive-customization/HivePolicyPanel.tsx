@@ -19,6 +19,7 @@ import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { useHarnessClaimStatus } from '../../adv/harnesses/useHarnessClaimStatus';
+import { useLexicon } from '@/lib/useLexicon';
 
 type Membership = 'open' | 'approval' | 'allowlist';
 interface HivePolicyView {
@@ -76,6 +77,7 @@ function linesToList(s: string): string[] {
 }
 
 export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement {
+  const t = useLexicon();
   const [open, setOpen] = useQueryState('hivePolicy', parseAsBoolean.withDefault(false));
   const { data: claim } = useHarnessClaimStatus(hive);
   const canEdit = claim?.viewer_is_claimant === true;
@@ -174,18 +176,18 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       setLoaded(body.policy ?? null);
-      toast.success(`Saved Hive policy (v${body.policy?.policyVersion ?? '?'})`);
+      toast.success(`Saved ${t('pot')} policy (v${body.policy?.policyVersion ?? '?'})`);
     } catch (e) {
       toast.error(`Couldn't save policy: ${e instanceof Error ? e.message : 'failed'}`);
     } finally {
       setSaving(false);
     }
-  }, [hive, canEdit, buildPolicy]);
+  }, [hive, canEdit, buildPolicy, t]);
 
   return (
-    <section className="pc-settings-section" aria-label="Hive policy" style={SECTION}>
+    <section className="pc-settings-section" aria-label={`${t('pot')} policy`} style={SECTION}>
       <div style={{ ...ROW, marginBottom: open ? 12 : 0 }}>
-        <h2 style={{ margin: 0, fontSize: 15 }}>Hive policy {loaded ? <span style={{ color: 'var(--fg-mute)', fontSize: 12 }}>· v{loaded.policyVersion}</span> : null}</h2>
+        <h2 style={{ margin: 0, fontSize: 15 }}>{t('pot')} policy {loaded ? <span style={{ color: 'var(--fg-mute)', fontSize: 12 }}>· v{loaded.policyVersion}</span> : null}</h2>
         <button type="button" style={BTN} onClick={() => void setOpen(!open)}>
           {open ? 'Hide' : 'Show'}
         </button>
@@ -194,16 +196,16 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
       {open && (
         <>
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 12px' }}>
-            Enforceable policy a <strong>claimed</strong> Hive owner sets — rate caps, membership mode,
-            allowlist, moderation. Signed with the Hive key + federated; honest peers enforce it at
-            write-admission (EN-2+). An unclaimed Hive can’t set policy.
+            Enforceable policy a <strong>claimed</strong> {t('pot', { lower: true })} owner sets — rate caps, membership mode,
+            allowlist, moderation. Signed with the {t('pot', { lower: true })} key + federated; honest peers enforce it at
+            write-admission (EN-2+). An unclaimed {t('pot', { lower: true })} can’t set policy.
           </p>
 
           {claim == null ? (
             <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>Checking owner authority…</p>
           ) : !canEdit ? (
             <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
-              Only the claimed Hive owner can edit policy ({claim.status}).{' '}
+              Only the claimed {t('pot', { lower: true })} owner can edit policy ({claim.status}).{' '}
               {loaded ? `Current: membership=${loaded.policy.membership ?? 'open'}.` : 'No policy set (permissive).'}
             </p>
           ) : loading ? (
@@ -238,7 +240,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
                 <span style={LABEL}>Live rate state</span>
                 <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
                   {!rateState || !rateState.booted ? (
-                    <span>Not available (Hive not currently booted on this machine).</span>
+                    <span>Not available ({t('pot')} not currently booted on this machine).</span>
                   ) : rateState.rows.length === 0 ? (
                     <span>No members tracked yet this window.</span>
                   ) : (

@@ -29,6 +29,10 @@ vi.mock('../../harness/Select', () => ({
 let claimState: { data: unknown };
 vi.mock('../../adv/harnesses/useHarnessClaimStatus', () => ({ useHarnessClaimStatus: () => claimState }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
+// routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import { HivePolicyPanel } from './HivePolicyPanel';
 
 type GetMode = 'ok' | 'fail' | 'pending';
@@ -84,7 +88,8 @@ describe('HivePolicyPanel', () => {
   it('shows a read-only message to a non-claimant', () => {
     claimState = { data: { viewer_is_claimant: false, status: 'claimed' } };
     renderPanel('?hivePolicy=true');
-    expect(screen.getByText(/Only the claimed Hive owner can edit policy \(claimed\)/i)).toBeTruthy();
+    // Copy is routed through the lexicon (echoed key 'pot'), not the hardcoded "Hive".
+    expect(screen.getByText(/Only the claimed pot owner can edit policy \(claimed\)/i)).toBeTruthy();
     expect(screen.queryByLabelText('Membership mode')).toBeNull();
   });
 
@@ -110,7 +115,7 @@ describe('HivePolicyPanel', () => {
     fireEvent.change(screen.getByLabelText(/ops\/min/i), { target: { value: '10' } });
     fireEvent.click(screen.getByLabelText(/members can report/i));
     fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(expect.stringMatching(/Saved Hive policy \(v4\)/)));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith(expect.stringMatching(/Saved pot policy \(v4\)/)));
     const post = calls.find((c) => c.method === 'POST')!;
     const policy = (post.body as { policy: Record<string, unknown> }).policy;
     expect(policy.extraKey).toBe('keep');           // forward-compat key preserved
