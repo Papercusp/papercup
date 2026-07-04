@@ -75,7 +75,8 @@ export function isStuckBlockerState(status: string | null | undefined): boolean 
   return status != null && STUCK_BLOCKER_STATES.has(status);
 }
 /** WI-1439 recovery-churn fix — is the placed unit itself deliberately parked
- *  (e.g. owner/human-gated), so a dead/absent bee is EXPECTED, not a failure? */
+ *  (`blocked` or `needs-human` — owner/human-gated), so a dead/absent bee is
+ *  EXPECTED, not a failure? */
 export function isUnitParked(status: string | null | undefined): boolean {
   return status != null && UNIT_PARKED_STATES.has(status);
 }
@@ -1020,7 +1021,8 @@ export async function reconcileOneHive(
           break;
         case 'parked':
           // WI-1439 recovery-churn fix — the unit's OWN status is a deliberate park
-          // (isUnitParked, e.g. `blocked` for an owner/human-gated step). No live
+          // (isUnitParked, e.g. `blocked` or `needs-human` for an owner/human-gated
+          // step — EI-6563). No live
           // holder is EXPECTED here, so this is NOT pathology: never bump fail/infra
           // counters, never stamp a loss lineage, and suppress any pre-existing cursed
           // escalation (mirrors the 'completed' case) since a park supersedes any prior

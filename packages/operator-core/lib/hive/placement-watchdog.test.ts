@@ -158,8 +158,13 @@ describe('evaluatePlacement — P-020 completion tracking', () => {
 });
 
 describe('isUnitParked', () => {
-  it('flags only the deliberate-park band (mirrors FEATURE_NON_REQUEUE_STATES\' blocked)', () => {
+  it('flags only the deliberate-park band (mirrors FEATURE_NON_REQUEUE_STATES\' blocked + needs-human)', () => {
     expect(isUnitParked('blocked')).toBe(true);
+    // EI-6563: needs-human was added to the sibling FEATURE_NON_REQUEUE_STATES reaper
+    // set (fleet-scheduler-hardening-2026-07-03 P-004) but not mirrored here — a unit
+    // an owner parked needs-human kept getting Queen recovery-wake churn (observed on
+    // WI-369), the same class WI-1439's `blocked` fix targets.
+    expect(isUnitParked('needs-human')).toBe(true);
     for (const s of ['todo', 'passed', 'in_progress', 'failing', null, undefined]) {
       expect(isUnitParked(s)).toBe(false);
     }
