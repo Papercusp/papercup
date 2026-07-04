@@ -18,6 +18,14 @@ import userEvent from '@testing-library/user-event';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import HarnessWelcome, { HarnessWelcomeCard } from '../HarnessWelcome';
 import type { HarnessFeature } from '../useHarnessData';
+import { lexiconFor } from '@papercusp/lexicon';
+
+// These components render under the DEFAULT ('classic' → Pot) brand pack in tests
+// (the-hive flag off). Resolve the brand term the SAME way the component does so a
+// future brand-lexicon flip can never re-red these copy tests. The literal copy
+// stays verbatim; only the flag-gated brand noun flexes.
+// (restore-pot-lexicon-public-release-2026-07-04 fallout — green-gate fix su-e9204.)
+const LEX = lexiconFor('classic');
 
 const mockFeatures = vi.fn<() => { features: HarnessFeature[] | null; error: string | null }>();
 const mockIssues = vi.fn<() => { issues: unknown[] | null; error: string | null }>();
@@ -59,10 +67,12 @@ describe('HarnessWelcome gate', () => {
     noWork();
     renderWelcome();
     screen.getByTestId('harness-welcome');
-    screen.getByText('Welcome to your Hive.');
+    screen.getByText(`Welcome to your ${LEX('pot')}.`);
     expect(
       screen.getByText(
-        /Come up with ideas in the brainstorm tab, plan them in the plan tab\.\s*Start them, and then watch agents work on them in the Hive tab\./,
+        new RegExp(
+          `Come up with ideas in the brainstorm tab, plan them in the plan tab\\.\\s*Start them, and then watch agents work on them in the ${LEX('pot')} tab\\.`,
+        ),
       ),
     ).toBeTruthy();
   });

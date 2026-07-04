@@ -22,6 +22,7 @@
  *     the exact dishonesty this surface exists to prevent.
  */
 import { useSyncQuery } from '@papercusp/sync';
+import { useLexicon } from '@/lib/useLexicon';
 
 export interface FedHive {
   hiveId: string;
@@ -90,6 +91,7 @@ export function substrateLabel(s: FedStatus['substrate']): string {
 }
 
 export default function HiveFederationStatus() {
+  const t = useLexicon();
   // P-009 (data-sync-push-completion): push-driven federation status. The
   // `network.federationStatus` resolver serves the SAME { ok, substrate, hives }
   // FedStatus the GET /api/discovery/federation-status endpoint did, as a flat
@@ -148,7 +150,7 @@ export default function HiveFederationStatus() {
 
           {data.hives.length === 0 ? (
             <div className="pclsb-panel__empty" data-testid="fed-no-hives">
-              No hives published from this install yet. Publish a hive and its live peer
+              No {t('pot', { plural: true, lower: true })} published from this install yet. Publish a {t('pot', { lower: true })} and its live peer
               reach appears here.
             </div>
           ) : (
@@ -176,8 +178,8 @@ export default function HiveFederationStatus() {
 
           {/* Honest scope note — reach is discovery; sync-health is install-wide. */}
           <div className="pclsb-panel__empty" style={{ fontSize: 11, opacity: 0.7 }} data-testid="fed-scope-note">
-            Reach = peers who can discover this hive on its announce topic. Sync-health
-            is install-wide (is local content draining to the federation log); per-hive
+            Reach = peers who can discover this {t('pot', { lower: true })} on its announce topic. Sync-health
+            is install-wide (is local content draining to the federation log); per-{t('pot', { lower: true })}
             content-sync peer counts are not yet surfaced.
           </div>
         </>

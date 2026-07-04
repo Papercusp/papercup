@@ -20,6 +20,16 @@ const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { success: (...a: unknown[]) => toastSuccess(...a), error: (...a: unknown[]) => toastError(...a) } }));
 
 import HarnessTopBar from './HarnessTopBar';
+import { lexiconFor } from '@papercusp/lexicon';
+
+// The button label is lexicon-driven (`Register sub-${t('pot', {plural, lower})}`).
+// Tests render under the DEFAULT ('classic' → Pot) brand pack (the-hive flag off),
+// so resolve the brand term the SAME way the component does — a brand-lexicon flip
+// then can never re-red this gate. (restore-pot-lexicon-2026-07-04 fallout, su-e9204.)
+const REGISTER_SUBS_LABEL = new RegExp(
+  `register sub-${lexiconFor('classic')('pot', { plural: true, lower: true })}`,
+  'i',
+);
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string) => new Response('{}', { status: 200 })));
@@ -37,7 +47,7 @@ describe('<HarnessTopBar />', () => {
     render(<HarnessTopBar slug="h" />);
     expect(screen.getByTestId('ws-button')).toBeTruthy();
     expect(screen.getByTestId('add-panel')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /register sub-hives/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: REGISTER_SUBS_LABEL })).toBeTruthy();
   });
 
   it('reset-layout button invokes resetLayout()', () => {
@@ -67,7 +77,7 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
   }
   function clickRegister() {
     render(<HarnessTopBar slug="root-h" />);
-    fireEvent.click(screen.getByRole('button', { name: /register sub-hives/i }));
+    fireEvent.click(screen.getByRole('button', { name: REGISTER_SUBS_LABEL }));
   }
 
   it('POSTs with the rootSlug and reports new + reconciled counts on success', async () => {

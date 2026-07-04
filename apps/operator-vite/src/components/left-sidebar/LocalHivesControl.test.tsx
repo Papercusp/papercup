@@ -33,6 +33,10 @@ let hiveResult: Record<string, unknown> = {
   error: null,
 };
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => hiveResult }));
+// Lexicon resolver mocked to ECHO its key (t('pot')→'pot', t('brain')→'brain',
+// t('contributor')→'contributor') — isolates from the THE_HIVE flag hook; classic
+// pack renders 'Pot(s)'/'Brain'/'Cup(s)' at runtime (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import { toast } from 'sonner';
 import LocalHivesControl from './LocalHivesControl';
@@ -82,7 +86,7 @@ describe('LocalHivesControl', () => {
   it('renders a row per hive with its state + the running tally', () => {
     render(<LocalHivesControl />);
     expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
-    expect(screen.getByText('local hives · 1/2 running')).toBeTruthy();
+    expect(screen.getByText('local pot · 1/2 running')).toBeTruthy();
     expect(screen.getByTestId('local-hive-papercup-hive')).toBeTruthy();
     // State is conveyed by the Start/Stop toggle label (no separate STARTED/
     // STOPPED text): a started hive offers Stop, a stopped hive offers Start.
@@ -93,7 +97,7 @@ describe('LocalHivesControl', () => {
   it('honest empty state when no local hives are registered', () => {
     hiveResult = { data: [], loading: false, error: null };
     render(<LocalHivesControl />);
-    expect(screen.getByText(/no local hives registered/)).toBeTruthy();
+    expect(screen.getByText(/no local pot registered/)).toBeTruthy();
   });
 
   it('Start on a stopped hive fires hive:start (no drainBees)', async () => {
@@ -105,7 +109,7 @@ describe('LocalHivesControl', () => {
       ]),
     );
     await waitFor(() =>
-      expect(toastMock.success).toHaveBeenCalledWith('Hive started', expect.anything()),
+      expect(toastMock.success).toHaveBeenCalledWith('pot started', expect.anything()),
     );
   });
 
@@ -115,7 +119,7 @@ describe('LocalHivesControl', () => {
     await waitFor(() =>
       expect(H.confirm).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Pause papercup-hive?',
-        confirmLabel: 'Pause hive',
+        confirmLabel: 'Pause pot',
         destructive: true,
       })),
     );
@@ -125,7 +129,7 @@ describe('LocalHivesControl', () => {
       ]),
     );
     await waitFor(() =>
-      expect(toastMock.success).toHaveBeenCalledWith('Hive paused', expect.anything()),
+      expect(toastMock.success).toHaveBeenCalledWith('pot paused', expect.anything()),
     );
   });
 
