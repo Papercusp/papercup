@@ -23,16 +23,20 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, readdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { createHash } from 'node:crypto';
-import type {
-  SeedProvider,
-  SeedStoreEntry,
-  SeedCutContext,
-  SeedCutOutput,
-  SeedRestoreContext,
-  SeedPayload,
-  VerifyResult,
+import {
+  sealBytes,
+  openBytes,
+  SEED_CIPHER,
+  type SeedProvider,
+  type SeedStoreEntry,
+  type SeedCutContext,
+  type SeedCutOutput,
+  type SeedRestoreContext,
+  type SeedPayload,
+  type SeedKeyRef,
+  type VerifyResult,
 } from '@papercusp/seed-bundle';
 
 export const GIT_SEED_KIND = 'git';
@@ -63,6 +67,10 @@ export interface GitCutContext {
   /** `git bundle create` revision selector; default `--all`. Pass `HEAD` (+ a
    *  configured `--depth` upstream) for a shallow seed (P-006 Q-1). */
   readonly rev?: string;
+  /** Encrypt the bundle bytes at rest (required for a PRIVATE repo shipped in a
+   *  public installer). The key is delivered to the joiner only post-admission
+   *  (via `keyRef`); it is NEVER in the installer. */
+  readonly encryption?: { readonly key: Uint8Array; readonly keyRef: SeedKeyRef };
 }
 
 /** Context for {@link createGitSeedProvider}.restore (first-boot time). */
@@ -71,6 +79,9 @@ export interface GitRestoreContext {
   readonly targetRepoDir: string;
   /** Override the origin URL recorded in the seed (else the seed's own). */
   readonly originUrl?: string;
+  /** The decryption key (resolved post-admission). REQUIRED iff the seed was cut
+   *  with encryption; restore throws if the seed is encrypted and this is absent. */
+  readonly decryptionKey?: Uint8Array;
 }
 
 interface GitSeedSubmodule {
@@ -82,6 +93,8 @@ interface GitSeedIndex {
   readonly super: string;
   readonly originUrl: string;
   readonly submodules: GitSeedSubmodule[];
+  /** True ⇒ every bundle file is encrypted at rest (decrypt before clone). */
+  readonly encrypted: boolean;
 }
 
 async function walkFiles(root: string, dir: string = root, acc: string[] = []): Promise<string[]> {
@@ -129,7 +142,7 @@ export function createGitSeedProvider(): SeedProvider {
     kind: GIT_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceRepoDir, stagingDir, originUrl, rev } = ctx as unknown as GitCutContext;
+      const { sourceRepoDir, stagingDir, originUrl, rev, encryption } = ctx as unknown as GitCutContext;
       await mkdir(join(stagingDir, 'submodules'), { recursive: true });
       const revSel = rev ?? '--all';
       await git(sourceRepoDir, ['bundle', 'create', join(stagingDir, 'super.bundle'), revSel]);
@@ -141,7 +154,17 @@ export function createGitSeedProvider(): SeedProvider {
         submodules.push({ path: sub.path, url: sub.url, bundle: bundleRel });
       }
 
-      const index: GitSeedIndex = { super: 'super.bundle', originUrl, submodules };
+      // Encrypt every bundle file in place (the CODE is the secret). index.json
+      // stays plaintext — it holds only bundle filenames + the public origin URL.
+      const bundleRels = ['super.bundle', ...submodules.map((s) => s.bundle)];
+      if (encryption) {
+        for (const rel of bundleRels) {
+          const p = join(stagingDir, rel);
+          await writeFile(p, sealBytes(encryption.key, await readFile(p)));
+        }
+      }
+
+      const index: GitSeedIndex = { super: 'super.bundle', originUrl, submodules, encrypted: Boolean(encryption) };
       await writeFile(join(stagingDir, 'index.json'), JSON.stringify(index, null, 2));
 
       const hash = await hashDir(stagingDir);
@@ -151,7 +174,8 @@ export function createGitSeedProvider(): SeedProvider {
         hash,
         sizeBytes,
         source: { type: 'resource', path: stagingDir },
-        meta: { originUrl, submodulePaths: submodules.map((s) => s.path) },
+        ...(encryption ? { encryption: { scheme: SEED_CIPHER, keyRef: encryption.keyRef } } : {}),
+        meta: { originUrl, submodulePaths: submodules.map((s) => s.path), encrypted: Boolean(encryption) },
       };
       return { entry, payload: { path: stagingDir } };
     },

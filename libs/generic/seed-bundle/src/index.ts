@@ -48,3 +48,13 @@ export {
   type StoreRestoreOutcome,
   type SeedPayloadResolver,
 } from './restore';
+
+export {
+  SEED_CIPHER,
+  SEED_KEY_LEN,
+  SeedCryptoError,
+  generateSeedKey,
+  sealBytes,
+  openBytes,
+  keysEqual,
+} from './crypto';
