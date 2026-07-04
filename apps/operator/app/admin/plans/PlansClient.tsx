@@ -751,7 +751,7 @@ export default function PlansClient() {
             <ClipboardList size={14} aria-hidden />
             Plans
           </button></Tooltip>
-          <Tooltip label="Open the Queue — every decision & action surface across plans the Queen did not auto-handle, with item filters cleared (plan filters stay)."><button
+          <Tooltip label={`Open the Queue — every decision & action surface across plans the ${t('brain')} did not auto-handle, with item filters cleared (plan filters stay).`}><button
             type="button"
             className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
             onClick={() => void goQueue()}
@@ -927,13 +927,13 @@ export default function PlansClient() {
                         <DecisionLog
                           layer={qlLayer}
                           limit={50}
-                          title={qlLayer === 'disposition' ? 'What the Queen decided' : 'Governed actions (audit)'}
+                          title={qlLayer === 'disposition' ? `What the ${t('brain')} decided` : 'Governed actions (audit)'}
                           description={
                             qlLayer === 'disposition'
-                              ? 'Every item the Queen considered and what she chose — act, defer, reject, route, or no-op. Newest first.'
+                              ? `Every item the ${t('brain')} considered and what it chose — act, defer, reject, route, or no-op. Newest first.`
                               : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
                           }
-                          emptyText="No decisions logged yet. As the Queen considers items, they appear here."
+                          emptyText={`No decisions logged yet. As the ${t('brain')} considers items, they appear here.`}
                           externalDetail
                         />
                       </section>

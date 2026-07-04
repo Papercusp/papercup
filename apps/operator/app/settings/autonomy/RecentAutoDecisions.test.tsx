@@ -16,6 +16,10 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ ...syncResult, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the
+// Queen→brain routed empty-state/description copy from the THE_HIVE flag hook
+// (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import RecentAutoDecisions from './RecentAutoDecisions';
 
@@ -50,6 +54,8 @@ describe('RecentAutoDecisions', () => {
     render(<RecentAutoDecisions />);
     expect(screen.getByRole('heading', { name: /Recent auto-decisions/i })).toBeTruthy();
     expect(screen.getByText(/No decisions logged yet/i)).toBeTruthy();
+    // Copy is routed through the lexicon (echoed key), not the hardcoded "Queen".
+    expect(screen.getByText(/As the brain considers items/i)).toBeTruthy();
   });
 
   it('renders a disposition row with its label, category, posture and rationale', () => {

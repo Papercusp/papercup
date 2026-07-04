@@ -683,7 +683,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Role backend, model, and tier ceiling"
-          description="One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the Queen may choose for that role. Empty model and no ceiling inherit the built-in default."
+          description={`One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the ${t('brain')} may choose for that role. Empty model and no ceiling inherit the built-in default.`}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div

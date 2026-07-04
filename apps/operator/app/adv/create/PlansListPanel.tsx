@@ -152,7 +152,7 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           <ClipboardList size={14} aria-hidden />
           Plans
         </button></Tooltip>
-        <Tooltip label="Queue — every decision & action surface across plans the Queen did not auto-handle (list + detail)."><button
+        <Tooltip label={`Queue — every decision & action surface across plans the ${t('brain')} did not auto-handle (list + detail).`}><button
           type="button"
           className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
           onClick={() => void setView('queue')}

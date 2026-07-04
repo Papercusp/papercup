@@ -140,7 +140,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
       ) : null}
 
       {showQueenLog ? (
-        <section className="pc-queue__queenlog" aria-label="Queen's decision log">
+        <section className="pc-queue__queenlog" aria-label={`${t('brain')}'s decision log`}>
           <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
             {QUEEN_LOG_LAYERS.map((l) => (
               <Tooltip key={l.id} label={l.hint} side="bottom">
@@ -158,13 +158,13 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
           <DecisionLog
             layer={qlLayer}
             limit={50}
-            title={qlLayer === 'disposition' ? 'What the Queen decided' : 'Governed actions (audit)'}
+            title={qlLayer === 'disposition' ? `What the ${t('brain')} decided` : 'Governed actions (audit)'}
             description={
               qlLayer === 'disposition'
-                ? 'Every item the Queen considered and what she chose — act, defer, reject, route, or no-op. Newest first.'
+                ? `Every item the ${t('brain')} considered and what it chose — act, defer, reject, route, or no-op. Newest first.`
                 : 'Every governed action that ran, auto or gated — the full audit trail. Newest first.'
             }
-            emptyText="No decisions logged yet. As the Queen considers items, they appear here."
+            emptyText={`No decisions logged yet. As the ${t('brain')} considers items, they appear here.`}
             externalDetail
           />
         </section>

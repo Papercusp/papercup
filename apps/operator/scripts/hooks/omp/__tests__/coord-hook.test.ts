@@ -2450,6 +2450,75 @@ describe('pollInboxDelta (mid-turn coord delivery)', () => {
   });
 });
 
+describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-flood-livelock)', () => {
+  const originalFetch = global.fetch;
+  const prevOp = process.env.PAPERCUSP_OPERATOR_URL;
+
+  const mockMcp = (payload: unknown): typeof fetch =>
+    (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+    })) as unknown as typeof fetch;
+
+  beforeEach(() => {
+    _resetHookOwnerIdForTests();
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:3070';
+  });
+  afterEach(() => {
+    _resetHookOwnerIdForTests();
+    _resetMidTurnCursorForTests(undefined);
+    global.fetch = originalFetch;
+    if (prevOp === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOp;
+  });
+
+  /**
+   * Regression guard for the coord-inbox-flood LIVELOCK (fact
+   * `ornith-coord-inbox-flood-livelock`, 2026-07-04). `deliverAs:'steer'`
+   * routes the coord delta to omp's steering queue, which ABORTS the in-flight
+   * tool ("Skipped due to queued user message"). Under a busy fleet's ambient
+   * `*` broadcast flood + a slow local model, every tool is aborted before it
+   * finishes → the session never makes progress. Mid-turn coord awareness must
+   * therefore be delivered as `followUp` (after the tool completes), never
+   * `steer`.
+   */
+  it('delivers the coord delta as followUp so the in-flight tool is not aborted', async () => {
+    const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+    const sent: Array<{ msg: { customType?: string }; opts?: { deliverAs?: string } }> = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+        subs.set(event, handler);
+      },
+      sendMessage: (msg: { customType?: string }, opts?: { deliverAs?: string }) => {
+        sent.push({ msg, opts });
+      },
+    };
+    const { default: register } = await import('../coord-hook');
+    register(pi as never);
+
+    _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
+    global.fetch = mockMcp({
+      entries: [
+        { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'ambient broadcast' },
+      ],
+      injection: '[coord+1]\n- peerX ambient broadcast',
+      summary: { newest_ts: '2026-06-01T00:05:00Z' },
+    });
+
+    await subs.get('tool_result')!({ type: 'tool_result', toolCallId: 'tc-1' }, {});
+
+    const coordMsg = sent.find((s) => s.msg.customType === 'coord-reminder');
+    expect(coordMsg).toBeDefined();
+    expect(coordMsg!.opts?.deliverAs).toBe('followUp');
+    expect(coordMsg!.opts?.deliverAs).not.toBe('steer');
+  });
+});
+
 describe('collapseDigestNotifies (coordination-substrate Phase 2, D-006)', () => {
   const notify = (over: Partial<InboxEntry>): InboxEntry => ({
     ts: '2026-06-04T00:00:00.000Z',

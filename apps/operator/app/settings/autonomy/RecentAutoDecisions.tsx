@@ -11,16 +11,19 @@
  * component (D-002). This is now a thin, settings-flavored wrapper — same title,
  * copy, layer, limit, Undo behavior, and section spacing as before.
  */
+import { useLexicon } from '@/lib/useLexicon';
+
 import DecisionLog from '../../_components/DecisionLog';
 
 export default function RecentAutoDecisions() {
+  const t = useLexicon();
   return (
     <DecisionLog
       layer="disposition"
       limit={25}
       title="Recent auto-decisions"
-      description="What the Queen has decided per item she considered — newest first. A row’s Undo rejects the auto-decision (owner thumbs-down) and demotes that category one step; it appears once a reversible auto-decision has an armed tripwire (the literal action-revert lands with the execution layer)."
-      emptyText="No decisions logged yet. As the Queen considers items, her dispositions appear here."
+      description={`What the ${t('brain')} has decided per item it considered — newest first. A row's Undo rejects the auto-decision (owner thumbs-down) and demotes that category one step; it appears once a reversible auto-decision has an armed tripwire (the literal action-revert lands with the execution layer).`}
+      emptyText={`No decisions logged yet. As the ${t('brain')} considers items, its dispositions appear here.`}
       className="pc-settings-section"
       style={{ marginTop: 28 }}
     />

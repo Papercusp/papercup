@@ -2319,14 +2319,25 @@ export default function register(pi: HookApi): void {
     // 1. Release the lock acquired for this tool (existing behavior).
     await safe(() => onToolResult(event), undefined);
     // 2. Mid-turn coord delivery — surface messages that arrived since turn
-    //    start / the last tool call. `deliverAs: 'steer'` injects into the
-    //    running turn (vs only at the next turn_start). Parity with the
-    //    Claude/Codex PostToolUse coord hook.
+    //    start / the last tool call. Delivered as `followUp`, NOT `steer`:
+    //    `steer` routes to omp's steering queue, which ABORTS the in-flight
+    //    tool (its result becomes "Skipped due to queued user message") every
+    //    time a coord delta lands. On a slow local model (ornith IQ3_M, ~40s
+    //    turns) in a busy fleet, ambient `*` broadcasts (claim pickups, sweeps)
+    //    arrive faster than tools complete, so every tool is aborted before
+    //    finishing → the session LIVELOCKS and never makes progress (observed
+    //    2026-07-04: a leader burned 424 msgs / 170K tokens of "Skipped…" with
+    //    0 goal actions — fact `ornith-coord-inbox-flood-livelock`). `followUp`
+    //    delivers the same awareness AFTER the running tool completes:
+    //    non-interrupting, and actually closer to the Claude/Codex passive
+    //    `additionalContext` parity this hook targets (that path appends, it
+    //    does not abort). Urgent control cues still arrive at the next tool
+    //    boundary (one call later) — an acceptable trade vs. a full livelock.
     const { reminder } = await safe(() => pollInboxDelta(), { reminder: '' });
     if (reminder.length > 0) {
       pi.sendMessage(
         { customType: 'coord-reminder', content: reminder, display: false, attribution: 'agent' },
-        { deliverAs: 'steer' },
+        { deliverAs: 'followUp' },
       );
     }
   });
