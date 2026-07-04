@@ -3,11 +3,14 @@ URL: /internal/docs/agent-insights/hive-seed-bundle-design
 
 The P-001 design memo for the generic seed-bundle layer: a checkpoint of a replicated store (git + corestore) shipped in the installer so a fresh install pre-positions bytes, and the UNMODIFIED shared-hive join then transfers only the delta. Defines the SeedProvider interface, the manifest schema, the restore-before-join state machine, the security model (epoch-ciphertext corestore + encrypted-at-rest git seed, keys via admission), and resolves the four open questions (installer size, git-seed encryption envelope, cross-core cut skew, epoch read-cut for new members).
 
-> **Status: DESIGN PROPOSAL (P-001) — awaiting owner review.** Plan:
+> **Status: AS-BUILT (P-001…P-011 landed, 2026-07-04).** Plan:
 > [`hive-seed-bundle-2026-07-04`](/project-docs?harness=papercusp\&path=docs%2Fplans%2Fhive-seed-bundle-2026-07-04.md).
-> Author: su-0824a, 2026-07-04 (AUTO). This memo resolves the plan's four open
-> questions and specifies the interface + manifest + state machine that P-002→P-011
-> build against. Decisions D-001…D-008 in the plan are binding; this expands them.
+> Author: su-0824a, 2026-07-04 (AUTO). This memo is the **design** (why + the
+> interface/manifest/state-machine spec); for **operations** — cutting a seed,
+> debugging a restore, the `HIVE_SEED_BUNDLE` kill-switch, every failure mode, and the
+> cold-join canary — see the
+> [seed-bundle runbook](/internal/docs/agent-insights/hive-seed-bundle-runbook).
+> Decisions D-001…D-009 in the plan are binding; this expands them.
 
 ## The problem
 
@@ -235,13 +238,23 @@ for them.
   current-epoch-only member — which is **still correct and still delta-efficient** (they
   catch up live from the boundary forward).
 
-**Recommendation:** make it an explicit **hive policy** — "grant newly-admitted members
-past-epoch read keys" — and default it **ON for the canonical dogfood hive** (a new
-member is *trusted*; the cut-off exists to fence out *removed* members, not new ones).
-`manifest.cutAtEpoch` lets restore assert the member holds a key for the seed's epoch
-before trusting decryptability; if not, that store's ops defer to the live path. This
-policy question is the one item that should get an explicit owner nod in P-005 before
-the git-seed encryption lands.
+**RATIFIED (owner, 2026-07-04, D-009) — and, on grounding the code, already the
+guaranteed default, so no new key-distribution code is needed.** The owner-side
+`grantEpochKeysToMembers` (`hive-epoch-boundary-wiring.ts`) **already wraps EVERY
+epoch key `[0..current]` to a newly-admitted member**, unconditionally — a documented
+*correctness* property ("Why \[0..current], not current-only"), because content is
+encrypted once per epoch and never re-encrypted, so a current-epoch-only joiner could
+read *zero* pre-join content. Restricting new members to the current epoch is explicitly
+called out there as a *deferred* forward-secrecy policy that nobody has built. So a
+newly-admitted member holds keys for every epoch the seed spans, and the corestore
+seed's epoch-ciphertext decrypts for free — and where a key hasn't arrived yet, the
+existing **decrypt-gate defers the op and drains it on key arrival** (`hive-epoch-op-gate.ts`),
+so a seeded op for a not-yet-keyed epoch is never lost. P-005b therefore reduces to a
+**named regression tripwire** (`seed-past-epoch-key-guarantee.test.ts`) that locks the
+`[0..current]` grant as a seed dependency: if the deferred forward-secrecy policy is ever
+implemented, that test fails and forces wiring the `manifest.cutAtEpoch` gate (defer a
+store to the cold path when the member lacks its epoch key) *first*. `manifest.cutAtEpoch`
+is carried for exactly that future guard.
 
 ## Cold path stays first-class (D-007)
 

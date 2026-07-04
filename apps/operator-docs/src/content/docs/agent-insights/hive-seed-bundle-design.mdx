@@ -3,7 +3,7 @@ title: "Seed-bundle design — installer-shipped shared-hive snapshot + live-joi
 description: "The P-001 design memo for the generic seed-bundle layer: a checkpoint of a replicated store (git + corestore) shipped in the installer so a fresh install pre-positions bytes, and the UNMODIFIED shared-hive join then transfers only the delta. Defines the SeedProvider interface, the manifest schema, the restore-before-join state machine, the security model (epoch-ciphertext corestore + encrypted-at-rest git seed, keys via admission), and resolves the four open questions (installer size, git-seed encryption envelope, cross-core cut skew, epoch read-cut for new members)."
 discovered: 2026-07-04
 tags: [seed-bundle, snapshot, shared-hive, dogfood, install, hyperbee, corestore, git-bundle, hive-epoch, federation, generic-first, delta-catchup]
-status: draft
+status: published
 documents:
   - packages/operator-core/lib/sync/hyperbee/corestore.ts
   - packages/operator-core/lib/sync/hyperbee/boot.ts
@@ -17,11 +17,14 @@ documents:
   - packages/operator-core/lib/instance-spec/types.ts
 ---
 
-> **Status: DESIGN PROPOSAL (P-001) — awaiting owner review.** Plan:
+> **Status: AS-BUILT (P-001…P-011 landed, 2026-07-04).** Plan:
 > [`hive-seed-bundle-2026-07-04`](/project-docs?harness=papercusp&path=docs%2Fplans%2Fhive-seed-bundle-2026-07-04.md).
-> Author: su-0824a, 2026-07-04 (AUTO). This memo resolves the plan's four open
-> questions and specifies the interface + manifest + state machine that P-002→P-011
-> build against. Decisions D-001…D-008 in the plan are binding; this expands them.
+> Author: su-0824a, 2026-07-04 (AUTO). This memo is the **design** (why + the
+> interface/manifest/state-machine spec); for **operations** — cutting a seed,
+> debugging a restore, the `HIVE_SEED_BUNDLE` kill-switch, every failure mode, and the
+> cold-join canary — see the
+> [seed-bundle runbook](/internal/docs/agent-insights/hive-seed-bundle-runbook).
+> Decisions D-001…D-009 in the plan are binding; this expands them.
 
 ## The problem
 
