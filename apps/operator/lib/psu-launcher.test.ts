@@ -79,6 +79,10 @@ import {
   runLaunchPreflight,
   normalizeModelSpec,
   validateModelSpec,
+  autoCompactWindowEnv,
+  isFleetMemberLaunch,
+  COMPACTION_LIMIT_1M_LEADER,
+  COMPACTION_LIMIT_1M_FLEET_MEMBER,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -1519,6 +1523,64 @@ describe('normalizeModelSpec (opus/fable → 1M window; owner directive 2026-07-
     expect(parseArgs(['--model=claude-fable-5:xhigh']).model).toBe('claude-fable-5[1m]:xhigh');
     expect(parseArgs(['--model=opus:max']).model).toBe('opus[1m]:max');
     expect(parseArgs(['--model=sonnet:high']).model).toBe('sonnet[1m]:high');
+  });
+});
+
+describe('autoCompactWindowEnv (P-014 — CC mechanical compaction backstop for [1m] launches)', () => {
+  const KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
+  /** CC's REAL fire point for a resolved window (binary-verified): output reserve 20000,
+   *  default precompute-buffer fraction 0.2 ⇒ compact fires at ≈0.8·(window−20000). */
+  const ccFirePoint = (w) => Math.round((w - 20_000) * 0.8);
+
+  it('lockstep soft-limit constants (agent-config-constants COMPACTION_LIMIT_DEFAULT_1M_*_CAP)', () => {
+    expect(COMPACTION_LIMIT_1M_LEADER).toBe(400_000);
+    expect(COMPACTION_LIMIT_1M_FLEET_MEMBER).toBe(300_000);
+  });
+
+  it('fleet MEMBER [1m] → window 470k (fires at the 1.2×300k=360k overshoot envelope)', () => {
+    const env = autoCompactWindowEnv('claude', 'sonnet[1m]:high', { fleetMember: true });
+    expect(env[KEY]).toBe('470000'); // 1.5·300000 + 20000
+    expect(ccFirePoint(Number(env[KEY]))).toBe(1.2 * COMPACTION_LIMIT_1M_FLEET_MEMBER);
+  });
+
+  it('leader / solo [1m] → window 620k (fires at the 1.2×400k=480k overshoot envelope)', () => {
+    const leader = autoCompactWindowEnv('claude', 'opus[1m]', { fleetMember: false });
+    expect(leader[KEY]).toBe('620000'); // 1.5·400000 + 20000
+    expect(ccFirePoint(Number(leader[KEY]))).toBe(1.2 * COMPACTION_LIMIT_1M_LEADER);
+    // fleetMember defaults to false ⇒ the leader/solo cap
+    expect(autoCompactWindowEnv('claude', 'claude-fable-5[1m]:xhigh')[KEY]).toBe('620000');
+  });
+
+  it('every resolved window sits inside CC\'s accepted [1e5, 1e6] clamp', () => {
+    for (const [spec, fm] of [['sonnet[1m]', true], ['opus[1m]', false]]) {
+      const w = Number(autoCompactWindowEnv('claude', spec, { fleetMember: fm })[KEY]);
+      expect(w).toBeGreaterThanOrEqual(100_000);
+      expect(w).toBeLessThanOrEqual(1_000_000);
+    }
+  });
+
+  it('NO override for a non-[1m] spec (a ≤200k session already backstops near its 158k soft limit)', () => {
+    expect(autoCompactWindowEnv('claude', 'sonnet', { fleetMember: true })).toEqual({});
+    expect(autoCompactWindowEnv('claude', 'haiku')).toEqual({});
+    expect(autoCompactWindowEnv('claude', 'claude-fable-5')).toEqual({});
+  });
+
+  it('NO override for a non-claude agent, or a null/absent spec (set only when we KNOW it is [1m])', () => {
+    expect(autoCompactWindowEnv('omp', 'sonnet[1m]', { fleetMember: true })).toEqual({});
+    expect(autoCompactWindowEnv('codex', 'opus[1m]')).toEqual({});
+    expect(autoCompactWindowEnv('claude', null)).toEqual({});
+    expect(autoCompactWindowEnv('claude', undefined)).toEqual({});
+  });
+});
+
+describe('isFleetMemberLaunch (P-014 — shapes the [1m] soft-limit leg)', () => {
+  it('true only for a named-fleet launch whose role is not leader', () => {
+    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: 'member' })).toBe(true);
+    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: 'leader' })).toBe(false);
+    expect(isFleetMemberLaunch({ fleet: 'backlog-clearance', fleetRole: null })).toBe(true); // fleet present, not leader
+    expect(isFleetMemberLaunch({ fleet: null, fleetRole: null })).toBe(false); // solo
+    expect(isFleetMemberLaunch({})).toBe(false);
+    expect(isFleetMemberLaunch(undefined)).toBe(false);
   });
 });
 

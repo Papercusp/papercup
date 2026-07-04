@@ -1885,6 +1885,54 @@ export function normalizeModelSpec(spec) {
   return `${spec}[1m]`;
 }
 
+/**
+ * The `[1m]` SOFT compaction limits — LOCKSTEP with agent-config-constants
+ * `COMPACTION_LIMIT_DEFAULT_1M_CAP` (leader/solo) + `COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP`
+ * (named-fleet member), duplicated here because this standalone .mjs cannot import the .ts
+ * (same reason DEFAULT_1M_FAMILY_RE mirrors `isDefault1mModelSpec`). Keep the two in sync.
+ */
+export const COMPACTION_LIMIT_1M_LEADER = 400_000;
+export const COMPACTION_LIMIT_1M_FLEET_MEMBER = 300_000;
+
+/**
+ * P-014 (agent-managed-compaction-2026-07-01) — the L2.5 MECHANICAL compaction backstop.
+ * Returns the env fragment setting Claude Code's native `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+ * so CC ITSELF force-compacts a fully-unresponsive `[1m]` session at ~120% of its papercusp
+ * SOFT limit, instead of drifting toward the 967k–1M model window (the 2026-07-04 incident:
+ * sonnet[1m] fleet members ran to 836k because CC's own auto-compact on a 1M window sits near
+ * ~758k — far above their 300k soft limit — so nothing mechanical ever caught the ones that
+ * ignored every reminder + the watchdog). `{}` for non-claude, and for any spec WITHOUT `[1m]`:
+ * a ≤200k session already has a natural CC backstop (~144–167k) just below its ~158k soft
+ * limit, and forcing a smaller window there would only fire EARLIER than papercusp's own clean
+ * cut. A null/absent spec (no --model → CLI default) also gets nothing — we set it ONLY when we
+ * KNOW the session runs the 1M window.
+ *
+ * WINDOW MATH — verified against the CC 2.1.x binary, NOT the naive "window == fire point":
+ * CC auto-compacts when usedTokens ≥ round((window − 20000) × (1 − f)) — output reserve 20000
+ * (`a5l`), default precompute-buffer fraction f = 0.20 (`w3o`; the statsig table
+ * `tengu_amber_moleskin` that could vary f is OFF here). So nominal fire ≈ 0.8 × (window − 20000).
+ * To land that fire point on the sanctioned overshoot envelope softLimit × 1.2
+ * (COMPACTION_OVERSHOOT_FACTOR) we INVERT: 0.8 × (W − 20000) = 1.2 × softLimit ⟹
+ * W = 1.5 × softLimit + 20000. Worst case (f→0, e.g. a future statsig flip) fires at
+ * W − 20000 = 1.5 × softLimit — still a real backstop far below the 1M window: it fails SAFE
+ * (a touch late, never never-fires). CC clamps the value to [1e5, 1e6]; we clamp too so the
+ * intent is explicit. A per-session config:set-compaction-limit override taken LATER is not
+ * reflected here (launch-time default only) — the watchdog (P-012/P-017) covers live-config.
+ */
+export function autoCompactWindowEnv(agent, spec, { fleetMember = false } = {}) {
+  if (agent !== 'claude') return {};
+  if (!/\[1m\]/i.test(String(spec ?? ''))) return {};
+  const softLimit = fleetMember ? COMPACTION_LIMIT_1M_FLEET_MEMBER : COMPACTION_LIMIT_1M_LEADER;
+  const window = Math.min(1_000_000, Math.max(100_000, Math.round(softLimit * 1.5 + 20_000)));
+  return { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) };
+}
+
+/** True for a named-fleet MEMBER launch (fleet present, role not leader) — shapes the [1m]
+ *  soft-limit leg exactly like agent-config-constants `defaultCompactionLimitForSpec` opts.fleetMember. */
+export function isFleetMemberLaunch(args) {
+  return !!args?.fleet && args?.fleetRole !== 'leader';
+}
+
 /** The canonical BARE cloud model aliases psu recognizes. Short + lowercase. The CLI/gateway own
  *  the full OPEN set of ids, so this list is used ONLY to spot an obviously-misspelled short alias
  *  (validateModelSpec) — never to gate full/provider ids. */
@@ -3313,6 +3361,10 @@ async function roleFlow(args, role, rolesMeta) {
       ...res.envelopeEnv,
       PAPERCUSP_AGENT_SESSION: '1',
       ...(args.model ? { PAPERCUSP_MODEL: args.model } : {}),
+      // P-014 (agent-managed-compaction): mechanical compaction backstop for a [1m]
+      // role session — CC's CLAUDE_CODE_AUTO_COMPACT_WINDOW at ~120% of its soft limit.
+      // No-op for non-claude / non-[1m] (see autoCompactWindowEnv).
+      ...autoCompactWindowEnv(res.agent, args.model, { fleetMember: isFleetMemberLaunch(args) }),
     },
   });
 }
@@ -3634,6 +3686,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       ...(res.agent === 'claude'
         ? { ENABLE_TOOL_SEARCH: args.contextSize === 'full' ? 'false' : 'true' }
         : {}),
+      // P-014 (agent-managed-compaction): the MECHANICAL compaction backstop. For a
+      // [1m] claude launch, set CC's native CLAUDE_CODE_AUTO_COMPACT_WINDOW so CC itself
+      // force-compacts at ~120% of the papercusp soft limit (300k member / 400k leader)
+      // instead of drifting toward the 1M model window (the 2026-07-04 836k incident).
+      // No-op for non-claude / non-[1m] (see autoCompactWindowEnv).
+      ...autoCompactWindowEnv(res.agent, args.model, { fleetMember: isFleetMemberLaunch(args) }),
       // P-030 (2026-07-02): OMP's default 30s MCP connect timeout is starved by a ~35s
       // startup event-loop block (observed twice, blockedMs≈35.6k both times) — every MCP
       // server then "times out"/"unable to connect" and the session runs TOOL-LESS with no
