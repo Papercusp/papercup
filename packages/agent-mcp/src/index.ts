@@ -152,6 +152,10 @@ export type { DeltaResponse, DeltaIngestResult, DeltaDispatch, DeltaDispatchResu
 // their content-encoded result with readJsonResult.
 export { applySeeAlso, resolveSeeAlso, renderSeeAlsoText, readJsonResult } from '@papercusp/tooldef';
 export type { SeeAlso, SeeAlsoEntry, SeeAlsoPointer } from '@papercusp/tooldef';
+// Host ambient result-annotator seam (agent-managed-compaction P-013) — the operator
+// wires its banded context gauge via context-gauge-wiring.ts, same as delta-flag-wiring.
+export { setResultAnnotator, resetResultAnnotator, applyResultAnnotator } from '@papercusp/tooldef';
+export type { ResultAnnotator } from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's

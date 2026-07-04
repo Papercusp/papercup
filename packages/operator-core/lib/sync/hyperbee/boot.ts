@@ -356,6 +356,21 @@ export interface BootHarnessOpts {
     harnessSlug: string,
   ) => Promise<string | null | undefined>;
   /**
+   * Test seam (WI-559 / WI-2105) — override how the OWNER's hive-home slug is
+   * resolved (the real `hiveHomeSlugForHarness`, which reads the harness_registry
+   * for `hive`-kind / `hive_slug` / PG-identity fallback). Production leaves this
+   * undefined and boot imports the real resolver. Tests inject one to exercise the
+   * content-guard-home resolution WITHOUT the registry — e.g. an OWNED-hive member
+   * harness (`hive-canary`) whose home (`papercusp`) ≠ own slug and whose joiner
+   * rebind is null, to assert cross-member content APPLIES via `contentGuardHiveHome`
+   * (not a no-hiveHome drop) while the hive-home projection rebind stays OFF (no
+   * double-apply). Gated on `bindingResolvesHiveHomeProjection` like the real path.
+   */
+  hiveHomeSlugForHarnessOverride?: (
+    workspaceId: string,
+    harnessSlug: string,
+  ) => Promise<string | null | undefined>;
+  /**
    * Test seam — override the projection apply sink. Production leaves this
    * undefined and the per-harness scoped apply (`buildHarnessProjectionApply`,
    * which routes ops to THIS harness's own projection set) is used. Tests
@@ -933,8 +948,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const resolvedHiveHomeSlug = await (async (): Promise<string | undefined> => {
     if (!bindingResolvesHiveHomeProjection(opts.swarmBinding)) return undefined;
     try {
-      const { hiveHomeSlugForHarness } = await import('../../hive-federation');
-      return (await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug)) ?? undefined;
+      const resolve =
+        opts.hiveHomeSlugForHarnessOverride ??
+        (await import('../../hive-federation')).hiveHomeSlugForHarness;
+      return (await resolve(opts.workspaceId, opts.harnessSlug)) ?? undefined;
     } catch {
       return undefined; // fail-open: today's behavior (no cross-member apply on the owner)
     }
