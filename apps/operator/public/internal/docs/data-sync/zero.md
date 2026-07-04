@@ -3,13 +3,19 @@ URL: /internal/docs/data-sync/zero
 
 How a Postgres row becomes a row in your React component, in real time.
 
-:::danger\[Zero is being retired — historical reference]
-Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
-path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
-host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
-**not run** on desktop. Treat this page as historical reference. Source of
-truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection
-doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::danger\[Zero is fully decommissioned — historical reference only]
+Zero / zero-cache / ZQL named-queries / WebSocket push is **gone, not just
+retiring**: `zero-decommission-2026-06-20` removed `@rocicorp/zero` from every
+`package.json`, deleted the `@papercusp/zero-harness` package (`libs/zero-harness`
+— the directory no longer exists in the tree, so every `libs/zero-harness/...`
+path referenced below is dead/historical), and stripped the Zero WS transport
+out of `@papercusp/sync`. The shipping desktop app uses **SSE-primary** sync
+(the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`);
+zero-cache is **not run** anywhere. Treat this whole page as historical
+reference. Source of truth: `apps/operator/providers/HarnessSyncProvider.tsx`
+(transport-selection doc-comment), the root `CLAUDE.md` deployment-model
+section, and [Named queries](/internal/docs/data-sync/named-queries) for the
+current, authoritative recipe.
 :::
 
 ## The pipeline end-to-end

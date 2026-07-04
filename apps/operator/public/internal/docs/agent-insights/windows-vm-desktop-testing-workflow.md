@@ -136,6 +136,28 @@ edge that cost an hour:
     distro boot fails until you `wsl --uninstall` to revert to the
     inbox engine (state survives the round trip; verified live
     2026-06-12). The §16 watchdog hint is for real hardware, not here.
+18. **Window/tray observation MUST run inside Session 1 — via an interactive
+    scheduled task that writes a result FILE the Session-0 ssh reads.** A
+    powershell spawned from the WSL operator (or a plain ssh) runs in Session 0
+    and `EnumWindows` returns zero interactive windows (D-002). Pattern that
+    works (verified P-004 tray / P-008 quit / D-003 focus, 2026-07-04):
+    `schtasks /create /tn <t> /tr "powershell -File C:\...\verify.ps1" /sc ONCE
+    /st 00:00 /it /rl LIMITED /f` then `/run`; the script does the
+    `EnumWindows` P/Invoke (and any `PostMessage WM_CLOSE` / `SetForegroundWindow`)
+    **in-session** and `Set-Content`s the result to a txt Session-0 then reads.
+    The Server tray app shows only a `com.papercusp.server-siw` single-instance
+    window (no user window) — the notification-area icon is not a top-level
+    window, so it never appears in `EnumWindows`; verify the tray by
+    Server-is-windowless + owns-the-sidecar, not by enumerating the icon.
+19. **A `schtasks`-relaunched GUI does not reliably persist a debuggable
+    WebView2** — so the CDP path (§14) only works on the *first-boot* GUI or a
+    `Start-Process`-launched one. On a *relaunch* via the `papercusp-e2e` task
+    (after the GUI was closed), the GUI process spawns/attaches the Server then
+    exits, leaving the Server+sidecar up but `:9222` unreachable. This looks
+    like the app "not persisting" but is a Session-1 task-tree artifact, NOT a
+    product second-launch bug (Start-Process launches persist; single-instance
+    PASS\_ALL). For a CDP/button-click E2E, launch the GUI with `Start-Process`
+    (or keep the first-boot GUI alive), don't relaunch through the task.
 
 ## Where the artifacts live
 

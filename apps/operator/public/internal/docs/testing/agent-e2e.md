@@ -150,7 +150,69 @@ If multiple bridges show up, several Tauri dev instances are running
 (stale token files do **not** mean stale bridges — `kill -0 <pid>`
 each one). Pass `--pid <pid>` to subsequent commands to disambiguate.
 
-### 1.3 Stale Vite cache
+### 1.3 Current + safe-to-drive shell
+
+Before a real verification run, prove the selected shell is both
+**current** (serving the code you intend to test) and **safe to disturb**.
+`tauri-agent-tools probe` only proves the bridge is reachable; it does
+not prove the webview loaded the newest SPA bundle, that the Hono host
+can still serve the SPA HTML, or that killing the shell would be safe.
+
+Run the health split first:
+
+```sh
+tauri-agent-tools eval "
+  Promise.all([
+    fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
+    fetch('/').then(r => r.status).catch(e => 'ERR:' + e.message),
+    location.href,
+    document.title
+  ]).then(v => JSON.stringify({ apiHealth: v[0], rootHtml: v[1], href: v[2], title: v[3] }))
+"
+```
+
+`apiHealth:200` with `rootHtml:"ERR:..."` means the sidecar API is alive
+but the SPA HTML path is wedged. A `location.reload()` will usually
+replay the same broken origin; do not treat that as a valid UI check.
+
+Then navigate to the route under test and assert route-specific content:
+
+```sh
+tauri-agent-tools eval "window.__TSR_ROUTER__?.navigate({ to: '/settings/p2p' })"
+tauri-agent-tools check --selector 'body' --text 'Peer' --no-errors
+```
+
+If the URL changes but the DOM stays on an older component, the shell is
+running a stale bundle. That is an `INCONCLUSIVE` UI result, not a
+feature failure.
+
+Finally, check whether the desktop owns the live dock before restarting
+or killing it:
+
+```sh
+PID=<pid-from-tauri-agent-tools-probe>
+pstree -ap "$PID" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
+```
+
+If that tree contains the Sentinel/Queen dock or agent TUIs, do **not**
+kill or restart the shell for routine verification. Use an isolated,
+dock-suppressed second instance instead:
+
+```sh
+cd papercusp-desktop
+OPERATOR_DEV_PORT=3370 \
+OPERATOR_DEV_PTY_PORT=3374 \
+PAPERCUSP_DEV_API_TARGET=3370 \
+PAPERCUSP_NATIVE_TERMINAL=0 \
+npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:3370"}}'
+```
+
+Use a different free port pair for concurrent runs. On a headless
+display, launch that command under the §15.4 Xvfb + VirtualGL recipe;
+`PAPERCUSP_NATIVE_TERMINAL=0` is the load-bearing part that prevents a
+duplicate `pui chat`/Queen/Sentinel dock from joining the live fleet.
+
+### 1.4 Stale Vite cache
 
 If the Tauri sidecar log shows a JSX parse error referencing a line
 that doesn't match the on-disk file, the Vite dependency cache is
@@ -158,7 +220,7 @@ stale — `rm -rf apps/operator-vite/node_modules/.vite` and restart the
 Tauri dev shell. (Next.js is retired; there is no longer an
 `apps/operator/.next` cache.)
 
-### 1.4 First-run paths — clear stored state
+### 1.5 First-run paths — clear stored state
 
 Onboarding tests need a clean slate:
 

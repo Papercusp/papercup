@@ -7657,6 +7657,106 @@ Compare with the same call *without* the env override (interactive family) and, 
 * This failure class does NOT trip the gym’s rate-pause detection or the learning-infra health chip (the spine probe checks credential *presence*, not *quota*) — first seen 2026-06-12 when the gym circuit accumulated errors on a perfectly healthy boot path.
 * The gym autoloop keeps dispatching doomed $0 cycles every tick until the error backoff opens the circuit; after recovery, `autoloop:control reset-errors` for `gymloopharness` clears the backoff.
 
+# Flush-to-proceed stretch discipline
+
+> The su engine-loop discipline: gate work-sequencing on the state-flush invariant, not a turn-ending reflex — flush invariant, continuation gate (60%), presence-adaptive cadence, and the mechanical backstops that make the judgment layer safe.
+
+The rule that governs how an su session sequences **units of work** across a turn. It replaces the retired reflex — *“do one work-item per stretch, end the turn, get re-woken”* — with gating on a **state invariant** instead of a turn-lifetime behavior.
+
+## The reframe (why turn-ending was the wrong rule)
+
+[Section titled “The reframe (why turn-ending was the wrong rule)”](#the-reframe-why-turn-ending-was-the-wrong-rule)
+
+“End your turn after one item” is a *turn-lifetime enforcement* of a *state-durability invariant*. That is the same bug class as oddsmith’s LLM-budget defect (a `≤100/day` cap enforced by a counter living in a per-cycle closure — enforcement lifetime ≠ invariant scope, so the cap never actually bound). The load-bearing invariant here is:
+
+> **Never hold unexternalized state longer than one unit of work.**
+
+Enforce *that* — checkpoint freshness at unit boundaries — and turn-ending becomes **one strategy among several** (chosen by the continuation gate), not the rule itself. The out-of-distribution failures of the behavioral proxy disappear because the proxy is gone: **presence-blindness** (settling per unit even while the owner is actively driving), the **boundary tax** (re-paying orient + inbox + facts on every single item), and **fragmentation** (splitting coupled work to fit a turn). *(Plan decision D-001.)*
+
+## The three rules
+
+[Section titled “The three rules”](#the-three-rules)
+
+### 1. Flush invariant
+
+[Section titled “1. Flush invariant”](#1-flush-invariant)
+
+Never transition to a new unit/phase while holding unexternalized state from the last. Before you move on, the finished unit is **flushed**:
+
+* in-flight state → a checkpoint (`work_items:checkpoint` / `loop:checkpoint`),
+* standing conclusions → `facts:assert`,
+* status → flipped (`plans:set-status` / `work_items:set_state`).
+
+The enforcement point is the **unit boundary, not turn-end**. This is *un-forgettable under pressure* because it is backstopped mechanically (see below), not left to persona trust.
+
+### 2. Continuation gate
+
+[Section titled “2. Continuation gate”](#2-continuation-gate)
+
+After settling a unit, continue in the **same turn** iff **all** hold:
+
+* context headroom (below the **60%** ceiling),
+* no pending owner input,
+* no inbox interrupt above threshold,
+* the next unit is already scoped.
+
+Otherwise **settle the turn**. On an armed loop this is a one-call read, not a guess: `loop:checkpoint` returns a `continuation` verdict (context-headroom leg + unread-inbox-since-last-settle leg), and it **fails safe toward settle** whenever a leg is unevaluable. Don’t rationalize “just one more” under momentum — read the verdict.
+
+### 3. Presence-adaptive cadence
+
+[Section titled “3. Presence-adaptive cadence”](#3-presence-adaptive-cadence)
+
+Key the cadence off the **mechanical** owner-present bit — `coord:orient`’s `ownerPresent` (a fresh, non-revoked human auth session in `power_user_sessions`), not message-provenance guessing.
+
+* Owner **present** ⇒ run units back-to-back **and** stay conversational, so a redirect is seen within a unit.
+* Owner **absent** ⇒ settle per unit, so each wake stays a fresh injection point (orient + inbox + facts re-read).
+* A **standing owner directive** (“run start to finish”) licenses back-to-back running even while absent.
+
+### Two supporting rules
+
+[Section titled “Two supporting rules”](#two-supporting-rules)
+
+* **Verification stays hard-gated.** A unit settles only **live-verified** or **explicitly deferred-with-reason**, never silently. `work_items:complete` emits a `verificationWarning` when a completion carries neither `tests` nor `deferred` — treat that as a red unit, not a passed one.
+* **Size units by coherence, not by what fits a turn.** A unit is what you can finish *and verify* together. Keep coupled work in one unit and **checkpoint mid-unit** rather than splitting it across a boundary that would strand half-done state.
+
+## Thresholds (as shipped)
+
+[Section titled “Thresholds (as shipped)”](#thresholds-as-shipped)
+
+| Constant                   | Value      | Where                    | Meaning                                                                      |
+| -------------------------- | ---------- | ------------------------ | ---------------------------------------------------------------------------- |
+| `CONTINUATION_CEILING_PCT` | **60**     | `continuation-gate.ts`   | Above this context %, settle rather than continue.                           |
+| `FLUSH_GATE_PCT`           | **75**     | `inbox-flush-gate.ts`    | At/above this %, `coord:inbox` names any held claim with a stale checkpoint. |
+| `FLUSH_STALE_MS`           | **10 min** | `inbox-flush-gate.ts`    | A checkpoint older than this (or absent) is “stale”.                         |
+| `COMPACTION_HINT_PCT`      | **85**     | `inbox-context-usage.ts` | Pre-existing compaction affordance.                                          |
+| `OWNER_PRESENCE_FRESH_MS`  | **20 min** | `power-user-sessions.ts` | Auth-session recency that counts as “owner present”.                         |
+
+The ordering is deliberate: **60 < 75 < 85** — you are nudged to *settle* (60) well before you are nudged to *flush* (75), which is itself below the *compaction* hint (85). By the time compaction is near, a disciplined session has already flushed.
+
+## What landed (mechanical enforcement — Phase 2)
+
+[Section titled “What landed (mechanical enforcement — Phase 2)”](#what-landed-mechanical-enforcement--phase-2)
+
+The judgment layer (rules 2–3) is only safe to grant because two mechanical backstops bound its failure mode: the flush gate makes it impossible to run hot without flushing, and the stale-checkpoint surface makes unflushed work visibly risky. **Ship order matters: the backstops (P-002/P-003) land before the persona grants back-to-back continuation (P-007).** *(D-002.)*
+
+| Item                               | Shipped                                                                                                                                                                                                                                         | Decision                                                                                                                                                                                                |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P-002** flush-freshness gate     | `contextUsagePct` (shared %) + `inbox-flush-gate.ts` (`classifyStaleClaims` / `renderFlushGateLine`) + `listActiveClaimFreshnessForOwner` (joins `work_item_claims` → `carry_notes` checkpoints), wired into `coord:inbox` behind the 75% gate. | **D-004**: injection-strength v1; the hard mutating-tool PreToolUse block is a deferred v2 (needs a deadlock-exemption design).                                                                         |
+| **P-003** stale-checkpoint surface | The compaction-compliance watchdog names an over-limit session’s stale-checkpoint claims in its warning + an `unflushedClaims` result field.                                                                                                    | **D-008**: **surface, not seize** — force-reclaiming a live peer’s claim on a staleness heuristic races the holder (same harm class as EI-24). Auto-reclaim deliberately not built.                     |
+| **P-004** `ownerPresent` bit       | `readOwnerPresence` over `power_user_sessions` (fresh non-revoked human auth session), folded into `coord:orient`’s result via the IO-free `composeOrient`.                                                                                     | **D-007**: the wake-payload leg is delivered via **wake-time orient**, not a fire-engine edit (presence is live only at fire time; a prompt-baked bit would be stale).                                  |
+| **P-005** loop continuation        | `loop:arm { continuation: 'settle' \| 'gated' }` (persisted like `carry`); a `GATED_LOOP_WAKE_ADDENDUM`; the pure `continuation-gate.ts` returned by `loop:checkpoint`.                                                                         | **D-006**: policy + gate-read + prompt shipped; runtime **interval-auto-stretch is deferred** (keeps the loop fire lane untouched).                                                                     |
+| **P-006** completion lint          | A **soft** `verificationWarning` on `work_items:complete` when a completion has neither `tests` nor `deferred`.                                                                                                                                 | **D-005**: soft, not hard-reject — EI-24 (“a finished completion is normalised, never lost”) is the load-bearing invariant of that file; a hard reject would be the one place that drops finished work. |
+
+Every scoping deviation from the plan’s literal text is recorded as a decision (D-004…D-008) so the *why* survives — each honours an existing codebase invariant rather than overriding it.
+
+## Where the rules live, and how they’re measured
+
+[Section titled “Where the rules live, and how they’re measured”](#where-the-rules-live-and-how-theyre-measured)
+
+* **Persona (P-007 / D-003).** Durable rules live in a **re-injected surface**, never in conversation (which decays at the next compaction). The three rules ship as a `## Stretch discipline — flush to proceed` section in **both** su base playbooks (`papercusp-su-engineer.tools.md`, `papercusp-su-power.tools.md`) — the playbook is a system-prompt surface, so it re-injects across compaction by construction. **D-009:** these persona edits reach **new** su launches from the integration/staging prompt tree *without* a code deploy (the `promptsDir()` prompt-decouple); only the Phase-2 **code** rides the next papercusp deploy.
+* **Measurement (P-008).** The `stretch-discipline` rubric (`rubrics:propose`, status *proposed*) grades one scorecard **per session**: `checkpoint-freshness-at-compaction`, `wake-overhead-per-completed-unit`, `owner-redirect-latency`, `units-completed-per-session`. Graded via turn-end `improvements:capture { rubricRef: 'stretch-discipline' }`; Scout’s digest trends it. A rule without measurement drifts back to a reflex.
+* **Rollout (P-009).** Pilot behind the loop-continuation policy on one session (the su-ac403 oddsmith engine loop); compare the rubric trend + wake overhead before/after over ≥3 days, then flip the fleet default and ratify the rubric. Rollback = disarm the policy; the old always-settle behavior remains the fallback. *(Gated on the `papercusp-loops` flag.)*
+
 # Folding a disposition channel into the Queue — surface the awaiting-human slice, never the backlog
 
 > When you add a source to the attention/Queue feed (plans:attention), the naive "surface every open row" floods the human. Filter to the genuinely-awaiting-human slice (a needsHuman flag, a bounded candidate set, or one rollup) and keep execution backlog (work_items) separate.
@@ -26422,6 +26522,8 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 15. **Transient white window with a healthy DOM** — observed twice on schtasks-launched windows: CDP shows the full DOM but the window paints white (WebView2 GPU/compositor init flake under QEMU qxl). It self-resolved after the onboarding-finalize restart. If you see white, check the DOM via CDP (§14) before assuming the app is dead.
 16. **Inbox (pre-Store) WSL’s `wsl.exe` wedges FOREVER under a pseudoconsole** — the wizard’s pty-routed installs/logins sit silent with zero output, zero exit, and no distro-side process; the same command via plain pipes works instantly. The VM runs inbox WSL (`wsl --version` is not even a recognized option there). Full diagnosis recipe + the fix set: [wsl-inbox-conpty-pty-hang](/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang). pty.rs now carries a 20s no-output watchdog that kills the wedge and prints a `wsl --update` hint into the pane.
 17. **NEVER run `wsl --update` on this VM** — Store WSL (2.7.8) cannot create its utility VM under the nested-QEMU profile (“Nested virtualization is not supported”, `CreateVm/0x800705b4`); every distro boot fails until you `wsl --uninstall` to revert to the inbox engine (state survives the round trip; verified live 2026-06-12). The §16 watchdog hint is for real hardware, not here.
+18. **Window/tray observation MUST run inside Session 1 — via an interactive scheduled task that writes a result FILE the Session-0 ssh reads.** A powershell spawned from the WSL operator (or a plain ssh) runs in Session 0 and `EnumWindows` returns zero interactive windows (D-002). Pattern that works (verified P-004 tray / P-008 quit / D-003 focus, 2026-07-04): `schtasks /create /tn <t> /tr "powershell -File C:\...\verify.ps1" /sc ONCE /st 00:00 /it /rl LIMITED /f` then `/run`; the script does the `EnumWindows` P/Invoke (and any `PostMessage WM_CLOSE` / `SetForegroundWindow`) **in-session** and `Set-Content`s the result to a txt Session-0 then reads. The Server tray app shows only a `com.papercusp.server-siw` single-instance window (no user window) — the notification-area icon is not a top-level window, so it never appears in `EnumWindows`; verify the tray by Server-is-windowless + owns-the-sidecar, not by enumerating the icon.
+19. **A `schtasks`-relaunched GUI does not reliably persist a debuggable WebView2** — so the CDP path (§14) only works on the *first-boot* GUI or a `Start-Process`-launched one. On a *relaunch* via the `papercusp-e2e` task (after the GUI was closed), the GUI process spawns/attaches the Server then exits, leaving the Server+sidecar up but `:9222` unreachable. This looks like the app “not persisting” but is a Session-1 task-tree artifact, NOT a product second-launch bug (Start-Process launches persist; single-instance PASS\_ALL). For a CDP/button-click E2E, launch the GUI with `Start-Process` (or keep the first-boot GUI alive), don’t relaunch through the task.
 
 ## Where the artifacts live
 
@@ -33290,7 +33392,7 @@ Rules of thumb: a checkpoint is *per unit of work*, a fact is *per conclusion*, 
 
 Work-item, loop, and hive checkpoints are rows in **`harness_shared.carry_notes`**, keyed by scope (`workitem:<harness>:<WI-id>`, `loop:…`, `hive`) — migration 472. Two traps:
 
-* `harness_shared.work_item_checkpoints` is a **legacy, empty** table — never query it.
+* `harness_shared.work_item_checkpoints` was the legacy checkpoint table; migration 494 folds any stragglers into `carry_notes` and drops it.
 * `work_items:get` at the trimmed payload tier does **not** surface an item’s checkpoint — absence of a checkpoint in a `get` is not evidence none exists. Read directly: `select note from harness_shared.carry_notes where scope like 'workitem:%:<id>'`.
 
 ## Facts discipline
@@ -33825,7 +33927,7 @@ The Zero / zero-cache / ZQL named-queries / WebSocket-push stack described below
 
 Every panel read the harness UI does goes through one **named query** — `useSyncQuery({ queryName, args })` — resolved against a single registry, so “what does the harness sync from Postgres?” always has one answer: open the registry. That principle survived the Zero decommission unchanged; only the registry’s *shape* changed.
 
-Today the registry is `REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the “v2” resolver) — a flat `Record<string, QueryEntry>` (150+ entries as of this writing) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`, `'snapshotsConsolidated.bySlug'`, `'messages.recent'`, …), each entry pairing a Zod `argsSchema` with an async `resolve(args)` that runs a normal drizzle/PG query and returns a flat row array. There is no `defineQueries` namespace object, no ZQL, and no separate `schema.ts`/publication step — a dotted name is just a registry key, and adding one is a \~15 LOC addition to that one file. **Full recipe, key points, and gotchas:** [Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — this page won’t duplicate it.
+Today the registry is `REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the “v2” resolver) — a flat `Record<string, QueryEntry>` (\~51 entries as of 2026-07-04) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`, `'snapshotsConsolidated.bySlug'`, `'storage.usage'`, …), each entry pairing a Zod `argsSchema` with an async `resolve(args)` that runs a normal drizzle/PG query and returns a flat row array. There is no `defineQueries` namespace object, no ZQL, and no separate `schema.ts`/publication step — a dotted name is just a registry key, and adding one is a \~15 LOC addition to that one file. **Full recipe, key points, and gotchas:** [Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — this page won’t duplicate it.
 
 ## The current catalog
 
@@ -33833,16 +33935,18 @@ Today the registry is `REGISTRY` in `packages/operator-core/lib/sync-resolver/in
 
 `knownQueryNamesV2()` (same file) enumerates every registered name — that’s the canonical list; don’t trust an inline copy here to stay in sync with it. The four core per-harness entities are still slug-agnostic consolidated tables in `harness_shared`, each read by a `.bySlug` query keyed on `harnessSlug` (a column, not a schema name):
 
-| Query                                         | Returns         | Args              |
-| --------------------------------------------- | --------------- | ----------------- |
-| `featuresConsolidated.bySlug`                 | `FeatureRow[]`  | `{ harnessSlug }` |
-| `issuesConsolidated.bySlug`                   | `IssueRow[]`    | `{ harnessSlug }` |
-| `agentRunsConsolidated.bySlug` (or `.recent`) | `AgentRunRow[]` | `{ harnessSlug }` |
-| `snapshotsConsolidated.bySlug`                | `SnapshotRow[]` | `{ harnessSlug }` |
-| `projects.all` / `projects.byId`              | `ProjectRow[]`  | (none) / `{ id }` |
-| `messages.recent`                             | `MessageRow[]`  | `{ limit }`       |
+| Query                                         | Returns          | Args              |
+| --------------------------------------------- | ---------------- | ----------------- |
+| `featuresConsolidated.bySlug`                 | `FeatureRow[]`   | `{ harnessSlug }` |
+| `issuesConsolidated.bySlug`                   | `IssueRow[]`     | `{ harnessSlug }` |
+| `agentRunsConsolidated.bySlug` (or `.recent`) | `AgentRunRow[]`  | `{ harnessSlug }` |
+| `snapshotsConsolidated.bySlug`                | `SnapshotRow[]`  | `{ harnessSlug }` |
+| `harnessProjects.lite`                        | `ProjectRow[]`   | (none)            |
+| `harnessWorkspaces.byHarness`                 | `WorkspaceRow[]` | `{ harnessSlug }` |
 
-`featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259 P-006/D-010), `.byPlanSlug`/`bySourcePlan`, and a `needsReview` variant (no args, rows flagged `needsHumanReview`) on top of `.all`/`.bySlug`. Adding a new harness still doesn’t add a query — the slug is a regular row value, not a schema name.
+`featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259 P-006/D-010) and `.byPlanSlug`.
+
+The doc text claiming a `needsReview` variant, a `.bySourcePlan` form, or a `.all` form is drift — those queries do not exist in the registry. Adding a new harness still doesn’t add a query — the slug is a regular row value, not a schema name.
 
 ## Adding a new named query
 
@@ -33902,7 +34006,7 @@ So a per-harness read still works (it goes through the view), but the canonical 
 
 Why a base table and not a Postgres view at the top? The PG trigger that drives invalidation (`emit_change_notify`, the bridge behind `TABLE_TO_QUERY_NAMES`) fires on the underlying relation’s row-level INSERT/UPDATE/DELETE; an auto-updatable view’s writes execute against that same underlying relation, so a trigger on the base table still sees them — but a view is not itself a relation a trigger can attach row-level logic to directly. Historically this table-not-view split was **also** required because Zero’s logical-replication publications couldn’t include views; that constraint is gone along with Zero, but the trigger-attachment reason still holds on its own, so the architecture is unchanged.
 
-The cross-harness `/features` page reads from the consolidated table, with no slug arg, via the `featuresConsolidated.all` named query — real-time via the v2 resolver + SSE, same as every other query on this page.
+The cross-harness `/features` page reads from the consolidated table via the `.byHive` named query. (The doc previously claimed a `featuresConsolidated.all` query — that does not exist; it was drift.)
 
 If you need another cross-harness aggregation, the recipe is:
 
@@ -34653,9 +34757,9 @@ Slug is unique, stable, and the only field both stores agreed on. New mutations 
 
 > How a Postgres row becomes a row in your React component, in real time.
 
-Zero is being retired — historical reference
+Zero is fully decommissioned — historical reference only
 
-Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+Zero / zero-cache / ZQL named-queries / WebSocket push is **gone, not just retiring**: `zero-decommission-2026-06-20` removed `@rocicorp/zero` from every `package.json`, deleted the `@papercusp/zero-harness` package (`libs/zero-harness` — the directory no longer exists in the tree, so every `libs/zero-harness/...` path referenced below is dead/historical), and stripped the Zero WS transport out of `@papercusp/sync`. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** anywhere. Treat this whole page as historical reference. Source of truth: `apps/operator/providers/HarnessSyncProvider.tsx` (transport-selection doc-comment), the root `CLAUDE.md` deployment-model section, and [Named queries](/internal/docs/data-sync/named-queries) for the current, authoritative recipe.
 
 ## The pipeline end-to-end
 
@@ -66063,15 +66167,65 @@ Page:
 
 If multiple bridges show up, several Tauri dev instances are running (stale token files do **not** mean stale bridges — `kill -0 <pid>` each one). Pass `--pid <pid>` to subsequent commands to disambiguate.
 
-### 1.3 Stale Vite cache
+### 1.3 Current + safe-to-drive shell
 
-[Section titled “1.3 Stale Vite cache”](#13-stale-vite-cache)
+[Section titled “1.3 Current + safe-to-drive shell”](#13-current--safe-to-drive-shell)
+
+Before a real verification run, prove the selected shell is both **current** (serving the code you intend to test) and **safe to disturb**. `tauri-agent-tools probe` only proves the bridge is reachable; it does not prove the webview loaded the newest SPA bundle, that the Hono host can still serve the SPA HTML, or that killing the shell would be safe.
+
+Run the health split first:
+
+```sh
+tauri-agent-tools eval "
+  Promise.all([
+    fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
+    fetch('/').then(r => r.status).catch(e => 'ERR:' + e.message),
+    location.href,
+    document.title
+  ]).then(v => JSON.stringify({ apiHealth: v[0], rootHtml: v[1], href: v[2], title: v[3] }))
+"
+```
+
+`apiHealth:200` with `rootHtml:"ERR:..."` means the sidecar API is alive but the SPA HTML path is wedged. A `location.reload()` will usually replay the same broken origin; do not treat that as a valid UI check.
+
+Then navigate to the route under test and assert route-specific content:
+
+```sh
+tauri-agent-tools eval "window.__TSR_ROUTER__?.navigate({ to: '/settings/p2p' })"
+tauri-agent-tools check --selector 'body' --text 'Peer' --no-errors
+```
+
+If the URL changes but the DOM stays on an older component, the shell is running a stale bundle. That is an `INCONCLUSIVE` UI result, not a feature failure.
+
+Finally, check whether the desktop owns the live dock before restarting or killing it:
+
+```sh
+PID=<pid-from-tauri-agent-tools-probe>
+pstree -ap "$PID" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
+```
+
+If that tree contains the Sentinel/Queen dock or agent TUIs, do **not** kill or restart the shell for routine verification. Use an isolated, dock-suppressed second instance instead:
+
+```sh
+cd papercusp-desktop
+OPERATOR_DEV_PORT=3370 \
+OPERATOR_DEV_PTY_PORT=3374 \
+PAPERCUSP_DEV_API_TARGET=3370 \
+PAPERCUSP_NATIVE_TERMINAL=0 \
+npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:3370"}}'
+```
+
+Use a different free port pair for concurrent runs. On a headless display, launch that command under the §15.4 Xvfb + VirtualGL recipe; `PAPERCUSP_NATIVE_TERMINAL=0` is the load-bearing part that prevents a duplicate `pui chat`/Queen/Sentinel dock from joining the live fleet.
+
+### 1.4 Stale Vite cache
+
+[Section titled “1.4 Stale Vite cache”](#14-stale-vite-cache)
 
 If the Tauri sidecar log shows a JSX parse error referencing a line that doesn’t match the on-disk file, the Vite dependency cache is stale — `rm -rf apps/operator-vite/node_modules/.vite` and restart the Tauri dev shell. (Next.js is retired; there is no longer an `apps/operator/.next` cache.)
 
-### 1.4 First-run paths — clear stored state
+### 1.5 First-run paths — clear stored state
 
-[Section titled “1.4 First-run paths — clear stored state”](#14-first-run-paths--clear-stored-state)
+[Section titled “1.5 First-run paths — clear stored state”](#15-first-run-paths--clear-stored-state)
 
 Onboarding tests need a clean slate:
 
