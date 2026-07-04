@@ -128,6 +128,21 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(rows.length).toBe(4);
   });
 
+  it('sets REPLICA IDENTITY FULL on agent_facts (migration 498 — WI-2718)', async () => {
+    // agent_facts has no primary key (only a UNIQUE INDEX), but migration 461's
+    // capture_agent_facts_outbox_del_trg publishes DELETEs for federation. Without
+    // an explicit replica identity, Postgres defaults to REPLICA IDENTITY DEFAULT,
+    // which requires a PK to log a DELETE for a table in a logical-replication
+    // publication — so any DELETE against agent_facts (e.g. the periodic sweep/GC)
+    // fails with "cannot delete from table ... because it does not have a replica
+    // identity and publishes deletes" on a federated/embedded operator. 'f' = FULL.
+    const [{ relreplident }] = await sql.unsafe(
+      `SELECT relreplident FROM pg_class
+        WHERE relname = 'agent_facts' AND relnamespace = 'harness_shared'::regnamespace`,
+    );
+    expect(relreplident).toBe('f');
+  });
+
   it('grants the runtime app role access (harness_app can read its tables — migration 109)', async () => {
     // --no-privileges stripped every grant from the baseline; 109 restores them. Connect AS
     // harness_app (not the migration superuser) to prove a fresh boot doesn't lock the app out.
