@@ -542,6 +542,8 @@ describe('psu-launcher arg parsing', () => {
       launchContext: null,
       launchedBy: null,
       profile: null,
+      // drain-mode P-003: named operating mode, default none.
+      mode: null,
       // su-context-size-variants (WI-1282): defaults to null (each client's native default).
       contextSize: null,
       personaTier: null,
@@ -604,6 +606,7 @@ describe('psu-launcher arg parsing', () => {
       launchContext: null,
       launchedBy: null,
       profile: null,
+      mode: null,
       contextSize: null,
       personaTier: null,
       force: false,
@@ -703,6 +706,23 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--no-auto']).auto).toBe(false);
     // last one wins if both are (nonsensically) passed
     expect(parseArgs(['--auto', '--no-auto']).auto).toBe(false);
+  });
+
+  it('parses --mode=drain; REFUSES any other mode loudly (drain-mode P-003)', () => {
+    expect(parseArgs([]).mode).toBeNull();
+    expect(parseArgs(['--mode=drain']).mode).toBe('drain');
+    // A typo'd mode must fail the launch, not silently launch a plain session.
+    expect(() => parseArgs(['--mode=burndown'])).toThrow(/not recognized/);
+    expect(() => parseArgs(['--mode='])).toThrow(/not recognized/);
+  });
+
+  it('drain-mode P-003: DRAIN implies AUTO — effectiveAutoMode true even against --no-auto', () => {
+    expect(effectiveAutoMode(parseArgs(['--mode=drain']))).toBe(true);
+    // Not overridable: a non-auto drain is a contradiction.
+    expect(effectiveAutoMode(parseArgs(['--mode=drain', '--no-auto']))).toBe(true);
+    // Baseline unchanged without the flag.
+    expect(effectiveAutoMode(parseArgs(['--no-auto']))).toBe(false);
+    expect(effectiveAutoMode(parseArgs([]))).toBe(false);
   });
 
   it('parses --fork / --fork-session (resume-time branch); defaults false', () => {
@@ -888,6 +908,24 @@ describe('psu-launcher arg parsing', () => {
       parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--fleet=x', '--no-auto']),
     );
     expect(optedOut).not.toHaveProperty('auto');
+  });
+
+  it('drain-mode P-003: freshSuBootstrapBody forwards mode:drain + auto:true, and records --mode= in launch_argv', () => {
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1', '--mode=drain']),
+    );
+    expect(body.mode).toBe('drain');
+    expect(body.auto).toBe(true); // DRAIN implies AUTO — server double-enforces
+    expect(body.launch_argv).toContain('--mode=drain');
+    expect(body.launch_argv).toContain('--auto');
+
+    // No mode ⇒ the field is absent (byte-identical pre-drain body).
+    const plain = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
+    );
+    expect(plain).not.toHaveProperty('mode');
   });
 
   it('roleBootstrapBody folds a chosen account into role launches', () => {

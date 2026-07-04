@@ -71,7 +71,10 @@ vi.mock('../../hive/wake-frontier-guard', async (importOriginal) => ({
 }));
 // start-hive-wake P-004/P-012: hive:status also reads the started bit + the
 // watchdog fire signal — both PG-backed, mocked at their module seams here.
-const getHiveStarted = vi.fn(async () => false);
+// WI-2012: hive:declare-wake refuses (hive_paused) and hive:wake skips event fires while the
+// queen loop is not started — so the declaration/wake MECHANICS tests here run against a
+// STARTED hive. The paused-gate behavior has its own dedicated suite (wake-paused-gate.test.ts).
+const getHiveStarted = vi.fn(async () => true);
 const recentWatchdogFires = vi.fn(async () => 0);
 vi.mock('../../hive/started', () => ({
   getHiveStarted: (...a: unknown[]) => getHiveStarted(...(a as [])),

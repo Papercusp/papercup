@@ -159,7 +159,7 @@ const CONNECT_RETRY_BUDGET_MS = Number.isFinite(_connectRetryRaw) ? _connectRetr
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
+  const out = { picker: true, resume: false, resumeId: null, fork: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, launchedBy: null, profile: null, contextSize: null, personaTier: null, force: false, yes: false, brain: false, account: null, fleet: null, fleetRole: null, fleetName: null, fleetScheme: null, auto: null, mode: null, addDir: [], passthrough: [], setClaudeToken: false, setClaudeTokenValue: null, clearClaudeToken: false, allowSubagents: null };
   // Everything after a literal `--` is forwarded VERBATIM to the underlying agent
   // CLI (claude/omp/codex) — a generic escape hatch so a new backend flag needs no
   // psu change. Appended at the END of the launch/resume argv (launchFreshSu /
@@ -294,6 +294,17 @@ export function parseArgs(argv) {
     // forces it on for any launch, `--no-auto` forces it off even for a fleet member.
     else if (a === '--auto') out.auto = true;
     else if (a === '--no-auto') out.auto = false;
+    // drain-mode-2026-07-03 P-003: named operating mode. Only 'drain' is recognized —
+    // launch the session in DRAIN mode (drain the target work queue to terminal; implies
+    // AUTO). A typo'd mode must fail the launch loudly, not silently launch a plain
+    // session — same throw-to-main() pattern as the --model guard (WI-1979).
+    else if (a.startsWith('--mode=')) {
+      const rawMode = a.slice('--mode='.length);
+      if (rawMode !== 'drain') {
+        throw new Error(`--mode=${rawMode} is not recognized — the only supported mode is \`drain\` (psu --mode=drain: drain the work queue to terminal; implies AUTO).`);
+      }
+      out.mode = rawMode;
+    }
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -2814,6 +2825,9 @@ export function forkBootstrapBody(session, account = null) {
  * it has a human present. Pure — exported for tests.
  */
 export function effectiveAutoMode(args) {
+  // drain-mode P-003: DRAIN IMPLIES AUTO — a drain launch is autonomous by definition,
+  // and this is NOT overridable by --no-auto (a non-auto drain is a contradiction).
+  if (args.mode === 'drain') return true;
   return args.auto ?? Boolean(args.fleet);
 }
 
@@ -2873,6 +2887,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   // A joined fleet (--fleet=<slug>) or a new fleet's derived slug (picker → fleetName).
   const fleetSlug = args.fleet || (args.fleetName ? fleetSlugFromName(args.fleetName) : null);
   if (fleetSlug) argv.push(`--fleet=${fleetSlug}`);
+  if (args.mode) argv.push(`--mode=${args.mode}`);
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
   if (args.launchedBy) argv.push(`--launched-by=${args.launchedBy}`);
@@ -2895,6 +2910,9 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
     // AUTO directive into the system prompt + prepends it to the seeded kickoff.
     ...(effectiveAutoMode(args) ? { auto: true } : {}),
+    // drain-mode P-003: forward the named mode — bootstrap-su validates it (unknown → 400),
+    // forces autoMode on, and bakes the DRAIN directive into system prompt + kickoff.
+    ...(args.mode ? { mode: args.mode } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
     // context-trimming-tiers P-017: explicit persona tier; omitted ⇒ server auto-select.
@@ -3578,6 +3596,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // hooks read it at runtime (the durable prompt directive + turn-1 kickoff come
       // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
       ...(effectiveAutoMode(args) ? { PAPERCUSP_AUTO_MODE: '1' } : {}),
+      ...(args.mode === 'drain' ? { PAPERCUSP_DRAIN_MODE: '1' } : {}),
       // su-context-size-variants: 'full' forces every tool schema loaded up-front by
       // disabling ToolSearch deferral (fine on a 1M-window model; the whole point of full).
       // Everything else FORCES deferral ON: claude silently disables tool search when
