@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   selectSpawnAccount: vi.fn(async () => undefined as string | undefined),
   updateAccountPool: vi.fn(async (mutator: (pool: unknown) => unknown, _ws?: string) => mutator({ accounts: [] })),
   recordAccountPenalty: vi.fn((pool: unknown, _id: string, _now: number, _opts?: { pausedUntil?: number }) => pool),
+  getFlag: vi.fn(async (_flag: string, _scope?: string) => true),
   ownerSteering: { value: null as null | Record<string, unknown> },
   agentConfig: { value: null as null | Record<string, unknown> },
   pgRunOutputRows: { value: [] as Array<{ diagnostic: string | null }> },
@@ -61,6 +62,7 @@ vi.mock('../deployment/account-pool-store', () => ({
   updateAccountPool: h.updateAccountPool,
 }));
 vi.mock('../deployment/account-pool', () => ({ recordAccountPenalty: h.recordAccountPenalty }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
@@ -111,6 +113,8 @@ beforeEach(() => {
   h.updateAccountPool.mockImplementation(async (mutator: (pool: unknown) => unknown) => mutator({ accounts: [] }));
   h.recordAccountPenalty.mockReset();
   h.recordAccountPenalty.mockImplementation((pool: unknown) => pool);
+  h.getFlag.mockReset();
+  h.getFlag.mockResolvedValue(true);
   h.ownerSteering.value = null;
   h.agentConfig.value = null;
   h.pgRunOutputRows.value = [];
@@ -252,6 +256,42 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     const fin = h.finishSpawn.mock.calls[0][1];
     expect(fin.spawnId).toBe('durable-spawn:implement:EI-9:2');
     expect(fin.status).toBe('done');
+  });
+
+  it('skips before recording or invoking when the Claude gateway is wholesale-throttled', async () => {
+    h.gatewayThrottled.value = true;
+    await durableSpawnFireImpl({
+      ...IMPL,
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
+    expect(h.recordSpawn).not.toHaveBeenCalled();
+    expect(h.loopbackFetch).not.toHaveBeenCalled();
+    expect(h.finishSpawn).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('gateway wholesale-throttled'));
+  });
+
+  it('lets the gateway dispatch gate flag disable the pre-invoke skip', async () => {
+    h.gatewayThrottled.value = true;
+    h.getFlag.mockResolvedValue(false);
+    await durableSpawnFireImpl({
+      ...IMPL,
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
+    expect(h.recordSpawn).toHaveBeenCalledTimes(1);
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pre-gate Codex/OpenAI control-plane spawns on a Claude gateway throttle', async () => {
+    h.gatewayThrottled.value = true;
+    await durableSpawnFireImpl({
+      ...IMPL,
+      body: { kickoff: 'go', spawnModel: 'chatgpt:5.5' },
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9' },
+    });
+    expect(h.recordSpawn).toHaveBeenCalledTimes(1);
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+    expect(h.finishSpawn).toHaveBeenCalledTimes(1);
   });
 
   it('heartbeats a visible durable spawn row while /invoke is still pending', async () => {

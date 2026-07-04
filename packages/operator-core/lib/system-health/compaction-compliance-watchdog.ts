@@ -5,11 +5,12 @@
  * On a cadence (OFF the per-turn hot path) it estimates each limit-setting session's
  * context size and caches it on coord_presence.context_tokens — the value the
  * coord:inbox usage signal reads to render `context: N/L (X%)` (P-007). It also logs
- * a warning when a session has run PAST its own compaction_limit without compacting.
+ * a warning when a session has run PAST its own compaction_limit without compacting
+ * and force-injects a compact turn into live psu-pty hosts.
  *
  * Trust-the-agent design (D-008): the agent self-manages off the injected signal;
- * this only catches the ones that don't. Active escalation (fleet broadcast /
- * force-inject `/compact`) is a documented follow-up rung — v1 caches + logs.
+ * this catches the ones that don't. The force-compact rung below is the active
+ * mechanical safety net for sessions that miss the nudge.
  *
  * Process-level (NOT a DBOS routine), like the git-sync / green / mcp-dark
  * watchdogs. Kill-switch: PAPERCUSP_COMPACTION_WATCHDOG='0'.

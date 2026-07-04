@@ -37,6 +37,8 @@
  * `DBOS.launch()`, like the feature-pipeline + coord-program workflows.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
 import { loopbackFetch } from '../loopback-fetch';
@@ -253,6 +255,37 @@ async function recordControlPlaneCodexUsageLimit(
   }
 }
 
+async function shouldSkipForGatewayDispatchGate(
+  input: DurableSpawnFireInput,
+  fireBody: Record<string, unknown>,
+): Promise<boolean> {
+  if (isCodexModelSpec(fireBody.spawnModel)) return false;
+  let enabled = true;
+  try {
+    enabled = await getFlag(FLAGS.AUTONOMOUS_SPAWN_GATEWAY_DISPATCH_GATE, 'system');
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gateway dispatch gate flag read failed (${input.label ?? ''}); dispatching anyway: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return false;
+  }
+  if (!enabled) return false;
+
+  try {
+    const { gatewayWholesaleThrottled } = await import('../inference-gateway/observability');
+    return await gatewayWholesaleThrottled();
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gateway dispatch gate probe failed (${input.label ?? ''}); dispatching anyway: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return false;
+  }
+}
+
 async function recordDurableSpawnAdmission(
   input: DurableSpawnFireInput,
   rec: SpawnRecordInput,
@@ -323,6 +356,18 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     typeof initialFireBody.spawnModel === 'string' && initialFireBody.spawnModel.trim()
       ? initialFireBody.spawnModel.trim()
       : null;
+
+  // WI-2376: avoid launching autonomous agents into a known all-account gateway
+  // storm. This runs BEFORE the spawned_agents row is recorded, so the skip does
+  // not charge a visible spawn attempt; the existing routine/retry clock re-offers
+  // later once the gateway is serviceable again. Fail-open: uncertain health must
+  // never strand the loop.
+  if (await shouldSkipForGatewayDispatchGate(input, initialFireBody)) {
+    console.warn(
+      `[durable-spawn] skipped ${input.label ?? input.idempotencyKey} before /invoke: inference gateway wholesale-throttled; will retry on the next autonomous dispatch tick`,
+    );
+    return;
+  }
 
   // Make the durable launch visible in fleet:tree (opt-in), mirroring the
   // fire-and-forget fallback's recordSpawn (WI-108). Best-effort: a bookkeeping

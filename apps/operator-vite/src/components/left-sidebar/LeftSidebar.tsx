@@ -24,6 +24,7 @@ import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
+import type { BoundLexicon } from '@papercusp/lexicon';
 import { Users, AudioLines, Network, Crown, Eye, Radio, KeyRound, PanelLeftOpen } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
@@ -56,14 +57,19 @@ const SentinelTab = lazy(() => import('./SentinelTab'));
 
 // `tip` is the hover tooltip (owner ask 2026-06-23) — a one-line "what is this
 // tab for", surfaced via the button's native `title` on hover.
+//
+// label/tip are BUILDERS of the active lexicon `t` (restore-pot-lexicon P-005):
+// brand nouns resolve through the flag-gated pack — classic/public shows Pot,
+// Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
+// Overwatch has no TermKey (D-002) so it stays literal in both packs.
 const TABS = [
-  { id: 'accounts', label: 'Accounts', icon: KeyRound, tip: 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
-  { id: 'queen', label: 'Queen', icon: Crown, tip: 'The Queen — plans work and places it across the swarm', render: (a: boolean) => <QueenTab active={a} /> },
-  { id: 'overwatch', label: 'Overwatch', icon: Eye, tip: 'Overwatch — supervises fleet & system health, nudges when things drift', render: (a: boolean) => <OverwatchTab active={a} /> },
-  { id: 'sentinel', label: 'Sentinel', icon: Radio, tip: 'Sentinel — your voice/text front-door agent; talks, suggests, and hands work to the Queen', render: (a: boolean) => <SentinelTab active={a} /> },
-  { id: 'swarm', label: 'Swarm', icon: Users, tip: 'The colony — live roster of SU agents & bees and what each is doing', render: (a: boolean) => <SwarmTab active={a} /> },
-  { id: 'voice', label: 'Peers', icon: AudioLines, tip: 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
-  { id: 'hives', label: 'Hives', icon: Network, tip: 'Hives — the cross-device P2P network of connected swarms', render: (a: boolean) => <HivesTab active={a} /> },
+  { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
+  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Crown, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <QueenTab active={a} /> },
+  { id: 'overwatch', label: (_t: BoundLexicon) => 'Overwatch', icon: Eye, tip: (t: BoundLexicon) => `Overwatch — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
+  { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: Radio, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <SentinelTab active={a} /> },
+  { id: 'swarm', label: (t: BoundLexicon) => t('fleet'), icon: Users, tip: (t: BoundLexicon) => `The ${t('fleet', { lower: true })} — live roster of SU agents & ${t('contributor', { plural: true, lower: true })} and what each is doing`, render: (a: boolean) => <SwarmTab active={a} /> },
+  { id: 'voice', label: (_t: BoundLexicon) => 'Peers', icon: AudioLines, tip: (_t: BoundLexicon) => 'Peers — live voice/video channels with other people', render: (a: boolean) => <VoiceTab active={a} /> },
+  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <HivesTab active={a} /> },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -221,7 +227,7 @@ export default function LeftSidebar() {
           data-collapsed={open ? 'false' : 'true'}
           data-tab={active.id}
           style={{ width: renderedWidth }}
-          aria-label="Swarm sidebar"
+          aria-label={`${t('fleet')} sidebar`}
         >
         {/* Collapsed: the three tab icons — click one to expand into it. */}
         <div className="pclsb__expand-rail" aria-hidden={open}>
@@ -233,7 +239,7 @@ export default function LeftSidebar() {
                 type="button"
                 className={`pclsb__rail-btn pclsb__rail-btn--${x.id}`}
                 data-testid={`left-sidebar-rail-${x.id}`}
-                aria-label={`Open ${x.label}`}
+                aria-label={`Open ${x.label(t)}`}
                 onClick={() => void setRail({ lsb: true, lst: x.id })}
               >
                 <Icon size={17} aria-hidden="true" />
@@ -272,13 +278,13 @@ export default function LeftSidebar() {
                       aria-selected={isActive}
                       className={`pclsb__tab pclsb__tab--${x.id}${isActive ? ' is-active' : ''}`}
                       data-testid={`left-sidebar-tab-${x.id}`}
-                      title={x.tip}
+                      title={x.tip(t)}
                       onClick={() => setTab(x.id)}
                     >
                       <span className="pclsb__tab-icon">
                         <Icon size={14} aria-hidden="true" />
                       </span>
-                      <span className="pclsb__tab-label">{x.id === 'swarm' ? t('fleet') : x.label}</span>
+                      <span className="pclsb__tab-label">{x.label(t)}</span>
                     </button>
                   );
                 })}

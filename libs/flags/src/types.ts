@@ -1160,6 +1160,14 @@ export const FLAGS = {
   // direct native auth (the current fleet path) is the fallback. KNOWN_DARK_FLAGS.
   // OFF ⇒ codex-cli accounts keep the exec bridge (stream:false only).
   CODEX_GATEWAY_OAUTH_PROXY: "papercusp-codex-gateway-oauth-proxy",
+  // autonomous-spawn-gateway-dispatch-gate-2026-07-04 (WI-2376): before an
+  // AUTONOMOUS durable spawn posts /invoke, read the inference-gateway health
+  // predicate and SKIP the dispatch when the Claude gateway is wholesale-throttled
+  // (paused/rejected/no priority-tier capacity). DEFAULT ON (derived FLAG_DEFAULTS):
+  // it is a conservative load-shed guard for background spawns only; interactive
+  // spawns and Codex/OpenAI control-plane spawns are unchanged. OFF is the kill-switch
+  // if the health predicate ever false-positives.
+  AUTONOMOUS_SPAWN_GATEWAY_DISPATCH_GATE: "papercusp-autonomous-spawn-gateway-dispatch-gate",
   // queen-capacity-aware-dispatch-2026-06-22: gates the Queen's capacity-aware
   // dispatch (placement keyed on live fleet capacity). DEFAULT OFF — the
   // implementation is in-flight; flips ON at rollout after the :3170 verify.
