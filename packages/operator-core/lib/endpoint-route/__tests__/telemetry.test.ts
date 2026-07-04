@@ -52,7 +52,10 @@ function execWith(
   };
 }
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  unsafeCalls = [];
+});
 
 describe('recordRouteInvocation — sampling gate', () => {
   it('sampleRate 0 → never touches PG', () => {
@@ -77,6 +80,48 @@ describe('recordRouteInvocation — sampling gate', () => {
     for (const status of ['ok', 'error', 'timeout', 'unauthorized'] as const) {
       expect(() => recordRouteInvocation(execWith({ status }))).not.toThrow();
     }
+  });
+});
+
+describe('recordRouteInvocation — resolved path + response bytes (EI-7069)', () => {
+  it('records the RESOLVED request path, distinct from the route TEMPLATE', async () => {
+    recordRouteInvocation(
+      execWith({ path: '/admin/plans/:verb', url: 'http://x/admin/plans/attention?tier=trimmed' }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unsafeCalls).toHaveLength(1);
+    const [insertSql, params] = [unsafeCalls[0].sql, unsafeCalls[0].params];
+    expect(insertSql).toContain('resolved_path');
+    // template path stays $3 (path), resolved path is the new $10 slot.
+    expect(params).toContain('/admin/plans/:verb');
+    expect(params).toContain('/admin/plans/attention');
+  });
+
+  it('an unparseable request URL degrades resolved_path to null rather than throwing', async () => {
+    const exec = execWith();
+    // Force an unparseable URL onto the already-built Request-backed exec.
+    Object.defineProperty(exec.req, 'url', { value: 'not a url', configurable: true });
+    expect(() => recordRouteInvocation(exec)).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unsafeCalls).toHaveLength(1);
+    expect(unsafeCalls[0].params).toContain(null);
+  });
+
+  it('records response_bytes when the orchestrator set it (Content-Length present)', async () => {
+    recordRouteInvocation(execWith({ responseBytes: 1234 }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unsafeCalls).toHaveLength(1);
+    expect(unsafeCalls[0].params).toContain(1234);
+  });
+
+  it('response_bytes stays null for a streaming response (no Content-Length)', async () => {
+    recordRouteInvocation(execWith({ responseBytes: null }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unsafeCalls).toHaveLength(1);
+    const params = unsafeCalls[0].params;
+    // response_bytes is the last bound param; assert it's specifically null,
+    // not just "params contains null somewhere" (principal fields are also null here).
+    expect(params[params.length - 1]).toBeNull();
   });
 });
 

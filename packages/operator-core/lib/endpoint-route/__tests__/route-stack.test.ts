@@ -33,6 +33,7 @@ import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
 import { getFlag } from '@papercusp/flags/server';
+import { recordRouteInvocation } from '../telemetry';
 
 function freshApp(): Hono {
   return new Hono();
@@ -422,6 +423,51 @@ describe('invoke step', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('runRouteStack — response byte capture (EI-7069)', () => {
+  it('captures Content-Length as exec.responseBytes for a plain JSON response', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/sized', auth: 'public',
+      handler: () => Response.json({ hello: 'world' }),
+    }));
+    const res = await app.request('/sized');
+    expect(res.status).toBe(200);
+    expect(recordRouteInvocation).toHaveBeenCalledTimes(1);
+    const exec = vi.mocked(recordRouteInvocation).mock.calls[0][0];
+    // Response.json sets Content-Length itself — the exact byte count of the
+    // serialized body, so this is deterministic, not just "a number".
+    const body = JSON.stringify({ hello: 'world' });
+    expect(exec.responseBytes).toBe(new TextEncoder().encode(body).length);
+  });
+
+  it('leaves responseBytes null for a streaming response with no Content-Length', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/stream-sized', auth: 'public',
+      handler: () =>
+        new Response(new ReadableStream({ start: (c) => { c.enqueue(new Uint8Array([1])); c.close(); } })),
+    }));
+    const res = await app.request('/stream-sized');
+    expect(res.status).toBe(200);
+    expect(recordRouteInvocation).toHaveBeenCalledTimes(1);
+    const exec = vi.mocked(recordRouteInvocation).mock.calls[0][0];
+    expect(exec.responseBytes).toBeNull();
+  });
+
+  it('never breaks the response even if reading headers were to throw', async () => {
+    // Defensive: the try/catch around header-reading must never surface into
+    // the response itself, whatever the response shape.
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/plain', auth: 'public',
+      handler: () => new Response('ok'),
+    }));
+    const res = await app.request('/plain');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('ok');
   });
 });
 

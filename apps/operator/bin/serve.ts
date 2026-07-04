@@ -576,7 +576,28 @@ const invokedDirectly = ((): boolean => {
 })();
 if (invokedDirectly) {
   main().catch((e) => {
-    console.error('[serve] fatal:', e);
+    // EI-7099: a raw `console.error('[serve] fatal:', e)` printed a bare
+    // "undefined" during a real restart-race failure (embedded-PG rejecting
+    // startup with "pre-existing shared memory block still in use") — some
+    // upstream rejection in the embedded-pg boot chain loses the Error object
+    // (a non-Error rejection reason, or a rejection with none at all), so the
+    // one-liner carried zero diagnostic value and the run sat wedged
+    // undiagnosable. Make this LAST-LINE-OF-DEFENSE handler informative
+    // regardless of what shape `e` arrives in, instead of chasing every
+    // possible upstream swallow point.
+    const detail =
+      e instanceof Error
+        ? (e.stack ?? e.message)
+        : e === undefined
+          ? '(no error object — an upstream rejection carried no reason; check the PG boot log, e.g. the embedded-pg data dir\'s log file or serve.log tail, for the actual FATAL)'
+          : (() => {
+              try {
+                return JSON.stringify(e);
+              } catch {
+                return String(e);
+              }
+            })();
+    console.error('[serve] fatal:', detail);
     process.exit(1);
   });
 }
