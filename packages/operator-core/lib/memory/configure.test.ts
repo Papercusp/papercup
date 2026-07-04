@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   resolveEmbedderWith,
   readEmbedderPreference,
+  markOpenAiEmbedFailure,
+  isOpenAiEmbedInCooldown,
+  __resetOpenAiEmbedCooldownForTest,
   type ResolveEmbedderDeps,
 } from './configure';
 
