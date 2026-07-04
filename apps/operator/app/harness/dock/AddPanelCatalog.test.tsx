@@ -4,6 +4,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the routed
+// catalog labels from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 import { AddPanelCatalog } from './AddPanelCatalog';
 import { panelRegistry } from './panel-registry';
 import { bindDockApi } from './dock-actions';

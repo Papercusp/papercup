@@ -62,7 +62,14 @@ const headerRow: React.CSSProperties = {
   padding: '8px 12px 0',
 };
 
-export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
+export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React.ReactElement {
+  const t = useLexicon();
+  // Route the live tab title through the lexicon so the static registry
+  // title ('Hives') is overridden with the classic-pack term when THE_HIVE
+  // is off (restore-pot-lexicon-public-release P-007).
+  useEffect(() => {
+    api.setTitle(t('pot', { plural: true }));
+  }, [api, t]);
   // P-009: push-driven directory. The resolver serves the same flat HiveRow[] the
   // /api/discovery/hives endpoint did; a withdrawn hive drops out / a new announce
   // appears off the directory's invalidations, no poll. While the first push is in
@@ -96,20 +103,20 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
         ...m,
         [hive.hiveId]:
           res.ok && body.ok
-            ? `Joined hive '${body.hiveSlug}' — ${okCount}/${hive.memberLinks.length} member(s)`
+            ? `Joined ${t('pot', { lower: true })} '${body.hiveSlug}' — ${okCount}/${hive.memberLinks.length} member(s)`
             : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
       }));
     } catch (e) {
       setJoinMsg((m) => ({ ...m, [hive.hiveId]: `Join failed: ${e instanceof Error ? e.message : e}` }));
     }
     setJoining(null);
-  }, []);
+  }, [t]);
 
-  if (rows === null) return <div style={mute}>Loading the hive directory…</div>;
+  if (rows === null) return <div style={mute}>Loading the {t('pot', { lower: true })} directory…</div>;
 
   const refreshBtn = (
     <div style={headerRow}>
-      <Tooltip label="Re-fetch the discovered hives now">
+      <Tooltip label={`Re-fetch the discovered ${t('pot', { plural: true, lower: true })} now`}>
         <button type="button" data-testid="hive-directory-refresh" onClick={() => invalidate()}>
           Refresh
         </button>
@@ -130,7 +137,8 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
       <div style={fill} data-testid="hive-directory">
         {refreshBtn}
         <div style={mute}>
-          No hives discovered yet. When a peer announces a public hive on the directory topic, it appears here.
+          No {t('pot', { plural: true, lower: true })} discovered yet. When a peer announces a public{' '}
+          {t('pot', { lower: true })} on the directory topic, it appears here.
         </div>
       </div>
     );
@@ -142,8 +150,8 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
       {rows.map((h) => {
         const joinable = h.memberLinks.length > 0;
         const joinTooltip = joinable
-          ? 'Join every member harness of this hive'
-          : 'This hive published topics only; a full join link is required';
+          ? `Join every member harness of this ${t('pot', { lower: true })}`
+          : `This ${t('pot', { lower: true })} published topics only; a full join link is required`;
         return (
           <div key={h.hiveId} style={card}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>

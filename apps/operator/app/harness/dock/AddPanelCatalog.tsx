@@ -45,6 +45,7 @@ import {
 import { panelRegistry } from './panel-registry';
 import { openPanel, focusPanel, listPanels } from './dock-actions';
 import { Popover } from '../Popover';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface AddPanelCatalogProps {
   /** Default slug to pass as params.harnessSlug for opened panels. */
@@ -132,7 +133,15 @@ const STUB_TYPES = new Set([
   'adv:pinned',
 ]);
 
-function labelFor(type: string): string {
+function labelFor(type: string, lex?: ReturnType<typeof useLexicon>): string {
+  // Lexicon-routed panels: the registry title is a static 'Hive…' string, so
+  // resolve the classic-pack term at the render site when THE_HIVE is off
+  // (restore-pot-lexicon-public-release P-007). The panels themselves also set a
+  // live title via api.setTitle once open; this covers the catalog menu label.
+  if (lex) {
+    if (type === 'adv:hive-content') return `${lex('pot')} content`;
+    if (type === 'workbench:hive-directory') return lex('pot', { plural: true });
+  }
   if (HUMAN_LABELS[type]) return HUMAN_LABELS[type];
   const registryTitle = panelRegistry.get(type)?.meta.title;
   if (registryTitle) return registryTitle;
@@ -156,6 +165,7 @@ export function AddPanelCatalog({
   includeStubs = false,
   allowedTypes,
 }: AddPanelCatalogProps) {
+  const lex = useLexicon();
   const [open, setOpen] = useState(false);
   const [registryTick, setRegistryTick] = useState(0);
   useEffect(() => panelRegistry.subscribe(() => setRegistryTick((t) => t + 1)), []);
@@ -207,7 +217,7 @@ export function AddPanelCatalog({
       const id = openPanel({
         type,
         params: defaultSlug ? { harnessSlug: defaultSlug } : {},
-        title: labelFor(type),
+        title: labelFor(type, lex),
       });
       focusPanel(id);
     } catch (err) {
@@ -255,7 +265,7 @@ export function AddPanelCatalog({
               const Icon = iconFor(t);
               const isOpen = openByType.has(t);
               return (
-                <Tooltip key={t} label={isOpen ? 'Already open — focus it' : `Open ${labelFor(t)}`}><button
+                <Tooltip key={t} label={isOpen ? 'Already open — focus it' : `Open ${labelFor(t, lex)}`}><button
 
                   type="button"
                   className="pc-add-panel__item"
@@ -266,7 +276,7 @@ export function AddPanelCatalog({
                     <Icon size={15} aria-hidden strokeWidth={1.75} />
                   </span>
                   <span className="pc-add-panel__text">
-                    <span className="pc-add-panel__label">{labelFor(t)}</span>
+                    <span className="pc-add-panel__label">{labelFor(t, lex)}</span>
                     <span className="pc-add-panel__type">{t}</span>
                   </span>
                   {isOpen ? (
