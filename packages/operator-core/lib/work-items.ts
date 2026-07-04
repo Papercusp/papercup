@@ -1023,13 +1023,27 @@ export async function setWorkItemState(
     completionRef?: string;
     completionEvidence?: CompletionVerificationEvidence;
     skipCompletionGate?: boolean;
+    /**
+     * EI-7125 / WI-2573: fired synchronously when the REQUESTED state aliases
+     * to a DIFFERENT canonical state before the write (e.g. issue-family
+     * 'blocked'/'needs-human'/'in_progress'/'wip' all collapse to 'open' —
+     * EI-450, the issue family's 3-state CHECK has no richer representation).
+     * Lets a caller (work_items:set_state) surface a loud note instead of the
+     * silent `ok:true, state unchanged from the caller's PoV` surprise that
+     * caused a real reclaim ping-pong (a caller asked for 'blocked', got back
+     * 'open', with nothing distinguishing that from a no-op). Never called
+     * when the requested state is already canonical.
+     */
+    onAlias?: (info: { requested: string; resolved: string }) => void;
   } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const requestedState = state;
   const norm = normalizeWorkItemState(wi.family, state);
   if (norm.ok) {
     state = norm.state;
+    if (state !== requestedState) opts.onAlias?.({ requested: requestedState, resolved: state });
   } else if (opts.allowNonCanonical && wi.family === 'feature') {
     // Trusted internal restore (e.g. autonomy tripwire revert restoring a CAPTURED
     // prior DB state, possibly a raw-SQL pipeline phase): the feature family has no DB

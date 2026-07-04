@@ -603,8 +603,15 @@ export async function setIssueState(
       );
     }
     if (!completionRef || !completionRef.trim()) {
+      // EI-7119: a bare rejection here sent callers on a 3-call round-trip (complete
+      // without state → set_state without completionRef → rejected → re-complete with
+      // both). Name the actual fix inline so the FIRST rejection is the last one.
       throw new Error(
-        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires a completionRef`,
+        `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires a completionRef. ` +
+          `Pass one directly (set_state { id, state, completionRef: "..." }), or prefer ` +
+          `work_items:complete { id, state: "${state}", completion: { summary: "..." } } which supplies it ` +
+          `from completion.summary automatically — a prior work_items:complete WITHOUT \`state\` does NOT persist ` +
+          `anything this call can reuse, so re-call complete with both, not set_state alone.`,
       );
     }
   }
