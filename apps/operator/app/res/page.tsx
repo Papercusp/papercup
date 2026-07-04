@@ -646,7 +646,7 @@ export default function ResourcesPage() {
             <span className="ct">{accounts.length + gpus.length} sources</span>
           </div>
           <p className="res-grouplede">
-            Fuels the queen↔bee loop — accounts share by <b>%</b>, and a fleet&apos;s seats on AUTO draw
+            Fuels the {t('brain', { lower: true })}↔{t('contributor', { lower: true })} loop — accounts share by <b>%</b>, and a fleet&apos;s seats on AUTO draw
             from these accounts.
           </p>
           <div className="res-subhead">

@@ -28,7 +28,20 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot', opts ignored) — isolates the
+// hive→pot routed copy from the THE_HIVE flag hook (restore-pot-lexicon P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import { WorkbenchHiveDirectoryPanel } from './WorkbenchHiveDirectoryPanel';
+
+// The panel is a dock panel — it receives PanelComponentProps and sets its live
+// title via api.setTitle. Supply an inert api so rendering standalone works.
+const panelProps = {
+  panelId: 'p1',
+  panelType: 'workbench:hive-directory',
+  params: {},
+  api: { setParams: () => {}, setTitle: () => {}, close: () => {} },
+};
 
 function mockJoinFetch() {
   return vi.fn(async (url: string, init?: RequestInit) => {
@@ -63,28 +76,28 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     dirRows = [
       { hiveId: 'ash', title: 'Ash Hive', description: 'shop work', owner: 'alice', visibility: 'public', memberTopics: ['a'], memberLinks: ['papercusp://harness?topic=a'], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel />);
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     expect(await screen.findByText('Ash Hive')).toBeTruthy();
     expect(screen.getByText(/owner: alice/)).toBeTruthy();
   });
 
   it('shows the loading state while the first push has not resolved', () => {
     dirRows = undefined;
-    render(<WorkbenchHiveDirectoryPanel />);
-    expect(screen.getByText(/Loading the hive directory/)).toBeTruthy();
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    expect(screen.getByText(/Loading the pot directory/)).toBeTruthy();
   });
 
   it('shows the empty-state when no hives are discovered', async () => {
     dirRows = [];
-    render(<WorkbenchHiveDirectoryPanel />);
-    expect(await screen.findByText(/No hives discovered yet/)).toBeTruthy();
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    expect(await screen.findByText(/No pot discovered yet/)).toBeTruthy();
   });
 
   it('disables Join + shows "link required" for a topic-only hive (no member links)', async () => {
     dirRows = [
       { hiveId: 'topic-only', title: 'Topic Hive', description: '', owner: 'bob', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: [], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel />);
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     const btn = (await screen.findByRole('button', { name: 'Join' })) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(screen.getByText('link required')).toBeTruthy();
@@ -94,7 +107,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     dirRows = [
       { hiveId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel />);
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     fireEvent.click(await screen.findByTestId('hive-directory-refresh'));
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
@@ -105,11 +118,11 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     ];
     const fetchMock = mockJoinFetch();
     vi.stubGlobal('fetch', fetchMock);
-    render(<WorkbenchHiveDirectoryPanel />);
+    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
     const btn = await screen.findByRole('button', { name: 'Join' });
     fireEvent.click(btn);
     // The panel reports the hive slug + member tally from the composed response.
-    await waitFor(() => expect(screen.getByText(/Joined hive .* 2\/2 member/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Joined pot .* 2\/2 member/)).toBeTruthy());
     // Exactly ONE join-hive call (not N loose join-link calls), carrying both links.
     const joinCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/discovery/join-hive');
     expect(joinCalls).toHaveLength(1);

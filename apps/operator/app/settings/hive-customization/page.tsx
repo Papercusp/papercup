@@ -450,7 +450,7 @@ export default function HiveCustomizationPage() {
             </div>
             <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 10px' }}>
               {section === 'scout'
-                ? 'How this hive’s scout loop ideates, critiques, and routes — lenses, novelty/verdict thresholds, and routing. A partial override; omitted keys keep the engine default.'
+                ? `How this ${t('pot', { lower: true })}'s scout loop ideates, critiques, and routes — lenses, novelty/verdict thresholds, and routing. A partial override; omitted keys keep the engine default.`
                 : 'JSON config delta for this section.'}
             </p>
             <ConfigOverrideEditor
