@@ -9,9 +9,16 @@
  * Tier 3 (real frames) is deliberately NOT here — on-demand only (D-004).
  *
  * Findings that cross thresholds AUTO-FILE via `captureImprovement` (the
- * improvements backlog, kind=bug): every loop-lag SLO violation (D-003 — the
- * headline gate) and every advisory regression past tolerance. capture-core's
- * search-first dedup means a STANDING regression files once, not nightly.
+ * improvements backlog): every loop-lag SLO violation (D-003 — the headline
+ * gate, kind=bug: a real regression worth an auto-fix attempt) and every
+ * advisory regression past tolerance (kind=change — EI-7254: informational,
+ * D-005 never gates, so it is not an auto-implement-eligible code defect).
+ * A `findIssuesByWatchdogKeys` pre-filter (EI-7254) skips the capture entirely
+ * when an OPEN issue already carries the same stable watchdogKey — an exact
+ * indexed lookup, not capture-core's fuzzy search-first dedup (whose title
+ * search is defeated once a few hundred near-duplicates already exist for the
+ * same scenario+metric, since the live baseline→current numbers embedded in
+ * the title vary every run). A STANDING regression now truly files once.
  * The run itself stays advisory (D-005): the routine never gates anything.
  *
  * Mirrors release-actions.ts layering: the handler SHELLS OUT to the runner
@@ -203,9 +210,49 @@ export function classifyNoSummaryRun(r: Pick<RunnerResult, 'code' | 'signal' | '
   return 'crash';
 }
 
-/** File one improvement per threshold-crossing finding (deduped by capture-core). */
+/**
+ * EI-7254: capture-core's dedup is search-FIRST (full-text title search, capped
+ * at 20 results, then filtered by title similarity — see capture-core.ts) with
+ * the watchdogKey check applied only to whatever that fuzzy search happens to
+ * surface. This p2p-perf title embeds the live baseline→current numbers, which
+ * differ every run, so once a few hundred near-duplicates exist for the SAME
+ * scenario+metric the true match routinely falls outside the fuzzy search's
+ * top-20 / similarity cut — and a fresh duplicate gets filed anyway, despite
+ * the stable watchdogKey each capture already carries (the EI-3909-era fix
+ * intent, never fully closed). This produced 1,200+ near-duplicate advisory
+ * bugs by 2026-07-04.
+ *
+ * Fix: pre-filter with `findIssuesByWatchdogKeys` — the SAME indexed, exact
+ * lookup the improvement watchdog's own collectors already use before planning
+ * a capture (watchdog.ts readWatchdogKeyDups) — and skip the capture entirely
+ * when an OPEN issue already carries the key. This is authoritative (an exact
+ * index match, not a fuzzy heuristic) and cannot miss regardless of backlog size.
+ */
+async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const issues = await findIssuesByWatchdogKeys([...keys]).catch(() => []);
+  const open = new Set<string>();
+  for (const i of issues) {
+    if (i.state !== 'open') continue;
+    const k = (i.payload as Record<string, unknown> | null)?.watchdogKey;
+    if (typeof k === 'string') open.add(k);
+  }
+  return open;
+}
+
+/** File one improvement per threshold-crossing finding (deduped by capture-core,
+ *  pre-filtered by an exact watchdogKey lookup — EI-7254). */
 async function fileFindings(summary: RunSummary, tierLabel: string): Promise<void> {
-  for (const v of summary.sloViolations) {
+  const sloKeys = summary.sloViolations.map((v) => `p2p-perf-slo:${v.scenario}:${v.paramsKey}`);
+  const regressionKeys = summary.regressions.map(
+    (r) => `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,
+  );
+  const alreadyOpen = await openIssueExistsForKeys([...sloKeys, ...regressionKeys]);
+
+  for (let idx = 0; idx < summary.sloViolations.length; idx++) {
+    const v = summary.sloViolations[idx]!;
+    const watchdogKey = sloKeys[idx]!;
+    if (alreadyOpen.has(watchdogKey)) continue; // EI-7254: a standing violation already has an open EI
     await captureImprovement({
       kind: 'bug',
       severity: 'major',
@@ -225,16 +272,26 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
       // never matched. Result: hundreds of near-duplicate EIs for the SAME
       // recurring SLO violation. Key on scenario+params only (never the live
       // numbers) so a standing violation truly files once, per the module's
-      // own doc-comment intent.
-      watchdogKey: `p2p-perf-slo:${v.scenario}:${v.paramsKey}`,
+      // own doc-comment intent. (EI-7254: the openIssueExistsForKeys() pre-filter
+      // above is now the authoritative guard; this stays as defense-in-depth.)
+      watchdogKey,
     }).catch(() => {
       // capture-core declines duplicates — exactly what we want for a standing
       // violation; any other failure must not break the routine.
     });
   }
-  for (const r of summary.regressions) {
+  for (let idx = 0; idx < summary.regressions.length; idx++) {
+    const r = summary.regressions[idx]!;
+    const watchdogKey = regressionKeys[idx]!;
+    if (alreadyOpen.has(watchdogKey)) continue; // EI-7254: a standing regression already has an open EI
     await captureImprovement({
-      kind: 'bug',
+      // EI-7254: an advisory (D-005, never-gating) baseline comparison is not an
+      // auto-fixable code defect — `kind:'change'` (human-reviewed informational)
+      // instead of `kind:'bug'` (auto-implement-eligible) keeps it out of the
+      // auto-implement dispatch lane, which cannot "fix" a perf-baseline drift
+      // and would just orphan trying (mirrors the timeout/signal classification
+      // a few lines up in this same file for exactly this reason).
+      kind: 'change',
       severity: 'minor',
       title: `p2p-perf regression: ${r.scenario} ${r.metric} ${r.baseline} → ${r.current} (${Math.round(r.relChange * 100)}% worse)`,
       body:
@@ -249,11 +306,12 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
       createdBy: 'system:p2p-perf',
       // Same fix as the SLO-violation capture above: the title embeds the live
       // baseline→current numbers (never identical two runs running), which
-      // defeated fuzzy title dedup and produced 800+ near-duplicate EIs for
-      // this one recurring regression (EI-3909 et al.). Key on scenario +
-      // params + metric only — stable across every run that re-detects the
-      // SAME regressed metric.
-      watchdogKey: `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,
+      // defeated fuzzy title dedup and produced 1,200+ near-duplicate EIs for
+      // this one recurring regression (EI-3909 et al., EI-7254). Key on scenario
+      // + params + metric only — stable across every run that re-detects the
+      // SAME regressed metric. (EI-7254: openIssueExistsForKeys() above is now
+      // the authoritative guard; this stays as defense-in-depth.)
+      watchdogKey,
     }).catch(() => {
       /* dedup-decline / capture failure never breaks the routine */
     });
