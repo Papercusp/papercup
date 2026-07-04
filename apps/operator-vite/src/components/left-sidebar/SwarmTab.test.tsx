@@ -34,6 +34,10 @@ const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, e
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));
+// The lexicon resolver is mocked to ECHO its key (so t('fleet') → 'fleet',
+// t('contributor') → 'contributor') — isolates this test from the flag hook;
+// classic pack renders 'Fleet'/'Cups' at runtime (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 // Rows now navigate via TanStack `<Link to search>` (client-side, no full reload)
 // instead of plain `<a href>`. Mock Link to a real `<a>` whose href reflects the
@@ -113,7 +117,7 @@ describe('<SwarmTab> roster', () => {
     seed('dev.coordPresence', PRESENCE);
     seed('sidebar.fleetBees', BEES);
     render(<SwarmTab active={true} />);
-    expect(screen.getByText('colony · 3 live')).toBeTruthy();
+    expect(screen.getByText('fleet · 3 live')).toBeTruthy();
     expect(screen.getByTestId('swarm-su').textContent).toContain('SU One');
     const beeSec = screen.getByTestId('swarm-bees');
     expect(beeSec.textContent).toContain('Bee One');

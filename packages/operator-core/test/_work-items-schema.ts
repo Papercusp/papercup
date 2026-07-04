@@ -192,6 +192,23 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     review_status   text NOT NULL DEFAULT 'none',
     tags            text[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (workspace_id, id)
+  );
+  -- WI-2118 reserved-plan-lane floor (reservedPlanLaneExclusionSql): the issue-claim path AND
+  -- diagnoseClaimNextMiss reference these two tables to exclude items reserved by another active
+  -- plan lane. Minimal columns the floor reads; empty by default ⇒ the EXISTS subqueries match
+  -- nothing, so a test that seeds neither is byte-identical to the pre-floor behavior (mirrors the
+  -- datatype_registry precedent above). A test that DOES apply the full migration 122/141 tables
+  -- keeps them (CREATE TABLE IF NOT EXISTS is a no-op when the richer table already exists).
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
+    plan_slug text PRIMARY KEY,
+    status text
+  );
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
+    plan_slug text NOT NULL,
+    item_id text NOT NULL,
+    owner text NOT NULL,
+    expires_ts timestamptz NOT NULL,
+    PRIMARY KEY (plan_slug, item_id)
   );`;
 
 /**

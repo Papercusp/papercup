@@ -17,6 +17,7 @@ import { useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsString } from 'nuqs';
+import { useLexicon } from '@/lib/useLexicon';
 
 interface PresenceRecord {
   ownerId: string;
@@ -138,6 +139,7 @@ function isBee(r: PresenceRecord): boolean {
 }
 
 export default function SwarmTab({ active }: { active: boolean }) {
+  const t = useLexicon();
   const [selected, setSelected] = useQueryState('lsa', parseAsString);
 
   const presence = useSyncQuery<PresenceRecord>({
@@ -338,7 +340,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
   return (
     <div className="pclsb-panel" data-testid="left-sidebar-swarm">
       <div className="pclsb-panel__bar">
-        <span className="pclsb-panel__bar-label">colony · {roster.length} live</span>
+        <span className="pclsb-panel__bar-label">{t('fleet', { lower: true })} · {roster.length} live</span>
       </div>
 
       {presence.error && <div className="pclsb-panel__error">{String(presence.error)}</div>}
@@ -355,7 +357,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
 
       {beeAgents.length > 0 && (
         <div className="pclsb-sec" data-testid="swarm-bees">
-          <div className="pclsb-sec__head">☕ Bees ({beeAgents.length})</div>
+          <div className="pclsb-sec__head">☕ {t('contributor', { plural: true })} ({beeAgents.length})</div>
           {beeAgents.map((r) => renderAgentRow(r, '☕'))}
         </div>
       )}

@@ -561,9 +561,10 @@ export async function getNextWorkItem(
   // Tier 3 (SCHEDULER_ISSUES_CLAIMABLE, owner-authority-gated): the whole feature family the
   // spec can see is exhausted — widen to the adjacent ISSUE family too, the SAME additive
   // fallback `claimNextWorkItem` (work-items.ts) applies, so the two claim paths never drift
-  // on WHERE the ladder bottoms out. A claim spec has no vocabulary over issue-family fields,
-  // so there is nothing spec-specific to carry across — this tier is the shared, unconditional
-  // "any open, unblocked bug/change/task" claim.
+  // on WHERE the ladder bottoms out. Most feature-family filters still have no issue-family
+  // vocabulary, so they preserve WI-1407's unrestricted adjacent-issue fallback. Explicit
+  // issue-kind filters are different: carry that lane constraint across so a bug/change fleet
+  // does not claim a reserved task.
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
     const issueKinds = issueKindsForFallback(spec.view.filter);
     claimed = await claimNextIssueWorkItem(

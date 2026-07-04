@@ -154,16 +154,8 @@ beforeAll(async () => {
   // Migration 379: the maintained readiness sidecar (some claim-path code paths reference
   // work_item_blocked even on the inline arm via the sidecar table; apply it for parity).
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
-  // WI-2118 reserved-plan-lane floor: the issue-claim path now LEFT-references these two tables
-  // (harness_plans.status='active' + a live plan_item_claims lease). Minimal DDL — just the columns
-  // the reservedPlanLaneExclusionSql floor reads (see work-items.ts).
-  await db.sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
-      plan_slug text PRIMARY KEY, status text );
-    CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
-      plan_slug text NOT NULL, item_id text NOT NULL, owner text NOT NULL,
-      expires_ts timestamptz NOT NULL,
-      PRIMARY KEY (plan_slug, item_id) );`).simple();
+  // harness_plans + plan_item_claims are created by HARNESS_FEATURES_CONSOLIDATED_DDL (the WI-2118
+  // reserved-plan-lane floor reads them); the reserved-lane describe below seeds into them.
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -340,5 +332,66 @@ describe('issue steer levers become applicable only when SCHEDULER_ISSUES_CLAIMA
     }>;
     expect(afterOn[0]!.feature_order).toBe(5);
     expect(afterOn[0]!.swarm_affinity).toBe('swarm-x');
+  });
+});
+
+// WI-2118 (the P-009 leak): the general drain must NOT self-select an issue-family item that is
+// RESERVED by another active plan lane — the parent plan is `active`, or the plan-item is under a
+// live lease held by another owner. Members that know the lane is reserved (its plan's `## Now`)
+// correctly refuse + release such an item, and the scheduler kept re-serving it (claim→refuse→
+// re-serve churn — WI-2118 hit 3 different members in minutes). The floor stops it at the source.
+describe('reserved plan-lane exclusion — issue linked to another active plan is NOT self-selected (WI-2118)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  /** Seed an issue-family task carrying a payload.plan_item back-pointer to (planSlug, itemId). */
+  async function seedPlanLinkedIssue(id: string, planSlug: string, itemId: string, createdTs = 100) {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'task', 'open', ${WS}, ${createdTs}, 0,
+              ${db.sql.json({ plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } })})`;
+  }
+  const seedPlan = (slug: string, status: string) =>
+    db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status) VALUES (${slug}, ${status})`;
+  const seedLease = (slug: string, itemId: string, owner: string, expiresMinFromNow: number) =>
+    db.sql`INSERT INTO harness_shared.plan_item_claims (plan_slug, item_id, owner, expires_ts)
+            VALUES (${slug}, ${itemId}, ${owner}, now() + make_interval(mins => ${expiresMinFromNow}))`;
+
+  it('an issue linked to an ACTIVE plan is NOT claimed (the WI-2118 case)', async () => {
+    await seedPlan('active-plan-x', 'active');
+    await seedPlanLinkedIssue('WI-RES-1', 'active-plan-x', 'P-009');
+    expect(await claimOne('drain-member')).toBeNull();
+  });
+
+  it('an issue linked to a DRAFT plan with no live lease IS claimed (free backlog, no over-exclusion)', async () => {
+    await seedPlan('draft-plan-x', 'draft');
+    await seedPlanLinkedIssue('WI-RES-2', 'draft-plan-x', 'P-003');
+    expect(await claimOne('drain-member')).toBe('WI-RES-2');
+  });
+
+  it('an issue under a LIVE lease held by ANOTHER owner is NOT claimed, even in a draft plan', async () => {
+    await seedPlan('draft-plan-y', 'draft');
+    await seedPlanLinkedIssue('WI-RES-3', 'draft-plan-y', 'P-006');
+    await seedLease('draft-plan-y', 'P-006', 'su-other-owner', 20); // lease live for 20 more min
+    expect(await claimOne('drain-member')).toBeNull();
+  });
+
+  it('an issue whose lease has LAPSED and whose plan is not active IS claimed (no indefinite starvation)', async () => {
+    await seedPlan('draft-plan-z', 'draft');
+    await seedPlanLinkedIssue('WI-RES-4', 'draft-plan-z', 'P-001');
+    await seedLease('draft-plan-z', 'P-001', 'su-gone', -60); // lapsed 60 min ago
+    expect(await claimOne('drain-member')).toBe('WI-RES-4');
+  });
+
+  it('a plan-linked issue with no plan row and no lease IS claimed (dangling link ⇒ free)', async () => {
+    await seedPlanLinkedIssue('WI-RES-5', 'ghost-plan', 'P-002');
+    expect(await claimOne('drain-member')).toBe('WI-RES-5');
+  });
+
+  it('an ordinary issue (no plan_item back-pointer, NULL payload) is unaffected by the floor', async () => {
+    await seedIssue('EI-RES-6', { state: 'open', createdTs: 100 });
+    expect(await claimOne('drain-member')).toBe('EI-RES-6');
   });
 });
