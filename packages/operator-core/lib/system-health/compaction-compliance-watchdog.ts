@@ -29,7 +29,7 @@ import {
 } from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
-import { recordContextUsage } from './context-usage-cache';
+import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -248,6 +248,18 @@ export interface CompactionComplianceResult {
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
   const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
+  // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
+  // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
+  // hiccup leaves the previous value untouched (fail to the default-ON gauge).
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    setContextGaugeEnabled(await getFlag(FLAGS.CONTEXT_GAUGE, 'system'));
+  } catch {
+    /* keep the previous mirror value */
+  }
   // Lazy per-pass tier menu, HOISTED so the seed pass AND the P-017 re-eval share ONE
   // workspace-config read: memoized, fail-soft to undefined (⇒ spec-derived defaults only).
   let tiersPromise: Promise<readonly ModelTier[] | undefined> | null = null;

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { COMPACTION_HINT_PCT, renderContextUsageLine } from './inbox-context-usage';
+import {
+  COMPACTION_HINT_PCT,
+  CONTEXT_GAUGE_CRITICAL_PCT,
+  CONTEXT_GAUGE_LOUD_PCT,
+  CONTEXT_GAUGE_QUIET_PCT,
+  contextGaugeBand,
+  renderBandedContextGauge,
+  renderContextUsageLine,
+} from './inbox-context-usage';
 
 describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
   it('returns null when usage cannot be computed', () => {

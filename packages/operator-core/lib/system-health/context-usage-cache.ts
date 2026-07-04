@@ -53,7 +53,27 @@ export function getContextUsage(
   return { tokens: e.tokens, limit: e.limit };
 }
 
+/* ── P-013 flag mirror ──────────────────────────────────────────────────────
+ * The result-annotator (P-013) is on a SYNC dispatch hot path but FLAGS.CONTEXT_GAUGE
+ * is an async read. So the compaction watchdog (already async, 2-min cadence) reads the
+ * flag each pass and mirrors it here; the annotator reads the mirror synchronously. A
+ * flip therefore takes effect within one sweep (~2 min), with zero per-call flag cost and
+ * no new timer. Starts ENABLED so the default-ON gauge works from process start, before
+ * the first watchdog pass. */
+let gaugeEnabled = true;
+
+/** Watchdog write: mirror the current FLAGS.CONTEXT_GAUGE value. */
+export function setContextGaugeEnabled(enabled: boolean): void {
+  gaugeEnabled = enabled;
+}
+
+/** Annotator read: is the banded gauge currently enabled? */
+export function isContextGaugeEnabled(): boolean {
+  return gaugeEnabled;
+}
+
 /** Test seam. */
 export function resetContextUsageCacheForTests(): void {
   cache.clear();
+  gaugeEnabled = true;
 }

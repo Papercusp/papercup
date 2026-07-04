@@ -250,6 +250,17 @@ export const FLAGS = {
   // context-death detection keep running) ⇒ warn-only, byte-identical to pre-P-012.
   // The kill-switch if the force-inject ever misfires.
   COMPACTION_WATCHDOG_FORCE_COMPACT: "papercusp-compaction-watchdog-force-compact",
+  // agent-managed-compaction P-013 (D-009 ambient awareness): when ON, a BANDED
+  // context-usage gauge ("context: N/L (X%)", silent <65% / quiet 65-80% / loud ⚠
+  // 80-90% / critical >90%) is appended to EVERY papercusp-su MCP tool RESULT (the
+  // result-annotator seam) so a heads-down session that never calls a coord tool still
+  // sees its usage — the surface that was missing in the 2026-07-02/07-04 blind-drift
+  // incidents. DEFAULT ON (not in DARK_FLAGS — owner-proposed). The flag is read by the
+  // compaction watchdog each pass into a sync in-process mirror (the annotator is on a
+  // sync hot path), so a flip takes effect within one sweep (~2 min). OFF removes the
+  // gauge from tool results (the coord:inbox usage line + P-015 native-tool hook are
+  // unaffected) — the kill-switch if it is ever noisy.
+  CONTEXT_GAUGE: "papercusp-context-gauge",
   // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
   // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
   // signal) — the creator must work the given id, not fork a duplicate it then

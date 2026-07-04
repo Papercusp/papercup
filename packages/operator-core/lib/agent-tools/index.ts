@@ -30,6 +30,11 @@ import './pre-prompt-registry-config';
 // not_modified). See delta-flag-wiring.ts.
 import './delta-flag-wiring';
 
+// Wire tooldef's result-annotator seam to the banded context-usage gauge
+// (agent-managed-compaction-2026-07-01 P-013) — a side-effect that registers the host
+// annotator appended to every tool result ≥65%. See context-gauge-wiring.ts.
+import './context-gauge-wiring';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
