@@ -8,35 +8,83 @@ replaced the GUI-wizard critical path. This is the map an agent needs before
 touching any of it. User-facing overview:
 [desktop/onboarding](/internal/docs/desktop/onboarding).
 
+## The 2026-07-04 refactor: the tutorial is a DETERMINISTIC script
+
+Originally the whole tutorial was agent-driven — an LLM tutor read a prompt +
+content pack and "figured out" how to print each section, interpret `[1]/[2]`,
+drive the GUI tabs, and checkpoint. Plan
+`deterministic-onboarding-tutorial-2026-07-04` replaced that spine with a
+**script** (`tutorial-runner.mjs`), because the content already exists as
+structured `## Brief` / `## Details` files — there is nothing for an LLM to
+decide when delivering it. The runner:
+
+* fetches the whole tutorial in ONE call (`GET /api/desktop/tutorial-script`),
+* prints each section's `## Brief` **verbatim** and the option line,
+* handles `[1] Continue` / `[2] More details` / `[m] Menu` / `[f] Finish` with
+  **no LLM**, checkpoints progress, narrates the finale GUI tour, and graduates,
+* invokes the agent **only** when the user types a free-form QUESTION — a single
+  one-shot call to the installed CLI (`claude -p` / `codex exec`), grounded in the
+  current section, then control returns to the script. A failed/unavailable
+  agent degrades to a doc pointer; the tutorial never stalls.
+
+The concierge handoff launches the runner; the **agentic tutor
+(`onboarding-tutor.md` → `psu --launch-context`) is now the FALLBACK**, used only
+if the runner script is missing or exits abnormally. Not-ready features
+(telemetry consent, mobile pairing, auto-update channel) are gated behind
+`FLAGS.ONBOARDING_PREVIEW_FEATURES` (default OFF) — the `tutorial-script`
+endpoint filters them out server-side, and the fallback prompt is told to skip
+them.
+
 ## Component map (follow one first-run through it)
 
-| Step            | Component                                                                                                                                         | Where                                                                              |                                                 |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Routing         | `firstRunTarget()` in the root route — unfinished wizard state → `/onboarding` when `FLAGS.ONBOARDING_AGENT_FIRST` (default ON), else `/setup`    | `apps/operator-vite/src/routes/index.tsx`                                          |                                                 |
-| Surface         | `OnboardingConsole` — full-window `InlinePtyTerminal` running the concierge; non-Tauri/browser → fallback card to `/setup?force=1`                | `apps/operator/app/_components/OnboardingConsole.tsx`                              |                                                 |
-| Spawn spec      | `onboardConcierge` SpawnSpec                                                                                                                      | `packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts`   |                                                 |
-| Concierge       | `onboard-launcher.mjs` — renders chat, runs SpawnSpecs, re-polls; NO stage logic client-side                                                      | `apps/operator/scripts/onboard-launcher.mjs`                                       |                                                 |
-| Stage machine   | `resolveStage()` — PURE fn over a detection snapshot; done/pick/install/login/embeddings/handoff                                                  | `packages/operator-core/lib/onboarding/stage-resolver.ts`                          |                                                 |
-| Status endpoint | `GET /api/desktop/onboarding-status?chosen&forcePick&embeddingsSkipped&tutorial` → `{ snapshot, stage, labels }`                                  | `…/endpoint-route/routes/desktop/onboarding-status.ts`                             |                                                 |
-| Handoff         | concierge `exec`s `psu --no-picker --agent=<a> --no-plan [--launch-context=…]` (`buildHandoffArgs`, env seam `PAPERCUSP_ONBOARD_LAUNCH_CONTEXT`)  | same launcher                                                                      |                                                 |
-| Tutor brief     | \`GET /api/desktop/onboarding-launch-context?agent\&mode=first-run                                                                                | tutorial\` renders the tutor prompt to a file                                      | `…/routes/desktop/onboarding-launch-context.ts` |
-| Tutor prompt    | `onboarding-tutor.md` + token splice (`{{PACK_INDEX}}`, `{{GUI_TAB_TOUR}}`, setup snapshot, OS, agent…)                                           | `apps/operator/prompts/onboarding-tutor.md` + `…/lib/onboarding/launch-context.ts` |                                                 |
-| Content pack    | `apps/operator/prompts/tutorial/<ch>/<nn>-<slug>.md` (frontmatter `id/chapter/order/title/docSlugs`, `## Brief` + `## Details`) + loader/registry | `packages/operator-core/lib/onboarding/`                                           |                                                 |
-| GUI finale      | `GUI_TAB_TOUR` mirrors `ADV_TABS` — tutor drives tabs via `ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}`                      | `…/lib/onboarding/gui-tab-tour.ts`                                                 |                                                 |
-| Re-entry        | `papercusp tutorial` / desktop icon → `onboard-launcher --tutorial` (finished machines resolve to handoff, not done)                              | launcher + `…/lib/desktop-install/papercusp-files.ts`                              |                                                 |
-| Graduation      | tutor calls `setup:complete` → `finished_at`; all stages re-derive statelessly (resumable by construction)                                        | `setup:*` tools                                                                    |                                                 |
-| Wizard fallback | Settings → Advanced → "Setup Wizard (classic)" + `/setup?force=1`                                                                                 | `apps/operator/app/settings/layout.tsx`                                            |                                                 |
+| Step                 | Component                                                                                                                                                                                                                                                                | Where                                                                              |                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Routing              | `firstRunTarget()` in the root route — unfinished wizard state → `/onboarding` when `FLAGS.ONBOARDING_AGENT_FIRST` (default ON), else `/setup`                                                                                                                           | `apps/operator-vite/src/routes/index.tsx`                                          |                                                 |
+| Surface              | `OnboardingConsole` — full-window `InlinePtyTerminal` running the concierge; non-Tauri/browser → fallback card to `/setup?force=1`                                                                                                                                       | `apps/operator/app/_components/OnboardingConsole.tsx`                              |                                                 |
+| Spawn spec           | `onboardConcierge` SpawnSpec                                                                                                                                                                                                                                             | `packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts`   |                                                 |
+| Concierge            | `onboard-launcher.mjs` — renders chat, runs SpawnSpecs, re-polls; NO stage logic client-side                                                                                                                                                                             | `apps/operator/scripts/onboard-launcher.mjs`                                       |                                                 |
+| Stage machine        | `resolveStage()` — PURE fn over a detection snapshot; done/pick/install/login/embeddings/handoff                                                                                                                                                                         | `packages/operator-core/lib/onboarding/stage-resolver.ts`                          |                                                 |
+| Status endpoint      | `GET /api/desktop/onboarding-status?chosen&forcePick&embeddingsSkipped&tutorial` → `{ snapshot, stage, labels }`                                                                                                                                                         | `…/endpoint-route/routes/desktop/onboarding-status.ts`                             |                                                 |
+| Handoff              | at handoff the concierge launches the **deterministic runner** (`node tutorial-runner.mjs --agent=<a> --operator-url=…`); falls back to `psu --no-picker --agent=<a> --no-plan --launch-context=…` (`buildHandoffArgs`) only if the runner is missing / exits abnormally | same launcher                                                                      |                                                 |
+| Deterministic runner | `tutorial-runner.mjs` — scripted walk: prints each Brief verbatim, `[1]/[2]/[m]/[f]` with NO LLM, checkpoints, narrates the finale, graduates; one-shots the agent ONLY for a free-form question                                                                         | `apps/operator/scripts/tutorial-runner.mjs`                                        |                                                 |
+| Tutorial payload     | `GET /api/desktop/tutorial-script?tutorial=` — ordered pack sections + chapters + saved progress + GUI tour + flag-filtered optional-setup + resolved `agentBinaries`                                                                                                    | `…/routes/desktop/tutorial-script.ts`                                              |                                                 |
+| Preview gating       | not-ready items (telemetry, mobile pairing, auto-update) filtered unless `FLAGS.ONBOARDING_PREVIEW_FEATURES` (default OFF, dark `incomplete`) is on                                                                                                                      | `…/lib/onboarding/optional-setup-items.ts`                                         |                                                 |
+| Runner Q\&A          | free-form input → one-shot `claude -p` / `codex exec` grounded in the section; failure → doc pointer                                                                                                                                                                     | `tutorial-runner.mjs` (`buildQaCommand`/`buildQaPrompt`)                           |                                                 |
+| Tutor brief          | \`GET /api/desktop/onboarding-launch-context?agent\&mode=first-run                                                                                                                                                                                                       | tutorial\` renders the tutor prompt to a file                                      | `…/routes/desktop/onboarding-launch-context.ts` |
+| Tutor prompt         | `onboarding-tutor.md` + token splice (`{{PACK_INDEX}}`, `{{GUI_TAB_TOUR}}`, setup snapshot, OS, agent…)                                                                                                                                                                  | `apps/operator/prompts/onboarding-tutor.md` + `…/lib/onboarding/launch-context.ts` |                                                 |
+| Content pack         | `apps/operator/prompts/tutorial/<ch>/<nn>-<slug>.md` (frontmatter `id/chapter/order/title/docSlugs`, `## Brief` + `## Details`) + loader/registry                                                                                                                        | `packages/operator-core/lib/onboarding/`                                           |                                                 |
+| GUI finale           | `GUI_TAB_TOUR` mirrors `ADV_TABS` — tutor drives tabs via `ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}`                                                                                                                                             | `…/lib/onboarding/gui-tab-tour.ts`                                                 |                                                 |
+| Re-entry             | `papercusp tutorial` / desktop icon → `onboard-launcher --tutorial` (finished machines resolve to handoff, not done)                                                                                                                                                     | launcher + `…/lib/desktop-install/papercusp-files.ts`                              |                                                 |
+| Graduation           | tutor calls `setup:complete` → `finished_at`; all stages re-derive statelessly (resumable by construction)                                                                                                                                                               | `setup:*` tools                                                                    |                                                 |
+| Wizard fallback      | Settings → Advanced → "Setup Wizard (classic)" + `/setup?force=1`                                                                                                                                                                                                        | `apps/operator/app/settings/layout.tsx`                                            |                                                 |
 
 ## Test coverage — where to add yours
 
 * **Stage machine**: unit tests beside `stage-resolver.ts`.
 * **Concierge helpers**: `apps/operator/scripts/__tests__/onboard-launcher.test.ts`.
-* **Scripted flow → handoff (CI, fake agent binary)**:
+* **Scripted concierge → handoff (CI, fake binaries)**:
   `apps/operator/scripts/__tests__/onboard-launcher-flow.integration.test.ts` —
-  spawns the REAL launcher against a stub operator API (node:http) with a
-  PATH-injected fake `psu`; asserts the exact P-005 argv, install streaming,
-  done-stage no-spawn, and `--tutorial` re-entry. Copy this pattern for new
-  stages; never prompt-bearing paths (they hang CI).
+  spawns the REAL launcher against a stub operator API (node:http); asserts install
+  streaming, done-stage no-spawn, and that the handoff now **launches the
+  deterministic runner** (an empty `tutorial-script` pack makes it exit 0 fast) in
+  both first-run and `--tutorial` re-entry.
+* **Deterministic runner, end to end**:
+  `apps/operator/scripts/__tests__/tutorial-runner-flow.integration.test.ts` —
+  spawns the REAL `tutorial-runner.mjs` against a stub `tutorial-script` +
+  `setup-wizard-state`, answering `@inquirer` prompts one at a time over a pipe
+  (send-on-quiet debounce — @inquirer consumes one line per prompt). Asserts
+  verbatim Brief delivery, `[1]` advance + progress checkpoint, `[2]` details, a
+  free-form question one-shotting a FAKE agent binary, finale narration, and
+  graduation (`finished_at`). Drive only the `input`-only path (empty optionalSetup +
+  no progress ⇒ no `select`/`confirm`, which can't be driven over a pipe).
+* **Runner navigation logic (unit)**:
+  `apps/operator/scripts/__tests__/tutorial-runner.test.ts` — `interpretReply`
+  (`1`/`2`/`m`/`f`/question), `buildQaCommand`/`buildQaPrompt`, resume math.
+* **Preview-flag filtering (unit)**:
+  `packages/operator-core/lib/onboarding/optional-setup-items.test.ts` — a default
+  install never sees telemetry / mobile-pairing / auto-update; a tester (flag on)
+  sees all. The dark flag itself is guarded by
+  `libs/flags/src/production-defaults.test.ts`.
 * **First-run routing + console surface**:
   `apps/operator/e2e/onboarding-first-run.spec.ts` — hermetic via
   `page.route` mocks of `setup-wizard-state` + `flags/bootstrap`.

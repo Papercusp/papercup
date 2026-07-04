@@ -191,6 +191,16 @@ export const FLAGS = {
   // Phase 1 (this sprint): skeleton + basic methods + IPC client.
   // Phase 2: socket handoff + integration tests. Listed in KNOWN_DARK_FLAGS.
   SUBSTRATE_SIDECAR: "papercusp-substrate-sidecar",
+  // WI-2105 (shared-hive-p2p-release-readiness) REV-leg fix: persist the substrate
+  // boot merge cursor's per-log positions to harness_shared.substrate_merge_cursor
+  // (seed before the first fold, checkpoint persist-after-apply during it) so fold
+  // progress is MONOTONIC across bg-host restarts. Without it an orphaned 70k-op
+  // peer log re-folds from 0 every restart, starves routinesTick past the 240s
+  // bghost-watchdog, and the watchdog restart loop means the fold never reaches
+  // tail (the REV restart loop). DEFAULT ON (not dark — a correctness fix, verified
+  // live on the tower sidecar). OFF = in-memory cursor only, byte-identical to the
+  // pre-fix behavior (the kill-switch: reverts to full re-fold each restart).
+  SUBSTRATE_MERGE_CURSOR_PG: "papercusp-substrate-merge-cursor-pg",
   // spawner-sidecar-offload-2026-06-30 WI-344 ③ — the SPAWNER sibling of
   // SUBSTRATE_SIDECAR. When ON, spawnInvokeOnceWithFallback (orchestrator-runner.ts)
   // routes the agent-spawn fork/exec + buildInvokeOnce (the ~24.5% main-loop CPU

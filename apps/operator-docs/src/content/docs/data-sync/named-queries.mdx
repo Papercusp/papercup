@@ -45,7 +45,7 @@ registry's *shape* changed.
 
 Today the registry is
 `REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the "v2"
-resolver) — a flat `Record<string, QueryEntry>` (150+ entries as of this
+resolver) — a flat `Record<string, QueryEntry>` (~51 entries) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
 writing) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
 `'snapshotsConsolidated.bySlug'`, `'messages.recent'`, …), each entry pairing
 a Zod `argsSchema` with an async `resolve(args)` that runs a normal

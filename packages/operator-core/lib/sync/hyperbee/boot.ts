@@ -57,10 +57,14 @@ import {
   createMergeCursor,
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
+  seedCursorFromPg,
+  persistCursor,
   findLatestSnapshotIndex,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
+  type MergeCursorStore,
 } from './read-merge';
+import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
@@ -1406,6 +1410,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
   let mergeCursor = createMergeCursor();
 
+  // WI-2105 REV fix (FLAG-GATED, default ON): durable per-log merge-cursor
+  // persistence. Seed each log's fold position from PG BEFORE the first fold and
+  // checkpoint it persist-after-apply DURING the fold, so a bg-host restart
+  // resumes each log where it left off instead of re-folding from 0 (which
+  // starved routinesTick → the bghost-watchdog restart loop → the REV leg never
+  // reached tail). Unlike snapshot-seeding (own-log only), this resumes ANY
+  // admitted log, incl. an orphaned peer log the tower can't snapshot (e06b8704).
+  // OFF ⇒ store is null ⇒ no seed + no persist hook ⇒ byte-identical to today.
+  // `pgCursorSeeded` is a ONE-SHOT latch: the seed loads from PG exactly once for
+  // the initial cursor; after a cursor RESET (roster rebind / truncation) we fall
+  // back to folding from 0 (correct — the positions re-accumulate + re-persist),
+  // never re-seeding, so a shrunk/forked log can't seed itself past its own tail.
+  const pgMergeCursorEnabled = await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(
+    () => true,
+  );
+  const pgMergeCursorStore: MergeCursorStore | null = pgMergeCursorEnabled
+    ? createPgMergeCursorStore(opts.workspaceId, opts.harnessSlug)
+    : null;
+  let pgCursorSeeded = false;
+
   // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home
   // projection rebind to force ONE full re-fold of all admitted logs through the
   // freshly-rebound scopedApply. The owner's hive_members op may have been admitted
@@ -1814,6 +1838,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (forceReFold) {
         mergeCursor = createMergeCursor();
         forceReFold = false;
+      }
+
+      // WI-2105 REV fix (flag-gated, default ON): seed the cursor's per-log
+      // positions from PG ONCE before the first fold, so a bg-host restart
+      // resumes each log's fold instead of re-folding from 0. One-shot via
+      // `pgCursorSeeded` (a cursor reset falls back to fold-from-0). Runs BEFORE
+      // snapshot-seeding so a PG position (which resumes an orphaned peer log too)
+      // takes precedence; snapshot-seeding then only fills a still-unseeded log.
+      // Isolated (WI-1544): a load failure means "start at 0" (slower, correct) —
+      // never aborts the pass via the outer catch.
+      if (pgMergeCursorStore && !pgCursorSeeded) {
+        pgCursorSeeded = true;
+        try {
+          await seedCursorFromPg(mergeCursor, pgMergeCursorStore);
+        } catch (e) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'merge_error',
+            `pg-cursor-seed: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
       }
 
       // P-007 (design A, flag-gated): seed a FRESH/reset cursor at each log's

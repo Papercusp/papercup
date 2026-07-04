@@ -7,11 +7,14 @@ plans:
   - agent-first-onboarding-2026-07-03
 ---
 
-Papercusp's first-run experience is a **conversation, not a wizard**. On a
-fresh install the desktop opens a full-window terminal — the **Onboarding
-Console** — running a scripted concierge that installs your agent framework,
-signs you in, and then hands the same terminal to a live agent tutor. The
-first experience *is* the daily experience.
+Papercusp's first-run experience is a **guided walkthrough in a terminal, not a
+wizard**. On a fresh install the desktop opens a full-window terminal — the
+**Onboarding Console** — running a scripted concierge that installs your agent
+framework, signs you in, and then hands the same terminal to a **scripted
+tutorial you can ask questions in**. The deterministic parts (installing,
+signing in, walking the tutorial) are just scripts; your agent is there for the
+moments that aren't deterministic — your questions. The first experience *is*
+the daily experience: describing what you want, in a terminal.
 
 ## What a new user sees
 
@@ -23,15 +26,21 @@ first experience *is* the daily experience.
    every few seconds, so installing manually in another terminal works too.
 3. An optional **OpenAI embeddings key** step (recommended — it makes search
    and agent memory dramatically better; skippable).
-4. **The handoff**: the concierge `exec`s the chosen agent CLI in the same
-   window with a tutor launch-context. From here a live agent walks the
-   7-chapter tutorial, one brief at a time, always ending with:
+4. **The tutorial**: the concierge hands the same window to a **scripted
+   walkthrough**. It presents the tutorial one brief at a time, always ending
+   with:
 
-   `[1] Continue · [2] More details · or just type your question`
+   `[1] Continue · [2] More details · [m] Menu · [f] Finish · or just type your question`
 
-5. **Graduation**: the tutor calls `setup:complete`; thereafter the app boots
-   normally. Quitting anywhere is safe — every stage re-derives from live
-   detection, so relaunching resumes exactly where you left off.
+   The walkthrough itself is deterministic — the same content, in the same order,
+   every time. Type `1`/`2`/`m`/`f` to navigate. The moment you type a real
+   **question**, it hands that one turn to your agent, answers it, and drops you
+   back into the tour. (The agent is used for your questions — not for reading you
+   the script.)
+
+5. **Graduation**: onboarding is marked finished; thereafter the app boots
+   normally. Quitting anywhere is safe — progress is checkpointed after every
+   section, so relaunching resumes exactly where you left off.
 
 ## Re-running the tutorial
 
