@@ -156,6 +156,28 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
     CREATE TRIGGER ot_tsv_trg BEFORE INSERT OR UPDATE ON harness_shared.operator_turns
       FOR EACH ROW EXECUTE FUNCTION harness_shared.ot_tsv();
   `);
+
+  // ── engineer_issues (131 baseline: GENERATED _search, no embedding column) ──
+  // EI-6984: the `work_item` search source. Mirrors production's generated
+  // tsvector expression exactly (title weight A / body weight B) so this test
+  // exercises the real ranking behavior, not an approximation.
+  await s.unsafe(`
+    CREATE TABLE harness_shared.engineer_issues (
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      issue_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'operator',
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'bug',
+      severity TEXT NOT NULL DEFAULT 'minor',
+      state TEXT NOT NULL DEFAULT 'open',
+      _search tsvector GENERATED ALWAYS AS (
+        (setweight(to_tsvector('english', coalesce(title, '')), 'A')
+         || setweight(to_tsvector('english', coalesce(body, '')), 'B'))
+      ) STORED,
+      PRIMARY KEY (workspace_id, issue_id)
+    );
+  `);
 }
 
 /**
@@ -197,6 +219,14 @@ async function seed(s: postgres.Sql): Promise<{ convA: string; convB: string }> 
   // THE DECOY: a B-workspace turn with the SAME matchable token. Must never leak.
   await s`INSERT INTO harness_shared.operator_turns (conversation_id, seq, role, text, text_embedding)
           VALUES (${convB}, 0, 'user', 'kubernetes secret discussion in another workspace', ${vecLit(0.04)}::vector)`;
+
+  // engineer_issues (EI-6984's work_item source): A (two harness scopes) + B decoy.
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
+          VALUES (${WS_A}, 'EI-1', 'harness:sheets', 'kubernetes scaling bug', 'pods do not autoscale', 'bug', 'open', 'major')`;
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
+          VALUES (${WS_A}, 'EI-2', 'harness:docs', 'kubernetes networking change', 'wants a service mesh', 'change', 'resolved', 'minor')`;
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
+          VALUES (${WS_B}, 'EI-9', 'harness:decoy', 'kubernetes secret issue from another workspace', 'leak', 'bug', 'open', 'critical')`;
 
   return { convA, convB };
 }
@@ -269,6 +299,33 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     }
     // The decoy's distinctive phrase must be absent from every excerpt.
     expect(out.some((r) => r.row.excerpt.includes('another workspace'))).toBe(false);
+  });
+
+  // EI-6984: the work_item source — no embedding method (engineer_issues has no
+  // embedding column yet), so only bm25 is exercised here.
+  it('SECURITY — work_item.bm25: only workspace A; source_id=issue_id, scope=the harness:<slug> scope column, excerpt prefixed [kind/state/severity]', async () => {
+    const out = await byName('work_item').bm25(params());
+    const ids = out.map((r) => r.row.source_id).sort();
+    expect(ids).toEqual(['EI-1', 'EI-2']);
+    expect(out.some((r) => r.row.source_id === 'EI-9')).toBe(false); // the B decoy never leaks
+
+    const ei1 = out.find((r) => r.row.source_id === 'EI-1')!;
+    expect(ei1.row.source).toBe('work_item');
+    expect(ei1.row.scope).toBe('harness:sheets');
+    expect(ei1.row.rankers).toEqual(['bm25']);
+    expect(ei1.row.excerpt).toBe('[bug/open/major] kubernetes scaling bug\npods do not autoscale');
+    expect(ei1.row.highlight).toContain('<mark>');
+    expect(ei1.key).toBe('work_item:EI-1');
+  });
+
+  it('work_item.bm25 with scopeFilter=sheets → only EI-1 (scope column stores harness:<slug>)', async () => {
+    const out = await byName('work_item').bm25(params({ scopeFilter: 'sheets' }));
+    expect(out.map((r) => r.row.source_id)).toEqual(['EI-1']);
+  });
+
+  it('a B-scoped work_item.bm25 returns ONLY the B decoy, never the A issues', async () => {
+    const out = await byName('work_item').bm25(params({ workspaceId: WS_B }));
+    expect(out.map((r) => r.row.source_id)).toEqual(['EI-9']);
   });
 });
 

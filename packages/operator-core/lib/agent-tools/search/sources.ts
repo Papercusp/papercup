@@ -289,7 +289,7 @@ const workItem: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
-         -- `scope` here stores 'operator' | 'harness:<slug>' — a bare harness_slug
+         -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
          -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
          AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
          AND _search @@ plainto_tsquery('english', ${query})

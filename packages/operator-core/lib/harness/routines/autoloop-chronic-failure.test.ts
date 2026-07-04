@@ -85,6 +85,28 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6)).toEqual([]);
   });
 
+  it("EI-6730 real shape: a high-streak (36) stuck-backstop loop, routine paused AND >6h stale, is NOT re-escalated", () => {
+    // EI-6730 (loop-su-1a5c2d41…): the pinned su session died, the loop climbed to
+    // consecutive_errors=36 (last_status 'loop-stuck-backstop'), then the routine was
+    // paused (active:false) and its last fire froze ~3 days ago. Both resolution guards
+    // apply (routine_active:false AND a >6h-stale frozen watermark), so its stale-red
+    // autoloop_state row must NOT re-file a chronic-failure ticket. Confirmed live via
+    // hive_watchdog_fires: no autoloop-chronic fire for this row since the guards landed.
+    // Pins the HIGHEST-streak real shape yet (existing pins cap at 19) so a future change
+    // that gated the routine_active/stale guard below some streak ceiling would fail here.
+    const rows = [
+      row({
+        role: 'loop-su-1a5c2d41-f3f2-483b-92a0-c86c6af002c8',
+        harness_slug: '*',
+        consecutive_errors: 36,
+        last_status: 'loop-stuck-backstop',
+        routine_active: false,
+        last_fired_at: new Date(NOW - 3 * 24 * HOUR_MS).toISOString(), // ~3 days stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);

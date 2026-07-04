@@ -483,6 +483,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completion.summary).toBe('clean');
       expect(r.completion.whatLanded).toEqual(['a.ts']);
     });
+
+    // EI-6999: a shape with NEITHER `completion` NOR any recognizable flat
+    // completion field (gatherFlatCompletion has nothing to rescue) must fail
+    // with the FULL minimal closing shape up front — not just "you're missing
+    // `completion`" — so a caller doesn't need 3+ round-trips to discover
+    // `completion.summary` and `state` are both required to actually close.
+    it('a shape with no completion at all states the FULL minimal closing contract in ONE error', () => {
+      const result = (complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } })
+        .safeParse({ id: 'WI-1', note: 'just a note, not a completion' });
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
+      expect(message).toContain('{ id, state, completion: { summary } }');
+      expect(message).toContain('state');
+      expect(message).toContain('REQUIRED');
+    });
   });
 
   describe('published JSON schema (tools/list projection) is unchanged by the preprocess wrappers', () => {

@@ -272,7 +272,19 @@ export default defineTool({
         items: z.array(itemSpec).min(1).max(100).optional().describe('complete many work-items at once — each { id, completion, state?, harness? }'),
       })
       .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
-        message: 'pass { id, completion } for one, or items:[{ id, completion }] for many',
+        // EI-6999: the first shape error a caller hits should state the FULL
+        // minimal shape needed to actually CLOSE an item, not just "you're
+        // missing `completion`" — a caller who fixes that alone still hits a
+        // SECOND round-trip discovering `completion.summary` is required, then
+        // a THIRD discovering `completion` alone never changes lifecycle state
+        // (a bare `completion` records the note but leaves the item claimable
+        // — pass `state` too to actually close it). Say all of it up front.
+        message:
+          'to CLOSE a work-item, pass { id, state, completion: { summary } } ' +
+          '(or items:[{ id, state, completion: { summary } }] for many) — ' +
+          '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
+          'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
+          'the item stays claimable (see work_items:set_state to change state alone, without a completion record).',
       }),
   ),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
