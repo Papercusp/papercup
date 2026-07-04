@@ -202,6 +202,9 @@ beforeAll(async () => {
   // ("relation harness_shared.decision_ledger does not exist") and
   // vitest-fail-on-console reddens the whole file (EI-496).
   await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
+  // The ONE shared carry-note substrate (472) — hive:declare-wake's { remember }
+  // journal + the wake path read/write it (su-cold-auto-mode-2026-07-03 P-001).
+  await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
   // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   // The hive started/paused KV (hive/started.ts + overwatch control-state) —

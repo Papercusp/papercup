@@ -22,6 +22,7 @@ const getLoopStatus =
   >();
 const sqlCalls: string[] = [];
 let beeCount = 0;
+let beeWorkingCount = 0;
 let activityRows: Array<Record<string, unknown>> = [];
 // self.objective legs (session-objective-display-2026-06-22): the caller's
 // in-execution work-item title, then the coord_presence intent fallback.
@@ -46,7 +47,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
     sql: (strings: TemplateStringsArray, ..._vals: unknown[]) => {
       const text = strings.join('?');
       sqlCalls.push(text);
-      if (text.includes('spawned_agents')) return Promise.resolve([{ n: beeCount }]);
+      if (text.includes('spawned_agents')) return Promise.resolve([{ n: beeCount, working: beeWorkingCount }]);
       if (text.includes('agent_activity')) return Promise.resolve(activityRows);
       return Promise.resolve([]);
     },
@@ -84,6 +85,7 @@ beforeEach(() => {
   countAllPendingWakes.mockResolvedValue(new Map());
   snapshotGovernors.mockReturnValue([]);
   beeCount = 0;
+  beeWorkingCount = 0;
   activityRows = [];
   getLoopStatus.mockResolvedValue(null);
   listFleetsLedBy.mockResolvedValue([]);
@@ -178,6 +180,22 @@ describe('coord:glance', () => {
     const g = out(await glance.handler(parse({}), ctx));
     expect(g.bees.running).toBe(4);
     expect(sqlCalls.some((q) => q.includes('spawned_agents'))).toBe(true);
+  });
+
+  it('EI-3226: bees.working is the confirmed-active (fresh last_output_at) subset, distinct from bees.running (heartbeat-only)', async () => {
+    // 3 rows heartbeat-fresh (host process alive), only 1 has recently produced
+    // output — the other 2 are parked/idle sessions whose process hasn't died.
+    beeCount = 3;
+    beeWorkingCount = 1;
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.bees).toEqual({ running: 3, working: 1 });
+  });
+
+  it('bees.working defaults to 0 when no rows come back (empty nursery)', async () => {
+    beeCount = 0;
+    beeWorkingCount = 0;
+    const g = out(await glance.handler(parse({}), ctx));
+    expect(g.bees).toEqual({ running: 0, working: 0 });
   });
 
   // ── self.fleets — multi-fleet terminal identity (WI-1963) ──

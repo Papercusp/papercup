@@ -258,6 +258,17 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // VERIFIES the device signature + device→owner attestation before applying
   // (hive identity key honored only for archived=true — the H10 force-archive).
   'p2p_fleet_directory',
+  // p2p-work-distribution-2026-07-02 (P-102 store leg, WI-1935; D-005 seat-offers
+  // ride it): the publisher-SIGNED offer store — one record per (hive, publisher,
+  // offer-id), keyed harness_slug = the hive HOME → workspace-owned + peer-log.
+  // Mirrors p2p_fleet_directory (its stated closest analog). Producer = CDC capture
+  // (mig 490, local_disposition excluded from the WHEN list — host-local refusal
+  // never federates); projection 'p2p-work-offers' (projections/work-offers.ts),
+  // which verifies device signature + device→publisher attestation before apply.
+  // [Registry entry added by su-16e4c to green the capture-coverage /
+  // checkPeerLogConsistency guards: mig 490 + mapper + projection landed without
+  // this classification (5 reds at HEAD) — flagged to WI-1935 owner su-35c3b.]
+  'p2p_work_offers',
   // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts federate
   // as hive state (mig 461 capture triggers, shareable=true rows only — D-006 privacy;
   // apply side partitions by receiver-stamped source_hive, H6). Keyed (workspace_id,

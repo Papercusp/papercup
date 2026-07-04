@@ -146,7 +146,7 @@ export async function listWorkOffers(
   sql?: Sql,
 ): Promise<StoredWorkOffer[]> {
   const conds = ['workspace_id = $1', 'harness_slug = $2'];
-  const params: unknown[] = [workspaceId, hiveHomeSlug];
+  const params: (string | number)[] = [workspaceId, hiveHomeSlug];
   if (filter?.fleetSlug) {
     params.push(filter.fleetSlug);
     conds.push(`fleet_slug = $${params.length}`);

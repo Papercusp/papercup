@@ -220,6 +220,9 @@ beforeAll(async () => {
   // ("relation harness_shared.decision_ledger does not exist") and
   // vitest-fail-on-console reddens the whole file (EI-497).
   await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
+  // The ONE shared carry-note substrate (472) — the wake path's carry-journal
+  // reads/writes it (su-cold-auto-mode-2026-07-03 P-001).
+  await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
   h.sql = rootSql;
 
   // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and the wake

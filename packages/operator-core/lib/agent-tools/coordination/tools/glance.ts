@@ -12,6 +12,11 @@
  * The founding tip (2026-06-11): the queen's autonomous loop sat silently
  * queued behind a manual wake gate for hours. coord:glance exists so that
  * state is one statusline line away, with the slash command to fix it.
+ *
+ * EI-3226: `bees.running` counts fresh-HEARTBEAT nursery rows — a host-process
+ * alive signal, which stays fresh for a parked/idle session and can diverge
+ * from coord:presence's reconciled liveness. `bees.working` (last_output_at
+ * fresh) is the confirmed-active subset; prefer it for real health checks.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -35,6 +40,27 @@ const DEFAULT_ACTIVITY_LIMIT = 12;
 const BEE_FRESH_MS = 15 * 60_000;
 
 /**
+ * `heartbeat_at` is the HOST PROCESS's own alive-beat (bumped every
+ * SPAWN_HEARTBEAT_INTERVAL_MS by spawn-reclaim.ts as long as the launching
+ * operator host hasn't died) — it says nothing about whether the bee INSIDE
+ * that process is actively doing anything. A parked/idle session still has a
+ * live host process, so `bees.running` alone can read "3 running" while
+ * `coord:presence` (which layers wakeability/session-state on top) shows
+ * zero live bees (EI-3226) — misleading for a Queen using glance as the cheap
+ * fleet-health read.
+ *
+ * `last_output_at` (child stdout — bumped only when the process actually
+ * generates output) is the same signal mcp-dark-watchdog.ts and the
+ * spawn-ceiling-jam detector already use to tell "process alive" apart from
+ * "actively working" — reuse it here instead of reproducing coord:presence's
+ * full wakeability join (which would defeat glance's cheap-read design).
+ * `bees.working` is ADDITIVE (bees.running keeps its existing meaning for
+ * back-compat) so a caller that wants the honest "confirmed active" count can
+ * read the narrower one.
+ */
+const BEE_WORKING_FRESH_MS = BEE_FRESH_MS;
+
+/**
  * Coerce a candidate objective string to a non-empty trimmed value, or null.
  * The fallback chain (wip-title → presence intent → null) MUST treat a blank
  * value as "absent": `coord_presence.intent` is a NOT-NULL text column defaulting
@@ -50,7 +76,7 @@ export function normalizeObjective(value: string | null | undefined): string | n
 export default defineTool({
   name: 'coord:glance',
   description:
-    "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (fresh-heartbeat nursery rows), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. The statusline/TUI read — one call instead of four.",
+    "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (bees.running = fresh-heartbeat nursery rows, a process-alive signal that can include parked/idle sessions; bees.working = the confirmed-active subset with fresh child-stdout output — prefer it for real health checks), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. The statusline/TUI read — one call instead of four.",
   guidance: {
     when: "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
     notWhen:
@@ -99,8 +125,12 @@ export default defineTool({
     const [wakeDefault, stagedByOwner, beeRows, activity] = await Promise.all([
       getDefaultWakeMode(),
       countAllPendingWakes(),
-      sql<Array<{ n: number }>>`
-        SELECT count(*)::int AS n
+      sql<Array<{ n: number; working: number }>>`
+        SELECT
+          count(*)::int AS n,
+          count(*) FILTER (
+            WHERE last_output_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
+          )::int AS working
         FROM harness_shared.spawned_agents
         WHERE status IN ('running', 'restarting')
           AND heartbeat_at > now() - make_interval(secs => ${BEE_FRESH_MS / 1000})
@@ -119,6 +149,7 @@ export default defineTool({
 
     const stagedTotal = [...stagedByOwner.values()].reduce((a, b) => a + b, 0);
     const beesRunning = beeRows[0]?.n ?? 0;
+    const beesWorking = beeRows[0]?.working ?? 0;
     const now = Date.now();
     const governorPaused = snapshotGovernors()
       .filter((b) => b.state.pausedUntil > now)
@@ -232,7 +263,12 @@ export default defineTool({
               stagedTotal,
               stagedOwners: stagedByOwner.size,
             },
-            bees: { running: beesRunning },
+            // `running` = host-process alive (heartbeat_at) — cheap but can include
+            // parked/idle sessions (EI-3226). `working` = confirmed actively
+            // generating output (last_output_at fresh) — the honest subset; a
+            // caller doing real fleet-health assessment should prefer it over
+            // `running`, or cross-check coord:presence for the full picture.
+            bees: { running: beesRunning, working: beesWorking },
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,

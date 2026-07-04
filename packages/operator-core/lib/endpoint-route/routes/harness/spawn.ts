@@ -514,6 +514,11 @@ const invoke = defineTool({
           runtimeMs: workerRuntimeMs,
           stdout: r.output,
           stderr: r.stderr,
+          // WI-2162: this route's own `timeoutMs` (resolveInvokeTimeoutMs) is what
+          // SIGTERM's the child — thread it so the classifier can tell "the clock ran
+          // out" (env, bounded-escalation, NOT a lane-breakage signal) from a genuine
+          // crash, instead of both landing in the same charged/signal-eligible bucket.
+          configuredTimeoutMs: timeoutMs,
         });
       } catch (e) {
         console.warn(`[invoke ${project.slug}] implement worker-exit back-edge failed:`, e);

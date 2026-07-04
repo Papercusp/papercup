@@ -176,6 +176,15 @@ export interface OrphanSignalOpts {
  *     CONTEXT_OVERFLOW_ESCALATE_CAP deaths, implement-worker-exit.ts) is the correct
  *     human signal — filing a SECOND "lane broken" EI on top would be the same
  *     self-amplifying-noise failure mode as the env-failure case above.
+ *   - a WORKER-TIMEOUT death (resolved_by 'worker-exit-backedge-timeout', WI-2162,
+ *     root-caused live 2026-07-04) — the invoke route's OWN clock (45min) SIGTERM'd
+ *     the worker while it was still investigating/fixing, not a crash. This was THE
+ *     dominant driver of the 17+ duplicate "Auto-implement dispatch died — orphaned
+ *     worker" EIs in the backlog: every one of those signals traced to exit 143 at
+ *     ~2700-2850s runtime, always mid-investigation, never near a resolve. Same
+ *     reasoning as context-overflow: says nothing about the lane, has its own bounded
+ *     escalation (TIMEOUT_ESCALATE_CAP), filing a lane-broken EI on it is the same
+ *     self-amplifying noise.
  * INCLUDED (genuine breakage): the 2h orphan collector's catch-all + a genuine non-env
  * worker crash — a worker that actually died/hung for a reason that IS about the lane.
  */
@@ -183,7 +192,8 @@ export function isLaneBreakageOrphan(r: ImprovementDispatchRow): boolean {
   if (
     r.resolvedBy === 'host-restart-recovery' ||
     r.resolvedBy === 'worker-exit-backedge-env' ||
-    r.resolvedBy === 'worker-exit-backedge-context-overflow'
+    r.resolvedBy === 'worker-exit-backedge-context-overflow' ||
+    r.resolvedBy === 'worker-exit-backedge-timeout'
   )
     return false;
   if ((r.fireError ?? '').includes('[env-failure')) return false; // legacy rows (pre-distinct resolved_by)
