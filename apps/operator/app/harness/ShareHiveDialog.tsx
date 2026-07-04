@@ -28,6 +28,7 @@ import { Check, Copy, Globe, Link2, Lock } from 'lucide-react';
 import { formatHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { Modal } from './Modal';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
+import { useLexicon } from '@/lib/useLexicon';
 import { Button } from './Button';
 import { TextArea, TextInput } from './TextInput';
 
@@ -118,32 +119,40 @@ function repoRefDisplay(ref: string): string {
   return ref.replace(/#\d+$/, '');
 }
 
-const VISIBILITY_OPTIONS: ReadonlyArray<{
+/**
+ * Visibility choices + their consequence copy. A function (not a const) so the
+ * "Comb"→lexicon noun resolves live: `comb` is the active brand word for the
+ * shared library (t('cupboard') → "Cupboard" public / "Comb" the-hive) —
+ * restore-pot-lexicon P-006/P-007.
+ */
+function visibilityOptions(comb: string): ReadonlyArray<{
   value: HiveShareVisibility;
   label: string;
   Icon: typeof Globe;
   /** Consequence copy — what picking this actually does. */
   copy: string;
-}> = [
-  {
-    value: 'public',
-    label: 'Public',
-    Icon: Globe,
-    copy: 'Listed on the P2P directory and browsable in the Comb. The member repos below are indexed; anyone can join in one click.',
-  },
-  {
-    value: 'invite',
-    label: 'Invite-only',
-    Icon: Link2,
-    copy: 'Unlisted — announced only on an invite-scoped topic. Joining requires the invite link below; nothing is indexed publicly.',
-  },
-  {
-    value: 'private',
-    label: 'Private',
-    Icon: Lock,
-    copy: 'Stops sharing via discovery: the published listing is withdrawn and Comb rows unlisted, and peers drop the announce. Members who already joined keep reading new content over the existing topic — only Dissolve cuts off an existing reader.',
-  },
-];
+}> {
+  return [
+    {
+      value: 'public',
+      label: 'Public',
+      Icon: Globe,
+      copy: `Listed on the P2P directory and browsable in the ${comb}. The member repos below are indexed; anyone can join in one click.`,
+    },
+    {
+      value: 'invite',
+      label: 'Invite-only',
+      Icon: Link2,
+      copy: 'Unlisted — announced only on an invite-scoped topic. Joining requires the invite link below; nothing is indexed publicly.',
+    },
+    {
+      value: 'private',
+      label: 'Private',
+      Icon: Lock,
+      copy: `Stops sharing via discovery: the published listing is withdrawn and ${comb} rows unlisted, and peers drop the announce. Members who already joined keep reading new content over the existing topic — only Dissolve cuts off an existing reader.`,
+    },
+  ];
+}
 
 export interface ShareHiveFormProps {
   hiveSlug: string;
@@ -166,6 +175,8 @@ export function ShareHiveForm({
   fetchShareMeta = defaultFetchShareMeta,
   setHiveListing = defaultSetHiveListing,
 }: ShareHiveFormProps) {
+  const t = useLexicon();
+  const visibilityCards = visibilityOptions(t('cupboard'));
   // Mid-edit drafts + load/save lifecycle — render state, not URL state.
   const [meta, setMeta] = useState<HiveShareMeta | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
@@ -266,7 +277,7 @@ export function ShareHiveForm({
       )}
 
       <div className="pc-share-hive__viz" role="group" aria-label="Visibility">
-        {VISIBILITY_OPTIONS.map(({ value, label, Icon, copy }) => (
+        {visibilityCards.map(({ value, label, Icon, copy }) => (
           <button
             key={value}
             type="button"

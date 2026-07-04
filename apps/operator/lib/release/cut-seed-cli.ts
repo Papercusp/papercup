@@ -43,6 +43,7 @@ import {
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
+import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_HIVE = 'papercusp';
