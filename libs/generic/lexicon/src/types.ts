@@ -22,6 +22,8 @@ export type TermKey =
   | 'fleet' // the live set of agents at work
   | 'operator' // the always-on coordination layer that can wake the brain
   | 'brain' // the high-judgment thinking/orchestration entity
+  | 'overwatch' // the autonomous system-health supervisor (a brain sibling)
+  | 'scout' // the autonomous idea-forager / creative-lens explorer
   | 'contributor' // any AI member
   | 'human' // any human member
   | 'chunk' // one worker-turn unit of a feature

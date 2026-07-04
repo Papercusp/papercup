@@ -268,12 +268,19 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp',
     updated_at: 'machine-local row timestamp',
     source_hive: 'receiver-stamped from the admitted log identity — never carried (a sender-claimed source is never trusted)',
+    shareable: 'send-side capture gate (mig 461/462 trigger WHEN NEW.shareable=true) — implicitly true for every row that reaches the wire at all, so redundant to carry',
   },
   gym_qd_archive: {
     // F1-2/F1-5 (mig 464/465): the federated subset is niche_key/candidate_id/scope/
     // domain/risk/fitness/descriptor/rationale/federatable/outcome_record/updated_at
     // (toGymQdEliteValue). created_at is machine-local (this row's local insert time).
     created_at: 'machine-local row timestamp (the federated cursor is updated_at, carried by the mapper)',
+    // REVIEW(findings-B): `source` ('gym'|'scout' — the sender-local seed-origin tag,
+    // mig 193) is real content a peer might want (weight scout-seeded elites
+    // differently), but the RECEIVE-side table (gym_qd_foreign_elites) has no column
+    // for it — carrying it needs a schema addition, out of scope for restoring this
+    // guard (WI-2233). Tracked as a candidate gap, not silently ignored.
+    source: 'sender-local seed-origin tag (gym|scout) — receive-side gym_qd_foreign_elites has no matching column yet; a real but small future gap, not carried today',
   },
   bee_claim_specs: {
     // P-016 (mig 438): federated subset is spec/revision/updated_by. updated_at is

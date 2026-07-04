@@ -23,8 +23,17 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
   // use only). restore-pot-lexicon-public-release-2026-07-04 P-001 (keystone).
   pot: { one: 'Pot', other: 'Pots' },
   fleet: { one: 'Fleet', other: 'Fleets' },
-  operator: { one: 'Operator', other: 'Operators' },
-  brain: { one: 'Brain', other: 'Brains' },
+  // Owner FINAL cast (2026-07-04, restore-pot-lexicon D-006): the Papercup
+  // cup-character role names for the public/classic release. The always-on
+  // front-door agent (`operator` key, = the-hive "Sentinel") is **Papercup**;
+  // the high-judgment orchestrator (`brain` key, = the-hive "Queen") is **Mug**;
+  // the system-health supervisor (`overwatch`) is **Kettle** (whistles when it
+  // overheats); the idea-forager (`scout`) is **Blender**. the-hive keeps the
+  // bee-theme names. (These are display labels only — backend ids unchanged, D-001.)
+  operator: { one: 'Papercup', other: 'Papercups' },
+  brain: { one: 'Mug', other: 'Mugs' },
+  overwatch: { one: 'Kettle', other: 'Kettles' },
+  scout: { one: 'Blender', other: 'Blenders' },
   // Pot/Cup/Cupboard theme (owner 2026-07-04, D-006): the worker/contributor is a
   // CUP (the backend id bee→cup mirrors this display label). A Pot holds Cups,
   // stored in the Cupboard.
@@ -54,6 +63,9 @@ const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   // (renamed from "Sentinel Bee", owner directive 2026-06-09 / hive-agent-tabs P-003).
   operator: { one: 'Sentinel', other: 'Sentinels' },
   brain: { one: 'Queen', other: 'Queens' },
+  // The bee-theme keeps its role names; classic renames these to Kettle/Blender.
+  overwatch: { one: 'Overwatch', other: 'Overwatches' },
+  scout: { one: 'Scout', other: 'Scouts' },
   contributor: { one: 'Bee', other: 'Bees' },
   human: { one: 'Keeper', other: 'Keepers' },
   chunk: { one: 'Cell', other: 'Cells' },

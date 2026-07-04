@@ -838,6 +838,24 @@ describe('stall watchdog (ornith failure mode #5 — silence, not a loop / WI-23
     vi.advanceTimersByTime(STALL_WATCHDOG_MS * 2);
     expect(halts).toHaveLength(0);
   });
+
+  it('turn lifecycle: disarmed on turn_end → an idle wait-for-input NEVER halts (iter18 false-positive fix)', () => {
+    // Reproduce the iter18 kill: a leader runs a kickoff turn (turn_start + a
+    // tool call), then cleanly ENDS the turn (turn_end → disarm) and idles
+    // waiting for its routing decision. That idle is silence-identical to a
+    // wedge but is legitimate, so it must NOT halt. Mirrors the register()
+    // wiring: turn_start/tool_* → poke, turn_end → disarmStallWatchdog.
+    pokeStallWatchdog(); // turn_start
+    noteStallToolInFlight(true);
+    pokeStallWatchdog(); // tool_call (read the plan)
+    noteStallToolInFlight(false);
+    pokeStallWatchdog(); // tool_result
+    expect(_stallWatchdogArmed()).toBe(true);
+    disarmStallWatchdog(); // turn_end — clean stop; the leader now idles for input
+    expect(_stallWatchdogArmed()).toBe(false);
+    vi.advanceTimersByTime(STALL_WATCHDOG_MS * (STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS + 3));
+    expect(halts).toHaveLength(0); // an idle wait after a clean turn_end never fires
+  });
 });
 
 describe('isAskCall + askBlockReason (interactive ask-gate guard, ornith iter10 / WI-2382)', () => {

@@ -1773,11 +1773,17 @@ export function resetReflexiveBlockBudget(): void {
  *  alive but sleeping (Ssl+), no tool activity, never routing. A per-call guard
  *  cannot see SILENCE (there is no call to inspect), so a stall hangs
  *  indefinitely and needs a manual kill — worse for an autonomous campaign than a
- *  loop (which now self-terminates). This is a HEARTBEAT watchdog: every hook
- *  event (session_start / turn_start / turn_end / tool_call / tool_result) POKES
- *  it, rearming a countdown; if NO event fires for STALL_WATCHDOG_MS the session
- *  is wedged → structural halt (same lever + fast-relaunch rationale as the
- *  doom-loop halts). Three correctness properties:
+ *  loop (which now self-terminates). This is a HEARTBEAT watchdog armed ONLY
+ *  WHILE A TURN IS IN PROGRESS: turn_start (and session_start) ARM it and each
+ *  in-turn event (tool_call / tool_result) rearms the countdown; a clean
+ *  turn_end DISARMS it. If the countdown elapses mid-turn the session is wedged
+ *  → structural halt (same lever + fast-relaunch rationale as the doom-loop
+ *  halts). CRITICAL (iter18): a session that cleanly ENDS its turn and idles
+ *  waiting for input (a kickoff routing gate presented as text, an owner
+ *  decision) is silence-identical to a wedge but is NOT wedged — so silence
+ *  alone must never trigger the halt; only silence WITHIN an unfinished turn
+ *  does (turn_end never fires for a genuine mid-turn freeze, so it stays armed
+ *  and is still caught). Three further correctness properties:
  *   1. The timer is unref()'d, so it NEVER holds an otherwise-finished process
  *      open (a finished session should exit, not be held alive then falsely
  *      "stall-halted"). It can only fire while the event loop is alive for
@@ -2558,7 +2564,16 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_end', async () => {
-    pokeStallWatchdog(); // heartbeat: turn completed
+    // A CLEAN turn_end ⇒ the session is now idle BETWEEN turns — legitimately
+    // waiting for the next input/wake (e.g. after presenting a kickoff routing
+    // gate as text and STOPping, per the ask-block redirect), NOT wedged. DISARM
+    // so the watchdog never kills a healthy waiting session. (iter18, 2026-07-04:
+    // the watchdog SIGTERM'd a leader exactly 6 min into a CORRECT routing-gate
+    // wait — a routing-gate idle is silence-identical to a wedge, so silence
+    // alone must NOT trigger the halt. The watchdog is armed only WHILE a turn is
+    // in progress; a mid-turn freeze keeps turn_end from ever firing, so it is
+    // still caught.)
+    disarmStallWatchdog();
     await safe(() => onTurnEnd(), undefined);
   });
 

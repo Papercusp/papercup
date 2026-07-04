@@ -10,6 +10,8 @@ const ALL_TERM_KEYS: TermKey[] = [
   'fleet',
   'operator',
   'brain',
+  'overwatch',
+  'scout',
   'contributor',
   'human',
   'chunk',
