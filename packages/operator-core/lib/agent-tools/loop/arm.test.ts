@@ -45,6 +45,20 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async 
 vi.mock('../../events/await/wake-reachability', () => ({
   probeWakeReachability: vi.fn(async () => ({ reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' })),
 }));
+// EI-6878: @papercusp/db-org is a big package (transitively required by other
+// bootstrap code in this import graph via @papercusp/agent-mcp) — partial-mock it
+// via importOriginal so only isParkedNextFire is overridden and everything else
+// (incl. `generated`) stays real. Same getTime()-equality contract the real
+// isParkedNextFire uses, just against a locally-defined sentinel so this test
+// doesn't depend on the exact NEXT_FIRE_PARKED value staying byte-identical.
+const NEXT_FIRE_PARKED_FOR_TEST = new Date(8_640_000_000_000_000);
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    isParkedNextFire: (d: Date | null) => d instanceof Date && d.getTime() === NEXT_FIRE_PARKED_FOR_TEST.getTime(),
+  };
+});
 
 import { materializeLoop, buildLoopWakePrompt, detectDrivenWorkItemId } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
@@ -189,5 +203,26 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never) as Out;
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
+  });
+});
+
+describe('loop:arm — EI-6878: firstFireAt must not leak the raw parked-loop sentinel', () => {
+  it('a normal (unparked) nextFireAt renders as its real ISO timestamp', async () => {
+    materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: new Date('2026-01-01T00:00:00Z') } as never);
+    const b = body(await call({}));
+    expect(b.loop.firstFireAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('a re-arm mid-turn returns the loop row PARKED at the infinity sentinel — renders as the literal string, never the raw +275760 date', async () => {
+    materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: NEXT_FIRE_PARKED_FOR_TEST } as never);
+    const b = body(await call({}));
+    expect(b.loop.firstFireAt).toBe('after-turn-settle');
+    expect(b.loop.firstFireAt).not.toContain('275760');
+  });
+
+  it('no nextFireAt at all still renders null (unchanged behavior)', async () => {
+    materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: null } as never);
+    const b = body(await call({}));
+    expect(b.loop.firstFireAt).toBeNull();
   });
 });

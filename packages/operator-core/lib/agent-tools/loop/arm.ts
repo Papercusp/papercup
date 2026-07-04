@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveHiveHomeSlug } from '../../hive/wake';
+import { isParkedNextFire } from '@papercusp/db-org';
 import {
   materializeLoop,
   buildLoopWakePrompt,
@@ -330,7 +331,17 @@ export default defineTool({
               carry: args.carry ?? 'warm',
               continuation: args.continuation ?? 'settle',
               costCapCents: args.costCapCents ?? null,
-              firstFireAt: loop.nextFireAt ? loop.nextFireAt.toISOString() : null,
+              // EI-6878: a re-arm of an ALREADY-armed loop called from WITHIN its own
+              // in-flight turn returns the loop's row PARKED at the 'infinity' sentinel
+              // (see routines-runtime.ts's upsertRoutine — parking must survive a re-arm
+              // so the completion-rebase can still find it). Render that as the literal
+              // string below rather than the raw sentinel's ISO date (+275760-09-13),
+              // which reads to a caller as "this loop will never fire".
+              firstFireAt: !loop.nextFireAt
+                ? null
+                : isParkedNextFire(loop.nextFireAt)
+                  ? 'after-turn-settle'
+                  : loop.nextFireAt.toISOString(),
               customWakePrompt: wakePrompt != null,
               workItem: claimedWorkItem,
             },

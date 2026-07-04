@@ -33,7 +33,7 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
-import { getOverride } from '@papercusp/testing-shell/llm';
+import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
@@ -236,7 +236,12 @@ export async function flushPendingTelemetry(): Promise<void> {
             await sql.begin(async (tx) => {
               await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
               for (const row of rows) {
-                await tx.unsafe(TELEMETRY_INSERT_SQL, row.params as unknown[]);
+                // `TelemetryRow.params` is `unknown[]` (each row's values are snapshotted
+                // generically at capture time); `tx.unsafe`'s param array type doesn't
+                // sufficiently overlap with `unknown[]` for a direct cast, so go through
+                // `unknown` first — derived from `tx` itself so this file need not import
+                // postgres.js's ParameterOrJSON type.
+                await tx.unsafe(TELEMETRY_INSERT_SQL, row.params as unknown as Parameters<typeof tx.unsafe>[1]);
               }
             });
           } catch (err) {
@@ -463,13 +468,23 @@ async function checkCapabilityEnvelopeImpl(input: {
  *
  * Plan §10.4.
  */
-const overrideToolImpl: ToolDispatchOverrideFn = (toolName, args, ctx) => {
+const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => {
   const uic = ctx.uiClientId;
   if (typeof uic !== 'string' || !uic.startsWith('llm-testing/')) return PASS_THROUGH;
   const runId = uic.slice('llm-testing/'.length);
   const override = getOverride(runId);
   if (!override) return PASS_THROUGH;
-  return override.override(toolName, args);
+  const result = await override.override(toolName, args);
+  // `@papercusp/testing-shell`'s ToolDispatchOverride and `@papercusp/agent-mcp`'s
+  // ToolDispatchOverrideFn each define their OWN `Symbol('PASS_THROUGH')` sentinel —
+  // two distinct `unique symbol` values (a real bug the typecheck caught, not just a
+  // type annoyance: dispatch-stack.ts's invokeStep compares the override's return
+  // against the tooldef PASS_THROUGH via `!==`, so testing-shell's sentinel passing
+  // through UNTRANSLATED would fail that comparison and be rendered as a bogus
+  // ToolResult instead of falling through to the real handler). Translate at this
+  // boundary so both packages can keep their own symbol without a new cross-package
+  // dependency.
+  return result === TESTING_SHELL_PASS_THROUGH ? PASS_THROUGH : result;
 };
 
 /** Shared deps singleton. Same object reference is safe to pass to

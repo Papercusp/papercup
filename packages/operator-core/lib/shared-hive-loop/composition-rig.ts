@@ -80,7 +80,7 @@ import { drainOutboxOnce } from '../sync/hyperbee/outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../sync/hyperbee/projection';
 import { buildHarnessFeaturesProjection } from '../sync/hyperbee/projections/harness-features';
 import { buildIssuesProjection } from '../sync/hyperbee/projections/issues';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   WORK_ITEM_CLAIM_OP_KINDS,
   type AcquireOpts,
@@ -351,7 +351,14 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- migration 432 (work-item-completion-integrity): FEATURE_COLS' RETURNING
       -- list (claimFeatureRow) selects these — a genuine-completion evidence pair.
       ADD COLUMN IF NOT EXISTS terminal_owner text,
-      ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
+      ADD COLUMN IF NOT EXISTS terminal_completion_ref text,
+      -- migration 485 (fleet-scheduler-hardening-2026-07-03 P-005, EI-6956):
+      -- releaseWorkItem's UPDATE sets last_released_by/_at on the row it frees,
+      -- and claimFeatureRow's floors read them for the release-cooldown window —
+      -- both hit "column does not exist" without these (EI-6887 drift, caught by
+      -- composition-rig-schema-drift.integration.test.ts / EI-6794).
+      ADD COLUMN IF NOT EXISTS last_released_by text,
+      ADD COLUMN IF NOT EXISTS last_released_at timestamptz;
   `);
 
   // Map the harness slug → the workspace_id the booted handle drains on (the
@@ -374,11 +381,8 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
     '241-signal-provenance-origin.sql',
   ]) {
-    const text = readFileSync(join(SQL_DIR, file), 'utf8')
-      .split('\n')
-      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
-      .join('\n');
-    await sql.unsafe(text);
+    // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper.
+    await applyMigrationForTest(sql, join(SQL_DIR, file));
   }
 
   // The unified work-item lookup probes the issue family too (getIssue's

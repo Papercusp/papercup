@@ -13,10 +13,18 @@ import {
   injectIntoHost,
   interruptViaPty,
   recolorViaPty,
+  pidIsPsuHost,
   sanitizeKey,
   PSU_PTY_DIR,
   type PsuPtyHost,
 } from './psu-pty-discovery';
+
+// WI-2339 defect #2: findLiveHost/listLiveHosts now cross-check that the recorded pid is
+// actually a psu session host (pidIsPsuHost). Tests below write `process.pid` (the vitest
+// runner — cmdline has no psu marker) as a live-host STAND-IN, so they inject a trivial
+// verifyIdentity to isolate the socket/pid-alive behavior from the identity gate (which
+// has its own focused tests). ID_OK == "treat the stand-in pid as a valid host".
+const ID_OK = { verifyIdentity: () => true } as const;
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -74,14 +82,27 @@ describe('findLiveHost', () => {
     expect(findLiveHost('su-nosock', dir)).toBeNull();
   });
 
-  it('returns the host when pid is alive AND the socket exists', () => {
+  it('returns the host when pid is alive AND the socket exists AND identity verifies', () => {
     const dir = tmpDir();
     const { sock } = startSocket(dir, 'su-live');
     writeMeta(dir, 'su-live', { pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 });
-    const h = findLiveHost('su-live', dir);
+    const h = findLiveHost('su-live', dir, ID_OK);
     expect(h).not.toBeNull();
     expect(h!.sock).toBe(sock);
     expect(h!.ownerId).toBe('su-live');
+  });
+
+  it('WI-2339 defect #2: rejects a pid-alive + socket-live host whose pid is NOT a psu process (recycled-pid false positive)', () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-reused');
+    // A genuinely alive pid + bound socket + matching ownerId — ONLY the identity
+    // gate can reject it. verifyIdentity:()=>false simulates "pid's cmdline has no
+    // psu-launcher/psu-pty-host marker" (an unrelated process on a recycled pid).
+    writeMeta(dir, 'su-reused', { pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 });
+    expect(findLiveHost('su-reused', dir, { verifyIdentity: () => false })).toBeNull();
+    // and with the DEFAULT verifier on Linux, the vitest process.pid (cmdline = node/vitest,
+    // no psu marker) is likewise rejected — proving the real default gate is wired, not just the seam.
+    if (existsSync('/proc')) expect(findLiveHost('su-reused', dir)).toBeNull();
   });
 
   it('EI-151: returns null when the recorded ownerId differs from the requested key (cross-owner misroute)', () => {
@@ -101,6 +122,34 @@ describe('findLiveHost', () => {
       JSON.stringify({ ownerId: 'su-B', pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 }),
     );
     expect(findLiveHost('su-A', dir)).toBeNull();
+  });
+});
+
+describe('pidIsPsuHost (WI-2339 defect #2 — process-identity gate)', () => {
+  // The DEFAULT reads /proc; these inject readCmdline to test the marker logic
+  // deterministically. Marker strings mirror the REAL launcher cmdline verified
+  // against ~15 live hosts on 2026-07-04 (post 50341).
+  it('ACCEPTS the real psu-launcher.mjs cmdline (the empirical recorded-pid process)', () => {
+    const cmd = 'node /home/x/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs --no-picker --agent=claude --role=sentinel';
+    expect(pidIsPsuHost(1234, () => cmd)).toBe(true);
+  });
+  it('ACCEPTS a direct psu-pty-host.mjs cmdline too (marker covers both)', () => {
+    expect(pidIsPsuHost(1234, () => 'node /x/apps/operator/scripts/psu-pty-host.mjs')).toBe(true);
+  });
+  it('REJECTS an unrelated process that inherited a recycled pid', () => {
+    expect(pidIsPsuHost(1234, () => 'node /x/some-unrelated-server.mjs')).toBe(false);
+    expect(pidIsPsuHost(1234, () => '/usr/bin/bash -c sleep 999')).toBe(false);
+  });
+  it('REJECTS an empty cmdline (zombie/defunct) on every platform — not a verifiable live host', () => {
+    expect(pidIsPsuHost(1234, () => '')).toBe(false);
+  });
+  it('fail-open semantics for an unreadable cmdline: rejects on Linux (/proc present), trusts off-Linux', () => {
+    // null = readFileSync threw (pid vanished, or no /proc at all). On the ship target
+    // (Linux, /proc present) that's a reject; a non-Linux dev box cannot verify → trust.
+    expect(pidIsPsuHost(1234, () => null)).toBe(!existsSync('/proc'));
+  });
+  it('rejects a falsy pid', () => {
+    expect(pidIsPsuHost(0, () => 'node psu-launcher.mjs')).toBe(false);
   });
 });
 
@@ -162,11 +211,11 @@ describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
 
     const osc = '\x1b]10;#f5e8ff\x07\x1b]11;#581c87\x07\x1b]12;#d8b4fe\x07';
     // no live host → false (recolor doesn't land; the bound scheme applies next window)
-    expect(await recolorViaPty('su-no-such-owner-recolor', osc)).toBe(false);
+    expect(await recolorViaPty('su-no-such-owner-recolor', osc, ID_OK)).toBe(false);
     // empty osc → false (nothing to write) even with a live host
-    expect(await recolorViaPty(ownerId, '')).toBe(false);
-    // live host → injects the osc envelope
-    expect(await recolorViaPty(ownerId, osc)).toBe(true);
+    expect(await recolorViaPty(ownerId, '', ID_OK)).toBe(false);
+    // live host → injects the osc envelope (ID_OK: process.pid stands in for a real host)
+    expect(await recolorViaPty(ownerId, osc, ID_OK)).toBe(true);
 
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
@@ -201,10 +250,10 @@ describe('interruptViaPty (Phase 4 pty-force leg)', () => {
     // no live host → false (caller falls back to headless SIGINT)
     expect(await interruptViaPty('su-no-such-owner-xyz')).toBe(false);
 
-    // sigint default = Ctrl-C, raw + immediate
-    expect(await interruptViaPty(ownerId)).toBe(true);
+    // sigint default = Ctrl-C, raw + immediate (ID_OK: process.pid stands in for a real host)
+    expect(await interruptViaPty(ownerId, 'sigint', ID_OK)).toBe(true);
     // esc variant
-    expect(await interruptViaPty(ownerId, 'esc')).toBe(true);
+    expect(await interruptViaPty(ownerId, 'esc', ID_OK)).toBe(true);
 
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(2);

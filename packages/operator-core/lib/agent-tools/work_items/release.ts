@@ -22,12 +22,12 @@ export default defineTool({
   name: 'work_items:release',
   profile: 'engineer',
   description:
-    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error }], counts } — correlate by id; a not-found item never fails the rest.',
+    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error }], counts } — correlate by id; a not-found item never fails the rest. A voluntary release records short cooldown provenance so the releasing agent does not immediately re-claim the same row.',
   guidance: {
     when: 'You claimed work-item(s) but are no longer working them. Release several at once via ids:[…].',
     chaining: 'work_items:claim → … → work_items:release.',
     seeAlso: [
-      'work_items:set_state { state:"blocked" } (park it with a reason instead of silently releasing)',
+      'work_items:set_state { state:"blocked" } (feature-family park with a reason; issue-family aliases blocked back to open, so release/cooldown is the current safe deferral path there)',
       'work_items:claim (re-take it later)',
     ],
   },

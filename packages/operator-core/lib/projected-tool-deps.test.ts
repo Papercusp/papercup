@@ -43,7 +43,7 @@ import {
   isPaletteUiPollRead,
 } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
-import { getOverride } from '@papercusp/testing-shell/llm';
+import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
 import { PASS_THROUGH } from '@papercusp/agent-mcp';
 import type { PostInvokeEvent, UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -164,26 +164,42 @@ describe('PROJECTED_DEPS.postInvoke — decision-ledger emit + never breaks its 
 });
 
 describe('PROJECTED_DEPS.overrideTool — llm-testing dispatch-override wiring (gap #7)', () => {
-  it('passes through when the ctx is not an llm-testing run (registry not consulted)', () => {
-    const r = PROJECTED_DEPS.overrideTool!('plans.get', {}, ctx({ uiClientId: 'desktop' }));
+  // overrideToolImpl is async (EI-6842 fix: it must await override.override(...) to
+  // translate testing-shell's own PASS_THROUGH sentinel into tooldef's before
+  // returning — the two packages each mint a distinct `Symbol('PASS_THROUGH')`), so
+  // every call here is awaited; a bare synchronous compare would compare against the
+  // returned Promise, not its resolved value.
+  it('passes through when the ctx is not an llm-testing run (registry not consulted)', async () => {
+    const r = await PROJECTED_DEPS.overrideTool!('plans.get', {}, ctx({ uiClientId: 'desktop' }));
     expect(r).toBe(PASS_THROUGH);
     expect(getOverride).not.toHaveBeenCalled();
   });
 
-  it('passes through a tagged llm-testing run with no registered override', () => {
+  it('passes through a tagged llm-testing run with no registered override', async () => {
     vi.mocked(getOverride).mockReturnValue(undefined as never);
-    const r = PROJECTED_DEPS.overrideTool!('plans.get', {}, ctx({ uiClientId: 'llm-testing/run_x' }));
+    const r = await PROJECTED_DEPS.overrideTool!('plans.get', {}, ctx({ uiClientId: 'llm-testing/run_x' }));
     expect(getOverride).toHaveBeenCalledWith('run_x');
     expect(r).toBe(PASS_THROUGH);
   });
 
-  it('returns the registered override result for a tagged llm-testing run', () => {
+  it('returns the registered override result for a tagged llm-testing run', async () => {
     const overridden = { ok: true, result: { content: [{ type: 'text', text: 'stub' }] } };
     const overrideFn = vi.fn().mockReturnValue(overridden);
     vi.mocked(getOverride).mockReturnValue({ override: overrideFn } as never);
-    const r = PROJECTED_DEPS.overrideTool!('plans.get', { a: 1 }, ctx({ uiClientId: 'llm-testing/run_y' }));
+    const r = await PROJECTED_DEPS.overrideTool!('plans.get', { a: 1 }, ctx({ uiClientId: 'llm-testing/run_y' }));
     expect(overrideFn).toHaveBeenCalledWith('plans.get', { a: 1 });
     expect(r).toBe(overridden);
+  });
+
+  // EI-6842: the actual bug the typecheck caught — testing-shell's PASS_THROUGH is a
+  // DIFFERENT symbol instance than tooldef's, so it must be translated at this
+  // boundary or dispatch-stack.ts's `ov !== PASS_THROUGH` check would treat it as a
+  // real ToolResult instead of falling through to the real handler.
+  it("translates testing-shell's own PASS_THROUGH sentinel into tooldef's before returning", async () => {
+    const overrideFn = vi.fn().mockReturnValue(TESTING_SHELL_PASS_THROUGH);
+    vi.mocked(getOverride).mockReturnValue({ override: overrideFn } as never);
+    const r = await PROJECTED_DEPS.overrideTool!('plans.get', {}, ctx({ uiClientId: 'llm-testing/run_z' }));
+    expect(r).toBe(PASS_THROUGH); // tooldef's sentinel, not testing-shell's
   });
 });
 

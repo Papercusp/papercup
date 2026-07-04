@@ -91,6 +91,31 @@ export const DEFAULT_POLL_MS = 5000;
  */
 export const DRAIN_PASS_TIMEOUT_MS = 120_000;
 
+/**
+ * WI-2009 (leg 3, the backlog-stall detector the hung-pass watchdog does NOT
+ * cover): how long the drain may make ZERO forward progress — settle a pass but
+ * drain no rows — while mapped undrained rows remain queued, before it escalates
+ * a durable `drain_backlog_stalled` EI.
+ *
+ * This is the EXACT live signature this WI was filed on that the `DRAIN_PASS_
+ * TIMEOUT_MS` watchdog misses: the passes do NOT hang — each one FAILS FAST
+ * (a persistent `EpochKeyUnavailableError` because the epoch key never reached
+ * this device [WI-2003 divergence], or a persistent append fault), logging a
+ * console line every 5s (the filed "208 cumulative drain-failed lines") while
+ * `undrained` sits frozen and nobody pages. The watchdog only fires on a pass
+ * that never SETTLES; a fast-failing pass settles instantly, so the backlog
+ * stalls silently forever.
+ *
+ * Progress-based (not age-based) so a legitimate large catch-up — the drain
+ * chewing through a big backlog 200 rows/poll after the process was down —
+ * never false-positives: any pass that drains ≥1 row resets the no-progress
+ * clock. Only a backlog that is NOT shrinking at all trips it. A FROZEN peer
+ * (a1a71) never trips it either: its drain loop isn't running, so the detector
+ * isn't either. 10 min is well under "silently dead indefinitely" yet far above
+ * any transient key-arrival delay (seconds) or a normal catch-up.
+ */
+export const DRAIN_BACKLOG_STALL_MS = 10 * 60 * 1000;
+
 /** Thrown inside the drain loop when a pass exceeds `DRAIN_PASS_TIMEOUT_MS`. */
 export class DrainPassTimeoutError extends Error {
   constructor(readonly scope: string, readonly timeoutMs: number) {
@@ -374,9 +399,13 @@ export interface StartDrainOptions {
   /** Test seam: override the per-pass watchdog timeout (`DRAIN_PASS_TIMEOUT_MS`).
    *  0 disables the watchdog. Production omits it. */
   _passTimeoutMs?: number;
-  /** Test seam: intercept the stall escalation (default = durable EI via
-   *  `fileReplicationStallEi`). Production omits it. */
-  _onStallEpisode?: (detail: string) => void;
+  /** Test seam: override the no-forward-progress backlog-stall window
+   *  (`DRAIN_BACKLOG_STALL_MS`). 0 disables the backlog detector. Production omits it. */
+  _backlogStallMs?: number;
+  /** Test seam: intercept BOTH stall escalations (default = durable EI via
+   *  `fileReplicationStallEi`). Receives the human detail + the episode `kind`
+   *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress). Production omits it. */
+  _onStallEpisode?: (detail: string, kind?: 'drain_stalled' | 'drain_backlog_stalled') => void;
 }
 
 export interface OutboxDrainHandle {
@@ -416,26 +445,84 @@ export function startOutboxDrain(
   let runAgain = false;
 
   const passTimeoutMs = opts._passTimeoutMs ?? DRAIN_PASS_TIMEOUT_MS;
+  const backlogStallMs = opts._backlogStallMs ?? DRAIN_BACKLOG_STALL_MS;
 
-  /** WI-2009 stall escalation: loud console line (grep-able, mirrors the
-   *  WI-1840 detector pattern) + durable EI (dedup'd per harness while one
-   *  stays open). Best-effort — never throws into the drain loop. */
-  const escalateStall =
-    opts._onStallEpisode ??
-    ((detail: string): void => {
-      void import('./replication-stall-ei').then(
-        (m) =>
-          m.fileReplicationStallEi({
-            workspaceId: handle.workspaceId,
-            harnessSlug: handle.harnessSlug,
-            logKeyHex: handle.ownLog.keyHex,
-            kind: 'drain_stalled',
-            stalledForMs: passTimeoutMs,
-            detail,
-          }),
-        () => {},
+  // WI-2009 leg-3 backlog-stall detector state. `lastProgressAt` is the last
+  // time ANY pass drained ≥1 row (init: loop start). `backlogStallEscalated`
+  // edge-triggers the durable EI ONCE per no-progress episode; a resumed drain
+  // (a pass that drains a row) clears it so a later re-stall re-escalates.
+  let lastProgressAt = Date.now();
+  let backlogStallEscalated = false;
+
+  /** WI-2009 stall escalation for BOTH detectors: loud console line (grep-able,
+   *  mirrors the WI-1840 detector pattern) + durable EI (dedup'd per
+   *  (harness, log, kind) while one stays open). Best-effort — never throws into
+   *  the drain loop. */
+  const escalateStall = (
+    kind: 'drain_stalled' | 'drain_backlog_stalled',
+    detail: string,
+    stalledForMs: number,
+  ): void => {
+    if (opts._onStallEpisode) {
+      opts._onStallEpisode(detail, kind);
+      return;
+    }
+    void import('./replication-stall-ei').then(
+      (m) =>
+        m.fileReplicationStallEi({
+          workspaceId: handle.workspaceId,
+          harnessSlug: handle.harnessSlug,
+          logKeyHex: handle.ownLog.keyHex,
+          kind,
+          stalledForMs,
+          detail,
+        }),
+      () => {},
+    );
+  };
+
+  /**
+   * WI-2009 leg 3: escalate when the drain SETTLES its passes but makes ZERO
+   * forward progress for the whole `backlogStallMs` window while a MAPPED
+   * undrained row still waits — the filed silent-permanence signature the
+   * hung-pass watchdog does NOT cover (fast-failing passes settle instantly).
+   * Runs on both the settle AND the throw path (a persistent
+   * EpochKeyUnavailableError throws every pass). Progress-based, so a legitimate
+   * large catch-up (any row draining resets the clock) never false-positives.
+   * Best-effort + read-only: a probe fault must never wedge the drain.
+   */
+  async function maybeEscalateBacklogStall(): Promise<void> {
+    if (stopped || backlogStallEscalated || backlogStallMs <= 0) return;
+    const stalledForMs = Date.now() - lastProgressAt;
+    if (stalledForMs < backlogStallMs) return;
+    try {
+      // A forward-compat unmapped-table row is left undrained ON PURPOSE (a
+      // newer build federates it) — NOT a stall. Only a row this build CAN map
+      // counts, so exclude the tables the drain has logged as unmapped.
+      const unknownTables = [...loggedUnknownTables];
+      const stuck = await pg`
+        SELECT 1
+          FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${handle.workspaceId}
+           AND harness_slug = ${handle.harnessSlug}
+           AND drained_at IS NULL
+           AND NOT (table_name = ANY(${unknownTables as string[]}::text[]))
+         LIMIT 1`;
+      if (stuck.length === 0) return; // nothing mappable is actually waiting
+      backlogStallEscalated = true;
+      escalateStall(
+        'drain_backlog_stalled',
+        `outbox-drain for ${wantPayload} made ZERO forward progress for ` +
+          `${Math.round(stalledForMs / 1000)}s while mapped undrained rows remain — passes settle but ` +
+          `drain nothing (WI-2009 filed silent-permanence signature: persistent EpochKeyUnavailableError ` +
+          `[epoch key never arrived — WI-2003 divergence] or a persistent append fault). Local writes are ` +
+          `NOT federating; the ${pollMs}ms poll keeps re-attempting.`,
+        stalledForMs,
       );
-    });
+    } catch {
+      // best-effort observability — the drain's own liveness must not depend on it
+    }
+  }
 
   async function drainSafely(): Promise<void> {
     if (stopped) return;
@@ -444,6 +531,7 @@ export function startOutboxDrain(
       return;
     }
     draining = true;
+    let anyProgress = false;
     try {
       do {
         runAgain = false;
@@ -457,10 +545,11 @@ export function startOutboxDrain(
         // later its work is either complete (drained_at already stamped) or
         // re-attempted by a fresh pass (at-least-once tolerates the duplicate).
         const pass = drainOutboxOnce(handle, pg, drainOpts);
+        let drainedThisPass = 0;
         if (passTimeoutMs > 0) {
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            await Promise.race([
+            drainedThisPass = await Promise.race([
               pass,
               new Promise<never>((_, reject) => {
                 timer = setTimeout(
@@ -477,24 +566,37 @@ export function startOutboxDrain(
             pass.catch(() => {});
           }
         } else {
-          await pass;
+          drainedThisPass = await pass;
+        }
+        // WI-2009 leg 3: a drained row is forward progress — reset the
+        // no-progress clock + clear the escalation latch (recovered).
+        if (drainedThisPass > 0) {
+          lastProgressAt = Date.now();
+          backlogStallEscalated = false;
+          anyProgress = true;
         }
       } while (runAgain && !stopped);
     } catch (e) {
-       
+
       console.error(
         `[outbox-drain] drain failed for ${wantPayload}:`,
         e instanceof Error ? e.message : String(e),
       );
       if (e instanceof DrainPassTimeoutError) {
         escalateStall(
+          'drain_stalled',
           `outbox-drain pass for ${wantPayload} exceeded ${passTimeoutMs}ms (hung await — ` +
             `WI-2009 permanence class; loop un-wedged, next tick re-attempts)`,
+          passTimeoutMs,
         );
       }
     } finally {
       draining = false;
     }
+    // WI-2009 leg 3: check for a no-forward-progress backlog stall AFTER the
+    // drain settles — reached on BOTH the normal and the throw (fast-fail) path,
+    // so a pass that fails fast every time (the filed signature) is caught.
+    if (!stopped && !anyProgress) await maybeEscalateBacklogStall();
   }
 
   // Immediate catch-up drain.

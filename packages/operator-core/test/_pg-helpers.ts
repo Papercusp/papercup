@@ -17,12 +17,38 @@
  * up for reuse by the next test file (testcontainers `.withReuse()`), so a serial
  * integration run doesn't pay the ~2s boot per file.
  */
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
 
 export interface FreshPgDb {
   sql: postgres.Sql;
   cleanup: () => Promise<void>;
+}
+
+/**
+ * EI-6887 — apply ONE real migration SQL file to a hand-provisioned test DB
+ * (e.g. `createFreshPgDb` above) via `sql.unsafe`, which speaks SQL, not psql.
+ * Newer migrations (461/462/464/465+) carry `\set ON_ERROR_STOP on` psql
+ * meta-commands + a top-level BEGIN;/COMMIT; wrapper per the runner convention
+ * — raw `sql.unsafe(readFileSync(file))` on one of these fails TWICE in
+ * sequence: first on the `\`-line ("syntax error at or near \"\\\""), then
+ * (once that's stripped) on postgres-js's UNSAFE_TRANSACTION guard (raw txn
+ * control isn't allowed on a pooled/non-`sql.begin` client). Older migrations
+ * (184/185/189) carry neither, so a test written against them silently
+ * doesn't transfer to a newer one. This strips both (the wrapper is a
+ * production-apply nicety, not a correctness requirement for a hand-applied
+ * single-file DDL run — the file's own DDL is idempotent) so any migration,
+ * old or new, applies the same way. Lifted from the inline version in
+ * `lib/agent-facts/store.integration.test.ts` (the first two call sites —
+ * that file and composition-rig.ts — both hand-rolled equivalent filters).
+ */
+export async function applyMigrationForTest(sql: postgres.Sql, filePath: string): Promise<void> {
+  const sqlText = readFileSync(filePath, 'utf8')
+    .split('\n')
+    .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
+    .join('\n');
+  await sql.unsafe(sqlText);
 }
 
 /**

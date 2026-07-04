@@ -18,10 +18,9 @@
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import { assertFact, retractFact, foldFacts, FACTS_PER_SCOPE_CAP } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 
@@ -44,15 +43,9 @@ beforeAll(async () => {
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
   ]) {
-    // Strip psql meta-commands (\set …) and the BEGIN/COMMIT wrapper — sql.unsafe
-    // speaks SQL not psql, and postgres-js forbids raw txn control on a pooled
-    // client (UNSAFE_TRANSACTION). The DDL is idempotent; the wrapper is a
-    // production-apply nicety, not a correctness requirement here.
-    const sqlText = readFileSync(join(SQL_DIR, m), 'utf8')
-      .split('\n')
-      .filter((l) => !l.startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/.test(l.trim()))
-      .join('\n');
-    await db.sql.unsafe(sqlText);
+    // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
+    // (lifted from this file's own former inline version).
+    await applyMigrationForTest(db.sql, join(SQL_DIR, m));
   }
 });
 afterAll(async () => {

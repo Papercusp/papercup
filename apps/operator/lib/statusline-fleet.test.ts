@@ -4,8 +4,9 @@
  * token). Asserts the glance render (wake glyph / staged ✉ / 🐝 / governor ⏳ /
  * peers / 💡 tip / ⋯ detail-affordance row) and the quiet-state single line.
  */
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -41,6 +42,24 @@ function titleOf(glance: unknown, extraEnv: Record<string, string> = {}, input =
   } catch {
     return ''; // no title written (nothing meaningful) — treated as empty
   }
+}
+
+function renderLiveAsync(env: NodeJS.ProcessEnv, input = '{}'): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn('bash', [SCRIPT], { env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolvePromise(stdout);
+      else reject(new Error(`statusline exited ${code}: ${stderr}`));
+    });
+    child.stdin.end(input);
+  });
 }
 
 const activity = [
@@ -311,6 +330,70 @@ describe('statusline-fleet render (fixture mode)', () => {
 
   it('garbage fixture prints nothing and exits 0', () => {
     expect(render([1, 2, 3])).toBe('');
+  });
+
+  it('live mode caches coord:glance for a short burst of statusline invocations', async () => {
+    let glanceCalls = 0;
+    const glance = {
+      ok: true,
+      wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+      bees: { running: 0 },
+      governor: { anyPaused: false, paused: [] },
+      activity: [],
+      tips: [],
+      self: { objective: 'cached glance' },
+    };
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith('/admin/route')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ account: null }));
+        return;
+      }
+      if (req.url?.startsWith('/api/mcp')) {
+        req.resume();
+        req.on('end', () => {
+          glanceCalls += 1;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              content: [{ type: 'text', text: JSON.stringify(glance) }],
+            },
+          }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    try {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') throw new Error('missing test server address');
+      const home = mkdtempSync(join(tmpdir(), 'statusline-home-'));
+      const cacheDir = mkdtempSync(join(tmpdir(), 'statusline-cache-'));
+      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token');
+      const env = {
+        ...process.env,
+        HOME: home,
+        PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${addr.port}`,
+        PAPERCUSP_GATEWAY_URL: `http://127.0.0.1:${addr.port}`,
+        PAPERCUSP_SID: 'su-cache-test',
+        PAPERCUSP_STATUSLINE_CACHE_DIR: cacheDir,
+        PAPERCUSP_STATUSLINE_GLANCE_TTL_SEC: '30',
+        COLUMNS: '200',
+      };
+      const first = await renderLiveAsync(env, '{}');
+      const second = await renderLiveAsync(env, '{}');
+      expect(first).toContain('🔭 cached glance');
+      expect(second).toBe(first);
+      expect(glanceCalls).toBe(1);
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   });
 
   const quietGlance = {

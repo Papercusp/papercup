@@ -26,19 +26,23 @@ import type { ReplicationStallEpisode } from './replication-liveness';
 export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
 
 /**
- * The EI surface also escalates the WI-2009 outbox-drain watchdog (kind
- * 'drain_stalled' — same durable-EI + dedup mechanism, same triage topic; the
- * "logKeyHex" slot carries the own-log key as the harness's stable identifier).
+ * The EI surface also escalates the two WI-2009 outbox-drain detectors — same
+ * durable-EI + dedup mechanism, same triage topic; the "logKeyHex" slot carries
+ * the own-log key as the harness's stable identifier:
+ *   - 'drain_stalled' — a single drain pass HUNG past the watchdog timeout;
+ *   - 'drain_backlog_stalled' — passes SETTLE but drain zero rows for the whole
+ *     no-progress window while mapped undrained rows wait (the original filed
+ *     silent-permanence signature the hung-pass watchdog does not cover).
  */
 export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
-  kind: ReplicationStallEpisode['kind'] | 'drain_stalled';
+  kind: ReplicationStallEpisode['kind'] | 'drain_stalled' | 'drain_backlog_stalled';
 };
 
 /** Stable, dedup-able title for one (harness, log, kind). */
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
   logKeyHex: string;
-  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated' | 'drain_stalled';
+  kind: 'no_replicator' | 'frozen' | 'connected_never_replicated' | 'drain_stalled' | 'drain_backlog_stalled';
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +
@@ -108,6 +112,15 @@ export async function fileReplicationStallEi(
               'NO local writes were federating (WI-2009 permanence class). The watchdog un-wedged the ' +
               'loop (a fresh pass re-attempts; duplicate appends are safe per the at-least-once contract), ' +
               'but the underlying hang needs a root-cause look (WI-2018 keychain identity is the known suspect).'
+            : episode.kind === 'drain_backlog_stalled'
+            ? 'the OUTBOX DRAIN for this harness has run its passes but drained ZERO rows for the whole ' +
+              'no-progress window while mapped undrained rows remain queued — passes complete (no hang) yet ' +
+              'make no forward progress, so local writes are silently NOT federating (WI-2009 filed ' +
+              'signature: fail-fast every pass, e.g. a persistent EpochKeyUnavailableError because the ' +
+              'epoch key never arrived [WI-2003 divergence], or a persistent append fault). The 5s poll ' +
+              'keeps re-attempting; this EI turns the otherwise silent console-spam into a durable page. ' +
+              'Root-cause: check whether this device holds the current epoch key (hive_epoch_keys) and ' +
+              'whether appends are landing on the own log.'
             : `the swarm-level connection may look healthy (peer_connected), but this ` +
               `admitted remote log is ${
                 episode.kind === 'no_replicator'

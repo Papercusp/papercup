@@ -20,7 +20,8 @@ const h = vi.hoisted(() => ({
   identity: vi.fn(),
   cancelSubtree: vi.fn(),
   abortLocalSpawn: vi.fn(),
-  getOrgPg: vi.fn(() => ({ sql: {} })),
+  sql: vi.fn(),
+  getOrgPg: vi.fn(),
 }));
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity }));
@@ -59,7 +60,8 @@ beforeEach(() => {
   h.identity.mockReset().mockReturnValue({ ownerId: 'op-1', ownerLabel: 'Operator', workspaceId: 'default' });
   h.cancelSubtree.mockReset();
   h.abortLocalSpawn.mockReset();
-  h.getOrgPg.mockReset().mockReturnValue({ sql: {} });
+  h.sql.mockReset().mockImplementation(async (_strings: TemplateStringsArray, _workspaceId: string, spawnId: string) => [{ spawn_id: spawnId }]);
+  h.getOrgPg.mockReset().mockReturnValue({ sql: h.sql });
 });
 
 describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10 / P-006)', () => {
@@ -110,6 +112,28 @@ describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10
       ['root-b', true],
     ]);
     expect(b.results[1].error).toContain('subtree not found');
+  });
+
+  it('refuses a non-nursery owner/session id loudly instead of reporting an empty successful cancel', async () => {
+    h.sql.mockImplementation(async (_strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
+      spawnId === 'su-omp-hook-session' ? [] : [{ spawn_id: spawnId }],
+    );
+    h.cancelSubtree.mockResolvedValue(baseCancelResult('real-spawn', ['real-spawn']));
+    h.abortLocalSpawn.mockReturnValue(false);
+
+    const b = env(await (cancelTool as any).handler({ spawn_ids: ['su-omp-hook-session', 'real-spawn'] }, CTX));
+
+    expect(b.ok).toBe(true);
+    expect(b.counts).toEqual({ ok: 1, failed: 1 });
+    expect(b.results.map((r: any) => [r.spawn_id, r.ok])).toEqual([
+      ['su-omp-hook-session', false],
+      ['real-spawn', true],
+    ]);
+    expect(b.results[0]).toMatchObject({ refused: true });
+    expect(b.results[0].error).toContain('not a nursery spawn');
+    expect(b.results[0].error).toContain('owner-directed OMP/static session');
+    expect(h.cancelSubtree).toHaveBeenCalledTimes(1);
+    expect(h.cancelSubtree.mock.calls[0]![1]).toMatchObject({ rootSpawnId: 'real-spawn' });
   });
 
   it('a failing dynamic import is swallowed: items still ok:true, processes_aborted:0', async () => {

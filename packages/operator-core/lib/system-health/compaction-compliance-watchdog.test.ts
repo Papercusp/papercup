@@ -77,6 +77,7 @@ import {
   checkCompactionCompliance,
   resetContextDeathEscalationsForTests,
   resetForceCompactedForTests,
+  resetBootConfigAssertForTests,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -126,6 +127,7 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   resetForceCompactedForTests();
+  resetBootConfigAssertForTests(); // P-018 boot self-assert dedup + streak
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
@@ -461,5 +463,63 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
     getFlagMock.mockResolvedValue(true);
     await checkCompactionCompliance(fakeSql({ seeded }));
     expect(isContextGaugeEnabled()).toBe(true);
+  });
+});
+
+describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', () => {
+  const seeded = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000 }];
+
+  it('escalates a session whose estimate never resolves — only after the grace sweeps, once (deduped)', async () => {
+    estimateMock.mockResolvedValue(null); // context estimate never resolves ⇒ dark telemetry
+    // Sweeps 1-2 are within the grace window (a normal boot reads null briefly) ⇒ no escalation.
+    const p1 = await checkCompactionCompliance(fakeSql({ seeded }));
+    const p2 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p1.bootConfigAlerts).toEqual([]);
+    expect(p2.bootConfigAlerts).toEqual([]);
+    expect(p1.estimated).toEqual([]); // a null-estimate session is never cached/estimated
+    expect(openEscalationMock).not.toHaveBeenCalled();
+    // Sweep 3 crosses DARK_TELEMETRY_MAX_NULL_SWEEPS ⇒ one advisory escalation.
+    const p3 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p3.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '3 null sweeps' }]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [identity, input] = openEscalationMock.mock.calls[0] as unknown as [
+      { ownerId: string },
+      { severity: string; summary: string },
+    ];
+    expect(identity.ownerId).toBe('compaction-watchdog');
+    expect(input.severity).toBe('advisory'); // self-clearing band, not a blocker
+    expect(input.summary).toContain('DARK context telemetry');
+    expect(input.summary).toContain('blind');
+    // Sweep 4 still dark, but already escalated ⇒ alert still surfaced, escalation deduped.
+    const p4 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p4.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '4 null sweeps' }]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a resolved estimate clears the streak — a brief null run never reaches the escalation threshold', async () => {
+    estimateMock.mockResolvedValue(null);
+    await checkCompactionCompliance(fakeSql({ seeded })); // streak 1
+    await checkCompactionCompliance(fakeSql({ seeded })); // streak 2
+    estimateMock.mockResolvedValue(210_000);
+    const p3 = await checkCompactionCompliance(fakeSql({ seeded })); // resolves ⇒ streak cleared
+    expect(p3.estimated).toEqual(['blind']);
+    estimateMock.mockResolvedValue(null);
+    const p4 = await checkCompactionCompliance(fakeSql({ seeded })); // streak back to 1
+    const p5 = await checkCompactionCompliance(fakeSql({ seeded })); // streak 2 — still under grace
+    expect(p4.bootConfigAlerts).toEqual([]);
+    expect(p5.bootConfigAlerts).toEqual([]);
+    expect(openEscalationMock).not.toHaveBeenCalled(); // never 3 CONSECUTIVE nulls
+  });
+
+  it('a context-DEAD session (P-019) is not double-counted as dark telemetry', async () => {
+    resetContextDeathEscalationsForTests();
+    estimateMock.mockResolvedValue(null);
+    deathMock.mockImplementation(async (owner: string) => owner === 'blind');
+    // Even across the grace window, the death detector `continue`s before the dark-telemetry
+    // counter, so it is escalated as a context-death (blocker), never as dark-telemetry.
+    for (let i = 0; i < 4; i++) await checkCompactionCompliance(fakeSql({ seeded }));
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.contextDeaths).toEqual(['blind']);
+    expect(out.bootConfigAlerts).toEqual([]); // never reached the dark-telemetry counter
   });
 });

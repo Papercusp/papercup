@@ -56,7 +56,7 @@ else
 fi
 
 python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" "$INPUT" <<'PYEOF' 2>/dev/null || exit 0
-import json, os, sys, textwrap, urllib.request, urllib.parse
+import hashlib, json, os, sys, tempfile, textwrap, time, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture = sys.argv[1:5]
@@ -65,6 +65,11 @@ HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
 OBJECTIVE_MAX = 48  # clip a long objective so the 🔭 segment can't swallow line 1
+GLANCE_CACHE_TTL_SEC = float(os.environ.get('PAPERCUSP_STATUSLINE_GLANCE_TTL_SEC') or '5')
+GLANCE_CACHE_DIR = os.environ.get(
+    'PAPERCUSP_STATUSLINE_CACHE_DIR',
+    os.path.join(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir(), 'papercusp-statusline-glance'),
+)
 
 
 def call_tool(name, args):
@@ -108,6 +113,56 @@ def call_tool(name, args):
             except Exception:
                 pass
     return None
+
+
+def _cache_path():
+    """Session+operator scoped statusline cache path. Fixture mode bypasses this entirely."""
+    key = hashlib.sha256(f'{operator_url.rstrip()}|{me}'.encode()).hexdigest()[:24]
+    return os.path.join(GLANCE_CACHE_DIR, f'{key}.json')
+
+
+def _read_cached_glance():
+    """Return a fresh-enough cached coord:glance payload, or None.
+
+    Claude may invoke the statusline several times in a burst. A short cache turns those
+    identical burst reads into one MCP call while keeping the bottom line fresh enough for
+    human use. The cache is a best-effort optimization only: corrupt/missing/stale files
+    fall through to a live read.
+    """
+    if GLANCE_CACHE_TTL_SEC <= 0:
+        return None
+    try:
+        path = _cache_path()
+        if time.time() - os.path.getmtime(path) > GLANCE_CACHE_TTL_SEC:
+            return None
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _write_cached_glance(data):
+    if GLANCE_CACHE_TTL_SEC <= 0 or not isinstance(data, dict):
+        return
+    try:
+        os.makedirs(GLANCE_CACHE_DIR, mode=0o700, exist_ok=True)
+        path = _cache_path()
+        tmp = f'{path}.{os.getpid()}.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, separators=(',', ':'))
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def get_glance():
+    cached = _read_cached_glance()
+    if cached is not None:
+        return cached
+    fresh = call_tool('coord:glance', {'audience': 'user', 'activity_limit': ACTIVITY_WINDOW})
+    _write_cached_glance(fresh)
+    return fresh
 
 
 def peer_glance(rows):
@@ -442,7 +497,7 @@ try:
         with open(fixture) as f:
             glance = json.load(f)
     else:
-        glance = call_tool('coord:glance', {'audience': 'user', 'activity_limit': ACTIVITY_WINDOW})
+        glance = get_glance()
 except Exception:
     glance = None
 

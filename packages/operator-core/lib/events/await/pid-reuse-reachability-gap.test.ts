@@ -20,13 +20,18 @@
  * {breach:false}`) can NEVER breach for that owner — the WI-1399 guard is permanently
  * defeated by a class of bug it was specifically built to catch.
  *
- * These tests do NOT touch any fix — they document today's (buggy) behavior so a future fix
- * has a red-to-green target. Once WI-2339 proposal B (process-identity verification in
- * findLiveHost / a real socket connect in probeWakeReachability) lands, the "TODAY (the bug)"
- * assertions below should FLIP (the false-positive host should be rejected / unreachable).
+ * STATUS (WI-2339 fix B landed, 2026-07-04): the findLiveHost leg is FIXED — the first
+ * describe below now asserts the recycled-pid false positive is REJECTED (process-identity
+ * gate: pidIsPsuHost cross-checks the pid's /proc cmdline for the psu-launcher/psu-pty-host
+ * marker). The remaining two describes characterize the DOWNSTREAM trust chain
+ * (deriveWakeReachability trusts its hasPsuHost input; the WI-1399 guard no-ops on any
+ * reachable:true) — each still holds IN ISOLATION and is unchanged by fix B; the point is
+ * that fix B stops a recycled pid from ever feeding that chain a false hasPsuHost in the
+ * first place. They stay as guards on the chain's contract, so a future regression that
+ * re-introduces a fooled host is still caught downstream too.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -58,30 +63,32 @@ function startSocket(dir: string, ownerId: string): string {
   return sock;
 }
 
-describe('findLiveHost — WI-2339 gap: no process-identity check beyond pid-alive + socket-exists', () => {
-  it('TODAY (the bug): a discovery file whose recorded pid is alive but whose command/ptyPid/startedAt are for a wholly unrelated process is still reported as the LIVE host', () => {
+describe('findLiveHost — WI-2339 defect #2 FIXED: process-identity gate rejects a recycled-pid false positive', () => {
+  it('a discovery file whose recorded pid is alive but is a wholly unrelated process is now REJECTED (no longer reported LIVE)', () => {
     // Stand-in for PID reuse: `process.pid` (this test process) is genuinely alive, but the
-    // discovery file's OTHER identity fields (command, ptyPid, startedAt) are exactly what a
-    // long-dead, unrelated psu-pty-host's stale file would still contain — findLiveHost never
-    // cross-checks any of them (source: findLiveHost only checks h.ownerId, existsSync(h.sock),
-    // and pidAlive(h.pid) — no /proc/<pid>/cmdline check, no startedAt comparison).
+    // discovery file's identity fields are exactly what a long-dead, unrelated process on a
+    // RECYCLED pid would carry. findLiveHost now cross-checks process identity (pidIsPsuHost:
+    // the pid's /proc cmdline must carry the psu-launcher/psu-pty-host marker), so this is
+    // rejected instead of masquerading as the live host forever.
     const dir = tmpDir();
     const sock = startSocket(dir, 'su-reused-pid');
     writeFileSync(
       join(dir, `${sanitizeKey('su-reused-pid')}.json`),
       JSON.stringify({
         ownerId: 'su-reused-pid',
-        pid: process.pid, // alive, but stands in for "OS recycled this exact pid"
-        ptyPid: 999999999, // unrelated, never cross-checked
-        command: 'totally-unrelated-process-not-psu-pty-host', // never cross-checked
+        pid: process.pid, // alive, but stands in for "OS recycled this exact pid to an unrelated process"
+        ptyPid: 999999999,
+        command: 'totally-unrelated-process-not-psu-pty-host',
         sock,
-        startedAt: 1, // absurdly stale, never cross-checked against actual process start time
+        startedAt: 1,
       }),
     );
-    const h = findLiveHost('su-reused-pid', dir);
-    expect(h).not.toBeNull();
-    expect(h!.pid).toBe(process.pid);
-    expect(h!.command).toBe('totally-unrelated-process-not-psu-pty-host');
+    // Deterministic (cross-platform): identity fails ⇒ rejected.
+    expect(findLiveHost('su-reused-pid', dir, { verifyIdentity: () => false })).toBeNull();
+    // And the REAL shipped default (pidIsPsuHost) likewise rejects the vitest process.pid,
+    // whose cmdline carries no psu-launcher/psu-pty-host marker — Linux/ship-target only
+    // (off-Linux, pidIsPsuHost fail-opens because /proc is absent, unchanged pre-fix behavior).
+    if (existsSync('/proc')) expect(findLiveHost('su-reused-pid', dir)).toBeNull();
   });
 });
 

@@ -49,6 +49,23 @@ const contextDeathEscalated = new Set<string>();
  *  re-arms it. A failed inject is NOT recorded, so it retries next pass. */
 const forceCompactedOwners = new Set<string>();
 
+/** P-018 boot self-assert: one advisory escalation per owner per defect-class per
+ *  process (key `${ownerId}:${kind}`). The 2026-07-04 incident's dark-telemetry defect
+ *  (a live member whose context estimate never resolved) was latent FROM BOOT and survived
+ *  hours silently — this asserts it per member and surfaces the failure. (compaction_limit
+ *  sanity is covered upstream: P-016 seeds the tier-aware default, P-017 lowers any >cap
+ *  drift, so a boot-time limit re-assert here would be redundant.) */
+const bootConfigEscalated = new Set<string>();
+/** P-018 dark-telemetry counter: consecutive sweeps a live limit-carrying session's
+ *  context estimate stayed null. Cleared when it resolves. */
+const nullEstimateStreak = new Map<string, number>();
+/** P-018 dark-telemetry: escalate after this many consecutive null estimates. A
+ *  normally-booting session reads null for a sweep or two (transcript not yet on
+ *  disk); 3 sweeps (~6min) of grace keeps a healthy boot from tripping it, while a
+ *  session that stays BLIND — the gauge / per-turn reminder / force-compact all can't
+ *  see its usage, the "dark telemetry latent from boot" defect — gets surfaced. */
+const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
+
 /** Test seam (P-019). */
 export function resetContextDeathEscalationsForTests(): void {
   contextDeathEscalated.clear();
@@ -57,6 +74,12 @@ export function resetContextDeathEscalationsForTests(): void {
 /** Test seam (P-012). */
 export function resetForceCompactedForTests(): void {
   forceCompactedOwners.clear();
+}
+
+/** Test seam (P-018). */
+export function resetBootConfigAssertForTests(): void {
+  bootConfigEscalated.clear();
+  nullEstimateStreak.clear();
 }
 
 /**
@@ -99,6 +122,47 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
     contextDeathEscalated.delete(ownerId);
     console.warn(
       `[compaction-watchdog] context-death escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * P-018 boot self-assert (agent-managed-compaction-2026-07-01): raise ONE advisory
+ * coord escalation per owner per defect-class when a live member fails a critical-config
+ * assertion — a too-high compaction_limit seed (compacts too late for its tier) or dark
+ * context telemetry (the watchdog/gauge/force-compact are BLIND to its usage). Both
+ * incident defects were latent from boot and survived hours silently; surfacing them
+ * (D-008: surface, don't seize) lets a leader/owner fix or relaunch. Advisory band ⇒
+ * self-clears once stale (the agent fixes its limit / telemetry resolves). Deduped +
+ * best-effort — never fails the sweep; a failed escalation un-dedups to retry next pass.
+ */
+async function escalateBootConfig(
+  ownerId: string,
+  ownerLabel: string,
+  kind: 'dark-telemetry',
+  summary: string,
+  body: string,
+): Promise<void> {
+  const key = `${ownerId}:${kind}`;
+  if (bootConfigEscalated.has(key)) return;
+  bootConfigEscalated.add(key);
+  console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) boot-config assert FAILED (${kind}) — ${summary} (P-018).`);
+  try {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation(
+      {
+        ownerId: 'compaction-watchdog',
+        ownerLabel: 'system · compaction-watchdog',
+        source: 'principal',
+        workspaceId: null,
+        userId: null,
+      },
+      { severity: 'advisory', summary, body },
+    );
+  } catch (e) {
+    bootConfigEscalated.delete(key);
+    console.warn(
+      `[compaction-watchdog] boot-config escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
@@ -236,6 +300,11 @@ export interface CompactionComplianceResult {
    *  stale (unflushed work about to be lost to a compaction/reclaim). SURFACED, never seized
    *  (D-008). One entry per (owner, stale claim). */
   unflushedClaims: Array<{ owner: string; workItemId: string; reason: StaleClaim['reason']; staleMs: number }>;
+  /** P-018 boot self-assert: live members that FAILED the dark-telemetry assertion this pass —
+   *  their context estimate never resolved (the gauge / per-turn reminder / force-compact are all
+   *  blind to the session), so it can silently overflow. One entry per owner; escalated once per
+   *  owner via escalateBootConfig. */
+  bootConfigAlerts: Array<{ owner: string; kind: 'dark-telemetry'; detail: string }>;
 }
 
 /**
@@ -247,7 +316,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [] };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -378,7 +447,28 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         }
       }
       const est = await estimateContextTokensForOwner(r.owner_id);
-      if (est == null) continue;
+      if (est == null) {
+        // P-018 boot self-assert (dark telemetry): a live limit-carrying session whose context
+        // estimate never resolves is BLIND — the gauge, the per-turn reminder, and the P-012
+        // force-compact backstop all read null, so it can silently overflow its model window
+        // (the 836k incident class). Grace a few sweeps (a normal boot reads null briefly before
+        // its transcript lands), then escalate once. A context-DEAD session (P-019 above) already
+        // `continue`d, so this is a live-but-blind session, not a corpse.
+        const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
+        nullEstimateStreak.set(r.owner_id, streak);
+        if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
+          out.bootConfigAlerts.push({ owner: r.owner_id, kind: 'dark-telemetry', detail: `${streak} null sweeps` });
+          await escalateBootConfig(
+            r.owner_id,
+            r.owner_label,
+            'dark-telemetry',
+            `${r.owner_label} has DARK context telemetry — its estimate has not resolved for ${streak} watchdog sweeps (~${streak * 2}min) since boot`,
+            `estimateContextTokensForOwner returns null, so the context gauge, the per-turn usage reminder, and the force-compact backstop are ALL blind to this session — it can silently overflow its model window (the 2026-07-04 836k class). Usually a missing/unreadable transcript or an unresolved model spec. Check the session's transcript path + model resolution; relaunch if wedged. (agent-managed-compaction-2026-07-01 P-018)`,
+          );
+        }
+        continue;
+      }
+      nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
       await setContextEstimate(r.owner_id, est).catch(() => {});
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call

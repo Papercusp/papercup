@@ -78,6 +78,61 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** Read a pid's `/proc/<pid>/cmdline` (NUL-delimited argv), NULs → spaces; null if
+ *  unreadable. Injectable so `pidIsPsuHost`'s marker logic unit-tests without a real
+ *  process (the DEFAULT is the only IO in the identity check). Local type (not exported):
+ *  callers pass an inline reader, so there is no external consumer to import it. */
+type ReadPidCmdline = (pid: number) => string | null;
+const defaultReadCmdline: ReadPidCmdline = (pid) => {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+  } catch {
+    return null;
+  }
+};
+
+/** The verify-identity seam findLiveHost/listLiveHosts accept (default `pidIsPsuHost`).
+ *  A test writing `process.pid` as a live-host stand-in injects `() => true`. Local type
+ *  (not exported): callers pass an inline `{ verifyIdentity: () => … }`. */
+type VerifyPidIdentity = (pid: number) => boolean;
+
+/**
+ * Process-IDENTITY check (WI-2339 defect #2): is `pid` actually a psu session host,
+ * or an UNRELATED process that inherited a RECYCLED pid? A dead host's discovery file
+ * lingers (its graceful cleanup never runs on an abrupt SIGKILL/OOM/terminal-close),
+ * so once the OS recycles that numeric pid, `pidAlive(pid) && existsSync(sock)` alone
+ * reports a FALSE-POSITIVE live host forever — which makes probeWakeReachability report
+ * `reachable:true` forever and permanently defeats the WI-1399 dead-owner terminal
+ * guard (evaluateUnreachableTerminalGuard returns {breach:false} on any reachable:true).
+ * This cross-checks the pid's cmdline for the psu session marker so a recycled pid held
+ * by an unrelated process is rejected.
+ *
+ * EMPIRICAL (2026-07-04, verified against ~15 live hosts): the discovery file's recorded
+ * `pid` is the **psu-launcher.mjs** process (it hosts the pty + control socket); a host
+ * launched directly would be psu-pty-host.mjs. So the marker matches EITHER — an
+ * unrelated recycled-pid process matches NEITHER and is rejected. ⚠ An earlier proposal
+ * matched only 'psu-pty-host', which would have false-negatived EVERY real host and broken
+ * fleet-wide wake delivery — do NOT narrow the marker back (WI-2339 post 50341).
+ *
+ * FAIL-OPEN where identity cannot be read (no /proc ⇒ non-Linux dev): return true, i.e.
+ * trust pid-alive + socket-exists exactly as before. The PID-reuse hardening is a Linux /
+ * ship-target concern; failing open NEVER rejects a real host, it only declines to add the
+ * extra rejection where it can't be computed. An unreadable/empty cmdline on Linux (pid
+ * vanished, zombie/defunct) ⇒ not a verifiable live host ⇒ reject (correct: it's dead).
+ */
+export function pidIsPsuHost(pid: number, readCmdline: ReadPidCmdline = defaultReadCmdline): boolean {
+  if (!pid) return false;
+  const cmdline = readCmdline(pid);
+  // Unreadable cmdline: FAIL-OPEN only where /proc is absent (non-Linux dev — cannot verify
+  // identity, so trust pid-alive + socket-exists exactly as before). On Linux a null read
+  // means the pid vanished / is a zombie ⇒ NOT a verifiable live host ⇒ reject.
+  if (cmdline == null) return !existsSync('/proc');
+  // A readable cmdline is authoritative on every platform: it IS a psu host iff it carries
+  // the psu session marker (empirically the psu-launcher.mjs process; psu-pty-host for a
+  // direct launch). An unrelated recycled-pid process matches neither ⇒ rejected.
+  return /psu-(launcher|pty-host)/.test(cmdline);
+}
+
 /**
  * The live psu-pty host for an ownerId, or null. Self-validating: the recorded
  * host pid must be alive AND its socket must still exist (a crashed host that
@@ -96,7 +151,12 @@ function pidAlive(pid: number): boolean {
  * misroute EI-151 reported. On mismatch we treat it as "no host" (→ park/inbox,
  * never the wrong session).
  */
-export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPtyHost | null {
+export function findLiveHost(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): PsuPtyHost | null {
+  const verify = opts.verifyIdentity ?? pidIsPsuHost;
   const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
   if (!existsSync(metaPath)) return null;
   try {
@@ -105,7 +165,10 @@ export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPty
     // a sanitize-collision / stale-reuse leaves a file whose `ownerId` is a
     // different agent — never hand that back as this owner's host.
     if (h && h.ownerId && h.ownerId !== ownerId) return null;
-    if (h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid)) return h;
+    // WI-2339 defect #2: pid-alive + socket-exists is NOT enough — a recycled pid
+    // held by an unrelated process would masquerade as a live host forever. Also
+    // require the pid to actually BE a psu session host (pidIsPsuHost cmdline check).
+    if (h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid)) return h;
   } catch {
     /* unreadable / partial write — treat as no host */
   }
@@ -121,7 +184,11 @@ export function findLiveHost(ownerId: string, dir: string = PSU_PTY_DIR): PsuPty
  * rot, unlike the launch-recorded adv_sessions window_id/pid. Best-effort: a
  * missing dir or unreadable file yields fewer hosts, never a throw.
  */
-export function listLiveHosts(dir: string = PSU_PTY_DIR): PsuPtyHost[] {
+export function listLiveHosts(
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): PsuPtyHost[] {
+  const verify = opts.verifyIdentity ?? pidIsPsuHost;
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -132,7 +199,9 @@ export function listLiveHosts(dir: string = PSU_PTY_DIR): PsuPtyHost[] {
   for (const f of files) {
     try {
       const h = JSON.parse(readFileSync(join(dir, f), 'utf8')) as PsuPtyHost;
-      if (h && h.ownerId && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid)) out.push(h);
+      // WI-2339 defect #2: same process-identity gate as findLiveHost — a recycled
+      // pid held by an unrelated process must not count as a live interactive host.
+      if (h && h.ownerId && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid)) out.push(h);
     } catch {
       /* unreadable / partial write — skip this host */
     }
@@ -204,8 +273,9 @@ export function injectIntoHost(
 export async function interruptViaPty(
   ownerId: string,
   key: 'sigint' | 'esc' = 'sigint',
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
 ): Promise<boolean> {
-  const host = findLiveHost(ownerId);
+  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
   const data = key === 'esc' ? '\x1b' : '\x03';
   return injectIntoHost(host.sock, { mode: 'raw', data });
@@ -223,9 +293,13 @@ export async function interruptViaPty(
  * applies the next time the fleet opens a window. Best-effort by design (the
  * fleet:join/create callers ignore the result), so a recolor never fails a join.
  */
-export async function recolorViaPty(ownerId: string, osc: string): Promise<boolean> {
+export async function recolorViaPty(
+  ownerId: string,
+  osc: string,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<boolean> {
   if (!osc) return false;
-  const host = findLiveHost(ownerId);
+  const host = findLiveHost(ownerId, PSU_PTY_DIR, opts);
   if (!host) return false;
   return injectIntoHost(host.sock, { mode: 'osc', data: osc });
 }

@@ -66,6 +66,24 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (spawn_id) => {
+        const rows = await sql<{ spawn_id: string }[]>`
+          SELECT spawn_id
+            FROM harness_shared.spawned_agents
+           WHERE workspace_id = ${workspaceId}
+             AND spawn_id = ${spawn_id}
+           LIMIT 1
+        `;
+        if (!rows[0]) {
+          return {
+            ok: false as const,
+            spawn_id,
+            refused: true as const,
+            error:
+              `refused: ${spawn_id} is not a nursery spawn in workspace ${workspaceId}; ` +
+              `fleet:cancel only cancels rows in harness_shared.spawned_agents. ` +
+              `If this is an owner-directed OMP/static session, do not treat it as a cancellable fleet bee.`,
+          };
+        }
         const res = await cancelSubtree(sql, {
           workspaceId,
           rootSpawnId: spawn_id,
