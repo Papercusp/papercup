@@ -32,7 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
-import { getWorkItem, setWorkItemState, workItemObjectRef } from '../../work-items';
+import { getWorkItem, setWorkItemState, workItemObjectRef, mergeWorkItemOutputPayload } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord, type CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -183,6 +183,16 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     agent: it.completion.agent || ident.ownerLabel || ident.ownerId,
     planSlug: it.completion.planSlug,
   };
+
+  // EI-7214: persist outputPayload onto the item row (payload.out) so it's a
+  // self-serve, queryable read surface for a harness sidecar pulling completed
+  // outputs over HTTP — not just a transient field on this call's own result /
+  // the emitted reaction event. Best-effort (mergeWorkItemOutputPayload never
+  // throws): a payload-persist failure must never turn an already-recorded
+  // completion into a failed one.
+  if (it.outputPayload !== undefined) {
+    await mergeWorkItemOutputPayload(it.id, it.outputPayload, { harness: it.harness });
+  }
 
   // Reflect-and-capture STEP at the completion boundary (self-learning-central P-001/B).
   const reflect = renderReflectStep({ harnessActive: Boolean(workItem?.harness) });

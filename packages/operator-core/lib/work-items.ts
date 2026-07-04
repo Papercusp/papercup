@@ -82,6 +82,7 @@ import {
   searchIssues,
   promoteIssue,
   issuesScopeWorkspace,
+  mergeIssuePayload,
   type EngineerIssue,
 } from './issues-engineer';
 
@@ -1331,6 +1332,50 @@ export async function setWorkItemLiveVerified(
   const updated = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   if (!updated) return null;
   return { id: updated.id, applicable: true, liveVerified: readWorkItemLiveVerified(updated.payload) };
+}
+
+/**
+ * EI-7214 — persist a completion's `outputPayload` onto the work-item row (under
+ * `payload.out`), so it becomes a self-serve, queryable read surface (e.g. the
+ * harness `GET /api/harness/:slug/work-items` route, which already returns
+ * `payload`) instead of existing ONLY as a transient field on the `emits` event
+ * result. Before this, every harness sidecar needing to pull a completed item's
+ * structured output (oddsmith's bet-analysis Signal, quartermaster's sidecar⇄
+ * papercusp seam) had to hand-roll its OWN reaction-rule bridge to capture the
+ * event at completion time — `fetchCompleted` shipped as a permanent TODO for
+ * exactly this reason. One additive JSONB merge here removes that whole class
+ * of per-harness boilerplate.
+ *
+ * Additive (mirrors `setWorkItemLiveVerified`): preserves every other payload
+ * key (e.g. the plan_item back-pointer). Best-effort from the caller's
+ * perspective — never throws; a merge failure must not fail the completion
+ * that already recorded the completion record. Works across BOTH families
+ * (feature-family rows live in harness_features_consolidated; issue-family
+ * rows route through the existing `mergeIssuePayload`).
+ */
+export async function mergeWorkItemOutputPayload(
+  id: string,
+  outputPayload: unknown,
+  opts: { harness?: string } = {},
+): Promise<void> {
+  try {
+    const wi = await getWorkItem(id, opts.harness);
+    if (!wi) return;
+    if (wi.family === 'issue') {
+      await mergeIssuePayload(id, { out: outputPayload });
+      return;
+    }
+    const { sql } = getOrgPg();
+    const patch = JSON.stringify({ out: outputPayload });
+    await sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb,
+             updated_ts = ${Date.now()}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}`;
+  } catch {
+    // Best-effort: the completion record itself already succeeded/emitted;
+    // a failed payload-persist must never surface as a failed completion.
+  }
 }
 
 /**

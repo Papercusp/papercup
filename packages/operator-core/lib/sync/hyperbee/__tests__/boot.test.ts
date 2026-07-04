@@ -1732,6 +1732,14 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
     cleanups.push(() => handle.close());
 
     vi.useFakeTimers();
+    // EI-7110's defaultRecoveryReporter deliberately logs a LOUD, grep-able
+    // `console.error('[replication-liveness] recovered ...')` line on a genuine
+    // alarm→recovered transition (same rationale as defaultEpisodeReporter's own
+    // stall line) — this test exercises the real default reporter path (no
+    // onRecovery override, unlike the pure-unit replication-liveness.test.ts
+    // suite), so the expected recovery log must be mocked rather than left to
+    // trip vitest-fail-on-console.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const keyHex = 'cc'.repeat(32);
       handle.admitted.set(keyHex, fakeAdmittedRemoteLog(keyHex, () => peers));
@@ -1754,6 +1762,7 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
       expect(listBootHistory({ workspaceId, harnessSlug, kinds: ['replication_stalled'] })).toHaveLength(2);
     } finally {
       vi.useRealTimers();
+      errorSpy.mockRestore();
     }
   });
 });

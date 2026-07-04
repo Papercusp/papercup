@@ -125,6 +125,51 @@ describe('boot-all — substrate orchestrator', () => {
     expect(getBootedHarness('ws-bogus', 'definitely-not-real')).toBeNull();
   });
 
+  it('bootSingleHarness refuses the default in-process boot on request-only hosts', async () => {
+    const savedVitest = process.env.VITEST;
+    const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    try {
+      delete process.env.VITEST;
+      process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+      const result = await bootSingleHarness('ws-request-only', 'papercup', {
+        resolveSwarmBinding: async () => null,
+      });
+      expect(result.state).toBe('failed');
+      expect(result.error).toContain('request-only host');
+      expect(getBootedHarness('ws-request-only', 'papercup')).toBeNull();
+    } finally {
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+      if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+    }
+  });
+
+  it('bootSingleHarness still allows an explicit boot factory on request-only hosts', async () => {
+    const savedVitest = process.env.VITEST;
+    const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    const bootHarness = vi.fn(async (opts) =>
+      fakeHandle(opts.workspaceId, opts.harnessSlug),
+    );
+    try {
+      delete process.env.VITEST;
+      process.env.PAPERCUSP_BACKGROUND_WORKERS = '0';
+      const result = await bootSingleHarness('ws-request-only', 'remote', {
+        bootHarness,
+        resolveSwarmBinding: async () => null,
+        skipSendSideWiring: true,
+      });
+      expect(result.state).toBe('booted');
+      expect(bootHarness).toHaveBeenCalledOnce();
+      expect(getBootedHarness('ws-request-only', 'remote')).not.toBeNull();
+    } finally {
+      if (savedVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = savedVitest;
+      if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+      else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
+    }
+  });
+
   // A resolver that throws makes bootSingleHarness fail BEFORE it ever calls
   // the real bootHarnessSubstrate — so these tests exercise the close+reboot
   // composition without spinning up corestore/hypercore native threads (which

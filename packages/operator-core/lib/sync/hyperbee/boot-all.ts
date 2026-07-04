@@ -48,6 +48,7 @@ import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
+import { backgroundWorkersEnabled } from '../../background-workers';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
@@ -159,6 +160,15 @@ function parseKey(k: string): { workspaceId: string; harnessSlug: string } | nul
   const i = k.indexOf('::');
   if (i < 0) return null;
   return { workspaceId: k.slice(0, i), harnessSlug: k.slice(i + 2) };
+}
+
+function defaultInProcessBootAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Vitest unit coverage injects fake boot factories and should not inherit the
+  // live host's machinery gate. Production request-only hosts must never take
+  // the default bootHarnessSubstrate path; the bg-host/sidecar is the sole
+  // corestore owner.
+  if (env.VITEST) return true;
+  return backgroundWorkersEnabled(env);
 }
 
 // ── LAZY_SUBSTRATE_BOOT (P-008) reaper support ──────────────────────────────
@@ -569,6 +579,15 @@ export async function bootSingleHarness(
   // default (set by bootSubstrateWithFallback). In sidecar mode this is the remote
   // factory + skipSendSideWiring:true so a standalone publish/join boots through the
   // sidecar (which wires the drain), never in-process.
+  if (!opts.bootHarness && !defaultBootHarness && !defaultInProcessBootAllowed()) {
+    return {
+      workspaceId,
+      harnessSlug,
+      state: 'failed',
+      error:
+        'substrate default boot disabled on request-only host (PAPERCUSP_BACKGROUND_WORKERS=0 / :3170); bg-host owns corestore',
+    };
+  }
   const bootHarness = opts.bootHarness ?? defaultBootHarness ?? bootHarnessSubstrate;
   const skipSendSideWiring = opts.skipSendSideWiring ?? defaultSkipSendSideWiring;
   const cached = handles.get(k);

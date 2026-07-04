@@ -194,13 +194,29 @@ export function createGitSeedProvider(): SeedProvider {
     },
 
     async restore(entry: SeedStoreEntry, payload: SeedPayload, ctx: SeedRestoreContext): Promise<void> {
-      const { targetRepoDir, originUrl: originOverride } = ctx as unknown as GitRestoreContext;
+      const { targetRepoDir, originUrl: originOverride, decryptionKey } = ctx as unknown as GitRestoreContext;
       const seedPath = (payload as { path: string }).path;
       const index = JSON.parse(await readFile(join(seedPath, 'index.json'), 'utf8')) as GitSeedIndex;
       const origin = originOverride ?? index.originUrl;
 
+      if (index.encrypted && !decryptionKey) {
+        throw new Error('git seed is encrypted but no decryption key was provided (resolve it post-admission)');
+      }
+
+      // Decrypt a bundle to a plaintext temp path (or return it as-is when
+      // unencrypted). git can only clone from a plaintext bundle.
+      const materialize = async (bundleRel: string): Promise<string> => {
+        const sealedPath = join(seedPath, bundleRel);
+        if (!index.encrypted) return sealedPath;
+        const plain = openBytes(decryptionKey!, await readFile(sealedPath));
+        const outPath = join(seedPath, '.decrypted', bundleRel);
+        await mkdir(dirname(outPath), { recursive: true });
+        await writeFile(outPath, plain);
+        return outPath;
+      };
+
       // Clone the superproject from its bundle (offline), then re-point origin.
-      await execFileP('git', [...ALLOW_FILE, 'clone', join(seedPath, index.super), targetRepoDir], {
+      await execFileP('git', [...ALLOW_FILE, 'clone', await materialize(index.super), targetRepoDir], {
         maxBuffer: GIT_MAX_BUFFER,
       });
       if (origin) await git(targetRepoDir, ['remote', 'set-url', 'origin', origin]);
@@ -208,7 +224,7 @@ export function createGitSeedProvider(): SeedProvider {
       // Restore each submodule from its bundle into the submodule working path.
       for (const sub of index.submodules) {
         const subTarget = join(targetRepoDir, sub.path);
-        await execFileP('git', [...ALLOW_FILE, 'clone', join(seedPath, sub.bundle), subTarget], {
+        await execFileP('git', [...ALLOW_FILE, 'clone', await materialize(sub.bundle), subTarget], {
           maxBuffer: GIT_MAX_BUFFER,
         });
         if (sub.url) await git(subTarget, ['remote', 'set-url', 'origin', sub.url]);

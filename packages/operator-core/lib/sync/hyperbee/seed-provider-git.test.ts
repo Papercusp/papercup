@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGitSeedProvider, GIT_SEED_KIND } from './seed-provider-git';
+import { generateSeedKey } from '@papercusp/seed-bundle';
 
 const exec = promisify(execFile);
 const cleanups: string[] = [];
@@ -106,6 +107,45 @@ describe('git seed provider', () => {
     await provider.restore(entry, payload, { targetRepoDir: target });
     expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top');
     expect(readFileSync(join(target, 'vendor/sub/lib.txt'), 'utf8')).toBe('sublib'); // submodule restored + checked out
+  });
+
+  it('encrypts the seed at rest; restores with the key; fails without/with a wrong key', async () => {
+    const src = tmpDir('gseed-enc-src-');
+    await initRepo(src);
+    writeFileSync(join(src, 'secret.txt'), 'private repo contents');
+    await g(src, ['add', '.']);
+    await g(src, ['commit', '-qm', 'secret']);
+
+    const provider = createGitSeedProvider();
+    const staging = tmpDir('gseed-enc-stage-');
+    const key = generateSeedKey();
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: src,
+      stagingDir: staging,
+      originUrl: 'https://github.com/Papercusp/papercup',
+      encryption: { key, keyRef: { via: 'seed-key-op', hiveId: 'papercusp' } },
+    });
+    // Envelope recorded; bundle on disk is ciphertext (no git-bundle header).
+    expect(entry.encryption?.scheme).toBe('chacha20-poly1305');
+    expect(entry.encryption?.keyRef).toEqual({ via: 'seed-key-op', hiveId: 'papercusp' });
+    const raw = readFileSync(join(staging, 'super.bundle')).subarray(0, 32).toString('latin1');
+    expect(raw).not.toMatch(/git bundle/);
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    // Restore WITH the key → the checkout materializes.
+    const okTarget = join(tmpDir('gseed-enc-ok-'), 'checkout');
+    await provider.restore(entry, payload, { targetRepoDir: okTarget, decryptionKey: key });
+    expect(readFileSync(join(okTarget, 'secret.txt'), 'utf8')).toBe('private repo contents');
+
+    // Restore with NO key → refused.
+    const noKeyTarget = join(tmpDir('gseed-enc-nokey-'), 'checkout');
+    await expect(provider.restore(entry, payload, { targetRepoDir: noKeyTarget })).rejects.toThrow(/no decryption key/i);
+
+    // Restore with a WRONG key → decrypt fails.
+    const badTarget = join(tmpDir('gseed-enc-bad-'), 'checkout');
+    await expect(
+      provider.restore(entry, payload, { targetRepoDir: badTarget, decryptionKey: generateSeedKey() }),
+    ).rejects.toThrow();
   });
 
   it('verify fails closed on a mismatched hash', async () => {
