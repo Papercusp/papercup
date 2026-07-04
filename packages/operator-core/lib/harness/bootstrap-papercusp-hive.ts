@@ -44,6 +44,8 @@ import {
 } from './papercusp-hive-join';
 import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
 import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
+import { triggerDeferredGitRestore, type TriggerDeferredGitRestoreResult } from '../sync/hyperbee/deferred-git-restore';
+import { buildMemberEpochKeyProvider } from '../sync/hyperbee/hive-epoch-boot-deps';
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';

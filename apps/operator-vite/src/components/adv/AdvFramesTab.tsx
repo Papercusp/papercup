@@ -5,6 +5,7 @@ import { createResilientEventSource, type ResilientEventSource } from '@papercus
 import FrameVncView from './FrameVncView';
 import FrameScreenTrackView from './FrameScreenTrackView';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * AdvFramesTab — the Swarm live view
@@ -52,6 +53,7 @@ export const STALE_AFTER_MS = 20_000;
 const tileKey = (slug: string, display: number) => `${slug}:${display}`;
 
 export default function AdvFramesTab() {
+  const t = useLexicon();
   // ── deployed-frame roster (registry; cheap, refetched on a slow interval) ──
   const [rows, setRows] = useState<DeployedFrameRow[]>([]);
   const [rosterErr, setRosterErr] = useState<string | null>(null);
@@ -185,7 +187,7 @@ export default function AdvFramesTab() {
     <div className="pc-frames">
       <div className="pc-frames__topbar">
         <MonitorPlay size={14} aria-hidden />
-        <span className="pc-frames__title">Swarm live view</span>
+        <span className="pc-frames__title">{t('fleet')} live view</span>
         <span className="pc-frames__sub">
           {rows.length === 0
             ? 'no deployed frames'

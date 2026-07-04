@@ -23,9 +23,15 @@ export function countStarted(rows: readonly HiveControlRow[]): number {
   return rows.filter((r) => r.started === true).length;
 }
 
-/** Pluralized label for the header pill ("N hive(s) running"). Pure. */
-export function hivesRunningLabel(n: number): string {
-  return `${n} hive${n === 1 ? '' : 's'} running`;
+/**
+ * Pluralized label for the header pill ("N pot(s) running"). Pure + hook-free so
+ * it stays unit-testable — the CALLER supplies the resolved brand noun (singular,
+ * plural) from the active lexicon (restore-pot-lexicon P-006). Defaults to the
+ * literal 'hive'/'hives' only for the bare unit test; production always passes the
+ * lexicon words.
+ */
+export function hivesRunningLabel(n: number, singular = 'hive', plural = 'hives'): string {
+  return `${n} ${n === 1 ? singular : plural} running`;
 }
 
 /**

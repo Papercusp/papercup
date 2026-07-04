@@ -520,7 +520,7 @@ export default function AdvShell({
                   </span>
                 </Tooltip>
               ) : (
-                <Tooltip label={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}>
+                <Tooltip label={`Share ${activeSlug} — publish the ${t('pot', { lower: true })} to the P2P directory so others can join`}>
                   <button
                     type="button"
                     className="pc-advshell__action pc-advshell__action--share"
@@ -534,7 +534,7 @@ export default function AdvShell({
             {!allMode && activeSlug && !activeIsHive && activeIsShared && (
               <span
                 className="pc-advshell__action pc-advshell__action--shared"
-                title={`${activeSlug} carries a legacy per-harness share (shared.json) — sharing now happens at the hive level`}
+                title={`${activeSlug} carries a legacy per-harness share (shared.json) — sharing now happens at the ${t('pot', { lower: true })} level`}
               >
                 <Check size={13} aria-hidden /> Shared
               </span>

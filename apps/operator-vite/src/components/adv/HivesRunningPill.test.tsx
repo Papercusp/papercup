@@ -25,6 +25,9 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.flagOn }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: H.rows }) }));
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
+// hives→pot pill label/tooltip/aria copy from the THE_HIVE flag hook (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 // The child control boots its own sync/runtime — stub to a marker so we only
 // assert that the popover mounts it.
 vi.mock('../left-sidebar/LocalHivesControl', () => ({
@@ -72,7 +75,7 @@ describe('<HivesRunningPill>', () => {
   it('shows the pluralized running label and the is-running class when ≥1 started', () => {
     render(<Pill />);
     const pill = screen.getByTestId('hives-running-pill');
-    expect(pill.textContent).toContain('1 hive running');
+    expect(pill.textContent).toContain('1 pot running');
     expect(pill.className).toContain('is-running');
     expect(pill.getAttribute('aria-expanded')).toBe('false');
   });
@@ -81,7 +84,7 @@ describe('<HivesRunningPill>', () => {
     H.rows = [{ slug: 'a', started: false }, { slug: 'b', started: false }];
     render(<Pill />);
     const pill = screen.getByTestId('hives-running-pill');
-    expect(pill.textContent).toContain('0 hives running');
+    expect(pill.textContent).toContain('0 pot running');
     expect(pill.className).not.toContain('is-running');
   });
 
@@ -110,7 +113,7 @@ describe('<HivesRunningPill>', () => {
     // not on the inner `hives-running-pop` content div the old hand-rolled panel used. The pill's
     // aria-controls still points at that inner content div's id.
     const dialog = screen.getByRole('dialog');
-    expect(dialog.getAttribute('aria-label')).toBe('Local hives');
+    expect(dialog.getAttribute('aria-label')).toBe('Local pot');
     const pop = screen.getByTestId('hives-running-pop');
     expect(pop).toBeTruthy();
     expect(screen.getByTestId('hives-running-pill').getAttribute('aria-controls')).toBe(pop.id);

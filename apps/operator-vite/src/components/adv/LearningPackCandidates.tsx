@@ -18,6 +18,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Inbox } from 'lucide-react';
 import type { LearningPackCandidate } from '@papercusp/operator-core/lib/learning-packs/candidates';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useLexicon } from '@/lib/useLexicon';
 
 const actionBtn: React.CSSProperties = {
   background: 'none',
@@ -30,6 +31,7 @@ const actionBtn: React.CSSProperties = {
 };
 
 export default function LearningPackCandidates() {
+  const t = useLexicon();
   const sync = useSyncQuery<LearningPackCandidate>({
     queryName: 'learningPacks.candidates',
     args: {},
@@ -103,7 +105,7 @@ export default function LearningPackCandidates() {
             >
               {lcand === c.id ? 'hide draft' : 'view draft'}
             </button>
-            <Tooltip label="Write this lesson into the fleet-lessons pack (hives adopt it through the pack update review)">
+            <Tooltip label={`Write this lesson into the fleet-lessons pack (${t('pot', { plural: true, lower: true })} adopt it through the pack update review)`}>
               <button
                 type="button"
                 style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}

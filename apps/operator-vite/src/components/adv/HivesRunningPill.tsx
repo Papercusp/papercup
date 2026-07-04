@@ -13,10 +13,12 @@ import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
+import { useLexicon } from '@/lib/useLexicon';
 import { countStarted, hivesRunningLabel, type HiveControlRow } from './hive-control';
 import LocalHivesControl from '../left-sidebar/LocalHivesControl';
 
 export default function HivesRunningPill() {
+  const t = useLexicon();
   const on = useFlag(FLAGS.HIVE_CONTROL);
   const [open, setOpen] = useQueryState('hivesCtl', parseAsBoolean.withDefault(false));
   const { data } = useSyncQuery<HiveControlRow>({ queryName: 'hive.controlState', args: {} });
@@ -39,13 +41,13 @@ export default function HivesRunningPill() {
             aria-controls="pc-advshell-hives-pop"
           >
             <Play size={11} aria-hidden />
-            {hivesRunningLabel(running)}
+            {hivesRunningLabel(running, t('pot', { lower: true }), t('pot', { plural: true, lower: true }))}
           </button>
         )}
-        tooltipLabel="Start/stop hives"
+        tooltipLabel={`Start/stop ${t('pot', { plural: true, lower: true })}`}
         side="bottom"
         align="end"
-        ariaLabel="Local hives"
+        ariaLabel={`Local ${t('pot', { plural: true, lower: true })}`}
         contentClassName="pc-advshell__hives-pop"
       >
         <div

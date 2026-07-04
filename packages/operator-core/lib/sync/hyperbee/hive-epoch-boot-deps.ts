@@ -22,7 +22,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { createEpochKeyProvider } from './hive-epoch-key-provider';
 import { createPgWrappedKeyLoader } from './hive-epoch-keys-store';
-import { resolveHiveEpochCrypto } from './hive-epoch-serving';
+import { resolveHiveEpochCrypto, type EpochKeyProvider } from './hive-epoch-serving';
 import { getHiveEpoch } from './hive-epoch-state';
 import { PendingEpochContent } from './pending-epoch-content';
 import { isCanonicalHiveOwner } from '../../hive-identity';
@@ -154,6 +154,37 @@ export async function buildHiveRekeyBootDeps(opts: {
     } catch {
       /* best-effort */
     }
+    return null;
+  }
+}
+
+/**
+ * Build JUST the member-side EpochKeyProvider for (workspace, hiveHomeSlug) — the
+ * device-identity + crypto + provider slice that {@link buildHiveRekeyBootDeps} also
+ * composes inline (steps 3–4a). Returns null when this box has no local device
+ * identity (⇒ it can unwrap no epoch key). Best-effort: any resolution hiccup ⇒ null,
+ * so the caller degrades to a cold path rather than failing.
+ *
+ * Consumer: the post-admission deferred-git-restore trigger (deferred-git-restore.ts,
+ * plan hive-seed-bundle-2026-07-04 P-010) — a git seed sealed with keyRef via='epoch'
+ * is decrypted with the hive epoch key at cutAtEpoch, which this provider unwraps from
+ * THIS device's `hive_epoch_keys` row (guaranteed present for a fresh member by Q-4 /
+ * grantEpochKeysToMembers). Not flag-gated: unlike the re-key gate it does no writes
+ * and only READS a key the member already holds. (buildHiveRekeyBootDeps keeps its own
+ * inline assembly to avoid churning that boot-critical path; the two could unify later.)
+ */
+export async function buildMemberEpochKeyProvider(opts: {
+  workspaceId: string;
+  hiveHomeSlug: string;
+}): Promise<EpochKeyProvider | null> {
+  try {
+    const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
+    const ident = await resolveLocalGithubIdentity();
+    if (ident.kind !== 'ok') return null;
+    const localDevice = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(ident.githubUserId));
+    const crypto = await resolveHiveEpochCrypto(true);
+    return createEpochKeyProvider(crypto, createPgWrappedKeyLoader(opts.workspaceId, opts.hiveHomeSlug), localDevice);
+  } catch {
     return null;
   }
 }
