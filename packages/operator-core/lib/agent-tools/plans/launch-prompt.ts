@@ -11,16 +11,40 @@
  * route + any launcher can import it without pulling launch.ts's heavy module graph.
  */
 
+/** The plan a launch is bound to — baked VERBATIM into the kickoff so the agent
+ *  never has to recover the slug from context. Weak-model guard proven necessary
+ *  2026-07-03: ornith leader session 10115 was handed "the plan" with no slug in
+ *  the kickoff, failed to extract it from coord:orient's launched-by fact, called
+ *  plans:get slug-less, listed plans twice, then PARKED on an interactive `ask`
+ *  ("Which plan slug?") until killed. */
+export interface LaunchPlanRef {
+  slug: string;
+  harness?: string | null;
+}
+
+function plansGetArgs(plan: LaunchPlanRef): string {
+  const h = (plan.harness ?? '').trim();
+  return `{ slug: "${plan.slug}"${h ? `, harness: "${h}"` : ''} }`;
+}
+
 /**
  * The first user turn for a launch — the supplied note, or a default kickoff when
- * the launch carried none. Pure.
+ * the launch carried none. When `plan` is provided, the kickoff names the exact
+ * slug (+ harness) and the literal `plans:get` args (appended to a custom note
+ * too — the note author may not have restated the slug). Pure.
  */
 export function deriveLaunchPromptText(
   note: string | null | undefined,
   autoMode = true,
+  plan?: LaunchPlanRef | null,
 ): string {
   const trimmed = (note ?? '').trim();
-  if (trimmed.length > 0) return trimmed;
+  if (trimmed.length > 0) {
+    return plan
+      ? `${trimmed}\n\n(You were launched on plan \`${plan.slug}\` — read it with the ` +
+          `\`plans:get\` MCP tool, args ${plansGetArgs(plan)}.)`
+      : trimmed;
+  }
   // AUTO ON — a headless fleet member / no human at the keyboard: it MUST start
   // working the plan immediately or it parks idle. Keep the direct work order —
   // but carry the SAME weak-model guards as the AUTO-off branch (proven necessary
@@ -31,8 +55,13 @@ export function deriveLaunchPromptText(
   // verification" that never happened (EI-7000) — hence the completion-integrity
   // clause.
   if (autoMode) {
-    return 'Begin: advance this plan. Read it by calling the `plans:get` MCP tool with its ' +
-      'slug (pass `harness`) — the plan lives in the coordination system, NOT on disk, so do ' +
+    const readClause = plan
+      ? `Begin: advance the plan \`${plan.slug}\`. Read it by calling the \`plans:get\` MCP ` +
+        `tool with EXACTLY these args: ${plansGetArgs(plan)} — copy them verbatim; do NOT ` +
+        'ask which plan or hunt for one. The plan lives in the coordination system, NOT on disk, so do '
+      : 'Begin: advance this plan. Read it by calling the `plans:get` MCP tool with its ' +
+        'slug (pass `harness`) — the plan lives in the coordination system, NOT on disk, so do ';
+    return readClause +
       'NOT hunt for a plan file with `read`, `bash`, `find`, or `grep`. Call MCP tools ' +
       'directly (or via `tools:invoke { name, args }`) — NEVER from inside `eval` (the eval ' +
       'runtime has no `tools` object; that is a NameError). Then read the `## Now` block, ' +
@@ -55,8 +84,13 @@ export function deriveLaunchPromptText(
   //  · "(C) … executed with the `fleet:launch-on-plan` tool" — sessions 9870/9865
   //    chose C, then never launched (the tool was hidden) or hand-built a broken psu
   //    command; naming the exact verb makes option C real.
-  return "You've been handed a plan to implement. First read it by calling the `plans:get` " +
-    "MCP tool with the plan's slug — the plan lives in the coordination system, NOT on disk, so " +
+  const gateReadClause = plan
+    ? `You've been handed the plan \`${plan.slug}\` to implement. First read it by calling ` +
+      `the \`plans:get\` MCP tool with EXACTLY these args: ${plansGetArgs(plan)} — copy them ` +
+      'verbatim; do NOT ask which plan or hunt for one. The plan lives in the coordination system, NOT on disk, so '
+    : "You've been handed a plan to implement. First read it by calling the `plans:get` " +
+      "MCP tool with the plan's slug — the plan lives in the coordination system, NOT on disk, so ";
+  return gateReadClause +
     'do NOT use the `read`, `bash`, `find`, or `grep` file tools and do NOT guess a `plan://` or ' +
     'file path. If a papercusp tool is not directly callable, invoke it via `tools:invoke` with ' +
     '`{ name, args }` (e.g. `tools:invoke { name: "plans:get", args: { slug, harness } }`) — do NOT ' +
