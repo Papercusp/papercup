@@ -256,6 +256,54 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.stateWarning).toMatch(/NOT closed/); // the failed transition left it claimable
     });
   });
+
+  // ── verificationWarning: settled-but-unverified lint (flush-to-proceed P-006) ────────────
+  // A settled unit is VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent.
+  // SOFT warning, not a hard reject (D-005 / EI-24: a finished completion is never lost).
+  describe('verificationWarning — settled-but-unverified lint (P-006)', () => {
+    beforeEach(() => {
+      // A closed item so stateWarning stays silent and these assertions isolate verificationWarning.
+      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+    });
+
+    it('warns when a completion has NEITHER `tests` nor `deferred`', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped it' } });
+      expect(r.ok).toBe(true); // NOT rejected — the completion is still recorded + emitted
+      expect(r.completion.summary).toBe('shipped it');
+      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
+      expect(r.verificationWarning).toContain('F-12');
+    });
+
+    it('does NOT warn when `tests` is populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', tests: '18 vitest green' } });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when `deferred` is a non-empty list (conscious deferral)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', deferred: ['live smoke pending'] } });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('treats an EMPTY `deferred` array + whitespace-only `tests` as absent (still warns)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      // Note: the schema drops empty arrays / min(1) strings, but the lint is defensive about both.
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', deferred: [] } });
+      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
+    });
+
+    it('does NOT warn when both are populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 's', tests: '5 green', deferred: ['perf pass later'] },
+      });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+  });
 });
 
 /**

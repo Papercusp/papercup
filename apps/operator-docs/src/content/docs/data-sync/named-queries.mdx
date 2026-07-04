@@ -69,8 +69,6 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 | `issuesConsolidated.bySlug` | `IssueRow[]` | `{ harnessSlug }` |
 | `agentRunsConsolidated.bySlug` (or `.recent`) | `AgentRunRow[]` | `{ harnessSlug }` |
 | `snapshotsConsolidated.bySlug` | `SnapshotRow[]` | `{ harnessSlug }` |
-| `projects.all` / `projects.byId` | `ProjectRow[]` | (none) / `{ id }` |
-| `messages.recent` | `MessageRow[]` | `{ limit }` |
 
 `featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259
 P-006/D-010) and `.byPlanSlug`. The doc text claiming a `needsReview` variant,

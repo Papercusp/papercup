@@ -44,6 +44,43 @@ import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../.
 /** Coverage levels most-covered → least, for sorting the rollup. */
 const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
 
+/**
+ * EI-6077 (detector gap): `AgentAssignment.alive` is heartbeat-freshness only
+ * (the `fleet_assignment` view's `holder_alive`) — EI-6374 already downgrades it
+ * for a CONFIRMED-ended session (adv_sessions.ended_at set), but a session that
+ * is simply not coord-wakeable — no live `coord:inbox-wake:<id>` await, e.g. it
+ * never registered one — still read `alive:true` here while coord:dispatch /
+ * coord:send could not actually reach it. That mismatch is exactly what left the
+ * Queen unable to tell "really runnable" from "just looks alive" without a
+ * separate coord:presence call (the EI's filed evidence).
+ *
+ * Ports the SAME reconciliation fleet:status already applies (EI-5858,
+ * fleet/fleet-roster.ts `foldFleetRoster`): derive `sessionState` from
+ * coord:presence's own wakeability signal (P-001) and gate `alive` on it, so the
+ * two "who's running" tools agree instead of leaving callers to cross-check both.
+ *
+ * Exported (not inlined in the handler) so it unit-tests with an injected
+ * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
+ * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
+ */
+export async function reconcileWakeability<
+  T extends AgentAssignment & { sessionState?: SessionState | null },
+>(
+  agents: T[],
+  fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const wakeability = await fetchWakeabilityFn(agents.map((a) => a.agentId));
+  for (const a of agents) {
+    const w = wakeability.get(a.agentId);
+    if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
+    const sessionState = deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
+    a.sessionState = sessionState;
+    if (sessionState === 'ended') a.alive = false;
+  }
+  return agents;
+}
+
 export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
@@ -147,28 +184,10 @@ export default defineTool({
     });
     const agents: (AgentAssignment & { sessionState?: SessionState | null })[] =
       groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
-    // EI-6077: `alive` above is heartbeat-freshness only (EI-6374 already downgrades
-    // it for a CONFIRMED-ended session, but a session that is simply not
-    // coord-wakeable — no live `coord:inbox-wake:<id>` await, e.g. it never
-    // registered one — still read `alive:true` here while coord:dispatch/coord:send
-    // could not actually reach it). Port the SAME reconciliation fleet:status
-    // already applies (EI-5858, fleet/fleet-roster.ts foldFleetRoster): derive
-    // `sessionState` from wakeability and gate `alive` on it, so the two "who's
-    // running" tools agree instead of leaving the Queen to notice the mismatch by
-    // cross-calling both. Best-effort — a query failure just leaves today's
-    // heartbeat-only `alive` and an absent `sessionState` (state unknown).
-    try {
-      const wakeability = await fetchWakeability(agents.map((a) => a.agentId));
-      for (const a of agents) {
-        const w: WakeabilitySignals | undefined = wakeability.get(a.agentId);
-        if (!w) continue;
-        const sessionState = deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
-        a.sessionState = sessionState;
-        if (sessionState === 'ended') a.alive = false;
-      }
-    } catch {
-      // Non-fatal — omit sessionState, keep heartbeat-only alive (today's behavior).
-    }
+    // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
+    // (see reconcileWakeability above) — best-effort, a query failure just leaves
+    // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
+    await reconcileWakeability(agents).catch(() => {});
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
