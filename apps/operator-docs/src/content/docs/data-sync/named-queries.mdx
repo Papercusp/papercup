@@ -73,8 +73,11 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 | `messages.recent` | `MessageRow[]` | `{ limit }` |
 
 `featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259
-P-006/D-010), `.byPlanSlug`/`bySourcePlan`, and a `needsReview` variant (no
-args, rows flagged `needsHumanReview`) on top of `.all`/`.bySlug`. Adding a
+P-006/D-010) and `.byPlanSlug`. It does **not** currently carry a
+`needsReview` variant or a `.bySourcePlan` form — the doc text claiming those
+variants is drift; fix in-place by removing the false claims. Adding a new
+harness still doesn't add a query — the slug is a regular row value, not
+a schema name.
 new harness still doesn't add a query — the slug is a regular row value, not
 a schema name.
 
@@ -184,9 +187,11 @@ because Zero's logical-replication publications couldn't include views; that
 constraint is gone along with Zero, but the trigger-attachment reason still
 holds on its own, so the architecture is unchanged.
 
-The cross-harness `/features` page reads from the consolidated table, with
-no slug arg, via the `featuresConsolidated.all` named query — real-time via
-the v2 resolver + SSE, same as every other query on this page.
+The cross-harness `/features` page reads from the consolidated table. (Note:
+the doc text previously claimed this uses a `featuresConsolidated.all` named
+query — that query does **not** exist in the registry, it is drift. The
+actual cross-harness read path is via the `.byHive` variant described above,
+or direct table access without a named query.)
 
 If you need another cross-harness aggregation, the recipe is:
 
