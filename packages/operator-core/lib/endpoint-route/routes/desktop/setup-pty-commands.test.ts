@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildFrameworkInstallSpec, buildInstallSpec } from './setup-pty-commands';
+import {
+  buildConciergeSpec,
+  buildFrameworkInstallSpec,
+  buildInstallSpec,
+  resolveConciergeScript,
+} from './setup-pty-commands';
 
 const HOME = '/home/tester';
 
@@ -52,6 +57,31 @@ describe('buildFrameworkInstallSpec', () => {
 
   it('omp-meridian on win32 throws loudly (D-006: Windows v1 ships no omp)', () => {
     expect(() => buildFrameworkInstallSpec('omp-meridian', 'win32', HOME)).toThrow(/Windows/);
+  });
+});
+
+describe('onboarding concierge spec (P-003)', () => {
+  it('resolveConciergeScript walks the fallback chain from cwd', () => {
+    const hit = '/srv/operator/scripts/onboard-launcher.mjs';
+    expect(resolveConciergeScript('/srv/operator', (p) => p === hit)).toBe(hit);
+    expect(
+      resolveConciergeScript('/srv/repo', (p) => p === '/srv/repo/apps/operator/scripts/onboard-launcher.mjs'),
+    ).toBe('/srv/repo/apps/operator/scripts/onboard-launcher.mjs');
+    expect(resolveConciergeScript('/nowhere', () => false)).toBeNull();
+  });
+
+  it('buildConciergeSpec uses an absolute node and threads the operator origin', () => {
+    const spec = buildConciergeSpec(
+      '/srv/operator/scripts/onboard-launcher.mjs',
+      'http://127.0.0.1:3070',
+      HOME,
+      '/usr/local/bin/node',
+    );
+    // The Tauri pty child inherits NO PATH — a bare `node` would not resolve.
+    expect(spec.command).toBe('/usr/local/bin/node');
+    expect(spec.args).toEqual(['/srv/operator/scripts/onboard-launcher.mjs']);
+    expect(spec.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3070');
+    expect(spec.cwd).toBe(HOME);
   });
 });
 

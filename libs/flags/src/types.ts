@@ -1196,6 +1196,13 @@ export const FLAGS = {
   // psu shim is inert (dev/internal launch is unchanged). KNOWN_DARK_FLAGS.
   PSU_END_USER: "papercusp-psu-end-user",
 
+  // DEFAULT ON (derived FLAG_DEFAULTS; agent-first-onboarding-2026-07-03 P-003):
+  // first-run lands on the agent-chat Onboarding Console (a full-window terminal
+  // running the onboarding concierge → tutor handoff) instead of the GUI Setup
+  // Wizard. Reversible cutover: OFF ⇒ byte-identical to today (first-run →
+  // /setup); the GUI wizard stays reachable at /setup?force=1 either way.
+  ONBOARDING_AGENT_FIRST: "papercusp-onboarding-agent-first",
+
   // DEFAULT ON (owner-directed 2026-06-23, ship-papercusp-as-single-hive): on first
   // boot a PACKAGED desktop install clones github.com/Papercusp/papercup and creates
   // the `papercusp` dogfood hive (Papercusp building itself), then homes on it. Safe

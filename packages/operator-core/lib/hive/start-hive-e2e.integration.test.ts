@@ -222,6 +222,16 @@ beforeAll(async () => {
   await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
   h.sql = rootSql;
 
+  // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and the wake
+  // surface refuses to arm while started=false. Start the hive the way
+  // hive:start does (setHiveStarted BEFORE arming) so the chain under test
+  // can fire.
+  {
+    const { setHiveStarted } = await import('./started');
+    const { resolveHiveHomeSlug } = await import('./wake');
+    await setHiveStarted(WS, resolveHiveHomeSlug('papercup', undefined)!, true);
+  }
+
   // Arm the Queen's defaults (P-002) — the live reaction rules the chain rides.
   await armDefaultHiveWakeSubscriptions(WS, { mode: 'replace' });
 }, 120_000);

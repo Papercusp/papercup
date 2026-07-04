@@ -200,6 +200,51 @@ export function buildLoginSpec(
   };
 }
 
+/**
+ * Locate the onboarding concierge script (onboard-launcher.mjs) from the
+ * operator's cwd. Same fallback-chain trick as the bundled-gh resolution
+ * below: dev runs with cwd=apps/operator; the packaged sidecar keeps scripts/
+ * next to its cwd. Returns null when absent (Onboarding Console then shows
+ * its GUI-wizard fallback).
+ */
+export function resolveConciergeScript(
+  cwd: string = process.cwd(),
+  exists: (p: string) => boolean = (p) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { existsSync } = require('node:fs') as typeof import('node:fs');
+    return existsSync(p);
+  },
+): string | null {
+  const candidates = [
+    `${cwd}/scripts/onboard-launcher.mjs`,
+    `${cwd}/../scripts/onboard-launcher.mjs`,
+    `${cwd}/apps/operator/scripts/onboard-launcher.mjs`,
+  ];
+  return candidates.find((p) => exists(p)) ?? null;
+}
+
+/**
+ * Spawn spec for the Onboarding Console's concierge (P-003). Pure given its
+ * inputs — exported for tests. `origin` is the operator base URL the WEBVIEW
+ * reached us on (derived from the request), threaded to the concierge via
+ * PAPERCUSP_OPERATOR_URL so it polls the same server. `nodeBin` defaults to
+ * this process's node — the Tauri pty child inherits NO PATH, so a bare
+ * `node` would not resolve.
+ */
+export function buildConciergeSpec(
+  scriptPath: string,
+  origin: string,
+  home: string,
+  nodeBin: string = process.execPath,
+): SpawnSpec {
+  return {
+    command: nodeBin,
+    args: [scriptPath],
+    cwd: home,
+    env: { PAPERCUSP_OPERATOR_URL: origin },
+  };
+}
+
 /** GitHub CLI uses `gh auth login` (different arg shape from claude/omp). */
 export function buildGithubLoginSpec(home: string): SpawnSpec {
   const resolved = (() => {
@@ -246,7 +291,7 @@ export default defineTool({
   method: 'GET',
   path: '/desktop/setup-pty-commands',
   auth: {},
-  handler() {
+  handler(req: Request) {
     const os = platform();
     const home = homedir();
     // Per-framework specs for the onboarding concierge (P-001): only the
@@ -254,9 +299,16 @@ export default defineTool({
     const installFramework = Object.fromEntries(
       allowedFrameworks(os).map((f) => [f, buildFrameworkInstallSpec(f, os, home)]),
     ) as Partial<Record<OnboardingFramework, SpawnSpec>>;
+    // Onboarding Console concierge (P-003): null when the script can't be
+    // located — the console component falls back to the GUI wizard.
+    const conciergeScript = resolveConciergeScript();
+    const onboardConcierge = conciergeScript
+      ? buildConciergeSpec(conciergeScript, new URL(req.url).origin, home)
+      : null;
     return Response.json({
       installRuntime: buildInstallSpec(os, home),
       installFramework,
+      onboardConcierge,
       loginClaude: buildLoginSpec('claude', home),
       loginCodex: buildLoginSpec('codex', home),
       loginOmp: buildLoginSpec('omp', home),

@@ -187,7 +187,8 @@ beforeAll(async () => {
       output_ref text, output_size bigint, error_message text,
       args_json jsonb, transport text, event_count integer, metadata_json jsonb,
       principal_kind text, principal_auth_method text, principal_trust text,
-      error_code text
+      error_code text,
+      coord_owner_id text
     )
   `);
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
@@ -216,6 +217,15 @@ beforeAll(async () => {
       CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
     )`);
   h.sql = rootSql;
+  // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and
+  // hive:declare-wake refuses to arm while started=false. Start the hive the
+  // way hive:start does (setHiveStarted BEFORE arming) so the declared-wake
+  // chain under test can register rules at all.
+  {
+    const { setHiveStarted } = await import('./started');
+    const { resolveHiveHomeSlug } = await import('./wake');
+    await setHiveStarted(WS, resolveHiveHomeSlug('papercup', undefined)!, true);
+  }
   // Deliberately NOT arming the default subscriptions — every rule in this test
   // comes from the Pot's own hive:declare-wake call (the declared path).
 }, 120_000);
@@ -231,7 +241,7 @@ describe('the declared event wake, end to end (P-008)', () => {
       harness: 'papercup',
       events: [{ on: 'plans:start', note: 'P-008 burst test' }],
     });
-    expect(out.ok).toBe(true);
+    expect(out.ok, JSON.stringify(out)).toBe(true);
     expect(out.mode).toBe('event');
     expect(out.eventRules).toBe(1);
   });
