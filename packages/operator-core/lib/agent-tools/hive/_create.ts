@@ -143,8 +143,18 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
 
   // Resolve + validate the chosen kind:'hive' blueprint (default the coding `hive`;
   // 'work' for a non-coding hive — hive-blueprint-generalization P-006).
+  // EI-3388: when linking an EXISTING repo as the hive home (opts.existingPath),
+  // also check ITS `.papercusp/blueprints` as a local resolver tier — the same
+  // local -> installed -> built-in composition harness:create already applies
+  // for its `path` arg (see agent-tools/harness/create.ts). Before this fix
+  // hive:create passed localDirs:[] unconditionally, so a hive-scoped blueprint
+  // authored in an existing repo's `.papercusp/blueprints/<id>/` (a custom
+  // `extends` parent, e.g. an ops/scout variant) could never resolve without a
+  // manual copy into the global `~/.papercusp/blueprints` installed tier.
   const blueprintId = opts.blueprintId ?? HIVE_BLUEPRINT_ID;
-  const resolver = operatorResolveExtends({ localDirs: [] });
+  const resolver = operatorResolveExtends({
+    localDirs: opts.existingPath != null ? [join(resolvePath(opts.existingPath), '.papercusp', 'blueprints')] : [],
+  });
   const childObj: Record<string, unknown> = { id: opts.slug, extends: blueprintId };
   const validation = resolveAndValidate(childObj, resolver);
   if (validation.parseError || !validation.ok || !validation.blueprint) {

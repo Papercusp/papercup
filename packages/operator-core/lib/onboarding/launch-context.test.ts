@@ -37,8 +37,9 @@ describe('the REAL onboarding-tutor.md source (token-drift guard)', () => {
     const rendered = renderTutorTemplate(readFileSync(source, 'utf8'), TOKENS);
     const leftovers = rendered.match(/{{[A-Z_]+}}/g) ?? [];
     expect(leftovers).toEqual([]);
-    // Owner-verbatim finale opener must survive rendering untouched.
-    expect(rendered).toContain('Now the last piece is the GUI');
+    // Owner-verbatim finale opener must survive rendering untouched
+    // (whitespace-normalized: the source hard-wraps lines).
+    expect(rendered.replace(/\s+/g, ' ')).toContain('Now the last piece is the GUI');
     // The section protocol line is the tutorial's engine — pin it.
     expect(rendered).toContain('[1] Continue · [2] More details · or just type your question');
   });
