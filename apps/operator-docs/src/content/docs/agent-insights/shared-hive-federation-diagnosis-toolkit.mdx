@@ -223,7 +223,9 @@ fed.sh b api GET '/api/admin/dogfood-substrate-boot-history?harness_slug=<hive-h
 The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 
 - `announce_admitted` — admission succeeded. The `message` says **which path**:
-  `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B).
+  `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B),
+  `owner_admit_joiner origin=… hive=…` (Path B's owner-gate exception, D-023 BUG C —
+  this box is the canonical owner admitting a brand-new joiner instead of buffering it).
 - `announce_rejected` — Layer-1 conclusive reject. Look at the reason — **`binding_invalid`**
   (gist/identity, fix that — see WI-797), `revoked` (read-cut, correct), `bad_sig`.
 - `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss`
