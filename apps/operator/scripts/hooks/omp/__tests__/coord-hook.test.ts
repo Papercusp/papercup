@@ -43,6 +43,9 @@ import {
   isAgentSession,
   isEvalCall,
   evalBlockReason,
+  EVAL_BLOCK_ESCALATE_AFTER,
+  noteEvalBlock,
+  resetEvalBlockBudget,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -439,6 +442,24 @@ describe('isEvalCall + evalBlockReason (eval doom-loop guard, WI-2299)', () => {
     expect(r).toContain('Bash');
     expect(r).toContain('NATIVELY');
   });
+  it('escalates to a hard, copy-pasteable directive once the block is ignored past the threshold', () => {
+    // At/under the threshold: the polite triad steer (no STOP).
+    expect(evalBlockReason(EVAL_BLOCK_ESCALATE_AFTER)).toContain('NATIVELY');
+    expect(evalBlockReason(EVAL_BLOCK_ESCALATE_AFTER)).not.toContain('STOP');
+    // Past it: a hard STOP naming the run length, with the literal plans:get / tools:invoke next-action.
+    const hard = evalBlockReason(EVAL_BLOCK_ESCALATE_AFTER + 1);
+    expect(hard).toContain('STOP');
+    expect(hard).toContain('plans:get');
+    expect(hard).toContain('tools:invoke');
+    expect(hard).toContain(`×${EVAL_BLOCK_ESCALATE_AFTER + 1}`);
+  });
+  it('noteEvalBlock is session-cumulative and resetEvalBlockBudget clears it', () => {
+    resetEvalBlockBudget();
+    expect(noteEvalBlock()).toBe(1);
+    expect(noteEvalBlock()).toBe(2);
+    resetEvalBlockBudget();
+    expect(noteEvalBlock()).toBe(1);
+  });
 });
 
 describe('onToolCall eval guard (agent sessions only)', () => {
@@ -446,9 +467,11 @@ describe('onToolCall eval guard (agent sessions only)', () => {
   beforeEach(() => {
     global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
     resetToolCallLoopState();
+    resetEvalBlockBudget();
   });
   afterEach(() => {
     resetToolCallLoopState();
+    resetEvalBlockBudget();
     if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
     else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
   });
@@ -465,6 +488,19 @@ describe('onToolCall eval guard (agent sessions only)', () => {
     expect(first.reason).toContain('eval-blocked');
     const second = await evalCall('plans.get(slug="y")'); // different code
     expect(second.block).toBe(true);
+  });
+
+  it('escalates the block after the session ignores it past the threshold (session-cumulative)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < EVAL_BLOCK_ESCALATE_AFTER + 2; i++) {
+      const r = await evalCall(`attempt_${i}()`); // DIFFERENT code each time — non-adjacent runs
+      expect(r.block).toBe(true);
+      reason = r.reason ?? '';
+    }
+    // Past the threshold the steer becomes the hard, copy-pasteable STOP directive.
+    expect(reason).toContain('STOP');
+    expect(reason).toContain('plans:get');
   });
 
   it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {

@@ -64,6 +64,21 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.claimable).toEqual([{ id: 'WI-9' }]);
   });
 
+  it('folds the injected ownerPresent bit verbatim (P-004), and omits the leg when not resolved', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const present = { present: true, lastSeenAgoMs: 12_000, activeSessions: 1 };
+    const withBit = await composeOrient({}, call, 'me', undefined, present);
+    expect(withBit.ownerPresent).toEqual(present);
+
+    const { call: call2 } = fakeCall({ ...CORE });
+    const withoutBit = await composeOrient({}, call2, 'me'); // handler didn't resolve it
+    expect(withoutBit.ownerPresent).toBeUndefined();
+
+    const { call: call3 } = fakeCall({ ...CORE });
+    const failedRead = await composeOrient({}, call3, 'me', undefined, null); // read failed ⇒ null leg
+    expect(failedRead.ownerPresent).toBeNull();
+  });
+
   it('honors claimableState / claimableLimit / inboxLimit overrides', async () => {
     const { call, calls } = fakeCall({ ...CORE });
     await composeOrient({ claimableState: 'wip', claimableLimit: 5, inboxLimit: 3 }, call, 'me');

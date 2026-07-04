@@ -14,9 +14,23 @@
  * stub closures recording into the SAME `calls` array so overrides show up in the
  * trace too. No network, no git, no real deploy.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { executeDeploy, type DeployDeps, type DeployPlan, type SnapshotInfo } from './deploy';
 import { releaseConfig } from './release-config';
+
+// EI-7287: executeDeploy dynamically imports emitAwaitedEvent from the await
+// engine and calls it DIRECTLY (deploy.ts ~L335 release:deployed / ~L407
+// release:deploy-failed) — NOT via injected deps. Both tests below exercise the
+// FAILURE path, so without this mock each fires a REAL release:deploy-failed —
+// carrying this file's fixture sha abcdef1234567890 + the "/churn" verify error —
+// onto the SHARED event bus on every gate-suite run, false-waking any agent on a
+// live deploy:await / events:await. deploy.test.ts mocks the engine for exactly
+// this reason; mirror it so these unit tests never reach the real bus. (Unit
+// tests have no DB isolation — the integration test is safe because it runs
+// against a per-test testcontainer store.)
+vi.mock('@papercusp/operator-core/lib/events/await/engine', () => ({
+  emitAwaitedEvent: vi.fn(async () => {}),
+}));
 
 /**
  * Like deploy.test.ts's makeDeps, but the call-trace array is created up front so

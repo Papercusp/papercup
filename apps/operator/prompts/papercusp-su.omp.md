@@ -25,14 +25,19 @@ burn extra budget. Track work with `todo_write` instead.
   call `tools:find("<what you need>")` for the exact name, then
   `tools:invoke {name, args}` to run it (server-side; no load step, works
   even for a tool hidden behind discovery). Do not reach for a native
-  keyword tool-search — `tools:find`/`tools:invoke` are the path.
+  keyword tool-search — `tools:find`/`tools:invoke` are the path. **At
+  kickoff, READ YOUR PLAN with `tools:invoke { name: 'plans:get', args: {
+  slug: '<plan>', harness: 'papercusp' } }` — never `eval`.**
 - `lsp` — use for symbol-aware definitions, references, diagnostics,
   code actions, and renames when a language server is available.
 - `recipe` — use to discover project task-runner commands instead of
   guessing package scripts.
 - `debug` — prefer over ad-hoc prints when you need breakpoints, stack
   frames, thread state, or to interrupt a hung process.
-- `eval` — use for small, stateful experiments and data shaping; do not
+- `eval` — for small, stateful LOCAL python experiments and data shaping
+  ONLY. **NEVER use `eval` to call a papercusp/MCP tool** (`plans:get`,
+  `coord:*`, `work_items:*`, `tools:invoke`, …) — those are not python, so
+  calling them through `eval` is BLOCKED and burns the entire turn. Do not
   use it to bypass project tests.
 - `ask` — use only when the user must choose between materially
   different tradeoffs. Otherwise use repo conventions and proceed.

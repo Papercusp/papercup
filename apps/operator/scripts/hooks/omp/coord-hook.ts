@@ -1666,15 +1666,51 @@ export function isEvalCall(toolName: string): boolean {
   return bare === 'eval' || bare === 'evaltool' || bare === 'runpython' || bare === 'python';
 }
 
-/** The redirect returned when an agent session invokes `eval`. Forces the model
- *  back onto the native tool / tools:invoke / Bash triad it actually has. Pure. */
-export function evalBlockReason(): string {
+/** SESSION-cumulative eval-block budget (ornith Iter-4, 2026-07-04 / WI-2382). The
+ *  WI-2299 name-block stops `eval` from EXECUTING, but a weak model (ornith IQ3_M)
+ *  keeps REFLEXIVELY re-issuing `eval` every turn despite the block — session 10234
+ *  called it 80+× across turns, each time acknowledging "I should use tools:invoke"
+ *  in its thinking yet calling `eval` again. Because each `eval` is its own OMP turn,
+ *  a turn-scoped counter would reset to 1 forever and never escalate; this counter is
+ *  session-cumulative (like the fleet-launch budget) so the redirect can ESCALATE from
+ *  the helpful triad steer to a hard, copy-pasteable directive. Test-seam reset only;
+ *  deliberately NOT turn-reset. */
+export const EVAL_BLOCK_ESCALATE_AFTER = 3;
+let _evalBlockCount = 0;
+
+/** Count an eval-block for this session; returns the new cumulative total. */
+export function noteEvalBlock(): number {
+  return ++_evalBlockCount;
+}
+
+/** Test seam: reset the session-cumulative eval-block budget. */
+export function resetEvalBlockBudget(): void {
+  _evalBlockCount = 0;
+}
+
+/** The redirect returned when an agent session invokes `eval`. Forces the model back
+ *  onto the native tool / tools:invoke / Bash triad it actually has. ESCALATES once the
+ *  session has ignored the block more than EVAL_BLOCK_ESCALATE_AFTER times: a weak model
+ *  that keeps reflexively re-issuing `eval` gets a hard, copy-pasteable next-action
+ *  directive instead of the same polite steer. Pure. */
+export function evalBlockReason(count = 1): string {
+  if (count <= EVAL_BLOCK_ESCALATE_AFTER) {
+    return (
+      'eval-blocked: the `eval` (python) tool is DISABLED for papercusp agent sessions. ' +
+      'Do NOT invoke MCP/papercusp tools through eval — call the tool NATIVELY by its name ' +
+      '(e.g. call `plans:get` directly with its args), or if it is not directly callable use ' +
+      'the `tools:invoke` tool ({ name, args }). For files or shell use the `Bash` tool. ' +
+      'Retry your intended action with the correct tool now.'
+    );
+  }
   return (
-    'eval-blocked: the `eval` (python) tool is DISABLED for papercusp agent sessions. ' +
-    'Do NOT invoke MCP/papercusp tools through eval — call the tool NATIVELY by its name ' +
-    '(e.g. call `plans:get` directly with its args), or if it is not directly callable use ' +
-    'the `tools:invoke` tool ({ name, args }). For files or shell use the `Bash` tool. ' +
-    'Retry your intended action with the correct tool now.'
+    `eval-blocked (×${count}): STOP — you have called \`eval\` ${count} times and EVERY call is ` +
+    'blocked. `eval` is permanently disabled for this session and will NEVER run; calling it ' +
+    'again only wastes the turn. Do NOT call `eval` again. To READ YOUR PLAN, your next action ' +
+    'must be EXACTLY: `tools:invoke { name: "plans:get", args: { slug: "<your plan slug>", ' +
+    'harness: "papercusp" } }`. To call ANY other papercusp tool: `tools:invoke { name: ' +
+    '"<group>:<verb>", args: {…} }`. For files or shell use the `Bash` tool. If you genuinely ' +
+    'cannot proceed, report the blocker via `coord:send` to your launcher — but do NOT call eval.'
   );
 }
 
@@ -1775,7 +1811,7 @@ export async function onToolCall(
   // the specific guards so it wins before the generic loop-breaker. Owner sessions
   // unrestricted (D-003).
   if (isAgentSession() && isEvalCall(event.toolName)) {
-    return { block: true, reason: evalBlockReason() };
+    return { block: true, reason: evalBlockReason(noteEvalBlock()) };
   }
 
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the
