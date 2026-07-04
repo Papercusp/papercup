@@ -41,7 +41,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 
 // Shared, mutable test-control state the mocks + injected runner read. Declared
@@ -297,7 +297,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('dispatchOneHarness — the DBOS sweep glue (P-011/P-013)', () => {

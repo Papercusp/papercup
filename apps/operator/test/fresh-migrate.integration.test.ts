@@ -19,7 +19,7 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -85,7 +85,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () => {

@@ -31,7 +31,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -112,7 +112,6 @@ afterAll(async () => {
     await admin.end({ timeout: 5 });
   }
   await Promise.all(tempDirs.map((d) => rm(d, { recursive: true, force: true })));
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('migration runner — failure paths + recording contract (synthetic sql dir)', () => {

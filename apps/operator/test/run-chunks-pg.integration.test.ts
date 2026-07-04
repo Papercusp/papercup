@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real durable module
 import {
   appendChunkPg,
@@ -72,7 +72,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('run-chunks-pg against real Postgres', () => {

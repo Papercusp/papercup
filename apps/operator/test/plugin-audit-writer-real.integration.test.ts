@@ -23,7 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -109,7 +109,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('PgAuditWriter on the least-privilege ship role (D-001 — the path that ships)', () => {

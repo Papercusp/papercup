@@ -11,7 +11,7 @@ import { mkdtempSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import { withTestSchema, teardownTestPg } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config';
 import {
   listSavedPrompts,
   upsertSavedPrompt,
@@ -51,7 +51,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (sql) await sql.end({ timeout: 5 });
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('saved-prompts-store', () => {

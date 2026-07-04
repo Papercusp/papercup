@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { withTestSchema, teardownTestPg } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config';
 
 let sql: postgres.Sql;
 let schema: string;
@@ -43,8 +43,4 @@ describe('test-config Postgres harness', () => {
   it('schema is isolated per worker', async () => {
     expect(schema).toMatch(/^t_[0-9a-f]{12}$/);
   });
-});
-
-afterAll(async () => {
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });

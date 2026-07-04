@@ -22,7 +22,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 
 let DBOS: typeof DBOSType;
@@ -90,7 +90,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('DBOS pipeline crash-mid-replay safety (P-007)', () => {

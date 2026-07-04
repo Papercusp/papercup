@@ -20,7 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages
 import {
   setFeatureStatusPg,
@@ -143,7 +143,6 @@ afterAll(async () => {
   } finally {
     await a.end({ timeout: 5 });
   }
-  await teardownTestPg();
 });
 
 // ─── P-012: Feature-lifecycle state machine ───────────────────────────────────

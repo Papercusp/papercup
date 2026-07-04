@@ -25,7 +25,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 import { ServerActionRegistry, type AuditRow, type AuditWriter } from '@papercusp/plugin-loader';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 describe('migration 137 — plugin_audit_log on the least-privilege ship role', () => {

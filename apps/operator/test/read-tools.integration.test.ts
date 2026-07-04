@@ -24,7 +24,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 
 // Register Papercusp's capability→tier policy BEFORE the tools self-register, so
 // their agentRoles resolve (mirrors agent-mcp's vitest test-setup).
@@ -208,7 +208,6 @@ afterAll(async () => {
   } finally {
     await admin.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 // features:get/history/list_related are bulk-standardized (the house keyed-array

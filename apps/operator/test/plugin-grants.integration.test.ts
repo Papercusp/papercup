@@ -10,7 +10,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { withTestSchema, teardownTestPg } from '@papercusp/test-config';
+import { withTestSchema } from '@papercusp/test-config';
 import {
   copyGrantsToNewHarness,
   grantCapabilities,
@@ -48,7 +48,6 @@ afterAll(async () => {
     try { await sql.unsafe(`DROP SCHEMA IF EXISTS harness_shared CASCADE`); } catch {}
     await sql.end({ timeout: 5 });
   }
-  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
 beforeEach(async () => {
