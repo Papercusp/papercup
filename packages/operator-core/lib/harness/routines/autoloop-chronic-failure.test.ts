@@ -268,3 +268,14 @@ describe('isStaleWatermark', () => {
     expect(isStaleWatermark({ last_fired_at: new Date(NOW - 100 * HOUR_MS).toISOString() }, NOW, 0)).toBe(false);
   });
 });
+
+describe('isLoopArmOwnerLoop (EI-6727)', () => {
+  it('non-null, non-empty target_owner_id → loop:arm owner loop (true)', () => {
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: 'su-dad90f05-580b-4cb0-b81e-8cb951756c59' })).toBe(true);
+  });
+  it('null / undefined / empty → fixed system role, fail-open (false)', () => {
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null })).toBe(false);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: undefined })).toBe(false);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: '' })).toBe(false);
+  });
+});
