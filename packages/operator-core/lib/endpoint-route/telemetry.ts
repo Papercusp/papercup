@@ -35,11 +35,25 @@ export function recordRouteInvocation(exec: RouteExecution): void {
   // telemetry; throwing here would warn on every invocation in such suites.
   if (typeof getOrgPg().sql?.begin !== 'function') return;
 
+  // EI-7069: `exec.def.path` is the route TEMPLATE ('/admin/plans/:verb') —
+  // record the RESOLVED path too (what the client actually hit) so per-verb
+  // traffic attribution doesn't require falling back to tool_invocations (which
+  // only works for routes that happen to dispatch into a tool). Best-effort:
+  // an unparseable exec.req.url must never break telemetry.
+  let resolvedPath: string | null = null;
+  try {
+    resolvedPath = new URL(exec.req.url).pathname;
+  } catch {
+    resolvedPath = null;
+  }
+
   // Snapshot everything off `exec` synchronously — `exec` is mutable and
   // the caller's `finally` may clear timers etc. right after this returns.
   const row = {
     method: exec.def.method,
     path: exec.def.path,
+    resolvedPath,
+    responseBytes: exec.responseBytes,
     status: exec.status,
     durationMs: Date.now() - exec.startedAt,
     principalKind: exec.principal?.kind ?? null,
@@ -57,8 +71,9 @@ export function recordRouteInvocation(exec: RouteExecution): void {
         await tx.unsafe(
           `INSERT INTO harness_shared.route_invocations
              (workspace_id, method, path, status, duration_ms,
-              principal_kind, principal_auth_method, principal_trust, error_message)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              principal_kind, principal_auth_method, principal_trust, error_message,
+              resolved_path, response_bytes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             workspaceId,
             row.method,
@@ -69,6 +84,8 @@ export function recordRouteInvocation(exec: RouteExecution): void {
             row.principalAuthMethod,
             row.principalTrust,
             row.errorMessage,
+            row.resolvedPath,
+            row.responseBytes,
           ],
         );
       });

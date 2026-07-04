@@ -45,6 +45,11 @@ export interface RouteExecution {
   timeoutTimer: ReturnType<typeof setTimeout> | null;
   /** Terminal status, for telemetry. */
   status: 'ok' | 'unauthorized' | 'forbidden' | 'invalid-input' | 'timeout' | 'error';
+  // ── written by the orchestrator's `finally`, before recordRouteInvocation (EI-7069) ──
+  /** Response body size in bytes, from the handler Response's Content-Length
+   *  header when present. Null for streaming/chunked responses (no header) —
+   *  never consumes/clones the body, so this can't break a streaming route. */
+  responseBytes: number | null;
 }
 
 /* ─── Step contract ──────────────────────────────────────────────────── */
@@ -268,6 +273,7 @@ export async function runRouteStack(
     abort: new AbortController(),
     timeoutTimer: null,
     status: 'error',
+    responseBytes: null,
   };
   let response: Response;
   try {
@@ -283,6 +289,16 @@ export async function runRouteStack(
     response = errorResponse(500, 'handler_error', err instanceof Error ? err.message : String(err));
   } finally {
     if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
+    // EI-7069: Content-Length only — never .clone()/read the body. A streaming
+    // (SSE/chunked) response has no Content-Length, so this stays null for
+    // those rather than risk consuming/buffering a stream for telemetry.
+    try {
+      const len = response.headers.get('content-length');
+      const parsed = len ? Number(len) : NaN;
+      exec.responseBytes = Number.isFinite(parsed) ? parsed : null;
+    } catch {
+      exec.responseBytes = null;
+    }
     try {
       recordRouteInvocation(exec);
     } catch {

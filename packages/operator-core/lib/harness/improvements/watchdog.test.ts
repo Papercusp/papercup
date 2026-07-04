@@ -17,6 +17,7 @@ import {
   stuckPlanSignalsFromRows,
   escalationSignalsFromRows,
   circuitOpenSignalsFromRows,
+  isResolvedFirePath,
   normalizeRedTestPath,
   redTestSignalsFromRows,
   isServiceHealthStale,
@@ -497,6 +498,40 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].body).toContain('error: timeout');
     // P-032: harness-attributable origin scope.
     expect(signals[0].scope).toBe('harness:papercup-org');
+  });
+
+  // EI-6721: a dead, auto-paused loop:arm loop kept re-filing "stuck in error-backoff" EIs
+  // (EI-6864/6912/6994/7127/7257/7386 all for the SAME dead loop-su-<uuid>) because this
+  // collector — unlike the chronic-failure sweep — never checked the underlying routine state.
+  it('fire-circuit-open: DROPS a row whose routine is auto-paused (routine_active=false)', () => {
+    const signals = circuitOpenSignalsFromRows([
+      { harness_slug: '*', role: 'loop-su-24eedd86', consecutive_errors: 54, last_status: 'loop-terminal-unreachable', routine_active: false },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('fire-circuit-open: DROPS an ephemeral loop:arm owner loop (routine_target_owner_id set)', () => {
+    const signals = circuitOpenSignalsFromRows([
+      { harness_slug: '*', role: 'loop-su-24eedd86', consecutive_errors: 54, last_status: 'x', routine_target_owner_id: 'su-24eedd86' },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('fire-circuit-open: STILL fires for a fixed system role (no matching routine → routine_active null, no owner)', () => {
+    const signals = circuitOpenSignalsFromRows([
+      { harness_slug: 'gymloopharness', role: 'gym-cycle', consecutive_errors: 9, last_status: 'error', routine_active: null, routine_target_owner_id: null },
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe('circuit:gymloopharness:gym-cycle');
+  });
+
+  it('isResolvedFirePath: suppresses auto-paused OR loop:arm owner; fail-open otherwise', () => {
+    expect(isResolvedFirePath({ routine_active: false })).toBe(true);
+    expect(isResolvedFirePath({ routine_target_owner_id: 'su-abc' })).toBe(true);
+    // fail-open: unknown routine state (no join match) and a live fixed system role are NOT suppressed
+    expect(isResolvedFirePath({ routine_active: null, routine_target_owner_id: null })).toBe(false);
+    expect(isResolvedFirePath({ routine_active: true, routine_target_owner_id: '' })).toBe(false);
+    expect(isResolvedFirePath({})).toBe(false);
   });
 });
 

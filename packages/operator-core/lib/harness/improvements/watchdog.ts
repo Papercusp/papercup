@@ -1423,23 +1423,55 @@ export async function collectEscalationSignals(sql: Sql, workspaceId: string): P
   return escalationSignalsFromRows(rows);
 }
 
-interface CircuitOpenRow { harness_slug: string; role: string; consecutive_errors: number; last_status: string | null }
-/** Pure: error-backoff fire-state rows → signals. */
+interface CircuitOpenRow {
+  harness_slug: string;
+  role: string;
+  consecutive_errors: number;
+  last_status: string | null;
+  /** The matching `harness_shared.routines.active` for this (workspace, role) — from a LEFT
+   *  JOIN, so `null` means no matching routine row exists (a fixed system role, not a
+   *  loop:arm-materialized routine). `false` = the routine engine already auto-paused this
+   *  fire path (a resolved condition, not a live one) — the ONLY value that suppresses. */
+  routine_active?: boolean | null;
+  /** The matching `harness_shared.routines.target_owner_id` — non-null marks an EPHEMERAL
+   *  `loop:arm` OWNER loop (`loop-su-<uuid>` role, `target_role = system:loop-wake`) that is
+   *  owner-witnessed AND auto-terminated by the reconcile dead-owner guard with its OWN
+   *  escalation. `null`/absent = a fixed system role (director/gym-cycle/overwatch/…). */
+  routine_target_owner_id?: string | null;
+}
+/** Pure: is this row a stuck-fire-path we must NOT re-escalate — because the routine engine has
+ *  already RESOLVED it (auto-paused, `routine_active === false`) or because it is an EPHEMERAL
+ *  `loop:arm` OWNER loop (`routine_target_owner_id` populated) managed end-to-end by the reconcile
+ *  dead-owner guard? Mirrors `selectChronicFailures` (autoloop-chronic-failure) so BOTH watchdogs
+ *  stop flooding the same dead `loop-su-<uuid>` row with duplicate tickets (EI-6721: a dead,
+ *  auto-paused loop:arm loop kept re-firing "stuck in error-backoff" EIs the chronic sweep already
+ *  suppressed but this collector did not). `routine_active: null` (no matching routine) and absent
+ *  `routine_target_owner_id` are NOT suppressed — fail-open, never silently drop an unknown state. */
+export function isResolvedFirePath(
+  r: Pick<CircuitOpenRow, 'routine_active' | 'routine_target_owner_id'>,
+): boolean {
+  const isLoopArmOwner = r.routine_target_owner_id != null && r.routine_target_owner_id !== '';
+  return r.routine_active === false || isLoopArmOwner;
+}
+/** Pure: error-backoff fire-state rows → signals. Rows the routine engine has already resolved
+ *  (auto-paused) or that are ephemeral loop:arm owner loops are dropped (see `isResolvedFirePath`). */
 export function circuitOpenSignalsFromRows(rows: CircuitOpenRow[]): WatchdogSignal[] {
-  return rows.map((r) => ({
-    source: 'fire-circuit-open' as const,
-    key: `circuit:${r.harness_slug}:${r.role}`,
-    title: `Role fire-path for ${r.harness_slug}/${r.role} is stuck in error-backoff`,
-    body:
-      `Watchdog signal (fire-circuit-open): the autoloop fire path for ${r.harness_slug}/${r.role} has failed ` +
-      `${r.consecutive_errors} consecutive times — the fire gate is backing it off, so this role is effectively ` +
-      `not running on its cadence until the underlying error is fixed (or autoloop:control reset-errors).` +
-      `\n\nLast status: ${(r.last_status ?? '').slice(0, 400) || '(none recorded)'}`,
-    severity: 'major' as const,
-    kind: 'bug' as const,
-    // Origin scope (P-032): a stuck role fire-path belongs to ONE harness.
-    scope: `harness:${r.harness_slug}`,
-  }));
+  return rows
+    .filter((r) => !isResolvedFirePath(r))
+    .map((r) => ({
+      source: 'fire-circuit-open' as const,
+      key: `circuit:${r.harness_slug}:${r.role}`,
+      title: `Role fire-path for ${r.harness_slug}/${r.role} is stuck in error-backoff`,
+      body:
+        `Watchdog signal (fire-circuit-open): the autoloop fire path for ${r.harness_slug}/${r.role} has failed ` +
+        `${r.consecutive_errors} consecutive times — the fire gate is backing it off, so this role is effectively ` +
+        `not running on its cadence until the underlying error is fixed (or autoloop:control reset-errors).` +
+        `\n\nLast status: ${(r.last_status ?? '').slice(0, 400) || '(none recorded)'}`,
+      severity: 'major' as const,
+      kind: 'bug' as const,
+      // Origin scope (P-032): a stuck role fire-path belongs to ONE harness.
+      scope: `harness:${r.harness_slug}`,
+    }));
 }
 /**
  * fire-circuit-open: a role fire-path (a role-target routine or autoloop trigger)
@@ -1448,6 +1480,13 @@ export function circuitOpenSignalsFromRows(rows: CircuitOpenRow[]): WatchdogSign
  * its cadence. The `recordFire` error path was otherwise invisible to the
  * watchdog: `routine-failure` only sees system-action `metadata.last_error`.
  * Recency-gated so a long-dead historical row doesn't fire forever.
+ *
+ * EI-6721: LEFT JOIN `harness_shared.routines` and DROP a row whose routine is already
+ * auto-paused (`active = false`) or is an ephemeral `loop:arm` OWNER loop (`target_owner_id`
+ * non-null). Both are managed by the reconcile dead-owner guard, which fires its OWN escalation
+ * — so re-filing "stuck in error-backoff" here is a duplicate that floods the queue for a dead
+ * `loop-su-<uuid>` session (EI-6864/6912/6994/7127/7257/7386 all re-created for ONE dead loop).
+ * This mirrors the exclusions `autoloop-chronic-failure`'s `selectChronicFailures` already applies.
  */
 export async function collectCircuitOpenSignals(
   sql: Sql,
@@ -1457,12 +1496,17 @@ export async function collectCircuitOpenSignals(
   const minErrors = opts.minConsecutiveErrors ?? 5;
   const recentHours = opts.recentHours ?? 24;
   const rows = await sql<CircuitOpenRow[]>`
-    SELECT harness_slug, role, consecutive_errors::int, last_status
-      FROM harness_shared.autoloop_state
-     WHERE workspace_id = ${workspaceId}
-       AND consecutive_errors >= ${minErrors}
-       AND last_fired_at > now() - make_interval(hours => ${recentHours})
-     ORDER BY consecutive_errors DESC
+    SELECT s.harness_slug, s.role, s.consecutive_errors::int, s.last_status,
+           r.active AS routine_active, r.target_owner_id AS routine_target_owner_id
+      FROM harness_shared.autoloop_state s
+ LEFT JOIN harness_shared.routines r
+        ON r.name = s.role AND r.workspace_id = s.workspace_id
+     WHERE s.workspace_id = ${workspaceId}
+       AND s.consecutive_errors >= ${minErrors}
+       AND s.last_fired_at > now() - make_interval(hours => ${recentHours})
+       AND (r.active IS DISTINCT FROM false)
+       AND (r.target_owner_id IS NULL OR r.target_owner_id = '')
+     ORDER BY s.consecutive_errors DESC
      LIMIT 10`;
   return circuitOpenSignalsFromRows(rows);
 }

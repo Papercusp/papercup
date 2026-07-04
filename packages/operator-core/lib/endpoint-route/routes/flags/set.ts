@@ -42,18 +42,27 @@ export default defineTool({
       await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', { backend: 'posthog' });
       return Response.json({ ok: true, key, enabled, backend: 'posthog' });
     }
-    if (result.reason === 'flag-backend-not-configured') {
-      const override = await setFlagOverride(key, enabled);
-      if (override.ok) {
-        publishFlagChange(key);
-        await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', { backend: 'pg-override' });
-        return Response.json({ ok: true, key, enabled, backend: 'pg-override' });
-      }
-      return Response.json(
-        { ok: false, error: override.reason, key },
-        { status: 502 },
-      );
+    // EI-7088: fall back to the PG override store for ANY setFlag failure, not
+    // just 'flag-backend-not-configured'. PostHog CONFIGURED-but-unreachable
+    // (a fetch error, `list:<status>`, `patch:<status>`, or the flag simply not
+    // existing there yet) previously fell straight to the 502 below with no
+    // fallback attempt at all — during a PostHog outage NO existing-in-PostHog
+    // flag could be toggled, including a kill-switch an operator might urgently
+    // need to flip. The PG override is the same safe local mechanism already
+    // used for the no-PostHog-configured case; using it here too keeps runtime
+    // toggling working regardless of WHY the PostHog write failed.
+    const override = await setFlagOverride(key, enabled);
+    if (override.ok) {
+      publishFlagChange(key);
+      await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', {
+        backend: 'pg-override',
+        posthogFailureReason: result.reason,
+      });
+      return Response.json({ ok: true, key, enabled, backend: 'pg-override', posthogFailureReason: result.reason });
     }
-    return Response.json({ ok: false, error: result.reason, key }, { status: 502 });
+    return Response.json(
+      { ok: false, error: `posthog: ${result.reason}; pg-override fallback also failed: ${override.reason}`, key },
+      { status: 502 },
+    );
   },
 });
