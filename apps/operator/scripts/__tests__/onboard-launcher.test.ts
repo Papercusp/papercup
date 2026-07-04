@@ -44,6 +44,7 @@ describe('parseArgs', () => {
       framework: 'codex',
       operatorUrl: 'http://127.0.0.1:3170',
       tutorialOnly: true,
+      tab: null,
     });
   });
 

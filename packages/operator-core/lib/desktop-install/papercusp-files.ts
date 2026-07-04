@@ -510,17 +510,17 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
     '# Refreshed on every boot; do not edit.\n' +
     'cmd="${1:-}"\n' +
     'case "$cmd" in\n' +
-    // `setup` is the primary name; `onboard` is kept as a back-compat alias. Both
-    // (and `tutorial`) open the SAME unified onboarding shell — they just default to a
-    // different tab (owner batch #4/#5: "Papercusp Setup" & "Papercusp Tutorial" reach
-    // the same place). `--tutorial` selects the Tutorial tab; setup/onboard default to Setup.
-    `  setup)    shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
-    `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
+    // `setup` and `tutorial` both open the SAME unified Tutorial|Setup shell — they
+    // just default to a different tab (owner batch #4/#5: "Papercusp Setup" & "Papercusp
+    // Tutorial" reach the same place, with tabs for both). `onboard` is the desktop's
+    // AUTO first-boot linear concierge (kept as a back-compat alias for direct use).
+    `  setup)    shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tab=setup "$@" ;;\n` +
     `  tutorial) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tutorial "$@" ;;\n` +
+    `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
     '  *)\n' +
     '    echo "usage: papercusp <setup|tutorial>"\n' +
-    '    echo "  setup     first-run setup + tutorial (alias: onboard)"\n' +
-    '    echo "  tutorial  re-open the guided tutorial"\n' +
+    '    echo "  setup     open the Tutorial & Setup shell on the Setup tab"\n' +
+    '    echo "  tutorial  open the Tutorial & Setup shell on the Tutorial tab"\n' +
     '    exit 2 ;;\n' +
     'esac\n';
   await fs.writeFile(shimPath, body, { mode: 0o755 });

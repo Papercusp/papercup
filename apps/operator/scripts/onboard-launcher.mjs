@@ -60,13 +60,33 @@ export function buildHandoffArgs(framework, env = process.env) {
   return args;
 }
 
+/** Exec the unified Tutorial|Setup shell (tutorial-runner.mjs) in THIS terminal —
+ *  the `papercusp setup` / `papercusp tutorial` entry (#4). Returns the child's code. */
+function execTutorialShell(base, extraArgs = []) {
+  const runnerPath = fileURLToPath(new URL('./tutorial-runner.mjs', import.meta.url));
+  if (!existsSync(runnerPath)) {
+    say(`Couldn't find the Papercusp shell at ${runnerPath}.`);
+    return 1;
+  }
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [runnerPath, `--operator-url=${base}`, ...extraArgs], {
+      stdio: 'inherit',
+    });
+    child.on('exit', (c) => resolve(c ?? 0));
+    child.on('error', () => resolve(1));
+  });
+}
+
 /** Parse argv (pure; exported for tests). */
 export function parseArgs(argv) {
-  const out = { framework: null, operatorUrl: null, tutorialOnly: false };
+  const out = { framework: null, operatorUrl: null, tutorialOnly: false, tab: null };
   for (const a of argv) {
     if (a.startsWith('--framework=')) out.framework = a.slice('--framework='.length);
     else if (a.startsWith('--operator-url=')) out.operatorUrl = a.slice('--operator-url='.length);
     else if (a === '--tutorial') out.tutorialOnly = true; // P-014: tutorial-only re-entry
+    // #4: `papercusp setup` opens the unified shell's SETUP tab directly (skips the
+    // linear first-run concierge, which stays the desktop's auto-first-boot flow).
+    else if (a.startsWith('--tab=')) out.tab = a.slice('--tab='.length);
   }
   if (out.framework && !FRAMEWORKS.includes(out.framework)) {
     throw new Error(`unknown --framework=${out.framework} (expected ${FRAMEWORKS.join(' | ')})`);
@@ -123,6 +143,14 @@ function runSpec(spec) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const base = operatorUrlFrom(args);
+
+  // #4: `papercusp setup` (dispatcher passes --tab=setup) opens the unified
+  // Tutorial|Setup shell straight on the Setup tab — the linear concierge below
+  // stays the desktop's AUTO first-boot flow (`papercusp onboard`), not this entry.
+  if (args.tab === 'setup' || args.tab === 'tutorial') {
+    return execTutorialShell(base, [`--tab=${args.tab}`]);
+  }
+
   const { select, confirm, password } = await import('@inquirer/prompts');
 
   // The session's choices — the ONLY client-side state; everything else is
