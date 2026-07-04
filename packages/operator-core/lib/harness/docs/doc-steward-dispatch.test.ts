@@ -13,7 +13,11 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mockSql }) }));
 
-import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
+import {
+  dispatchDocStewardForDrift,
+  DOC_STEWARD_MAX_DOCS_PER_DISPATCH,
+  type DriftedDoc,
+} from './doc-steward-dispatch';
 
 const docs: DriftedDoc[] = [
   // P-005: workItems (the change cause) rides along in the batch.
@@ -35,7 +39,8 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
 
     const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', docs);
 
-    expect(dispatched).toBe(true);
+    // WI-2104: returns the batch actually handed to the steward (here: all of it — under the cap).
+    expect(dispatched).toEqual(docs);
     expect(mockGetFlag).toHaveBeenCalledWith('papercusp-doc-steward', 'h');
     expect(mockFire).toHaveBeenCalledTimes(1);
     const [event, input] = mockFire.mock.calls[0] as [string, Record<string, unknown>];
@@ -53,39 +58,63 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
     expect(input.kickoff as string).toContain('b.mdx');
   });
 
-  it('does NOT fire while an active doc-steward is already running for the harness', async () => {
+  it('WI-2104: caps the batch at DOC_STEWARD_MAX_DOCS_PER_DISPATCH and returns ONLY the dispatched subset', async () => {
+    mockGetFlag.mockResolvedValue(true);
+    mockFire.mockResolvedValue({ blueprintId: 'doc-steward' });
+    const many: DriftedDoc[] = Array.from({ length: DOC_STEWARD_MAX_DOCS_PER_DISPATCH + 4 }, (_, i) => ({
+      docId: `doc-${i}.mdx`,
+      anchorPaths: [`src/${i}.ts`],
+      reason: 'changed',
+      source: 'manual',
+    }));
+
+    const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', many);
+
+    // The first MAX docs (callers order most-deserving first) — never the whole due set: an
+    // unbounded batch is what drove 58% of stewards into the 900s timeout (and E2BIG at the
+    // extreme), charging give-up attempts to docs no agent ever read.
+    expect(dispatched).toEqual(many.slice(0, DOC_STEWARD_MAX_DOCS_PER_DISPATCH));
+    const [, input] = mockFire.mock.calls[0] as [string, Record<string, unknown>];
+    const payload = JSON.parse((input.extra as string[])[1]) as { docs: DriftedDoc[] };
+    expect(payload.docs).toHaveLength(DOC_STEWARD_MAX_DOCS_PER_DISPATCH);
+    expect(input.kickoff as string).toContain(`Re-sync ${DOC_STEWARD_MAX_DOCS_PER_DISPATCH} drifted doc(s)`);
+    // sliced-out docs are NOT in the batch → the caller won't charge them an attempt
+    expect(payload.docs.some((d) => d.docId === `doc-${DOC_STEWARD_MAX_DOCS_PER_DISPATCH}.mdx`)).toBe(false);
+  });
+
+  it('does NOT fire while a doc-steward is active OR started within the dispatch cooldown (WI-2104 pacing)', async () => {
     mockGetFlag.mockResolvedValue(true);
     mockSql.mockResolvedValue([{ n: '1' }]);
 
     const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', docs);
 
-    expect(dispatched).toBe(false);
+    expect(dispatched).toEqual([]);
     expect(mockFire).not.toHaveBeenCalled();
   });
 
   it('does NOT fire when the flag is OFF', async () => {
     mockGetFlag.mockResolvedValue(false);
     const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', docs);
-    expect(dispatched).toBe(false);
+    expect(dispatched).toEqual([]);
     expect(mockFire).not.toHaveBeenCalled();
   });
 
   it('does NOT fire (and never reads the flag) when there are no stale docs', async () => {
     const dispatched = await dispatchDocStewardForDrift('h', 'ws-1', []);
-    expect(dispatched).toBe(false);
+    expect(dispatched).toEqual([]);
     expect(mockGetFlag).not.toHaveBeenCalled();
     expect(mockFire).not.toHaveBeenCalled();
   });
 
-  it('is best-effort: a fire failure returns false instead of throwing (never wedges git-sync)', async () => {
+  it('is best-effort: a fire failure returns [] instead of throwing (never wedges git-sync)', async () => {
     mockGetFlag.mockResolvedValue(true);
     mockFire.mockRejectedValue(new Error('invoke route down'));
-    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toBe(false);
+    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toEqual([]);
   });
 
-  it('is best-effort: a flag-read failure returns false and never fires', async () => {
+  it('is best-effort: a flag-read failure returns [] and never fires', async () => {
     mockGetFlag.mockRejectedValue(new Error('flags infra down'));
-    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toBe(false);
+    await expect(dispatchDocStewardForDrift('h', 'ws-1', docs)).resolves.toEqual([]);
     expect(mockFire).not.toHaveBeenCalled();
   });
 });

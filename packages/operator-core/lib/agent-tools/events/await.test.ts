@@ -3,8 +3,9 @@
  *
  * Mirrors watch.test.ts's tool-mock rig. events:await is the one-shot WAKE sugar
  * — asserts registerAwait is called with policy:'wake', timeoutBehavior:'wake'
- * by default, timeoutSec:14400 (4h) by default, that overrides flow through, and
- * that the response carries await_id/expires_ts/wake_handle.
+ * by default, timeoutSec = the shared AWAIT_DEFAULT_TIMEOUT_SEC (1800 = 30min) by
+ * default, that overrides flow through, and that the response carries
+ * await_id/expires_ts/wake_handle.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -27,6 +28,7 @@ import awaitTool from './await';
 import { registerAwait } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
+import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -37,7 +39,7 @@ const call = async (args: Record<string, unknown>) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:await wrapper defaults', () => {
-  it('defaults: policy:wake, timeoutBehavior:wake, timeoutSec:14400 (4h), and the sweeper starts', async () => {
+  it('defaults: policy:wake, timeoutBehavior:wake, timeoutSec:AWAIT_DEFAULT_TIMEOUT_SEC (1800 = 30min), and the sweeper starts', async () => {
     await call({ event: 'lock:grant:t1' });
     expect(startAwaitSweeper).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(registerAwait).mock.calls[0][0];
@@ -46,7 +48,7 @@ describe('events:await wrapper defaults', () => {
       eventKey: 'lock:grant:t1',
       policy: 'wake',
       timeoutBehavior: 'wake',
-      timeoutSec: 4 * 60 * 60,
+      timeoutSec: AWAIT_DEFAULT_TIMEOUT_SEC,
       note: null,
       workspaceId: 'ws-x',
     });

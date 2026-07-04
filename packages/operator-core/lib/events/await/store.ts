@@ -129,13 +129,20 @@ export async function registerAwait(input: {
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs(input.workspaceId);
+  // Safe-by-default (await-timeout-fallback-defaults-2026-07-03): a caller that sets a
+  // deadline but names no behavior WAKEs at it (auto-woken to re-orient) rather than
+  // lapsing silently. Every real caller (events:await / watch:create / the events sugar /
+  // locks:acquire) passes 'wake' explicitly, so this changes no behavior today — it only
+  // guards a future caller that forgets. The always-armed inbox-wake path is separate
+  // (upsertInboxWakeAwait hardcodes 'expire' + no deadline), so it is unaffected.
+  const timeoutBehavior: TimeoutBehavior = input.timeoutBehavior ?? 'wake';
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
       (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
-       ${input.timeoutBehavior ?? 'expire'},
+       ${timeoutBehavior},
        ${
          // ISO text, not a raw Date — the live org postgres-js client throws on
          // Date binding (the repo's known quirk); PG casts text→timestamptz.

@@ -302,10 +302,18 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
 }
 
 async function fileDelete(keychainId: string): Promise<void> {
-  try {
-    await unlink(encFilePath(keychainId));
-  } catch {
-    // ignore — not_found is fine for delete
+  // WI-2018: delete from EVERY dir `fileLoad` reads (primary + legacy), not just the
+  // primary. Deleting only `encFilePath()` left a legacy-dir copy that `fileLoad`
+  // silently RESURRECTED on the next load — so a poisoned/divergent key survived its
+  // own cleanup (the split-device-identity class; proven live on the mac VM
+  // 2026-07-03, where a poison-era epoch key persisted in the second identity root).
+  const name = encFileName(keychainId);
+  for (const dir of identityReadDirs()) {
+    try {
+      await unlink(join(dir, name));
+    } catch {
+      // ignore — not_found is fine for delete
+    }
   }
 }
 

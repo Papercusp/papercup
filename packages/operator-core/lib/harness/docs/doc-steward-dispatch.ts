@@ -28,7 +28,25 @@ export interface DriftedDoc {
 
 const DOC_STEWARD_ACTIVE_WINDOW_MIN = 50;
 
-async function activeDocStewardExists(workspaceId: string, harnessSlug: string): Promise<boolean> {
+/**
+ * WI-2104 (token audit 2026-07-03) — batch cap + dispatch cooldown. The dispatcher used to hand
+ * ONE steward the ENTIRE due set (dozens of docs) with a ~900s spawn budget, and re-dispatch as
+ * soon as the previous steward exited (min observed gap 5.3min): 58% of spawns died at the
+ * timeout (exitCode 143 after avg 941s) having burned the full context cost and healed a
+ * fraction of the batch — and two spawns failed outright with E2BIG because the batch JSON
+ * exceeded the exec arg limit. 62 spawns/day, ~$40/day, mostly wasted.
+ *
+ *  - MAX_DOCS caps the batch to what a steward FINISHES inside its budget (successful runs
+ *    avg 369s). Sliced-out docs are NOT charged an attempt (the caller marks only the
+ *    dispatched subset) and re-offer on their retry clock.
+ *  - COOLDOWN_MIN paces dispatch starts per harness — the guard rail that bounds the burn
+ *    when stewards fail systemically (rate storms, operator restarts). The deterministic
+ *    drift DETECTION + digest broadcast stay instant; only the LLM heal is paced.
+ */
+export const DOC_STEWARD_MAX_DOCS_PER_DISPATCH = 8;
+export const DOC_STEWARD_DISPATCH_COOLDOWN_MIN = 45;
+
+async function recentOrActiveDocStewardExists(workspaceId: string, harnessSlug: string): Promise<boolean> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const rows = await getOrgPg().sql<{ n: string }[]>`
     SELECT count(*)::text AS n
@@ -36,8 +54,11 @@ async function activeDocStewardExists(workspaceId: string, harnessSlug: string):
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND child_role = 'doc-steward'
-       AND status IN ('running', 'restarting')
-       AND started_at > now() - make_interval(mins => ${DOC_STEWARD_ACTIVE_WINDOW_MIN})
+       AND (
+         (status IN ('running', 'restarting')
+           AND started_at > now() - make_interval(mins => ${DOC_STEWARD_ACTIVE_WINDOW_MIN}))
+         OR started_at > now() - make_interval(mins => ${DOC_STEWARD_DISPATCH_COOLDOWN_MIN})
+       )
   `;
   return Number(rows[0]?.n ?? 0) > 0;
 }
@@ -45,29 +66,33 @@ async function activeDocStewardExists(workspaceId: string, harnessSlug: string):
 /**
  * Dispatch the doc-steward for a batch of newly-drifted docs. DETERMINISTIC trigger; best-effort
  * — a dispatch failure must NEVER wedge the sweep / git-sync. Fires the `docs:drift` launch
- * blueprint. Returns true iff a doc-steward was dispatched (for testability / observability).
+ * blueprint with AT MOST `DOC_STEWARD_MAX_DOCS_PER_DISPATCH` docs (callers should order the
+ * most-deserving first — newly-drifted before retries). Returns the subset actually handed to
+ * the steward ([] when nothing was dispatched) so the caller charges retry attempts ONLY for
+ * docs the steward was really asked to work (WI-1661's per-doc accountability, batch-level).
  */
 export async function dispatchDocStewardForDrift(
   harnessSlug: string,
   workspaceId: string,
   staleDocs: DriftedDoc[],
-): Promise<boolean> {
-  if (staleDocs.length === 0) return false;
+): Promise<DriftedDoc[]> {
+  if (staleDocs.length === 0) return [];
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
-    if (!(await getFlag(FLAGS.DOC_STEWARD, harnessSlug))) return false;
-    if (await activeDocStewardExists(workspaceId, harnessSlug)) return false;
+    if (!(await getFlag(FLAGS.DOC_STEWARD, harnessSlug))) return [];
+    if (await recentOrActiveDocStewardExists(workspaceId, harnessSlug)) return [];
+    const batch = staleDocs.slice(0, DOC_STEWARD_MAX_DOCS_PER_DISPATCH);
     const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
     await fireLaunchBlueprintForEvent('docs:drift', {
       installSlug: harnessSlug,
       workspaceId,
-      kickoff: `Re-sync ${staleDocs.length} drifted doc(s) in ${harnessSlug} to the current code: ${staleDocs.map((d) => d.docId).join(', ')}`,
-      extra: ['--doc-drift', JSON.stringify({ docs: staleDocs })],
+      kickoff: `Re-sync ${batch.length} drifted doc(s) in ${harnessSlug} to the current code: ${batch.map((d) => d.docId).join(', ')}`,
+      extra: ['--doc-drift', JSON.stringify({ docs: batch })],
     });
-    return true;
+    return batch;
   } catch {
     // best-effort: doc-steward dispatch must never break the sweep
-    return false;
+    return [];
   }
 }

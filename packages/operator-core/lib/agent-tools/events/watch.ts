@@ -27,8 +27,10 @@ import { startAwaitSweeper } from '../../events/await/engine';
 import { subscribeTopic } from '../coordination/topics';
 import { softText, clampText, LIMITS } from '../limits';
 
-const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h (one-shot wake default)
-const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
+// The fallback timeout-wake window + hard cap — one shared source of truth
+// (await-timeout-fallback-defaults-2026-07-03): the one-shot wake default is now
+// 30min, not 4h. Aliased to the local names so every usage below is unchanged.
+import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 
 /** Default floor for a STANDING wake watch (once:false) — bounds the recurring-wake burn,
  *  generalized from the pot's floor. One-shot grants default to 0 (wake promptly). */

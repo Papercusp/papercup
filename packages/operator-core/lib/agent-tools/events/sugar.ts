@@ -29,8 +29,10 @@ import { startAwaitSweeper } from '../../events/await/engine';
 import { buildKey } from '../../events/await/catalog';
 import { clampText, LIMITS } from '../limits';
 
-const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h — matches events:await
-const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
+// The fallback timeout-wake window + hard cap — one shared source of truth
+// (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
+// Aliased to the local names so every usage/describe below is unchanged.
+import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 
 /** Shared timeout arg — identical semantics to events:await's. */
 const timeoutArg = z

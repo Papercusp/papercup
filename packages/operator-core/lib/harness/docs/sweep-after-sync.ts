@@ -231,23 +231,28 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   }
 
   // P-008 doc-steward — dispatch the LLM consumer to FIX the newly-drifted docs against the
-  // current code (the deterministic counterpart to detection). Best-effort + flag-gated; the
-  // sweep already deduped (once per drift episode), so this fires ONE doc-steward for the batch.
-  const dispatched = await dispatchDocStewardForDrift(harnessSlug, workspaceId, staleDocs);
+  // current code (the deterministic counterpart to detection). Best-effort + flag-gated.
+  // WI-2104: the dispatcher CAPS the batch to what one steward can finish inside its spawn
+  // budget, so order the most-deserving docs first — NEWLY-drifted (0 attempts, most likely
+  // healable) ahead of retry re-offers. `newlyDrifted` shares object refs with `staleDocs`,
+  // so a Set dedups the concatenation.
+  const ordered = [...new Set([...newlyDrifted, ...staleDocs])];
+  const dispatched = await dispatchDocStewardForDrift(harnessSlug, workspaceId, ordered);
 
   // WI-1661: spend each dispatched doc's retry attempt HERE — only once a doc-steward is
   // CONFIRMED to have actually launched for this batch — never inside sweepHarnessDocs
   // itself (which only touches the retry-CLOCK, so a skipped dispatch — flag off, an
-  // exception, or `activeDocStewardExists` finding a prior steward still mid-flight — no
-  // longer silently burns an attempt toward the 5-attempt give-up cap with zero agent turns
-  // ever spent on the doc). A skipped dispatch just leaves the doc due again next backoff.
-  if (dispatched) {
-    for (const d of staleDocs) {
-      if (d.source === 'manual') {
-        await markReverifyFlagged(harnessSlug, d.docId, workspaceId).catch(() => {});
-      } else {
-        await markRegenEnqueued(harnessSlug, d.docId, workspaceId).catch(() => {});
-      }
+  // exception, or the dispatcher's active/cooldown gate — no longer silently burns an
+  // attempt toward the 5-attempt give-up cap with zero agent turns ever spent on the doc).
+  // WI-2104: charge ONLY the docs actually IN the dispatched batch — a doc sliced out by
+  // the batch cap was never handed to a steward, so it keeps its attempts and re-offers on
+  // its retry clock. (Before this, a 40-doc batch charged all 40 while the steward timed
+  // out after ~6 — the give-up cap filled with docs no agent ever read.)
+  for (const d of dispatched) {
+    if (d.source === 'manual') {
+      await markReverifyFlagged(harnessSlug, d.docId, workspaceId).catch(() => {});
+    } else {
+      await markRegenEnqueued(harnessSlug, d.docId, workspaceId).catch(() => {});
     }
   }
 

@@ -19,6 +19,23 @@ export type AwaitPolicy = 'wake' | 'notify';
  *  `expire` = lapse silently (visible in events:status, no turn spent). */
 export type TimeoutBehavior = 'expire' | 'wake';
 
+/**
+ * The fallback timeout-wake window: the default deadline for a one-shot wake
+ * await when the caller names none (await-timeout-fallback-defaults-2026-07-03).
+ *
+ * The fallback exists so an agent BLOCKED on an event that never fires is
+ * auto-woken (a `timeout` wake, `fired_reason='timeout'`) to re-orient, instead
+ * of hanging until a human notices. It was 4h — far below the owner's actual
+ * check-in cadence, so blocked agents sat dead for hours. 30min matches "a human
+ * would have looked by now". This is the ONE source of truth: events:await,
+ * watch:create, and the events sugar verbs all import it (it replaced three
+ * duplicated `DEFAULT_TIMEOUT_SEC = 4 * 60 * 60` copies).
+ */
+export const AWAIT_DEFAULT_TIMEOUT_SEC = 30 * 60; // 30min
+
+/** Hard cap on a caller-supplied await deadline — shared by every await surface. */
+export const AWAIT_MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
+
 /** The session wake-handle stamped onto an await at registration (D-003 —
  *  it cannot be fetched at fire time; the agent is asleep). */
 export type WakeHandle =

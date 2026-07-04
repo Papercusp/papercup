@@ -179,6 +179,56 @@ describe('loadOrGenerateDeviceKeypair', () => {
   });
 });
 
+// WI-2018: generate ONLY on not_found. An io_error means a key may EXIST but this
+// process context can't read it (locked OS keychain in a service context, permission
+// fault) — minting a fresh keypair there FORKS the device identity (presence stamps
+// one pubkey, another tier resolves a different one; the new key is never attested).
+describe('loadOrGenerateDeviceKeypair — WI-2018 unreadable-keychain guard', () => {
+  afterEach(() => {
+    vi.doUnmock('./keychain');
+    vi.resetModules();
+  });
+
+  async function attestWithKeychainError(errorKind: string, reason?: string) {
+    vi.resetModules();
+    const store = vi.fn(async () => {});
+    vi.doMock('./keychain', () => ({
+      keychainLoad: async () => ({ kind: 'error', error: { kind: errorKind, reason } }),
+      keychainStore: store,
+    }));
+    const attest = await import('./attest');
+    return { attest, store };
+  }
+
+  it('io_error ⇒ THROWS (refuses to mint a fresh identity; nothing stored)', async () => {
+    const { attest, store } = await attestWithKeychainError('io_error', 'EACCES: keychain locked');
+    await expect(attest.loadOrGenerateDeviceKeypair('id-io')).rejects.toThrow(
+      /split-device-identity/,
+    );
+    expect(store).not.toHaveBeenCalled();
+  });
+
+  it('decryption_failed ⇒ regenerates LOUDLY (warn) and stores', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { attest, store } = await attestWithKeychainError('decryption_failed', 'auth tag mismatch');
+      const r = await attest.loadOrGenerateDeviceKeypair('id-dec');
+      expect(r.pubkeyBase64.length).toBe(44);
+      expect(store).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('regenerating'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('not_found ⇒ generates + stores (first run, unchanged)', async () => {
+    const { attest, store } = await attestWithKeychainError('not_found');
+    const r = await attest.loadOrGenerateDeviceKeypair('id-nf');
+    expect(r.pubkeyBase64.length).toBe(44);
+    expect(store).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── verifyAttestation ────────────────────────────────────────────────────────
 
 describe('verifyAttestation', () => {

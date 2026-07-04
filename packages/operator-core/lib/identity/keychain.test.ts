@@ -155,4 +155,38 @@ describe('keychain (encrypted-file fallback)', () => {
       rmSync(customIdentityDir, { recursive: true, force: true });
     }
   });
+
+  // WI-2018: keychainDelete must remove the file copy from EVERY dir fileLoad reads
+  // (primary + legacy). Deleting only the primary left a legacy-dir copy that fileLoad
+  // silently RESURRECTED on the next load — a poisoned key survived its own cleanup
+  // (the split-device-identity class, proven live on the mac VM 2026-07-03).
+  it('delete removes BOTH the primary (PAPERCUSP_IDENTITY_DIR) and legacy copies — no resurrection', async () => {
+    const { keychainStore, keychainDelete, keychainLoad } = await loadKeychain();
+    const id = 'split:dirs';
+    const der = Buffer.from('poison-era-key-material-0123456789');
+
+    // 1. store with NO PAPERCUSP_IDENTITY_DIR → lands in the legacy default
+    await keychainStore(id, der);
+    expect(existsSync(encPath(id))).toBe(true);
+
+    // 2. switch to a shared-operator primary dir (the D-024 split); store again → primary copy
+    const primaryDir = mkdtempSync(join(tmpdir(), 'pc-keychain-primary-'));
+    process.env.PAPERCUSP_IDENTITY_DIR = primaryDir;
+    const primaryPath = join(primaryDir, 'keypair-split_dirs.enc');
+    try {
+      await keychainStore(id, der);
+      expect(existsSync(primaryPath)).toBe(true);
+      expect(existsSync(encPath(id))).toBe(true); // both copies live
+
+      // 3. ONE delete → BOTH copies gone; load = not_found (nothing resurrects)
+      await keychainDelete(id);
+      expect(existsSync(primaryPath)).toBe(false);
+      expect(existsSync(encPath(id))).toBe(false);
+      const res = await keychainLoad(id);
+      expect(res.kind).toBe('error');
+      if (res.kind === 'error') expect(res.error.kind).toBe('not_found');
+    } finally {
+      rmSync(primaryDir, { recursive: true, force: true });
+    }
+  });
 });
