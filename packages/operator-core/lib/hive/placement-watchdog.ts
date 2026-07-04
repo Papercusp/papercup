@@ -57,11 +57,16 @@ const STUCK_BLOCKER_STATES = new Set(['failing', 'failed']);
 /** A bee spawn row in one of these is GONE (its claim/work is no longer live). */
 const TERMINAL_SPAWN_STATES = new Set(['done', 'failed', 'cancelled', 'reaped']);
 /** A placed unit's OWN status is a deliberate park (work-item-dispatch-states.ts:
- *  FEATURE_NON_REQUEUE_STATES treats `blocked` the same way — "a deliberate park
- *  with its own delegator-notify signal path", never auto-requeued). Distinct from
- *  STUCK_BLOCKER_STATES above, which is about a unit BLOCKING downstream work, not
- *  a unit that IS itself parked. */
-const UNIT_PARKED_STATES = new Set(['blocked']);
+ *  FEATURE_NON_REQUEUE_STATES treats `blocked` AND `needs-human` the same way — "a
+ *  deliberate [owner] park … never auto-requeued". `needs-human` was added to that
+ *  sibling reaper set on 2026-07-03 (fleet-scheduler-hardening-2026-07-03 P-004,
+ *  WI-1774/WI-1775) but was never mirrored here (EI-6563) — so a unit an owner
+ *  parked `needs-human` kept getting treated as a failed placement: the Queen fired
+ *  a recovery wake + a fresh bee every debounce window forever (observed live on
+ *  WI-369, the same churn class WI-1439's `blocked` fix above targets). Distinct
+ *  from STUCK_BLOCKER_STATES above, which is about a unit BLOCKING downstream
+ *  work, not a unit that IS itself parked. */
+const UNIT_PARKED_STATES = new Set(['blocked', 'needs-human']);
 
 export function isUnitTerminal(status: string | null | undefined): boolean {
   return status != null && TERMINAL_UNIT_STATES.has(status);
@@ -243,9 +248,10 @@ export interface PlacementObservation {
    *  the per-item zombie signal below keeps the bounded breaker. Default false. */
   postDormancySweep?: boolean;
   /** WI-1439 recovery-churn fix — the unit's OWN status is a deliberate park
-   *  (`isUnitParked`, e.g. `blocked` for an owner/human-gated step). A parked unit
-   *  is EXPECTED to have no live holder — that is not a failed placement, so it
-   *  must never enter the recover/breaker path (which fired a Queen recovery wake
+   *  (`isUnitParked`, e.g. `blocked` or `needs-human` for an owner/human-gated
+   *  step — EI-6563). A parked unit is EXPECTED to have no live holder — that is
+   *  not a failed placement, so it must never enter the recover/breaker path
+   *  (which fired a Queen recovery wake
    *  + re-placed a fresh bee every debounce window FOREVER on a unit no bee can
    *  ever close, observed live on WI-1439: a new bee roughly every 5-40min for
    *  days, each one independently re-confirming the same owner-gate and dying).

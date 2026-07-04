@@ -28,6 +28,7 @@ import { countAllPendingWakes } from '../pending-wakes';
 import { evaluateTips, GLANCE_AUDIENCES } from '../glance-tips';
 import { resolveAgentIdentity } from '../identity';
 import { getPresence } from '../presence';
+import { contextUsagePct } from './inbox-context-usage';
 import { fetchPresenceFleet } from '../presence-fleet';
 import { getLoopStatus } from '../../../harness/routines/loop';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -187,6 +188,11 @@ export default defineTool({
     // (OSC 11), so N fleets are shown as N nearest-match color SQUARES + names in the
     // OS title (statusline-fleet.sh). Empty when the agent is in no fleet. FAIL-OPEN.
     let selfFleets: Array<{ slug: string; label: string; role: string; square: string }> = [];
+    // self.context — the caller's cached context-usage gauge (agent-managed-compaction
+    // P-015): the same watchdog-cached tokens/limit the coord:inbox usage line uses,
+    // surfaced here so the statusline can render an ambient `ctx N%` segment every tick
+    // with NO extra call. null when usage can't be computed (no limit / no estimate).
+    let selfContext: { tokens: number; limit: number; pct: number } | null = null;
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
       if (ownerId) {
@@ -194,12 +200,19 @@ export default defineTool({
           SELECT title FROM harness_shared.work_items
           WHERE taken_by = ${ownerId} AND status IN ('wip', 'building', 'failing')
           ORDER BY taken_at DESC NULLS LAST LIMIT 1`;
+        // Fetch presence ONCE here — reused for the objective-intent fallback AND the
+        // context gauge (avoids a second PK read on the statusline hot path).
+        const pres = await getPresence(ownerId);
         // intent is a NOT-NULL text column defaulting to '' (coord_presence) — an
         // undeclared intent reads back as '' (falsy, not nullish), so a bare `?? null`
         // would leak '' through and render an empty `🔭  · ` segment. Normalize blank
         // titles/intents to null so the fallback chain is honestly wip → intent → null.
         const title = normalizeObjective(wipRows[0]?.title);
-        selfObjective = title ?? normalizeObjective((await getPresence(ownerId))?.intent);
+        selfObjective = title ?? normalizeObjective(pres?.intent);
+        const ctxPct = contextUsagePct(pres?.contextTokens, pres?.compactionLimit);
+        if (ctxPct != null && pres?.contextTokens != null && pres?.compactionLimit != null) {
+          selfContext = { tokens: pres.contextTokens, limit: pres.compactionLimit, pct: ctxPct };
+        }
         try {
           const ls = await getLoopStatus(ownerId);
           if (ls?.active) {
@@ -272,7 +285,7 @@ export default defineTool({
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,
-            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets },
+            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext },
             // Loud tier marker (D-004): a non-full session sees the smaller
             // activity window is tier-derived (widen via activity_limit /
             // payloadTier:"full").

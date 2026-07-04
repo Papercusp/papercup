@@ -213,6 +213,25 @@ def loop_part(g):
     return f'⟳ {fmt_interval(lp.get("intervalSec"))} loop'
 
 
+def context_part(g):
+    """The `ctx N%` context-usage gauge chip from the glance payload's `self.context`
+    (agent-managed-compaction P-015): an ambient readout of how full THIS session's context
+    is, every statusline tick. ⚠-prefixed at/above the LOUD band (80%, mirrors
+    CONTEXT_GAUGE_LOUD_PCT) so an approaching compaction is visible without opening a tool.
+    ADDITIVE + FAIL-OPEN: None when absent / uncomputable / old operator, so the existing
+    render is untouched."""
+    if not isinstance(g, dict):
+        return None
+    c = (g.get('self') or {}).get('context')
+    if not isinstance(c, dict):
+        return None
+    pct = c.get('pct')
+    if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+        return None
+    pct = int(pct)
+    return f'⚠ ctx {pct}%' if pct >= 80 else f'ctx {pct}%'
+
+
 def _session_json(raw):
     """Parse Claude Code's piped session JSON (model / cwd / session_id / …). {} on any trouble — fail-open."""
     if not raw:
@@ -487,6 +506,11 @@ parts = ([obj] if obj else []) + lead()
 lpchip = loop_part(glance)
 if lpchip:
     parts.append(lpchip)
+# ctx N% — this session's ambient context-usage gauge (agent-managed-compaction P-015),
+# ⚠-prefixed ≥80% so an approaching compaction is visible in the bottom line every tick.
+ctxchip = context_part(glance)
+if ctxchip:
+    parts.append(ctxchip)
 # 🧠 <model>·<effort> — the model + settings (e.g. opus[1m]·xhigh) this terminal is running on.
 if mchip:
     parts.append(mchip)
