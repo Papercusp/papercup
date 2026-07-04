@@ -42,6 +42,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, realpat
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
+import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 
@@ -516,30 +517,33 @@ async function main(): Promise<void> {
     // process never exited, launchd KeepAlive never respawned it, so PG never
     // came back. A ref'd hard deadline guarantees exit regardless of any
     // stalled await, which also restores crash-recovery (exit → launchd
-    // respawn → fresh boot brings PG back up).
-    const forceExit = setTimeout(() => {
-      log(`${sig} — shutdown deadline exceeded; force-exiting`);
-      process.exit(0);
-    }, 4000);
-    try {
-      server?.close?.();
-    } catch {
-      /* ignore */
-    }
-    try {
-      unlinkSync(OPERATOR_JSON);
-    } catch {
-      /* already gone */
-    }
-    if (pg) sigintPostmasterSync(resolvedPgDataDir());
-    releaseColdStartLock();
-    // Best-effort graceful wait — a competing handler may kill us before
-    // this completes; the sync work above already covered the essentials.
-    void (async () => {
-      if (pg) await pg.stop().catch(() => {});
-      clearTimeout(forceExit);
-      process.exit(0);
-    })();
+    // respawn → fresh boot brings PG back up). The orchestration is extracted
+    // into runShutdownWithDeadline so the HANG path has a unit recurrence guard
+    // (shutdown-deadline.test.ts) — see shutdown-deadline.ts.
+    runShutdownWithDeadline({
+      deadlineMs: 4000,
+      onForceExit: () => log(`${sig} — shutdown deadline exceeded; force-exiting`),
+      syncCleanup: () => {
+        try {
+          server?.close?.();
+        } catch {
+          /* ignore */
+        }
+        try {
+          unlinkSync(OPERATOR_JSON);
+        } catch {
+          /* already gone */
+        }
+        if (pg) sigintPostmasterSync(resolvedPgDataDir());
+        releaseColdStartLock();
+      },
+      // Best-effort graceful wait — a competing handler may kill us before this
+      // completes; the sync work above already covered the essentials.
+      gracefulStop: async () => {
+        if (pg) await pg.stop().catch(() => {});
+      },
+      exit: (code) => process.exit(code),
+    });
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

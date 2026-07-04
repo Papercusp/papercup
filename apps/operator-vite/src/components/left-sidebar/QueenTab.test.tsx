@@ -47,6 +47,10 @@ vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__'
 // The nested hive→plan picker (flag ON, the default) has its own suite,
 // QueenTab.tree.test.tsx.
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => false }));
+// Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
+// — isolates from the THE_HIVE flag hook; classic pack renders 'Brain'/'Pot(s)' at
+// runtime (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import QueenTab from './QueenTab';
 
@@ -97,7 +101,7 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
     render(<QueenTab active={true} />, { wrapper: Wrap });
     expect(screen.getByText('Pause new work')).toBeTruthy();
     expect(screen.getByText('Focus directive')).toBeTruthy();
-    expect(screen.getByText('Eligible hives')).toBeTruthy();
+    expect(screen.getByText('Eligible pot')).toBeTruthy();
     expect(screen.getByText('Eligible plans')).toBeTruthy();
     expect(screen.getByLabelText('Pause duration in minutes')).toBeTruthy();
     expect(screen.getByText('Plan A')).toBeTruthy();
@@ -114,9 +118,9 @@ describe('QueenTab (Colony sidebar, round 2)', () => {
       invalidate: vi.fn(),
     };
     render(<QueenTab active={true} />, { wrapper: Wrap });
-    expect(screen.getByLabelText('Queen steering summary')).toBeTruthy();
+    expect(screen.getByLabelText('brain steering summary')).toBeTruthy();
     expect(screen.getByText('Flowing')).toBeTruthy();
-    expect(screen.getByText('1 hive · 1 plan')).toBeTruthy();
+    expect(screen.getByText('1 pot · 1 plan')).toBeTruthy();
     expect(screen.getByText('Directive set')).toBeTruthy();
     expect(screen.getByText('1 tier override')).toBeTruthy();
   });

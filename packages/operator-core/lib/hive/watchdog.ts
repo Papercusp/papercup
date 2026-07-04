@@ -165,7 +165,12 @@ export type WatchdogSource =
   // WI-1623: the release-deploy staleness recurrence guard — the green pin has
   // sat deployable-but-not-live longer than the threshold (a genuinely wedged
   // pipeline OR a lying deployedAt field; either way, worth an alert).
-  | 'release-deploy-staleness';
+  | 'release-deploy-staleness'
+  // hive-seed-bundle P-008 (D-007): the cold-join canary's per-interval fire —
+  // a scheduled FULL cold join (seed disabled) keeps the whole-history join path
+  // exercised now that seeded installs only carry the delta. A fire records each
+  // canary run (pass or fail) + doubles as the interval debounce clock.
+  | 'cold-join-canary';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
