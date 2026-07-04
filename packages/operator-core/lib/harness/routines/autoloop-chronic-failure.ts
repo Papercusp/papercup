@@ -79,6 +79,17 @@ export interface AutoloopStateRow {
    *  (orphaned/renamed slug) so its error count can never reset. `null`/absent =
    *  unknown → fail-OPEN (treated as live, never silently suppressed). */
   last_fired_at?: string | Date | null;
+  /** The matching `harness_shared.routines.target_owner_id` — the warm coord owner of a
+   *  `loop:arm`-materialized loop (`loop-su-<uuid>` role, `target_role = system:loop-wake`).
+   *  NON-NULL ⇒ this is an EPHEMERAL loop:arm OWNER loop, not a fixed system role
+   *  (director/gym-cycle/overwatch/scout-cycle, which carry `null`). EI-6727: such loops are
+   *  owner-witnessed AND managed end-to-end by the reconcile terminal-guard autonomy — a dead
+   *  owner is auto-paused with its OWN dedicated human escalation (`escalateDeadLoop`,
+   *  WI-2339 fix E). So the chronic-failure sweep escalating them is a PREMATURE DUPLICATE
+   *  (fired in the window before the guard pauses the routine), flooding the queue with
+   *  un-actionable "loop-su-<uuid> red N fires" tickets (28 accumulated). NON-NULL suppresses
+   *  escalation; `null`/absent (a fixed system role, the sweep's intended scope) does NOT. */
+  routine_target_owner_id?: string | null;
 }
 
 /** PURE: is this row's error streak a FROZEN watermark rather than a live failure —
@@ -98,12 +109,16 @@ export function isStaleWatermark(
   return now - t > staleMs;
 }
 
-/** PURE: which rows breach the threshold (highest streak first), EXCLUDING any row whose
- *  matching routine is already `active:false` (auto-paused — a resolved condition, not a
- *  live chronic failure; see this module's header comment) OR whose streak is a FROZEN
- *  watermark (EI-6765 — `last_fired_at` older than the staleness window; the row stopped
- *  firing so its error count can never reset). `routine_active: null` / absent
- *  `last_fired_at` are NOT excluded — fail-open, never silently suppress an unknown state. */
+/** PURE: which rows breach the threshold (highest streak first), EXCLUDING any row that is
+ *  (a) an EPHEMERAL `loop:arm` OWNER loop (`routine_target_owner_id` non-null — EI-6727: managed
+ *  end-to-end by the reconcile terminal-guard autonomy with its own dedicated dead-owner
+ *  escalation, so a chronic-failure ticket is a premature duplicate); (b) already auto-paused
+ *  (`routine_active: false` — a resolved condition, not a live chronic failure; see this module's
+ *  header comment); or (c) a FROZEN watermark (EI-6765 — `last_fired_at` older than the staleness
+ *  window; the row stopped firing so its error count can never reset). `routine_target_owner_id`
+ *  null (a fixed system role — director/gym-cycle/overwatch/scout-cycle, the sweep's intended
+ *  scope), `routine_active: null`, and absent `last_fired_at` are NOT excluded — fail-open, never
+ *  silently suppress an unknown state. */
 export function selectChronicFailures(
   rows: readonly AutoloopStateRow[],
   threshold: number,
@@ -116,16 +131,26 @@ export function selectChronicFailures(
     .filter(
       (r) =>
         r.consecutive_errors >= threshold &&
+        !isLoopArmOwnerLoop(r) &&
         r.routine_active !== false &&
         !isStaleWatermark(r, now, staleMs),
     )
     .sort((a, b) => b.consecutive_errors - a.consecutive_errors);
 }
 
+/** PURE: is this an ephemeral `loop:arm` OWNER loop (EI-6727)? A non-null
+ *  `routine_target_owner_id` marks a `loop-su-<uuid>` warm-coord loop — owner-witnessed and
+ *  auto-terminated by the reconcile dead-owner guard (which fires its OWN escalation), so the
+ *  chronic-failure sweep must not also escalate it. `null`/absent = a fixed system role → not a
+ *  loop:arm loop → fail-OPEN (still eligible to escalate), never silently suppressed. */
+export function isLoopArmOwnerLoop(row: Pick<AutoloopStateRow, 'routine_target_owner_id'>): boolean {
+  return row.routine_target_owner_id != null && row.routine_target_owner_id !== '';
+}
+
 export interface ChronicFailureResult {
   harnessSlug: string;
   role: string;
-  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'error';
+  outcome: 'escalated' | 'debounced' | 'skipped-paused' | 'skipped-stale' | 'skipped-loop-arm' | 'error';
   reason: string;
 }
 

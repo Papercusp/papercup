@@ -216,9 +216,15 @@ export class MultiSessionTestbed {
     return metaPath;
   }
 
-  /** The operator's REAL discovery, pointed at this testbed's isolated dir. */
+  /** The operator's REAL discovery, pointed at this testbed's isolated dir.
+   *  verifyIdentity:()=>true bypasses the WI-2339 pidIsPsuHost /proc-cmdline gate:
+   *  the testbed records `process.pid` (the vitest process) as its live-host
+   *  stand-in, whose cmdline carries no psu-launcher/psu-pty-host marker, so the
+   *  real gate would reject it. The socket IS genuinely bound to this process, so
+   *  trusting the pid is correct here — the identity gate has its own dedicated
+   *  coverage (psu-pty-discovery.test.ts, pid-reuse-reachability-gap.test.ts). */
   findHost(ownerId: string): PsuPtyHost | null {
-    return findLiveHost(ownerId, this.psuPtyDir);
+    return findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
   }
 
   /** The operator's REAL socket inject (unchanged transport — exercises the seam). */
@@ -230,10 +236,12 @@ export class MultiSessionTestbed {
    * `ExecuteWakeDeps.findPsuHost` bound to this testbed's isolated dir, so
    * `executeWake` runs its REAL psu-socket-inject rung against our real sockets
    * without touching the live fleet's `~/.papercusp/psu-pty`. (The behavior is
-   * the real `findLiveHost`; only the search directory is redirected.)
+   * the real `findLiveHost`; only the search directory is redirected, and the
+   * WI-2339 pidIsPsuHost gate is bypassed — see `findHost` for why: the stand-in
+   * host records `process.pid`, whose cmdline lacks the psu-host marker.)
    */
   findPsuHostDep(): (ownerId: string) => PsuPtyHost | null {
-    return (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir);
+    return (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
   }
 
   async destroy(): Promise<void> {
