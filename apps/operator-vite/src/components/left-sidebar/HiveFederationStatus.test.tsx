@@ -32,6 +32,11 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the two
+// routed render strings from the THE_HIVE flag hook (restore-pot-lexicon P-005).
+// The pure label fns (reachLabel/substrateLabel/drainLabel) carry no lexicon nouns.
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import HiveFederationStatus, { reachLabel, substrateLabel, drainLabel, type FedStatus } from './HiveFederationStatus';
 
 /** Push one FedStatus onto the panel's sync query (flat one-element array). */
@@ -185,7 +190,7 @@ describe('<HiveFederationStatus>', () => {
   it('honest empty state when no hives are published', async () => {
     mockSync(status({ hives: [] }));
     render(<HiveFederationStatus />);
-    expect((await screen.findByTestId('fed-no-hives')).textContent).toMatch(/No hives published/);
+    expect((await screen.findByTestId('fed-no-hives')).textContent).toMatch(/No pot published/);
   });
 
   it('surfaces a sync error instead of claiming health', async () => {

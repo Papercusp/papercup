@@ -7,6 +7,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { UserProfile, type UserProfileData } from '../UserProfile';
+import { lexiconFor } from '@papercusp/lexicon';
+
+// UserProfile renders under the DEFAULT ('classic' → Pot) brand pack in tests
+// (the-hive flag off). Resolve the brand noun the SAME way the component does so a
+// brand-lexicon flip can never re-red this copy test.
+// (restore-pot-lexicon-public-release-2026-07-04 fallout — green-gate fix su-e9204.)
+const LEX = lexiconFor('classic');
 
 afterEach(() => cleanup());
 
@@ -67,7 +74,7 @@ describe('UserProfile — P-072', () => {
 
   it('P-072b empty harnesses shows the empty-state copy', () => {
     render(<UserProfile data={data({ harnesses: [] })} />);
-    expect(screen.getByText(/No visible hives/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`No visible ${LEX('pot', { plural: true, lower: true })}`))).toBeTruthy();
   });
 
   it('P-072c recent activity renders entries with time-ago labels', () => {

@@ -115,7 +115,9 @@ describe('<HarnessTopBar /> RegisterSubsButton', () => {
     );
     clickRegister();
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
-    expect(toastSuccess.mock.calls[0][0]).toMatch(/No new sub-hives/);
+    expect(toastSuccess.mock.calls[0][0]).toMatch(
+      new RegExp(`No new sub-${lexiconFor('classic')('pot', { plural: true, lower: true })}`),
+    );
   });
 
   it('routes a payload with per-slug errors to toast.error', async () => {
