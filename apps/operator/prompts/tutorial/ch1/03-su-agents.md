@@ -8,11 +8,13 @@ docSlugs: agent-policies
 
 ## Brief
 
-I am an **SU agent** — a superuser engineer that works *with* you. I can read
-and edit files, run commands, query Papercusp's database, file and complete
-work, and coordinate with other agents — the same authority a senior engineer
-would have on this machine. You direct me in plain language; I plan, act, and
-report back.
+**SU agents are the main agents you work with to build things.** An SU is a
+superuser engineer that works *with* you — you launch one with the **`psu`**
+utility, then direct it in plain language. It can read and edit files, run
+commands, query Papercusp's database, file and complete work, and coordinate
+with other agents — the same authority a senior engineer would have on this
+machine. It plans, acts, and reports back. (The agent running this tutorial is
+one.)
 
 ## Details
 
@@ -28,6 +30,5 @@ project at once, coordinating through Papercusp's shared coordination layer
 you. Everything they do is recorded, so the GUI can always show you what
 happened and why.
 
-The agent you're talking to right now is an SU agent running the tutorial.
-When we finish, starting a fresh one for real work is one command: `psu` —
+When we finish, starting a fresh SU for real work is a single `psu` command —
 which is exactly what the next section covers.

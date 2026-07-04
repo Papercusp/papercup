@@ -158,6 +158,30 @@ edge that cost an hour:
     product second-launch bug (Start-Process launches persist; single-instance
     PASS\_ALL). For a CDP/button-click E2E, launch the GUI with `Start-Process`
     (or keep the first-boot GUI alive), don't relaunch through the task.
+20. **Catch `cfg(windows)` Rust errors LOCALLY in \~40 s — don't spend a
+    15-25 min VM build to find a typo (WI-2215).** The desktop's \~68
+    `#[cfg(windows)]` / `#[cfg(target_os = "windows")]` regions (main.rs,
+    wsl\_setup.rs, native\_console.rs, pty.rs, custom\_protocol.rs,
+    endpoint\_ipc.rs, dev\_bridge.rs, native\_terminal.rs) do NOT compile under a
+    plain `cargo check` on the Linux box — that target builds the
+    `cfg(not(windows))` half, so a Windows-only type/import/borrow error is
+    invisible until the VM build. Run `bin/check-windows-cfg.sh` instead
+    (\~40 s cold, \~4 s warm). It is `cargo xwin check --target
+    x86_64-pc-windows-msvc -p papercusp-desktop`. **Why not a bare
+    `cargo check --target x86_64-pc-windows-msvc`:** the graph pulls in `ring`
+    (via the TLS stack), whose build SCRIPT compiles C/asm and needs the MSVC
+    librarian `lib.exe`; on Linux cargo aborts at `ring` before ever reaching
+    our crate (`cc-rs: failed to find tool "lib.exe"`). `cargo-xwin` shims
+    clang-cl / llvm-lib / llvm-rc in and downloads the MSVC CRT+SDK (one-time,
+    cached under `~/.cache/cargo-xwin`); `check` is metadata-only so no real
+    linker is needed. One-time setup (the script prints the exact command for
+    any missing piece): `rustup target add x86_64-pc-windows-msvc`,
+    `sudo apt-get install -y --no-install-recommends clang lld llvm`,
+    `cargo install cargo-xwin`. `build-windows-on-vm.sh` runs it as an opt-out
+    pre-flight (`SKIP_WINDOWS_CFG_PRECHECK=1`) and aborts before the VM trip on
+    a compile error; it skips gracefully when the toolchain is absent. It is a
+    COMPILE check, not a build — a runnable `.exe` is still the VM's job, and
+    this is deliberately not in the green-checkpoint suite (needs the SDK).
 
 ## Where the artifacts live
 
