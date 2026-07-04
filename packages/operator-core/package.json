@@ -23,6 +23,7 @@
     "@papercusp/bench-metrics": "*",
     "@papercusp/blueprint-distribution": "*",
     "@papercusp/cache": "*",
+    "@papercusp/seed-bundle": "*",
     "@papercusp/chat-protocol": "*",
     "@papercusp/control-mutation": "*",
     "@papercusp/debounce-coalesce": "*",

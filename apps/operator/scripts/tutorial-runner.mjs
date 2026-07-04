@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * tutorial-runner.mjs — the DETERMINISTIC Papercusp tutorial
- * (deterministic-onboarding-tutorial-2026-07-04 P-004/P-005).
+ * (deterministic-onboarding-tutorial-2026-07-04 P-004/P-005;
+ *  tutorial-polish-and-docs-search-2026-07-04 #1/#2/#4).
  *
  * The tutorial used to be 100% agent-driven: an LLM read a prompt + content pack and
  * "figured out" how to print each section, interpret [1]/[2], drive the GUI tabs, and
@@ -9,23 +10,31 @@
  * paraphrase / reorder / hallucinate). This runner replaces that spine with a SCRIPT:
  *
  *   - It fetches the whole tutorial in ONE call (GET /api/desktop/tutorial-script).
- *   - It prints each section's `## Brief` VERBATIM and the option line.
- *   - It handles [1] Continue / [2] More details / [m] Menu / [f] Finish with NO LLM.
+ *   - It prints each section's `## Brief` VERBATIM (with a friendly reveal).
+ *   - Each section ends with an ARROW-KEY menu (Continue / More details / Search /
+ *     Ask a question / Jump to a chapter / Finish) — like the Claude TUI. No LLM.
+ *   - It can SEARCH the whole tutorial (type-to-filter) and jump to any section.
  *   - It checkpoints progress, narrates the finale GUI tour, and graduates — all
  *     deterministically.
- *   - The AGENT is invoked ONLY when the user types a free-form QUESTION: a single
+ *   - The AGENT is invoked ONLY when the user asks a free-form QUESTION: a single
  *     one-shot call to the CLI they installed (`claude -p` / `codex exec` / …),
  *     grounded in the current section, then control returns to the script.
  *
+ * Rendering uses chalk (truecolor, auto-degrades to plain when the terminal has no
+ * color / isn't a TTY) plus hand-rolled gradient/typewriter/progress touches and an
+ * ora spinner. Every animation is gated on `process.stdout.isTTY` and can be disabled
+ * with PAPERCUSP_TUTORIAL_NO_ANIM=1, so piped / CI runs degrade to plain text.
+ *
  * Sibling of onboard-launcher.mjs (the setup concierge) — same repo location so
- * `@inquirer/prompts` resolves from the operator's node_modules, same chat-styled
- * rendering so the whole experience reads as one continuous conversation.
+ * `@inquirer/prompts` / chalk / ora resolve from the operator's node_modules, same
+ * chat-styled rendering so the whole experience reads as one continuous conversation.
  *
  * Interactive:  papercusp tutorial            (also: node tutorial-runner.mjs --tutorial)
  * First-run:    launched by the concierge at handoff (deterministic tutorial)
  */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import chalk from 'chalk';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for tests)
@@ -43,7 +52,10 @@ export function parseArgs(argv) {
 }
 
 /**
- * Interpret a reply to the option line. Deterministic — NO LLM decides this.
+ * Interpret a typed reply to the option line. Deterministic — NO LLM decides this.
+ * Retained for the NON-TTY text fallback (when @inquirer's arrow-key select can't run,
+ * e.g. a piped/headless stdin) and for tests. The interactive TTY path uses the
+ * arrow-key select built from sectionChoices() instead.
  * Anything that isn't a recognized command IS a question for the agent.
  */
 export function interpretReply(raw) {
@@ -55,6 +67,7 @@ export function interpretReply(raw) {
   if (t === '2' || lower === 'more' || lower === 'details' || lower === 'd') {
     return { kind: 'details' };
   }
+  if (lower === 's' || lower === 'search') return { kind: 'search' };
   if (lower === 'm' || lower === 'menu') return { kind: 'menu' };
   if (lower === 'f' || lower === 'finish' || lower === 'done' || lower === 'quit' || lower === 'exit') {
     return { kind: 'finish' };
@@ -62,9 +75,64 @@ export function interpretReply(raw) {
   return { kind: 'question', text: t };
 }
 
-/** The one option line every section ends with. */
+/** The one option line the NON-TTY text fallback ends with. */
 export const OPTION_LINE =
-  '[1] Continue · [2] More details · [m] Menu · [f] Finish · or just type your question';
+  '[1] Continue · [2] More details · [s] Search · [m] Menu · [f] Finish · or just type your question';
+
+/** Per-chapter emoji (pure). Falls back to a generic book. */
+export const CHAPTER_EMOJI = { 1: '🧭', 2: '🎯', 3: '🐝', 4: '🧠', 5: '🏗️', 6: '🚧' };
+export function chapterEmoji(n) {
+  return CHAPTER_EMOJI[n] ?? '📘';
+}
+
+/**
+ * Build the arrow-key menu choices for a section (pure — the interactive #1 menu).
+ * "More details" is omitted when the section has none. Emoji + value/name pairs the
+ * @inquirer select renders; the runner acts on `value`.
+ */
+export function sectionChoices(section) {
+  const choices = [{ value: 'continue', name: '➡️  Continue' }];
+  if (section?.details) choices.push({ value: 'details', name: '📖 More details' });
+  choices.push(
+    { value: 'search', name: '🔍 Search the tutorial' },
+    { value: 'question', name: '💬 Ask a question' },
+    { value: 'menu', name: '📚 Jump to a chapter' },
+    { value: 'finish', name: '🏁 Finish' },
+  );
+  return choices;
+}
+
+/**
+ * Rank tutorial sections against a search query (pure — powers #4). Case-insensitive
+ * token match: a title hit weighs 3, a brief hit 1. Empty query → every section (so an
+ * empty search box lists everything). Returns [{ idx, section, score }] best-first.
+ */
+export function searchSections(sections, query) {
+  const q = (query ?? '').trim().toLowerCase();
+  const list = sections ?? [];
+  if (!q) return list.map((section, idx) => ({ idx, section, score: 0 }));
+  const terms = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  list.forEach((section, idx) => {
+    const title = (section.title ?? '').toLowerCase();
+    const brief = (section.brief ?? '').toLowerCase();
+    let score = 0;
+    for (const t of terms) {
+      if (title.includes(t)) score += 3;
+      if (brief.includes(t)) score += 1;
+    }
+    if (score > 0) scored.push({ idx, section, score });
+  });
+  return scored.sort((a, b) => b.score - a.score || a.idx - b.idx);
+}
+
+/** Render a text progress bar, e.g. "▓▓▓░░░ 50%". Pure. */
+export function renderProgressBar(current, total, width = 12) {
+  const t = Math.max(1, total);
+  const frac = Math.max(0, Math.min(1, current / t));
+  const filled = Math.round(frac * width);
+  return `${'▓'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))} ${Math.round(frac * 100)}%`;
+}
 
 /**
  * Build the one-shot Q&A command for the installed agent CLI. `bin` is the resolved
@@ -115,12 +183,80 @@ export function resumeIndex(sections, progress) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Rendering
+// Rendering (chalk auto-degrades to plain when !isTTY / NO_COLOR; animations are
+// additionally gated on animOn()).
 // ───────────────────────────────────────────────────────────────────────────
-const dim = (s) => `\x1b[2m${s}\x1b[0m`;
-const bold = (s) => `\x1b[1m${s}\x1b[0m`;
+const dim = (s) => chalk.dim(s);
+const bold = (s) => chalk.bold(s);
+const accent = (s) => chalk.cyan(s);
+const ok = (s) => chalk.green(s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Animations on? Only in a real TTY, and never when explicitly disabled. */
+function animOn() {
+  return Boolean(process.stdout.isTTY) && process.env.PAPERCUSP_TUTORIAL_NO_ANIM !== '1';
+}
+
+/** Linear RGB gradient across a string (violet → cyan by default). Pure-ish (uses chalk). */
+function gradient(text, from = [139, 92, 246], to = [34, 211, 238]) {
+  const chars = [...text];
+  const n = Math.max(1, chars.length - 1);
+  return chars
+    .map((ch, i) => {
+      const r = Math.round(from[0] + (to[0] - from[0]) * (i / n));
+      const g = Math.round(from[1] + (to[1] - from[1]) * (i / n));
+      const b = Math.round(from[2] + (to[2] - from[2]) * (i / n));
+      return chalk.rgb(r, g, b)(ch);
+    })
+    .join('');
+}
+
 function say(msg) {
   process.stdout.write(`\n${msg}\n`);
+}
+
+/** Reveal text with a fast, skippable-feeling typewriter. Degrades to a plain write. */
+async function typeOut(text, cps = 900) {
+  if (!animOn()) {
+    process.stdout.write(`${text}\n`);
+    return;
+  }
+  const delay = 1000 / cps;
+  for (const ch of text) {
+    process.stdout.write(ch);
+    if (ch !== '\n' && ch !== ' ') await sleep(delay);
+  }
+  process.stdout.write('\n');
+}
+
+/** One-time animated gradient welcome banner (settles to a static gradient). */
+async function welcomeBanner() {
+  const title = 'P A P E R C U S P';
+  const tagline = 'your multi-agent coding platform';
+  if (!animOn()) {
+    say(bold(title));
+    process.stdout.write(`${dim(tagline)}\n`);
+    return;
+  }
+  process.stdout.write('\n  ');
+  // A left→right "shine": one bright position sweeps across the gradient title.
+  const chars = [...title];
+  for (let pos = 0; pos <= chars.length; pos++) {
+    const line = chars
+      .map((ch, i) => {
+        if (i === pos) return chalk.whiteBright.bold(ch);
+        const n = Math.max(1, chars.length - 1);
+        const r = Math.round(139 + (34 - 139) * (i / n));
+        const g = Math.round(92 + (211 - 92) * (i / n));
+        const b = Math.round(246 + (238 - 246) * (i / n));
+        return chalk.rgb(r, g, b)(ch);
+      })
+      .join('');
+    process.stdout.write(`\r  ${line}`);
+    await sleep(45);
+  }
+  process.stdout.write(`\r  ${gradient(title)}\n`);
+  process.stdout.write(`  ${dim(tagline)}\n`);
 }
 
 function operatorUrlFrom(args, env = process.env) {
@@ -191,7 +327,16 @@ function runSpec(spec) {
 // ───────────────────────────────────────────────────────────────────────────
 async function answerQuestion(agent, bin, section, question) {
   const { command, args } = buildQaCommand(agent, bin, buildQaPrompt(section, question));
-  say(dim('Asking the agent…'));
+  let spinner = null;
+  if (animOn()) {
+    try {
+      const ora = (await import('ora')).default;
+      spinner = ora({ text: accent('Asking the agent…'), color: 'cyan' }).start();
+    } catch {
+      spinner = null;
+    }
+  }
+  if (!spinner) say(dim('Asking the agent…'));
   const answer = await new Promise((resolve) => {
     let out = '';
     let done = false;
@@ -222,11 +367,15 @@ async function answerQuestion(agent, bin, section, question) {
       clearTimeout(timer);
       finish(null);
     });
-    child.on('exit', (code) => {
+    child.on('exit', () => {
       clearTimeout(timer);
-      finish(code === 0 ? out.trim() || null : out.trim() || null);
+      finish(out.trim() || null);
     });
   });
+  if (spinner) {
+    if (answer) spinner.succeed(accent('Answer'));
+    else spinner.stop();
+  }
   if (answer) {
     say(answer);
   } else {
@@ -236,7 +385,7 @@ async function answerQuestion(agent, bin, section, question) {
       : '';
     say(
       `I couldn't reach the agent for a live answer just now.${docs} ` +
-        dim('Type [2] for this section\'s details, or [1] to continue.'),
+        dim('Pick “More details”, or Continue.'),
     );
   }
 }
@@ -270,7 +419,7 @@ async function runOptionalSetup(base, items, prompts) {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name: name.trim(), email: email.trim() }),
           });
-          say('Saved. ✓');
+          say(ok('Saved. ✓'));
         } catch (e) {
           say(dim(`(couldn't save git identity: ${e?.message ?? e} — set it later in Settings)`));
         }
@@ -293,20 +442,46 @@ async function runOptionalSetup(base, items, prompts) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Menus
+// Menus + search
 // ───────────────────────────────────────────────────────────────────────────
 async function chapterMenu(script, prompts, includeResume, resumeChapterTitle) {
   const { select } = prompts;
   const choices = [];
   if (includeResume && resumeChapterTitle) {
-    choices.push({ value: '__resume', name: `Resume where you left off (${resumeChapterTitle})` });
+    choices.push({ value: '__resume', name: `↩️  Resume where you left off (${resumeChapterTitle})` });
   }
-  choices.push({ value: '__begin', name: 'Start from the beginning' });
+  choices.push({ value: '__begin', name: '⏮️  Start from the beginning' });
   for (const ch of script.chapters) {
-    choices.push({ value: String(ch.number), name: `Chapter ${ch.number} — ${ch.title}` });
+    choices.push({ value: String(ch.number), name: `${chapterEmoji(ch.number)} Chapter ${ch.number} — ${ch.title}` });
   }
-  choices.push({ value: '__finish', name: 'Finish the tutorial' });
+  choices.push({ value: '__finish', name: '🏁 Finish the tutorial' });
   return select({ message: 'Where would you like to go?', choices });
+}
+
+/**
+ * Search the whole tutorial (#4) with @inquirer's type-to-filter `search` prompt.
+ * Returns the chosen section index, or null if the user backed out.
+ */
+async function searchTutorial(script, prompts) {
+  const { search } = prompts;
+  const sections = script.sections ?? [];
+  try {
+    const idx = await search({
+      message: '🔍 Search the tutorial (type to filter):',
+      source: async (term) => {
+        const hits = searchSections(sections, term ?? '');
+        return hits.slice(0, 12).map(({ idx, section }) => ({
+          name: `${chapterEmoji(section.chapter)} Ch${section.chapter} — ${section.title}`,
+          value: idx,
+          description: (section.brief ?? '').split('\n')[0].slice(0, 80),
+        }));
+      },
+    });
+    return typeof idx === 'number' ? idx : null;
+  } catch (e) {
+    if (e?.name === 'ExitPromptError') return null; // Ctrl+C out of search → back to the section
+    throw e;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -324,7 +499,7 @@ function runFinale(script) {
   );
   let n = 1;
   for (const tab of script.guiTabTour ?? []) {
-    say(`${bold(`${n}. ${tab.label}`)} — ${tab.blurb}`);
+    say(`${bold(`${chapterEmoji(0)} ${n}. ${tab.label}`)} — ${tab.blurb}`);
     n += 1;
   }
   say(
@@ -342,7 +517,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const base = operatorUrlFrom(args);
   const prompts = await import('@inquirer/prompts');
-  const { input } = prompts;
+  const { select, input } = prompts;
+  const interactive = Boolean(process.stdout.isTTY) && Boolean(process.stdin.isTTY);
 
   let script;
   try {
@@ -360,6 +536,7 @@ async function main() {
     say('No tutorial content is installed on this build. ' + dim('Nothing to run.'));
     return 0;
   }
+  const totalChapters = script.chapters?.length ?? 0;
 
   const agent =
     args.agent ||
@@ -368,6 +545,7 @@ async function main() {
       : 'claude');
   const bin = script.agentBinaries?.[agent] ?? null;
 
+  await welcomeBanner();
   say(
     args.tutorial
       ? bold('The Papercusp tutorial — welcome back.')
@@ -414,33 +592,58 @@ async function main() {
     const s = sections[idx];
     if (s.chapter !== lastChapter) {
       const ch = script.chapters.find((c) => c.number === s.chapter);
-      say(bold(`── Chapter ${s.chapter}${ch ? ` — ${ch.title}` : ''} ──`));
+      const bar = totalChapters ? dim(`  ${renderProgressBar(s.chapter, totalChapters, 12)}`) : '';
+      say(
+        accent(bold(`${chapterEmoji(s.chapter)}  Chapter ${s.chapter}${ch ? ` — ${ch.title}` : ''}`)) +
+          bar,
+      );
       lastChapter = s.chapter;
     }
-    // Brief, VERBATIM from the content pack. No LLM.
-    say(`${bold(s.title)}\n${s.brief}`);
+    // Brief, VERBATIM from the content pack. No LLM. Friendly reveal.
+    process.stdout.write(`\n${bold(s.title)}\n`);
+    await typeOut(s.brief);
 
     let advanced = false;
     while (!advanced) {
-      const reply = interpretReply(await input({ message: OPTION_LINE }));
-      if (reply.kind === 'continue') {
+      // Interactive TTY → arrow-key select (#1). Non-TTY → typed fallback.
+      let action;
+      let typedQuestion = null;
+      if (interactive) {
+        action = await select({ message: 'What next?', choices: sectionChoices(s), loop: false });
+      } else {
+        const reply = interpretReply(await input({ message: OPTION_LINE }));
+        action = reply.kind;
+        // The typed fallback already carries the question text — don't re-prompt.
+        if (reply.kind === 'question') typedQuestion = reply.text;
+      }
+
+      if (action === 'continue') {
         completed.add(s.id);
         await saveProgress(base, s.id, [...completed]);
         idx += 1;
         advanced = true;
-      } else if (reply.kind === 'details') {
+      } else if (action === 'details') {
         say(s.details || dim('(no extra details for this section — ask a question if you like)'));
-      } else if (reply.kind === 'question') {
-        await answerQuestion(agent, bin, s, reply.text);
-      } else if (reply.kind === 'menu') {
+      } else if (action === 'search') {
+        const target = await searchTutorial(script, prompts);
+        if (typeof target === 'number' && target >= 0) {
+          idx = target;
+          lastChapter = null; // re-print the chapter header on the jump
+          advanced = true;
+        }
+      } else if (action === 'question') {
+        const q = typedQuestion ?? (await input({ message: '💬 Your question:' }))?.trim();
+        if (q) await answerQuestion(agent, bin, s, q);
+      } else if (action === 'menu') {
         const choice = await chapterMenu(script, prompts, false, null);
         if (choice === '__finish') {
           await finishUp(base, script, args);
           return 0;
         }
         idx = choice === '__begin' ? 0 : Math.max(0, firstIndexOfChapter(sections, Number(choice)));
+        lastChapter = null;
         advanced = true;
-      } else if (reply.kind === 'finish') {
+      } else if (action === 'finish') {
         await finishUp(base, script, args);
         return 0;
       }
@@ -461,7 +664,7 @@ async function finishUp(base, script, args, skipFinale = false) {
     if (res.error) say(dim(`(couldn't mark onboarding finished: ${res.error} — you can ignore this)`));
   }
   say(
-    bold("That's the tour.") +
+    ok(bold("That's the tour.")) +
       ' Start an agent session any time with ' +
       bold('psu') +
       ', and re-open this tutorial from the ' +

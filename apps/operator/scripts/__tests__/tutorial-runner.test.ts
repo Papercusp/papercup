@@ -4,10 +4,14 @@ import {
   OPTION_LINE,
   buildQaCommand,
   buildQaPrompt,
+  chapterEmoji,
   firstIndexOfChapter,
   interpretReply,
   parseArgs,
+  renderProgressBar,
   resumeIndex,
+  searchSections,
+  sectionChoices,
 } from '../tutorial-runner.mjs';
 
 describe('parseArgs', () => {
@@ -108,5 +112,68 @@ describe('resume math', () => {
   it('firstIndexOfChapter finds a chapter start', () => {
     expect(firstIndexOfChapter(sections, 2)).toBe(2);
     expect(firstIndexOfChapter(sections, 9)).toBe(-1);
+  });
+});
+
+describe('interpretReply — search command (non-TTY fallback)', () => {
+  it('s / search → search', () => {
+    expect(interpretReply('s').kind).toBe('search');
+    expect(interpretReply('SEARCH').kind).toBe('search');
+  });
+});
+
+describe('sectionChoices — the arrow-key section menu (#1)', () => {
+  it('always offers continue first, then search/question/menu/finish', () => {
+    const values = sectionChoices({ title: 'X', brief: 'b', details: null }).map((c) => c.value);
+    expect(values[0]).toBe('continue');
+    expect(values).toEqual(['continue', 'search', 'question', 'menu', 'finish']);
+  });
+  it('includes "details" only when the section has details', () => {
+    const withD = sectionChoices({ details: 'more' }).map((c) => c.value);
+    expect(withD).toContain('details');
+    const noD = sectionChoices({ details: null }).map((c) => c.value);
+    expect(noD).not.toContain('details');
+  });
+});
+
+describe('searchSections — tutorial search ranking (#4)', () => {
+  const sections = [
+    { title: 'Plans', brief: 'a durable list of work items', chapter: 2 },
+    { title: 'Work items', brief: 'the unit of work an agent claims', chapter: 2 },
+    { title: 'Loops', brief: 'keep an agent working on a plan', chapter: 2 },
+  ];
+  it('ranks a title hit above a brief-only hit', () => {
+    const hits = searchSections(sections, 'plan');
+    // "Plans" (title) must rank above "Loops" (brief mentions 'plan')
+    expect(hits[0].section.title).toBe('Plans');
+    expect(hits.map((h) => h.section.title)).toContain('Loops');
+  });
+  it('empty query returns every section (idx preserved)', () => {
+    const hits = searchSections(sections, '');
+    expect(hits).toHaveLength(3);
+    expect(hits[0].idx).toBe(0);
+  });
+  it('no match returns empty', () => {
+    expect(searchSections(sections, 'zzzznomatch')).toEqual([]);
+  });
+});
+
+describe('renderProgressBar', () => {
+  it('renders proportional fill + percent', () => {
+    expect(renderProgressBar(0, 6, 6)).toBe('░░░░░░ 0%');
+    expect(renderProgressBar(3, 6, 6)).toBe('▓▓▓░░░ 50%');
+    expect(renderProgressBar(6, 6, 6)).toBe('▓▓▓▓▓▓ 100%');
+  });
+  it('clamps out-of-range + guards total=0', () => {
+    expect(renderProgressBar(9, 6, 6)).toBe('▓▓▓▓▓▓ 100%');
+    expect(renderProgressBar(1, 0, 6)).toBe('▓▓▓▓▓▓ 100%');
+  });
+});
+
+describe('chapterEmoji', () => {
+  it('maps known chapters and falls back for unknown', () => {
+    expect(chapterEmoji(1)).toBe('🧭');
+    expect(chapterEmoji(3)).toBe('🐝');
+    expect(chapterEmoji(99)).toBe('📘');
   });
 });
