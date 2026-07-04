@@ -279,6 +279,32 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain('escalate');
   });
 
+  it('EI-6542: flags a failing test file that already changed since the candidate was cut', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2'); // the (stale-by-the-time-the-suite-finishes) candidate
+    await commit('src/failing.test.ts', 'fixed', 'c3 — fixes the failing test, landed after the candidate was cut');
+    const { deps } = stubDeps(false, ['src/failing.test.ts']);
+    const messages: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => { messages.push(body ?? ''); };
+    const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(messages.some((m) => m.includes('already changed since candidate') && m.includes('src/failing.test.ts'))).toBe(true);
+  });
+
+  it('EI-6542: no already-fixed-since note when the failing file was NOT touched after the candidate', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    await commit('other-file.ts', 'unrelated', 'c3 — unrelated change, does not touch the failing file');
+    const { deps } = stubDeps(false, ['src/failing.test.ts']);
+    const messages: string[] = [];
+    deps.broadcast = async (_s: string, body?: string) => { messages.push(body ?? ''); };
+    const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+    expect(r.reason).toBe('not-green');
+    expect(messages.some((m) => m.includes('already changed since candidate'))).toBe(false);
+  });
+
   it('docs-audit #2: re-broadcasts a rising-urgency alert when the gate has been held >2h', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);
