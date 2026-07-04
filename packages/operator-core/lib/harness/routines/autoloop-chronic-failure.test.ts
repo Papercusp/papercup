@@ -134,6 +134,26 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it('EI-6718 real shape: a dead loop:arm owner loop already auto-paused AND stale is NOT re-escalated', () => {
+    // EI-6718 (loop-su-7e812a66…@*): a pre-fix chronic-failure ticket filed 2026-07-02, before
+    // the EI-6727 loop:arm guard landed. The live row now hits ALL THREE exclusion axes at once —
+    // the reconcile dead-owner guard has auto-paused the routine (active:false), it is a loop:arm
+    // OWNER loop (target_owner_id non-null, with its own escalation), and its last fire is a stale
+    // frozen watermark. Any one axis suffices; together they pin that this class stays suppressed.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-7e812a66-7d3d-4f41-a73d-9f523209f666',
+        consecutive_errors: 54,
+        last_status: 'loop-terminal-unreachable',
+        routine_active: false,
+        routine_target_owner_id: 'su-7e812a66-7d3d-4f41-a73d-9f523209f666',
+        last_fired_at: new Date(NOW - 30 * HOUR_MS).toISOString(), // last fired > staleness window ago
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('EI-6727: a fixed SYSTEM role (no target_owner_id) still escalates — the suppression is loop:arm-only', () => {
     // Regression guard against over-suppression: gym-cycle/director/overwatch/scout-cycle are
     // witness-less fixed system roles with NO target_owner_id and no other escalation path —

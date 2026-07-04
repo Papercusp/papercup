@@ -251,6 +251,9 @@ import './accounts/accounts';
 import './accounts/link';
 // accounts-pool-tab-2026-06-15 P-004 — the owner's session-now account override tools.
 import './accounts/session-override';
+// EI-7357 — restores accounts:test-egress (the clean-IP gate probe egress-probe.ts's own
+// doc comment references, but which was never actually registered as an MCP tool).
+import './accounts/test-egress';
 // gateway-live-control-and-egress-plan-2026-06-20 B-GWCTL — gateway:status / gateway:reload (hot-config).
 import './gateway/gateway';
 // local-concurrent-inference-2026-07-02 P-004 — gateway:local_backend_register/list/remove.
