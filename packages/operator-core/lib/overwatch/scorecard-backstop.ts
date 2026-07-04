@@ -245,9 +245,10 @@ async function recordScorecardFire(workspaceId: string, installSlug: string, rea
  * Default `tool-utilization` grade: read the fleet code:run adoption rollup (last 7 days) from PG
  * and grade it. Best-effort — any failure (no table, slow query) returns undefined so the floor
  * falls back to honest 'unknown' rather than breaking the backstop. Mirrors the RunQuery prod
- * wiring (sql.unsafe(query, params)).
+ * wiring (sql.unsafe(query, params)). Exported for the scheduled emission pulse
+ * (scorecard-emission-pulse.ts), which grounds the same criterion the same way.
  */
-async function defaultToolUtilizationGrade(): Promise<ScorecardRating | undefined> {
+export async function defaultToolUtilizationGrade(): Promise<ScorecardRating | undefined> {
   try {
     const { sql } = getOrgPg();
     const runQuery: RunQuery = async <T = unknown>(query: string, params: unknown[]) =>
