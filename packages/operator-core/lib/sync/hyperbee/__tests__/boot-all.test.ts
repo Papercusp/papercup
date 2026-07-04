@@ -26,7 +26,7 @@ import {
   _resetSubstrateBootDefaultsForTests,
   type SwarmBindingResolver,
 } from '../boot-all';
-import type { BootedHarnessHandle } from '../boot';
+import type { BootedHarnessHandle, BootHarnessOpts } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
 import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
 import { makeFakeBootedHandle } from './fake-booted-handle';
@@ -148,7 +148,7 @@ describe('boot-all — substrate orchestrator', () => {
   it('bootSingleHarness still allows an explicit boot factory on request-only hosts', async () => {
     const savedVitest = process.env.VITEST;
     const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
-    const bootHarness = vi.fn(async (opts) =>
+    const bootHarness = vi.fn(async (opts: BootHarnessOpts) =>
       fakeHandle(opts.workspaceId, opts.harnessSlug),
     );
     try {

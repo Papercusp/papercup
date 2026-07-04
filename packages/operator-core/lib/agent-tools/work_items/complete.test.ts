@@ -10,10 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getWorkItem = vi.fn();
 const setWorkItemState = vi.fn();
+const mergeWorkItemOutputPayload = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemState: (...a: unknown[]) => setWorkItemState(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
+  mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
 }));
 
 // TEST-COMPLETION GATE (P-006): the flag + the gate helper are mocked so these unit tests
