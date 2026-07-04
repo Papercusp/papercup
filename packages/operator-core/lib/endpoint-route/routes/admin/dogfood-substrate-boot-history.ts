@@ -36,26 +36,47 @@ import {
 } from '../../../sync/hyperbee/boot-history';
 import { getSubstrateIpcClient } from '../../../sync/hyperbee/substrate-ipc-client';
 
-const VALID_KINDS: ReadonlyArray<BootHistoryKind> = [
-  'boot_start',
-  'boot_ok',
-  'boot_fail',
-  'close',
-  'peer_connected',
-  'swarm_join_failed',
-  'peer_rejected',
-  'peer_rate_limited',
-  'peer_capped',
-  'peer_revoked',
-  'announce_admitted',
-  'announce_pending',
-  'announce_rejected',
-  'announce_error',
-  'merge_error',
-  'rekey_grant_failed',
-  'rekey_grant_skipped',
-  'rekey_boundary_skipped',
-];
+// WI-1953: this MUST cover every BootHistoryKind union member, or a value passed
+// in ?kinds= is silently dropped (filtered, not rejected) — indistinguishable
+// from the event never firing, which directly undermines diagnosis (the WI-808
+// epoch_* kinds and the WI-193 peer_unrevoked kind were previously missing this
+// way). Keyed as a Record<BootHistoryKind, true> instead of a bare array so
+// TypeScript's excess/missing-property checking makes an update to
+// BootHistoryKind (in boot-history.ts) a COMPILE ERROR here until this map is
+// updated too — the allow-list cannot drift out of sync again.
+const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
+  boot_start: true,
+  boot_ok: true,
+  boot_fail: true,
+  close: true,
+  peer_connected: true,
+  join_started: true,
+  join_succeeded: true,
+  swarm_join_failed: true,
+  peer_rejected: true,
+  peer_rate_limited: true,
+  peer_cap_near: true,
+  peer_capped: true,
+  peer_revoked: true,
+  peer_unrevoked: true,
+  replication_stalled: true,
+  replication_frozen: true,
+  announce_admitted: true,
+  announce_pending: true,
+  announce_rejected: true,
+  announce_clock_skew: true,
+  announce_error: true,
+  merge_error: true,
+  rekey_grant_failed: true,
+  rekey_grant_skipped: true,
+  rekey_boundary_skipped: true,
+  epoch_gate_built: true,
+  epoch_gate_seen: true,
+  epoch_defer: true,
+  epoch_decrypt_fail: true,
+  epoch_applied: true,
+};
+const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 
 interface BootHistoryPayload {
   entries: BootHistoryEntry[];
