@@ -461,7 +461,7 @@ export function EntryGithubSearchForm({
                           padding: '1px 6px',
                         }}
                       >
-                        🍯 Hive exists{b.hive_title ? `: ${b.hive_title}` : ''} ·{' '}
+                        🍯 {t('pot')} exists{b.hive_title ? `: ${b.hive_title}` : ''} ·{' '}
                         {claimed ? 'claimed' : 'unclaimed'} — pick to join
                       </span>
                     );
