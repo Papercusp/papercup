@@ -9,12 +9,45 @@ routes, 24 family batches. A few things that bite if you don't know them:
 
 ## Catch-all routes must register LAST
 
-Hono's parametric/wildcard matches (`/:transport`, `/plugins/*`,
-`/agent-tools/*`) will shadow literal paths registered after them in some
-router configs. Register every literal route first, then the family
-catch-all, then the absolute-last `:transport` MCP catch-all. In
-`routes/index.ts` the spread order in `ALL_ROUTES` is load-bearing — the
-comment markers there are not decoration.
+Hono resolves overlapping routes purely by **registration order** — unlike
+Next.js file routing, it has **no static-over-dynamic precedence**, so a
+parametric/wildcard route (`/:transport`, `/plugins/*`, `/agent-tools/*`)
+registered before a literal sibling shadows it outright (the audit's
+original finding: `GET /api/marketplace/:slug` registered first 404'd
+`GET /api/marketplace/spawnable`).
+
+**Current behavior (2026-07-03): this is now enforced automatically, not by
+hand-placement in `ALL_ROUTES`.** `register.ts` classifies every route via
+`isCatchAll(path)` (a `*` segment, a greedy `:name{.+}` /`:name{.*}` regex
+param, or the exact single-segment `/:transport`) and registers in **two
+phases**:
+
+* `registerRouteLiterals(app)` — every non-catch-all route, sorted
+  literal-before-param by `bySpecificity()` (a stable sort, so ties keep
+  their `ALL_ROUTES` order). Called **before** the composed app mounts its
+  sub-apps (`app.route('/harness', …)`, `app.route('/plugins', …)`), so a
+  literal `defineTool` always out-ranks a **sub-app's own** parametric/
+  catch-all route at the same prefix — the scenario the original hand-ordered
+  scheme couldn't reach at all (a sub-app's catch-all lives outside
+  `ALL_ROUTES`).
+* `registerRouteCatchalls(app)` — the `*` / `:transport` dispatch routes,
+  mounted **after** the sub-apps, so a sub-app's real route (e.g. a plugin's
+  own `apiRoutes`) still gets first refusal before the projected-tool
+  catch-all.
+
+So the position of a route within the `ALL_ROUTES` spread in
+`routes/index.ts` is **no longer load-bearing for correctness** — the sort
+re-derives literal-before-param order every time regardless of where you
+add the import line (the comment markers there are now organizational, not
+load-bearing). What IS load-bearing: classifying a genuinely-catch-all route
+correctly so `isCatchAll()` sorts it into phase 2, and calling
+`registerRouteLiterals` / `registerRouteCatchalls` (not the combined
+`registerAllRoutes`) around the real app's sub-app mounts — `registerAllRoutes`
+runs both phases back-to-back and is correct only for a bare app with no
+sub-apps (the in-process test harness). A regression test —
+`__tests__/route-shadowing-invariant.test.ts` — asserts the invariant against
+the exact mounted order (`routeRegistrationOrder()`): no parametric route
+registers before a literal sibling it would shadow.
 
 ## A route module importing the barrel can deadlock the registry
 

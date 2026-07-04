@@ -198,13 +198,18 @@ beforeAll(async () => {
       coord_owner_id text
     )
   `);
-  // EI-7217: resolveWorkspaceForHarness (workspace-for-harness.ts) -> fill_workspace_id_from_projects
-  // (agent-tools/plans/source.ts) queries harness_shared.projects as its FIRST consult before
-  // falling back to the harness registry (a hive/generic harness like this test's 'papercup'
-  // legitimately has ZERO rows here — that's fine, it's the query erroring because the TABLE
-  // itself didn't exist in this test's hand-curated minimal schema that broke plans:start with
-  // "relation harness_shared.projects does not exist". Only slug/workspace_id are ever read
-  // (lookupProjectWorkspaceIds); a minimal empty table is enough for the graceful 0-rows path.
+  // EI-7217/EI-7227: resolveWorkspaceForHarness (workspace-for-harness.ts) ->
+  // fill_workspace_id_from_projects (agent-tools/plans/source.ts) queries
+  // harness_shared.projects as its FIRST consult before falling back to the
+  // harness registry — and plans:start's resolvePlanScope now canonicalizes
+  // this test's 'papercup' harness slug to 'papercusp' first (RETIRED_HARNESS_SLUG_ALIASES
+  // in harness/operator-home-harness.ts, the 2026-06-19 papercup->papercusp rename-compat
+  // shim), THEN looks that canonical slug up — so this test needs both (a) the table to
+  // exist at all (it didn't, in this hand-curated minimal schema — "relation
+  // harness_shared.projects does not exist") and (b) a row registering the CANONICAL
+  // 'papercusp' slug (not the pre-rename 'papercup' this test's fixtures otherwise use)
+  // to this test's workspace, or resolvePlanScope fails loud (WI-148, "refusing to
+  // silently default"). Only slug/workspace_id are ever read (lookupProjectWorkspaceIds).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.projects (
       id text NOT NULL,
@@ -214,6 +219,9 @@ beforeAll(async () => {
       workspace_id text NOT NULL
     )
   `);
+  await rootSql.unsafe(
+    `INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id) VALUES ('papercusp', 'papercusp', 'active', 'papercusp', '${WS}')`,
+  );
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();

@@ -927,6 +927,56 @@ The reconciler itself (§5, `reclaimStaleWorkItemClaims` / `reclaimStaleIssueCla
 
 **What this means for you:** don’t be surprised if a stale-looking claim (`taken_by` some alias `fleet:assignments`/`coord:presence` on THIS node has never heard of) survives well past the usual \~10-minute stale-claim grace — that is the federation guard working as intended, not a bug. If you need to confirm a claim is truly abandoned rather than live-on-another-node, check the hive’s other member nodes (or wait out the 24h fallback) before assuming it’s free.
 
+# Agent-first onboarding — architecture + runbook
+
+> Component map, endpoint contracts, test coverage, and the traps that bite agents working on the concierge → tutor onboarding flow.
+
+The agent-chat-first onboarding (plan `agent-first-onboarding-2026-07-03`) replaced the GUI-wizard critical path. This is the map an agent needs before touching any of it. User-facing overview: [desktop/onboarding](/internal/docs/desktop/onboarding).
+
+## Component map (follow one first-run through it)
+
+[Section titled “Component map (follow one first-run through it)”](#component-map-follow-one-first-run-through-it)
+
+| Step            | Component                                                                                                                                         | Where                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Routing         | `firstRunTarget()` in the root route — unfinished wizard state → `/onboarding` when `FLAGS.ONBOARDING_AGENT_FIRST` (default ON), else `/setup`    | `apps/operator-vite/src/routes/index.tsx`                                          |
+| Surface         | `OnboardingConsole` — full-window `InlinePtyTerminal` running the concierge; non-Tauri/browser → fallback card to `/setup?force=1`                | `apps/operator/app/_components/OnboardingConsole.tsx`                              |
+| Spawn spec      | `onboardConcierge` SpawnSpec                                                                                                                      | `packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts`   |
+| Concierge       | `onboard-launcher.mjs` — renders chat, runs SpawnSpecs, re-polls; NO stage logic client-side                                                      | `apps/operator/scripts/onboard-launcher.mjs`                                       |
+| Stage machine   | `resolveStage()` — PURE fn over a detection snapshot; done/pick/install/login/embeddings/handoff                                                  | `packages/operator-core/lib/onboarding/stage-resolver.ts`                          |
+| Status endpoint | `GET /api/desktop/onboarding-status?chosen&forcePick&embeddingsSkipped&tutorial` → `{ snapshot, stage, labels }`                                  | `…/endpoint-route/routes/desktop/onboarding-status.ts`                             |
+| Handoff         | concierge `exec`s `psu --no-picker --agent=<a> --no-plan [--launch-context=…]` (`buildHandoffArgs`, env seam `PAPERCUSP_ONBOARD_LAUNCH_CONTEXT`)  | same launcher                                                                      |
+| Tutor brief     | \`GET /api/desktop/onboarding-launch-context?agent\&mode=first-run                                                                                | tutorial\` renders the tutor prompt to a file                                      |
+| Tutor prompt    | `onboarding-tutor.md` + token splice (`{{PACK_INDEX}}`, `{{GUI_TAB_TOUR}}`, setup snapshot, OS, agent…)                                           | `apps/operator/prompts/onboarding-tutor.md` + `…/lib/onboarding/launch-context.ts` |
+| Content pack    | `apps/operator/prompts/tutorial/<ch>/<nn>-<slug>.md` (frontmatter `id/chapter/order/title/docSlugs`, `## Brief` + `## Details`) + loader/registry | `packages/operator-core/lib/onboarding/`                                           |
+| GUI finale      | `GUI_TAB_TOUR` mirrors `ADV_TABS` — tutor drives tabs via `ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}`                      | `…/lib/onboarding/gui-tab-tour.ts`                                                 |
+| Re-entry        | `papercusp tutorial` / desktop icon → `onboard-launcher --tutorial` (finished machines resolve to handoff, not done)                              | launcher + `…/lib/desktop-install/papercusp-files.ts`                              |
+| Graduation      | tutor calls `setup:complete` → `finished_at`; all stages re-derive statelessly (resumable by construction)                                        | `setup:*` tools                                                                    |
+| Wizard fallback | Settings → Advanced → “Setup Wizard (classic)” + `/setup?force=1`                                                                                 | `apps/operator/app/settings/layout.tsx`                                            |
+
+## Test coverage — where to add yours
+
+[Section titled “Test coverage — where to add yours”](#test-coverage--where-to-add-yours)
+
+* **Stage machine**: unit tests beside `stage-resolver.ts`.
+* **Concierge helpers**: `apps/operator/scripts/__tests__/onboard-launcher.test.ts`.
+* **Scripted flow → handoff (CI, fake agent binary)**: `apps/operator/scripts/__tests__/onboard-launcher-flow.integration.test.ts` — spawns the REAL launcher against a stub operator API (node:http) with a PATH-injected fake `psu`; asserts the exact P-005 argv, install streaming, done-stage no-spawn, and `--tutorial` re-entry. Copy this pattern for new stages; never prompt-bearing paths (they hang CI).
+* **First-run routing + console surface**: `apps/operator/e2e/onboarding-first-run.spec.ts` — hermetic via `page.route` mocks of `setup-wizard-state` + `flags/bootstrap`.
+* **Tutor behavior (LLM)**: target `onboarding-tutor` + scenarios OT1–OT3 in `packages/operator-core/lib/llm-testing/`; hermetic wiring test in `__tests__/onboarding-tutor-target.test.ts`.
+* **Pack ↔ docs sync**: the registry test fails if any pack `docSlug` doesn’t resolve to a live `/internal/docs` page — the tutorial doubles as a docs coverage audit. Write the missing doc, don’t drop the slug.
+* **Tab-tour drift**: `gui-tab-tour.test.ts` parses `AdvShell.tsx` source and fails if `ADV_TABS` and `GUI_TAB_TOUR` diverge (order, ids, labels).
+
+## Traps
+
+[Section titled “Traps”](#traps)
+
+1. **A browser never shows the real console.** `isTauriNative()` false → the fallback card. Playwright therefore verifies the card + routing only; the real pty console is verified in the Tauri shell per [testing/agent-e2e](/internal/docs/testing/agent-e2e).
+2. **Stage resolution is server-side on purpose.** The `.mjs` concierge must not grow stage logic — quit-anywhere resumability depends on every stage re-deriving from `onboarding-status`. Thread new session choices through query params, like `embeddingsSkipped`.
+3. **The handoff env seam**: `PAPERCUSP_ONBOARD_LAUNCH_CONTEXT` / `PAPERCUSP_ONBOARD_HARNESS` are read by `buildHandoffArgs` at spawn time. Tests must scrub them from the child env (the dev box may carry them).
+4. **The tutor prompt renders at launch**, not live: token changes need a fresh launch-context render; `{{GUI_TAB_TOUR}}` lines embed `ui:dispatch` calls verbatim — the `set_url` handler’s `path` arg exists for exactly this (added with P-018; older `params:{url:…}` guidance was silently broken — EI-7263).
+5. **Cutover flag**: `papercusp-onboarding-agent-first` default ON; OFF must stay byte-identical to the pre-plan behavior (`/setup` first-run). The e2e spec pins both directions — keep it green when touching routing.
+6. **`/onboarding` is deliberately un-gated** (no `requireFlag`): tutorial re-entry deep-links to it after first-run. Don’t “fix” that.
+
 # Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
 
 > When :3070 agent-mcp routes degrade to many seconds and MCP clients time out while /api/health stays fast, the cause is sustained main-thread CPU saturating the event loop — every await hop pays the loop delay, so hop-heavy routes degrade ~Nx while health (~2 hops) barely moves. Read the event-loop-lag gauge first, not the PG pool.
@@ -1241,7 +1291,7 @@ Superseded — two changes after this was written
 
 This runbook still describes the original (2026-05-31) shape. Two parts now mislead:
 
-1. **Plan-review is no longer a push source — there is no 4th producer.** The `harness_plan_review` source and its `POST /api/internal/plan-review-event` endpoint were **retired by B-14/P-101**. There is no live writer and no such `defineTool` — only stale comments remain in `harness-fs-watcher.ts`. There are now **three** producer call-sites (escalation, smoke-fail, needs-human), not four, and `plan-review` is **not** a notify kind (`AttentionNotifyKind` is `'needs-human' | 'intervention' | 'smoke-fail'`). needs-human plan items are the review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts:184`, `apps/operator/bin/host-bootstrap.ts:310`, `packages/operator-core/lib/harness-state/table-registry.ts:238`. Ignore the `plan-review` row in the importance table and the `plan-review` row in the “four producer call-sites” table below.
+1. **Plan-review is no longer a push source — there is no 4th producer.** The `harness_plan_review` source and its `POST /api/internal/plan-review-event` endpoint were **retired by B-14/P-101**. There is no live writer and no such `defineTool` — only stale comments remain in `harness-fs-watcher.ts`. There are now **three** producer call-sites (escalation, smoke-fail, needs-human), not four, and `plan-review` is **not** a notify kind (`AttentionNotifyKind` is `'needs-human' | 'intervention' | 'smoke-fail'`). needs-human plan items are the review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts` (\~line 309), `apps/operator/bin/host-bootstrap.ts` (\~line 467), `packages/operator-core/lib/harness-state/table-registry.ts` (\~line 302) — line numbers drift as the surrounding files grow, so treat these as approximate; search each file for `plan-review`/`harness_plan_review` if they’ve moved again. Ignore the `plan-review` row in the importance table and the `plan-review` row in the “four producer call-sites” table below.
 2. **The native desktop OS notification is now opt-in (disabled by default).** Since the 2026-06-18 owner request it fires only when `localStorage['papercusp:desktopOsNotifications'] === '1'` **and** running in the Tauri shell. The in-app sonner toast still fires **always** — only the OS-level popup changed. See `apps/operator/app/_components/DesktopAttentionNotifier.tsx:62-79`.
 
 Path note: the internal `*-event` endpoints moved from app routes to `packages/operator-core/lib/endpoint-route/routes/internal/`. Everything else (the `notifyAttention` two-channel fail-safe, the escalation/smoke-fail/needs-human gating, the importance map for live kinds, the deleted 60s poll) still holds.
@@ -5910,7 +5960,14 @@ The R5 endpoint migration moved every `app/api/**/route.ts` in the operator onto
 
 [Section titled “Catch-all routes must register LAST”](#catch-all-routes-must-register-last)
 
-Hono’s parametric/wildcard matches (`/:transport`, `/plugins/*`, `/agent-tools/*`) will shadow literal paths registered after them in some router configs. Register every literal route first, then the family catch-all, then the absolute-last `:transport` MCP catch-all. In `routes/index.ts` the spread order in `ALL_ROUTES` is load-bearing — the comment markers there are not decoration.
+Hono resolves overlapping routes purely by **registration order** — unlike Next.js file routing, it has **no static-over-dynamic precedence**, so a parametric/wildcard route (`/:transport`, `/plugins/*`, `/agent-tools/*`) registered before a literal sibling shadows it outright (the audit’s original finding: `GET /api/marketplace/:slug` registered first 404’d `GET /api/marketplace/spawnable`).
+
+**Current behavior (2026-07-03): this is now enforced automatically, not by hand-placement in `ALL_ROUTES`.** `register.ts` classifies every route via `isCatchAll(path)` (a `*` segment, a greedy `:name{.+}` /`:name{.*}` regex param, or the exact single-segment `/:transport`) and registers in **two phases**:
+
+* `registerRouteLiterals(app)` — every non-catch-all route, sorted literal-before-param by `bySpecificity()` (a stable sort, so ties keep their `ALL_ROUTES` order). Called **before** the composed app mounts its sub-apps (`app.route('/harness', …)`, `app.route('/plugins', …)`), so a literal `defineTool` always out-ranks a **sub-app’s own** parametric/ catch-all route at the same prefix — the scenario the original hand-ordered scheme couldn’t reach at all (a sub-app’s catch-all lives outside `ALL_ROUTES`).
+* `registerRouteCatchalls(app)` — the `*` / `:transport` dispatch routes, mounted **after** the sub-apps, so a sub-app’s real route (e.g. a plugin’s own `apiRoutes`) still gets first refusal before the projected-tool catch-all.
+
+So the position of a route within the `ALL_ROUTES` spread in `routes/index.ts` is **no longer load-bearing for correctness** — the sort re-derives literal-before-param order every time regardless of where you add the import line (the comment markers there are now organizational, not load-bearing). What IS load-bearing: classifying a genuinely-catch-all route correctly so `isCatchAll()` sorts it into phase 2, and calling `registerRouteLiterals` / `registerRouteCatchalls` (not the combined `registerAllRoutes`) around the real app’s sub-app mounts — `registerAllRoutes` runs both phases back-to-back and is correct only for a bare app with no sub-apps (the in-process test harness). A regression test — `__tests__/route-shadowing-invariant.test.ts` — asserts the invariant against the exact mounted order (`routeRegistrationOrder()`): no parametric route registers before a literal sibling it would shadow.
 
 ## A route module importing the barrel can deadlock the registry
 
@@ -9209,7 +9266,7 @@ For per-slug subsystems (git-sync’s routine rows, `(slug, phase)` escalation r
 
 [Section titled “TL;DR”](#tldr)
 
-A shared hive’s `membership:'approval'` policy is enforced **on the OWNER side**, at the substrate admission seam (`boot.ts` `drainAdmissionQueue`), via **`ownerAdmitOrPend`** (`hive-membership-admission.ts`). When the owner admits a binding-verified peer’s announce it does NOT unconditionally trust-admit; it consults the owner-signed policy:
+A shared hive’s `membership:'approval'` policy is enforced **on the OWNER side**, at the substrate admission seam (`boot.ts` `drainAdmissionQueue`), via **`admitAnnouncedPeerAsOwner`**, which resolves the peer’s Hive home + self-gates to the owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in `hive-membership-admission.ts`). When the owner admits a binding-verified peer’s announce it does NOT unconditionally trust-admit; it consults the owner-signed policy:
 
 * **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
 * **not a member, open/allowlisted** → `upsertHiveMember` (trust-admit).
@@ -9239,6 +9296,18 @@ The owner is online + authoritative, and it already receives + verifies the join
 [Section titled “Invariants — what ownerAdmitOrPend does NOT touch”](#invariants--what-owneradmitorpend-does-not-touch)
 
 It gates ONLY the membership-UPSERT decision. **Core admission, the `revoked` set, the C-001 read-cut/epoch decrypt gate, and per-op policy enforcement are unchanged** (each at its own seam). A pending/refused peer’s *content* is still gated by the P-002 membership guard, so nothing federates as a member before approval. With no policy or `open` mode the outcome is `admit` → **byte-equivalent** to the prior behavior, so existing hives are unaffected (no flag needed — it’s naturally scoped to approval/allowlist-policy hives, which are owner opt-in).
+
+## Wiring detail (as of the `admitAnnouncedPeerAsOwner` extraction)
+
+[Section titled “Wiring detail (as of the admitAnnouncedPeerAsOwner extraction)”](#wiring-detail-as-of-the-admitannouncedpeerasowner-extraction)
+
+`drainAdmissionQueue` no longer calls `ownerAdmitOrPend` directly — it calls the testable extraction **`admitAnnouncedPeerAsOwner`**, fire-and-forget (`void (async () => …)()`) so the owner-admit I/O never blocks the merge-gated drain loop. That wrapper:
+
+1. **Resolves the Hive home** via `hiveHomeSlugForHarness` (a fresh `hive-federation` registry read: member slug → its `hive_slug`; a hive-home slug → itself) — **not** the boot-time projection slug, which is `undefined` on the owner’s own MEMBER boot (WI-280; using it there silently skipped registration before this fix).
+2. **Self-gates to the owner box** via `loadHivePubkey(workspaceId, hiveHomeSlug)` — only a box holding the Hive private key runs the admit/pend decision at all (`skip: 'not_owner'`); a hive with no resolvable home skips too (`skip: 'no_hive_home'`).
+3. Only then calls `ownerAdmitOrPend`, which is the branching logic this doc’s TL;DR describes (already-member refresh / policy-admit / pending / refuse).
+
+**WI-1585:** this now runs for **every** drained announce, not only the peer’s first core admission — an announce also arrives on every (re)connect, and a peer whose core is already admitted (presence already flowing) still needs its **membership** refreshed. The `already_member` branch of `ownerAdmitOrPend` is exactly this reconnect self-heal: an idempotent `upsertHiveMember` re-grants the member’s epoch keys, which matters most for a member’s **second device** — without re-running the admit decision on every announce, that second device would never be granted keys within the process’s lifetime.
 
 ## Federated table note
 
@@ -10067,6 +10136,20 @@ The 2026-06-14 fix closed the **drain-interleave** trigger but NOT the root caus
 [Section titled “RESOLVED (D-001 fix shipped)”](#resolved-d-001-fix-shipped)
 
 The one-ordering-key-of-record fix landed. Migration `314-d001-hlc-ordering-key.sql` adds a **`fed_hlc`** column to the mutable LWW tables, and the projection PG guards now order by it (the HLC), with `fed_ts` kept only as a fallback when a row predates the column — so the merge fold and the PG guard finally use the SAME key. The HLC-winner can no longer be silently rejected by a `fed_ts`-loser guard, so concurrent same-key writes converge to one value across cells even under recv-advance skew. The seeded `convergence-fuzz` suite asserts it: `S0 (D-001) FIXED: the skew sweep fully converges under the shipped fed_hlc guard` (`packages/operator-core/lib/sync/hyperbee/__tests__/convergence-fuzz.test.ts`). The original `lww-hlc-fedts-divergence.test.ts` repro is now the regression tripwire.
+
+## FURTHER REFINED (EI-1698 + WI-1672 — mig 458/459/466)
+
+[Section titled “FURTHER REFINED (EI-1698 + WI-1672 — mig 458/459/466)”](#further-refined-ei-1698--wi-1672--mig-458459466)
+
+D-001 (above) made the merge fold and the PG guard order by the SAME field (`fed_hlc`, falling back to `fed_ts`), but two more divergence modes surfaced after it shipped — both closed by refining the SQL comparator, not by reopening the ordering-key question:
+
+* **EI-1698 (transitivity, migration `458-fed-order-key-transitivity-fix.sql`):** the original guard’s rule — “if BOTH sides carry an HLC compare HLC, else compare bare `ts`” — is **non-transitive** when HLC presence is mixed (a rolling-upgrade / pre-P-010-history scenario): three ops `X` (hlc+ts), `Y` (ts-only), `Z` (hlc+ts) can cycle `X>Z, Z>Y, Y>X`, so two peers applying the same ops in a different delivery order pick different winners. The fix gives every op **one comparable key** — its real `hlc` when present, else a *derived* `encodeHlc({ms: ts ?? 0, count: 0})` — and compares that single derived key for every pair. `lwwPick` (`projection.ts`) already folded this in-process; migration 458 adds the SQL mirror, `harness_shared.fed_order_key(hlc, ts)`, so every writer’s `ON CONFLICT` / `DELETE` guard (\`fed\_order\_key(EXCLUDED…)
+
+  > \= fed\_order\_key(stored…)\`) compares in the exact same order space as the fold and can no longer reject what the fold picked.
+
+* **WI-1672 (exact-tie split-brain, migrations `459-hlc-node-id-total-order.sql` + `466-hlc-node-id-strong-entropy.sql`):** `hlc_recv`/`observeRemoteHlc` ratchet every peer’s clock to the max wall-ms ever witnessed hive-wide, so after any transient fast-clock episode all peers advance by logical counter only, in near-lockstep — two peers then routinely mint an **identical** `fed_hlc` for concurrent writes to the same key, and the guard’s tie-ACCEPTING `>=` lets the incoming remote op overwrite the local row on BOTH sides — a stable swap, not a crash, so it’s easy to miss. The fix makes the ordering key **total by construction**: every `Hlc` now carries an optional `node` identity segment (`libs/generic/locks-core/src/hlc.ts`, `HLC_NODE_LEN = 16` lowercase-hex), `compareHlc`/`encodeHlc` break `(ms, count)` ties on it, and `HlcClock` stamps its own node onto every value it mints — so a genuine full tie can only be the *same* stamp replayed (where tie-accept is correct and idempotent). Migration 459 seeds each device’s `hlc_clock.node_id` from SQL `random()`; migration 466 found that formula (`md5(random()::text || clock_timestamp()::text || pg_backend_pid()::text)`) can collide across two backends started in close succession on the same PG server (observed in CI), and reseeds from pgcrypto’s `gen_random_bytes()` instead — a decorrelated source engineered for exactly that “many callers, narrow time window” shape. No comparator or format change: a node-less legacy stamp is a strict string-prefix of any node-carrying sibling with the same `(ms, count)`, so it loses the tie identically on every peer/collation.
+
+Both fixes are additive to D-001’s ordering key (`fed_hlc`/`fed_order_key`), not a new one — they make its *comparator* transitive and its *ties* total, closing the two windows a same-key-contention smell test should now also cover: (a) mixed HLC-presence cycling across 3+ peers, (b) two peers minting the exact same `fed_hlc`.
 
 # The honest-majority trust model (shared-hive owner enforcement)
 
@@ -22817,6 +22900,14 @@ Hyperswarm dedups one socket per peer across all shared topics. The substrate’
 [Section titled “Update (D-045, shared-hive-member-content-federation): fast window widened 30s → 120s”](#update-d-045-shared-hive-member-content-federation-fast-window-widened-30s--120s)
 
 The original 30s fast window (above) turned out too short: a **freshly-spawned sidecar process** joining over the public DHT reliably misses the first several announce/lookup rounds (cold start), so the next re-announce after 30s fell straight to the 60s SLOW cadence — a \~90s dead zone where two genuinely-separate machines never `peer_connected` (seen live: run-12 “no peer in \~90s”; invisible to tests because local-testnet peers instantly). `DEFAULT_SUBSTRATE_FAST_WINDOW_MS` is now **120s** — 2.5s re-announces keep a cold node aggressively discoverable until it pairs, then it drops to the bounded SLOW keepalive. Still re-armed on last-peer-loss; still bounded (no forever-hammering).
+
+## Update (2026-07-02, cross-machine-coord-parity-and-trust-2026-07-01 P-004/D-008): directory-swarm.ts is now a thin instantiation of the generic `topic-gossip.ts` chassis
+
+[Section titled “Update (2026-07-02, cross-machine-coord-parity-and-trust-2026-07-01 P-004/D-008): directory-swarm.ts is now a thin instantiation of the generic topic-gossip.ts chassis”](#update-2026-07-02-cross-machine-coord-parity-and-trust-2026-07-01-p-004d-008-directory-swarmts-is-now-a-thin-instantiation-of-the-generic-topic-gossipts-chassis)
+
+The hive-**directory** gossip’s two-speed refresh loop referenced throughout this doc no longer lives inline in `directory-swarm.ts` — it moved to a generic `createTopicGossip<Frame>()` chassis in the new `topic-gossip.ts`, which `directory-swarm.ts` now calls as a thin instantiation (`createDirectoryGossip` → `createTopicGossip({ protocol: HIVE_DIRECTORY_PROTOCOL, ... })`); the presence-gossip transport is the chassis’s second instantiation. The refresh defaults for the directory path are unchanged and still live as constants re-exported from `topic-gossip.ts` (`DEFAULT_REFRESH_MS` = 2.5s, `DEFAULT_FAST_WINDOW_MS` = **30s** — not widened, unlike the substrate path below — `DEFAULT_SLOW_REFRESH_MS` = 60s). Public API and existing callers/tests (`hive-directory-boot.ts`) are unchanged.
+
+The **substrate** swarm (`joinHarnessSwarm` in `swarm.ts`, the subject of the fix below) has **not** been migrated onto this chassis — it still runs its own bespoke `managedSetInterval`-based refresh loop with its own `DEFAULT_SUBSTRATE_*` constants (verified current as of 2026-07-04). Don’t assume “the same loop” means “the same source file” anymore: for the hive-directory side, read `topic-gossip.ts`; for the per-harness substrate side, read `swarm.ts` directly.
 
 ## Gotcha
 
@@ -40209,6 +40300,59 @@ Every call is recorded in `harness_shared.tool_invocations` with `role='operator
 | `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                                                                                                                                                                                       |
 | `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri `console_launch` command + per-OS spawners (today’s live path only for the Windows/WSL2 host; macOS/Linux logic here is superseded by `console-spawn.ts`’s server-side path but kept for the Tauri IPC fallback) |
 | `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console                                                                                                                                                                |
+
+# Onboarding — the agent-chat first run
+
+> What a fresh install experiences — the concierge → agent-tutor conversation — plus how to re-run the tutorial and where the classic GUI wizard lives now.
+
+Papercusp’s first-run experience is a **conversation, not a wizard**. On a fresh install the desktop opens a full-window terminal — the **Onboarding Console** — running a scripted concierge that installs your agent framework, signs you in, and then hands the same terminal to a live agent tutor. The first experience *is* the daily experience.
+
+## What a new user sees
+
+[Section titled “What a new user sees”](#what-a-new-user-sees)
+
+1. **The concierge** (works before any LLM exists) prints the welcome banner and asks one question: *which agent framework?* — Claude Code (recommended), Codex, or oh-my-pi + Meridian. If one is already installed and signed in it skips straight to the handoff.
+
+2. **Guided install + sign-in** stream in the same terminal. Detection polls every few seconds, so installing manually in another terminal works too.
+
+3. An optional **OpenAI embeddings key** step (recommended — it makes search and agent memory dramatically better; skippable).
+
+4. **The handoff**: the concierge `exec`s the chosen agent CLI in the same window with a tutor launch-context. From here a live agent walks the 7-chapter tutorial, one brief at a time, always ending with:
+
+   `[1] Continue · [2] More details · or just type your question`
+
+5. **Graduation**: the tutor calls `setup:complete`; thereafter the app boots normally. Quitting anywhere is safe — every stage re-derives from live detection, so relaunching resumes exactly where you left off.
+
+## Re-running the tutorial
+
+[Section titled “Re-running the tutorial”](#re-running-the-tutorial)
+
+Any time, two ways:
+
+* The **Papercusp Tutorial** desktop icon (installed beside the server + GUI icons).
+* `papercusp tutorial` in a terminal — tutorial-only mode: skips the setup stages detection reports complete, offers a section menu, and resumes where you left off.
+
+## Where the GUI wizard went
+
+[Section titled “Where the GUI wizard went”](#where-the-gui-wizard-went)
+
+The classic step-by-step Setup Wizard is **demoted, not removed** — it is the standing fallback:
+
+* **Settings → Advanced → Setup Wizard (classic)** (`/settings/setup-wizard`).
+* Direct URL escape hatch: `/setup?force=1` (the Onboarding Console links to it — “Prefer clicking through a GUI?”).
+* **Automatic in a browser**: the chat-first console needs the desktop’s pty; a plain browser gets a card pointing at the classic wizard instead.
+
+## The cutover switch
+
+[Section titled “The cutover switch”](#the-cutover-switch)
+
+First-run routing is gated by the `papercusp-onboarding-agent-first` flag (default **ON**). Flipping it OFF restores the old behavior byte-for-byte — fresh installs land on `/setup` — with the agent-chat console still reachable at `/onboarding`. See `/admin/features` to flip.
+
+## For engineers
+
+[Section titled “For engineers”](#for-engineers)
+
+Architecture, endpoint map, test coverage, and traps live in the runbook: [agent-insights/agent-first-onboarding-architecture](/internal/docs/agent-insights/agent-first-onboarding-architecture).
 
 # Desktop workbench (/workbench)
 

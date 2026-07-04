@@ -13,11 +13,13 @@ This runbook still describes the original (2026-05-31) shape. Two parts now misl
    now **three** producer call-sites (escalation, smoke-fail, needs-human), not
    four, and `plan-review` is **not** a notify kind (`AttentionNotifyKind` is
    `'needs-human' | 'intervention' | 'smoke-fail'`). needs-human plan items are the
-   review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts:184`,
-   `apps/operator/bin/host-bootstrap.ts:310`,
-   `packages/operator-core/lib/harness-state/table-registry.ts:238`. Ignore the
-   `plan-review` row in the importance table and the `plan-review` row in the
-   "four producer call-sites" table below.
+   review gate now. See `packages/operator-core/lib/agent-tools/plans/attention.ts`
+   (\~line 309), `apps/operator/bin/host-bootstrap.ts` (\~line 467),
+   `packages/operator-core/lib/harness-state/table-registry.ts` (\~line 302) — line
+   numbers drift as the surrounding files grow, so treat these as approximate;
+   search each file for `plan-review`/`harness_plan_review` if they've moved
+   again. Ignore the `plan-review` row in the importance table and the
+   `plan-review` row in the "four producer call-sites" table below.
 2. **The native desktop OS notification is now opt-in (disabled by default).** Since
    the 2026-06-18 owner request it fires only when
    `localStorage['papercusp:desktopOsNotifications'] === '1'` **and** running in the

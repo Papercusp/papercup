@@ -38,6 +38,39 @@ import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
+/**
+ * EI-5873 — "broad AUTO directives cause fleet over-coverage": observed twice
+ * in one session, multiple fleet members each independently declared
+ * "working ALL remaining items" in free-text `intent` (no structured `items`)
+ * and raced for the same set. The structural claim path (`items` + P-NNN)
+ * already prevents a double-EDIT via `reconcileDeclaredClaims`'s conflict
+ * check — the gap is double-INTENT: a broad prose declaration that never
+ * enumerates items bypasses that check entirely, so two agents can each
+ * believe they own "everything" with no structural signal either sees.
+ *
+ * This is a CHEAP, PURELY-ADVISORY nudge (never blocks or alters behavior):
+ * when `intent` reads like a broad "take everything remaining" scope AND no
+ * structured `items` were declared alongside it, surface a hint recommending
+ * the caller enumerate its lane instead — so the next declare-intent naturally
+ * produces the conflict signal this class of collision needs. False positives
+ * cost nothing (the caller still declared successfully); false negatives just
+ * mean the pattern wasn't broad-sounding enough to catch, same as today.
+ */
+const BROAD_INTENT_RE =
+  /\ball\b[\s\S]{0,40}\b(remaining|items?|work|todos?|the\s+backlog|left)\b|\beverything\b|\bwhatever'?s?\s+left\b/i;
+
+function broadIntentHint(intent: string, hasStructuredItems: boolean): string | null {
+  if (hasStructuredItems) return null;
+  if (!BROAD_INTENT_RE.test(intent)) return null;
+  return (
+    'EI-5873: this reads like a broad "take everything remaining" intent with no structured `items` — ' +
+    'a peer declaring the same broad scope has no structural signal to see the overlap (the claim check ' +
+    'only runs on declared `items`). If this work has enumerable plan items (P-NNN) or work-items, pass ' +
+    'them as `items` (or claim the specific ones via work_items:claim / scheduler:get_next) so a colliding ' +
+    'peer sees a real conflict instead of both of you discovering it after the fact.'
+  );
+}
+
 export default defineTool({
   name: 'coord:declare-intent',
   description:
@@ -209,11 +242,17 @@ export default defineTool({
     const presence = record
       ? { ...record, fleetSlug: fleet?.fleetSlug ?? null, fleetRole: fleet?.fleetRole ?? null }
       : record;
+    const overCoverageHint = broadIntentHint(args.intent, !!(args.items && args.items.length > 0));
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, presence, ...(claims ? { claims } : {}) }),
+          text: JSON.stringify({
+            ok: true,
+            presence,
+            ...(claims ? { claims } : {}),
+            ...(overCoverageHint ? { overCoverageHint } : {}),
+          }),
         },
       ],
     };

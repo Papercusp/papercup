@@ -138,3 +138,52 @@ shipped fed_hlc guard`
 (`packages/operator-core/lib/sync/hyperbee/__tests__/convergence-fuzz.test.ts`).
 The original `lww-hlc-fedts-divergence.test.ts` repro is now the regression
 tripwire.
+
+## FURTHER REFINED (EI-1698 + WI-1672 — mig 458/459/466)
+
+D-001 (above) made the merge fold and the PG guard order by the SAME field
+(`fed_hlc`, falling back to `fed_ts`), but two more divergence modes surfaced
+after it shipped — both closed by refining the SQL comparator, not by
+reopening the ordering-key question:
+
+* **EI-1698 (transitivity, migration `458-fed-order-key-transitivity-fix.sql`):**
+  the original guard's rule — "if BOTH sides carry an HLC compare HLC, else
+  compare bare `ts`" — is **non-transitive** when HLC presence is mixed (a
+  rolling-upgrade / pre-P-010-history scenario): three ops `X` (hlc+ts), `Y`
+  (ts-only), `Z` (hlc+ts) can cycle `X>Z, Z>Y, Y>X`, so two peers applying the
+  same ops in a different delivery order pick different winners. The fix gives
+  every op **one comparable key** — its real `hlc` when present, else a
+  *derived* `encodeHlc({ms: ts ?? 0, count: 0})` — and compares that single
+  derived key for every pair. `lwwPick` (`projection.ts`) already folded this
+  in-process; migration 458 adds the SQL mirror, `harness_shared.fed_order_key(hlc,
+  ts)`, so every writer's `ON CONFLICT` / `DELETE` guard (\`fed\_order\_key(EXCLUDED…)
+  > \= fed\_order\_key(stored…)\`) compares in the exact same order space as the fold
+  > and can no longer reject what the fold picked.
+* **WI-1672 (exact-tie split-brain, migrations `459-hlc-node-id-total-order.sql` +
+  `466-hlc-node-id-strong-entropy.sql`):** `hlc_recv`/`observeRemoteHlc` ratchet
+  every peer's clock to the max wall-ms ever witnessed hive-wide, so after any
+  transient fast-clock episode all peers advance by logical counter only, in
+  near-lockstep — two peers then routinely mint an **identical** `fed_hlc` for
+  concurrent writes to the same key, and the guard's tie-ACCEPTING `>=` lets the
+  incoming remote op overwrite the local row on BOTH sides — a stable swap, not a
+  crash, so it's easy to miss. The fix makes the ordering key **total by
+  construction**: every `Hlc` now carries an optional `node` identity segment
+  (`libs/generic/locks-core/src/hlc.ts`, `HLC_NODE_LEN = 16` lowercase-hex),
+  `compareHlc`/`encodeHlc` break `(ms, count)` ties on it, and `HlcClock` stamps
+  its own node onto every value it mints — so a genuine full tie can only be the
+  *same* stamp replayed (where tie-accept is correct and idempotent). Migration
+  459 seeds each device's `hlc_clock.node_id` from SQL `random()`; migration 466
+  found that formula (`md5(random()::text || clock_timestamp()::text ||
+  pg_backend_pid()::text)`) can collide across two backends started in close
+  succession on the same PG server (observed in CI), and reseeds from
+  pgcrypto's `gen_random_bytes()` instead — a decorrelated source engineered for
+  exactly that "many callers, narrow time window" shape. No comparator or format
+  change: a node-less legacy stamp is a strict string-prefix of any node-carrying
+  sibling with the same `(ms, count)`, so it loses the tie identically on every
+  peer/collation.
+
+Both fixes are additive to D-001's ordering key (`fed_hlc`/`fed_order_key`),
+not a new one — they make its *comparator* transitive and its *ties* total,
+closing the two windows a same-key-contention smell test should now also
+cover: (a) mixed HLC-presence cycling across 3+ peers, (b) two peers minting
+the exact same `fed_hlc`.

@@ -7,9 +7,10 @@ membership:'approval' is enforced by ownerAdmitOrPend in boot.ts drainAdmissionQ
 
 A shared hive's `membership:'approval'` policy is enforced **on the OWNER side**, at the
 substrate admission seam (`boot.ts` `drainAdmissionQueue`), via
-**`ownerAdmitOrPend`** (`hive-membership-admission.ts`). When the owner admits a
-binding-verified peer's announce it does NOT unconditionally trust-admit; it consults
-the owner-signed policy:
+**`admitAnnouncedPeerAsOwner`**, which resolves the peer's Hive home + self-gates to the
+owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in
+`hive-membership-admission.ts`). When the owner admits a binding-verified peer's announce
+it does NOT unconditionally trust-admit; it consults the owner-signed policy:
 
 * **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
 * **not a member, open/allowlisted** → `upsertHiveMember` (trust-admit).
@@ -56,6 +57,30 @@ membership guard, so nothing federates as a member before approval. With no poli
 `open` mode the outcome is `admit` → **byte-equivalent** to the prior behavior, so
 existing hives are unaffected (no flag needed — it's naturally scoped to
 approval/allowlist-policy hives, which are owner opt-in).
+
+## Wiring detail (as of the `admitAnnouncedPeerAsOwner` extraction)
+
+`drainAdmissionQueue` no longer calls `ownerAdmitOrPend` directly — it calls the testable
+extraction **`admitAnnouncedPeerAsOwner`**, fire-and-forget (`void (async () => …)()`) so
+the owner-admit I/O never blocks the merge-gated drain loop. That wrapper:
+
+1. **Resolves the Hive home** via `hiveHomeSlugForHarness` (a fresh `hive-federation`
+   registry read: member slug → its `hive_slug`; a hive-home slug → itself) — **not** the
+   boot-time projection slug, which is `undefined` on the owner's own MEMBER boot (WI-280;
+   using it there silently skipped registration before this fix).
+2. **Self-gates to the owner box** via `loadHivePubkey(workspaceId, hiveHomeSlug)` — only a
+   box holding the Hive private key runs the admit/pend decision at all (`skip:
+   'not_owner'`); a hive with no resolvable home skips too (`skip: 'no_hive_home'`).
+3. Only then calls `ownerAdmitOrPend`, which is the branching logic this doc's TL;DR
+   describes (already-member refresh / policy-admit / pending / refuse).
+
+**WI-1585:** this now runs for **every** drained announce, not only the peer's first core
+admission — an announce also arrives on every (re)connect, and a peer whose core is
+already admitted (presence already flowing) still needs its **membership** refreshed. The
+`already_member` branch of `ownerAdmitOrPend` is exactly this reconnect self-heal: an
+idempotent `upsertHiveMember` re-grants the member's epoch keys, which matters most for a
+member's **second device** — without re-running the admit decision on every announce, that
+second device would never be granted keys within the process's lifetime.
 
 ## Federated table note
 
