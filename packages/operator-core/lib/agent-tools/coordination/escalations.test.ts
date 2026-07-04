@@ -96,6 +96,35 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     expect(r.escalations).toEqual([]);
     expect(r.truncated).toBe(false);
   });
+
+  it('EI-6624: a resolve-heavy window does not starve status:open opens out of the page', async () => {
+    // Reproduces the reported symptom: an active fleet resolving many escalations
+    // recently means a maxRecords-sized COMBINED window (old behavior) could be
+    // almost entirely `escalation_resolved` events, crowding out genuinely open
+    // escalations and returning escalations:[] with a misleading nonzero total.
+    configureCoordLog(new InMemoryCoordLog());
+    // One still-open escalation, oldest of all events.
+    await coordLog.putEvent('escalations', 'open1', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'open1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'still open', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    // A burst of 10 unrelated resolve events, all NEWER than open1 — under the
+    // old shared-window design with maxRecords:5 these alone would fill the
+    // entire window and open1 would never be scanned.
+    for (let i = 1; i <= 10; i++) {
+      await coordLog.putEvent('escalations', `resolve${i}`, {
+        ts: `2026-01-01T00:01:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: `resolve${i}`, from: 'A', to: ['human'],
+        kind: 'escalation_resolved', related_msg_id: `unrelated${i}`, choice: 'ok', summary: 'resolved',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+
+    const r = await listEscalationsPaginated({ status: 'open', maxRecords: 5 });
+    expect(r.escalations.map((e) => e.msg_id)).toEqual(['open1']);
+    expect(r.total).toBe(1); // total matches what's actually returned — never a misleading nonzero-with-empty-array
+  });
 });
 
 describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {

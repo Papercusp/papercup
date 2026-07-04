@@ -359,4 +359,46 @@ describe('cc fleet statusline — render + fail-open', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
   });
+
+  // agent-managed-compaction P-015: the `ctx N%` context-usage chip from the glance
+  // payload's self.context, ⚠-prefixed at/above the LOUD band (80%). PAPERCUSP_GATEWAY_URL
+  // is pinned unroutable so the routed-account read-back (lead()) fails fast → deterministic.
+  const CTX_ENV = { PAPERCUSP_SID: 'su-me-self', PAPERCUSP_GATEWAY_URL: 'http://127.0.0.1:1' };
+
+  it('renders the ⚠-prefixed ctx gauge chip at/above the loud band (self.context.pct ≥ 80)', () => {
+    const fixture = join(cache, 'sl-ctx-loud.json');
+    fs.writeFileSync(fixture, JSON.stringify({
+      wake: { default: 'auto' },
+      self: { context: { tokens: 425000, limit: 500000, pct: 85 } },
+      activity: [],
+    }));
+    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('⚠ ctx 85%');
+  });
+
+  it('renders a quiet ctx gauge chip (no ⚠) below the loud band', () => {
+    const fixture = join(cache, 'sl-ctx-quiet.json');
+    fs.writeFileSync(fixture, JSON.stringify({
+      wake: { default: 'auto' },
+      self: { context: { tokens: 210000, limit: 500000, pct: 42 } },
+      activity: [],
+    }));
+    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('ctx 42%');
+    expect(r.stdout).not.toContain('⚠ ctx');
+  });
+
+  it('omits the ctx chip when self.context is absent (additive + fail-open)', () => {
+    const fixture = join(cache, 'sl-ctx-absent.json');
+    fs.writeFileSync(fixture, JSON.stringify({
+      wake: { default: 'auto' },
+      self: {},
+      activity: [],
+    }));
+    const r = runStatusline({ ...CTX_ENV, PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('ctx');
+  });
 });

@@ -19,6 +19,20 @@
 
 import { z } from 'zod';
 
+/**
+ * EI-6666: `whatLanded` / `deferred` are conceptually "one or more lines", and
+ * every OTHER free-text-shaped completion field here (`summary`, `tests`,
+ * `deploy`, `coordNotes`) accepts a plain string — so passing a bare string to
+ * these two (the natural first guess) used to fail `invalid_input: expected
+ * array, received string`, discoverable only by trial since the tool
+ * description just says `completion?:object` with no field-level schema.
+ * Accept either shape and normalize a single string to a one-element array —
+ * the stored/rendered type (`string[] | undefined`) is unchanged.
+ */
+const stringOrStringArray = z
+  .union([z.string().min(1), z.array(z.string().min(1))])
+  .transform((v) => (typeof v === 'string' ? [v] : v));
+
 /** The lifecycle categories this layer renders (the D-003 automation table). */
 export const LIFECYCLE_CATEGORIES = [
   'completion',
