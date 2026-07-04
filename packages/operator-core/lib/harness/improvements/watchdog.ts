@@ -1042,22 +1042,45 @@ interface RoutineFailureRow {
   is_loop?: boolean;
   /** `metadata.last_error_source` — identifies WHO stamped the error. */
   last_error_source?: string | null;
+  /** The routine's next scheduled fire. For a non-loop routine, a concrete FUTURE
+   *  timestamp proves `claimDueRoutine` already rescheduled it after the reaper's
+   *  requeue (EI-6172) — i.e. the fire that produced the stale error already
+   *  succeeded in being re-armed, distinct from a genuinely wedged routine whose
+   *  next_fire_at stays null/past. NOT a useful signal for a loop routine, whose
+   *  next_fire_at is 'infinity' while healthily parked awaiting its next wake —
+   *  that's why loops keep their own dedicated loop-stalled collector instead. */
+  next_fire_at?: string | Date | null;
 }
 /**
- * Pure: routines carrying a recorded error → signals — EXCEPT a loop routine
- * whose error was stamped by the dbos-executor-reaper's own self-heal requeue
- * (EI-5302): that is the reaper recovering a stuck fire (working as designed),
- * already surfaced — if it's a REAL wedge — by the separate loop-stalled
- * collector. Flagging it here too double-reports every self-healed loop as a
- * MAJOR bug, churning the auto-implement queue with noise (27 live instances
- * observed 2026-06-30). A non-loop routine (git-sync, green-checkpoint, …) is
- * unaffected — this exclusion only applies when BOTH is_loop and the reaper
- * source match.
+ * Pure: routines carrying a recorded error → signals — EXCEPT a self-heal requeue
+ * stamped by the dbos-executor-reaper (EI-5302 / EI-6172): that is the reaper
+ * recovering a stuck fire (working as designed), not a persistent failure.
+ *   - A LOOP routine's reaper-tagged error is ALWAYS suppressed here — a real
+ *     wedge is already surfaced by the separate loop-stalled collector (which
+ *     reads parked_secs, since a loop's next_fire_at sits at 'infinity' whether
+ *     healthy or stuck and so can't disambiguate).
+ *   - A NON-loop routine's reaper-tagged error is suppressed only when its
+ *     `next_fire_at` is a concrete FUTURE timestamp — proof the routine was
+ *     already successfully rescheduled since the error, not just carrying a
+ *     stale marker while genuinely wedged (EI-6172: bp-singleton-iq-battery-0 /
+ *     bp-singleton-prompt-ablation-0 / hive-eval-battery all recorded a reaper
+ *     self-heal yet were confirmed healthy — active, on-cadence, next_fire_at
+ *     weeks out — and still churned the improvement queue as phantom bugs).
+ * Flagging either case as a MAJOR bug double-reports self-healed routines,
+ * churning the auto-implement queue with noise (27 live loop instances observed
+ * 2026-06-30; 67 open `routine-failure:routine:%` issues observed 2026-07-01,
+ * several confirmed phantoms of this exact non-loop shape).
  */
 export function routineFailureSignalsFromRows(rows: RoutineFailureRow[]): WatchdogSignal[] {
   return rows
     .filter((r) => (r.last_error ?? '').trim().length > 0)
-    .filter((r) => !(r.is_loop && r.last_error_source === REAPER_SELF_HEAL_ERROR_SOURCE))
+    .filter((r) => {
+      if (r.last_error_source !== REAPER_SELF_HEAL_ERROR_SOURCE) return true;
+      if (r.is_loop) return false;
+      const nextFireAt = r.next_fire_at ? new Date(r.next_fire_at) : null;
+      const isConcreteFuture = !!nextFireAt && !Number.isNaN(nextFireAt.getTime()) && nextFireAt.getTime() > Date.now();
+      return !isConcreteFuture;
+    })
     .map((r) => ({
       source: 'routine-failure' as const,
       key: `routine:${r.name}`,
@@ -1071,12 +1094,14 @@ export function routineFailureSignalsFromRows(rows: RoutineFailureRow[]): Watchd
     }));
 }
 /** routine-failure: an ACTIVE background routine with a recorded `metadata.last_error`,
- *  excluding a loop's reaper-self-heal requeue (EI-5302 — see routineFailureSignalsFromRows). */
+ *  excluding a reaper self-heal requeue already proven recovered (EI-5302 / EI-6172 —
+ *  see routineFailureSignalsFromRows). */
 export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSignal[]> {
   const rows = await sql<RoutineFailureRow[]>`
     SELECT name, metadata->>'last_error' AS last_error,
            (reschedule_interval_sec IS NOT NULL) AS is_loop,
-           metadata->>'last_error_source' AS last_error_source
+           metadata->>'last_error_source' AS last_error_source,
+           next_fire_at
       FROM harness_shared.routines
      WHERE active = true AND COALESCE(metadata->>'last_error', '') <> ''
      LIMIT 20`;

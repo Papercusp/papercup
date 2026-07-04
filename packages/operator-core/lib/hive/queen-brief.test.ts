@@ -342,6 +342,48 @@ test('renderQueenBrief — no placement section when nothing is open', () => {
   assert.doesNotMatch(out, /### Placements/);
 });
 
+// EI-6104 — placements is a wake-time snapshot; an empty Frontier alongside
+// nonzero placement counts is exactly the "phantom completion pressure" shape
+// reported (brief said working=3/cursed=15, live survey/scheduler showed 0).
+// The reconciliation caveat should fire on that combination, never when the
+// frontier still has real work (no need to second-guess an already-consistent
+// picture) or when nothing is open at all.
+test('renderQueenBrief — placements + empty frontier renders a reconcile-before-acting caveat', () => {
+  const out = renderQueenBrief({
+    floor: {
+      frontier: [],
+      openPlacements: {
+        recovering: 0,
+        cursed: 15,
+        stranded: 0,
+        workingTracked: 3,
+        items: [{ workItemId: 'wi-60', status: 'cursed', failCount: 2, harness: 'papercusp' }],
+      },
+    },
+  });
+  assert.match(out, /snapshot at wake-time/);
+  assert.match(out, /hive:survey/);
+});
+
+test('renderQueenBrief — placements + non-empty frontier omits the reconcile caveat', () => {
+  const r: Ranked<PlacementCandidate> = {
+    id: 'wi-9',
+    view: 'work-item',
+    harness: 'papercup',
+    title: 'T',
+    importance: 'normal',
+    rank: { score: 1, features: [] },
+  };
+  const out = renderQueenBrief({
+    floor: {
+      frontier: [r],
+      openPlacements: { recovering: 0, cursed: 1, stranded: 0, workingTracked: 0, items: [] },
+    },
+  });
+  assert.match(out, /### Placements/);
+  assert.doesNotMatch(out, /snapshot at wake-time/);
+});
+
 // queen-interactive-brain-fresh-context P-004 — the interactive `psu --brain`
 // dock pane runs the SU engineer playbook + this injected brief (it does NOT load
 // queen.md), so the fresh-per-launch teaching that queen.md gives the autonomous

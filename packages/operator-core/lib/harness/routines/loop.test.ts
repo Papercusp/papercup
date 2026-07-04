@@ -130,6 +130,37 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     for (const f of ['did', 'left', 'insight', 'next']) expect(cold).toContain(f);
     expect(cold).toContain('COLD loop');
   });
+
+  it("a SETTLE loop (default / absent continuation) has no gated addendum (flush-to-proceed P-005)", () => {
+    const settleDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
+    const settleExplicit = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', continuation: 'settle',
+    });
+    expect(settleExplicit).toBe(settleDefault); // explicit settle == absent
+    expect(settleDefault).not.toContain('GATED loop');
+    expect(settleDefault).not.toContain('continuation gate');
+  });
+
+  it('a GATED loop appends the continuation-gate addendum (superset of the base, no base text lost)', () => {
+    const settle = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
+    const gated = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', continuation: 'gated',
+    });
+    expect(gated.startsWith(settle)).toBe(true);
+    expect(gated.length).toBeGreaterThan(settle.length);
+    expect(gated).toContain('GATED loop');
+    expect(gated).toContain('CONTINUATION GATE');
+    expect(gated).toContain('loop:checkpoint'); // the gate read lives on loop:checkpoint's return
+    expect(gated).toContain('work_items:checkpoint'); // flush-first mandate
+  });
+
+  it('cold + gated compose (both addenda appended)', () => {
+    const both = buildLoopWakePrompt({
+      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold', continuation: 'gated',
+    });
+    expect(both).toContain('COLD loop');
+    expect(both).toContain('GATED loop');
+  });
 });
 
 describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fire)', () => {
@@ -196,6 +227,22 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
       carry: 'cold',
     });
     expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', carry: 'cold' });
+  });
+
+  it('stamps continuation:"gated" onto payload_template only when armed gated (flush-to-proceed P-005)', async () => {
+    await materializeLoop({
+      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', continuation: 'gated',
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', continuation: 'gated' });
+  });
+
+  it('a SETTLE (or absent) continuation leaves payload_template byte-identical to today (no continuation key)', async () => {
+    await materializeLoop({
+      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', continuation: 'settle',
+    });
+    const input = upsertRoutineSpy.mock.calls[0][1];
+    expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
+    expect('continuation' in input.payloadTemplate).toBe(false);
   });
 
   it('a WARM (or absent) carry leaves payload_template byte-identical to today (no carry key)', async () => {

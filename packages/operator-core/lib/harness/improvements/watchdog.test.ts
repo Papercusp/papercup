@@ -420,11 +420,33 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals.map((s) => s.key)).toEqual(['routine:loop-su-def456']);
   });
 
-  it('routine-failure (EI-5302): a NON-loop routine with a reaper-sourced error still fires (only loop+reaper together is suppressed)', () => {
+  it('routine-failure (EI-5302): a NON-loop routine with a reaper-sourced error and NO next_fire_at still fires (unproven recovery)', () => {
     const signals = routineFailureSignalsFromRows([
       { name: 'git-sync', last_error: 'produced no DBOS operation output', is_loop: false, last_error_source: 'dbos-executor-reaper' },
     ]);
     expect(signals.map((s) => s.key)).toEqual(['routine:git-sync']);
+  });
+
+  it('routine-failure (EI-6172): a NON-loop routine with a reaper-sourced error IS suppressed when next_fire_at is a concrete future timestamp (proven rescheduled)', () => {
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // a week out, like a weekly bp-singleton battery
+    const signals = routineFailureSignalsFromRows([
+      {
+        name: 'bp-singleton-iq-battery-0',
+        last_error: 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+        is_loop: false,
+        last_error_source: 'dbos-executor-reaper',
+        next_fire_at: future,
+      },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('routine-failure (EI-6172): a NON-loop routine with a reaper-sourced error still fires when next_fire_at is in the PAST (overdue, not proven recovered)', () => {
+    const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const signals = routineFailureSignalsFromRows([
+      { name: 'stuck-cron', last_error: 'produced no DBOS operation output', is_loop: false, last_error_source: 'dbos-executor-reaper', next_fire_at: past },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['routine:stuck-cron']);
   });
 
   it('routine-failure (EI-5302): the body no longer names git-sync as a false example (was mis-triggering the git-sync human-gate keyword)', () => {

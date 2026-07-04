@@ -496,6 +496,16 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     }
     const overflow = op.items.length - caps.placements;
     if (overflow > 0) out.push(`…+${overflow} more (hive:status to drill down)`);
+    // EI-6104: this is a point-in-time snapshot taken when your brief was
+    // assembled — a fast-draining queue can clear these between then and now.
+    // An empty Frontier above alongside nonzero counts here is the tell
+    // (phantom completion pressure, not real backlog) — reconcile with a fresh
+    // `hive:survey` / `fleet:assignments` read before acting on it as-is.
+    if (f.frontier.length === 0) {
+      out.push(
+        '_(snapshot at wake-time — if this conflicts with the empty Frontier above, re-check `hive:survey` before re-placing/escalating)_',
+      );
+    }
   }
 
   section(

@@ -145,9 +145,12 @@ export default defineTool({
       let unreadInbox: number | null = null;
       try {
         const wm = await readWatermark(ownerId);
-        const since = wm?.messages_since_ts;
-        if (since) {
-          const unread = await readInbox(ownerId, { since, excludeOwn: true });
+        // messages_since_ts advances at turn-END, so this counts messages addressed to you
+        // that arrived since your last settle (excludeOwn + non-notify by filterInbox default
+        // = real interrupts, not ambient). Empty ('' — never-settled) ⇒ stays null (blocking).
+        const sinceTs = wm?.messages_since_ts;
+        if (sinceTs) {
+          const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
           unreadInbox = unread.length;
         }
       } catch {

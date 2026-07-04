@@ -20,6 +20,13 @@
         "*.bench.ts"
       ]
     },
+    "apps/operator-vite": {
+      "ignoreDependencies": [
+        "lodash",
+        "marked",
+        "react-responsive-carousel"
+      ]
+    },
     "libs/**": {
       "entry": [
         "src/index.{ts,tsx}",
