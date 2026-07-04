@@ -260,47 +260,63 @@ describe('reapDeadExecutorWorkflows', () => {
   });
 });
 
-describe('startExecutorReaper — a reap-tick failure must be VISIBLE, never a silent unhandled rejection (EI-3673)', () => {
+describe('startExecutorReaper — the registered tick must genuinely AWAIT the reap (EI-3673)', () => {
   afterEach(() => {
     capturedTick = null;
     vi.restoreAllMocks();
   });
 
-  it('boot reap: a rejecting reap never throws/rejects out of startExecutorReaper itself, but IS logged', async () => {
+  it('a reap failure never throws/rejects out of startExecutorReaper (reapDeadExecutorWorkflows catches its own errors)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { sql } = fakeSql(() => {
       throw new Error('pg unreachable — pool still reconnecting after restart');
     });
 
-    // Must not throw synchronously, and the internal boot-reap promise must not
-    // surface as an unhandled rejection (vitest fails the run on one of those).
     expect(() => startExecutorReaper(sql)).not.toThrow();
-    // Let the fire-and-forgotten boot-reap promise settle before asserting.
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0)); // let the fire-and-forgotten boot reap settle
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('reap tick FAILED'));
+    // reapDeadExecutorWorkflows's own top-level try/catch logs this — proves the
+    // failure was observed + handled, not silently lost.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('reap pass failed (non-fatal)'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('pg unreachable'));
   });
 
-  it('the registered interval tick REJECTS on a reap failure (so managedSetInterval records it as a visible lastError)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const { sql } = fakeSql(() => {
-      throw new Error('transient PG error');
+  it('the registered tick fn returns a REAL pending promise that resolves only once the reap actually completes', async () => {
+    let releaseReap: (() => void) | null = null;
+    const reapGate = new Promise<void>((resolve) => {
+      releaseReap = resolve;
+    });
+    const { sql } = fakeSql(async (text) => {
+      if (text.includes('SELECT executor_id')) {
+        await reapGate; // block until the test releases it
+        return [];
+      }
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
     });
 
-    startExecutorReaper(sql);
-    await new Promise((r) => setTimeout(r, 0)); // let the boot reap settle first
-    warn.mockClear();
-
+    startExecutorReaper(sql, { intervalMs: 10_000 });
     expect(capturedTick).not.toBeNull();
-    // Before EI-3673 this tick fn returned `undefined` synchronously (a fire-and-forget
-    // `void promise.then(onSuccess)` with no rejection path reaching the caller) — a
-    // failure was then INVISIBLE to managedSetInterval's own tick wrapper (which only
-    // records `lastError` when the fn it called itself rejects). Now the tick fn
-    // returns the promise chain directly, so a reap failure propagates as a real
-    // rejection the scheduled-registry tick wrapper can see and record.
-    await expect(capturedTick!()).rejects.toThrow('transient PG error');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('reap tick FAILED'));
+
+    // Before EI-3673, `run()` returned `undefined` SYNCHRONOUSLY (a fire-and-forget
+    // `void promise.then(onSuccess)`) — managedSetInterval's tick wrapper would have
+    // seen the tick "complete" immediately, flipping its re-entrancy guard back off
+    // and stamping `lastFireAt` before the reap had done any real work. Now the tick
+    // fn returns the actual promise chain, so callers (the tick wrapper) genuinely
+    // await it — provable here: the returned promise must NOT resolve while the
+    // underlying query is still gated open.
+    let resolved = false;
+    const tickPromise = capturedTick!() as Promise<void>;
+    void tickPromise.then(() => {
+      resolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 5)); // give the microtask queue a chance
+    expect(resolved).toBe(false); // still awaiting the gated query — NOT settled early
+
+    releaseReap!();
+    await tickPromise;
+    expect(resolved).toBe(true); // settles only once the real work finished
   });
 
   it('a SUCCESSFUL reap tick still resolves cleanly (no behavior change on the happy path)', async () => {

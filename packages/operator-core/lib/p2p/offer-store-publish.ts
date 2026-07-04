@@ -184,7 +184,6 @@ export async function publishSeatOfferForDelegation(
     cancelReason: opts.removed ? 'delegation-removed' : null,
     workOffer: null,
     authorship: null,
-    spawnRequest: null,
     seat: opts.removed
       ? // Carry the last-published payload on cancel (the count no longer
         // matters; a junk existing record falls back to the caller's trio).
@@ -202,6 +201,9 @@ export async function publishSeatOfferForDelegation(
           accountScope: (opts.account || AUTO_ACCOUNT).toUpperCase() === AUTO_ACCOUNT ? 'auto' : 'pinned',
           hostLabel: resolveHostLabel(),
         },
+    // Key position matters: the no-churn gate below compares JSON.stringify of
+    // THIS literal against a coerce-parsed record — keep coerce's field order.
+    spawnRequest: null,
     recordVersion: (existing?.recordVersion ?? 0) + 1,
   };
 
