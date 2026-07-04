@@ -9,7 +9,13 @@
  * — the next full snapshot / reconnect heals it. Never throws, never corrupts, and
  * returns the SAME map reference on a no-op so the React consumer skips a re-render.
  */
-import { applySnapshotDelta, type SnapshotDelta, type VersionedSnapshot } from '@papercusp/agent-mcp';
+// Import from the ISOMORPHIC lib directly, NOT the @papercusp/agent-mcp barrel: agent-mcp is a
+// server package (its barrel exports auth.ts → node:crypto, PG, …), and this reducer runs in the
+// BROWSER (OperatorConversationProvider → use-state-snapshots). A VALUE import of the agent-mcp
+// barrel drags the whole server surface into the SPA module graph and blanks the app at
+// module-eval time (fleet incident 2026-07-04). agent-mcp itself re-exports these from tooldef,
+// so this is the same symbols one hop earlier. (Type-only agent-mcp imports are fine — erased.)
+import { applySnapshotDelta, type SnapshotDelta, type VersionedSnapshot } from '@papercusp/tooldef';
 import type { SnapshotEnvelope } from './use-state-snapshots';
 
 export type SnapshotWireEvent =

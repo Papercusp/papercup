@@ -454,6 +454,7 @@ import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
 import './db/next_migration';
+import './testing/prune_orphan_runs';
 
 // Named-fleet registry tools (named-su-agent-fleets-2026-06-29 P-004 / D-002 / D-003):
 // create / list / status / join / leave / take-leadership over the durable

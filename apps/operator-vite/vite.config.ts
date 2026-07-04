@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
 import { devDistPrunePlugin, shouldRetainDistChunks } from './dev-dist-prune';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
+import { watchHeartbeatPlugin } from './watch-heartbeat';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -190,5 +191,10 @@ export default defineConfig({
     // same-dist live watcher and fails open otherwise, so it never wedges the
     // deploy pipeline. See dist-wipe-guard.ts.
     ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin()]),
+    // EI-5202: stamp a heartbeat (build time + git SHA) after every `--watch`
+    // rebuild, so a health probe can detect a wedged-but-running watcher
+    // instead of the only signal being a manual dist/index.html mtime check.
+    // No-op for a one-shot production/CI build. See watch-heartbeat.ts.
+    watchHeartbeatPlugin(),
   ],
 });

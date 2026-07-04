@@ -106,6 +106,7 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
   const parsed: unknown = text ? JSON.parse(text) : {};
+  if (process.env.DEBUG_DISPATCH) console.error('DISPATCH_DEBUG', tool, JSON.stringify(res.result), '|||', text, '|||', JSON.stringify(parsed));
   // EI-7217: every defineTool handler now returns the canonical `{ data }`
   // envelope (definetool-token-optimization-adoption P-006/D-008), one level
   // OUTSIDE whatever the handler itself returns — plans:start's bulk envelope

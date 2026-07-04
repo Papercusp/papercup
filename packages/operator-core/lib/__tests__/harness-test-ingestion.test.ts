@@ -9,10 +9,20 @@
  *   - persistHarnessTestRuns: stamps harness_slug + workspace_id on every row,
  *     returns the written count, and is D-007 fail-soft (never throws).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+const currentLoopLagMock = vi.fn<() => { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number } | null>(
+  () => null,
+);
+vi.mock('../event-loop-lag-monitor', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  currentLoopLag: () => currentLoopLagMock(),
+}));
+
 import {
   parseVitestJsonForHarnessRows,
   persistHarnessTestRuns,
+  isLikelySaturationArtifact,
   type HarnessTestFileRow,
 } from '../testing-run-store';
 
@@ -134,7 +144,8 @@ const sampleRows: HarnessTestFileRow[] = [
 ];
 
 describe('persistHarnessTestRuns', () => {
-  it('inserts one row per file, stamping harness_slug + workspace_id', async () => {
+  it('inserts one row per file, stamping harness_slug + workspace_id + the EI-4940 saturation snapshot', async () => {
+    currentLoopLagMock.mockReturnValue({ p50Ms: 10, p95Ms: 42.3, p99Ms: 60, maxMs: 80 });
     const { sql, calls } = makeRecordingSql();
     const written = await persistHarnessTestRuns({
       harnessSlug: 'my-hive',
@@ -148,7 +159,8 @@ describe('persistHarnessTestRuns', () => {
     expect(written).toBe(2);
     expect(calls).toHaveLength(2);
     // Value order: filePath, 'vitest', status, durationMs, startedAt, finishedAt,
-    // outputTail, runGroupId, source, branch, commit, harness_slug, workspace_id
+    // outputTail, runGroupId, source, branch, commit, harness_slug, workspace_id,
+    // loop_lag_p95_ms, rss_mb
     const first = calls[0];
     expect(first[0]).toBe('src/foo.test.ts');
     expect(first[1]).toBe('vitest');
@@ -159,6 +171,21 @@ describe('persistHarnessTestRuns', () => {
     expect(first[10]).toBe('abc123');
     expect(first[11]).toBe('my-hive'); // harness_slug
     expect(first[12]).toBe('ws-42'); // workspace_id
+    expect(first[13]).toBe(42.3); // loop_lag_p95_ms
+    expect(typeof first[14]).toBe('number'); // rss_mb — real process.memoryUsage(), not mocked
+  });
+
+  it('EI-4940: loop_lag_p95_ms is null when no monitor is running (absence of signal, not a claim of calm)', async () => {
+    currentLoopLagMock.mockReturnValue(null);
+    const { sql, calls } = makeRecordingSql();
+    await persistHarnessTestRuns({
+      harnessSlug: 'h',
+      workspaceId: 'w',
+      rows: [sampleRows[0]],
+      runGroupId: 'g',
+      sql,
+    });
+    expect(calls[0][13]).toBeNull();
   });
 
   it('returns 0 and never touches the DB for an empty row set', async () => {
@@ -186,5 +213,61 @@ describe('persistHarnessTestRuns', () => {
       sql: throwingSql,
     });
     expect(written).toBe(0);
+  });
+});
+
+describe('isLikelySaturationArtifact (EI-4940)', () => {
+  it('true: a bare timeout failure recorded while the loop was critically saturated', () => {
+    expect(
+      isLikelySaturationArtifact({
+        status: 'fail',
+        outputTail: 'Error: Test timed out in 60000ms.',
+        loopLagP95Ms: 900, // > the 600ms critical default
+      }),
+    ).toBe(true);
+  });
+
+  it('false: a timeout-shaped message but the host was NOT saturated (elevated or ok band)', () => {
+    expect(
+      isLikelySaturationArtifact({
+        status: 'fail',
+        outputTail: 'Error: Test timed out in 60000ms.',
+        loopLagP95Ms: 50, // well under the elevated default
+      }),
+    ).toBe(false);
+  });
+
+  it('false: the host was saturated but the failure is a real assertion, not a timeout', () => {
+    expect(
+      isLikelySaturationArtifact({
+        status: 'fail',
+        outputTail: 'AssertionError: expected 1 to equal 2',
+        loopLagP95Ms: 900,
+      }),
+    ).toBe(false);
+  });
+
+  it('false: loopLagP95Ms null (no monitor running) never masquerades as saturation — conservative default', () => {
+    expect(
+      isLikelySaturationArtifact({
+        status: 'fail',
+        outputTail: 'Error: Test timed out in 60000ms.',
+        loopLagP95Ms: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('false: a passing row is never flagged regardless of lag', () => {
+    expect(isLikelySaturationArtifact({ status: 'pass', outputTail: null, loopLagP95Ms: 900 })).toBe(false);
+  });
+
+  it('recognizes jest/vitest\'s alternate timeout phrasing ("exceeded timeout of Nms")', () => {
+    expect(
+      isLikelySaturationArtifact({
+        status: 'error',
+        outputTail: 'thrown: "Exceeded timeout of 5000ms for a hook."',
+        loopLagP95Ms: 700,
+      }),
+    ).toBe(true);
   });
 });
