@@ -970,6 +970,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       `[A-003] boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
     );
   }
+  // WI-2105 REV diag (DURABLE, not env-gated): the effective member-content-guard
+  // hiveHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? ownHiveHomeSlug.
+  // If it resolves '<none>', decideMemberContentOp drops EVERY cross-member op with
+  // 'no-hiveHome' — the tower↔VM REV-leg drop when the owner folds a hive via a NON-home
+  // harness (hive-canary ≠ its hive-home). Recorded once at boot so getBootHistory reveals
+  // it after the next restart without the A-003 env flag.
+  try {
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'merge_error',
+      `hiveHome-resolve: binding=${opts.swarmBinding?.kind ?? '<none>'} projSlug=${hiveHomeProjectionSlug ?? '<none>'} ownHome=${ownHiveHomeSlug ?? '<none>'} → guardHiveHome=${(hiveHomeProjectionSlug ?? ownHiveHomeSlug) ?? '<NONE→drop-all-cross-member>'}`,
+    );
+  } catch {
+    /* diagnostic must never break boot */
+  }
 
   // ── C-001 re-key apply deps (shared-hive-rekey-2026-06-19, su-ee7e9) ── Built ONCE here
   // (like the rateLimiter): the decrypt gate + its pending-content buffer are stateful across

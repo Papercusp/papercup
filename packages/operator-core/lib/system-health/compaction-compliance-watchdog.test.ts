@@ -12,15 +12,31 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { estimateMock, specMock, setEstimateMock, setLimitMock, deathMock, openEscalationMock } =
-  vi.hoisted(() => ({
-    estimateMock: vi.fn(),
-    specMock: vi.fn(),
-    setEstimateMock: vi.fn(async () => {}),
-    setLimitMock: vi.fn(async () => {}),
-    deathMock: vi.fn(async (_owner: string) => false),
-    openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
-  }));
+const {
+  estimateMock,
+  specMock,
+  setEstimateMock,
+  setLimitMock,
+  deathMock,
+  openEscalationMock,
+  getFlagMock,
+  findLiveHostMock,
+  hostSupportsMock,
+  injectMock,
+} = vi.hoisted(() => ({
+  estimateMock: vi.fn(),
+  specMock: vi.fn(),
+  setEstimateMock: vi.fn(async () => {}),
+  setLimitMock: vi.fn(async () => {}),
+  deathMock: vi.fn(async (_owner: string) => false),
+  openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
+  // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
+  // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).
+  getFlagMock: vi.fn(async () => true),
+  findLiveHostMock: vi.fn((_ownerId: string) => null as null | { sock: string; caps?: string[] }),
+  hostSupportsMock: vi.fn((_host: unknown, _cap: string) => false),
+  injectMock: vi.fn(async () => true),
+}));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
   resolveModelSpecForOwner: specMock,
@@ -32,6 +48,16 @@ vi.mock('../agent-tools/coordination/presence', () => ({
 }));
 vi.mock('../agent-tools/coordination/escalations', () => ({
   openEscalation: openEscalationMock,
+}));
+// P-012: the force-compact rung's deps. FLAGS is stubbed to the one key the watchdog reads.
+vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagMock }));
+vi.mock('@papercusp/flags', () => ({
+  FLAGS: { COMPACTION_WATCHDOG_FORCE_COMPACT: 'papercusp-compaction-watchdog-force-compact' },
+}));
+vi.mock('../events/await/psu-pty-discovery', () => ({
+  findLiveHost: findLiveHostMock,
+  hostSupports: hostSupportsMock,
+  injectIntoHost: injectMock,
 }));
 // The spawn-record honor leg lazily imports the tier menu — pin a small one so
 // the test never reads the real workspace agent-config.
@@ -47,6 +73,7 @@ vi.mock('../fleet/model-tiers', () => ({
 import {
   checkCompactionCompliance,
   resetContextDeathEscalationsForTests,
+  resetForceCompactedForTests,
 } from './compaction-compliance-watchdog';
 
 /** Fake postgres tag: routes on the query text — the seed query selects
@@ -78,6 +105,13 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks wipes implementations too — restore the P-012 defaults (flag ON,
+  // no live host, inject succeeds) so unrelated over-limit tests stay no-op.
+  getFlagMock.mockResolvedValue(true);
+  findLiveHostMock.mockReturnValue(null);
+  hostSupportsMock.mockReturnValue(false);
+  injectMock.mockResolvedValue(true);
+  resetForceCompactedForTests();
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -205,6 +239,89 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     );
     expect(out.overLimit).toEqual([]);
     expect(out.unflushedClaims).toEqual([]); // under limit ⇒ the claim read never runs
+  });
+});
+
+describe('force-compact rung (agent-managed-compaction P-012)', () => {
+  const seeded = [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 158_000 }];
+
+  it('force-compacts an over-limit session with a compact-capable live host (mode:compact)', async () => {
+    estimateMock.mockResolvedValue(200_000); // over 158k
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.forceCompacted).toEqual(['hot']);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    const [sock, payload] = injectMock.mock.calls[0] as unknown as [string, { mode: string; focus?: string }];
+    expect(sock).toBe('/tmp/hot.sock');
+    expect(payload.mode).toBe('compact');
+    expect(payload.focus).toContain('identity block');
+  });
+
+  it('falls back to a plain /compact turn on a host without the compact capability', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock' });
+    hostSupportsMock.mockReturnValue(false);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.forceCompacted).toEqual(['hot']);
+    const [, payload] = injectMock.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    expect(payload.mode).toBe('turn');
+    expect(payload.data).toMatch(/^\/compact /);
+  });
+
+  it('does NOT force-compact when the flag is OFF (warn-only, byte-identical to pre-P-012)', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    getFlagMock.mockResolvedValue(false);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.overLimit).toEqual(['hot']); // still detected + warned
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('no live psu-pty host ⇒ over-limit but not force-compacted (context-death + P-014 cover it)', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue(null);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('injects ONCE per crossing (deduped across passes), and re-arms after recovery', async () => {
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    // Pass 1: over limit ⇒ force-compact.
+    estimateMock.mockResolvedValue(200_000);
+    const p1 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p1.forceCompacted).toEqual(['hot']);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    // Pass 2: STILL over limit but already forced ⇒ no duplicate inject.
+    const p2 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p2.forceCompacted).toEqual([]);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    // Pass 3: recovered (under limit) — clears the dedup.
+    estimateMock.mockResolvedValue(40_000);
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    // Pass 4: over limit AGAIN ⇒ re-fires.
+    estimateMock.mockResolvedValue(200_000);
+    const p4 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p4.forceCompacted).toEqual(['hot']);
+    expect(injectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed inject is not recorded, so the next pass retries', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    injectMock.mockResolvedValueOnce(false); // pass 1 inject fails
+    const p1 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p1.forceCompacted).toEqual([]);
+    const p2 = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(p2.forceCompacted).toEqual(['hot']); // retried, succeeded
+    expect(injectMock).toHaveBeenCalledTimes(2);
   });
 });
 
