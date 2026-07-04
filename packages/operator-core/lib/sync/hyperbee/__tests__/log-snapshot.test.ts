@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   buildSnapshotRows,
   buildSnapshotOp,
+  buildSnapshotOps,
+  chunkSnapshotRows,
   isSnapshotOp,
   SNAPSHOT_TABLE_TAG,
   type SnapshotPayload,
+  type SnapshotRow,
 } from '../log-snapshot';
 import type { PeerLogOp } from '../peer-log';
 
@@ -139,5 +142,102 @@ describe('buildSnapshotOp (P-005 wrapper)', () => {
     expect(isSnapshotOp(put('queue', 'F-1', {}, 1))).toBe(false);
     expect(isSnapshotOp(null)).toBe(false);
     expect(isSnapshotOp(undefined)).toBe(false);
+  });
+});
+
+/** WI-2313 — the fix: split the folded rows across size-bounded chunk ops so no
+ *  single snapshot append exceeds hypercore's 15 MiB block ceiling (the
+ *  BAD_ARGUMENT that meant the snapshot never landed → cursor never seeded →
+ *  every restart replayed member logs from 0, the WI-2105 REV-leg restart loop). */
+describe('chunkSnapshotRows (WI-2313 chunking)', () => {
+  function row(hbKey: string, value: unknown): SnapshotRow {
+    return { table: 'queue', hbKey, value, ts: 1, schema_version: 1 };
+  }
+  const rowBytes = (r: SnapshotRow) => Buffer.byteLength(JSON.stringify(r), 'utf8');
+  // Match chunkSnapshotRows' budget metric: the SUM of per-row serialized bytes.
+  const bytes = (rows: SnapshotRow[]) => rows.reduce((s, r) => s + rowBytes(r), 0);
+
+  it('empty input → ONE empty chunk (anchors coversUpTo for an all-deleted log)', () => {
+    expect(chunkSnapshotRows([])).toEqual([[]]);
+  });
+
+  it('rows that fit under the budget → a single chunk', () => {
+    const rows = [row('A', { v: 1 }), row('B', { v: 2 })];
+    const chunks = chunkSnapshotRows(rows, 1_000_000);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual(rows);
+  });
+
+  it('rows over the budget → multiple chunks, each within budget, order + membership preserved', () => {
+    const rows = Array.from({ length: 20 }, (_, i) =>
+      row(`K${String(i).padStart(3, '0')}`, { pad: 'x'.repeat(100) }),
+    );
+    const budget = 400; // ~2 rows/chunk given each row serializes to ~150B
+    const chunks = chunkSnapshotRows(rows, budget);
+    expect(chunks.length).toBeGreaterThan(1);
+    // Every chunk is within budget UNLESS it is a single (over-budget) row.
+    for (const c of chunks) {
+      expect(c.length).toBeGreaterThan(0);
+      if (c.length > 1) expect(bytes(c)).toBeLessThanOrEqual(budget);
+    }
+    // The concatenation is exactly the input, in order (no row dropped/duplicated).
+    expect(chunks.flat()).toEqual(rows);
+  });
+
+  it('a single row larger than the budget rides ALONE in its own chunk (never dropped)', () => {
+    const big = row('BIG', { pad: 'x'.repeat(5000) });
+    const small = row('small', { v: 1 });
+    expect(rowBytes(big)).toBeGreaterThan(500);
+    const chunks = chunkSnapshotRows([small, big, small], 500);
+    // small | big-alone | small
+    expect(chunks).toHaveLength(3);
+    expect(chunks[1]).toEqual([big]);
+    expect(chunks.flat()).toEqual([small, big, small]);
+  });
+});
+
+describe('buildSnapshotOps (WI-2313 chunked producer builder)', () => {
+  it('small state → ONE chunk op tagged 0-of-1 (coversUpTo + all rows)', () => {
+    const ops = buildSnapshotOps({
+      ops: [put('queue', 'F-1', { v: 1 }, 1), put('queue', 'F-2', { v: 2 }, 2)],
+      coversUpTo: 2,
+      author_pubkey: 'PUB',
+      ts: 9,
+      schema_version: 1,
+    });
+    expect(ops).toHaveLength(1);
+    const p = ops[0].value as SnapshotPayload;
+    expect(isSnapshotOp(ops[0])).toBe(true);
+    expect(ops[0].hbKey).toBe('snapshot/2/0-of-1');
+    expect(p).toMatchObject({ coversUpTo: 2, chunkIdx: 0, chunkCount: 1 });
+    expect(p.rows).toHaveLength(2);
+  });
+
+  it('large state + tiny budget → N chunk ops sharing coversUpTo, chunkIdx 0..N-1, union == full fold', () => {
+    const srcOps = Array.from({ length: 30 }, (_, i) =>
+      put('queue', `K${String(i).padStart(3, '0')}`, { pad: 'y'.repeat(80) }, i + 1),
+    );
+    const ops = buildSnapshotOps({
+      ops: srcOps,
+      coversUpTo: srcOps.length,
+      author_pubkey: 'PUB',
+      ts: 100,
+      schema_version: 1,
+      maxChunkBytes: 500,
+    });
+    expect(ops.length).toBeGreaterThan(1);
+    const n = ops.length;
+    ops.forEach((op, i) => {
+      expect(isSnapshotOp(op)).toBe(true);
+      const p = op.value as SnapshotPayload;
+      expect(p.coversUpTo).toBe(srcOps.length);
+      expect(p.chunkIdx).toBe(i);
+      expect(p.chunkCount).toBe(n);
+      expect(op.hbKey).toBe(`snapshot/${srcOps.length}/${i}-of-${n}`);
+    });
+    // The chunked rows reassemble EXACTLY to the single-op fold (no key lost/dup'd).
+    const chunkedRows = ops.flatMap((op) => (op.value as SnapshotPayload).rows);
+    const single = buildSnapshotRows(srcOps, { now: 100 });
+    expect(chunkedRows).toEqual(single);
   });
 });

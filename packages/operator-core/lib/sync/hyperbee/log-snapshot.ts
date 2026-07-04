@@ -359,48 +359,62 @@ export interface ProduceSnapshotResult {
   appended: boolean;
   /** Own-log length the appended snapshot summarizes (its `coversUpTo`). */
   coversUpTo: number;
-  /** Number of live keys in the snapshot. */
+  /** Number of live keys in the snapshot (summed across all chunks). */
   rowCount: number;
+  /** WI-2313 — number of chunk ops appended for this snapshot (≥1 when appended,
+   *  0 when nothing was appended). The set occupies `[coversUpTo, coversUpTo + N)`. */
+  chunkCount: number;
 }
 
 /**
  * P-005 — the producer. Read the peer's OWN log, fold it to the minimal
- * current-state set, and APPEND one snapshot op (design A — additive; the prior
- * ops are NOT removed, so there is no Hypercore fork). A snapshot-aware reader
- * (P-007) can then fold from this op's index forward instead of from 0.
+ * current-state set, and APPEND the snapshot (design A — additive; the prior ops
+ * are NOT removed, so there is no Hypercore fork). A snapshot-aware reader (P-007)
+ * can then fold from the snapshot's index forward instead of from 0.
+ *
+ * WI-2313 — the snapshot is CHUNKED: the folded rows are split across N ops each
+ * under `SNAPSHOT_MAX_CHUNK_BYTES` (well below hypercore's 15 MiB block ceiling)
+ * and appended in ONE `appendBatch` so the chunks land CONTIGUOUSLY at
+ * `[coversUpTo, coversUpTo + N)`. Before this, the whole state went in a SINGLE
+ * append that, for a large own log, blew the block ceiling (`BAD_ARGUMENT`) → the
+ * snapshot never landed → the cursor never seeded → every restart replayed from 0.
  *
  * Reads `[0, length)` of the own log once per compaction (the writer paying
- * O(history) once, vs every joiner paying it forever — the whole point). The
- * snapshot op lands at index `length` and carries `coversUpTo = length`.
+ * O(history) once, vs every joiner paying it forever — the whole point). Chunk 0
+ * lands at index `length` and every chunk carries `coversUpTo = length`.
  *
- * GATED: callers MUST flag-gate this (`papercusp-substrate-log-snapshot`,
- * default-off) until the P-008 cross-machine sparse-fetch proof passes. This
- * function itself does not read the flag — it is the pure mechanism; the gate
- * lives at the (future) call site so the producer stays unit-testable.
+ * GATED: callers MUST flag-gate this (`papercusp-substrate-log-snapshot`) until
+ * the P-008 cross-machine sparse-fetch proof passes. This function itself does not
+ * read the flag — it is the pure mechanism; the gate lives at the call site so the
+ * producer stays unit-testable.
  */
 export async function produceLogSnapshot(
   ownLog: OwnLog,
-  opts: { now: number; schemaVersion: number },
+  opts: { now: number; schemaVersion: number; maxChunkBytes?: number },
 ): Promise<ProduceSnapshotResult> {
   const coversUpTo = ownLog.length;
-  if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0 };
+  if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
 
   const ops: PeerLogOp[] = [];
   for (let i = 0; i < coversUpTo; i++) {
     const op = await ownLog.get(i);
     if (op) ops.push(op);
   }
-  const snapshotOp = buildSnapshotOp({
+  const snapshotOps = buildSnapshotOps({
     ops,
     coversUpTo,
     author_pubkey: ownLog.keyHex,
     ts: opts.now,
     schema_version: opts.schemaVersion,
+    maxChunkBytes: opts.maxChunkBytes,
   });
-  await ownLog.append(snapshotOp);
-  return {
-    appended: true,
-    coversUpTo,
-    rowCount: (snapshotOp.value as SnapshotPayload).rows.length,
-  };
+  // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
+  // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
+  // only seeds a cursor once every chunk is present (crash-consistency guard).
+  await ownLog.appendBatch(snapshotOps);
+  const rowCount = snapshotOps.reduce(
+    (sum, op) => sum + (op.value as SnapshotPayload).rows.length,
+    0,
+  );
+  return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
 }

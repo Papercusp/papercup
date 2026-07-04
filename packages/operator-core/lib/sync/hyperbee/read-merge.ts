@@ -337,37 +337,119 @@ export function createMergeCursor(): MergeCursor {
 export const SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
 
 /**
- * P-007 (design A): find the index of the LATEST `__snapshot__` op in a log, or
- * `null` if none within `maxLookback` ops of the tail. Scans BACKWARD from the
- * tail (the latest snapshot is near the tail by the cadence) so it touches only
- * `[index, length)` — exactly the tail a snapshot-seeded fold will read anyway, so
- * the scan adds no download a fresh joiner wouldn't already pay. Per-op reads are
- * bounded so a withholding peer can't hang it (a failed read ends the scan →
- * null → fold from 0, safe).
+ * WI-2313 — verify a snapshot SET fully occupies `[coversUpTo, coversUpTo + chunkCount)`:
+ * every chunk present (readable), a snapshot op, tagged with the SAME `coversUpTo`,
+ * the SAME `chunkCount`, and its correct `chunkIdx`. THE crash-consistency guard for
+ * seeding: a fresh cursor may skip the summarized prefix ONLY when the whole set is
+ * durably present; a partial/torn set (a chunk still downloading on a sparse
+ * replica, or a torn append) must fall back to a full replay from 0 — NEVER a
+ * forward seed that would silently skip the ops the missing chunks summarize
+ * (silent REV row loss, worse than slow). A legacy single-op snapshot (no chunk
+ * fields) reads as a complete 1-chunk set. Per-op reads are bounded (a withholding
+ * peer can't hang it — an unreadable chunk just fails verification).
+ */
+async function verifySnapshotSet(
+  log: AdmittedLog,
+  coversUpTo: number,
+  chunkCount: number,
+  getTimeoutMs: number,
+): Promise<boolean> {
+  if (coversUpTo < 0 || chunkCount < 1) return false;
+  if (coversUpTo + chunkCount > log.length) return false; // set extends past the tail → incomplete
+  for (let j = 0; j < chunkCount; j++) {
+    const op = await readOpBounded(log, coversUpTo + j, getTimeoutMs);
+    if (!op || !isSnapshotOp(op)) return false;
+    const p = op.value as SnapshotPayload | undefined;
+    if (!p || p.coversUpTo !== coversUpTo) return false;
+    if ((p.chunkCount ?? 1) !== chunkCount) return false;
+    if ((p.chunkIdx ?? 0) !== j) return false;
+  }
+  return true;
+}
+
+/** WI-2313 — seed descriptor for the latest COMPLETE snapshot set in a log. */
+export interface SnapshotSeed {
+  /** Index of chunk 0 — where a fresh cursor starts so the forward fold reads
+   *  EVERY chunk of the set (then the post-snapshot tail). Equals `coversUpTo` for
+   *  a log whose chunks were appended contiguously at its tail (the producer's
+   *  `appendBatch`). */
+  seedIndex: number;
+  /** Own-log length the set summarizes (the chunks' shared `coversUpTo`). */
+  coversUpTo: number;
+  /** Number of chunks in the set. */
+  chunkCount: number;
+}
+
+/**
+ * WI-2313 (supersedes the single-op P-007 scan): find the latest COMPLETE snapshot
+ * set near the tail. Scans BACKWARD within `maxLookback`; on hitting any chunk of a
+ * set it derives the set span `[coversUpTo, coversUpTo + chunkCount)` from that
+ * chunk's payload and verifies the whole span (`verifySnapshotSet`). A verified set
+ * ⇒ its chunk-0 index; a TORN set ⇒ skip its whole span and keep scanning older
+ * history for an earlier complete set; none in the window ⇒ `null` (caller folds
+ * from 0). Touches only `[seedIndex, length)` + the set's chunks — exactly the tail
+ * a snapshot-seeded fold reads anyway, so it adds no download a fresh joiner
+ * wouldn't already pay.
+ */
+export async function findLatestCompleteSnapshot(
+  log: AdmittedLog,
+  maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
+  getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
+): Promise<SnapshotSeed | null> {
+  const len = log.length;
+  const floor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
+  let i = len - 1;
+  while (i >= floor) {
+    const op = await readOpBounded(log, i, getTimeoutMs);
+    if (!op) return null; // unavailable/withholding tail → give up, fold from 0 (safe)
+    if (isSnapshotOp(op)) {
+      const p = op.value as SnapshotPayload | undefined;
+      const coversUpTo = p?.coversUpTo ?? 0;
+      const chunkCount = p?.chunkCount ?? 1;
+      if (await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs)) {
+        return { seedIndex: coversUpTo, coversUpTo, chunkCount };
+      }
+      // Torn/incomplete (or corrupt) set — skip its whole span and look for an
+      // earlier complete one. `Math.min` keeps the scan strictly backward even if a
+      // corrupt payload reports a coversUpTo ahead of the current index.
+      i = Math.min(coversUpTo - 1, i - 1);
+      continue;
+    }
+    i--;
+  }
+  return null;
+}
+
+/**
+ * P-007 (design A): the index a FRESH cursor should seed at — the chunk-0 index of
+ * the latest COMPLETE snapshot set, or `null` if none within `maxLookback` of the
+ * tail. WI-2313: the seed fires ONLY for a whole present set, so a partial
+ * multi-chunk set never seeds a cursor ahead of un-folded ops. Thin wrapper over
+ * `findLatestCompleteSnapshot` (kept for the boot compaction-cadence anchor +
+ * `seedCursorFromSnapshots`).
  */
 export async function findLatestSnapshotIndex(
   log: AdmittedLog,
   maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
   getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
 ): Promise<number | null> {
-  const len = log.length;
-  const floor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
-  for (let i = len - 1; i >= floor; i--) {
-    const op = await readOpBounded(log, i, getTimeoutMs);
-    if (!op) return null; // unavailable/withholding → give up, fold from 0
-    if (isSnapshotOp(op)) return i;
-  }
-  return null;
+  const seed = await findLatestCompleteSnapshot(log, maxLookback, getTimeoutMs);
+  return seed ? seed.seedIndex : null;
 }
 
 /**
- * P-007 (design A): seed a FRESH merge cursor at each log's latest snapshot index
- * so a new joiner (or a post-reset re-fold) folds from the snapshot forward
- * instead of from 0 — the new-joiner replay-skip. Only seeds a log with NO cursor
- * position yet (fresh); an already-advanced cursor is left untouched (idempotent,
- * never rewinds a live fold). A log with no snapshot is left at 0 (folds from
- * scratch, today's behavior). FLAG-GATED by the caller (boot.ts) — off ⇒ never
- * called ⇒ cursor seeds at 0, byte-identical to today.
+ * P-007 (design A): seed a FRESH merge cursor at each log's latest COMPLETE
+ * snapshot set so a new joiner (or a post-reset re-fold) folds from the snapshot
+ * forward instead of from 0 — the new-joiner replay-skip. Only seeds a log with NO
+ * cursor position yet (fresh); an already-advanced cursor is left untouched
+ * (idempotent, never rewinds a live fold). A log with no snapshot is left at 0
+ * (folds from scratch, today's behavior). FLAG-GATED by the caller (boot.ts) —
+ * off ⇒ never called ⇒ cursor seeds at 0, byte-identical to today.
+ *
+ * WI-2313 crash-consistency: the seed comes from `findLatestSnapshotIndex`, which
+ * returns a set's chunk-0 index ONLY when every chunk is present + contiguous. A
+ * partial/torn multi-chunk set yields `null` ⇒ this leaves the log at 0 (full
+ * replay), never seeding the cursor PAST ops that unread chunks summarize.
  */
 export async function seedCursorFromSnapshots(
   logs: AdmittedLog[],
