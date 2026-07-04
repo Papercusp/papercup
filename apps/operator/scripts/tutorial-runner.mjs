@@ -147,26 +147,49 @@ export function buildQaCommand(agent, bin, prompt) {
   return { command: exe, args: ['-p', prompt] };
 }
 
-/** Build the grounded Q&A prompt for a section. Pure. */
+/**
+ * Build the grounded Q&A prompt for a section. Pure. (B2-#2)
+ *
+ * Papercusp ships thorough, actively-maintained docs, so the prompt does two
+ * things: (1) ATTACHES the current section's own grounding + its linked doc
+ * pages, and (2) instructs the agent to answer with our STANDARD doc tooling
+ * (docs:search / docs:get) — explicitly NOT forcing the current section, because
+ * the user's question may be open-ended or about a completely different area.
+ */
 export function buildQaPrompt(section, question) {
   const grounding = section
-    ? [
-        `Section: ${section.title}`,
-        section.details || section.brief || '',
-        section.docSlugs && section.docSlugs.length
-          ? `Relevant docs: ${section.docSlugs.join(', ')}`
-          : '',
-      ]
+    ? [`Section the user is currently reading: ${section.title}`, section.details || section.brief || '']
         .filter(Boolean)
         .join('\n')
     : '(no specific section context)';
+  const docs =
+    section?.docSlugs?.length
+      ? section.docSlugs.map((d) => `- /internal/docs/${d}`).join('\n')
+      : '(no docs are specifically linked to this section)';
   return (
-    'You are the Papercusp onboarding tutor answering ONE question during a guided ' +
-    'tutorial. Answer concisely (3–6 sentences), plainly, no preamble. Ground the ' +
-    'answer in the section context below; if the question is outside it, say briefly ' +
-    'what to check (a /internal/docs slug).\n\n' +
-    `${grounding}\n\nUser question: ${question}`
+    'You are the Papercusp onboarding tutor answering ONE question a user asked during ' +
+    'the guided tutorial.\n\n' +
+    `${grounding}\n\n` +
+    'Documentation grounding this section:\n' +
+    `${docs}\n\n` +
+    'Papercusp has thorough, well-maintained documentation. Answer using your standard ' +
+    'doc tooling: search with `docs:search` and read pages with `docs:get` (fall back to ' +
+    'fetching `/internal/docs/<slug>` if those tools are unavailable). The question MAY be ' +
+    'about this section OR about something else entirely — do NOT assume it is about this ' +
+    'section: if it is open-ended or off-topic, search the docs for the right page instead ' +
+    'of forcing an answer out of the section above.\n\n' +
+    'Answer concisely (3–6 sentences), plainly, no preamble; cite pages by their ' +
+    '`/internal/docs/<slug>` path.\n\n' +
+    `User question: ${question}`
   );
+}
+
+/** Human labels for the Q&A backend picker (B2-#3). */
+export const AGENT_LABELS = { claude: 'Claude (claude)', codex: 'Codex (codex)', omp: 'OMP (omp)' };
+
+/** Installed Q&A backends — those with a resolved binary path — in preference order. Pure. */
+export function installedQaBackends(agentBinaries) {
+  return ['claude', 'codex', 'omp'].filter((a) => agentBinaries?.[a]);
 }
 
 /** First section index of a chapter number (or -1). Pure. */
@@ -390,6 +413,40 @@ async function answerQuestion(agent, bin, section, question) {
   }
 }
 
+/**
+ * Resolve which backend answers a question (B2-#3). Caches the choice for the
+ * session (passed back in via `cached`) so we don't re-prompt on every question.
+ * Returns null when NO backend is installed → caller routes to setup (B2-#3b).
+ */
+async function resolveQaBackend(script, prompts, cached) {
+  if (cached) return cached;
+  const installed = installedQaBackends(script.agentBinaries ?? {});
+  if (installed.length === 0) return null;
+  if (installed.length === 1) {
+    return { agent: installed[0], bin: script.agentBinaries[installed[0]] };
+  }
+  // More than one installed → let the user choose which answers (B2-#3).
+  const { select } = prompts;
+  const agent = await select({
+    message: 'Which agent should answer your question?',
+    choices: installed.map((a) => ({ value: a, name: AGENT_LABELS[a] ?? a })),
+  });
+  return { agent, bin: script.agentBinaries?.[agent] ?? null };
+}
+
+/**
+ * No agent backend is installed, so live Q&A can't run (B2-#3b). Point the user
+ * at setup to install one. (In the unified Setup|Tutorial shell this becomes an
+ * automatic switch to the Setup tab — tutorial-setup-batch #4.)
+ */
+function routeToSetupForBackend() {
+  say(
+    `You'll need an agent backend installed to ask live questions. Run ${bold('papercusp setup')} ` +
+      'to install one (Claude, Codex, or OMP), then re-open the tutorial. ' +
+      dim('Everything else in the tutorial works without it.'),
+  );
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Phase A — optional setup (deterministic; the not-ready items are already
 // filtered out server-side unless the preview flag is on).
@@ -551,12 +608,15 @@ async function main() {
   }
   const totalChapters = script.chapters?.length ?? 0;
 
-  const agent =
-    args.agent ||
-    (script.agentBinaries
-      ? ['claude', 'codex', 'omp'].find((a) => script.agentBinaries[a]) || 'claude'
-      : 'claude');
-  const bin = script.agentBinaries?.[agent] ?? null;
+  // The Q&A backend is chosen lazily when the user actually asks a question
+  // (resolveQaBackend — B2-#3), not once at startup. Seed the session cache from
+  // an explicit --agent (the concierge's chosen framework) so first-run users are
+  // not re-prompted; re-entry (`papercusp tutorial`, no --agent) resolves at
+  // ask-time: pick when >1 installed, route to setup when none (B2-#3b).
+  let qaBackend =
+    args.agent && script.agentBinaries?.[args.agent]
+      ? { agent: args.agent, bin: script.agentBinaries[args.agent] }
+      : null;
 
   say(
     args.tutorial
@@ -645,7 +705,15 @@ async function main() {
         }
       } else if (action === 'question') {
         const q = typedQuestion ?? (await input({ message: '💬 Your question:' }))?.trim();
-        if (q) await answerQuestion(agent, bin, s, q);
+        if (q) {
+          const backend = await resolveQaBackend(script, prompts, qaBackend);
+          if (!backend) {
+            routeToSetupForBackend(); // B2-#3b: no agent installed → point at setup
+          } else {
+            qaBackend = backend; // cache the session's choice so we don't re-prompt (B2-#3)
+            await answerQuestion(backend.agent, backend.bin, s, q);
+          }
+        }
       } else if (action === 'menu') {
         const choice = await chapterMenu(script, prompts, false, null);
         if (choice === '__finish') {

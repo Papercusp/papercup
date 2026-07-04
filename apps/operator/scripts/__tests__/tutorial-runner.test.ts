@@ -6,6 +6,7 @@ import {
   buildQaPrompt,
   chapterEmoji,
   firstIndexOfChapter,
+  installedQaBackends,
   interpretReply,
   parseArgs,
   renderProgressBar,
@@ -85,15 +86,35 @@ describe('buildQaPrompt — grounds the answer in the section', () => {
     details: 'Plans live in Postgres and agents work from them.',
     docSlugs: ['system/plans'],
   };
-  it('includes the section title, its details, docs, and the question', () => {
+  it('includes the section title, its details, its docs, and the question', () => {
     const p = buildQaPrompt(section, 'how do I start one?');
-    expect(p).toContain('Section: Plans');
-    expect(p).toContain('Plans live in Postgres');
-    expect(p).toContain('system/plans');
+    expect(p).toContain('Plans'); // section title
+    expect(p).toContain('Plans live in Postgres'); // section details
+    expect(p).toContain('/internal/docs/system/plans'); // linked docs, as a path
     expect(p).toContain('User question: how do I start one?');
+  });
+  it('instructs the agent to use our doc tooling and NOT force the section (B2-#2)', () => {
+    const p = buildQaPrompt(section, 'how do I start one?');
+    expect(p).toContain('docs:search');
+    expect(p).toContain('docs:get');
+    expect(p).toMatch(/do NOT assume it is about this section|something else entirely/);
   });
   it('degrades gracefully with no section', () => {
     expect(buildQaPrompt(null, 'hi')).toContain('User question: hi');
+  });
+});
+
+describe('installedQaBackends — which agents can answer (B2-#3)', () => {
+  it('returns only backends with a resolved path, in preference order', () => {
+    expect(installedQaBackends({ claude: '/u/claude', codex: null, omp: '/u/omp', pi: '/u/pi' })).toEqual([
+      'claude',
+      'omp',
+    ]);
+  });
+  it('is empty when nothing is installed (caller routes to setup — B2-#3b)', () => {
+    expect(installedQaBackends({ claude: null, codex: null, omp: null, pi: null })).toEqual([]);
+    expect(installedQaBackends({})).toEqual([]);
+    expect(installedQaBackends(undefined)).toEqual([]);
   });
 });
 
