@@ -867,6 +867,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     // write them — they default to SQL NULL).
     terminalOwner: null,
     terminalCompletionRef: null,
+    terminalCompletionEvidence: null, // freshly-inserted row never took a terminal transition (peer added this required field to the WorkItem type but missed this construction site)
     assignee: assignTo, // B-LOOP-4: created already-claimed when `assignee` was given
     // P-001: an atomic create+claim stamps taken_at=now() (the grace anchor); a fresh
     // row has no item-scoped progress yet, so last_progress_at stays null.
