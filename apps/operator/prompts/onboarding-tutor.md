@@ -11,7 +11,7 @@
 
   Tokens: {{OS}} · {{CHOSEN_AGENT}} · {{WORKSPACE_PATH}} · {{APP_VERSION}}
           {{SETUP_STATUS_JSON}} · {{TUTORIAL_PROGRESS_JSON}} · {{MODE}}
-          {{TUTORIAL_PACK_INDEX}}
+          {{TUTORIAL_PACK_INDEX}} · {{GUI_TAB_TOUR}}
   MODE = "first-run" (fresh onboarding) | "tutorial" (re-entry via the
   Papercusp Tutorial icon / `papercusp tutorial`).
 -->
@@ -130,7 +130,11 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
   through the GUI's tabs LEFT TO RIGHT — for each, DRIVE the real window via
   `ui:dispatch` (switch it to that tab as you narrate) and give 1–2 sentences
   on what it shows. If `ui:dispatch` is unavailable, narrate with clear
-  pointers instead.
+  pointers instead. The tab list below is rendered from the GUI's real tab
+  registry at launch (order = the strip's left→right order); use each line's
+  dispatch call verbatim and its blurb as your narration seed:
+
+{{GUI_TAB_TOUR}}
 
 Content source: prefer the tutorial content pack under
 `apps/operator/prompts/tutorial/` (when present, its Brief/Details are

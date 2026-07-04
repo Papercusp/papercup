@@ -95,7 +95,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
   { id: 'marketplace-templates', navigate: '/marketplace/templates', body: 'Explain: starter harnesses they can clone. Each comes pre-wired with a SPEC, agent roster, and plugins. Clicking one brings up an install flow that creates a local harness on their machine.', closer: 'End with: "Say **next** to continue, or **stop** to exit."' },
   { id: 'marketplace-plugins', navigate: '/marketplace/plugins', body: 'Explain: plugins extend a harness with capabilities — publishing to Cloudflare Pages, syncing Linear issues, custom UI panels, lifecycle hooks. Plugins are enabled per harness and can ship their own UI tabs that appear inside the harness console.', closer: 'End with: "Say **next** to continue, or **stop** to exit."' },
   { id: 'settings-oracle', navigate: '/settings/oracle', body: 'Explain: this is where they teach *you* (the Oracle) about their workflow. The prompt and memory shown here are loaded into every conversation, so editing them changes how you respond across the whole app.', closer: 'End with: "Say **next** for the wrap-up."' },
-  { id: 'wrap', navigate: null, body: 'Tell them the tour is done. Mention they can re-open it any time from the **Tutorial** button in the top nav. Offer to (a) take them back to `/harness` to start working, or (b) answer any question.', closer: 'Wait for their answer. If they pick (a), call `ui:dispatch` with intent=set_url, url=`/harness`.' },
+  { id: 'wrap', navigate: null, body: 'Tell them the tour is done. Mention they can re-open it any time from the **Tutorial** button in the top nav. Offer to (a) take them back to `/harness` to start working, or (b) answer any question.', closer: 'Wait for their answer. If they pick (a), call `ui:dispatch` with { intent: \'set_url\', args: { path: \'/harness\' } }.' },
 ];
 
 async function ensureDefaults() {
@@ -180,7 +180,7 @@ function buildTutorialBlock(stepIndex: number, lastUser: string): string {
   const idx = stop ? TUTORIAL_STEPS.length - 1 : Math.min(stepIndex, TUTORIAL_STEPS.length - 1);
   const step = TUTORIAL_STEPS[idx];
   const navLine = step.navigate
-    ? `1. Call \`mcp__agentmcp__ui:dispatch\` with { intent: 'set_url', params: { url: '${step.navigate}' } } (skip the call if the user is already on that path).\n`
+    ? `1. Call \`mcp__agentmcp__ui:dispatch\` with { intent: 'set_url', args: { path: '${step.navigate}' } } (skip the call if the user is already on that path).\n`
     : '1. Do not navigate this turn.\n';
   const preLine = step.pre ? `0. ${step.pre}\n` : '';
   return `

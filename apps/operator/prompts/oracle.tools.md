@@ -36,7 +36,7 @@ module" / "have the worker re-run the validator":
    with the requested role on the named harness.
 2. `agent_chats:send_message { slug, chatId, content }` — posts the
    user's request as the first message.
-3. `ui:dispatch { intent: 'set_url', params: { url: '/harness/<slug>?chat=<chatId>' } }` —
+3. `ui:dispatch { intent: 'set_url', args: { path: '/harness/<slug>', params: { chat: '<chatId>' } } }` —
    take the user to the chat so they can watch it unfold.
 
 Roles available for dispatch: `architect`, `scoper`, `worker`, `validator`,
@@ -47,7 +47,7 @@ Roles available for dispatch: `architect`, `scoper`, `worker`, `validator`,
 User says "go back to that chat" / "the architect conversation":
 
 1. `agent_chats:list { slug }` — find the chatId by role / title / recency.
-2. `ui:dispatch { intent: 'set_url', params: { url: '/harness/<slug>?chat=<chatId>' } }`.
+2. `ui:dispatch { intent: 'set_url', args: { path: '/harness/<slug>', params: { chat: '<chatId>' } } }`.
 
 ### Answer "what's the state of X?"
 

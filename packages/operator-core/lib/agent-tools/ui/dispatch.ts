@@ -35,7 +35,7 @@ const MAX_TIMEOUT_MS = 60_000;
 export default defineTool({
   name: 'ui:dispatch',
   description:
-    'Dispatch a UI intent to a browser tab and wait for the result. Defaults client_id to ctx.uiClientId (the tab that spawned the agent). Built-in intents: set_url ({params:{...}}), snapshot ({selector?,mode?}), read_visible_text, focus, scroll_into_view, click. Pages can register additional intents via useUiIntent(name, handler).',
+    'Dispatch a UI intent to a browser tab and wait for the result. Defaults client_id to ctx.uiClientId (the tab that spawned the agent). Built-in intents: set_url ({path?:"/route", params:{...}} — path switches the route, params merge into the query string), snapshot ({selector?,mode?}), read_visible_text, focus, scroll_into_view, click. Pages can register additional intents via useUiIntent(name, handler).',
   capability: 'ui:dispatch',
   guidance: {
     when: 'You need to make something happen in the user\'s browser tab — open the panel, navigate, focus a card, etc. Side-effect tool: writes a ui_intents row the tab consumes via SSE.',

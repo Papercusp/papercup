@@ -23,6 +23,8 @@ export interface TutorTokens {
   tutorialProgressJson: string;
   /** packIndexMarkdown() over the tutorial content pack (P-012). */
   tutorialPackIndex: string;
+  /** guiTabTourMarkdown() — the finale's tab-by-tab GUI tour list (P-018). */
+  guiTabTour: string;
 }
 
 /** Replace every {{TOKEN}} in the template. Pure; exported for tests. */
@@ -35,7 +37,8 @@ export function renderTutorTemplate(template: string, t: TutorTokens): string {
     .replaceAll('{{MODE}}', t.mode)
     .replaceAll('{{SETUP_STATUS_JSON}}', t.setupStatusJson)
     .replaceAll('{{TUTORIAL_PROGRESS_JSON}}', t.tutorialProgressJson)
-    .replaceAll('{{TUTORIAL_PACK_INDEX}}', t.tutorialPackIndex);
+    .replaceAll('{{TUTORIAL_PACK_INDEX}}', t.tutorialPackIndex)
+    .replaceAll('{{GUI_TAB_TOUR}}', t.guiTabTour);
 }
 
 /**
