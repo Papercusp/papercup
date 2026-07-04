@@ -66,9 +66,29 @@ const overrideCache = new Map<
   { flags: Partial<Record<FlagKey, boolean>>; ts: number }
 >();
 const OVERRIDE_CACHE_TTL_MS = 5_000;
+const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
 
 function currentCacheKey(): string {
   return overrideStore?.cacheKey?.() ?? '';
+}
+
+function flagBackendTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_FLAG_BACKEND_TIMEOUT_MS;
+}
+
+async function withFlagBackendTimeout<T>(op: Promise<T>): Promise<T> {
+  const ms = flagBackendTimeoutMs();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`flag backend timed out after ${ms}ms`)), ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    return await Promise.race([op, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
@@ -229,11 +249,11 @@ export async function getFlag(
       evaluateFlags?: (distinctId: string, opts?: { flagKeys?: string[] }) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
     };
     if (typeof c.evaluateFlags === "function") {
-      const flags = await c.evaluateFlags(distinctId, { flagKeys: [key] });
+      const flags = await withFlagBackendTimeout(c.evaluateFlags(distinctId, { flagKeys: [key] }));
       const v = flags.isEnabled(key);
       return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
     }
-    const v = await client.isFeatureEnabled(key, distinctId);
+    const v = await withFlagBackendTimeout(client.isFeatureEnabled(key, distinctId));
     return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
   } catch {
     return FLAG_DEFAULTS[key];
@@ -286,7 +306,7 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   };
   if (typeof c5.evaluateFlags === "function") {
     try {
-      const snap = await c5.evaluateFlags(distinctId, { flagKeys: [...ALL_FLAG_KEYS] });
+      const snap = await withFlagBackendTimeout(c5.evaluateFlags(distinctId, { flagKeys: [...ALL_FLAG_KEYS] }));
       for (const key of ALL_FLAG_KEYS) {
         const v = snap.isEnabled(key);
         if (typeof v === "boolean") evaluated[key] = v;
@@ -298,7 +318,7 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
     await Promise.all(
       ALL_FLAG_KEYS.map(async (key) => {
         try {
-          const v = await client!.isFeatureEnabled(key, distinctId);
+          const v = await withFlagBackendTimeout(client!.isFeatureEnabled(key, distinctId));
           if (typeof v === "boolean") evaluated[key] = v;
         } catch {
           // leave undefined; resolveWithDefaults fills with FLAG_DEFAULTS[key]

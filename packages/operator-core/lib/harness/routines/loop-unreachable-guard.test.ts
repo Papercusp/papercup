@@ -94,6 +94,73 @@ describe('evaluateUnreachableTerminalGuard — circuit-open fast path (EI-7006 R
   });
 });
 
+describe('evaluateUnreachableTerminalGuard — WI-2339 resumable-DEAD (a `resume`-only reachability no longer vetoes a circuit-open loop)', () => {
+  it('resumable-dead: reachable:true via resume (durableWhileAlive:false) + circuit OPEN + ≥min-fires → BREACHES (the su-95cf8308 case)', () => {
+    // The probe reports reachable:true (channel `resume`) for an ended+resumable session, but its
+    // resume turns keep failing → circuit open. That failure streak overrides the dry-run optimism.
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: false,
+      parkedForMs: 1000, // circuit-open decouples the dwell window
+      intervalMs: 60_000,
+      stuckFireCount: 8,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(true);
+    expect(v.reason).toMatch(/resumable-dead/i);
+    expect(v.reason).toContain('WI-2339');
+    expect(v.reason).toContain('WI-1399');
+  });
+
+  it('a HEALTHY resumable loop between turns (resume reachable, circuit CLOSED) is NEVER terminated — even parked well past the window', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: false,
+      parkedForMs: 1e12,
+      intervalMs: 60_000,
+      stuckFireCount: 999,
+      circuitOpen: false, // its resume turns settle → recordFire('ok') → circuit never opens
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('a genuinely LIVE injectable owner (durableWhileAlive:true) stays protected even with an OPEN circuit', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: true, // psu-socket / managed-pty — a live host, not a dead session
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 999,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('resumable-dead still respects the min-fires floor (a short streak never terminates)', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      durableWhileAlive: false,
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 1,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+
+  it('backward-compat: an omitted durableWhileAlive is treated as durable/protected (pre-WI-2339 veto preserved)', () => {
+    const v = evaluateUnreachableTerminalGuard({
+      reachable: true,
+      // durableWhileAlive omitted
+      parkedForMs: 1000,
+      intervalMs: 60_000,
+      stuckFireCount: 999,
+      circuitOpen: true,
+    });
+    expect(v.breach).toBe(false);
+  });
+});
+
 describe('terminalUnreachableMs / minStuckFiresForTermination — env overrides + floors', () => {
   const ORIG_TERMINAL_MS = process.env.PAPERCUSP_LOOP_TERMINAL_UNREACHABLE_MS;
   const ORIG_MIN_FIRES = process.env.PAPERCUSP_LOOP_TERMINAL_MIN_STUCK_FIRES;
@@ -137,6 +204,11 @@ function verdict(reachable: boolean): WakeReachabilityVerdict {
     durableWhileAlive: reachable,
     summary: reachable ? 'live' : 'dead',
   };
+}
+
+/** WI-2339: an ended+resumable session — reachable via `claude --resume` but NOT durable-while-alive. */
+function resumeVerdict(): WakeReachabilityVerdict {
+  return { reachable: true, channel: 'resume', durableWhileAlive: false, summary: 'resumable' };
 }
 
 describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
@@ -194,6 +266,30 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
       throw new Error('boom');
     });
     const res = await checkUnreachableTerminalGuard(input, { autoPause, probeReachability });
+    expect(res.breach).toBe(false);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  it('WI-2339 resumable-dead: a `resume` verdict (reachable but not durable) + OPEN circuit auto-pauses', async () => {
+    const autoPause = vi.fn(async () => {});
+    const probeReachability = vi.fn(async () => resumeVerdict());
+    const res = await checkUnreachableTerminalGuard(
+      { ...input, parkedForMs: 1000, circuitOpen: true },
+      { autoPause, probeReachability },
+    );
+    expect(res.breach).toBe(true);
+    expect(res.reason).toMatch(/resumable-dead/i);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(autoPause).toHaveBeenCalledWith(input.sql, 'rt-1', expect.stringContaining('WI-2339'));
+  });
+
+  it('WI-2339: a `resume` verdict with a CLOSED circuit (healthy resumable loop) does NOT pause', async () => {
+    const autoPause = vi.fn(async () => {});
+    const probeReachability = vi.fn(async () => resumeVerdict());
+    const res = await checkUnreachableTerminalGuard(
+      { ...input, parkedForMs: 1e12, circuitOpen: false },
+      { autoPause, probeReachability },
+    );
     expect(res.breach).toBe(false);
     expect(autoPause).not.toHaveBeenCalled();
   });

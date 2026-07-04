@@ -141,6 +141,12 @@ describe('getFlag — configured (PostHog client mocked)', () => {
     ph.isFeatureEnabled.mockRejectedValue(new Error('posthog down'));
     expect(await getFlag(FLAGS.TESTING, 'u')).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
   });
+
+  it('falls back to the default when the client never resolves (fail-fast bootstrap)', async () => {
+    process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS = '1';
+    ph.isFeatureEnabled.mockImplementation(() => new Promise(() => {}));
+    expect(await getFlag(FLAGS.TESTING, 'u')).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
+  });
 });
 
 describe('getAllFlags — configured (PostHog client mocked)', () => {
@@ -164,6 +170,16 @@ describe('getAllFlags — configured (PostHog client mocked)', () => {
     const payload = await getAllFlags('u');
     expect(payload.source).toBe('posthog');
     expect(payload.flags[FLAGS.DESIGN]).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]);
+  });
+
+  it('a never-resolving backend evaluation degrades the bootstrap payload to defaults', async () => {
+    process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS = '1';
+    ph.isFeatureEnabled.mockImplementation(() => new Promise(() => {}));
+    const payload = await getAllFlags('u');
+    expect(payload.source).toBe('posthog');
+    expect(payload.flags[FLAGS.TESTING]).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
+    expect(payload.flags[FLAGS.DESIGN]).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]);
+    expect(ph.isFeatureEnabled).toHaveBeenCalled();
   });
 });
 

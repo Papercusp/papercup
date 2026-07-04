@@ -66,6 +66,13 @@ export function minStuckFiresForTermination(): number {
 export function evaluateUnreachableTerminalGuard(input: {
   /** `probeWakeReachability(...).reachable` for the loop's target owner. */
   reachable: boolean;
+  /** `probeWakeReachability(...).durableWhileAlive` — TRUE only for a genuinely live INJECTABLE
+   *  channel (psu-socket / managed-pty). FALSE for the `resume` channel and for the non-reachable
+   *  channels. WI-2339 (resumable-dead): distinguishes a live-injectable owner (always protected)
+   *  from a resumable-but-DEAD owner — a dry-run `reachable:true` via `claude --resume` that the
+   *  failing fire-circuit contradicts. Absent/undefined is treated as durable (protected) so an
+   *  older caller that omits it keeps the pre-WI-2339 veto behavior. */
+  durableWhileAlive?: boolean;
   /** How long the owner has been unreachable / the loop parked with no signal (ms). */
   parkedForMs: number;
   /** The loop's configured interval (ms) — used to floor the terminal window. */
@@ -81,7 +88,17 @@ export function evaluateUnreachableTerminalGuard(input: {
    *  reachable, and never accruing a consecutive-error streak — is still never terminated. */
   circuitOpen?: boolean;
 }): { breach: boolean; reason?: string } {
-  if (input.reachable) return { breach: false };
+  // Reachability veto — with ONE exception (WI-2339, resumable-dead). A genuinely live INJECTABLE
+  // channel (psu-socket / managed-pty; durableWhileAlive:true) ALWAYS protects the loop. But a
+  // `resume`-channel reachability (durableWhileAlive:false) is only DRY-RUN optimism:
+  // probeWakeReachability reports an ended+resumable session as reachable via `claude --resume`,
+  // yet cannot see that those resume turns keep FAILING to produce a settled turn. When the
+  // fire-circuit is OPEN (≥circuitThreshold REAL consecutive failures, fed by the reconcile
+  // completion-signal), that failure streak is the AUTHORITATIVE dead-owner signal — so a
+  // resume-only reachability no longer vetoes termination. A HEALTHY resumable loop between turns
+  // keeps a CLOSED circuit (its resume turns settle → recordFire('ok')), so it never reaches here.
+  const resumableDead = input.reachable && input.durableWhileAlive === false && input.circuitOpen === true;
+  if (input.reachable && !resumableDead) return { breach: false };
   // Classic (circuit-closed) path: require the full dwell window before terminating. Circuit-open
   // path (EI-7006): the dwell window is DECOUPLED — see the `circuitOpen` field doc above.
   if (!input.circuitOpen) {
@@ -90,12 +107,16 @@ export function evaluateUnreachableTerminalGuard(input: {
   }
   const minFires = minStuckFiresForTermination();
   if (input.stuckFireCount < minFires) return { breach: false };
+  const channelPhrase = resumableDead
+    ? 'RESUMABLE-DEAD (probe reports reachable via `claude --resume`, but the resume turns never settle)'
+    : 'unreachable (no injectable/resumable wake channel)';
   return {
     breach: true,
     reason: input.circuitOpen
-      ? `dead-owner: unreachable (no injectable/resumable wake channel) with fire-circuit OPEN across ` +
-        `${input.stuckFireCount} consecutive failures — auto-paused (WI-1399 / EI-7006 circuit-open fast path, dwell window decoupled)`
-      : `dead-owner: unreachable (no injectable/resumable wake channel), parked ${Math.round(input.parkedForMs / 1000)}s ` +
+      ? `dead-owner: ${channelPhrase} with fire-circuit OPEN across ` +
+        `${input.stuckFireCount} consecutive failures — auto-paused (WI-1399 / EI-7006 circuit-open fast path, dwell window decoupled` +
+        `${resumableDead ? '; WI-2339 resumable-dead' : ''})`
+      : `dead-owner: ${channelPhrase}, parked ${Math.round(input.parkedForMs / 1000)}s ` +
         `(≥${Math.round(terminalUnreachableMs(input.intervalMs) / 1000)}s terminal window) across ${input.stuckFireCount} consecutive stuck-backstop fires ` +
         `— auto-paused (WI-1399, dead-owner loop terminal guard)`,
   };
@@ -146,6 +167,9 @@ export async function checkUnreachableTerminalGuard(
 
   const verdict = evaluateUnreachableTerminalGuard({
     reachable: reachability.reachable,
+    // WI-2339: pass the channel durability so a resumable-DEAD owner (reachable via `resume` but
+    // whose fire-circuit is open) can be terminated, while a live-injectable owner stays protected.
+    durableWhileAlive: reachability.durableWhileAlive,
     parkedForMs: input.parkedForMs,
     intervalMs: input.intervalMs,
     stuckFireCount: input.stuckFireCount,

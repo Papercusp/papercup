@@ -78,6 +78,9 @@ import {
 } from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
 import { checkUnreachableTerminalGuard as defaultCheckUnreachableTerminalGuard } from './loop-unreachable-guard';
+import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/inbox-wake-arm';
+import { openEscalation } from '../../agent-tools/coordination/escalations';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -113,6 +116,48 @@ function stuckParkMs(intervalMs: number): number {
   const env = Number(process.env.PAPERCUSP_LOOP_STUCK_PARK_MS);
   const base = Number.isFinite(env) && env > 0 ? env : DEFAULT_STUCK_PARK_MS;
   return Math.max(base, intervalMs * 4);
+}
+
+/** WI-2339 (fix E) — the synthetic system principal the loud dead-loop escalation is attributed
+ *  to, mirroring INFRA_LIVENESS_IDENTITY. Attributable + dedupable in the human inbox. */
+export const LOOP_DEATH_WATCHDOG_IDENTITY: AgentIdentity = {
+  ownerId: 'system:loop-death-watchdog',
+  ownerLabel: 'system · loop-death-watchdog',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Diagnostics passed to the dead-loop escalation seam. */
+export interface DeadLoopInfo {
+  routineId: string;
+  targetOwnerId: string;
+  installSlug: string;
+  name: string;
+  reason: string;
+}
+
+/**
+ * Default loud human escalation for a durably-dead loop (WI-2339 fix E = pause+escalate, NOT
+ * auto-respawn — owner policy). Advisory severity: the watchdog has ALREADY paused the loop, so
+ * the human just needs to know it happened + decide whether to relaunch. `harness_slug` federates
+ * the escalation to the owning harness's human inbox (WI-1375). May throw if the coord context is
+ * unavailable in this worker — the CALLER swallows it (worst case: no escalation, never a crashed
+ * tick), so this stays a plain await.
+ */
+async function defaultEscalateDeadLoop(info: DeadLoopInfo): Promise<void> {
+  await openEscalation(LOOP_DEATH_WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary: `Loop '${info.name}' auto-paused — owner session ${info.targetOwnerId} is durably dead (wakes stopped landing).`,
+    body:
+      `The loop death/respawn watchdog (WI-2339) confirmed loop '${info.name}' ` +
+      `(routine ${info.routineId}, harness ${info.installSlug}, owner ${info.targetOwnerId}) can no longer be ` +
+      `reached as a fresh turn, and AUTO-PAUSED it (active=false) instead of re-firing into a dead session forever.\n\n` +
+      `Reason: ${info.reason}\n\n` +
+      `This is inform-only: the watchdog does NOT auto-respawn (owner policy). To resume the work, ` +
+      `relaunch the owner session and re-arm the loop (loop:arm), or reclaim its work-items.`,
+    harness_slug: info.installSlug,
+  });
 }
 
 export type RebaseVia = 'lifecycle' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
@@ -257,6 +302,14 @@ export async function reconcileLoopRoutines(
     checkUnreachableTerminalGuard?: typeof defaultCheckUnreachableTerminalGuard;
     /** Injected for tests; defaults to the real fire-circuit threshold read (EI-7006). */
     circuitThreshold?: typeof defaultCircuitThreshold;
+    /** WI-2339 (fix E): injected loud human-escalation for a confirmed durably-dead loop. Fires
+     *  ONCE per dead loop (the breach auto-pauses it → never re-scanned). Default opens an advisory
+     *  coord escalation. Fail-soft at the call site. */
+    escalateDeadLoop?: (info: DeadLoopInfo) => Promise<void>;
+    /** WI-2339 (fix D): injected inbox-wake cancel for a confirmed durably-dead owner. Default
+     *  cancelInboxWake — stops the ghost standing await from matching-without-consuming and
+     *  poisoning EVERY other wake source for the dead owner. Fail-soft at the call site. */
+    cancelInboxWake?: (ownerId: string, workspaceId?: string) => Promise<number>;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -265,6 +318,8 @@ export async function reconcileLoopRoutines(
   const readFireState = opts.readFireState ?? defaultReadFireState;
   const checkUnreachableTerminalGuard = opts.checkUnreachableTerminalGuard ?? defaultCheckUnreachableTerminalGuard;
   const circuitThreshold = opts.circuitThreshold ?? defaultCircuitThreshold;
+  const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
+  const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
 
   // Loop routines that may need a re-arm: a PARKED pure loop (rebase off completion) or an
   // armed cron+loop (fold the sooner). A pure loop still ARMED for its FIRST fire (a real
@@ -390,6 +445,34 @@ export async function reconcileLoopRoutines(
             ).catch((e) =>
               console.warn(
                 `[loop-reconcile] recordFire('error') failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+            // WI-2339 fix D — stop the ghost standing inbox-wake await from matching-without-
+            // consuming and poisoning EVERY other wake source for this now-confirmed-dead owner
+            // (the once=false await is otherwise cancelled only on a graceful SessionEnd, which an
+            // unplanned death never runs). Fail-soft: a cancel failure never blocks termination.
+            await runWithWorkspace(row.routine_workspace_id, () =>
+              cancelInboxWake(row.target_owner_id, row.routine_workspace_id),
+            ).catch((e) =>
+              console.warn(
+                `[loop-reconcile] cancelInboxWake failed for dead owner '${row.target_owner_id}': ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+            // WI-2339 fix E — pause+ESCALATE (owner policy: NOT auto-respawn). Loudly tell a human
+            // the watchdog auto-paused a dead loop, rather than the silent no-op it was before.
+            // Fires exactly once (the loop is now active=false → never re-scanned). Fail-soft: a
+            // missing coord context degrades to no escalation, never a crashed tick.
+            await runWithWorkspace(row.routine_workspace_id, () =>
+              escalateDeadLoop({
+                routineId: row.id,
+                targetOwnerId: row.target_owner_id,
+                installSlug: row.install_slug,
+                name: row.name,
+                reason: guard.reason ?? 'unreachable dead-owner loop',
+              }),
+            ).catch((e) =>
+              console.warn(
+                `[loop-reconcile] escalateDeadLoop failed for terminated loop '${row.id}': ${e instanceof Error ? e.message : e}`,
               ),
             );
             console.warn(

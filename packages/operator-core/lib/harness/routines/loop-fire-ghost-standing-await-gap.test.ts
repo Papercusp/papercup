@@ -17,11 +17,20 @@
  * `fireLoopWake` is structurally incapable of ever reaching its own `no-session-now`
  * auto-deactivation path for a session that died without a graceful exit.
  *
- * This test does NOT touch any fix — it documents today's (buggy) behavior so a future fix
- * (WI-2339 proposal A: make the fire-success signal reflect ACTUAL reachability via
- * `probeWakeReachability`, not a ghost-registration match) has a red-to-green target. Once
- * that fix lands, a `wake()` returning `woken:1` for a genuinely-dead target should no longer
- * be trusted as `reached` — this test's "TODAY (the bug)" assertions should then flip.
+ * RESOLUTION (WI-2339 fix landed, 2026-07-04): the death detection was deliberately placed
+ * DOWNSTREAM of the fire gate, NOT at it (proposal A — "make fireLoopWake pre-check
+ * probeWakeReachability and deactivate on reachable:false" — was NOT taken: it removes the
+ * WI-1399 debounce, so it would kill a healthy loop on a transient blip, and it CANNOT catch the
+ * actual su-95cf8308 case anyway — a resumable-but-dead session probes `reachable:true` via the
+ * `resume` channel). The synchronous fire gate genuinely CANNOT distinguish a ghost standing-await
+ * match from a real delivery — the delivery is async + decoupled — so these "TODAY (the bug)"
+ * assertions are now a PERMANENT CHARACTERIZATION of that intrinsic limitation, not a red-to-green
+ * target. The catch lives where the real-delivery signal actually exists: the reconcile
+ * completion-signal feedback (`recordFire('ok')` on a settled turn / `'error'` on the stuck-park
+ * backstop) opens the fire-circuit after ≥threshold undelivered turns, and the WI-1399 terminal
+ * guard's resumable-dead path (`loop-unreachable-guard.ts`, WI-2339) then auto-pauses + escalates
+ * the loop. So a ghost woken:1 no longer keeps a dead loop alive forever — reconcile terminates it
+ * a few dwell-windows later. See loop-unreachable-guard.test.ts + reconcile-loop-routines.test.ts.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { fireLoopWake, type LoopFireDeps } from './loop-fire';

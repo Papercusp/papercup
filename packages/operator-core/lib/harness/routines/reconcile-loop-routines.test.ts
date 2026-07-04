@@ -318,13 +318,16 @@ describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => 
     };
   }
 
-  it('a stuck-backstop fire whose terminal guard BREACHES is TERMINATED, not re-armed', async () => {
+  it('a stuck-backstop fire whose terminal guard BREACHES is TERMINATED, not re-armed — AND (WI-2339 D+E) cancels the ghost inbox-wake + loudly escalates', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
     const sql = fakeSql([stuckRow()], updates);
     const recordFire = vi.fn(async () => {});
     const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 2 }));
     const checkUnreachableTerminalGuard = vi.fn(async () => ({ breach: true, reason: 'dead-owner: unreachable, WI-1399' }));
+    // WI-2339 fixes D + E — injected so the unit stays hermetic (the real defaults hit coord/PG).
+    const cancelInboxWake = vi.fn(async () => 1);
+    const escalateDeadLoop = vi.fn(async () => {});
 
     const res = await reconcileLoopRoutines({
       sql,
@@ -332,6 +335,8 @@ describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => 
       recordFire,
       readFireState,
       checkUnreachableTerminalGuard,
+      cancelInboxWake,
+      escalateDeadLoop,
     });
 
     expect(res.rearmed).toBe(0);
@@ -346,6 +351,20 @@ describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => 
     );
     // Still recorded to the fire history (autoloop_state), per the terminal-guard contract.
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-gone', 'loop-terminal-unreachable', 'error');
+    // WI-2339 fix D — the dead owner's ghost standing inbox-wake await is cancelled so it stops
+    // poisoning every OTHER wake source (called with the owner + its workspace).
+    expect(cancelInboxWake).toHaveBeenCalledWith('su-permanently-gone', 'ws-papercusp');
+    // WI-2339 fix E — a loud human escalation is raised (pause+escalate, not silent no-op), carrying
+    // the routine/owner/harness + the guard's reason.
+    expect(escalateDeadLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-dead',
+        targetOwnerId: 'su-permanently-gone',
+        installSlug: 'papercusp',
+        name: 'loop-su-gone',
+        reason: 'dead-owner: unreachable, WI-1399',
+      }),
+    );
   });
 
   it('a stuck-backstop fire whose terminal guard does NOT breach re-arms exactly as before (backward-compat)', async () => {
@@ -452,6 +471,8 @@ describe('reconcileLoopRoutines — circuit-open fast path (EI-7006)', () => {
       recordFire,
       readFireState,
       checkUnreachableTerminalGuard: guard,
+      cancelInboxWake: async () => 0, // WI-2339 D/E: hermetic no-ops (real defaults hit coord/PG)
+      escalateDeadLoop: async () => {},
     });
 
     expect(res.terminated).toEqual([
@@ -525,6 +546,8 @@ describe('reconcileLoopRoutines — circuit-open fast path (EI-7006)', () => {
       recordFire,
       readFireState,
       checkUnreachableTerminalGuard: guard,
+      cancelInboxWake: async () => 0, // WI-2339 D/E: hermetic no-ops (real defaults hit coord/PG)
+      escalateDeadLoop: async () => {},
     });
 
     expect(res.terminated).toHaveLength(1);
