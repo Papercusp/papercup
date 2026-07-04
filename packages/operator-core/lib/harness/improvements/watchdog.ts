@@ -1613,6 +1613,35 @@ interface CeilingJamRow {
   harness_slug: string | null;
   started_at: string | Date;
   last_output_at: string | Date | null;
+  /** The nursery run_id — used only to identify in-process loopback launches
+   *  (`launch-*`), which never populate `last_output_at`. Optional so the pure
+   *  classifier can be exercised with bee-spawn rows alone. */
+  run_id?: string | null;
+}
+
+/**
+ * Is this a nursery row for an IN-PROCESS loopback launch (a durable-spawn
+ * worker, a `launch-*` launch-blueprint — doc-steward / release cadence /
+ * git-sync — or a Queen/overwatch wake) rather than a supervised invoke-once
+ * bee child? Mirrors spawn-reclaim.ts's `kind` classifier (the single source of
+ * truth for this distinction: `run_id` starts with `launch-`, OR `spawn_id`
+ * starts with `durable-spawn:`).
+ *
+ * WHY THE CEILING-JAM DETECTOR MUST EXCLUDE THESE (EI-7215). `last_output_at` is
+ * stamped ONLY by the child-process stdout supervisor (`operator-spawn.ts` →
+ * `heartbeatSpawns(…, outputAtMs)`). An in-process launch runs via `/invoke`, not
+ * as a stdout-streaming child, so its heartbeat path never passes `outputAtMs`
+ * and `last_output_at` stays NULL for the row's ENTIRE life — even while the
+ * launch is demonstrably alive and working. The jam signal's stream-recency
+ * liveness proxy is therefore structurally inapplicable to this class: counting
+ * it flags every live in-process launch (durable-spawn worker, launch-blueprint,
+ * Queen) as a "stale debit", firing a false-positive `spawn-ceiling-jam` whenever
+ * ≥`slack` such launches run concurrently. Their liveness + genuine stale-debit
+ * reclaim are owned by the boot-id-aware reclaim sweep / boot reconcile
+ * (spawn-reclaim.ts), not this DB-only detector.
+ */
+export function isInProcessLaunchRow(row: { spawn_id: string; run_id?: string | null }): boolean {
+  return (row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:');
 }
 /**
  * Pure: classify the workspace's `running`/`restarting` nursery rows into

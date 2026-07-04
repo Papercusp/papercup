@@ -260,6 +260,64 @@ describe('reapDeadExecutorWorkflows', () => {
   });
 });
 
+describe('startExecutorReaper — a reap-tick failure must be VISIBLE, never a silent unhandled rejection (EI-3673)', () => {
+  afterEach(() => {
+    capturedTick = null;
+    vi.restoreAllMocks();
+  });
+
+  it('boot reap: a rejecting reap never throws/rejects out of startExecutorReaper itself, but IS logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { sql } = fakeSql(() => {
+      throw new Error('pg unreachable — pool still reconnecting after restart');
+    });
+
+    // Must not throw synchronously, and the internal boot-reap promise must not
+    // surface as an unhandled rejection (vitest fails the run on one of those).
+    expect(() => startExecutorReaper(sql)).not.toThrow();
+    // Let the fire-and-forgotten boot-reap promise settle before asserting.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('reap tick FAILED'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pg unreachable'));
+  });
+
+  it('the registered interval tick REJECTS on a reap failure (so managedSetInterval records it as a visible lastError)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { sql } = fakeSql(() => {
+      throw new Error('transient PG error');
+    });
+
+    startExecutorReaper(sql);
+    await new Promise((r) => setTimeout(r, 0)); // let the boot reap settle first
+    warn.mockClear();
+
+    expect(capturedTick).not.toBeNull();
+    // Before EI-3673 this tick fn returned `undefined` synchronously (a fire-and-forget
+    // `void promise.then(onSuccess)` with no rejection path reaching the caller) — a
+    // failure was then INVISIBLE to managedSetInterval's own tick wrapper (which only
+    // records `lastError` when the fn it called itself rejects). Now the tick fn
+    // returns the promise chain directly, so a reap failure propagates as a real
+    // rejection the scheduled-registry tick wrapper can see and record.
+    await expect(capturedTick!()).rejects.toThrow('transient PG error');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('reap tick FAILED'));
+  });
+
+  it('a SUCCESSFUL reap tick still resolves cleanly (no behavior change on the happy path)', async () => {
+    const { sql } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
+    });
+
+    startExecutorReaper(sql);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(capturedTick).not.toBeNull();
+    await expect(capturedTick!()).resolves.toBeUndefined();
+  });
+});
+
 describe('clearStaleReaperLastError', () => {
   it('strips the reaper marker keys (incl. reaped_count) with a SOURCE-SCOPED UPDATE (EI-5938)', async () => {
     const { sql, calls } = fakeSql(() => ({ count: 1 }));
