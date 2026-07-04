@@ -90,8 +90,14 @@ function ensureOmpHindsightConfig(): void {
  *  is correct; a human who wants `eval` can re-enable per-session (`omp config set eval.py
  *  true`) or use a different profile. */
 function ensureOmpAgentToolTierConfig(): void {
+  // Disable EVERY eval-shell language, not just py/js — a weak model reaches for `eval` by
+  // reflex regardless of language, and leaving eval.rb/eval.jl enabled leaves the same
+  // doom-loop attractor half-open (the omp `eval` builtin is still presented). All four off
+  // ⇒ omp stops presenting the tool at all (ornith iter10 completion, 2026-07-04 / WI-2382).
   setOmpConfig('eval.py', 'false');
   setOmpConfig('eval.js', 'false');
+  setOmpConfig('eval.rb', 'false');
+  setOmpConfig('eval.jl', 'false');
 }
 
 /** Resolve the directory `omp` lives in (so the wrapper lands on the

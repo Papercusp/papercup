@@ -1714,6 +1714,35 @@ export function evalBlockReason(count = 1): string {
   );
 }
 
+/** True when the agent is invoking the interactive `ask` builtin. A spawned agent has NO
+ *  human at the terminal, so `ask` cannot be answered — under a supervised/headless launch
+ *  it BLOCKS or auto-resolves to its recommended option, which is how an ornith LEADER
+ *  (iter10, 2026-07-04 / WI-2382) "chose" do-it-myself at its routing gate and began
+ *  claiming+editing items before its owner ever answered route C. There is no omp config to
+ *  disable `ask` (unlike eval.py/js) and the `--tools` whitelist also gates the papercusp
+ *  MCP tools, so a tool-NAME block here is the structural lever. Strips a `group:` prefix so
+ *  a namespaced verb (e.g. `x:ask`) is not swept up. Pure. */
+export function isAskCall(toolName: string): boolean {
+  const bare = (toolName || '').toLowerCase().replace(/[_-]/g, '').replace(/^.*:/, '');
+  return bare === 'ask';
+}
+
+/** The redirect returned when an agent session invokes the interactive `ask` builtin. An
+ *  agent has no live human to answer, so `ask` is never the right tool: a KICKOFF ROUTING
+ *  GATE must be presented as plain TEXT and awaited (the launcher/owner sends the route as a
+ *  coordination message); a genuine mid-work question goes to the durable `coord:ask-owner`
+ *  path, which actually reaches the owner and never auto-defaults. Pure. */
+export function askBlockReason(): string {
+  return (
+    'ask-blocked: the interactive `ask` tool is DISABLED for papercusp agent sessions — you ' +
+    'have no human at the terminal, so `ask` cannot be answered and auto-resolves to its ' +
+    'default option (sending you down a route nobody chose). If this is your KICKOFF ROUTING ' +
+    'GATE, present the options as plain TEXT and STOP — your launcher/owner will send the ' +
+    'routing decision as a coordination message you act on next turn. If you genuinely need an ' +
+    'owner decision mid-task, call `coord:ask-owner` (durable) — NOT `ask`. Do not call `ask` again.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -1812,6 +1841,20 @@ export async function onToolCall(
   // unrestricted (D-003).
   if (isAgentSession() && isEvalCall(event.toolName)) {
     return { block: true, reason: evalBlockReason(noteEvalBlock()) };
+  }
+
+  // ask-gate guard (ornith iter10, 2026-07-04 / WI-2382): a spawned agent has NO human at the
+  // terminal, so the interactive `ask` builtin cannot be answered — under a supervised launch it
+  // auto-resolves to its recommended option, which is how an ornith LEADER "chose" do-it-myself at
+  // its routing gate and began hoarding items before the owner ever answered route C. `ask` has no
+  // omp-config disable (unlike eval) and the `--tools` whitelist also strips the papercusp MCP
+  // tools, so this tool-NAME block is the structural lever: present the routing gate as TEXT and
+  // wait for the owner's coord decision; use coord:ask-owner for a genuine mid-task question. A
+  // structural replacement for prompt-only steering (a weak model ignores prose — same lesson as
+  // eval). Not reflexive like eval, so no escalation counter; the generic loop-breaker below is the
+  // backstop if it ever repeats. Owner sessions unrestricted (D-003).
+  if (isAgentSession() && isAskCall(event.toolName)) {
+    return { block: true, reason: askBlockReason() };
   }
 
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the

@@ -46,6 +46,8 @@ import {
   EVAL_BLOCK_ESCALATE_AFTER,
   noteEvalBlock,
   resetEvalBlockBudget,
+  isAskCall,
+  askBlockReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -517,6 +519,68 @@ describe('onToolCall eval guard (agent sessions only)', () => {
       input: { code: 'ok' },
     });
     expect(r.block).toBeUndefined();
+  });
+});
+
+describe('isAskCall + askBlockReason (interactive ask-gate guard, ornith iter10 / WI-2382)', () => {
+  it('matches the bare `ask` builtin in every spelling, strips a group prefix', () => {
+    expect(isAskCall('ask')).toBe(true);
+    expect(isAskCall('ASK')).toBe(true); // case-insensitive
+    expect(isAskCall('x:ask')).toBe(true); // strips a group prefix
+  });
+  it('does NOT sweep up unrelated tools whose name merely contains "ask"', () => {
+    expect(isAskCall('task')).toBe(false);
+    expect(isAskCall('taskcreate')).toBe(false);
+    expect(isAskCall('coord:ask-owner')).toBe(false); // bare verb `askowner`, not `ask`
+    expect(isAskCall('plans:get')).toBe(false);
+    expect(isAskCall('')).toBe(false);
+  });
+  it('the reason redirects to a TEXT routing gate + coord:ask-owner', () => {
+    const r = askBlockReason();
+    expect(r).toContain('ask-blocked');
+    expect(r).toContain('TEXT');
+    expect(r).toContain('coord:ask-owner');
+  });
+});
+
+describe('onToolCall ask guard (agent sessions only)', () => {
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+  });
+  afterEach(() => {
+    resetToolCallLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const askCall = () =>
+    onToolCall({ type: 'tool_call', toolName: 'ask', toolCallId: 'a', input: { questions: [] } });
+
+  it('blocks an `ask` call on #1 for an agent session, redirecting to a text gate', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await askCall();
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('ask-blocked');
+    expect(r.reason).toContain('coord:ask-owner');
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    expect((await askCall()).block).toBeUndefined();
+  });
+
+  it('leaves the `task`-family and coord:ask-owner tools to their own handling (no ask sweep)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    // coord:ask-owner is the SANCTIONED durable path — it must NOT be swept up by the ask guard.
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'coord:ask-owner',
+      toolCallId: 'q',
+      input: { question: 'ok' },
+    });
+    expect(r.reason ?? '').not.toContain('ask-blocked');
   });
 });
 

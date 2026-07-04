@@ -29,10 +29,12 @@
  *     snapshots checked against thresholds —
  *       · handoffs stuck pending          (open > stuckHandoffHours, def 12)
  *       · operational escalations undrained (operational + open past the reconcile
- *                                          TTL — the substrate's own drain is failing;
- *                                          EI-6910: was "any open escalation past 6h",
- *                                          which fired perpetually on the human's normal
- *                                          decision backlog)
+ *                                          TTL + a grace window — the substrate's own
+ *                                          drain is failing; EI-6910: was "any open
+ *                                          escalation past 6h", which fired perpetually
+ *                                          on the human's normal decision backlog;
+ *                                          EI-7087: the grace absorbs the normal
+ *                                          reconcile-tick-vs-check-tick cadence race)
  *       · locks held past TTL, unswept    (expired > expiredLockGraceMin, def 60)
  *       · presence ghosts                 (heartbeat stale > presenceGhostHours,
  *                                          def 72, rows never cleaned)
@@ -73,6 +75,31 @@ import { listEscalations } from '../../agent-tools/coordination/escalations';
 // (OPERATIONAL_ESCALATION_TTL_MS — the single source of truth in reconcile-escalations.ts).
 import { isOperationalEscalation } from '../../attention/adapters';
 import { OPERATIONAL_ESCALATION_TTL_MS } from '../../attention/reconcile-escalations';
+
+/**
+ * EI-7087: grace window added ON TOP of OPERATIONAL_ESCALATION_TTL_MS before the
+ * invariant flags an undrained escalation. Without it, this check false-positives
+ * on ordinary tick-cadence drift, not a real drain failure: the reconcile sweep
+ * fires hourly at :20 (attentionReconcileTick) and this invariant checks hourly at
+ * :37 (seed-coord-invariant-routines) — 17 minutes later. An operational escalation
+ * that crosses the 48h TTL boundary in the 17–43min window BETWEEN a reconcile tick
+ * and the next one is, by construction, still open when this check runs, even
+ * though the reconcile sweep is working perfectly and will drain it at its very
+ * next tick. Given the near-continuous operational-escalation traffic (e.g.
+ * system:infra-liveness-alarm bursts), that race hits often enough to keep this
+ * "minor" EI perpetually re-opening despite zero real backlog (verified live,
+ * 2026-07-04: max age of any open operational escalation was 46.4h — under the
+ * 48h TTL — at the moment this fired citing "still open past TTL").
+ * One hour comfortably covers the normal cadence race (which is at most ~43min)
+ * with margin, while staying tiny next to what a GENUINE drain failure looks like
+ * (reconcile repeatedly shed/stuck for multiple hours against a fast-growing
+ * operational-escalation stream) — so this still catches the real failure this
+ * invariant exists for, just not the tick-timing noise.
+ */
+export const ESCALATION_RECONCILE_GRACE_MS = (() => {
+  const env = Number(process.env.PAPERCUSP_ESCALATION_RECONCILE_GRACE_MS);
+  return Number.isFinite(env) && env > 0 ? env : 60 * 60 * 1000;
+})();
 import { sweepDeadOwnerPendingWakes } from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
@@ -523,13 +550,17 @@ export function evaluateInvariants(
   const undrainedOperationalEsc = snap.openEscalations.filter((e) => {
     if (!isOperationalEscalation(e.from, e.hasOptions)) return false;
     const openedMs = Date.parse(e.ts);
-    return Number.isFinite(openedMs) && nowMs - openedMs > OPERATIONAL_ESCALATION_TTL_MS;
+    // EI-7087: TTL + a grace window, not the bare TTL — see ESCALATION_RECONCILE_GRACE_MS
+    // doc comment for why (absorbs the normal reconcile-tick-vs-invariant-check cadence
+    // race instead of false-firing on it every time an escalation crosses the TTL boundary
+    // between two reconcile ticks).
+    return Number.isFinite(openedMs) && nowMs - openedMs > OPERATIONAL_ESCALATION_TTL_MS + ESCALATION_RECONCILE_GRACE_MS;
   }).length;
   if (undrainedOperationalEsc > 0) {
-    const ttlHours = Math.round(OPERATIONAL_ESCALATION_TTL_MS / 3_600_000);
+    const ttlHours = Math.round((OPERATIONAL_ESCALATION_TTL_MS + ESCALATION_RECONCILE_GRACE_MS) / 3_600_000);
     out.push({
       title: 'coord invariant: operational escalations undrained past reconcile TTL',
-      detail: `${undrainedOperationalEsc} operational escalation(s) still open past the ${ttlHours}h attention-reconcile TTL — the reconcile sweep (reconcile-escalations.ts) is not draining them.`,
+      detail: `${undrainedOperationalEsc} operational escalation(s) still open past the ${ttlHours}h attention-reconcile TTL (${Math.round(OPERATIONAL_ESCALATION_TTL_MS / 3_600_000)}h TTL + ${Math.round(ESCALATION_RECONCILE_GRACE_MS / 3_600_000)}h grace) — the reconcile sweep (reconcile-escalations.ts) is not draining them.`,
       severity: 'minor',
     });
   }

@@ -83,14 +83,21 @@ describe('recordRouteInvocation — sampling gate', () => {
   });
 });
 
+/** recordRouteInvocation's tx runs TWO tx.unsafe calls per write (a
+ *  set_config, then the INSERT) — isolate the INSERT for assertions. */
+function findInsertCall(): { sql: string; params: unknown[] } {
+  const found = unsafeCalls.find((c) => c.sql.includes('INSERT INTO harness_shared.route_invocations'));
+  if (!found) throw new Error(`no INSERT call captured among ${unsafeCalls.length} tx.unsafe call(s)`);
+  return found;
+}
+
 describe('recordRouteInvocation — resolved path + response bytes (EI-7069)', () => {
   it('records the RESOLVED request path, distinct from the route TEMPLATE', async () => {
     recordRouteInvocation(
       execWith({ path: '/admin/plans/:verb', url: 'http://x/admin/plans/attention?tier=trimmed' }),
     );
     await new Promise((r) => setTimeout(r, 0));
-    expect(unsafeCalls).toHaveLength(1);
-    const [insertSql, params] = [unsafeCalls[0].sql, unsafeCalls[0].params];
+    const { sql: insertSql, params } = findInsertCall();
     expect(insertSql).toContain('resolved_path');
     // template path stays $3 (path), resolved path is the new $10 slot.
     expect(params).toContain('/admin/plans/:verb');
@@ -103,22 +110,21 @@ describe('recordRouteInvocation — resolved path + response bytes (EI-7069)', (
     Object.defineProperty(exec.req, 'url', { value: 'not a url', configurable: true });
     expect(() => recordRouteInvocation(exec)).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
-    expect(unsafeCalls).toHaveLength(1);
-    expect(unsafeCalls[0].params).toContain(null);
+    const { params } = findInsertCall();
+    expect(params).toContain(null);
   });
 
   it('records response_bytes when the orchestrator set it (Content-Length present)', async () => {
     recordRouteInvocation(execWith({ responseBytes: 1234 }));
     await new Promise((r) => setTimeout(r, 0));
-    expect(unsafeCalls).toHaveLength(1);
-    expect(unsafeCalls[0].params).toContain(1234);
+    const { params } = findInsertCall();
+    expect(params).toContain(1234);
   });
 
   it('response_bytes stays null for a streaming response (no Content-Length)', async () => {
     recordRouteInvocation(execWith({ responseBytes: null }));
     await new Promise((r) => setTimeout(r, 0));
-    expect(unsafeCalls).toHaveLength(1);
-    const params = unsafeCalls[0].params;
+    const { params } = findInsertCall();
     // response_bytes is the last bound param; assert it's specifically null,
     // not just "params contains null somewhere" (principal fields are also null here).
     expect(params[params.length - 1]).toBeNull();

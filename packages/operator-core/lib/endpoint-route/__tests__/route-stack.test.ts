@@ -427,20 +427,24 @@ describe('invoke step', () => {
 });
 
 describe('runRouteStack — response byte capture (EI-7069)', () => {
-  it('captures Content-Length as exec.responseBytes for a plain JSON response', async () => {
+  it('captures Content-Length as exec.responseBytes when the handler response carries one', async () => {
+    // Hono's in-process app.request() never crosses a real HTTP transport, so
+    // a plain Response.json() here does NOT get an auto-computed Content-Length
+    // (that only happens once Node's real http layer serializes a known-length
+    // body — @hono/node-server in production). Set it explicitly to exercise
+    // this code's Content-Length-reading logic directly and deterministically.
     const app = freshApp();
+    const body = JSON.stringify({ hello: 'world' });
+    const byteLen = new TextEncoder().encode(body).length;
     registerRoute(app, defineTool({
       method: 'GET', path: '/sized', auth: 'public',
-      handler: () => Response.json({ hello: 'world' }),
+      handler: () => new Response(body, { headers: { 'content-type': 'application/json', 'content-length': String(byteLen) } }),
     }));
     const res = await app.request('/sized');
     expect(res.status).toBe(200);
     expect(recordRouteInvocation).toHaveBeenCalledTimes(1);
     const exec = vi.mocked(recordRouteInvocation).mock.calls[0][0];
-    // Response.json sets Content-Length itself — the exact byte count of the
-    // serialized body, so this is deterministic, not just "a number".
-    const body = JSON.stringify({ hello: 'world' });
-    expect(exec.responseBytes).toBe(new TextEncoder().encode(body).length);
+    expect(exec.responseBytes).toBe(byteLen);
   });
 
   it('leaves responseBytes null for a streaming response with no Content-Length', async () => {

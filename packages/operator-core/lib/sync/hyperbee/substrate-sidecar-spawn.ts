@@ -334,7 +334,12 @@ export async function spawnSubstrateSidecar(
     child.on('exit', (code) => {
       cleanup();
       const msg = code !== null ? `exit code ${code}` : 'killed';
-      console.warn(`[substrate-sidecar] died (${msg})`);
+      // A deliberate stopSubstrateSidecar() is a graceful shutdown, not a
+      // crash — warning "died" here is misleading noise (and trips
+      // vitest-fail-on-console). Only warn for an UNEXPECTED exit.
+      if (!deliberateStop) {
+        console.warn(`[substrate-sidecar] died (${msg})`);
+      }
       const launchFailed = isScopeLaunchFailure(code);
       if (sidecarProcess === child) {
         sidecarProcess = null;
