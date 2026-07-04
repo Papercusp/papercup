@@ -13,29 +13,60 @@
  * watchdog is inert on healthy passes.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { startOutboxDrain, DRAIN_PASS_TIMEOUT_MS, DRAIN_BACKLOG_STALL_MS } from './outbox-drain';
+import {
+  startOutboxDrain,
+  DRAIN_PASS_TIMEOUT_MS,
+  DRAIN_BACKLOG_STALL_MS,
+  DRAIN_ORPHAN_LOOKBACK_MS,
+  DRAIN_ORPHAN_CHECK_INTERVAL_MS,
+  OUTBOX_GC_AGE_MS,
+} from './outbox-drain';
 import type { BootedHarnessHandle } from './boot';
 
+/** A row of the WI-2136 orphan-tail GROUP BY (drained_log_key ≠ live key). */
+interface OrphanGroup {
+  drained_log_key: string;
+  rows: number;
+  oldest_at: number | null;
+  newest_at: number | null;
+}
+
 /** Minimal postgres.Sql fake: a template-tag returning rows for the drain SELECT,
- *  an answer for the WI-2009 leg-3 backlog-stall probe, and a countable result for
- *  everything else (GC / UPDATE), plus a listen() stub.
+ *  an answer for the WI-2009 leg-3 backlog-stall probe + the WI-2136 orphan-tail
+ *  GROUP BY, and a countable result for everything else (GC / UPDATE), plus a
+ *  listen() stub.
  *
  *  `opts.stuckProbe` answers the leg-3 probe (`SELECT 1 FROM …substrate_outbox …
  *  LIMIT 1`): true → a mapped undrained row is still waiting ([{…}]); false →
- *  nothing mappable is stuck ([]). Default true. */
+ *  nothing mappable is stuck ([]). Default true.
+ *  `opts.orphanGroups` answers the WI-2136 detector query (`… GROUP BY
+ *  drained_log_key`): the prior-era log keys with stranded drained rows. Default [].
+ *  `opts.onUpdate` observes each drained_at UPDATE's interpolated values
+ *  ([now, drained_log_key, id]) so a test can assert the log-key attribution stamp. */
 function fakePg(
   nextRows: () => unknown[],
-  opts: { stuckProbe?: () => boolean } = {},
+  opts: {
+    stuckProbe?: () => boolean;
+    orphanGroups?: () => OrphanGroup[];
+    onUpdate?: (vals: unknown[]) => void;
+  } = {},
 ) {
   const stuckProbe = opts.stuckProbe ?? (() => true);
-  const tag = async (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  const orphanGroups = opts.orphanGroups ?? (() => []);
+  const tag = async (strings: TemplateStringsArray, ...vals: unknown[]) => {
     const sql = strings.join(' ');
     if (/SELECT id, table_name/.test(sql)) {
       const rows = nextRows() as unknown[] & { count?: number };
       return rows;
     }
+    if (/GROUP BY drained_log_key/.test(sql)) {
+      return orphanGroups() as unknown[] & { count?: number };
+    }
     if (/SELECT 1\s+FROM harness_shared\.substrate_outbox/.test(sql)) {
       return (stuckProbe() ? [{ '?column?': 1 }] : []) as unknown[] & { count?: number };
+    }
+    if (/UPDATE harness_shared\.substrate_outbox\s+SET drained_at/.test(sql)) {
+      opts.onUpdate?.(vals);
     }
     const r = [] as unknown[] & { count?: number };
     r.count = 0;
@@ -315,5 +346,178 @@ describe('outbox-drain backlog-stall detector (WI-2009 leg 3)', () => {
 
   it('production default backlog-stall window is 10min (bounded, above transient key-arrival delay)', () => {
     expect(DRAIN_BACKLOG_STALL_MS).toBe(10 * 60 * 1000);
+  });
+});
+
+/**
+ * WI-2136 — the orphan-tail recurrence guard. The tower bg-host own-log keypair
+ * does NOT persist across restarts (WI-2105: e06b8704 era → 4072cfad era), so a
+ * restart orphans the prior log's unreplicated tail — rows sit drained_at-stamped
+ * but their blocks can never replicate (no live process holds the dead log). The
+ * drain now stamps `drained_log_key` per row (mig 495); this detector compares the
+ * distinct recently-drained keys against the live key and pages a durable
+ * `drain_orphan_tail` EI for any dead-era tail, ONCE per dead key. It runs at boot
+ * (the moment the stranded tail is detectable) and throttled thereafter.
+ */
+describe('outbox-drain orphan-tail recurrence guard (WI-2136)', () => {
+  const emptyCounted = () => {
+    const r = [] as unknown[] & { count?: number };
+    r.count = 0;
+    return r;
+  };
+  const LIVE_KEY = 'aa'.repeat(32); // matches fakeHandle().ownLog.keyHex
+
+  it('stamps drained_log_key = the live own-log key on each drained row (attribution)', async () => {
+    vi.useFakeTimers();
+    try {
+      const append = vi.fn(async () => {});
+      const updates: unknown[][] = [];
+      let served = false;
+      const pg = fakePg(
+        () => {
+          if (served) return emptyCounted();
+          served = true;
+          const rows = [{ ...OUTBOX_ROW }] as unknown[] & { count?: number };
+          rows.count = 1;
+          return rows;
+        },
+        { onUpdate: (vals) => updates.push(vals) },
+      );
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _orphanCheckIntervalMs: -1, // isolate the attribution stamp from detection
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(updates).toHaveLength(1);
+      // UPDATE … SET drained_at = ${now}, drained_log_key = ${keyHex} WHERE id = ${id}
+      expect(updates[0]![1]).toBe(LIVE_KEY);
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a prior-era drained_log_key at boot → exactly ONE drain_orphan_tail per dead key (latched)', async () => {
+    vi.useFakeTimers();
+    try {
+      const append = vi.fn(async () => {});
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const deadKey = 'bb'.repeat(32);
+      const pg = fakePg(() => emptyCounted(), {
+        orphanGroups: () => [{ drained_log_key: deadKey, rows: 3, oldest_at: 1000, newest_at: 2000 }],
+      });
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _orphanCheckIntervalMs: 1000, // let a re-check run to prove the latch holds
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      const orphan = () => episodes.filter((e) => e.kind === 'drain_orphan_tail');
+      expect(orphan()).toHaveLength(1);
+      expect(orphan()[0]!.detail).toContain('orphan-tail');
+      expect(orphan()[0]!.detail).toContain(deadKey.slice(0, 12));
+      // The live-key drain-stall kinds never fire here (nothing is stuck/hung).
+      expect(episodes.some((e) => e.kind !== 'drain_orphan_tail')).toBe(false);
+
+      // Re-checks past the throttle keep returning the same dead key → latch holds.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(orphan()).toHaveLength(1);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('two distinct prior-era keys → one drain_orphan_tail EACH', async () => {
+    vi.useFakeTimers();
+    try {
+      const append = vi.fn(async () => {});
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const k1 = 'bb'.repeat(32);
+      const k2 = 'cc'.repeat(32);
+      const pg = fakePg(() => emptyCounted(), {
+        orphanGroups: () => [
+          { drained_log_key: k1, rows: 2, oldest_at: 10, newest_at: 20 },
+          { drained_log_key: k2, rows: 5, oldest_at: 30, newest_at: 40 },
+        ],
+      });
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _orphanCheckIntervalMs: 60_000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      const orphan = episodes.filter((e) => e.kind === 'drain_orphan_tail');
+      expect(orphan).toHaveLength(2);
+      expect(orphan.some((e) => e.detail.includes(k1.slice(0, 12)))).toBe(true);
+      expect(orphan.some((e) => e.detail.includes(k2.slice(0, 12)))).toBe(true);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('no prior-era keys (all drained onto the live log) → no orphan escalation', async () => {
+    vi.useFakeTimers();
+    try {
+      const append = vi.fn(async () => {});
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const pg = fakePg(() => emptyCounted(), { orphanGroups: () => [] });
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _orphanCheckIntervalMs: 1000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(episodes.filter((e) => e.kind === 'drain_orphan_tail')).toHaveLength(0);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a negative check interval disables the orphan detector entirely', async () => {
+    vi.useFakeTimers();
+    try {
+      const append = vi.fn(async () => {});
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const pg = fakePg(() => emptyCounted(), {
+        orphanGroups: () => [{ drained_log_key: 'bb'.repeat(32), rows: 1, oldest_at: 1, newest_at: 2 }],
+      });
+      const drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _orphanCheckIntervalMs: -1,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(episodes.filter((e) => e.kind === 'drain_orphan_tail')).toHaveLength(0);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('production defaults: orphan lookback = the 24h GC horizon; check throttle = 10min', () => {
+    expect(DRAIN_ORPHAN_LOOKBACK_MS).toBe(OUTBOX_GC_AGE_MS);
+    expect(DRAIN_ORPHAN_CHECK_INTERVAL_MS).toBe(10 * 60 * 1000);
   });
 });

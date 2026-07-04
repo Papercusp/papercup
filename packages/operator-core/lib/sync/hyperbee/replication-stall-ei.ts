@@ -138,6 +138,17 @@ export async function fileReplicationStallEi(
               'keeps re-attempting; this EI turns the otherwise silent console-spam into a durable page. ' +
               'Root-cause: check whether this device holds the current epoch key (hive_epoch_keys) and ' +
               'whether appends are landing on the own log.'
+            : episode.kind === 'drain_orphan_tail'
+            ? 'the OUTBOX DRAIN drained fed-scope rows into a PRIOR-era own-log key (log_core_key above) ' +
+              'that no longer matches the live process’s log — the own-log keypair did NOT persist across ' +
+              'a restart (WI-2105 / WI-2136 class: e06b8704 era → 4072cfad era), so that dead era’s ' +
+              'unreplicated tail is STRANDED: its blocks can never replicate because no live process holds ' +
+              'the dead log’s keypair. Recovery is runbook-only per the GO/NO-GO (d)-clause — re-emit ' +
+              'the stranded rows by setting drained_at=NULL for the dead-key rows so the next drain ' +
+              're-appends them onto the LIVE log (at-least-once tolerates the duplicate). Root fix ' +
+              '(WI-2136 Q1): persist the own-log keypair across restarts so the class disappears; this ' +
+              'guard then stays silent and pins it against regression. NB: two live keys at once instead ' +
+              'of a restart succession is the WI-1891 cross-process host race (P-059) — also worth paging.'
             : `the swarm-level connection may look healthy (peer_connected), but this ` +
               `admitted remote log is ${
                 episode.kind === 'no_replicator'
