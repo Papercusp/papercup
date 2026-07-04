@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { captureImprovement } from '../improvements/capture-core';
+import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import type { RunSummary } from '../../sync/hyperbee/perf/runner';
 
 const RUNNER_REL = 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts';

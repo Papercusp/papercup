@@ -156,6 +156,11 @@ import { BEE_B02_IDLE_ON_EMPTY_FRONTIER } from './bee/B02-idle-on-empty-frontier
 // supervisor's persona boundaries: NUDGE-not-replace (D-001) + OBSERVE-not-idea (D-003).
 import { OVERWATCH_OW01_NUDGE_NOT_REPLACE } from './overwatch/OW01-nudge-not-replace';
 import { OVERWATCH_OW02_OBSERVE_NOT_IDEA } from './overwatch/OW02-observe-not-idea';
+// OT1–OT3: agent-first-onboarding-2026-07-03 P-008 — the onboarding tutor's
+// launch-context behaviors: section protocol, checkpoint-as-you-go, detour return.
+import { OT1_SECTION_PROTOCOL } from './onboarding-tutor/OT1-section-protocol';
+import { OT2_PROGRESS_CHECKPOINT } from './onboarding-tutor/OT2-progress-checkpoint';
+import { OT3_QUESTION_DETOUR } from './onboarding-tutor/OT3-question-detour';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -288,6 +293,10 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // overwatch persona-boundary coverage (overwatch-role-2026-06-15 B-11)
   OVERWATCH_OW01_NUDGE_NOT_REPLACE,
   OVERWATCH_OW02_OBSERVE_NOT_IDEA,
+  // onboarding-tutor launch-context coverage (agent-first-onboarding-2026-07-03 P-008)
+  OT1_SECTION_PROTOCOL,
+  OT2_PROGRESS_CHECKPOINT,
+  OT3_QUESTION_DETOUR,
 ];
 
 export function getScenario(id: string): Scenario {

@@ -13,8 +13,14 @@
  * a timeout is a human-reviewed perf signal; an external signal-kill is not a
  * finding at all. This locks that classification so the noise loop can't return.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { classifyNoSummaryRun } from './p2p-perf-actions';
+import type { RunSummary } from '../../sync/hyperbee/perf/runner';
+
+const captureImprovementMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../improvements/capture-core', () => ({
+  captureImprovement: (...args: unknown[]) => captureImprovementMock(...args),
+}));
 
 describe('classifyNoSummaryRun (EI-5753)', () => {
   it('classifies our own timeout firing as a timeout (human-reviewed perf signal, not a bug)', () => {
@@ -67,5 +73,99 @@ describe('classifyNoSummaryRun (EI-5753)', () => {
     // Our timeout firing implies we SIGTERM'd the tree, so signal/143 co-occur —
     // the run overran its budget, so it must classify as timeout, not signal.
     expect(classifyNoSummaryRun({ code: 143, signal: 'SIGTERM', timedOut: true })).toBe('timeout');
+  });
+});
+
+describe('fileFindings watchdogKey stability (EI-3909/EI-5846/EI-5829/EI-6585)', () => {
+  beforeEach(() => {
+    captureImprovementMock.mockClear();
+  });
+
+  function summaryWith(overrides: Partial<RunSummary>): RunSummary {
+    return {
+      runId: 'r1',
+      profile: 'ci',
+      outDir: '/tmp/out',
+      reportPath: '/tmp/out/report.md',
+      scenarioFailures: [],
+      sloViolations: [],
+      regressions: [],
+      artifacts: [],
+      baselineCompared: true,
+      ...overrides,
+    } as RunSummary;
+  }
+
+  it('stamps a watchdogKey for a regression that does NOT vary run-to-run even though baseline/current/relChange do', async () => {
+    const { fileFindings } = (
+      await import('./p2p-perf-actions')
+    )._testing;
+
+    // Two "different nights" of the SAME regressed metric — every live number differs,
+    // but scenario/paramsKey/metric (what the watchdogKey must key on) stay identical.
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1068.699, relChange: 6.27 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1186.973, relChange: 7.08 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(2);
+    const firstKey = captureImprovementMock.mock.calls[0]![0].watchdogKey;
+    const secondKey = captureImprovementMock.mock.calls[1]![0].watchdogKey;
+    expect(firstKey).toBe('p2p-perf-regression:merge.delta-tick:historySize=1000,seed=1234:deltaTick1000Ms');
+    // THE regression this test guards: same key across runs despite different live numbers.
+    expect(firstKey).toBe(secondKey);
+    // And the title (which DOES embed the live numbers) legitimately differs —
+    // the watchdogKey, not the title, is what must carry cross-run identity.
+    expect(captureImprovementMock.mock.calls[0]![0].title).not.toBe(captureImprovementMock.mock.calls[1]![0].title);
+  });
+
+  it('stamps a watchdogKey for an SLO violation keyed on scenario+params only (not the live p95Ms)', async () => {
+    const { fileFindings } = (
+      await import('./p2p-perf-actions')
+    )._testing;
+
+    await fileFindings(
+      summaryWith({
+        sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    expect(captureImprovementMock.mock.calls[0]![0].watchdogKey).toBe(
+      'p2p-perf-slo:churn.reconnect-storm:historySize=10000,readers=4,seed=1234,winners=3710',
+    );
+  });
+
+  it('gives a DIFFERENT watchdogKey to a different metric on the SAME scenario/params (they must not dedup against each other)', async () => {
+    const { fileFindings } = (
+      await import('./p2p-perf-actions')
+    )._testing;
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick100Ms', baseline: 13.857, current: 74.832, relChange: 4.4 },
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 874.11, relChange: 4.95 },
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(2);
+    const keys = captureImprovementMock.mock.calls.map((c) => c[0].watchdogKey);
+    expect(new Set(keys).size).toBe(2);
   });
 });

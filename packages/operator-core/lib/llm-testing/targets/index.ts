@@ -11,6 +11,7 @@ import { SuTarget } from './su';
 import { makeQueenTarget } from './queen';
 import { makeBeeTarget } from './bee';
 import { makeOverwatchTarget } from './overwatch';
+import { onboardingTutorTarget } from './onboarding-tutor';
 
 export type TargetFactory = () => ChatTarget;
 
@@ -44,6 +45,10 @@ const TARGETS: Record<string, TargetFactory> = {
   // overwatch — the system-health supervisor's blueprint persona on the same loop
   // (overwatch-role-2026-06-15 B-11: does it NUDGE-not-replace + OBSERVE-not-idea?).
   overwatch: () => makeOverwatchTarget(),
+  // onboarding-tutor — the first-run/tutorial launch context on the same
+  // in-process loop (agent-first-onboarding-2026-07-03 P-008: section
+  // protocol, progress checkpointing, question-detour return).
+  'onboarding-tutor': () => onboardingTutorTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {
