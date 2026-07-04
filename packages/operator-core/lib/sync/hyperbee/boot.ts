@@ -875,8 +875,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // `op.author_pubkey` — the latter is caller-supplied (peer-log.ts:19), so a removed
   // member could spoof a still-member's pubkey to evade the write-cut. `null` when the
   // source log isn't admitted (own log / legacy op without a source key).
-  const resolveAuthorDevice = (sourceLogKeyHex: string): string | null =>
-    admittedIdentities.get(sourceLogKeyHex)?.devicePubkey ?? null;
+  const resolveAuthorDeviceNullLogged = new Set<string>();
+  const resolveAuthorDevice = (sourceLogKeyHex: string): string | null => {
+    const dev = admittedIdentities.get(sourceLogKeyHex)?.devicePubkey ?? null;
+    // WI-2105 REV diag: a folded PEER op whose source log has NO resolvable device
+    // identity makes the WI-259 member-content-guard DROP it permanently ('no-srcDevice')
+    // — the tower↔VM REV-leg regression (17c98: resolveAuthorDevice(60da99e0) unresolved
+    // at apply). Surface the exact unresolved log ONCE per key (deduped, best-effort) so
+    // getBootHistory names it after the next restart — no force-bounce needed. Skips the
+    // own log (its ops take the own-slug apply fast path; a null there is expected).
+    if (
+      dev === null &&
+      sourceLogKeyHex &&
+      sourceLogKeyHex !== ownLog.keyHex &&
+      !resolveAuthorDeviceNullLogged.has(sourceLogKeyHex)
+    ) {
+      resolveAuthorDeviceNullLogged.add(sourceLogKeyHex);
+      try {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'merge_error',
+          `identity-gap: src-log ${sourceLogKeyHex.slice(0, 8)} unresolved (admittedIds=${admittedIdentities.size}, admitted?=${admitted.has(sourceLogKeyHex)}) → member-content DROP`,
+        );
+      } catch {
+        /* diagnostic must never break resolution */
+      }
+    }
+    return dev;
+  };
 
   // ── WI-259 P-004 content-before-membership buffer (plan shared-hive-member-content-federation-
   // 2026-06-20) ── ONE per booted apply loop (stateful across merge passes, like rekeyDeps.pending).
