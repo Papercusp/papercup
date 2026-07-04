@@ -100,10 +100,14 @@ function startOperator(sections: unknown[]): Promise<{
   });
 }
 
-/** Spawn the REAL runner, feed `input` over a pipe, resolve with exit + stdout. */
+/**
+ * Spawn the REAL runner and answer its @inquirer prompts one at a time. @inquirer over
+ * a pipe consumes only ONE line per prompt, so we send the next queued answer whenever
+ * stdout goes quiet (a debounce = "the prompt is now waiting"), not all up front.
+ */
 function runRunner(
   args: string[],
-  stdin: string,
+  answers: string[],
   timeoutMs = 25_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -113,22 +117,34 @@ function runRunner(
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => (stdout += String(d)));
+    const queue = [...answers];
+    let settle: NodeJS.Timeout | undefined;
+    const sendNext = () => {
+      if (queue.length && child.stdin.writable) child.stdin.write(`${queue.shift()}\n`);
+    };
+    const bump = () => {
+      clearTimeout(settle);
+      settle = setTimeout(sendNext, 400); // output quiet for 400ms ⇒ a prompt is waiting
+    };
+    child.stdout.on('data', (d) => {
+      stdout += String(d);
+      bump();
+    });
     child.stderr.on('data', (d) => (stderr += String(d)));
+    bump(); // in case the first prompt renders before any captured data
     const t = setTimeout(() => {
       child.kill('SIGKILL');
       reject(new Error(`runner timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
     }, timeoutMs);
     child.on('exit', (code) => {
       clearTimeout(t);
+      clearTimeout(settle);
       resolve({ code, stdout, stderr });
     });
     child.on('error', (e) => {
       clearTimeout(t);
       reject(e);
     });
-    child.stdin.write(stdin);
-    // Leave stdin open — the child exits on its own after graduation.
   });
 }
 
@@ -160,7 +176,7 @@ describe('deterministic tutorial runner — end to end', () => {
       const { server, port, rec } = await startOperator(TWO_SECTIONS);
       try {
         // [1] then [1] → walk both sections → finale → graduate.
-        const r = await runRunner([`--operator-url=http://127.0.0.1:${port}`], '1\n1\n');
+        const r = await runRunner([`--operator-url=http://127.0.0.1:${port}`], ['1', '1']);
         expect(r.code, r.stderr).toBe(0);
         // Content pack delivered VERBATIM (no LLM paraphrase).
         expect(r.stdout).toContain('BRIEF_ONE_VERBATIM.');
@@ -189,7 +205,7 @@ describe('deterministic tutorial runner — end to end', () => {
         // section1: [2] details → ask a question → [1] continue → section2: [1] → end.
         const r = await runRunner(
           [`--agent=claude`, `--operator-url=http://127.0.0.1:${port}`],
-          '2\nwhat is a harness?\n1\n1\n',
+          ['2', 'what is a harness?', '1', '1'],
         );
         expect(r.code, r.stderr).toBe(0);
         // [2] rendered the section's Details verbatim.

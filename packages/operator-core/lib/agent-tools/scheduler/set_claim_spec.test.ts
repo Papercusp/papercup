@@ -8,7 +8,7 @@
  * push-role trips it. These assertions pin that role-awareness.
  */
 import { describe, it, expect } from 'vitest';
-import { claimSpecInertWarning } from './set_claim_spec';
+import { claimSpecInertWarning, claimSpecWakeabilityWarning } from './set_claim_spec';
 
 describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
   it('WARNS for coding-FACTORY push-pipeline roles (spec is genuinely inert)', () => {
