@@ -19,6 +19,9 @@ import {
   claudeProjectsRoots,
   findSessionTranscript,
   isSessionThinking,
+  resolveInteractiveTranscript,
+  resolveSessionThinkingState,
+  newestTranscriptUnderOwner,
   __resetClaudeSessionCaches,
 } from './claude-sessions';
 
@@ -249,6 +252,84 @@ describe('isolation-dir scanning (EI-5790)', () => {
       expect(await isSessionThinking(sid, { owner: 'su-o', isolationBase: isoBase, roots: [], nowMs: mtime + 60_000 })).toBe(false);
       expect(await isSessionThinking('nope-999999', { roots: [], nowMs: mtime })).toBe(false);
     } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveInteractiveTranscript: exact recorded session_id resolves first (unchanged primary path)', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'resolve-exact-'));
+    const isoBase = join(base, 'session-claude');
+    const owner = 'su-resolve-exact';
+    const projDir = join(isoBase, owner, 'projects', '-home-x-proj');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'exact-abc123';
+    const target = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(target, '{}\n');
+    try {
+      __resetClaudeSessionCaches();
+      expect(await resolveInteractiveTranscript(sid, { owner, isolationBase: isoBase, roots: [] })).toBe(target);
+    } finally {
+      __resetClaudeSessionCaches();
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveInteractiveTranscript: P-016 fallback — a STALE recorded id resolves the newest transcript under the owner (WI-2680: resume mints a fresh uuid)', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'resolve-fallback-'));
+    const isoBase = join(base, 'session-claude');
+    const owner = 'su-resolve-fallback';
+    const projDir = join(isoBase, owner, 'projects', '-home-x-proj');
+    await fs.mkdir(projDir, { recursive: true });
+    // The recorded session_id (what adv_sessions holds) — but NO file by that name:
+    // a resume minted a fresh uuid, so the live transcript is under a DIFFERENT name.
+    const recordedStaleSid = 'stale-recorded-000000';
+    const freshUuid = 'fresh-resumed-999999';
+    const live = join(projDir, `${freshUuid}.jsonl`);
+    await fs.writeFile(live, '{}\n');
+    // history.jsonl (the shell log) must be excluded from the fallback.
+    await fs.writeFile(join(projDir, 'history.jsonl'), '{}\n');
+    try {
+      __resetClaudeSessionCaches();
+      // Exact-id lookup misses; the owner fallback returns the newest real transcript.
+      expect(await resolveInteractiveTranscript(recordedStaleSid, { owner, isolationBase: isoBase, roots: [] })).toBe(live);
+      // Sanity: the raw P-016 primitive agrees.
+      expect(newestTranscriptUnderOwner(owner, isoBase)).toBe(live);
+    } finally {
+      __resetClaudeSessionCaches();
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveInteractiveTranscript: a genuine miss with NO owner hint → null (no fallback without an owner)', async () => {
+    __resetClaudeSessionCaches();
+    expect(await resolveInteractiveTranscript('gone-000000', { roots: [] })).toBeNull();
+  });
+
+  it('resolveSessionThinkingState: resolvable+thinking within window; resolvable stays true past the window; both false when the transcript is gone (WI-2680)', async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'resolve-state-'));
+    const isoBase = join(base, 'session-claude');
+    const owner = 'su-state';
+    const projDir = join(isoBase, owner, 'projects', '-p');
+    await fs.mkdir(projDir, { recursive: true });
+    const sid = 'state-abc123';
+    const f = join(projDir, `${sid}.jsonl`);
+    await fs.writeFile(f, '{}\n');
+    const mtime = (await fs.stat(f)).mtimeMs;
+    try {
+      __resetClaudeSessionCaches();
+      // Fresh append → resolvable AND thinking.
+      expect(await resolveSessionThinkingState(sid, { owner, isolationBase: isoBase, roots: [], nowMs: mtime + 1_000 }))
+        .toEqual({ resolvable: true, thinking: true });
+      // Stale append → STILL resolvable (a transcript exists to stream), just not thinking.
+      // This is the whole point: an idle-but-alive session keeps its "Live thinking" pane.
+      expect(await resolveSessionThinkingState(sid, { owner, isolationBase: isoBase, roots: [], nowMs: mtime + 60_000 }))
+        .toEqual({ resolvable: true, thinking: false });
+      // A parked/ended agent whose transcript is gone → NOT resolvable (client shows the
+      // honest "unavailable" note instead of an empty pane).
+      expect(await resolveSessionThinkingState('gone-999999', { owner: 'su-none', isolationBase: '/tmp/dne-xyz', roots: [], nowMs: mtime }))
+        .toEqual({ resolvable: false, thinking: false });
+    } finally {
+      __resetClaudeSessionCaches();
       await fs.rm(base, { recursive: true, force: true });
     }
   });

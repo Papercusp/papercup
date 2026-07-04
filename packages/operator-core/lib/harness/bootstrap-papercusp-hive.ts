@@ -43,6 +43,7 @@ import {
   type CanonicalHiveInvite,
 } from './papercusp-hive-join';
 import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
+import { restoreHiveSeed, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
@@ -135,6 +136,13 @@ export interface BootstrapPapercuspHiveDeps {
   findJoinedCanonical?: (pubkeyBase64: string) => Promise<{ slug: string } | null>;
   /** Inspect whether a repo's submodules still need init/update. */
   submodulesNeedUpdate?: (repoPath: string) => Promise<boolean>;
+  /** P-007 restore-before-join: pre-position the installer-bundled seed (corestore
+   *  federated state now; encrypted git deferred to post-admission) BEFORE the
+   *  unchanged join runs, so the join transfers only the delta. Default:
+   *  {@link defaultRestoreHiveSeed} — a SAFE no-op (ran:false) until a build ships a
+   *  seed and sets PAPERCUSP_SEED_DIR. Best-effort: any failure degrades to the
+   *  cold path and never breaks the join. */
+  restoreSeed?: (record: BootstrapPapercuspHiveDeps['recordProgress']) => Promise<RestoreHiveSeedResult>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -159,6 +167,34 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
   } catch {
     return null;
   }
+}
+
+/**
+ * P-007 default restore-before-join. SAFE by construction: when no seed is shipped
+ * (PAPERCUSP_SEED_DIR unset AND no bundled manifest) `restoreHiveSeed` returns
+ * `ran:false`, so this is a pure no-op on dev boxes + current packaged builds — the
+ * cold join is unchanged. A release that bundles a seed sets PAPERCUSP_SEED_DIR to
+ * the Tauri resource dir. The corestore (federated hive state) restores now; the
+ * ENCRYPTED git seed defers (its key arrives post-admission — see restore-hive-seed).
+ */
+async function defaultRestoreHiveSeed(
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+): Promise<RestoreHiveSeedResult> {
+  const seedDir = process.env.PAPERCUSP_SEED_DIR;
+  if (!seedDir) return { ran: false, outcomes: [], deferred: [] };
+  const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  // Restore the corestore into the canonical hive's store dir; the git checkout into
+  // the clones dir the join would otherwise populate.
+  const targetStoreDir = join(workspaceRoot ?? defaultClonesDir(), '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee');
+  const targetRepoDir = join(defaultClonesDir(), PAPERCUSP_HIVE_SLUG);
+  const res = await restoreHiveSeed({
+    seedDir,
+    targetStoreDir,
+    targetRepoDir,
+    // decryptionKey is intentionally absent pre-admission → the git seed defers.
+    log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
+  });
+  return res;
 }
 
 /** Count top-level submodules from `.gitmodules` (best-effort) — the progress
@@ -433,6 +469,23 @@ export async function bootstrapPapercuspHive(
       record('submodules', 'done');
       return { state: 'already-present', slug: alreadyJoined.slug };
     }
+    // P-007: RESTORE-BEFORE-JOIN. Pre-position the installer-bundled seed so the
+    // join's clone + federation delta-replication transfer only the delta on top.
+    // The join below is UNCHANGED. Best-effort: any failure degrades to the cold
+    // path and never breaks the join (a seed is untrusted cache).
+    try {
+      const restore = deps.restoreSeed ?? defaultRestoreHiveSeed;
+      const seedRes = await restore(record);
+      if (seedRes.ran) {
+        const restored = seedRes.outcomes.filter((o) => o.ok).map((o) => o.kind);
+        console.warn(
+          `[papercusp-hive] seed restore: restored=[${restored.join(',')}] deferred=[${seedRes.deferred.join(',')}]`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[papercusp-hive] seed restore failed (non-fatal; cold path): ${(e as Error)?.message ?? e}`);
+    }
+
     const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
     const joinRes = await joinCanonical(canonicalInvite, { record });
     return joinRes.state === 'joined'

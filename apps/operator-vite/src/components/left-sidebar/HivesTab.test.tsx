@@ -17,6 +17,10 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.flagOn }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates this
+// test from the flag hook; classic pack renders 'Pots'/'Pot' at runtime
+// (restore-pot-lexicon P-005).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('./LocalHivesControl', () => ({
   default: () => <div data-testid="local-hives-control" />,
 }));
@@ -55,8 +59,8 @@ afterEach(() => cleanup());
 describe('<HivesTab>', () => {
   it('renders the honest empty state when no peers have announced', () => {
     render(<HivesTab active={true} />);
-    expect(screen.getByText(/p2p swarm · 0 joined · 0 live/)).toBeTruthy();
-    expect(screen.getByText(/this hive flies solo/)).toBeTruthy();
+    expect(screen.getByText(/p2p pot · 0 joined · 0 live/)).toBeTruthy();
+    expect(screen.getByText(/this pot flies solo/)).toBeTruthy();
     expect(screen.queryByTestId('local-hives-control')).toBeNull();
   });
 
@@ -69,7 +73,7 @@ describe('<HivesTab>', () => {
   it('does not show the empty state while loading', () => {
     H.result = { data: [], loading: true, error: null };
     render(<HivesTab active={true} />);
-    expect(screen.queryByText(/this hive flies solo/)).toBeNull();
+    expect(screen.queryByText(/this pot flies solo/)).toBeNull();
   });
 
   it('surfaces a query error', () => {

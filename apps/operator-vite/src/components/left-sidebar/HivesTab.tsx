@@ -9,6 +9,7 @@ import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { useLexicon } from '@/lib/useLexicon';
 import LocalHivesControl from './LocalHivesControl';
 import HiveFederationStatus from './HiveFederationStatus';
 
@@ -70,6 +71,7 @@ export function groupHives(rows: FederatedRow[]): HiveGroup[] {
 }
 
 export default function HivesTab({ active }: { active: boolean }) {
+  const t = useLexicon();
   const hiveControlOn = useFlag(FLAGS.HIVE_CONTROL);
   const hives = useSyncQuery<FederatedRow>({
     queryName: 'sidebar.hives',
@@ -88,15 +90,16 @@ export default function HivesTab({ active }: { active: boolean }) {
       {active && <HiveFederationStatus />}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">
-          p2p swarm · {groups.length} joined · {live} live
+          p2p {t('pot', { plural: true, lower: true })} · {groups.length} joined · {live} live
         </span>
       </div>
       {hives.error && <div className="pclsb-panel__error">{String(hives.error)}</div>}
       {groups.length === 0 && !hives.loading && (
         <div className="pclsb-panel__empty">
-          no remote hives in the p2p swarm yet — this hive flies solo
+          no remote {t('pot', { plural: true, lower: true })} in the p2p network yet — this{' '}
+          {t('pot', { lower: true })} flies solo
           <br />
-          <br />A hive appears here once another Papercusp install joins the substrate and its
+          <br />A {t('pot')} appears here once another Papercusp install joins the substrate and its
           announce lands in shared_presence.
         </div>
       )}

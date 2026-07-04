@@ -125,6 +125,33 @@ describe('agentGlyph (pure)', () => {
   });
 });
 
+describe('hasThinking (pure — WI-2680: transcript-resolvability veto)', () => {
+  it('true for each real handle when resolvability is not vetoed', () => {
+    expect(hasThinking({ runId: 'r1', harnessSlug: 'h' })).toBe(true); // bee run-log
+    expect(hasThinking({ sessionId: 's1' })).toBe(true); // claude interactive
+    expect(hasThinking({ agent: 'codex', advSessionId: 42 })).toBe(true); // codex rollout
+    expect(hasThinking({ ompThreadId: 't1' })).toBe(true); // omp thread
+  });
+
+  it('false with no handle at all', () => {
+    expect(hasThinking({ ownerId: 'su-x' } as never)).toBe(false);
+    expect(hasThinking({ runId: 'r1' })).toBe(false); // runId needs harnessSlug
+  });
+
+  it('thinkingResolvable===false VETOES even a present claude session handle (the empty-pane fix)', () => {
+    // A parked/ended claude agent whose transcript is gone: server stamped resolvable
+    // false so the client offers the honest "unavailable" note, never an empty modal.
+    expect(hasThinking({ sessionId: 's1', thinkingResolvable: false })).toBe(false);
+    // The veto is unconditional across backends when explicitly false.
+    expect(hasThinking({ runId: 'r1', harnessSlug: 'h', thinkingResolvable: false })).toBe(false);
+  });
+
+  it('resolvable true / undefined does NOT hide a working pane (no regression)', () => {
+    expect(hasThinking({ sessionId: 's1', thinkingResolvable: true })).toBe(true);
+    expect(hasThinking({ sessionId: 's1', thinkingResolvable: undefined })).toBe(true);
+  });
+});
+
 describe('<AgentsRunningPill>', () => {
   it('renders nothing when no non-stale agents are present', () => {
     H.active = [agent({ liveness: 'stale' })];
