@@ -56,10 +56,7 @@ import {
 import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
 import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
-import {
-  resolveSubstrateSocketPath,
-  SUBSTRATE_SOCKET_ENV,
-} from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
+import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the
@@ -330,29 +327,20 @@ if (clusterWorkers > 1) {
   // the fork env below.
   process.env.PAPERCUSP_EXPECTED_OPERATOR_PROCS = String(expectedOperatorProcs);
 }
-// WI-1879: pin the substrate sidecar's IPC socket path BEFORE forking. The substrate
-// (when SUBSTRATE_SIDECAR is on) boots asynchronously deep inside onPrimary's
-// runBootstrap() — by the time spawnSubstrateSidecar() actually sets
-// process.env[SUBSTRATE_SOCKET_ENV] on the PRIMARY (substrate-sidecar-spawn.ts),
-// cluster.fork(workerEnv) below has ALREADY forked every worker off the
-// pre-substrate-boot env. Each worker's OWN later resolveSubstrateSocketPath() call
-// (dogfood-substrate-boot-history's IPC proxy) then falls back to its *own* pid-keyed
-// tmpdir path (not the primary's) — a socket that was never created, so the IPC dial
-// always fails and the route always degrades to `source:'main-fallback'` with an
-// empty ring on every cluster host (found during P-059 / WI-1837, ~1h burned).
-// Resolving it HERE (still pre-fork, so process.pid is the PRIMARY's) and pinning it
-// into both this process's env AND workerEnv means spawnSubstrateSidecar's own
-// `resolveSubstrateSocketPath()` call picks up the SAME value later (env-var-first),
-// and every forked worker inherits it too — one true socket path cluster-wide.
-if (clusterWorkers > 1) {
-  process.env[SUBSTRATE_SOCKET_ENV] = resolveSubstrateSocketPath();
-}
+// WI-1879: pin the substrate sidecar's IPC socket path BEFORE forking — see
+// pinSubstrateSocketForCluster's doc for the full race (the substrate boots
+// asynchronously deep inside onPrimary's runBootstrap(), well after cluster.fork()
+// has already forked every worker off the pre-substrate-boot env, so each worker used
+// to fall back to its OWN pid-keyed — nonexistent — socket path and the
+// dogfood-substrate-boot-history route always degraded to `source:'main-fallback'`
+// with an empty ring on every clustered host; found during P-059 / WI-1837).
+const substrateSocketWorkerEnv = pinSubstrateSocketForCluster(clusterWorkers);
 const clusterHandle = startCluster({
   workers: clusterWorkers,
   workerEnv: {
     PAPERCUSP_BACKGROUND_WORKERS: '0',
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
-    ...(clusterWorkers > 1 ? { [SUBSTRATE_SOCKET_ENV]: process.env[SUBSTRATE_SOCKET_ENV]! } : {}),
+    ...substrateSocketWorkerEnv,
   },
   onPrimary: () => runBootstrap(), // background machinery (single process in cluster mode)
   onWorker: () => {

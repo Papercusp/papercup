@@ -21,10 +21,14 @@ import {
   getBootedHarness,
   listBootedHandles,
   rebootHarness,
+  reconcileRemoteHandlesAfterSidecarRestart,
+  setSubstrateBootDefaults,
+  _resetSubstrateBootDefaultsForTests,
   type SwarmBindingResolver,
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
+import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
 import { makeFakeBootedHandle } from './fake-booted-handle';
 
 // The DEFAULT discovery path (no discoverHarnessSlugs override) reads the PG
@@ -666,5 +670,116 @@ describe('ensureSendSideWired — EI-521: send-side wiring is idempotent + retry
     // Once wired, further passes are no-ops (no redundant drain loops).
     await bootSingleHarness('ws-rewire', 'h', { wireSendSide: { wireOutbox, wirePresence } });
     expect(wireOutbox).toHaveBeenCalledTimes(2);
+  });
+});
+
+// WI-1877: after a substrate-sidecar crash+respawn, cached RemoteBootedHarnessHandle
+// entries still point at the OLD (now-gone) sidecar instance — the new sidecar boots
+// with zero harnesses registered, so federation goes silently dark until a full app
+// restart unless something re-issues bootHarness for each one.
+describe('reconcileRemoteHandlesAfterSidecarRestart (WI-1877)', () => {
+  function fakeRemoteHandle(workspaceId: string, harnessSlug: string): RemoteBootedHarnessHandle {
+    return new RemoteBootedHarnessHandle({
+      workspaceId,
+      harnessSlug,
+      storeId: `store-${workspaceId}-${harnessSlug}`,
+      ownLogKey: 'a'.repeat(64),
+      client: { call: vi.fn(async () => ({})) },
+    });
+  }
+
+  afterEach(() => {
+    _resetSubstrateBootDefaultsForTests();
+  });
+
+  it('re-boots every cached REMOTE handle onto the fresh sidecar via the installed default boot factory', async () => {
+    const remoteA = fakeRemoteHandle('ws-1', 'remote-a');
+    const remoteB = fakeRemoteHandle('ws-1', 'remote-b');
+    _setHandleForTests('ws-1', 'remote-a', remoteA);
+    _setHandleForTests('ws-1', 'remote-b', remoteB);
+
+    const rebootCalls: string[] = [];
+    setSubstrateBootDefaults({
+      bootHarness: async ({ workspaceId, harnessSlug }) => {
+        rebootCalls.push(`${workspaceId}::${harnessSlug}`);
+        return fakeRemoteHandle(workspaceId, harnessSlug);
+      },
+      skipSendSideWiring: true,
+    });
+
+    const result = await reconcileRemoteHandlesAfterSidecarRestart();
+
+    expect(rebootCalls.sort()).toEqual(['ws-1::remote-a', 'ws-1::remote-b']);
+    expect(result.rebooted.sort()).toEqual(['ws-1::remote-a', 'ws-1::remote-b']);
+    expect(result.failed).toEqual([]);
+    // The stale handles were torn down (rebootHarness closes-then-boots) and
+    // replaced with fresh ones registered against the NEW sidecar.
+    expect(getBootedHarness('ws-1', 'remote-a')).not.toBe(remoteA);
+    expect(getBootedHarness('ws-1', 'remote-b')).not.toBe(remoteB);
+  });
+
+  it('leaves IN-PROCESS (non-remote) handles completely untouched', async () => {
+    const local = fakeHandle('ws-1', 'local-only');
+    _setHandleForTests('ws-1', 'local-only', local);
+    setSubstrateBootDefaults({ bootHarness: async () => fakeHandle('ws-1', 'unused'), skipSendSideWiring: true });
+
+    const result = await reconcileRemoteHandlesAfterSidecarRestart();
+
+    expect(result.rebooted).toEqual([]);
+    expect(result.failed).toEqual([]);
+    expect(local.close).not.toHaveBeenCalled();
+    expect(getBootedHarness('ws-1', 'local-only')).toBe(local);
+  });
+
+  it('one harness failing to re-boot never blocks the others', async () => {
+    const remoteA = fakeRemoteHandle('ws-1', 'ok');
+    const remoteB = fakeRemoteHandle('ws-1', 'boom');
+    _setHandleForTests('ws-1', 'ok', remoteA);
+    _setHandleForTests('ws-1', 'boom', remoteB);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    setSubstrateBootDefaults({
+      bootHarness: async ({ workspaceId, harnessSlug }) => {
+        if (harnessSlug === 'boom') throw new Error('sidecar rejected boot');
+        return fakeRemoteHandle(workspaceId, harnessSlug);
+      },
+      skipSendSideWiring: true,
+    });
+
+    const result = await reconcileRemoteHandlesAfterSidecarRestart();
+
+    expect(result.rebooted).toEqual(['ws-1::ok']);
+    expect(result.failed).toEqual([{ key: 'ws-1::boom', error: 'sidecar rejected boot' }]);
+    errSpy.mockRestore();
+  });
+
+  it('returns cleanly with no work when nothing is cached', async () => {
+    const result = await reconcileRemoteHandlesAfterSidecarRestart();
+    expect(result).toEqual({ rebooted: [], failed: [] });
+  });
+
+  it('bounds concurrency (mirrors the WI-779 boot-all guard) instead of firing every reboot at once', async () => {
+    const N = 10;
+    for (let i = 0; i < N; i++) {
+      _setHandleForTests('ws-conc', `r${i}`, fakeRemoteHandle('ws-conc', `r${i}`));
+    }
+    let active = 0;
+    let peak = 0;
+    setSubstrateBootDefaults({
+      bootHarness: async ({ workspaceId, harnessSlug }) => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((r) => setTimeout(r, 5));
+        active--;
+        return fakeRemoteHandle(workspaceId, harnessSlug);
+      },
+      skipSendSideWiring: true,
+    });
+
+    const result = await reconcileRemoteHandlesAfterSidecarRestart(3);
+
+    expect(result.rebooted).toHaveLength(N);
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(peak).toBeGreaterThan(1);
   });
 });

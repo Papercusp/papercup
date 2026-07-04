@@ -348,7 +348,7 @@ export async function reclaimStaleWorkItemClaims(
        SET taken_by = NULL,
            taken_at = NULL,
            -- EI-6992: issue-family (bug/change/task) NEVER has its requeue_count or
-           -- status touched — see the `freed-issue` StaleClaimAction doc for why (the
+           -- status touched — see the 'freed-issue' StaleClaimAction doc for why (the
            -- feature-vocabulary requeue/dead-letter targets ('todo'/'blocked') are
            -- outside the issue vocab open|resolved|closed and were corrupting these
            -- rows). Clearing taken_by/taken_at alone is the complete, correct reclaim

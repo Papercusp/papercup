@@ -47,16 +47,28 @@ vi.mock('./boot-all', () => ({
   gatherBootedHarnessFacts: () => [],
   evictBootedHarnessEngine: async () => false,
   setSubstrateBootDefaults: (o: unknown) => setBootDefaults(o),
+  reconcileRemoteHandlesAfterSidecarRestart: () => reconcileRemoteHandles(),
 }));
 
 const spawnSidecar = vi.fn(async () => {});
 const registerShutdown = vi.fn();
 const stopSidecar = vi.fn(async () => {});
+const respawnListeners: Array<() => void> = [];
+const onSidecarRespawnedMock = vi.fn((listener: () => void) => {
+  respawnListeners.push(listener);
+  return () => {
+    const i = respawnListeners.indexOf(listener);
+    if (i >= 0) respawnListeners.splice(i, 1);
+  };
+});
 vi.mock('./substrate-sidecar-spawn', () => ({
   spawnSubstrateSidecar: () => spawnSidecar(),
   registerSidecarShutdownHooks: () => registerShutdown(),
   stopSubstrateSidecar: () => stopSidecar(),
+  onSidecarRespawned: (listener: () => void) => onSidecarRespawnedMock(listener),
 }));
+
+const reconcileRemoteHandles = vi.fn(async () => ({ rebooted: [], failed: [] }));
 
 const ipcCalls: Array<{ method: string; params?: unknown }> = [];
 const ipcClient = {
@@ -92,6 +104,7 @@ import {
   bootSubstrateWithFallback,
   maybeStartSubstrateEvictionReaper,
   stopSubstrateEvictionReaper,
+  _resetSidecarRespawnReconcileRegistrationForTests,
 } from './substrate-boot-wrapper';
 
 beforeEach(() => {
@@ -107,6 +120,10 @@ beforeEach(() => {
   startKeepalive.mockClear();
   mockOrgPg.mockClear();
   setBootDefaults.mockClear();
+  onSidecarRespawnedMock.mockClear();
+  reconcileRemoteHandles.mockClear();
+  respawnListeners.length = 0;
+  _resetSidecarRespawnReconcileRegistrationForTests();
   stopSubstrateEvictionReaper(); // reset the module singleton between tests
 });
 afterEach(() => {
@@ -180,6 +197,37 @@ describe('bootSubstrateWithFallback', () => {
     expect(ipcCalls.map((c) => c.method)).toEqual(['sidecar:healthz', 'substrate:bootHarness']);
     expect(r.usedSidecar).toBe(true);
     expect(r.booted).toBe(1);
+  });
+
+  // WI-1877: a sidecar crash-respawn only restarts the PROCESS — nothing
+  // re-boots the harnesses onto it unless this registration runs the
+  // reconcile in response.
+  it('WI-1877: registers a post-respawn reconcile hook when the sidecar boots', async () => {
+    h.sidecarOn = true;
+    await bootSubstrateWithFallback();
+
+    expect(onSidecarRespawnedMock).toHaveBeenCalledTimes(1);
+    expect(reconcileRemoteHandles).not.toHaveBeenCalled(); // only fires ON a respawn notification
+
+    // Simulate the substrate-sidecar-spawn module notifying a respawn.
+    respawnListeners.forEach((l) => l());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(reconcileRemoteHandles).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-1877: registers the reconcile hook at most once across repeated sidecar boots', async () => {
+    h.sidecarOn = true;
+    await bootSubstrateWithFallback();
+    await bootSubstrateWithFallback();
+
+    expect(onSidecarRespawnedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-1877: never registers the reconcile hook when the sidecar is OFF', async () => {
+    h.sidecarOn = false;
+    await bootSubstrateWithFallback();
+    expect(onSidecarRespawnedMock).not.toHaveBeenCalled();
   });
 
   it('sidecar startup failure falls back to in-process boot', async () => {

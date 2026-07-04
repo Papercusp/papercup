@@ -25,10 +25,17 @@
  * closes the circuit by hand.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, eq, sql as dsql } from 'drizzle-orm';
+import { and, eq, or, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 
 const at = generated.autoloopStateInHarnessShared;
+
+/** EI-7009: the exact `last_status` string the WI-1399 terminal guard writes when it
+ *  auto-pauses a durably-dead loop:arm owner's routine (reconcile-loop-routines.ts's
+ *  `recordFire(row.install_slug, row.name, 'loop-terminal-unreachable', 'error')`). A
+ *  row carrying this EXACT marker is a confirmed SYSTEM auto-pause, never a human pause
+ *  for investigation — see pruneStaleFireState's second clause. */
+export const LOOP_TERMINAL_AUTO_PAUSE_STATUS = 'loop-terminal-unreachable';
 
 /** Backoff doubles from this base per consecutive error. */
 export function backoffBaseSec(): number {
@@ -224,14 +231,29 @@ export function pruneMaxAgeDays(): number {
 
 /**
  * Retire long-dead fire-state rows (autonomous-loop-hardening F6 — health-signal hygiene).
- * DELETEs rows that have not fired for `maxAgeDays` AND carry no error signal
- * (`consecutive_errors = 0`) — a role that fired once for a since-deleted harness and went
- * quiet, leaving cruft that clutters `autoloop:status` and any health read. GLOBAL (every
- * workspace): the accumulation is old dead harnesses across workspaces, and a ≥14-day-stale
- * zero-error row cannot belong to a live role. Rows with a non-zero error counter are
- * PRESERVED (real circuit signal for reset-errors / investigation), and recently-fired rows
- * are untouched — so this can never disturb an active or a legitimately-failing circuit.
- * Returns the number of rows retired.
+ * DELETEs rows matching EITHER of two classes:
+ *
+ *  1. Have not fired for `maxAgeDays` AND carry no error signal (`consecutive_errors = 0`) —
+ *     a role that fired once for a since-deleted harness and went quiet, leaving cruft that
+ *     clutters `autoloop:status` and any health read. GLOBAL (every workspace): the
+ *     accumulation is old dead harnesses across workspaces, and a ≥14-day-stale zero-error
+ *     row cannot belong to a live role. Rows with a non-zero error counter are otherwise
+ *     PRESERVED (real circuit signal for reset-errors / investigation), and recently-fired
+ *     rows are untouched — so this can never disturb an active or a legitimately-failing
+ *     circuit.
+ *
+ *  2. EI-7009: carry the EXACT `LOOP_TERMINAL_AUTO_PAUSE_STATUS` marker AND their matching
+ *     `routines` row (workspace_id, install_slug=harness_slug, name=role) is now `active =
+ *     false`. This is the WI-1399 terminal guard's own auto-pause of a durably-dead loop:arm
+ *     owner — a system action, not a human pause for investigation, and it is PERMANENT (the
+ *     paused routine will never fire 'ok' again to reset the counter, so class 1's
+ *     zero-error rule can never catch it — the exact "permanently-red watermark" this class
+ *     exists to clear). No age gate: the guard's own pause IS the definitive "this will never
+ *     resolve on its own" signal. Scoped to the EXACT marker string (not any inactive
+ *     routine) so a routine a HUMAN paused mid-investigation (any other `last_status`) keeps
+ *     its error trail intact — this class never touches it.
+ *
+ * Returns the number of rows retired (both classes combined).
  */
 export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): Promise<number> {
   const maxAgeDays = opts.maxAgeDays && opts.maxAgeDays > 0 ? opts.maxAgeDays : pruneMaxAgeDays();
@@ -239,10 +261,22 @@ export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): P
   const res = await db
     .delete(at)
     .where(
-      and(
-        dsql`${at.lastFiredAt} IS NOT NULL`,
-        dsql`${at.lastFiredAt} < now() - (${maxAgeDays}::int * interval '1 day')`,
-        eq(at.consecutiveErrors, 0),
+      or(
+        and(
+          dsql`${at.lastFiredAt} IS NOT NULL`,
+          dsql`${at.lastFiredAt} < now() - (${maxAgeDays}::int * interval '1 day')`,
+          eq(at.consecutiveErrors, 0),
+        ),
+        and(
+          eq(at.lastStatus, LOOP_TERMINAL_AUTO_PAUSE_STATUS),
+          dsql`EXISTS (
+            SELECT 1 FROM harness_shared.routines r
+             WHERE r.workspace_id = ${at.workspaceId}
+               AND r.install_slug = ${at.harnessSlug}
+               AND r.name = ${at.role}
+               AND r.active = false
+          )`,
+        ),
       ),
     );
   return Number((res as unknown as { count?: number }).count ?? 0);
