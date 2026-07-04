@@ -38,7 +38,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import DecisionLog, { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
 import QueueSummary from './QueueSummary';
-import { QUEUE_TABS, QUEEN_LOG_LAYERS } from './queue-authorizer';
+import { queueTabs, queenLogLayers } from './queue-authorizer';
 import { ClipboardList, Inbox, Terminal, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import {
@@ -893,7 +893,7 @@ export default function PlansClient() {
                       <>
                         <QueueSummary waitingOnYou={tierCounts.decision} />
                         <nav className="pc-queue__tabs" aria-label="Queue tab">
-                          {QUEUE_TABS.map((tb) => (
+                          {queueTabs(t).map((tb) => (
                             <Tooltip key={tb.id} label={tb.hint}><button
 
                               type="button"
@@ -911,7 +911,7 @@ export default function PlansClient() {
                     {queueAuthzView && queueTab === 'queen-log' ? (
                       <section className="pc-queue__queenlog" aria-label={`${t('brain')}'s decision log`}>
                         <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
-                          {QUEEN_LOG_LAYERS.map((l) => (
+                          {queenLogLayers(t).map((l) => (
                             <Tooltip key={l.id} label={l.hint}><button
 
                               type="button"

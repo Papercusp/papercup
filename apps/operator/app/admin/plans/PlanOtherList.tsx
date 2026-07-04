@@ -37,6 +37,7 @@ import { QueueCardActions } from './QueueCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
+import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 
 const KIND_LABEL: Record<AttentionKind, string> = {

@@ -28,7 +28,7 @@ import PlanItemsList from '@/app/admin/plans/PlanItemsList';
 import PlanOtherList from '@/app/admin/plans/PlanOtherList';
 import QueueFilterBar from '@/app/admin/plans/QueueFilterBar';
 import QueueSummary from '@/app/admin/plans/QueueSummary';
-import { QUEUE_TABS, QUEEN_LOG_LAYERS } from '@/app/admin/plans/queue-authorizer';
+import { queueTabs, queenLogLayers } from '@/app/admin/plans/queue-authorizer';
 import type { AttentionKind } from '@/app/admin/plans/plans-api';
 import DecisionLog from '@/app/_components/DecisionLog';
 import {
@@ -123,7 +123,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
         <div className="pc-queue__masthead">
           <QueueSummary waitingOnYou={queue.tierCounts.decision} />
           <nav className="pc-queue__tabs" aria-label="Queue tab">
-            {QUEUE_TABS.map((tb) => (
+            {queueTabs(t).map((tb) => (
               <Tooltip key={tb.id} label={tb.hint} side="bottom">
                 <button
                   type="button"
@@ -142,7 +142,7 @@ export default function QueuePanel(_props?: Partial<PanelComponentProps>) {
       {showQueenLog ? (
         <section className="pc-queue__queenlog" aria-label={`${t('brain')}'s decision log`}>
           <nav className="pc-queue__tabs pc-queue__layer-toggle" aria-label="Decision log layer">
-            {QUEEN_LOG_LAYERS.map((l) => (
+            {queenLogLayers(t).map((l) => (
               <Tooltip key={l.id} label={l.hint} side="bottom">
                 <button
                   type="button"
