@@ -41,6 +41,10 @@ vi.mock('nuqs', async () => {
   };
 });
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
+// routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import HiveCustomizationPage from './page';
 
 beforeEach(() => {
@@ -54,7 +58,8 @@ afterEach(cleanup);
 describe('HiveCustomizationPage', () => {
   it('prompts to pick a hive when none is selected', () => {
     render(<HiveCustomizationPage />);
-    expect(screen.getByText(/Pick a hive to edit/i)).toBeTruthy();
+    // Copy is routed through the lexicon (echoed key 'pot'), not the hardcoded "hive".
+    expect(screen.getByText(/Pick a pot to edit/i)).toBeTruthy();
     // No editor sections until a hive is chosen.
     expect(screen.queryByText('Role persona (prose)')).toBeNull();
   });

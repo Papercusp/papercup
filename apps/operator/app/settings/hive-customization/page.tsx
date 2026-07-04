@@ -26,6 +26,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import { HivePolicyPanel } from './HivePolicyPanel';
 
@@ -113,6 +114,7 @@ function ProseOverrideEditor({
   onSave: (md: string) => Promise<void>;
   onClear: () => Promise<void>;
 }) {
+  const t = useLexicon();
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
   const dirty = draft !== initialValue;
@@ -142,7 +144,7 @@ function ProseOverrideEditor({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         spellCheck={false}
-        placeholder="Markdown delta appended after the built-in role persona for this hive. Leave empty to use the blueprint default."
+        placeholder={`Markdown delta appended after the built-in role persona for this ${t('pot', { lower: true })}. Leave empty to use the blueprint default.`}
         style={TEXTAREA_STYLE}
       />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -178,6 +180,7 @@ function ConfigOverrideEditor({
   onSave: (value: unknown) => Promise<SetResp>;
   onClear: () => Promise<void>;
 }) {
+  const t = useLexicon();
   const initialText = initialValue == null ? '' : JSON.stringify(initialValue, null, 2);
   const [draft, setDraft] = useState(initialText);
   const [busy, setBusy] = useState(false);
@@ -273,7 +276,7 @@ function ConfigOverrideEditor({
               ignores these (it parses defensively).
             </div>
           ) : (
-            <div>Accepted — the scout loop reads this on its next per-hive cycle.</div>
+            <div>Accepted — the scout loop reads this on its next per-{t('pot', { lower: true })} cycle.</div>
           )}
         </div>
       )}
@@ -282,6 +285,7 @@ function ConfigOverrideEditor({
 }
 
 export default function HiveCustomizationPage() {
+  const t = useLexicon();
   const { data: hiveData, loading: hivesLoading } = useSyncQuery<HiveRow>({ queryName: 'learning.hiveList' });
   const hives = useMemo<HiveRow[]>(() => hiveData ?? [], [hiveData]);
 
@@ -368,31 +372,31 @@ export default function HiveCustomizationPage() {
 
   return (
     <div>
-      <h1>Hive customization</h1>
+      <h1>{t('pot')} customization</h1>
       <p className="pc-settings-intro">
-        Specialize a hive’s agents for its domain without forking the shared blueprint. The hive’s
-        reusable blueprint personas stay generic; only this hive’s deltas live here, and they federate
-        to every node of a shared hive. Two editors: a <strong>prose</strong> per-role persona delta,
-        and a <strong>structured</strong> scout-tuning config (which prose can’t express).
+        Specialize a {t('pot', { lower: true })}'s agents for its domain without forking the shared blueprint. The {t('pot', { lower: true })}'s
+        reusable blueprint personas stay generic; only this {t('pot', { lower: true })}'s deltas live here, and they federate
+        to every node of a shared {t('pot', { lower: true })}. Two editors: a <strong>prose</strong> per-role persona delta,
+        and a <strong>structured</strong> scout-tuning config (which prose can't express).
       </p>
 
       {error && (
         <p role="alert" style={{ color: 'var(--bad)', marginBottom: 16, fontSize: 13 }}>
-          Couldn’t load this hive’s overrides: {error.message}
+          Couldn't load this {t('pot', { lower: true })}'s overrides: {error.message}
         </p>
       )}
 
-      <section className="pc-settings-section" aria-label="Hive selector" style={{ marginBottom: 20 }}>
+      <section className="pc-settings-section" aria-label={`${t('pot')} selector`} style={{ marginBottom: 20 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
-          <span style={{ color: 'var(--fg-mute)' }}>Hive</span>
+          <span style={{ color: 'var(--fg-mute)' }}>{t('pot')}</span>
           <Select
             value={hive ?? ''}
             onChange={(v) => void setHive(v || null)}
-            ariaLabel="Hive"
+            ariaLabel={t('pot')}
             options={
               hiveOptions.length > 0
                 ? hiveOptions
-                : [{ value: '', label: hivesLoading ? 'Loading…' : 'No hives', disabled: true }]
+                : [{ value: '', label: hivesLoading ? 'Loading…' : `No ${t('pot', { plural: true, lower: true })}`, disabled: true }]
             }
           />
         </label>
@@ -400,7 +404,7 @@ export default function HiveCustomizationPage() {
 
       {!hive ? (
         <p style={{ color: 'var(--fg-mute)', fontSize: 13 }}>
-          Pick a hive to edit its per-instance overrides.
+          Pick a {t('pot', { lower: true })} to edit its per-instance overrides.
         </p>
       ) : (
         <>
