@@ -219,6 +219,118 @@ export function buildSnapshotOp(opts: {
 }
 
 /**
+ * WI-2313 — max SERIALIZED bytes of the `rows` payload packed into ONE snapshot
+ * chunk op. Hypercore rejects an appended block over `MAX_SUGGESTED_BLOCK_SIZE`
+ * (15 MiB) with `BAD_ARGUMENT: Appended block exceeds the maximum suggested block
+ * size`; the whole-state snapshot for a large own log (papercup: thousands of
+ * plan/plan-part/coord keys) exceeded that as a single append, so the snapshot
+ * never landed and every sidecar restart replayed admitted member logs from 0
+ * (the WI-2105 REV-leg restart loop). We chunk the rows across N ops each under
+ * this budget — well below the 15 MiB block ceiling so the JSON envelope + array
+ * overhead fit in the headroom. A tunable, not a constant of correctness: any
+ * value in (0, ~14 MiB) is correct; smaller ⇒ more, smaller blocks (faster
+ * individual WAN fetch, more replication round-trips).
+ */
+export const SNAPSHOT_MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * WI-2313 — split a snapshot's folded rows into chunks each within `maxBytes` of
+ * serialized payload, so no single snapshot op exceeds hypercore's block ceiling.
+ * Greedy pack in the builder's deterministic (table, hbKey) order. A single row
+ * larger than `maxBytes` gets its OWN chunk (it was individually appendable as a
+ * normal op, so it is under the 15 MiB hard ceiling). Empty input ⇒ ONE empty
+ * chunk, so a snapshot of an all-deleted log still anchors its `coversUpTo` in the
+ * log (the seed can still skip the summarized-and-dead prefix). Pure.
+ */
+export function chunkSnapshotRows(
+  rows: readonly SnapshotRow[],
+  maxBytes: number = SNAPSHOT_MAX_CHUNK_BYTES,
+): SnapshotRow[][] {
+  if (rows.length === 0) return [[]];
+  const budget = maxBytes > 0 ? maxBytes : SNAPSHOT_MAX_CHUNK_BYTES;
+  const chunks: SnapshotRow[][] = [];
+  let cur: SnapshotRow[] = [];
+  let curBytes = 0;
+  for (const row of rows) {
+    const rowBytes = Buffer.byteLength(JSON.stringify(row), 'utf8');
+    // Close the current chunk before adding a row that would overflow the budget —
+    // but never emit an EMPTY chunk (a single over-budget row rides alone).
+    if (cur.length > 0 && curBytes + rowBytes > budget) {
+      chunks.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(row);
+    curBytes += rowBytes;
+  }
+  chunks.push(cur);
+  return chunks;
+}
+
+/** WI-2313 — wrap ONE chunk of a snapshot set into a reserved-tag op. All chunks
+ *  of a set share `coversUpTo`; `chunkIdx` / `chunkCount` let the reader recognize
+ *  the set and require every chunk before seeding a cursor. The hbKey is unique
+ *  per (coversUpTo, chunkIdx). */
+function buildSnapshotChunkOp(opts: {
+  rows: SnapshotRow[];
+  coversUpTo: number;
+  chunkIdx: number;
+  chunkCount: number;
+  author_pubkey: string;
+  ts: number;
+  schema_version: number;
+}): PeerLogOp {
+  const payload: SnapshotPayload = {
+    coversUpTo: opts.coversUpTo,
+    rows: opts.rows,
+    chunkIdx: opts.chunkIdx,
+    chunkCount: opts.chunkCount,
+  };
+  return {
+    type: 'put',
+    table: SNAPSHOT_TABLE_TAG,
+    hbKey: `snapshot/${opts.coversUpTo}/${opts.chunkIdx}-of-${opts.chunkCount}`,
+    value: payload,
+    ts: opts.ts,
+    schema_version: opts.schema_version,
+    author_pubkey: opts.author_pubkey,
+  };
+}
+
+/**
+ * WI-2313 — the CHUNKED producer builder (the fix for the oversized-block bug).
+ * Fold `ops` to the minimal current-state set (`buildSnapshotRows`), split it into
+ * size-bounded chunks (`chunkSnapshotRows`), and wrap each into a snapshot op. All
+ * returned ops share `coversUpTo` and are meant to be appended CONTIGUOUSLY (one
+ * `appendBatch`) so the reader recognizes the set as the span
+ * `[coversUpTo, coversUpTo + N)`. Always returns ≥1 op. Pure.
+ */
+export function buildSnapshotOps(opts: {
+  ops: readonly PeerLogOp[];
+  coversUpTo: number;
+  author_pubkey: string;
+  ts: number;
+  schema_version: number;
+  maxChunkBytes?: number;
+}): PeerLogOp[] {
+  // EI-1688: pass `now` (= the snapshot ts) so old tombstones GC out at production.
+  const rows = buildSnapshotRows(opts.ops, { now: opts.ts });
+  const chunks = chunkSnapshotRows(rows, opts.maxChunkBytes ?? SNAPSHOT_MAX_CHUNK_BYTES);
+  const chunkCount = chunks.length;
+  return chunks.map((chunkRows, chunkIdx) =>
+    buildSnapshotChunkOp({
+      rows: chunkRows,
+      coversUpTo: opts.coversUpTo,
+      chunkIdx,
+      chunkCount,
+      author_pubkey: opts.author_pubkey,
+      ts: opts.ts,
+      schema_version: opts.schema_version,
+    }),
+  );
+}
+
+/**
  * Default compaction cadence: compact the own log once it has grown this many
  * ops PAST the last snapshot's `coversUpTo`. Compaction reads the whole own log
  * (O(history)) once per fire, so it must be infrequent — this threshold trades a
