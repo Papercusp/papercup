@@ -9,6 +9,7 @@ import {
   parsePpidFromStat,
   pidHasWindowAncestor,
   windowOwningPids,
+  gatherOnDesktopSessions,
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
@@ -301,5 +302,37 @@ describe('proc-ancestry on-desktop detection (WI-1586 — the launch-capture-fre
       ]);
       expect([...pids]).toEqual([1357544]);
     });
+  });
+});
+
+describe('gatherOnDesktopSessions — WI-1967 windowSignalUnknown (Windows conservative-on-stale)', () => {
+  // listWindows → [] means the PG join is skipped entirely (no getOrgPg), so the
+  // windowSignalUnknown computation is unit-tested without a database. isWindowsHost
+  // + readWindowsCache are injected so the Windows branch runs off the Linux dev box.
+  const noWindows = async (): Promise<OpenWindow[]> => [];
+
+  it('flags unknown on a Windows host when the renderer cache is null (GUI closed/stale push)', async () => {
+    const sets = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: { listWindows: noWindows, isWindowsHost: () => true, readWindowsCache: () => null },
+    });
+    expect(sets.windowSignalUnknown).toBe(true);
+    expect(sets.owners.size).toBe(0); // still empty sets — "unknown", not "someone's here"
+  });
+
+  it('does NOT flag unknown when the Windows cache is a fresh EMPTY list (a definite "no windows open")', async () => {
+    const sets = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: { listWindows: noWindows, isWindowsHost: () => true, readWindowsCache: () => [] },
+    });
+    expect(sets.windowSignalUnknown).toBe(false);
+  });
+
+  it('never flags unknown on a non-Windows host, even with a null cache (empty wmctrl = genuinely headless)', async () => {
+    const sets = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: { listWindows: noWindows, isWindowsHost: () => false, readWindowsCache: () => null },
+    });
+    expect(sets.windowSignalUnknown).toBe(false);
   });
 });

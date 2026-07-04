@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   planIdleSessionReap,
+  planWindowUnknownProtection,
   classifyLiveIdle,
   terminateIdleLiveSessions,
   planZombieReap,
@@ -97,6 +98,64 @@ describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-proce
     expect(plan.keptLive).toEqual([live]);
     expect(plan.keptFresh).toEqual([fresh]);
     expect(plan.keptNoOwner).toEqual([noOwner]);
+  });
+});
+
+describe('planWindowUnknownProtection (WI-1967 — Windows conservative-on-stale, pure)', () => {
+  const grace = IDLE_SESSION_GRACE_MS;
+
+  it('is a no-op when the window signal is KNOWN (Linux/mac / fresh cache) — never over-protects', () => {
+    const r = planWindowUnknownProtection({
+      sessions: [session(1, 'a', old(2 * grace)), session(2, 'b', old(2 * grace))],
+      windowSignalUnknown: false,
+      alreadyProtected: new Set(),
+      nowMs: NOW,
+    });
+    expect(r.extraProtectedOwners).toEqual([]);
+    expect(r.keptWindowSignalUnknown).toBe(0);
+  });
+
+  it('protects EVERY open owner when unknown, but counts only past-grace + not-already-protected as rescued', () => {
+    const sessions = [
+      session(1, 'dead-old', old(2 * grace)), // reapable → rescued + protected
+      session(2, 'live', old(2 * grace)), // already protected → protected (idempotent), NOT counted
+      session(3, 'fresh', old(grace - 1)), // within grace → protected, NOT counted (never at risk)
+      session(4, null, old(2 * grace)), // no owner → planIdleSessionReap never reaps → neither protected nor counted
+    ];
+    const r = planWindowUnknownProtection({
+      sessions,
+      windowSignalUnknown: true,
+      alreadyProtected: new Set(['live']),
+      nowMs: NOW,
+    });
+    expect(new Set(r.extraProtectedOwners)).toEqual(new Set(['dead-old', 'live', 'fresh']));
+    expect(r.keptWindowSignalUnknown).toBe(1); // only 'dead-old' was actually saved from a reap
+  });
+
+  it('feeding the extra owners into planIdleSessionReap yields ZERO reaps (the end-to-end invariant)', () => {
+    const sessions = [session(1, 'ghost-1', old(3 * grace)), session(2, 'ghost-2', old(5 * grace))];
+    const protectedOwners = new Set<string>();
+    const { extraProtectedOwners } = planWindowUnknownProtection({
+      sessions,
+      windowSignalUnknown: true,
+      alreadyProtected: protectedOwners,
+      nowMs: NOW,
+    });
+    for (const o of extraProtectedOwners) protectedOwners.add(o);
+    const plan = planIdleSessionReap({ sessions, protectedOwners, nowMs: NOW });
+    expect(plan.reap).toHaveLength(0); // nothing reaped while the window signal is unknown
+    expect(plan.keptLive).toHaveLength(2);
+  });
+
+  it('counts two ghost rows sharing one dead owner as two sessions spared, deduping the owner for protection', () => {
+    const r = planWindowUnknownProtection({
+      sessions: [session(1, 'ghost', old(2 * grace)), session(2, 'ghost', old(3 * grace))],
+      windowSignalUnknown: true,
+      alreadyProtected: new Set(),
+      nowMs: NOW,
+    });
+    expect(r.extraProtectedOwners).toEqual(['ghost']); // owner deduped
+    expect(r.keptWindowSignalUnknown).toBe(2); // but 2 sessions saved
   });
 });
 

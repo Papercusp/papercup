@@ -100,6 +100,45 @@ export function planIdleSessionReap(opts: {
 }
 
 /**
+ * PURE (WI-1967 — Windows conservative-on-stale). When the on-desktop WINDOW
+ * signal is UNAVAILABLE on a Windows host (GUI closed/backgrounded → no fresh
+ * renderer push → we cannot tell which `wt.exe` terminals are still open), NO
+ * open session may be reaped on the (absent) window signal — so EVERY open
+ * session's owner must be protected this sweep. Returns the extra owners to fold
+ * into the protected set AND the count of sessions this actually RESCUED from an
+ * otherwise-certain reap (owner not already protected AND past the grace floor —
+ * i.e. exactly what `planIdleSessionReap` would have reaped without the fold),
+ * for observability. A no-op (`[]`, `0`) when the signal is known — always so on
+ * Linux/macOS — so the caller's non-Windows behavior is byte-for-byte unchanged.
+ * Injected clock so the grace boundary is deterministic.
+ */
+export function planWindowUnknownProtection(opts: {
+  sessions: ReapableSession[];
+  windowSignalUnknown: boolean;
+  alreadyProtected: ReadonlySet<string>;
+  nowMs: number;
+  graceMs?: number;
+}): { extraProtectedOwners: string[]; keptWindowSignalUnknown: number } {
+  if (!opts.windowSignalUnknown) return { extraProtectedOwners: [], keptWindowSignalUnknown: 0 };
+  const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
+  const extra = new Set<string>();
+  let keptWindowSignalUnknown = 0;
+  for (const s of opts.sessions) {
+    if (!s.coordOwnerId) continue; // no owner → planIdleSessionReap never reaps it anyway
+    extra.add(s.coordOwnerId);
+    // Count only the sessions this fold actually saved: an owner NOT already
+    // protected AND past the grace floor is precisely one planIdleSessionReap
+    // would have reaped. A within-grace or already-protected session was never
+    // at risk, so it must not inflate the metric. Per-session (not per-owner):
+    // two ghost rows for one dead owner are two sessions spared.
+    if (!opts.alreadyProtected.has(s.coordOwnerId) && opts.nowMs - s.startedAtMs >= graceMs) {
+      keptWindowSignalUnknown += 1;
+    }
+  }
+  return { extraProtectedOwners: [...extra], keptWindowSignalUnknown };
+}
+
+/**
  * The set of coord owner ids that are ALIVE / must never be reaped — the same
  * alias-aware liveness as work-items-stale-claims (presence + running nursery
  * aliases) UNION registered wakes (the wake-executor will resume them) UNION
@@ -229,23 +268,21 @@ export async function runIdleSessionReap(
     // protect EVERY open session's owner this sweep. Windows-only + purely
     // additive (pre-change Windows had no on-desktop exemption at all — see
     // WI-1675), so this can only ever protect more, never reap more; Linux/macOS
-    // (windowSignalUnknown always false) is completely unchanged. Snapshot the
-    // protected set FIRST so keptWindowSignalUnknown can count exactly the
-    // sessions this fold rescued (dead-owner + past-grace, i.e. otherwise-reaped).
+    // (windowSignalUnknown always false) is completely unchanged. The decision +
+    // the "rescued" count are a PURE helper (planWindowUnknownProtection) so the
+    // grace boundary is unit-tested without PG. alreadyProtected is the CURRENT
+    // protected set (live + on-desktop + viewer), so the count is exactly the
+    // sessions this fold saved from an otherwise-certain reap.
     const nowMs = Date.now();
     const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
-    const windowSignalUnknown = onDesktop?.windowSignalUnknown === true;
-    let keptWindowSignalUnknown = 0;
-    if (windowSignalUnknown) {
-      const protectedBeforeUnknown = new Set(protectedOwners);
-      for (const s of sessions) if (s.coordOwnerId) protectedOwners.add(s.coordOwnerId);
-      keptWindowSignalUnknown = sessions.filter(
-        (s) =>
-          s.coordOwnerId != null &&
-          !protectedBeforeUnknown.has(s.coordOwnerId) &&
-          nowMs - s.startedAtMs >= graceMs,
-      ).length;
-    }
+    const { extraProtectedOwners, keptWindowSignalUnknown } = planWindowUnknownProtection({
+      sessions,
+      windowSignalUnknown: onDesktop?.windowSignalUnknown === true,
+      alreadyProtected: protectedOwners,
+      nowMs,
+      graceMs,
+    });
+    for (const o of extraProtectedOwners) protectedOwners.add(o);
     const plan = planIdleSessionReap({
       sessions,
       protectedOwners,
