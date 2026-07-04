@@ -49,7 +49,7 @@ export interface InstallPaths {
   psuPath: string;
   /** ~/.papercusp/bin/ptool — defineTool CLI shim → the bundled ptool.mjs. */
   ptoolPath: string;
-  /** ~/.papercusp/bin/papercusp — `papercusp <onboard|tutorial>` dispatcher →
+  /** ~/.papercusp/bin/papercusp — `papercusp <setup|tutorial>` dispatcher (onboard = alias of setup) →
    *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
   papercuspCliPath: string;
 }
@@ -494,8 +494,9 @@ async function writeShim(shimPath: string, launcherPath: string, label: string):
 
 /**
  * Write the `papercusp` end-user dispatcher shim (agent-first-onboarding
- * P-014): `papercusp onboard` runs the terminal onboarding concierge,
- * `papercusp tutorial` re-opens the guided tutorial (concierge --tutorial).
+ * P-014): `papercusp setup` (alias `onboard`) runs the terminal onboarding
+ * concierge, `papercusp tutorial` re-opens the guided tutorial (concierge
+ * --tutorial). Both reach the same unified shell (owner batch #4/#5).
  * Same node-resolution rules as writeShim. The Linux .deb writes a system
  * twin at /usr/bin/papercusp (deb/postinstall.sh); this per-user copy covers
  * macOS + dev boxes, where installPapercuspFiles is the install path.
@@ -509,11 +510,16 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
     '# Refreshed on every boot; do not edit.\n' +
     'cmd="${1:-}"\n' +
     'case "$cmd" in\n' +
+    // `setup` is the primary name; `onboard` is kept as a back-compat alias. Both
+    // (and `tutorial`) open the SAME unified onboarding shell — they just default to a
+    // different tab (owner batch #4/#5: "Papercusp Setup" & "Papercusp Tutorial" reach
+    // the same place). `--tutorial` selects the Tutorial tab; setup/onboard default to Setup.
+    `  setup)    shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
     `  onboard)  shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} "$@" ;;\n` +
     `  tutorial) shift; exec ${JSON.stringify(nodeCmd)} ${JSON.stringify(launcherPath)} --tutorial "$@" ;;\n` +
     '  *)\n' +
-    '    echo "usage: papercusp <onboard|tutorial>"\n' +
-    '    echo "  onboard   first-run setup + tutorial"\n' +
+    '    echo "usage: papercusp <setup|tutorial>"\n' +
+    '    echo "  setup     first-run setup + tutorial (alias: onboard)"\n' +
     '    echo "  tutorial  re-open the guided tutorial"\n' +
     '    exit 2 ;;\n' +
     'esac\n';

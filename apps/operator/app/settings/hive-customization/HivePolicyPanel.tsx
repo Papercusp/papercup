@@ -198,7 +198,7 @@ export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement 
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '0 0 12px' }}>
             Enforceable policy a <strong>claimed</strong> {t('pot', { lower: true })} owner sets — rate caps, membership mode,
             allowlist, moderation. Signed with the {t('pot', { lower: true })} key + federated; honest peers enforce it at
-            write-admission (EN-2+). An unclaimed {t('pot', { lower: true })} can’t set policy.
+            write-admission (EN-2+). An unclaimed {t('pot', { lower: true })} can&rsquo;t set policy.
           </p>
 
           {claim == null ? (

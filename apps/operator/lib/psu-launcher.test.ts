@@ -83,6 +83,7 @@ import {
   isFleetMemberLaunch,
   COMPACTION_LIMIT_1M_LEADER,
   COMPACTION_LIMIT_1M_FLEET_MEMBER,
+  setupReminderLines,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';

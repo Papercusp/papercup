@@ -3506,6 +3506,49 @@ async function main() {
 }
 
 /**
+ * The pre-TUI "your setup isn't finished" nudge (owner batch #5). PURE: given the
+ * concierge setup STAGE name, return the reminder lines to print, or null when there
+ * is nothing to nudge — setup is complete (stage 'done') or the stage is unknown
+ * (null, e.g. the operator was unreachable — never nag on a failed probe). Both
+ * `papercusp setup` and `papercusp tutorial` reach the same place (the unified
+ * onboarding shell), so the nudge names both.
+ */
+export function setupReminderLines(stage) {
+  if (!stage || stage === 'done') return null;
+  return [
+    '',
+    'ⓘ  Heads up — your Papercusp setup isn’t finished yet, so some functionality stays locked.',
+    '   Finish it any time:  `papercusp setup`  or  `papercusp tutorial`  (both open the same place).',
+    '',
+  ];
+}
+
+/**
+ * Best-effort read of the concierge setup stage from the LIVE operator. Returns the
+ * stage NAME (e.g. 'pick' | 'install' | 'login' | 'embeddings' | 'handoff' | 'done'),
+ * or null on ANY error/timeout so a slow or unreachable operator never delays or breaks
+ * the TUI launch. The operator is already known-reachable at the one call site
+ * (bootstrap-su just succeeded), so this normally returns in tens of ms; the timeout is
+ * only a safety net. Note the endpoint returns `stage` as an OBJECT ({ stage: 'done' }),
+ * so the stage NAME is `body.stage.stage`.
+ */
+async function fetchSetupStageSoft({ fetchImpl = fetch, operatorUrl = OPERATOR_URL, timeoutMs = 1500 } = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetchImpl(operatorUrl + '/api/desktop/onboarding-status', { signal: ac.signal });
+    if (!r?.ok) return null;
+    const j = await r.json();
+    const name = j?.stage?.stage;
+    return typeof name === 'string' ? name : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * POST bootstrap-su + exec the raw backend — the fresh-SU launch tail shared
  * by the plain `psu` flow. The retired `psu --brain` path is rejected before
  * it reaches this launcher.
@@ -3660,6 +3703,24 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       if (ompPiConfigDir) console.error(`psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`);
       else console.error(`psu: omp (${effectiveModel}) — could not materialize a seeded config; using OMP default (full catalog).`);
     }
+  }
+
+  // Owner batch #5: right before the TUI takes over the terminal, remind a human
+  // whose setup isn't finished that some functionality stays locked — and that
+  // `papercusp setup` / `papercusp tutorial` both reach the place to finish it.
+  // Gated to an INTERACTIVE, non-agent, non-scripted launch: fleet/Queen (brain),
+  // omp (always an agent session), a scripted plan kickoff, a layered launch-context,
+  // and any piped/non-TTY stdio all skip it. Best-effort + time-boxed — a slow or
+  // unreachable operator (or any probe error) prints nothing and never delays the launch.
+  if (
+    Boolean(process.stdout.isTTY) &&
+    !brain &&
+    res.agent !== 'omp' &&
+    !kickoffArgs.length &&
+    !args.launchContext
+  ) {
+    const lines = setupReminderLines(await fetchSetupStageSoft());
+    if (lines) for (const line of lines) console.error(line);
   }
 
   // codex's superuser bearer is baked into its per-session config.toml
