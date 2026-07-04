@@ -130,7 +130,7 @@ describe('/res Agent-seats group (P-003)', () => {
     expect(screen.getByText('Autonomous-loop capacity')).toBeTruthy();
     expect(screen.getByText('Agent seats')).toBeTruthy();
     // one helper line per group
-    expect(screen.getByText(/queen↔bee loop/)).toBeTruthy();
+    expect(screen.getByText(/brain↔contributor loop/)).toBeTruthy();
     expect(screen.getByText(/capped by/)).toBeTruthy();
   });
 

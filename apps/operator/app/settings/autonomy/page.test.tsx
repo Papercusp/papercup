@@ -47,6 +47,10 @@ vi.mock('nuqs', async () => {
   };
 });
 
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates the
+// Queen→brain routed intro copy from the THE_HIVE flag hook (restore-pot-lexicon P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import AutonomySettingsPage from './page';
 
 function row(over: Record<string, unknown>) {

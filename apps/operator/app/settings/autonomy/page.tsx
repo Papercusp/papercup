@@ -21,6 +21,7 @@ import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
+import { useLexicon } from '@/lib/useLexicon';
 import { Checkbox } from '../../harness/Checkbox';
 import { CeilingSlider, CEILING_LEVELS, CEILING_SHORT_LABEL, type Ceiling } from './CeilingSlider';
 import RecentAutoDecisions from './RecentAutoDecisions';
@@ -130,6 +131,7 @@ const ROW_GRID: CSSProperties = {
 };
 
 export default function AutonomySettingsPage() {
+  const t = useLexicon();
   const { data, loading, error } = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy' });
   const rows = useMemo<PolicyRow[]>(() => data ?? [], [data]);
   // The master switch (P-092). The whole policy is dormant unless this is on, so
@@ -250,7 +252,7 @@ export default function AutonomySettingsPage() {
     <div>
       <h1>Autonomy</h1>
       <p className="pc-settings-intro">
-        Per-category ceilings for what the Papercup Queen may decide on her own versus escalate to
+        Per-category ceilings for what the Papercup {t('brain')} may decide on her own versus escalate to
         you. Nothing auto-runs until you raise a category’s ceiling <em>and</em> it earns a track
         record within that cap — and the whole policy only takes effect while autonomy is armed.
         Protected categories (release &amp; deploy, spend, credentials, system control) are locked at
