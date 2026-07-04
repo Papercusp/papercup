@@ -1724,7 +1724,7 @@ export async function collectCeilingJamSignals(
 ): Promise<WatchdogSignal[]> {
   const minAgeMinutes = opts.ceilingJamMinAgeMinutes ?? 15;
   const rows = await sql<CeilingJamRow[]>`
-    SELECT spawn_id, harness_slug, started_at, last_output_at
+    SELECT spawn_id, harness_slug, started_at, last_output_at, run_id
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND status IN ('running', 'restarting')

@@ -87,6 +87,7 @@ function freshRecord(): WorkOfferStoreRecord {
     workOffer: null,
     authorship: null,
     seat: { model: 'haiku', effort: 'low', count: 2, accountScope: 'auto', hostLabel: 'box-b' },
+    spawnRequest: null,
     recordVersion: 1,
   };
 }

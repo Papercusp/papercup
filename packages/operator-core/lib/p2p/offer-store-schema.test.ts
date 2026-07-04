@@ -104,6 +104,96 @@ describe('coerceWorkOfferStoreRecord — seat kind', () => {
   });
 });
 
+const SPAWN_REQUEST_RECORD = {
+  offerId: 'spawnreq-0123456789abcdef',
+  publisherGithubUserId: 1567022,
+  fleetSlug: 'alpha',
+  kind: 'spawn_request',
+  status: 'open',
+  cancelReason: null,
+  workOffer: null,
+  authorship: null,
+  seat: null,
+  spawnRequest: {
+    targetPublisherGithubUserId: 279242982,
+    targetOfferId: 'seat-abc123',
+    count: 2,
+    planSlug: 'my-plan-2026-07-04',
+    requesterOwnerId: 'su-owner-1',
+    requestedAtMs: 1_751_600_000_000,
+    launchContext: 'work the plan',
+  },
+  recordVersion: 1,
+};
+
+describe('coerceWorkOfferStoreRecord — spawn_request kind (P-009)', () => {
+  it('accepts a valid spawn-request record and defaults absent launchContext to null', () => {
+    const res = coerceWorkOfferStoreRecord(SPAWN_REQUEST_RECORD);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.record.spawnRequest?.count).toBe(2);
+    const { launchContext: _omit, ...bare } = SPAWN_REQUEST_RECORD.spawnRequest;
+    const res2 = coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, spawnRequest: bare });
+    expect(res2.ok).toBe(true);
+    if (res2.ok) expect(res2.record.spawnRequest?.launchContext).toBeNull();
+  });
+
+  it('rejects a count past the per-request cap and a non-positive requestedAtMs', () => {
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SPAWN_REQUEST_RECORD,
+        spawnRequest: { ...SPAWN_REQUEST_RECORD.spawnRequest, count: 13 },
+      }).ok,
+    ).toBe(false);
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SPAWN_REQUEST_RECORD,
+        spawnRequest: { ...SPAWN_REQUEST_RECORD.spawnRequest, requestedAtMs: 0 },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('rejects target/requester fields that would break the fed key or signed bytes', () => {
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SPAWN_REQUEST_RECORD,
+        spawnRequest: { ...SPAWN_REQUEST_RECORD.spawnRequest, targetOfferId: 'has/slash' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SPAWN_REQUEST_RECORD,
+        spawnRequest: { ...SPAWN_REQUEST_RECORD.spawnRequest, requesterOwnerId: 'white space' },
+      }).ok,
+    ).toBe(false);
+    expect(
+      coerceWorkOfferStoreRecord({
+        ...SPAWN_REQUEST_RECORD,
+        spawnRequest: { ...SPAWN_REQUEST_RECORD.spawnRequest, targetPublisherGithubUserId: -1 },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('kind discrimination is closed: no seat/work payloads on a spawn_request, no spawnRequest elsewhere', () => {
+    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, seat: SEAT_RECORD.seat }).ok).toBe(false);
+    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, workOffer: OFFER, authorship: AUTHORSHIP }).ok).toBe(false);
+    expect(coerceWorkOfferStoreRecord({ ...SPAWN_REQUEST_RECORD, spawnRequest: null }).ok).toBe(false);
+    expect(
+      coerceWorkOfferStoreRecord({ ...SEAT_RECORD, spawnRequest: SPAWN_REQUEST_RECORD.spawnRequest }).ok,
+    ).toBe(false);
+    expect(
+      coerceWorkOfferStoreRecord({ ...WORK_RECORD, spawnRequest: SPAWN_REQUEST_RECORD.spawnRequest }).ok,
+    ).toBe(false);
+  });
+
+  it('canonical json round-trips a spawn_request record', () => {
+    const res = coerceWorkOfferStoreRecord(SPAWN_REQUEST_RECORD);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const json = canonicalWorkOfferRecordJson(res.record);
+    expect(parseWorkOfferRecordJson(json)).toEqual(res.record);
+  });
+});
+
 describe('coerceWorkOfferStoreRecord — work kind (H17 single-validator reuse)', () => {
   it('accepts a valid work record (offer + inner authorship)', () => {
     const c = coerceWorkOfferStoreRecord(WORK_RECORD);
