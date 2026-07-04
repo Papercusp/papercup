@@ -8,7 +8,14 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const sqlBegin = vi.fn(async () => {});
+let unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
+const sqlBegin = vi.fn(async (fn: (tx: { unsafe: (sql: string, params?: unknown[]) => Promise<unknown> }) => Promise<void>) => {
+  await fn({
+    unsafe: async (sql: string, params?: unknown[]) => {
+      unsafeCalls.push({ sql, params: params ?? [] });
+    },
+  });
+});
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(() => ({ sql: { begin: sqlBegin } })),
 }));
@@ -21,8 +28,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { RouteExecution } from '../route-stack';
 import type { RouteDefinition } from '../define-route';
 
-function execWith(over: Partial<RouteDefinition> & { status?: RouteExecution['status'] } = {}): RouteExecution {
-  const { status, ...defOver } = over;
+function execWith(
+  over: Partial<RouteDefinition> & { status?: RouteExecution['status']; url?: string; responseBytes?: number | null } = {},
+): RouteExecution {
+  const { status, url, responseBytes, ...defOver } = over;
   return {
     def: {
       method: 'GET',
@@ -32,13 +41,14 @@ function execWith(over: Partial<RouteDefinition> & { status?: RouteExecution['st
       ...defOver,
     } as RouteDefinition,
     hono: {} as never,
-    req: new Request('http://x/x'),
+    req: new Request(url ?? 'http://x/x'),
     startedAt: Date.now() - 5,
     principal: null,
     input: undefined,
     abort: new AbortController(),
     timeoutTimer: null,
     status: status ?? 'ok',
+    responseBytes: responseBytes ?? null,
   };
 }
 
