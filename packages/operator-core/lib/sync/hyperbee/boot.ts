@@ -64,7 +64,6 @@ import {
   type AdmittedLog,
   type MergeCursorStore,
 } from './read-merge';
-import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
@@ -275,6 +274,15 @@ export interface BootHarnessOpts {
    * getSharedSwarm() (one Hyperswarm per process).
    */
   swarmOverride?: HyperswarmLike;
+  /**
+   * WI-2105 REV fix — INJECTED durable merge-cursor store. The production folder
+   * (substrate-sidecar-host) reads the SUBSTRATE_MERGE_CURSOR_PG flag and passes
+   * a PG-backed store so a bg-host restart RESUMES each log's fold from PG instead
+   * of re-folding from 0 (the REV restart loop). Omit / null ⇒ the cursor is
+   * in-memory only — byte-identical to the pre-fix behavior, and hermetic for the
+   * many merge tests that must not touch the shared PG cursor table.
+   */
+  mergeCursorStore?: MergeCursorStore | null;
   /**
    * Merge-poll interval override (ms). Tests set this to 0 to disable the
    * timer and drive `mergeNow()` by hand. Default 1000.
@@ -1422,12 +1430,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the initial cursor; after a cursor RESET (roster rebind / truncation) we fall
   // back to folding from 0 (correct — the positions re-accumulate + re-persist),
   // never re-seeding, so a shrunk/forked log can't seed itself past its own tail.
-  const pgMergeCursorEnabled = await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(
-    () => true,
-  );
-  const pgMergeCursorStore: MergeCursorStore | null = pgMergeCursorEnabled
-    ? createPgMergeCursorStore(opts.workspaceId, opts.harnessSlug)
-    : null;
+  // INJECTED by the production caller (substrate-sidecar-host reads the flag +
+  // builds the PG-backed store). Default null ⇒ in-memory cursor only, so this
+  // function stays PG-free and every merge test is hermetic unless it opts in.
+  const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
   let pgCursorSeeded = false;
 
   // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home

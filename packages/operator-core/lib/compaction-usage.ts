@@ -14,7 +14,8 @@
  * (a follow-up can add OMP via OmpSessionUsage).
  */
 import * as fs from 'node:fs';
-import { findSessionTranscript } from './claude-sessions';
+import * as path from 'node:path';
+import { findSessionTranscript, papercuspSessionClaudeBase } from './claude-sessions';
 
 export interface SessionRef {
   /** Backend: 'claude' | 'omp' | 'codex' | null (unknown → treated as claude). */
@@ -88,6 +89,7 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
       SELECT agent, session_id
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${ownerId} AND session_id IS NOT NULL
+       ORDER BY started_at DESC
        LIMIT 1
     `;
     if (!rows.length) return null;
@@ -97,10 +99,71 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
   }
 }
 
-/** Best-effort context-token estimate for a session by its coord ownerId. */
+/**
+ * P-016 fallback resolver: the newest `*.jsonl` under this owner's isolation root
+ * `<base>/<owner>/projects/<cwd>/` (excluding the `history.jsonl` shell log).
+ *
+ * Covers the cohort-independence gap that caused the 2026-07-04 dark-drift: the
+ * `session_id` recorded in adv_sessions can go STALE (a resume mints a fresh Claude
+ * UUID, so `<sessionId>.jsonl` no longer exists though a live transcript does), and
+ * some launch cohorts write a `<sessionId>/` directory rather than a flat file. When
+ * the exact-id lookup misses, the newest jsonl under the owner root is the session's
+ * current transcript regardless of its UUID. Best-effort + single-owner-dir scan
+ * (cheap — one readdir per project dir, never the 12k-owner sweep): null on any error.
+ */
+export function newestTranscriptUnderOwner(
+  ownerId: string,
+  isolationBase: string = papercuspSessionClaudeBase(),
+): string | null {
+  // Guard the path join — owner ids are our own UUIDs, but never escape the root.
+  if (!ownerId || ownerId.includes('/') || ownerId.includes('..')) return null;
+  try {
+    const projectsRoot = path.join(isolationBase, ownerId, 'projects');
+    let best: { p: string; mtimeMs: number } | null = null;
+    for (const projDir of fs.readdirSync(projectsRoot)) {
+      const dir = path.join(projectsRoot, projDir);
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue; // not a dir / unreadable
+      }
+      for (const name of entries) {
+        if (!name.endsWith('.jsonl') || name === 'history.jsonl') continue;
+        const p = path.join(dir, name);
+        try {
+          const st = fs.statSync(p);
+          if (st.isFile() && (!best || st.mtimeMs > best.mtimeMs)) best = { p, mtimeMs: st.mtimeMs };
+        } catch {
+          /* vanished mid-scan */
+        }
+      }
+    }
+    return best?.p ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort context-token estimate for a session by its coord ownerId.
+ *
+ * Primary: resolve the recorded session_id → its `<sessionId>.jsonl`. Fallback
+ * (P-016): if that misses for a Claude session (stale/rotated session_id), use the
+ * newest jsonl under the owner root so a live session is never left with a null
+ * estimate — the null that silently hid the per-turn compaction reminder and let the
+ * 2026-07-04 cohort drift to 836k. OMP/Codex keep the null-by-design gate (no jsonl
+ * transcript). Cohorts whose transcript lives outside the owner root entirely are
+ * covered by the mechanical `autoCompactWindow` cap (P-014), not this estimate.
+ */
 export async function estimateContextTokensForOwner(ownerId: string): Promise<number | null> {
   const ref = await resolveSessionRef(ownerId);
-  return ref ? estimateContextTokens(ref, ownerId) : null;
+  if (!ref) return null;
+  const primary = await estimateContextTokens(ref, ownerId);
+  if (primary != null) return primary;
+  if (ref.agent === 'omp' || ref.agent === 'codex') return null;
+  const alt = newestTranscriptUnderOwner(ownerId);
+  return alt ? tokensFromFileSize(alt) : null;
 }
 
 /** The context-death signature Claude writes into the transcript when the

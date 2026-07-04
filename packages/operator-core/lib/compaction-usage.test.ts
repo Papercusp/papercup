@@ -4,11 +4,11 @@
  * transcript-size path is exercised by integration; here we pin the pure guards:
  * unresolvable / non-Claude sessions must degrade to null, never throw.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { estimateContextTokens, tokensFromFileSize } from './compaction-usage';
+import { estimateContextTokens, newestTranscriptUnderOwner, tokensFromFileSize } from './compaction-usage';
 
 describe('estimateContextTokens (backend gating + degradation)', () => {
   it('returns null for a null sessionId', async () => {

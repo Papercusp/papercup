@@ -135,7 +135,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   const checks = buildDefaultChecks();
   const byName = new Map(checks.map((c) => [c.name, c]));
 
-  it('converts exactly the 12 high-frequency ephemeral probes', () => {
+  it('carries exactly the expected ephemeral probe set (the EI-1622 conversions + later additions)', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
         'completion-ref-verify',
@@ -144,6 +144,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'harness-status-sweep',
         'hive-epoch-key-reconcile',
         'learning-infra-health',
+        'scorecard-emission-pulse',
         'service-health',
         'shared-presence-reaper',
         'spawn-reclaim-sweep',
@@ -167,6 +168,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('federation-drain-reconcile')!.intervalMs).toBe(300_000);
     expect(byName.get('hive-epoch-key-reconcile')!.intervalMs).toBe(600_000);
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
+    expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {
@@ -175,6 +177,13 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     // stall persists, so a shed tick is caught next interval (WI-254).
     // hive-epoch-key-reconcile does NOT shed: it is GAP-AWARE (no crypto on an intact hive), so it
     // stays cheap under load AND its fireOnArm heal-on-startup must run even during the busy boot.
-    expect(shedders).toEqual(['federation-drain-reconcile', 'harness-status-sweep', 'system-health']);
+    // scorecard-emission-pulse sheds: it computes SystemHealth when it fires, and a shed
+    // cycle just delays the deterministic floor one 10min interval.
+    expect(shedders).toEqual([
+      'federation-drain-reconcile',
+      'harness-status-sweep',
+      'scorecard-emission-pulse',
+      'system-health',
+    ]);
   });
 });

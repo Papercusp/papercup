@@ -130,14 +130,20 @@ describe('runScorecardEmissionPulse', () => {
   });
 
   it('a throwing capture → outcome error, NEVER a throw into the scheduler', async () => {
-    const { deps } = mkDeps({
-      capture: (async () => {
-        throw new Error('pg down');
-      }) as never,
-    });
-    const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
-    expect(r.outcome).toBe('error');
-    expect(r.reason).toContain('pg down');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { deps } = mkDeps({
+        capture: (async () => {
+          throw new Error('pg down');
+        }) as never,
+      });
+      const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+      expect(r.outcome).toBe('error');
+      expect(r.reason).toContain('pg down');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a failing toolUtilizationGrade path still files with honest unknown (grade undefined)', async () => {

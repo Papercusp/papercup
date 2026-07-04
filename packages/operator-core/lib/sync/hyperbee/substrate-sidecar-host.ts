@@ -51,6 +51,9 @@ import { wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { listBootHistory, bootHistoryDepth, type ListBootHistoryOpts } from './boot-history';
 import { getReplicationLiveness } from './replication-liveness';
+import { createPgMergeCursorStore } from './pg-merge-cursor-store';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 /**
  * Minimal Hypercore surface used by the observability methods. corestore's
@@ -348,6 +351,18 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     }
 
     const storagePath = resolveStoragePath(p);
+    // WI-2105 REV fix (flag-gated, default ON): inject a durable PG-backed merge
+    // cursor so a bg-host restart RESUMES each admitted log's fold from PG instead
+    // of re-folding from 0 (the fold that starved routinesTick → the bghost-
+    // watchdog restart loop → the REV leg never reached tail). Constructed HERE,
+    // not inside bootHarnessSubstrate, so the boot function stays PG-free and
+    // hermetic for its many merge tests. Lazy — no PG connection until the first
+    // seed/persist. OFF ⇒ null ⇒ in-memory cursor only (pre-fix behavior).
+    const mergeCursorStore = (await getFlag(FLAGS.SUBSTRATE_MERGE_CURSOR_PG, 'system').catch(
+      () => true,
+    ))
+      ? createPgMergeCursorStore(p.workspaceId, p.harnessSlug)
+      : null;
     const handle = await bootHarnessImpl({
       workspaceRoot: p.workspaceRoot,
       workspaceId: p.workspaceId,
@@ -355,6 +370,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       swarmBinding: p.swarmBinding ?? null,
       storagePath,
       hlcClock,
+      mergeCursorStore,
     } as BootHarnessOpts & { storagePath?: string });
     await ensureRelocatedSendSideWired(handle);
 
