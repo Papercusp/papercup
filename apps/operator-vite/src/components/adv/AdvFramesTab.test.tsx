@@ -67,6 +67,10 @@ vi.mock('./FrameScreenTrackView', () => ({
   ),
 }));
 
+// Lexicon resolver mocked to ECHO its key (t('fleet') → 'fleet') — isolates the
+// Swarm→Fleet routed title from the THE_HIVE flag hook (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import AdvFramesTab, { type DeployedFrameRow } from './AdvFramesTab';
 
 const FRAMES: DeployedFrameRow[] = [

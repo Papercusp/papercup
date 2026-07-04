@@ -23,6 +23,9 @@ let candidates: LearningPackCandidate[] = [];
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: candidates, invalidate }),
 }));
+// Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
+// hives→pot routed tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 const { default: LearningPackCandidates } = await import('./LearningPackCandidates');
 

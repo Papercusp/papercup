@@ -189,6 +189,89 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     warn.mockRestore();
   });
 
+  it('P-010: post-admission git-restore runs AFTER a successful join when the pre-join restore deferred git', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const restoreSeed = vi.fn(async () => {
+      order.push('restore');
+      return { ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] };
+    });
+    const joinCanonical = vi.fn(async () => {
+      order.push('join');
+      return { state: 'joined' as const, slug: 'papercusp-view' };
+    });
+    const restoreDeferredGitSeed = vi.fn(async () => {
+      order.push('post-admission');
+      return { ran: true, restored: ['git'], stillDeferred: [] };
+    });
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical,
+      restoreDeferredGitSeed,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created');
+    expect(restoreDeferredGitSeed).toHaveBeenCalledOnce();
+    // Strict order: pre-position, THEN join (admission delivers the key), THEN restore git.
+    expect(order).toEqual(['restore', 'join', 'post-admission']);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/post-admission seed restore: restored=\[git\]/));
+    warn.mockRestore();
+  });
+
+  it('P-010: post-admission restore is SKIPPED when nothing was deferred', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }, { kind: 'git', ok: true }], deferred: [] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      restoreDeferredGitSeed,
+    });
+    await bootstrapPapercuspHive(deps);
+    expect(restoreDeferredGitSeed).not.toHaveBeenCalled(); // an unencrypted seed restored git pre-join
+    warn.mockRestore();
+  });
+
+  it('P-010: post-admission restore is SKIPPED when the join did NOT succeed (no admission ⇒ no key)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical: vi.fn(async () => ({ state: 'skipped' as const, slug: null, reason: 'owner offline' })),
+      restoreDeferredGitSeed,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('skipped');
+    expect(restoreDeferredGitSeed).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('P-010: a post-admission restore failure is non-fatal — the join result still stands', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreDeferredGitSeed = vi.fn(async () => {
+      throw new Error('epoch key unwrap blew up');
+    });
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      findJoinedCanonical: vi.fn(async () => null),
+      restoreSeed,
+      joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      restoreDeferredGitSeed,
+    });
+    const res = await bootstrapPapercuspHive(deps);
+    expect(res.state).toBe('cloned-and-created'); // post-admission restore threw; join result unaffected
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/post-admission git seed restore failed \(non-fatal; cold clone\)/));
+    warn.mockRestore();
+  });
+
   it('P-006: a join SKIP propagates as skipped (next-boot retry) — never falls through to clone+create', async () => {
     const joinCanonical = vi.fn(async () => ({
       state: 'skipped' as const,

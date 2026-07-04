@@ -145,6 +145,14 @@ export interface BootstrapPapercuspHiveDeps {
    *  seed and sets PAPERCUSP_SEED_DIR. Best-effort: any failure degrades to the
    *  cold path and never breaks the join. */
   restoreSeed?: (record: BootstrapPapercuspHiveDeps['recordProgress']) => Promise<RestoreHiveSeedResult>;
+  /** P-010 live-wire 2 post-admission git-restore trigger: once the join admits this
+   *  device + delivers the epoch keys, restore the git seed that the pre-join restore
+   *  DEFERRED (encrypted at rest; key = the hive epoch key at cutAtEpoch). Default:
+   *  {@link defaultRestoreDeferredGitSeed} — best-effort, called only when the pre-join
+   *  restore deferred a git store AND the join succeeded. */
+  restoreDeferredGitSeed?: (
+    record: BootstrapPapercuspHiveDeps['recordProgress'],
+  ) => Promise<TriggerDeferredGitRestoreResult>;
 }
 
 /** Set `registry.current` to `ws` (idempotent). The deliberate counterpart to
@@ -193,11 +201,10 @@ async function defaultRestoreHiveSeed(
   const seedDir = resolved.seedDir;
   if (!seedDir) return { ran: false, outcomes: [], deferred: [] };
   record?.('clone', 'running', { detail: `seed: found (${resolved.source}) — restoring before join` });
-  const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
   // Restore the corestore into the canonical hive's store dir; the git checkout into
-  // the clones dir the join would otherwise populate.
-  const targetStoreDir = join(workspaceRoot ?? defaultClonesDir(), '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee');
-  const targetRepoDir = join(defaultClonesDir(), PAPERCUSP_HIVE_SLUG);
+  // the clones dir the join would otherwise populate (same dirs the post-admission
+  // deferred-git restore targets — see seedTargetDirs).
+  const { targetStoreDir, targetRepoDir } = seedTargetDirs();
   const res = await restoreHiveSeed({
     seedDir,
     targetStoreDir,
@@ -206,6 +213,49 @@ async function defaultRestoreHiveSeed(
     log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
   });
   return res;
+}
+
+/** The seed's canonical restore target dirs (shared by the pre-join restore and the
+ *  post-admission deferred-git restore so both point at the SAME checkout / store). */
+function seedTargetDirs(): { targetStoreDir: string; targetRepoDir: string } {
+  const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
+  return {
+    targetStoreDir: join(workspaceRoot ?? defaultClonesDir(), '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee'),
+    targetRepoDir: join(defaultClonesDir(), PAPERCUSP_HIVE_SLUG),
+  };
+}
+
+/**
+ * P-010 live-wire 2 default: after the join admits this device and delivers the hive
+ * epoch keys, restore the git seed that {@link defaultRestoreHiveSeed} DEFERRED (its
+ * bundles are encrypted at rest; the key = the hive epoch key at cutAtEpoch, which a
+ * fresh member now holds — Q-4). Resolves the member EpochKeyProvider and hands it to
+ * the trigger, which unwraps the key + re-restores just the git store. Best-effort +
+ * safe: no seed / --no-seed / no local device identity ⇒ the store stays deferred and
+ * the join's normal cold clone fills the repo in — never a boot failure.
+ */
+async function defaultRestoreDeferredGitSeed(
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+): Promise<TriggerDeferredGitRestoreResult> {
+  const resolved = resolveSeedDir();
+  if (resolved.disabled || !resolved.seedDir) return { ran: false, restored: [], stillDeferred: [] };
+  const { targetStoreDir, targetRepoDir } = seedTargetDirs();
+  const epochKeyProvider = await buildMemberEpochKeyProvider({
+    workspaceId: PAPERCUSP_WORKSPACE_ID,
+    hiveHomeSlug: PAPERCUSP_HIVE_SLUG,
+  });
+  if (!epochKeyProvider) {
+    // No device identity / crypto yet ⇒ can't unwrap the epoch key this boot; the git
+    // store stays deferred and the join's cold clone back-fills the repo.
+    return { ran: false, restored: [], stillDeferred: ['git'] };
+  }
+  return triggerDeferredGitRestore({
+    seedDir: resolved.seedDir,
+    targetStoreDir,
+    targetRepoDir,
+    epochKeyProvider,
+    log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
+  });
 }
 
 /** Count top-level submodules from `.gitmodules` (best-effort) — the progress
@@ -484,9 +534,11 @@ export async function bootstrapPapercuspHive(
     // join's clone + federation delta-replication transfer only the delta on top.
     // The join below is UNCHANGED. Best-effort: any failure degrades to the cold
     // path and never breaks the join (a seed is untrusted cache).
+    let gitDeferred = false; // P-010 live-wire 2: the encrypted git seed awaits its post-admission key.
     try {
       const restore = deps.restoreSeed ?? defaultRestoreHiveSeed;
       const seedRes = await restore(record);
+      if (seedRes.deferred.includes('git')) gitDeferred = true;
       if (seedRes.ran) {
         const restored = seedRes.outcomes.filter((o) => o.ok).map((o) => o.kind);
         console.warn(
@@ -499,6 +551,28 @@ export async function bootstrapPapercuspHive(
 
     const joinCanonical = deps.joinCanonical ?? joinCanonicalPapercuspHive;
     const joinRes = await joinCanonical(canonicalInvite, { record });
+
+    // P-010 live-wire 2: POST-ADMISSION git-restore. The join above admitted this
+    // device + delivered the hive epoch keys, so the deferred (encrypted) git seed is
+    // now decryptable — restore it so the repo is pre-positioned and its later fetch
+    // carries only the delta. Best-effort: only when the join succeeded AND the git
+    // store was deferred; a failure degrades to the join's normal cold clone.
+    if (joinRes.state === 'joined' && gitDeferred) {
+      try {
+        const restoreDeferred = deps.restoreDeferredGitSeed ?? defaultRestoreDeferredGitSeed;
+        const gitRes = await restoreDeferred(record);
+        if (gitRes.restored.length || gitRes.stillDeferred.length) {
+          console.warn(
+            `[papercusp-hive] post-admission seed restore: restored=[${gitRes.restored.join(',')}] stillDeferred=[${gitRes.stillDeferred.join(',')}]`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[papercusp-hive] post-admission git seed restore failed (non-fatal; cold clone): ${(e as Error)?.message ?? e}`,
+        );
+      }
+    }
+
     return joinRes.state === 'joined'
       ? { state: 'cloned-and-created', slug: joinRes.slug }
       : { state: 'skipped', slug: joinRes.slug, reason: joinRes.reason };
