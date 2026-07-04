@@ -109,3 +109,6 @@
 [submodule "libs/generic/resumable-download"]
 	path = libs/generic/resumable-download
 	url = https://github.com/Papercusp/resumable-download.git
+[submodule "libs/generic/hive-app-seam"]
+	path = libs/generic/hive-app-seam
+	url = https://github.com/Papercusp/hive-app-seam.git

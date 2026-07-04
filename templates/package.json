@@ -1,0 +1,16 @@
+{
+  "name": "@papercusp/templates",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The templates/ source-of-truth dir as a runnable workspace member (plan app-templates-2026-07-04 P-006/P-007). Runs the template checks in-repo: composition-integrity executes UNCONFIGURED against the sibling template.yamls (the release gate pins it continuously); the app-parameterized checks (confinement-guard, seam-round-trip, gym-signals, boot-e2e) SKIP unless TEMPLATE_CHECKS_CONFIG names a checks-config JSON — the template gym (P-009) and a materialized app run them configured. The check .test.ts files under <id>/checks/ are the PORTABLE template content the materializer copies into a built app; this package.json is repo plumbing, never copied.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@papercusp/template-kit": "*",
+    "@types/node": "^22.0.0",
+    "vitest": "^4.1.4",
+    "yaml": "^2.6.0"
+  }
+}

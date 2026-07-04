@@ -1,0 +1,53 @@
+/**
+ * @papercusp/template-kit — pure schema + validation kit for the templates
+ * system (plan app-templates-2026-07-04).
+ *
+ * P-004: the component-manifest format + validator + the curated catalog.
+ * P-005: the template.yaml schema + validator + catalog cross-validation.
+ * P-014: multi-template composition semantics (validateTemplateSet,
+ *        composeTemplates — the union-of-checks) + the reference 3-way split.
+ * P-007: the checks-config seam — the JSON schema an app provides to
+ *        parameterize the portable template checks (templates/<id>/checks/).
+ */
+export {
+  parseComponentManifest,
+  validateCatalog,
+  validateComponentManifest,
+  type ComponentKind,
+  type ComponentManifest,
+  type ComponentSource,
+  type ComponentTier,
+} from "./component-manifest.js";
+export { COMPONENT_CATALOG } from "./catalog.js";
+export {
+  parseTemplateManifest,
+  validateTemplateAgainstCatalog,
+  validateTemplateManifest,
+  type TemplateCheck,
+  type TemplateComponentRef,
+  type TemplateDecisionPoint,
+  type TemplateManifest,
+  type TemplateScope,
+} from "./template-manifest.js";
+export {
+  composeTemplates,
+  validateTemplateSet,
+  type ComposedFrom,
+  type TemplateComposition,
+} from "./composition.js";
+export {
+  parseChecksConfig,
+  validateChecksConfig,
+  type ChecksBootSection,
+  type ChecksCompositionSection,
+  type ChecksConfinementSection,
+  type ChecksGymSection,
+  type ChecksSeamSection,
+  type TemplateChecksConfig,
+} from "./checks-config.js";
+export {
+  AGENTIC_DESKTOP_APP_TEMPLATE,
+  PAPERCUSP_OPS_HIVES_TEMPLATE,
+  REFERENCE_TEMPLATES,
+  TAURI_DESKTOP_SHELL_TEMPLATE,
+} from "./reference-templates.js";

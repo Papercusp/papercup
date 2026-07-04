@@ -1,0 +1,17 @@
+{
+  "$comment": "Typechecks the portable template checks (<id>/checks/*.test.ts). Mirrors template-kit's config; types:['node'] is required explicitly — hoisted @types/node is NOT auto-included under moduleResolution:bundler in this workspace layout.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["esnext"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["**/checks/*.test.ts"]
+}

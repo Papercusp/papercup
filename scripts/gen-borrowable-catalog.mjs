@@ -79,6 +79,8 @@ const BORROWABLE = [
  * not "borrow as-is".
  */
 const SEAMED = [
+  ['libs/generic/hive-app-seam', 'The ONE app⇄hive seam for papercusp hive-apps (templates Tier B component #1): first-run hive bootstrap, generic domain work-items transport, DOWN poll ingest loop. Papercusp-operator-facing by design; consumed by quartermaster + oddsmith. See agent-insights/templates-component-catalog.'],
+  ['libs/generic/template-kit', 'Pure schema + validation kit for the templates system: component-manifest format + validator + the curated component catalog (template.yaml schema lands next). Zero runtime deps; papercusp tie-in is the catalog content itself.'],
   ['libs/papercusp/packages/locks', 'Distributed file-lock coordinator (own side-DB + advisory locks); generic via an opaque coordination domain.'],
   ['packages/coordination',   'Papercusp Postgres tie-in adapter over @papercusp/pubsub-substrate (generic pub/sub: core + event-log + presence + watermark + topic/subscription/thread fan-out) and @papercusp/linkable-edges; keeps only the harness_shared-bound Pg* backends.'],
   ['packages/backup',         'Per-workspace kopia backup behind a BackupHost config seam.'],
