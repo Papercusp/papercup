@@ -500,7 +500,7 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
     'JOINER booted on a HIVE binding admits the owner log via the directory-cache owner-bootstrap',
     async () => {
       const { joinerAdmittedOwner, joinerEvents } = await runScenario('hive');
-      // eslint-disable-next-line no-console
+       
       console.log(
         '[repro hive-binding] joiner events:',
         joinerEvents.map((e) => `${e.kind}:${e.message ?? ''}`).join(' | '),
@@ -517,7 +517,7 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
     'JOINER booted on a TOPIC binding (the real invite/link join) admits the owner log via the directory-cache owner-bootstrap',
     async () => {
       const { joinerAdmittedOwner, joinerEvents } = await runScenario('topic');
-      // eslint-disable-next-line no-console
+       
       console.log(
         '[repro topic-binding] joiner events:',
         joinerEvents.map((e) => `${e.kind}:${e.message ?? ''}`).join(' | '),
@@ -536,7 +536,7 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
       const { joinerAdmittedOwner, joinerEvents } = await runScenario('topic', {
         unresolvedHomeUntilRekey: true,
       });
-      // eslint-disable-next-line no-console
+       
       console.log(
         '[repro home<none>→rekey] joiner events:',
         joinerEvents.map((e) => `${e.kind}:${e.message ?? ''}`).join(' | '),

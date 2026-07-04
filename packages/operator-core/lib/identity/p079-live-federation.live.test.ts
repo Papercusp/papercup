@@ -201,7 +201,7 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
     expect(peerA.userId).not.toBe(peerB.userId); // genuinely distinct identities
 
     clearAttestationCache();
-    // eslint-disable-next-line no-console
+     
     console.info(
       `[P-079 live] A=${peerA.login}#${peerA.userId} B=${peerB.login}#${peerB.userId} (write-free: gists + announces only, no shared repo)`,
     );

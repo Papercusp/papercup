@@ -16,7 +16,7 @@ interface RunRecord {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __papercuspAdminTestRuns: Map<string, RunRecord> | undefined;
 }
 

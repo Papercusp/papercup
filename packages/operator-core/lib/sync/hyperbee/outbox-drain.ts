@@ -265,7 +265,7 @@ export async function drainOutboxOnce(
       if (e instanceof UnknownOutboxTableError) {
         if (!loggedUnknownTables.has(e.tableName)) {
           loggedUnknownTables.add(e.tableName);
-          // eslint-disable-next-line no-console
+           
           console.warn(
             `[outbox-drain] skipping outbox rows for unmapped table '${e.tableName}' ` +
               `(forward-compat: this build has no projection for it; a newer build will ` +
@@ -288,7 +288,7 @@ export async function drainOutboxOnce(
       const guarded = redactContentOpValueForEgress(op.table, op.value);
       if (guarded.redacted) {
         op = { ...op, value: guarded.value };
-        // eslint-disable-next-line no-console
+         
         console.warn(
           `[outbox-drain] egress secrets-guard redacted a secret-bearing '${op.table}' op before federation`,
         );
@@ -342,7 +342,7 @@ export async function drainOutboxOnce(
       try {
         await opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row });
       } catch (e) {
-        // eslint-disable-next-line no-console
+         
         console.error(
           `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
           e instanceof Error ? e.message : String(e),
@@ -481,7 +481,7 @@ export function startOutboxDrain(
         }
       } while (runAgain && !stopped);
     } catch (e) {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[outbox-drain] drain failed for ${wantPayload}:`,
         e instanceof Error ? e.message : String(e),
@@ -508,7 +508,7 @@ export function startOutboxDrain(
   });
   // Surface a listen-setup failure without crashing the boot path.
   void Promise.resolve(listenReq).catch((e: unknown) => {
-    // eslint-disable-next-line no-console
+     
     console.error(
       `[outbox-drain] LISTEN setup failed for ${wantPayload}:`,
       e instanceof Error ? e.message : String(e),

@@ -87,7 +87,7 @@ export async function preregister(input: PreregisterInput): Promise<PreregisterR
       (prereg_hash, run_id, workspace_id, label, suites, config, file_path)
     VALUES
       (${preregHash}, ${input.runId}, ${ws}, ${input.label ?? null},
-       ${jb(input.suites)}::jsonb, ${jb(input.config)}::jsonb, ${filePath})
+       ${jb(input.suites)}::text::jsonb, ${jb(input.config)}::text::jsonb, ${filePath})
     ON CONFLICT (prereg_hash) DO UPDATE SET
       run_id = EXCLUDED.run_id,
       label = EXCLUDED.label,

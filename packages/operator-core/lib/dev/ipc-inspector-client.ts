@@ -176,7 +176,7 @@ export function installIpcInspector(): void {
   installed = true;
   setIpcInspector(record);
   (window as unknown as { __ipcInspector: IpcInspectorApi }).__ipcInspector = api;
-  // eslint-disable-next-line no-console
+   
   console.info(
     '[ipc-inspector] window.__ipcInspector ready — .churn() / .summary() / .events()',
   );

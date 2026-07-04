@@ -55,7 +55,7 @@ async function drainConverseStream(body: ReadableStream<Uint8Array>): Promise<{ 
   let buf = '';
   let assembled = '';
   let eventCount = 0;
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;

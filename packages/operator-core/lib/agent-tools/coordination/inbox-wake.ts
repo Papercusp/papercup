@@ -124,7 +124,7 @@ export async function wakeRecipients(
   const targets = allTargets.slice(0, MAX_WAKE_FANOUT);
   const fanoutCapped = allTargets.slice(MAX_WAKE_FANOUT);
   if (fanoutCapped.length > 0) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[inbox-wake] wake fan-out capped at ${MAX_WAKE_FANOUT}: ${fanoutCapped.length} recipient(s) ` +
         'INJECTED but not woken (oversized audience — they see it on their next turn).',

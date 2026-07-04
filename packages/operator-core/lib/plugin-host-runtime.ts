@@ -1250,7 +1250,7 @@ export async function captureReloadStates(): Promise<void> {
       const stash = await getStateForReload(ctx);
       await savePluginReloadState({ pluginId: pluginName, harnessSlug, sql }, stash);
     } catch (e: any) {
-      // eslint-disable-next-line no-console
+       
       console.warn(`[plugin-host] getStateForReload(${pluginName}, ${harnessSlug}) threw — state discarded: ${e?.message ?? e}`);
     }
   }
@@ -1278,7 +1278,7 @@ async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<P
       pluginDataDir: join(paths.stateDir, 'plugin-data', lp.plugin.name),
       installSlug: harnessSlug,
       log: (msg: string) => {
-        // eslint-disable-next-line no-console
+         
         console.log(`[${lp.plugin.name}/${harnessSlug}] ${msg}`);
       },
     } as PapercuspContext;

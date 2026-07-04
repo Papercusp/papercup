@@ -59,7 +59,7 @@ export async function recordOwnerInteraction(
       INSERT INTO harness_shared.owner_interactions
         (workspace_id, kind, subject_kind, subject_id, payload)
       VALUES (${activeWorkspaceId()}, ${input.kind}, ${input.subjectKind},
-              ${input.subjectId}, ${JSON.stringify(input.payload ?? {})}::jsonb)`;
+              ${input.subjectId}, ${JSON.stringify(input.payload ?? {})}::text::jsonb)`;
     return true;
   } catch (err) {
     console.warn(

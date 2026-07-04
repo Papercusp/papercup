@@ -75,7 +75,7 @@ export function makeScoutCycleAction(
     // Scout idea-grading OFF for the home hive. Fail-soft → runs (default ON).
     const { idleActivityAllowed } = await import('../owner-steering');
     if (!(await idleActivityAllowed(ctx.workspaceId, 'scout'))) {
-      // eslint-disable-next-line no-console
+       
       console.log(`[scout-cycle] ${ctx.installSlug}: skipped — owner idle-activity toggle (scout) is OFF`);
       return;
     }
@@ -138,15 +138,15 @@ export function makeScoutCycleAction(
     );
 
     if (result.fired) {
-      // eslint-disable-next-line no-console
+       
       console.log(
         `[scout-cycle] ${ctx.installSlug}: fired (${result.reason}) cycle=${result.cycleId} routed=${result.routedCount}`,
       );
     } else if (result.reason === 'cycle-error') {
-      // eslint-disable-next-line no-console
+       
       console.warn(`[scout-cycle] ${ctx.installSlug}: cycle error — ${result.error}`);
     } else if (result.reason === 'workspace-ceiling') {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[scout-cycle] ${ctx.installSlug}: refused — workspace-wide scout spend ceiling reached (P-051)`,
       );

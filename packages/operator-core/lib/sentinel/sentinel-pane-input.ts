@@ -40,7 +40,7 @@ function zellijBin(): string {
   return existsSync(cargoBin) ? cargoBin : 'zellij';
 }
 
-// eslint-disable-next-line no-control-regex
+ 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
 /**

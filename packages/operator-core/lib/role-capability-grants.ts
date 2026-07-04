@@ -43,7 +43,7 @@ export async function writeGrants(role: string, caps: string[]): Promise<string[
   } else {
     await sql`
       INSERT INTO harness_shared.role_capability_grants (workspace_id, role, capabilities, updated_at)
-      VALUES (${ws}, ${role}, ${JSON.stringify(unique)}::jsonb, ${Date.now()})
+      VALUES (${ws}, ${role}, ${JSON.stringify(unique)}::text::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id, role)
         DO UPDATE SET capabilities = EXCLUDED.capabilities, updated_at = EXCLUDED.updated_at`;
   }

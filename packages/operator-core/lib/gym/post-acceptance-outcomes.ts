@@ -374,7 +374,7 @@ export async function gatherChampionOutcomeEntries(
     });
     return formatChampionOutcomeEntries(rows, q);
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[gym/post-acceptance-outcomes] outcome read failed — no champion priming this cycle:',
       err instanceof Error ? err.message : err,

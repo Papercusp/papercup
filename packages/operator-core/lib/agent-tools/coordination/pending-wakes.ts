@@ -96,7 +96,7 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
     VALUES (
       ${input.ownerId},
       ${input.summary ?? null},
-      ${payloadJson}::jsonb,
+      ${payloadJson}::text::jsonb,
       ${input.source ?? null},
       ${input.workspaceId ?? null}
     )

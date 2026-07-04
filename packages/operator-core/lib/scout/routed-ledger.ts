@@ -452,7 +452,7 @@ export async function upsertScoutLensWeights(
   // cannot persist. Best-effort contract (refreshScoutOutcomes wraps this in
   // try/catch): warn + skip rather than throw a NOT NULL violation.
   if (!opts.hiveSlug) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[scout/routed-ledger] upsertScoutLensWeights: no hiveSlug — skipping lens-weight persist');
     return;
   }
@@ -559,7 +559,7 @@ export async function getScoutLensWeights(
     }
   } catch (err) {
     // Best-effort read: fall through with no persisted signal → uniform weights.
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[scout/routed-ledger] readScoutLensWeights failed — falling back to uniform:',
       err instanceof Error ? err.message : err,
@@ -635,7 +635,7 @@ export async function refreshScoutOutcomes(
       ...(scopeSlug ? { hiveSlug: scopeSlug } : {}),
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[scout/routed-ledger] lens-weight upsert failed (non-fatal):',
       err instanceof Error ? err.message : err,

@@ -104,7 +104,7 @@ export async function revalidateRepoCoords(
     );
     if (coordEntries.length === 0) return counts;
     if (coordEntries.length > MAX_COORD_ENTRIES) {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[revalidate-repo-coords] skipping: ${coordEntries.length} coord-bearing entries ` +
           `exceed the ${MAX_COORD_ENTRIES}-entry best-effort cap (this is boot hygiene, not a sync system)`,
@@ -123,7 +123,7 @@ export async function revalidateRepoCoords(
         }));
       } catch (e) {
         counts.failed += 1;
-        // eslint-disable-next-line no-console
+         
         console.warn(
           `[revalidate-repo-coords] '${entry.slug}' (repo ${repoId}): fetch failed — ${e instanceof Error ? e.message : e}`,
         );
@@ -147,7 +147,7 @@ export async function revalidateRepoCoords(
             ? data.clone_url
             : `https://github.com/${fullName}.git`;
         counts.renamed += 1;
-        // eslint-disable-next-line no-console
+         
         console.log(
           `[revalidate-repo-coords] '${entry.slug}': upstream renamed ` +
             `${storedFullName ?? '(unparseable remote)'} → ${fullName}; repairing github_remote`,
@@ -195,7 +195,7 @@ export async function revalidateRepoCoords(
       counts.failed += repairs.size;
       counts.renamed = 0;
       counts.branchChanged = 0;
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[revalidate-repo-coords] registry mutate failed (${repairs.size} repair(s) dropped): ` +
           `${e instanceof Error ? e.message : e}`,
@@ -204,7 +204,7 @@ export async function revalidateRepoCoords(
     return counts;
   } catch (e) {
     // NEVER throws — this is boot-adjacent hygiene.
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[revalidate-repo-coords] sweep failed: ${e instanceof Error ? e.message : e}`,
     );
@@ -235,7 +235,7 @@ export function ensureRepoCoordsRevalidatedOnce(
   void revalidateRepoCoords(workspaceId, deps)
     .then((c) => {
       if (c.renamed || c.branchChanged || c.failed) {
-        // eslint-disable-next-line no-console
+         
         console.log(
           `[revalidate-repo-coords] boot sweep: checked=${c.checked} renamed=${c.renamed} ` +
             `branchChanged=${c.branchChanged} failed=${c.failed}`,

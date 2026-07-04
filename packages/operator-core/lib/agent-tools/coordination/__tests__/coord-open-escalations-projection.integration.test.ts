@@ -118,7 +118,7 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     // A messages-surface row whose body even claims kind:'escalation' must be ignored.
     await db.sql`
       INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
-      VALUES ('messages', 'm1', ${JSON.stringify({ msg_id: 'm1', kind: 'escalation' })}::jsonb, 'default')`;
+      VALUES ('messages', 'm1', ${JSON.stringify({ msg_id: 'm1', kind: 'escalation' })}::text::jsonb, 'default')`;
     const n = await db.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.coord_open_escalations`;
     expect(n[0].n).toBe(0);

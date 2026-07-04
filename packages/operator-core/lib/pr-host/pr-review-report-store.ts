@@ -78,8 +78,8 @@ export async function storeReviewReport(args: StoreReviewReportArgs): Promise<vo
       ${args.workspaceId}, ${args.harnessSlug}, ${args.prNumber}, ${args.prUrl},
       ${args.headSha}, ${args.featureId},
       ${report.recommendation}, ${report.summary}, ${report.rationale},
-      ${JSON.stringify(report.risks)}::jsonb,
-      ${JSON.stringify(report.checksObserved)}::jsonb,
+      ${JSON.stringify(report.risks)}::text::jsonb,
+      ${JSON.stringify(report.checksObserved)}::text::jsonb,
       ${args.model}, ${args.tokensIn}, ${args.tokensOut}, ${args.costUsdCents},
       ${args.nowIso ?? new Date().toISOString()}
     )

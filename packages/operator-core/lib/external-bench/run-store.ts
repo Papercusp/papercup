@@ -130,7 +130,7 @@ export async function upsertBenchRun(init: BenchRunInit, opts: DbScope = {}): Pr
        hive_slug, task_count, recovered, started_at, created_at, updated_at)
     VALUES
       (${init.id}, ${ws}, ${init.arm}, ${init.taskSetId}, ${suite}, ${init.model}, ${status}, ${source},
-       ${jb(init.config ?? null)}::jsonb, ${init.hiveSlug ?? null}, ${init.taskCount ?? null},
+       ${jb(init.config ?? null)}::text::jsonb, ${init.hiveSlug ?? null}, ${init.taskCount ?? null},
        ${init.recovered ?? false},
        ${status === 'running' ? sql`now()` : sql`null`}, now(), now())
     ON CONFLICT (id) DO UPDATE SET
@@ -165,7 +165,7 @@ export async function upsertBenchRunTask(runId: string, task: BenchTaskRow, opts
        ${task.beeId ?? null}, ${task.disposition ?? null}, ${task.stopReason ?? null},
        ${task.generationError ?? null}, ${task.tokensIn ?? null}, ${task.tokensOut ?? null},
        ${task.costUsd ?? null}, ${task.turns ?? null}, ${task.wallClockMs ?? null},
-       ${task.diffBytes ?? null}, ${jb(task.armMeta ?? null)}::jsonb, now(), now())
+       ${task.diffBytes ?? null}, ${jb(task.armMeta ?? null)}::text::jsonb, now(), now())
     ON CONFLICT (run_id, instance_id) DO UPDATE SET
       task_status = EXCLUDED.task_status,
       resolved = COALESCE(EXCLUDED.resolved, harness_shared.bench_run_tasks.resolved),
@@ -581,7 +581,7 @@ async function finalizeImportedRun(
       tokens_out = ${summary.tokensOut},
       wall_ms = ${summary.wallMs},
       peak_concurrent_bees = ${summary.peakConcurrentBees},
-      summary = ${jb(summary)}::jsonb,
+      summary = ${jb(summary)}::text::jsonb,
       started_at = COALESCE(${run.startedAt ?? null}, started_at),
       finished_at = now(),
       updated_at = now()
@@ -607,7 +607,7 @@ export async function importAllPreservedRuns(
       (res.imported ? imported : skipped).push(entry.id);
     } catch (e) {
       skipped.push(entry.id);
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[bench-import] skipped malformed preserved run ${entry.id}: ${e instanceof Error ? e.message : e}`,
       );

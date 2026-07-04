@@ -103,7 +103,7 @@ export async function emitFleetRun(
         (${fleetRunId}, ${s.runId}, ${ws}, ${input.preregHash}, ${s.suite}, ${s.arm}, ${input.backlogId}, ${seed},
          ${s.tasks}, ${s.resolved}, ${s.tasksZeroHumanGate}, ${s.wallClockMs}, ${s.tokensTotal}, ${s.costUsd}, ${priceTableVersion},
          ${s.peakConcurrency ?? null}, ${val.valueCapturedUsd ?? null}, ${val.valueAvailableUsd ?? null}, ${val.budgetUsd ?? null}, ${input.budgetTokens ?? null},
-         ${input.modelId}, ${input.harnessVersion}, ${jb(prov.configSnapshot)}::jsonb, ${jb(prov.envFingerprint)}::jsonb, ${jb(prov.armMeta)}::jsonb)
+         ${input.modelId}, ${input.harnessVersion}, ${jb(prov.configSnapshot)}::text::jsonb, ${jb(prov.envFingerprint)}::text::jsonb, ${jb(prov.armMeta)}::text::jsonb)
       ON CONFLICT (fleet_run_id) DO UPDATE SET
         run_id = EXCLUDED.run_id, prereg_hash = EXCLUDED.prereg_hash, suite = EXCLUDED.suite, arm = EXCLUDED.arm,
         backlog_id = EXCLUDED.backlog_id, seed = EXCLUDED.seed, tasks = EXCLUDED.tasks, resolved = EXCLUDED.resolved,

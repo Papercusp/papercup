@@ -238,7 +238,7 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
         await hook();
       } catch (e) {
         // best-effort: a throwing hook never blocks the rest of teardown.
-        // eslint-disable-next-line no-console
+         
         console.warn('[remote-booted-harness] close hook failed:', e instanceof Error ? e.message : String(e));
       }
     }

@@ -66,7 +66,7 @@ describe('emitCodexSlashToolPrompts', () => {
     // 5s is the give-up line — if this trips, the P-009 volume concern is
     // real and goes back to the owner per the plan.)
     expect(result.ms).toBeLessThan(5_000);
-    // eslint-disable-next-line no-console
+     
     process.stderr.write(
       `[measure] codex slash emit: ${result.written} files in ${Math.round(result.ms)}ms\n`,
     );

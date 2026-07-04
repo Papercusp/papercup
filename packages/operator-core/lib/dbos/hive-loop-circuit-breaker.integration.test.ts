@@ -94,7 +94,7 @@ beforeAll(async () => {
       (id, install_slug, name, trigger_kind, trigger_config, target_role,
        payload_template, active, next_fire_at, workspace_id)
     VALUES
-      (${RID}, ${SLUG}, 'bp-schedule-0', 'cron', ${'{"cron":"*/30 * * * * *"}'}::jsonb,
+      (${RID}, ${SLUG}, 'bp-schedule-0', 'cron', ${'{"cron":"*/30 * * * * *"}'}::text::jsonb,
        'system:blueprint-run', null, true, now() + interval '1 year', ${WS})`;
 }, 300_000);
 

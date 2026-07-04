@@ -68,7 +68,7 @@ async function insertRoutine(o: { id: string; name?: string; targetRole?: string
   const intervalSec = o.rescheduleIntervalSec ?? null;
   await rootSql`
     INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
-    VALUES (${o.id}, 'web', ${name}, 'schedule', ${JSON.stringify(o.cfg)}::jsonb, ${o.targetRole ?? 'worker'},
+    VALUES (${o.id}, 'web', ${name}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, ${o.targetRole ?? 'worker'},
             ${o.active ?? true}, ${o.nextFireAt ?? null}, 'ws1', ${intervalSec})`;
   // The stub MUST carry rescheduleIntervalSec — claimDueRoutine reads it to detect a loop.
   return { id: o.id, workspaceId: 'ws1', installSlug: 'web', name, targetRole: o.targetRole ?? 'worker', triggerConfig: o.cfg, rescheduleIntervalSec: intervalSec } as never;

@@ -43,7 +43,7 @@ export interface EmitBestEffortOpts<K extends UsageEventKind> {
 
 function defaultOnError(kind: UsageEventKind, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  // eslint-disable-next-line no-console
+   
   console.warn(`[usage-events] best-effort emit '${kind}' failed: ${msg}`);
 }
 

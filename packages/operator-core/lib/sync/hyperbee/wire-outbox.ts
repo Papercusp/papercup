@@ -108,7 +108,7 @@ export async function wireOutboxForHarness(
   try {
     await backfill(handle, pg);
   } catch (e) {
-    // eslint-disable-next-line no-console
+     
     console.error(
       `[wire-outbox] backfillLocalState failed for ${handle.workspaceId}::${handle.harnessSlug} ` +
         `(continuing — drain still starts):`,

@@ -853,13 +853,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           (await joinerHiveHomeSlug(opts.workspaceId, opts.harnessSlug, { fresh: true })) ?? undefined;
       }
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
-        // eslint-disable-next-line no-console
+         
         console.error(`[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug=${resolved ?? '<null>'}`);
       }
       return resolved;
     } catch (e) {
       if (process.env.PAPERCUSP_A003_TRACE === '1') {
-        // eslint-disable-next-line no-console
+         
         console.error(
           `[A-003] resolve ${opts.harnessSlug}: joinerHiveHomeSlug THREW: ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -996,7 +996,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // grep `[A-003]` to see whether the joiner rebind engaged + which slug. Set
   // PAPERCUSP_A003_TRACE=1 on the instance to enable.
   if (process.env.PAPERCUSP_A003_TRACE === '1') {
-    // eslint-disable-next-line no-console
+     
     console.error(
       `[A-003] boot ${opts.harnessSlug}: swarmBinding.kind=${opts.swarmBinding?.kind ?? '<none>'} hiveHomeProjectionSlug=${hiveHomeProjectionSlug ?? '<none>'}`,
     );
@@ -1689,7 +1689,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               // The grant failure inside upsertHiveMember already records a queryable
               // `rekey_grant_failed` boot-event; this catch only fires if the resolve /
               // membership write itself throws. Stay non-blocking (merge-gated), best-effort.
-              // eslint-disable-next-line no-console
+               
               console.error(
                 `[hive-rekey] owner admit failed for ${peerLabel(frame.log_core_key)}: ${detail}`,
               );
@@ -1718,7 +1718,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ) {
           pendingPeers.set(frame.log_core_key, { frame, since: Date.now() });
         }
-        // eslint-disable-next-line no-console
+         
         console.error(
           `[hyperbee-admission] admit failed for ${peerLabel(frame.log_core_key)} — re-buffered for retry: ${msg}`,
         );
@@ -2213,7 +2213,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (msg !== lastMergeErrorMsg || Date.now() - lastMergeErrorLogTs > 60_000) {
         lastMergeErrorMsg = msg;
         lastMergeErrorLogTs = Date.now();
-        // eslint-disable-next-line no-console
+         
         console.error(
           `[hyperbee-merge] merge pass FAILED harness=${opts.harnessSlug}: ${e instanceof Error ? (e.stack ?? msg) : msg}`,
         );
@@ -2342,7 +2342,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // directory cache resolve the joined hive's owner device? `<null>` here is the live A→B
     // root — the owner-bootstrap admit + the roster member-set both depend on this resolving.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[A-003] owner-resolve ${opts.harnessSlug}: binding.kind=${binding.kind} ` +
           `${binding.kind === 'hive' ? `hive_pubkey=${binding.hive_pubkey.slice(0, 10)}` : binding.kind === 'topic' ? `topic=${binding.topic_hex.slice(0, 12)}` : ''} ` +
@@ -2499,7 +2499,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // fire + match this frame's device? match=true ⇒ B admits the owner log (the keystone);
     // match=false with ownerDevice=<null> ⇒ cache didn't resolve the owner (the live A→B root).
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[A-003] owner-admit ${opts.harnessSlug}: ownerDevice=${ownerDevice ? ownerDevice.slice(0, 10) : '<null>'} ` +
           `frame.device=${frame.device_pubkey.slice(0, 10)} match=${!!(ownerDevice && frame.device_pubkey === ownerDevice)}`,
@@ -2592,7 +2592,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `binding_unverified_window ${peerLabel(frame.log_core_key)}`,
         );
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
-          // eslint-disable-next-line no-console
+           
           console.error(
             `[A-003] reclassify ${opts.harnessSlug}: binding_invalid → pending (join window, home=<none>) peer=${peerLabel(frame.log_core_key)}`,
           );
@@ -2649,7 +2649,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // ADMITS the owner's hive-home log (origin=<hive-home> → ADMIT requires
     // home=<hive-home>, i.e. the rebind resolved) or REJECTs it.
     if (process.env.PAPERCUSP_A003_TRACE === '1') {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `[A-003] slug-filter ${opts.harnessSlug}: origin=${originSlug ?? '<none>'} own=${slug} ` +
           `home=${hiveHomeProjectionSlug ?? '<none>'} → ${inScope ? 'ADMIT' : 'REJECT'} ` +
@@ -2911,7 +2911,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
         if (!loggedRetryErrorKeys.has(logCoreKey)) {
           loggedRetryErrorKeys.add(logCoreKey);
-          // eslint-disable-next-line no-console
+           
           console.error(
             `[hyperbee-admission] pending-retry failed for ${peerLabel(entry.frame.log_core_key)} (kept pending; will retry until grace expiry): ${msg}`,
           );
@@ -3191,7 +3191,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         slowRefreshMs: opts.swarmSlowRefreshMs,
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
-          // eslint-disable-next-line no-console
+           
           console.info(
             `[swarm] peer_connected harness=${opts.harnessSlug}` +
               (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : ''),
@@ -3232,7 +3232,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         },
       });
-      // eslint-disable-next-line no-console
+       
       console.info(
         `[swarm] joined topic ${topic.toString('hex').slice(0, 16)}… ` +
           `harness=${opts.harnessSlug} (announcing as github_user_id=${identity.githubUserId})`,
@@ -3276,7 +3276,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // in in-memory boot-history), which masked packaged two-instance debugging.
       const msg = e instanceof Error ? e.message : String(e);
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'swarm_join_failed', msg);
-      // eslint-disable-next-line no-console
+       
       console.warn(`[swarm] join FAILED harness=${opts.harnessSlug} — staying local-only: ${msg}`);
     }
   }
@@ -3310,7 +3310,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // NEW topic, never re-join the boot-time one from the opts snapshot.
       await joinForBinding(currentBinding);
       if (swarmHandle !== null) {
-        // eslint-disable-next-line no-console
+         
         console.info(
           `[swarm] join RECOVERED via retry harness=${opts.harnessSlug} — federation re-established without a restart`,
         );
@@ -3427,7 +3427,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (!opts.applyOverride) {
         const next = await resolveHiveHomeProjectionSlug(binding);
         if (process.env.PAPERCUSP_A003_TRACE === '1') {
-          // eslint-disable-next-line no-console
+           
           console.error(
             `[A-003] rekey ${opts.harnessSlug}: binding.kind=${binding?.kind ?? '<none>'} next=${next ?? '<none>'} prev=${hiveHomeProjectionSlug ?? '<none>'} rebind=${next !== hiveHomeProjectionSlug}`,
           );
@@ -3472,7 +3472,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           forceReFold = true;
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
-        // eslint-disable-next-line no-console
+         
         console.error(`[A-003] rekey ${opts.harnessSlug}: SKIPPED (applyOverride present)`);
       }
       await joinForBinding(binding);
@@ -3527,7 +3527,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         try {
           await hook();
         } catch (e) {
-          // eslint-disable-next-line no-console
+           
           console.error(
             `[boot.close] close-hook failed for ${opts.workspaceId}::${opts.harnessSlug}:`,
             e instanceof Error ? e.message : String(e),

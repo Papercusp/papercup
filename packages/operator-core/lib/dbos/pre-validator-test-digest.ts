@@ -15,7 +15,7 @@
  * orchestrator-runner.ts next to its siblings (realDebuggerHook).
  */
 
-/* eslint-disable no-control-regex -- ANSI escape stripping needs control chars */
+ 
 const ANSI_RE = /\[[0-9;]*m/g;
 
 /** Lines that indicate a failure / error worth quoting to the validator. */

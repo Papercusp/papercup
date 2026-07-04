@@ -69,7 +69,7 @@ export async function commitHarnessState(opts: CommitHarnessStateOpts): Promise<
   const { harnessRoot } = opts;
   const enabled = opts.enabled ?? gitExportCommitEnabled();
   const runGit = opts.runGit ?? defaultRunGit;
-  const log = opts.log ?? ((m) => console.log(m)); // eslint-disable-line no-console
+  const log = opts.log ?? ((m) => console.log(m));  
 
   if (!enabled) {
     log(

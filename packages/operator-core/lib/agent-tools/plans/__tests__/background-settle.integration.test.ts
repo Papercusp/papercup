@@ -25,7 +25,7 @@ import { setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 // executePlanAgentTurn settles the run to `failed`. Async-generator shape
 // matches runPlanAgent's `AsyncGenerator<ChatEvent>`.
 vi.mock('../runner', () => ({
-  // eslint-disable-next-line require-yield
+   
   runPlanAgent: async function* () {
     yield { type: 'error', message: 'forced backend failure for P2-4' } as const;
   },
@@ -71,7 +71,7 @@ const MAKE_CTX = () =>
 /** Poll the run store until `status` settles to a non-running value, or time out. */
 async function waitForSettle(runId: number, timeoutMs = 8_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const row = await getPlanRun(runId);
     if (row && row.status !== 'running') return row.status;

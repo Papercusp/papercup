@@ -195,7 +195,7 @@ export async function emitP2pReceipt(
                 refusal_code: args.refusal?.code ?? null,
                 missing: args.refusal?.missing ?? null,
                 requester: args.requester ?? null,
-              })}::jsonb, ${ws})`;
+              })}::text::jsonb, ${ws})`;
   } catch {
     /* audit is advisory; the receipt row is the durable record */
   }

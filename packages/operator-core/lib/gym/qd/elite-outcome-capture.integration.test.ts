@@ -104,7 +104,7 @@ async function seedLocalElite(sql: postgres.Sql, nicheKey: string): Promise<void
        fitness, descriptor, updated_at, federatable)
     VALUES
       (${WS}, ${SLUG}, ${nicheKey}, 'cand-1', 'local', 'execution', 'low',
-       7.5, ${JSON.stringify({ v: 1 })}::jsonb, 1000, false)`;
+       7.5, ${JSON.stringify({ v: 1 })}::text::jsonb, 1000, false)`;
 }
 
 async function capturedRecords(sql: postgres.Sql, nicheKey: string): Promise<Array<unknown>> {

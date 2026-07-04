@@ -63,7 +63,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
     });
     return true;
   } catch (e) {
-    // eslint-disable-next-line no-console
+     
     console.warn(`[severe-event-broadcast] failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
@@ -95,7 +95,7 @@ export async function broadcastSevereEventResolved(res: SevereEventResolution): 
     });
     return true;
   } catch (e) {
-    // eslint-disable-next-line no-console
+     
     console.warn(`[severe-event-broadcast] resolve failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }

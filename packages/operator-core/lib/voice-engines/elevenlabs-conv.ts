@@ -114,7 +114,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
   // `endSession` is set after conv is created (forward-declared) so the
   // end_conversation tool can call it. We accept the indirection because
   // end_conversation is rare and the closure cost is one var lookup.
-  // eslint-disable-next-line prefer-const
+   
   let convRef: { endSession: () => Promise<void> } | null = null;
   const clientTools = buildClientTools({
     workspace: args.workspace,

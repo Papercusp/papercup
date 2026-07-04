@@ -38,7 +38,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
          critical_path, work_item_count, planted_bug_location)
       VALUES
         (${s.scenarioId}, ${s.title}, ${s.shape}, ${s.idealWallClockUnits}, ${s.idealBeeCount},
-         ${s.totalUnits}, ${s.criticalPath == null ? null : JSON.stringify(s.criticalPath)}::jsonb, ${s.workItemCount}, ${s.plantedBugLocation})
+         ${s.totalUnits}, ${s.criticalPath == null ? null : JSON.stringify(s.criticalPath)}::text::jsonb, ${s.workItemCount}, ${s.plantedBugLocation})
       ON CONFLICT (scenario_id) DO UPDATE SET
         title = EXCLUDED.title,
         shape = EXCLUDED.shape,
@@ -94,7 +94,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         work_items_total = ${o.workItemsTotal},
         work_items_completed = ${o.workItemsCompleted},
         cost_usd = ${o.costUsd},
-        observations = ${JSON.stringify(o)}::jsonb,
+        observations = ${JSON.stringify(o)}::text::jsonb,
         trace_ref = ${fields.traceRef || null}
       WHERE run_id = ${runId}
     `;
@@ -113,7 +113,7 @@ export class HiveEvalStorePg implements HiveEvalStore {
         (${row.runId}, ${row.rubricHash}, ${row.rubricVersion}, ${row.outcomeGatePassed},
          ${row.efficiencyScore}, ${row.speedScore}, ${row.composite}, ${row.judgeComposite ?? null},
          ${row.regressions}, ${row.plantedBugCaught}, ${row.fabricationDetected},
-         ${row.criticalPathRatio}, ${row.floorCeiling}, ${row.detail == null ? null : JSON.stringify(row.detail)}::jsonb)
+         ${row.criticalPathRatio}, ${row.floorCeiling}, ${row.detail == null ? null : JSON.stringify(row.detail)}::text::jsonb)
       ON CONFLICT (run_id, rubric_hash) DO UPDATE SET
         rubric_version = EXCLUDED.rubric_version,
         outcome_gate_passed = EXCLUDED.outcome_gate_passed,

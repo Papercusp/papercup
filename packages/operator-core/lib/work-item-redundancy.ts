@@ -413,7 +413,7 @@ export async function recordReplicaResultLocal(opts: RecordReplicaResultOpts): P
   const resultJson = JSON.stringify(opts.result);
   const rows = await sql<ReplicaDbRow[]>`
     UPDATE harness_shared.work_item_replicas
-       SET status = 'complete', result = ${resultJson}::jsonb,
+       SET status = 'complete', result = ${resultJson}::text::jsonb,
            last_activity_ts = clock_timestamp(), updated_ts = clock_timestamp()
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${opts.harnessSlug}
        AND work_item_id = ${opts.workItemId} AND replica_index = ${opts.replicaIndex}

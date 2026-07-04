@@ -342,7 +342,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     const dur = Number(attrs['duration_minutes']);
     if (!Number.isFinite(dur) || dur <= 0) {
       // Malformed; drop with a warn so we notice if the model drifts.
-      // eslint-disable-next-line no-console
+       
       console.warn('[operator-converse] dropped malformed <sleep>: bad duration_minutes', {
         attrs,
         raw,
@@ -367,7 +367,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     const attrs = parseAttrs(spawnMatch[1]);
     const role = (attrs['role'] ?? '').trim();
     if (!role) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[operator-converse] dropped malformed <spawn>: missing role', { attrs });
       continue;
     }
@@ -396,7 +396,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     const attrs = parseAttrs(handoffMatch[1]);
     const summary = (attrs['summary'] ?? '').trim();
     if (!summary) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[operator-converse] dropped malformed <handoff_to_queen>: missing summary', {
         attrs,
       });
@@ -426,7 +426,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     const attrs = parseAttrs(deepMatch[1]);
     const summary = (attrs['summary'] ?? '').trim();
     if (!summary) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[operator-converse] dropped malformed <delegate_deep>: missing summary', {
         attrs,
       });
@@ -449,7 +449,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     if (report) {
       result.report = report;
     } else {
-      // eslint-disable-next-line no-console
+       
       console.warn('[operator-converse] dropped malformed <report>: invalid/empty JSON body', {
         raw,
       });
@@ -460,7 +460,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
   // when both present; the user-visible say wins. Log so we notice if
   // the model is making this mistake regularly.
   if (result.sleep && result.say) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[operator-converse] dropped <sleep> because <say> was also emitted (going-silent contract)', {
       raw,
     });

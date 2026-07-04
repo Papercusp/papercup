@@ -95,8 +95,8 @@ export class PgExperimentLedger implements ExperimentLedger {
          total_cost_usd, budget_exhausted)
       VALUES (
         ${row.workspaceId}, ${row.batteryId}, ${row.testId}, ${row.tier},
-        ${JSON.stringify(row.arms)}::jsonb, ${row.baselineId}, ${row.winner},
-        ${row.comparison == null ? null : JSON.stringify(row.comparison)}::jsonb,
+        ${JSON.stringify(row.arms)}::text::jsonb, ${row.baselineId}, ${row.winner},
+        ${row.comparison == null ? null : JSON.stringify(row.comparison)}::text::jsonb,
         ${row.totalCostUsd}, ${row.budgetExhausted}
       )
       ON CONFLICT (workspace_id, battery_id) DO UPDATE SET

@@ -237,7 +237,7 @@ export async function backfillLocalState(
   // Cap-and-warn: a peer's read-merge drops anything past the per-author cap, so
   // warn (rather than chunk) when we couldn't enqueue everything.
   if (dropped > 0) {
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[backfill-local-state] peer_capped: ${workspaceId}::${harnessSlug} backfill ` +
         `exceeded the per-author cap (${cap}); enqueued ${enqueued}, DROPPED ${dropped} ` +

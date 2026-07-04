@@ -331,7 +331,7 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
   // already in flight and this fire (almost always a reaper requeue) must NOT spawn a
   // second runner+peer swarm — skip and let the workflow complete + reschedule.
   if (!acquirePerfLock(tier, timeoutMs + 5 * 60_000)) {
-    // eslint-disable-next-line no-console
+     
     console.info(
       `[p2p-perf] ${label}: a run already holds the lock — skipping this (reaper-requeued) fire to avoid stacking runners`,
     );
@@ -355,7 +355,7 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
       const cls = classifyNoSummaryRun(r);
       if (cls === 'signal') {
         // Externally interrupted (bg-host restart / OOM / external kill) — not a finding.
-        // eslint-disable-next-line no-console
+         
         console.info(
           `[p2p-perf] ${label}: run interrupted by a signal (exit ${r.code}${r.signal ? `, ${r.signal}` : ''}) before ` +
             `writing a summary — bg-host restart / OOM / external kill, not a finding; skipping (it will re-run next cycle)`,
@@ -399,7 +399,7 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
       return;
     }
 
-    // eslint-disable-next-line no-console
+     
     console.info(
       `[p2p-perf] ${label} run ${summary.runId}: ${summary.artifacts} artifacts, ` +
         `${summary.sloViolations.length} SLO violations, ${summary.regressions.length} regressions, ` +

@@ -81,7 +81,7 @@ export default defineTool({
     const writeSnap = async (snap: RoutineSnap): Promise<void> => {
       await sql`
         UPDATE harness_shared.routines
-           SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::jsonb,
+           SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::text::jsonb,
                active = ${snap.active},
                next_fire_at = ${snap.nextFireAtIso}::timestamptz,
                updated_at = now()

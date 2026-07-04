@@ -177,9 +177,9 @@ export async function upsertDatatype(
     VALUES (
       ${input.id}, ${input.workspaceId}, ${input.hiveSlug ?? null}, ${input.title},
       ${input.description}, ${input.tier}, ${input.workItemKind ?? null},
-      ${input.payloadSchema ? JSON.stringify(input.payloadSchema) : null}::jsonb,
+      ${input.payloadSchema ? JSON.stringify(input.payloadSchema) : null}::text::jsonb,
       ${input.authoritativeWriter ?? 'papercusp'},
-      ${input.selfImprovement ? JSON.stringify(input.selfImprovement) : null}::jsonb,
+      ${input.selfImprovement ? JSON.stringify(input.selfImprovement) : null}::text::jsonb,
       ${input.published ?? false}, ${input.tags ?? []},
       ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
     )

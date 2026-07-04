@@ -118,7 +118,7 @@ export function mountPluginApiRoutes(opts: MountPluginApiRoutesOptions = {}): Pr
       // Real errors (corrupt manifest, missing dependency at a present
       // entry point) keep the original error path.
       if (/no entry point found/i.test(err.error)) {
-        // eslint-disable-next-line no-console
+         
         console.info(`[plugin-mount] skipping provision-only plugin at ${err.path}`);
         skipped++;
         continue;

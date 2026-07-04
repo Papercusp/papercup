@@ -59,8 +59,9 @@ export const CompletionRecordSchema = z.object({
   summary: z.string().min(1),
   /** Freeform status verb: 'done' | 'built+tested' | 'landed' | 'shipped'. Default 'done'. */
   status: z.string().min(1).default('done'),
-  /** What landed — files / modules each with a one-line description. */
-  whatLanded: z.array(z.string().min(1)).optional(),
+  /** What landed — files / modules each with a one-line description. A single
+   *  string is accepted and normalized to a one-element array (EI-6666). */
+  whatLanded: stringOrStringArray.optional(),
   /** Migrations applied, e.g. ["146 spawned_agents supervision", "147 fleet_governor"]. */
   migrations: z.array(z.string().min(1)).optional(),
   /** Tests — counts / status, e.g. "67 green tests" or "32 tests green (vitest integration)". */
@@ -73,7 +74,7 @@ export const CompletionRecordSchema = z.object({
    * its deferrals is the exact failure the policy guards against. Rendered
    * prominently (see render.ts).
    */
-  deferred: z.array(z.string().min(1)).optional(),
+  deferred: stringOrStringArray.optional(),
   /**
    * Genuinely-contextual residual (D-006): peer-addressed nuance, design notes
    * the structured fields can't hold. Stays free-text by design — NOT every

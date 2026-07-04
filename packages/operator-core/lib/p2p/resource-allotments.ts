@@ -298,7 +298,7 @@ export async function setResourceAllotment(
       (workspace_id, fleet_slug, resource_kind, resource_ref, share_pct, quantity, axis, status, created_by_github_user_id)
     VALUES
       (${ws}, ${args.fleetSlug}, ${args.resourceKind}, ${resourceRef}, ${sharePct}, ${quantity},
-       ${JSON.stringify(axis)}::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
+       ${JSON.stringify(axis)}::text::jsonb, ${status}, ${args.createdByGithubUserId ?? null})
     ON CONFLICT (workspace_id, fleet_slug, resource_kind, resource_ref)
     DO UPDATE SET share_pct = EXCLUDED.share_pct,
                   quantity = EXCLUDED.quantity,

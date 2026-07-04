@@ -46,7 +46,7 @@ export class PgReplayStore implements ReplayStore {
     // different pg client that tolerates sql.json) stayed green. EI-607.
     await this.sql`
       UPDATE harness_shared.replay_runs SET
-        divergence = ${fields.divergence == null ? null : JSON.stringify(fields.divergence)}::jsonb,
+        divergence = ${fields.divergence == null ? null : JSON.stringify(fields.divergence)}::text::jsonb,
         cost_usd   = ${fields.costUsd},
         elapsed_ms = ${Math.round(fields.elapsedMs)},
         updated_at = now()

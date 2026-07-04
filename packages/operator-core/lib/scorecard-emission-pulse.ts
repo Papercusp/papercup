@@ -64,7 +64,7 @@ async function recordPulseFire(workspaceId: string, installSlug: string, reason:
     await sql`
       INSERT INTO harness_shared.hive_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
-      VALUES (${workspaceId}, ${installSlug}, ${'scorecard-pulse'}, ${reason}, ${null}, ${'{}'}::jsonb)`;
+      VALUES (${workspaceId}, ${installSlug}, ${'scorecard-pulse'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
   } catch (e) {
     console.warn(`[scorecard-emission-pulse] fire record failed: ${e instanceof Error ? e.message : e}`);
   }

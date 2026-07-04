@@ -513,7 +513,7 @@ export async function collectPerfRegressionSnapshot(
       VALUES
         (${workspaceId}, ${metrics.loopLagP95Ms}, ${metrics.connSaturationPct}, ${metrics.dispatchOrphanRate},
          ${metrics.dispatchSample}, ${metrics.coordOpenEscalations}, ${metrics.advTabSwitchMedianMs}, ${metrics.advFcpMs},
-         ${JSON.stringify(breaches)}::jsonb)`;
+         ${JSON.stringify(breaches)}::text::jsonb)`;
   } catch (e) {
     if (isMissingTableError(e, 'perf_regression_snapshots')) {
       notes.push('dormant: perf_regression_snapshots not migrated yet (mig 395) — snapshot not persisted');

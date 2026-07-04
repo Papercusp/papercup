@@ -171,7 +171,7 @@ describe('decision ledger — tripwire undo seam (B-16, migration 269)', () => {
         INSERT INTO harness_shared.autonomy_tripwires
           (id, workspace_id, category, revert_handle, window_until, decision_id, status)
         VALUES (${id}, ${TW}, 'agent-lifecycle',
-                ${JSON.stringify({ kind: 'work-item-state' })}::jsonb,
+                ${JSON.stringify({ kind: 'work-item-state' })}::text::jsonb,
                 now() + ${'1 hour'}::interval, ${String(decisionId)}, ${status})`;
     };
     await arm('tw-armed-1', armedLedgerId, 'armed');

@@ -111,7 +111,7 @@ async function recordOverwatchFire(opts: {
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (
         ${opts.workspaceId}, ${opts.installSlug}, ${"overwatch-" + opts.source}, ${opts.reason},
-        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${"{}"}::jsonb
+        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${"{}"}::text::jsonb
       )`;
   } catch (e) {
     // Observability must never break the arm.

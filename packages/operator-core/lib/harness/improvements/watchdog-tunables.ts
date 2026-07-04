@@ -66,7 +66,7 @@ export async function applyWatchdogTunables(patch: WatchdogTunablePatch): Promis
   const slug = routineSlug();
   const rows = await sql<{ payload_template: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.routines
-       SET payload_template = COALESCE(payload_template, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb,
+       SET payload_template = COALESCE(payload_template, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb,
            updated_at = now()
      WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${ROUTINE_NAME}
    RETURNING payload_template`;
@@ -85,7 +85,7 @@ export async function restoreWatchdogPayload(payload: Record<string, unknown> | 
   const slug = routineSlug();
   await sql`
     UPDATE harness_shared.routines
-       SET payload_template = ${payload === null ? null : JSON.stringify(payload)}::jsonb,
+       SET payload_template = ${payload === null ? null : JSON.stringify(payload)}::text::jsonb,
            updated_at = now()
      WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${ROUTINE_NAME}`;
 }

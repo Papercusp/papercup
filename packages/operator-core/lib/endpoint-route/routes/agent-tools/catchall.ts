@@ -100,7 +100,7 @@ const HOST_EXTRAS: HttpToolHostExtras = {
   },
   deps: PROJECTED_DEPS,
   log: (line, ctx: UnifiedToolContext) => {
-    // eslint-disable-next-line no-console
+     
     console.log(`[agent-tool/http][${ctx.principal?.slug ?? '-'}/${ctx.role ?? '-'}] ${line}`);
   },
 };

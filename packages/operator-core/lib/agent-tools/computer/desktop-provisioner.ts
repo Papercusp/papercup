@@ -70,7 +70,7 @@ function displayReady(display: string): boolean {
 async function waitForDisplay(display: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   // Time is read inside the loop; the helper is only reached on the live path.
-  // eslint-disable-next-line no-restricted-syntax
+   
   while (Date.now() < deadline) {
     if (displayReady(display)) return;
     await new Promise((r) => setTimeout(r, 200));

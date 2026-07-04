@@ -991,8 +991,8 @@ export async function seedCorpus(sql: postgres.Sql): Promise<void> {
           ${caseData.variant},
           ${caseData.title},
           ${caseData.prompt},
-          ${JSON.stringify(caseData.groundTruth)}::jsonb,
-          ${JSON.stringify(caseData.rubric)}::jsonb,
+          ${JSON.stringify(caseData.groundTruth)}::text::jsonb,
+          ${JSON.stringify(caseData.rubric)}::text::jsonb,
           ${index},
           ${now},
           ${now}

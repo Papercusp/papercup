@@ -97,7 +97,7 @@ describe('installConsoleInterceptor', () => {
   afterEach(() => {
     // Fully restore global console + clear the install flag so the wrap
     // never leaks to other test files sharing this worker.
-    /* eslint-disable no-console */
+     
     // (console methods are restored inside the test's finally below.)
     delete (console as unknown as Record<symbol, unknown>)[Symbol.for('papercusp.console.intercepted')];
   });

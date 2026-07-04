@@ -23,7 +23,7 @@ import { ProjectionIndex, type ChangeEvent } from '@papercusp/projection-index';
 export type ProjectionErrorSink = (err: unknown, ctx: { op: string; sourceId: string }) => void;
 
 const defaultSink: ProjectionErrorSink = (err, ctx) => {
-  // eslint-disable-next-line no-console
+   
   console.error(`[projection-index] ${ctx.op} failed for source ${ctx.sourceId}; skipping record`, err);
 };
 

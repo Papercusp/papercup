@@ -61,7 +61,7 @@ describe('operator-report source (real PG)', () => {
         INSERT INTO harness_shared.operator_turns
           (conversation_id, seq, role, text, created_at, report)
         VALUES (${conv}, ${seq}, ${role}, ${text}, ${createdAt},
-                ${report === null ? null : JSON.stringify(report)}::jsonb)
+                ${report === null ? null : JSON.stringify(report)}::text::jsonb)
       `;
     };
 

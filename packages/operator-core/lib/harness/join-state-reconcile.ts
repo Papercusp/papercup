@@ -181,10 +181,10 @@ export function ensureJoinStatesReconciledOnce(
   void (async () => {
     const r = await reconcileJoinStates({ workspaceId, ...seams });
     if (r.error) {
-      // eslint-disable-next-line no-console
+       
       console.warn(`[join-state-reconcile] sweep failed for workspace '${workspaceId}': ${r.error}`);
     } else if (r.reregistered.length || r.abandoned.length) {
-      // eslint-disable-next-line no-console
+       
       console.log(
         `[join-state-reconcile] boot sweep (${workspaceId}): reregistered=[${r.reregistered.join(', ')}]` +
           (r.abandoned.length ? ` abandoned=[${r.abandoned.join(', ')}]` : ''),
@@ -192,7 +192,7 @@ export function ensureJoinStatesReconciledOnce(
     }
   })().catch((e) => {
     // unreachable (reconcileJoinStates never throws) — belt and braces
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[join-state-reconcile] boot sweep crashed: ${e instanceof Error ? e.message : String(e)}`,
     );

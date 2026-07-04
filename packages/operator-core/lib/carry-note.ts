@@ -226,7 +226,7 @@ export async function setCarryNote(
     }
     await tx`
       INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts)
-      VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::jsonb, ${now})
+      VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::text::jsonb, ${now})
       ON CONFLICT (workspace_id, scope) DO UPDATE
         SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts`;
     return noteCol;

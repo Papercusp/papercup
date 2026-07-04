@@ -141,7 +141,7 @@ export async function registerAwait(input: {
       (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
+       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
        ${timeoutBehavior},
        ${
          // ISO text, not a raw Date — the live org postgres-js client throws on
@@ -179,7 +179,7 @@ export async function upsertInboxWakeAwait(input: {
       (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, 'wake',
-       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
+       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
        'expire', NULL, false, ${input.minSleepSec ?? null}, false)
     ON CONFLICT (workspace_id, subscriber_id, event_key)
       WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL
@@ -364,7 +364,7 @@ export async function insertDeliveries(input: {
     await sql`
       INSERT INTO harness_shared.event_wake_deliveries
         (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
-      VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::jsonb,
+      VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::text::jsonb,
               ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
     `;
     n++;

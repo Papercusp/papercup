@@ -58,7 +58,7 @@ describe('runHaiku', () => {
   it('returns null when the iterator throws (best-effort, never surfaces)', async () => {
     runAgentChatMock.mockImplementation(async function* () {
       throw new Error('transport died');
-      // eslint-disable-next-line no-unreachable
+       
       yield {};
     });
     await expect(runHaiku('x')).resolves.toBeNull();

@@ -487,12 +487,12 @@ export function pgSagaJournal(sql: Db): SagaJournal {
     async create(opts) {
       await sql`
         INSERT INTO harness_shared.fleet_sagas (workspace_id, saga_id, name, status, steps)
-        VALUES (${opts.workspaceId}, ${opts.sagaId}, ${opts.name}, 'running', ${JSON.stringify(opts.steps)}::jsonb)`;
+        VALUES (${opts.workspaceId}, ${opts.sagaId}, ${opts.name}, 'running', ${JSON.stringify(opts.steps)}::text::jsonb)`;
     },
     async update(opts: { workspaceId: string; sagaId: string; steps: SagaStepLog[]; status: string; error?: string }) {
       await sql`
         UPDATE harness_shared.fleet_sagas
-           SET steps = ${JSON.stringify(opts.steps)}::jsonb, status = ${opts.status},
+           SET steps = ${JSON.stringify(opts.steps)}::text::jsonb, status = ${opts.status},
                error = ${opts.error ?? null}, updated_at = now()
          WHERE workspace_id = ${opts.workspaceId} AND saga_id = ${opts.sagaId}`;
     },

@@ -61,7 +61,7 @@ export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): P
     await db(sql)`
       INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, detail)
       VALUES (${ev.workspaceId || '*'}, ${ev.installSlug}, ${ev.kind}, ${ev.status},
-              ${JSON.stringify(detail)}::jsonb)
+              ${JSON.stringify(detail)}::text::jsonb)
     `;
   } catch (e) {
     console.warn(`[pipeline-events] append failed (${ev.kind}/${ev.status}): ${e instanceof Error ? e.message : e}`);

@@ -50,7 +50,7 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${input.surface},
         ${input.entries.length},
         ${topScore},
-        ${JSON.stringify(scores)}::jsonb,
+        ${JSON.stringify(scores)}::text::jsonb,
         ${countFragmentHits(input.entries)}
       )
     `;

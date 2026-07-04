@@ -235,7 +235,7 @@ async function recordScorecardFire(workspaceId: string, installSlug: string, rea
     await sql`
       INSERT INTO harness_shared.hive_watchdog_fires
         (workspace_id, install_slug, source, reason, wake_at, demand)
-      VALUES (${workspaceId}, ${installSlug}, ${'overwatch-scorecard'}, ${reason}, ${null}, ${'{}'}::jsonb)`;
+      VALUES (${workspaceId}, ${installSlug}, ${'overwatch-scorecard'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
   } catch (e) {
     console.warn(`[overwatch-scorecard-backstop] fire record failed: ${e instanceof Error ? e.message : e}`);
   }

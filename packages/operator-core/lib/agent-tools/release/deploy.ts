@@ -54,7 +54,7 @@ async function recordDeployAudit(op: string, actor: string, details: Record<stri
       [id, Date.now(), actor, 'release:deploy', op, JSON.stringify(details), activeWorkspaceId()],
     );
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.warn('[release:deploy] audit write failed:', (err as Error)?.message);
   }
 }
@@ -137,7 +137,7 @@ export default defineTool({
         const refreshed = await readDeployStatus();
         if (refreshed) status = refreshed;
       } catch (e) {
-        // eslint-disable-next-line no-console
+         
         console.warn('[release:deploy] pre-deploy git-sync fire failed (continuing with current staging):', (e as Error)?.message);
       }
     }
@@ -243,7 +243,7 @@ export default defineTool({
         body: `${actor} force-deployed ${commit.slice(0, 12)} past a red gate. Accepting reds: ${args.acknowledgeRedTests.join(', ')}. Reason: ${args.reason}`,
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[release:deploy] force notifyAttention failed:', (err as Error)?.message);
     }
     const launch = await launchDetachedDeploy({ force: true, commit });

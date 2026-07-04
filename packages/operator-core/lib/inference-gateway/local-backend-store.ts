@@ -86,7 +86,7 @@ export async function registerLocalBackend(input: RegisterLocalBackendInput, inj
     INSERT INTO harness_shared.local_backends
       (id, workspace_id, kind, base_url, models, max_concurrent, enabled)
     VALUES
-      (${id}, ${ws}, ${input.kind}, ${baseUrl}, ${JSON.stringify(models)}::jsonb, ${maxConcurrent}, ${enabled})
+      (${id}, ${ws}, ${input.kind}, ${baseUrl}, ${JSON.stringify(models)}::text::jsonb, ${maxConcurrent}, ${enabled})
     ON CONFLICT (id) DO UPDATE SET
       workspace_id   = EXCLUDED.workspace_id,
       kind           = EXCLUDED.kind,

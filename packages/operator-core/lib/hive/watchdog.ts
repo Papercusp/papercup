@@ -191,7 +191,7 @@ export async function recordFire(opts: {
         (workspace_id, install_slug, source, reason, wake_at, demand)
       VALUES (
         ${opts.workspaceId}, ${opts.installSlug}, ${opts.source}, ${opts.reason},
-        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::jsonb
+        ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb
       )`;
   } catch (e) {
     // Observability must never break the arm (or boot) — mig 212 may be pending.
@@ -283,7 +283,7 @@ export async function claimWatchdogFire(opts: {
           (workspace_id, install_slug, source, reason, wake_at, demand)
         VALUES (
           ${workspaceId}, ${installSlug}, ${source}, ${opts.reason},
-          ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::jsonb
+          ${opts.wakeAt ? opts.wakeAt.toISOString() : null}, ${JSON.stringify(opts.demand ?? {})}::text::jsonb
         )`;
       return true;
     });

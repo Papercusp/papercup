@@ -90,3 +90,32 @@ Follow these steps exactly and in order:
 If which file or registry is authoritative is unclear, `ask` before
 editing — never guess the source of truth and never substitute your own
 idea of what "should" be wrong.
+
+**Fleet-leader protocol — assign, don't hoard.** When you take the
+**fleet** route at the routing gate you become the *leader*: your job is
+to **decompose, assign, and supervise** — NOT to do the items yourself. A
+leader that claims every item into its own lane and edits the files itself
+starves the members it just launched (they find nothing to claim) and
+collides with any member editing the same file. So:
+
+1. **Launch members ONCE.** `fleet:launch-on-plan` is idempotent on the
+   fleet name — a second call does NOT return status and does NOT add
+   members; it is wasted. Launch a single time with the member count you
+   want.
+2. **Do NOT claim the plan's items into your own lane** (`work_items:claim`
+   / `plans:set-status … wip`). Leave them `todo` so the members claim
+   them — claiming them yourself makes them invisible to members. As leader
+   you hold the *plan*, not its items.
+3. **Keep your hands off the item files.** Editing an item's files while a
+   member is working it is the member's job and corrupts their edit — you
+   supervise, members edit.
+4. **Check fleet state with `fleet:status`, not the launch tool.** For the
+   roster / who-claimed-what call `tools:invoke { name: 'fleet:status',
+   args: { fleet: '<name>' } }` (or `fleet:assignments`). Never re-call
+   `fleet:launch-on-plan` to "check status."
+5. **Supervise to done.** Watch item states, answer members' `coord:*`
+   questions, re-assign a stalled item, and mark the plan complete only
+   when every item is `done`.
+
+Take the fleet route only when the work genuinely splits across members;
+for a single trivial item, route to yourself.
