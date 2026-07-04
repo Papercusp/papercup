@@ -293,6 +293,36 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(onlyBugs.length).toBe(1);
   });
 
+  // EI-6506: work_items:list had no assignee/mine filter — a leader's "see your
+  // work item" handoff was un-findable without raw PG. `assignee` filters by an
+  // explicit id (feature → taken_by, issue → assignee, already supported by the
+  // underlying listWorkItems() — only the tool never exposed it); `mine`
+  // resolves the CALLER's own identity so you don't have to know/paste your own
+  // ownerId. An explicit `assignee` wins over `mine` when both are passed.
+  it('assignee/mine filter to items assigned to a given (or the caller\'s own) agent — issue + feature', async () => {
+    const bug = await createOne({ kind: 'bug', title: 'assigned bug', harness: 'papercup' });
+    const bugId = (bug.workItem as Record<string, unknown>).id as string;
+    const feat = await createOne({ kind: 'feature', title: 'assigned feature', harness: 'papercup' });
+    const featId = (feat.workItem as Record<string, unknown>).id as string;
+    await createOne({ kind: 'bug', title: 'someone else\'s bug', harness: 'papercup' });
+
+    await claimOne({ id: bugId, assignee: 'su-tester' }); // CTX resolves to ownerId 'su-tester'
+    await claimOne({ id: featId, assignee: 'agent-other' });
+
+    const mine = await listData({ harness: 'papercup', mine: true });
+    expect(mine.map((w) => w.id)).toEqual([bugId]);
+
+    const explicit = await listData({ harness: 'papercup', assignee: 'agent-other' });
+    expect(explicit.map((w) => w.id)).toEqual([featId]);
+
+    // explicit `assignee` wins over `mine` when both are passed.
+    const both = await listData({ harness: 'papercup', mine: true, assignee: 'agent-other' });
+    expect(both.map((w) => w.id)).toEqual([featId]);
+
+    const none = await listData({ harness: 'papercup', assignee: 'nobody-home' });
+    expect(none).toEqual([]);
+  });
+
   it('claim → set_state(close) → release walks the lifecycle envelopes (issue + feature)', async () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;

@@ -29,6 +29,7 @@ import {
 } from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
+import { recordContextUsage } from './context-usage-cache';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -367,6 +368,10 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       const est = await estimateContextTokensForOwner(r.owner_id);
       if (est == null) continue;
       await setContextEstimate(r.owner_id, est).catch(() => {});
+      // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
+      // result-annotator + native-tool hook render the banded gauge with ZERO per-call
+      // DB cost (the watchdog is the single writer; readers never touch PG).
+      recordContextUsage(r.owner_id, est, r.compaction_limit);
       out.estimated.push(r.owner_id);
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         out.overLimit.push(r.owner_id);

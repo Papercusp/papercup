@@ -985,13 +985,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     );
   }
   // WI-2105 REV diag (DURABLE, not env-gated): the effective member-content-guard
-  // hiveHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? ownHiveHomeSlug.
-  // When it resolves undefined FOR A HIVE-PEERED HARNESS, decideMemberContentOp drops EVERY
-  // cross-member op with 'no-hiveHome' — the tower↔VM REV-leg drop when the owner folds a
-  // hive via a NON-home harness (hive-canary ≠ its hive-home 'papercusp'). Fires ONLY on that
-  // exact bug condition (a swarm-bound harness with no resolvable guard hiveHome), so a
-  // non-hive / normally-resolved boot records nothing (zero test/alerting impact); getBootHistory
-  // reveals it after the next restart without the A-003 env flag.
+  // hiveHomeSlug for THIS harness's scoped apply = hiveHomeProjectionSlug ?? contentGuardHiveHome
+  // (the DECOUPLED guard home — broader than the rebind fallback, so it now resolves for an
+  // owned-hive member harness like hive-canary→papercusp). When it STILL resolves undefined for
+  // a HIVE-PEERED HARNESS, decideMemberContentOp drops EVERY cross-member op with 'no-hiveHome'.
+  // Post-fix this fires only on a residual case the fix does NOT cover (a swarm-bound harness
+  // whose hive-home is genuinely unresolvable), so a non-hive / normally-resolved boot records
+  // nothing (zero test/alerting impact); getBootHistory reveals it after the next restart.
   if (opts.swarmBinding && (hiveHomeProjectionSlug ?? contentGuardHiveHome) == null) {
     try {
       recordBootEvent(

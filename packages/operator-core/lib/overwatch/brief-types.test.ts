@@ -106,6 +106,21 @@ test('renderOverwatchBrief — empty anomalies render an explicit healthy signal
   assert.match(out, /- queen alive · overwatch alive/);
   assert.match(out, /by role: none/);
   assert.match(out, /paused buckets: none/);
+  // EI-6493: bees.running=0 (the empty-brief default) must carry the explicit
+  // "not the whole fleet" caveat, so a reader never mistakes it for a stall.
+  assert.match(out, /### Bees \(Queen-placed only — NOT the whole fleet\)/);
+  assert.match(
+    out,
+    /zero here means no Queen-dispatched bee is active — it does NOT mean the fleet is idle/,
+  );
+});
+
+test('renderOverwatchBrief — EI-6493: the bees-running=0 caveat only fires at zero, and always names the scope', () => {
+  const zero = renderOverwatchBrief(emptyOverwatchBrief('papercup-hive'));
+  assert.match(zero, /cross-check fleet:assignments\/coord:presence before reading this as a stall/);
+
+  const nonZero = renderOverwatchBrief(unhealthyBrief());
+  assert.doesNotMatch(nonZero, /zero here means no Queen-dispatched bee is active/);
 });
 
 test('renderOverwatchBrief — over-cap anomalies are digested with a "+N more" overflow line', () => {

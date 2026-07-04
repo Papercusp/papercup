@@ -50,3 +50,58 @@ export function renderContextUsageLine(
   }
   return line;
 }
+
+/* ── Banded ambient gauge (agent-managed-compaction D-009 / P-013 + P-015) ──────
+ *
+ * The SAME context percent, rendered as a BANDED line for the two ambient-awareness
+ * surfaces that a heads-down session (one that never calls a coord tool, so never
+ * sees {@link renderContextUsageLine}) still hits: every papercusp-su MCP tool RESULT
+ * (P-013, the result-annotator seam) and the native-tool PostToolUse hook (P-015).
+ * Bands (owner-proposed, D-009): SILENT below QUIET so the vast majority of low-% turns
+ * append NOTHING (zero noise, zero cost); a QUIET bare fact 65–79%; a LOUD ⚠ action line
+ * 80–89%; a CRITICAL ⚠ urgent line ≥90%. Thresholds are exported so the client hook +
+ * statusline band on ONE definition. */
+export const CONTEXT_GAUGE_QUIET_PCT = 65;
+export const CONTEXT_GAUGE_LOUD_PCT = 80;
+export const CONTEXT_GAUGE_CRITICAL_PCT = 90;
+
+/** The gauge band for a rounded percent: null (silent) below {@link CONTEXT_GAUGE_QUIET_PCT}. */
+export type ContextGaugeBand = 'quiet' | 'loud' | 'critical';
+export function contextGaugeBand(pct: number | null | undefined): ContextGaugeBand | null {
+  if (pct == null) return null;
+  if (pct >= CONTEXT_GAUGE_CRITICAL_PCT) return 'critical';
+  if (pct >= CONTEXT_GAUGE_LOUD_PCT) return 'loud';
+  if (pct >= CONTEXT_GAUGE_QUIET_PCT) return 'quiet';
+  return null;
+}
+
+/**
+ * Render the banded ambient gauge, or null below the QUIET band (silent — the common
+ * case, so most calls append nothing). QUIET is a bare fact; LOUD/CRITICAL also NAME the
+ * action (session:request-compaction) so the line is an affordance, not just a number —
+ * the same fact-vs-affordance split as {@link renderContextUsageLine}. Pure; null when
+ * usage can't be computed (no limit / no estimate).
+ */
+export function renderBandedContextGauge(
+  contextTokens: number | null | undefined,
+  compactionLimit: number | null | undefined,
+): string | null {
+  const pct = contextUsagePct(contextTokens, compactionLimit);
+  const band = contextGaugeBand(pct);
+  if (band == null) return null;
+  const fact = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
+  switch (band) {
+    case 'quiet':
+      return fact;
+    case 'loud':
+      return (
+        `⚠ ${fact} — approaching your soft compaction limit; reach a clean stopping ` +
+        `point soon and call session:request-compaction (or /compact) with a focus.`
+      );
+    case 'critical':
+      return (
+        `⚠ ${fact} — CRITICAL: at your soft compaction limit. Call session:request-compaction ` +
+        `(or /compact) with a focus NOW, at the nearest stopping point — do not merely narrate ending the turn.`
+      );
+  }
+}
