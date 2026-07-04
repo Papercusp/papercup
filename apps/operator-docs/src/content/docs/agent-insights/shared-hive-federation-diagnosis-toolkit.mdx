@@ -161,6 +161,23 @@ federated to us yet — the asymmetric A→B stall) the frame is **BUFFERED** fo
 **not** conclusively dropped: a 5s loop re-runs Layer-1 `admit()` + this check each
 tick, admitting the instant membership federates in, or dropping after the 30-min grace.
 
+**Path B's owner-gate exception (D-023 BUG C).** On a membership `miss`,
+`resolveSameHiveMember` also asks: is *this* box the hive's owner? If so it must
+ADMIT the brand-new joiner immediately instead of buffering (else
+`admitAnnouncedPeerAsOwner`, the upsert seam, never runs and open-mode
+auto-admission deadlocks) → `announce_admitted owner_admit_joiner origin=…
+hive=…`. **As of WI-1981 (wake-#5515, 2026-07)** that owner check is
+`isCanonicalHiveOwner` (`packages/operator-core/lib/hive-identity.ts`) — holding
+*a* private key is not enough; the held pubkey must MATCH the hive's canonical
+record (the `hives` row, or the joined view's verified `hive_pubkey`) — replacing
+the earlier mere-key-presence check (`loadHivePubkey != null`). A stale/divergent
+local key (e.g. a partial keychain-delete survivor in the encrypted-FILE tier) used
+to make a JOINER box wrongly resolve `isOwner=true`, mint fresh-random epoch keys
+instead of unwrapping the true owner's wrapped rows, and produce a permanent mutual
+`epoch_decrypt_fail` with no re-mint. A detected mismatch now fires a deduped
+divergent-key health signal (`hive-owner-key-health.ts`) and reports **not**-owner
+instead.
+
 > The merge loop iterates **only `admitted.values()`** (`boot.ts`), and `admitted`
 > + `admittedIdentities` are populated together from the same announce frame — so for
 > any op that actually merged, the source identity is present. That is why a live
