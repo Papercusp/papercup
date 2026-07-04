@@ -49,13 +49,23 @@ const EXT_CONTENT_TYPE: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.wasm': 'application/wasm',
   '.ico': 'image/x-icon',
+  // Pagefind index assets (WI-2648 docs-search). Pagefind ships its wasm as
+  // `*.pagefind` (NOT `.wasm`) and its binary index/metadata/fragment chunks as
+  // `.pf_meta` / `.pf_index` / `.pf_fragment`. Without these, the docs-search
+  // palette loads its UI but every index fetch 404s → zero results (the exact
+  // symptom that shipped). All fetched as ArrayBuffer, so octet-stream is safe;
+  // the wasm is non-streaming-instantiated by Pagefind so it needn't be wasm-typed.
+  '.pagefind': 'application/wasm',
+  '.pf_meta': 'application/octet-stream',
+  '.pf_index': 'application/octet-stream',
+  '.pf_fragment': 'application/octet-stream',
 };
 
 const TEXT_EXTS = new Set([
   '.html', '.md', '.txt', '.xml', '.css', '.js', '.mjs', '.json', '.svg',
 ]);
 
-const STATIC_ASSET_RE = /\.(md|txt|html|xml|js|mjs|css|json|svg|png|jpe?g|webp|gif|woff2?|wasm|ico)$/i;
+const STATIC_ASSET_RE = /\.(md|txt|html|xml|js|mjs|css|json|svg|png|jpe?g|webp|gif|woff2?|wasm|ico|pagefind|pf_meta|pf_index|pf_fragment)$/i;
 const EXT_RE = /\.[a-z0-9]+$/i;
 
 function serveFile(absPath: string, status = 200): Response {
