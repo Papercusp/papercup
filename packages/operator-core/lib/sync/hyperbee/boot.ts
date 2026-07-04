@@ -1984,8 +1984,30 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // observability must never abort the merge pass
           }
         },
+        // WI-2105 REV fix (flag-gated, default ON): persist the cursor's per-log
+        // positions to PG as the fold advances (persist-after-apply — fired
+        // intra-pass so a large-backlog pass that outlasts the 240s watchdog
+        // still checkpoints progress). OFF ⇒ undefined ⇒ no persist, cursor stays
+        // in-memory only (byte-identical to today). Best-effort: persistCursor's
+        // throw is swallowed inside the merge so a failed save can't abort a pass.
+        onCursorAdvance: pgMergeCursorStore
+          ? (positions: ReadonlyMap<string, number>) => persistCursor(positions, pgMergeCursorStore)
+          : undefined,
       };
-      let result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
+      // WI-2105 REV acceleration (17c98): fold the log with the SMALLEST remaining
+      // backlog first, so a nearly-caught-up REV carrier (the VM member log
+      // 60da99e0) reaches tail — and PG-persists — before an orphaned 70k-op log
+      // (e06b8704) monopolizes the pre-watchdog window. Fold order is LWW-
+      // irrelevant (see the mergeCursor invariant above), so this changes only
+      // convergence latency, never the folded result. A shallow copy — the
+      // canonical `logs` order (used by the changed-check + snapshot seed) is kept.
+      const orderedLogs = [...logs].sort(
+        (a, b) =>
+          a.length -
+          (mergeCursor.positions.get(a.keyHex) ?? 0) -
+          (b.length - (mergeCursor.positions.get(b.keyHex) ?? 0)),
+      );
+      let result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       // EI-79 step 3 (correctness escape hatch): a TRUNCATED log (length dropped
       // below its cursor — a reset/forked peer log) invalidates the standing fold.
       // Reset the cursor and re-fold all logs from scratch THIS pass (the same
@@ -2003,7 +2025,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // observability must never abort the merge pass
         }
         mergeCursor = createMergeCursor();
-        result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
+        // Reset positions ⇒ orderedLogs is now length-ascending, still a valid
+        // fold order (WI-2105 acceleration); reuse it rather than re-sorting.
+        result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       }
       const { applied } = result;
 
