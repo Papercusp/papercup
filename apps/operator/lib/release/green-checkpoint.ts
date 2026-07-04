@@ -31,6 +31,7 @@ import {
   advanceReady,
   revListBefore,
   commitUnixTime,
+  changedFiles,
   type AdvanceResult,
 } from './git-ops';
 import { toolingRoot, type ReleaseConfig } from './release-config';
@@ -1055,10 +1056,34 @@ export async function runGreenCheckpoint(
   }
   if (!green) {
     deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
+    // EI-6542: surface "this exact failing test file already changed since the
+    // candidate" — the manual git-log check a triaging agent otherwise repeats by
+    // hand. Purely informational (never alters the advance/hold decision): a
+    // logically-atomic change split across git-sync ticks means the quiet-cut
+    // candidate can be stale by the time the ~40min suite finishes, and a newer
+    // commit may already have fixed the exact failing file(s). Best-effort — any
+    // git error here just skips the note, never blocks the red path.
+    let alreadyFixedNote = '';
+    if (failingTests?.length) {
+      try {
+        const freshTip = await revParse(cfg.integrationRoot, cfg.integrationBranch);
+        if (freshTip !== candidate) {
+          const changedSinceCandidate = new Set(await changedFiles(cfg.integrationRoot, candidate, freshTip));
+          const alreadyTouched = failingTests.filter((f) => changedSinceCandidate.has(f));
+          if (alreadyTouched.length) {
+            alreadyFixedNote =
+              `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${alreadyTouched.join(', ')}`;
+            deps.log(`already-fixed-since: ${alreadyTouched.join(', ')} changed between ${candidate.slice(0, 8)} and ${freshTip.slice(0, 8)}`);
+          }
+        }
+      } catch (e) {
+        deps.log(`already-fixed-since check skipped (${e instanceof Error ? e.message : e})`);
+      }
+    }
     await deps
       .broadcast(
         `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
-        summary,
+        summary + alreadyFixedNote,
       )
       .catch(() => {});
     // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the
@@ -1071,7 +1096,7 @@ export async function runGreenCheckpoint(
         emitAwaitedEvent({
           key: 'green-checkpoint:red',
           summary: `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`,
-          payload: { sha: candidate, from: lastReady ?? null, summary },
+          payload: { sha: candidate, from: lastReady ?? null, summary: summary + alreadyFixedNote },
           source: 'green-checkpoint',
         }),
       )
@@ -1079,7 +1104,7 @@ export async function runGreenCheckpoint(
     // P-002: durable human-facing escalation (transition-only, cleared on green).
     await deps.escalate?.(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}`,
+      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${alreadyFixedNote}`,
     ).catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
     // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a

@@ -10,6 +10,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
@@ -174,6 +176,78 @@ describe('cc PostToolUse coord-inbox hook — operator-independent paths', () =>
     const r = runCoord({ PAPERCUSP_SID: sid });
     expect(r.status).toBe(0); // a coord/operator blip never blocks the turn
     expect(r.stdout).toBe(''); // and never injects junk
+  });
+});
+
+// ── P-015: the ≥80% loud context gauge on an EMPTY inbox (heads-down coverage) ──
+// A mock operator returns a coord:inbox result with NO new entries but a server-rendered
+// `context_gauge`; the hook must inject it (the zero-new-mail gap that caused EI-6597),
+// and inject NOTHING when the gauge is null (below 80%).
+function mockOperator(inbox: unknown): Promise<{ server: Server; url: string }> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: JSON.stringify(inbox) }] },
+          }),
+        );
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ server, url: `http://127.0.0.1:${port}` });
+    });
+  });
+}
+
+describe('cc PostToolUse coord-inbox hook — P-015 loud gauge on empty inbox', () => {
+  it('injects the server-rendered context_gauge when there are NO new entries', async () => {
+    const sid = 'sid-gauge';
+    fs.writeFileSync(
+      join(cache, `coord-cursor-${sid}.json`),
+      JSON.stringify({ since_ts: '2020-01-01T00:00:00Z' }),
+    );
+    const gauge =
+      '⚠ context: 260000/300000 (87%) — approaching your soft compaction limit; reach a clean stopping point soon and call session:request-compaction (or /compact) with a focus.';
+    const { server, url } = await mockOperator({
+      owner_id: sid,
+      summary: {},
+      entries: [],
+      injection: '',
+      context_gauge: gauge,
+    });
+    const r = runCoord({ PAPERCUSP_SID: sid, PAPERCUSP_OPERATOR_URL: url });
+    server.close();
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    expect(out.hookSpecificOutput.additionalContext).toContain('context: 260000/300000 (87%)');
+    expect(out.hookSpecificOutput.additionalContext).toContain('session:request-compaction');
+  });
+
+  it('injects NOTHING on an empty inbox when context_gauge is null (below 80%)', async () => {
+    const sid = 'sid-quiet';
+    fs.writeFileSync(
+      join(cache, `coord-cursor-${sid}.json`),
+      JSON.stringify({ since_ts: '2020-01-01T00:00:00Z' }),
+    );
+    const { server, url } = await mockOperator({
+      owner_id: sid,
+      summary: {},
+      entries: [],
+      injection: '',
+      context_gauge: null,
+    });
+    const r = runCoord({ PAPERCUSP_SID: sid, PAPERCUSP_OPERATOR_URL: url });
+    server.close();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
   });
 });
 
