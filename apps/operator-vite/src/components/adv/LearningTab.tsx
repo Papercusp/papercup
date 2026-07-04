@@ -62,6 +62,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { usePromptDialog } from '@/app/harness/usePromptDialog';
 import { hiveHomeLabel } from '@/lib/hive-label';
+import { useLexicon } from '@/lib/useLexicon';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
 import LearningEfficacyPanel from './LearningEfficacyPanel';
@@ -71,8 +72,11 @@ import LearningPackCandidates from './LearningPackCandidates';
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'throughput', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
 
-/** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
-const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
+/** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip.
+ *  Built per-render from the active lexicon so agent-noun copy (brain / contributor /
+ *  pot, or their swarm-skin aliases) tracks the FLAGS.THE_HIVE pack (restore-pot-lexicon P-006). */
+function buildHowSteps(t: ReturnType<typeof useLexicon>): Record<LView, { title: string; desc: string }[]> {
+  return {
   improvements: [
     {
       title: 'Notice',
@@ -130,21 +134,21 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
     },
     {
       title: 'Grade',
-      desc: 'Grade routed ideas 1–5 with an optional note — the Queen auto-grades the rest, and your grade always wins. Grades shift the lens weights below, and recent notes are quoted to the next cycle’s ideators.',
+      desc: `Grade routed ideas 1–5 with an optional note — the ${t('brain')} auto-grades the rest, and your grade always wins. Grades shift the lens weights below, and recent notes are quoted to the next cycle’s ideators.`,
     },
   ],
   throughput: [
     {
       title: 'Place',
-      desc: 'The Queen ranks the ready work and fans it onto bees — as many per wake as there are free slots. Frontier depth is how much waits; placements/wake is how fast she pours.',
+      desc: `The ${t('brain')} ranks the ready work and fans it onto ${t('contributor', { plural: true, lower: true })} — as many per wake as there are free slots. Frontier depth is how much waits; placements/wake is how fast she pours.`,
     },
     {
       title: 'Run',
-      desc: 'Each placed bee runs to completion. Busy-vs-cap is fleet utilization, mean-time-to-complete is how long a placement takes, and a stuck count flags bees that stopped advancing.',
+      desc: `Each placed ${t('contributor', { lower: true })} runs to completion. Busy-vs-cap is fleet utilization, mean-time-to-complete is how long a placement takes, and a stuck count flags ${t('contributor', { plural: true, lower: true })} that stopped advancing.`,
     },
     {
       title: 'Unblock',
-      desc: 'When a bee hits a question, where it resolves — itself, a peer vote, the Queen, or you — is the question-rung split. A loop operating well keeps the frontier draining without pegging the fleet or stranding placements.',
+      desc: `When a ${t('contributor', { lower: true })} hits a question, where it resolves — itself, a peer vote, the ${t('brain')}, or you — is the question-rung split. A loop operating well keeps the frontier draining without pegging the fleet or stranding placements.`,
     },
   ],
   knowledge: [
@@ -164,7 +168,7 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
   learnings: [
     {
       title: 'Seeded',
-      desc: 'A new hive starts with a learning pack — curated working wisdom copied into its shared memory, badged so you can always tell it apart from what the hive learned itself.',
+      desc: `A new ${t('pot', { lower: true })} starts with a learning pack — curated working wisdom copied into its shared memory, badged so you can always tell it apart from what the ${t('pot', { lower: true })} learned itself.`,
     },
     {
       title: 'Grown',
@@ -175,7 +179,8 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
       desc: 'Everything here is editable — fix a learning that doesn’t fit your project, remove what you disagree with, add what’s missing. Agents treat the pool as strong defaults, not gospel.',
     },
   ],
-};
+  };
+}
 
 /** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they
  *  read the tab-level `?lhive=`. The rest are workspace-global (Benchmark,
@@ -184,6 +189,8 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
 const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>(['improvements', 'gym', 'learnings']);
 
 export default function LearningTab() {
+  const t = useLexicon();
+  const howSteps = buildHowSteps(t);
   const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
   const [showHow, setShowHow] = useQueryState('how', parseAsBoolean.withDefault(true));
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
@@ -273,7 +280,7 @@ export default function LearningTab() {
             onClick={() => void setLview('throughput')}
           >
             <Activity size={13} aria-hidden />
-            <span>Throughput<em>queen loop</em></span>
+            <span>Throughput<em>{t('brain', { lower: true })} loop</em></span>
           </button>
           <button
             type="button"
@@ -293,7 +300,7 @@ export default function LearningTab() {
             onClick={() => void setLview('learnings')}
           >
             <Brain size={13} aria-hidden />
-            <span>Learnings<em>hive memory</em></span>
+            <span>Learnings<em>{t('pot', { lower: true })} memory</em></span>
           </button>
         </div>
         <div className="pc-learning__controlsright">
@@ -301,16 +308,16 @@ export default function LearningTab() {
               workspace-global views (Benchmark / Scout / Knowledge / Throughput)
               hide the picker since they ignore it. */}
           {hiveAware ? (
-            <Tooltip label="Scope the hive-aware views (Improvements, Gym, Learnings) to one hive — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.">
+            <Tooltip label={`Scope the ${t('pot', { lower: true })}-aware views (Improvements, Gym, Learnings) to one ${t('pot', { lower: true })} — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.`}>
               <label className="pc-learning__hivepick">
                 <Brain size={12} aria-hidden />
-                <span className="pc-learning__hivepicklabel">hive</span>
+                <span className="pc-learning__hivepicklabel">{t('pot', { lower: true })}</span>
                 <Select
-                  ariaLabel="Hive lens"
+                  ariaLabel={`${t('pot')} lens`}
                   value={hive}
                   onChange={(v: string) => void setLhive(v)}
                   disabled={hives.length === 0}
-                  placeholder={hives.length === 0 ? 'no hives yet' : undefined}
+                  placeholder={hives.length === 0 ? `no ${t('pot', { plural: true, lower: true })} yet` : undefined}
                   triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
                   options={hives.map((h) => ({
                     value: h.slug,
@@ -334,7 +341,7 @@ export default function LearningTab() {
 
       {showHow ? (
         <ol className="pc-learning__how" aria-label="How this works">
-          {HOW_STEPS[view].map((s, i) => (
+          {howSteps[view].map((s, i) => (
             <li key={s.title} className="pc-learning__howstep">
               <span className="pc-learning__hownum" aria-hidden>{i + 1}</span>
               <span className="pc-learning__howbody">
@@ -363,7 +370,7 @@ export default function LearningTab() {
       )}
 
       <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each hive’s editable memory lives in Learnings.
+        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}’s editable memory lives in Learnings.
       </p>
 
       <LearningStyles />
