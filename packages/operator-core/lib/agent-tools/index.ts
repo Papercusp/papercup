@@ -382,6 +382,7 @@ import './setup/set_telemetry';
 import './setup/set_update_channel';
 import './setup/save_key';
 import './setup/complete';
+import './setup/set_tutorial_progress';
 import './docs/outline';
 import './docs/get';
 import './docs/search';

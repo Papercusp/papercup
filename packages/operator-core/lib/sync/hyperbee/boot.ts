@@ -2916,8 +2916,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // SEPARATE corestore that is NEVER passed to store.replicate (the §5.3
       // fail-closed premise); the roster/epoch reads federate under the hive
       // home slug when one is bound (grants/epochs live there), else our own.
+      //
+      // WI-1910 hardening: DEFERRED off the join critical path. This block
+      // holds three awaits against best-effort deps (scoped corestore open,
+      // PG fleet-directory read, ensureOwnScopes) — a NON-SETTLING one used
+      // to wedge the entire join silently BEFORE swarm.join (no joined-topic,
+      // no join-FAILED, zero dials: exactly the WI-1910 rig signature, and
+      // the one hypothesis the run-#5 logs could not cheaply distinguish).
+      // So it is kicked off here un-awaited; the join awaits it AFTER
+      // swarm.join with a bounded wait (below), so the scoped layer is
+      // normally wired before boot returns but can only ever DELAY the join,
+      // never block it. On a late settle it wires in the background — every
+      // consumer (onAnnounce :2814, declareParticipatingScopes, the handle
+      // getter) null-guards. The closure catches internally and never rejects.
+      const scopedInitDone = (async () => {
       try {
-        const scopedStore = await getHarnessScopedStore(storeOpts);
+        const scopedStore = opts.scopedStoreOverride
+          ? await opts.scopedStoreOverride()
+          : await getHarnessScopedStore(storeOpts);
         if (!scopeRegistry) {
           // Narrowed at the boundary (scope-cores.ts convention): Corestore
           // sessions structurally satisfy ScopedSessionLike.
@@ -2976,6 +2992,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           `scoped-log layer unavailable: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
+      })();
       // SUBSTRATE_SIDECAR Option B (WI-604): build the replication-offload seam.
       // A test override wins; else, when the OFF-by-default flag is ON, route each
       // accepted peer socket to the sidecar via offloadReplicationToSidecar.
@@ -3064,6 +3081,37 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         `[swarm] joined topic ${topic.toString('hex').slice(0, 16)}… ` +
           `harness=${opts.harnessSlug} (announcing as github_user_id=${identity.githubUserId})`,
       );
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'join_succeeded',
+        `topic=${topic.toString('hex').slice(0, 16)}…`,
+      );
+      // WI-1910 hardening: bounded wait for the deferred scoped-log init.
+      // Normally it settled long before the swarm join did, so this is a
+      // no-op; a stalled dep delays return by at most scopedInitWaitMs and
+      // is recorded LOUDLY (a silently-absent scoped layer is the same
+      // invisible-failure class as the silently-local-only harness below).
+      {
+        const scopedWaitMs = opts.scopedInitWaitMs ?? 10_000;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = await Promise.race([
+          scopedInitDone.then(() => false),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(true), scopedWaitMs);
+          }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (timedOut) {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'announce_error',
+            `scoped-log layer init still pending after ${scopedWaitMs}ms — ` +
+              `join continued without it; it wires in the background if/when it settles`,
+          );
+        }
+      }
     } catch (e) {
       // Swarm join failed (DHT unreachable / port blocked / gh-auth or keychain
       // can't resolve the announce identity / etc). Record + continue — local

@@ -82,6 +82,15 @@ export type BootHistoryKind =
   | 'boot_fail'
   | 'close'
   | 'peer_connected'
+  // WI-1910 hardening (join-lifecycle witnesses): 'join_started' fires at
+  // joinForBinding ENTRY (before its first await), 'join_succeeded' after the
+  // swarm join returns. A 'join_started' with NEITHER 'join_succeeded' NOR
+  // 'swarm_join_failed' is the silent-wedge signature (an await stuck on the
+  // join critical path); no 'join_started' at all means the join was never
+  // attempted. The WI-1910 rig hunt had no signal separating those two states
+  // from a healthy-but-undialed swarm — each is a different bug class.
+  | 'join_started'
+  | 'join_succeeded'
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'

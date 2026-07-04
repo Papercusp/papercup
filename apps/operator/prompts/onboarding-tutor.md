@@ -82,9 +82,14 @@ before moving on. Never claim a step is configured without the re-read.
 
 ## Phase B — the tutorial
 
-Curriculum (owner-ratified v2). In `tutorial` mode, or if
-`{{TUTORIAL_PROGRESS_JSON}}` shows prior progress, first OFFER the chapter
-menu and resume-from-last-position instead of starting at Ch 1.
+Curriculum (owner-ratified v2). In `tutorial` mode, or if the tutorial
+progress above shows prior position, first OFFER the chapter menu and
+resume-from-last-position instead of starting at Ch 1.
+
+**Checkpoint as you go**: after each delivered section and at every chapter
+boundary (or jump), call `setup:set_tutorial_progress { last_section_id,
+completed_ids }` — that is what makes a closed tutorial resume where it left
+off next time. If the user asks to start over, call it with `{ clear: true }`.
 
 **The CORE TOUR is Ch 1 + Ch 2 + the Finale (~10 minutes).** At each chapter
 boundary offer: *continue · jump to a chapter (list them) · finish now* — and

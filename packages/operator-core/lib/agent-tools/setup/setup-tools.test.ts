@@ -48,6 +48,7 @@ const setChannel = (await import('./set_update_channel')).default;
 const complete = (await import('./complete')).default;
 const saveKey = (await import('./save_key')).default;
 const status = (await import('./status')).default;
+const setProgress = (await import('./set_tutorial_progress')).default;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
@@ -115,6 +116,34 @@ describe('setup:save_key', () => {
       github_pat: 'ghp_existing',
       anthropic_api_key: 'sk-ant-abcdef',
     });
+  });
+});
+
+describe('setup:set_tutorial_progress', () => {
+  it('merges position + completed list, preserving other wizard state', async () => {
+    await call(setTelemetry, { enabled: true });
+    let b = body(await call(setProgress, { last_section_id: 'ch1-01-server-gui-tutorial' }));
+    expect(b.tutorial_progress).toMatchObject({ last_section_id: 'ch1-01-server-gui-tutorial' });
+
+    b = body(
+      await call(setProgress, {
+        last_section_id: 'ch2-01-plans',
+        completed_ids: ['ch1-01-server-gui-tutorial', 'ch1-02-pots-harnesses-blueprints'],
+      }),
+    );
+    expect(b.tutorial_progress).toMatchObject({
+      last_section_id: 'ch2-01-plans',
+      completed_ids: ['ch1-01-server-gui-tutorial', 'ch1-02-pots-harnesses-blueprints'],
+    });
+    expect(typeof b.tutorial_progress.updated_at).toBe('string');
+    expect(wizard()).toMatchObject({ telemetry_enabled: true }); // merge, not replace
+  });
+
+  it('clear erases progress (restart from the top)', async () => {
+    await call(setProgress, { last_section_id: 'ch2-01-plans' });
+    const b = body(await call(setProgress, { clear: true }));
+    expect(b.tutorial_progress).toBeNull();
+    expect(wizard()?.tutorial_progress).toBeUndefined();
   });
 });
 

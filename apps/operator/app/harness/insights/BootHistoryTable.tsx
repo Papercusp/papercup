@@ -25,6 +25,12 @@ export type BootHistoryKind =
   | 'boot_fail'
   | 'close'
   | 'peer_connected'
+  // WI-1910 hardening: join-lifecycle witnesses (started at joinForBinding
+  // entry; succeeded after the swarm join returns; the failure side is the
+  // existing 'swarm_join_failed'). started-without-either-outcome = a wedged
+  // join — the silent state the WI-1910 hunt could not distinguish.
+  | 'join_started'
+  | 'join_succeeded'
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'
@@ -37,6 +43,9 @@ export type BootHistoryKind =
   | 'peer_revoked'
   | 'peer_unrevoked'
   | 'replication_stalled'
+  // P-004 (WI-1840): attached-but-dead replication — was in the canonical
+  // union but missing here (same exhaustiveness drift as peer_cap_near above).
+  | 'replication_frozen'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
@@ -74,6 +83,8 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   boot_fail: 'var(--bad)',
   close: 'var(--fg-dim)',
   peer_connected: 'var(--accent)',
+  join_started: 'var(--fg-dim)',
+  join_succeeded: 'var(--good)',
   swarm_join_failed: 'var(--warn)',
   peer_rejected: 'var(--warn)',
   peer_rate_limited: 'var(--bad)',
@@ -82,6 +93,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   peer_revoked: 'var(--bad)',
   peer_unrevoked: 'var(--good)',
   replication_stalled: 'var(--bad)',
+  replication_frozen: 'var(--bad)',
   announce_admitted: 'var(--good)',
   announce_pending: 'var(--warn)',
   announce_rejected: 'var(--warn)',
@@ -104,6 +116,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   boot_fail: '✗',
   close: '×',
   peer_connected: '⇄',
+  join_started: '▶',
+  join_succeeded: '🔗',
   swarm_join_failed: '⚠',
   peer_rejected: '⛔',
   peer_rate_limited: '🛑',
@@ -112,6 +126,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_revoked: '🚫',
   peer_unrevoked: '↩',
   replication_stalled: '🧊',
+  replication_frozen: '❄',
   announce_admitted: '➕',
   announce_pending: '⏳',
   announce_rejected: '⛔',
