@@ -89,6 +89,39 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('overwatch-scorecard-skipped');
   });
 
+  // 4c — rubric-emission-dark (WI-2374): enabled + STOPPED long past a wake must
+  // NOT be silent forever ('not-started' reads benign to the freshness interpreter,
+  // so nothing else ever surfaces a stopped monitor's dead rubric emission).
+  const DARK_NOW = 100 * 3_600_000;
+
+  it('overwatch enabled + STOPPED, last wake 7h ago → rubric-emission-dark advisory', () => {
+    const h = mkHealth({ evaluatedAt: DARK_NOW, panels: { overwatch: { data: { flagEnabled: true, started: false, lastWakeAt: DARK_NOW - 7 * 3_600_000 } } } });
+    const sig = evaluateLivenessAlarm(h, null).find((s) => s.key === 'rubric-emission-dark');
+    expect(sig?.severity).toBe('advisory');
+    expect(sig?.summary).toContain('7h');
+    expect(sig?.summary).toContain('STOPPED');
+  });
+
+  it('enabled + STOPPED but only 2h dark → within the 6h grace, no signal', () => {
+    const h = mkHealth({ evaluatedAt: DARK_NOW, panels: { overwatch: { data: { flagEnabled: true, started: false, lastWakeAt: DARK_NOW - 2 * 3_600_000 } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('rubric-emission-dark');
+  });
+
+  it('flag OFF + stopped → no rubric-emission-dark (explicitly disabled is not an alarm)', () => {
+    const h = mkHealth({ evaluatedAt: DARK_NOW, panels: { overwatch: { data: { flagEnabled: false, started: false, lastWakeAt: DARK_NOW - 30 * 3_600_000 } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('rubric-emission-dark');
+  });
+
+  it('never woke (lastWakeAt null) → no signal (a fresh pre-armed install stays quiet)', () => {
+    const h = mkHealth({ evaluatedAt: DARK_NOW, panels: { overwatch: { data: { flagEnabled: true, started: false, lastWakeAt: null } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('rubric-emission-dark');
+  });
+
+  it('started (running) → no rubric-emission-dark; the started cases belong to 4/4b', () => {
+    const h = mkHealth({ evaluatedAt: DARK_NOW, panels: { overwatch: { data: { flagEnabled: true, started: true, lastWakeAt: DARK_NOW - 30 * 3_600_000 } } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('rubric-emission-dark');
+  });
+
   it('all LLM accounts paused → accounts-starved blocker', () => {
     const h = mkHealth({ panels: { tokens: { data: { accountsTotal: 9, accountsAvailable: 0 } } } });
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('accounts-starved');

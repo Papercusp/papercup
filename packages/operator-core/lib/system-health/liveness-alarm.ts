@@ -68,6 +68,9 @@ export interface AlarmSignal {
 const DEFAULT_SNAPSHOT_STALE_MS = 6 * 60_000;
 const DEFAULT_DEBOUNCE_MS = 30 * 60_000;
 const DEFAULT_INTERVAL_MS = 2 * 60_000;
+/** 6h since the last wake before an enabled-but-STOPPED overwatch fires
+ *  `rubric-emission-dark` — generous vs any deliberate short pause. */
+const RUBRIC_EMISSION_DARK_GRACE_MS = 6 * 60 * 60_000;
 
 /**
  * PURE: derive the critical supervision signals from a SystemHealth snapshot.
@@ -147,6 +150,27 @@ export function evaluateLivenessAlarm(
           ? `Overwatch emitting only PARTIAL hive-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
           : `Overwatch woke but emitted NO complete hive-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
     });
+  }
+
+  // 4c. Rubric emission dark — flag ON but the supervisor is STOPPED, long past a
+  //     wake. 4/4b both gate on `started`, and the freshness interpreter reads
+  //     'not-started' as benign — so a monitor stopped mid-flight went silent
+  //     FOREVER (WI-2374: emission died with overwatch on 2026-07-02 and nothing
+  //     noticed). Fires only when it HAS woken before (lastWakeAt != null — a
+  //     never-started fresh install stays quiet) and after a 6h grace. Auto-resolves
+  //     when overwatch restarts OR the flag is turned off (making the pause explicit).
+  if (ow?.flagEnabled && !ow.started && ow.lastWakeAt != null) {
+    const darkMs = health.evaluatedAt - ow.lastWakeAt;
+    if (darkMs > RUBRIC_EMISSION_DARK_GRACE_MS) {
+      signals.push({
+        key: 'rubric-emission-dark',
+        severity: 'advisory',
+        summary:
+          `hive-coordination-health AGENT emission dark ${Math.round(darkMs / 3_600_000)}h — overwatch is enabled but STOPPED ` +
+          `(last wake ${new Date(ow.lastWakeAt).toISOString()}). The scheduled pulse keeps a deterministic floor, but the ` +
+          `agent trend is blind. overwatch:start to resume, or turn the papercusp-overwatch flag OFF to make the pause explicit.`,
+      });
+    }
   }
 
   // 5. LLM substrate starved — every pool account paused. ONLY trusted when the

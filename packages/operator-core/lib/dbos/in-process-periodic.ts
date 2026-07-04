@@ -586,6 +586,29 @@ const sharedPresenceReaperCheck: PeriodicCheck = {
   },
 };
 
+// Every 10min: rubric-emission floor pulse (WI-2374 adoption step 1). Files the
+// deterministic hive-coordination-health floor when NO scorecard (agent or floor)
+// landed in the last hour — the data layer no longer dies with a stopped/dead
+// overwatch (the turn-end backstop only fires when an overwatch turn ENDS). Zero
+// LLM tokens; flag-gated (papercusp-overwatch) inside the pulse; a live overwatch
+// makes this a cheap freshness read + no-op. HEAVY when it fires (computeSystemHealth)
+// → sheds under saturation; a shed cycle just delays the floor 10min.
+const scorecardEmissionPulseCheck: PeriodicCheck = {
+  name: 'scorecard-emission-pulse',
+  intervalMs: 600_000,
+  shed: true,
+  tick: async () => {
+    const { readRegistry } = await import('../workspace-registry');
+    const { runScorecardEmissionPulse } = await import('../scorecard-emission-pulse');
+    for (const ws of readRegistry().workspaces.map((w) => w.id)) {
+      const r = await runScorecardEmissionPulse({ workspaceId: ws });
+      if (r.outcome === 'filed') {
+        console.warn(`[scorecard-emission-pulse] ${ws}: ${r.reason}`);
+      }
+    }
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -601,6 +624,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     federationDrainReconcileCheck,
     hiveEpochKeyReconcileCheck,
     sharedPresenceReaperCheck,
+    scorecardEmissionPulseCheck,
   ];
 }
 
