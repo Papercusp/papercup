@@ -19,6 +19,13 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+// EI-7284: the P-011 prompt-weight budget ratchet, run HERE too. This file is
+// the quick-check the CLAUDE.md "Adding a tool" discipline mandates after a
+// guidance/description edit — folding the budget suite in means that mandated
+// run reds a budget breach locally, instead of it slipping to the green gate
+// (a ~12h fleet-wide deploy wedge). Same suite the standalone
+// tool-guidance-budget.test.ts runs, from one shared source of truth.
+import { describeToolGuidanceBudget } from './tool-guidance-budget.shared';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '../../../../');
@@ -326,3 +333,7 @@ describe('tools-md-sync', () => {
     });
   });
 });
+
+// EI-7284: run the P-011 prompt-weight budget ratchet as part of this
+// quick-check so `npx vitest run tools-md-sync` reds an over-budget tool.
+describeToolGuidanceBudget();

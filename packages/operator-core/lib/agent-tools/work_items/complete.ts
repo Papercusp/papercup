@@ -143,6 +143,22 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
       ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', so it stays claimable and the auto-loop may re-place work on it. Pass top-level \`state\` (feature: 'passed'|'deprecated'; issue: 'resolved'|'closed') to close it.`
       : undefined;
 
+  // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
+  // unit is either VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent. A
+  // completion carrying NEITHER is exactly the "settled a unit without saying whether it was
+  // checked" gap the discipline closes. SOFT warning, not a hard reject (D-005): this file's
+  // whole contract is EI-24 "a finished completion is normalised, never hard-rejected+lost"
+  // — the coerce layer, the state-write catch, and stateWarning all record-and-warn rather
+  // than drop, so hard-rejecting HERE would be the one place that violates it. Mirrors
+  // stateWarning: attached to the result + surfaced to the caller; the completion is still
+  // recorded + emitted. Rides the write-echo passthrough (write-echo-shape.ts).
+  const hasTests = typeof it.completion.tests === 'string' && it.completion.tests.trim().length > 0;
+  const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
+  const verificationWarning =
+    !hasTests && !hasDeferred
+      ? `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
+      : undefined;
+
   // Fill provenance defaults so the rendered notification is complete (D-006).
   const completion = {
     ...it.completion,
@@ -163,6 +179,7 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
     ...(stateError ? { stateError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
+    ...(verificationWarning ? { verificationWarning } : {}),
   };
 }
 

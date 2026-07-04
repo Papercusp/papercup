@@ -240,6 +240,14 @@ describe("shapeFleetAssignments (P-022)", () => {
     const weird = { ok: false, error: "x" };
     expect(shapeFleetAssignments(weird, "trimmed")).toBe(weird);
   });
+
+  it("sessionState defaults to null when the wakeability read was unavailable (EI-6077)", () => {
+    const noSessionState = { ...data, agents: [agentRow(0, { sessionState: undefined })] };
+    const out = shapeFleetAssignments(noSessionState, "trimmed") as {
+      agents: Record<string, unknown>[];
+    };
+    expect(out.agents[0].sessionState).toBeNull();
+  });
 });
 
 describe("coord:plan-events tier defaults (P-022 — ctx-tier-adaptive, hook-safe)", () => {

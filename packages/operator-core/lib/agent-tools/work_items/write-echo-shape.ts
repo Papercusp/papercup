@@ -11,7 +11,7 @@
  * additionally drops the `completion`/`outputPayload` echoes (pure replays of
  * the caller's OWN input — inherently recoverable, flagged once at the
  * envelope by `echo_note`, D-004). Outcome fields (ok/id/error/holder/hint/
- * stateError/stateWarning/reflect) always pass through verbatim.
+ * stateError/stateWarning/verificationWarning/reflect) always pass through verbatim.
  */
 
 export const WRITE_ECHO_TIER_CAPS = {

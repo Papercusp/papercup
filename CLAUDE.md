@@ -378,7 +378,10 @@ training cutoffs; don't guess from memory.
    `packages/operator-core/lib/operator-mcp-tools.ts`; oracle:
    `packages/operator-core/lib/agent-tools/oracle/prompts.ts`).
 5. **Run** `cd packages/operator-core && npx vitest run tools-md-sync` — green
-   before commit.
+   before commit. This quick-check now also enforces the P-011 prompt-weight
+   budget (≤1500 soft / ≤1600 hard per tool's description+guidance), so an
+   over-budget guidance edit reds HERE instead of silently wedging the green
+   gate (EI-7284).
 
 Per-tool when/not-when goes on the tool; cross-tool patterns in
 `<role>.tools.md`; behavior rules in `<role>.persona.md`. The split is
