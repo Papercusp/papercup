@@ -494,9 +494,13 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
       // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
       // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
       // wrapper before recovering); lsp is pure code-intelligence a coordination worker
-      // never needs, so dropping it deletes one tool-call attractor. (The doom-loop
-      // attractor `eval` is a HALLUCINATED tool — not a real builtin to strip — so the
-      // fix for that is the kickoff's explicit tools:invoke escape hatch, not a flag.)
+      // never needs, so dropping it deletes one tool-call attractor. The other attractor,
+      // `eval`, is a REAL omp shell builtin (NOT hallucinated as this comment long claimed)
+      // and the WORST offender — ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239)
+      // despite the coord-hook block + an escalating steer; message-based fixes can't break
+      // the reflex, so it is disabled at the omp-config layer instead (eval.py/eval.js=false,
+      // ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches the
+      // surface. The kickoff tools:invoke escape hatch remains the positive redirect.
       '--no-lsp',
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
@@ -578,9 +582,13 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
       // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
       // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
       // wrapper before recovering); lsp is pure code-intelligence a coordination worker
-      // never needs, so dropping it deletes one tool-call attractor. (The doom-loop
-      // attractor `eval` is a HALLUCINATED tool — not a real builtin to strip — so the
-      // fix for that is the kickoff's explicit tools:invoke escape hatch, not a flag.)
+      // never needs, so dropping it deletes one tool-call attractor. The other attractor,
+      // `eval`, is a REAL omp shell builtin (NOT hallucinated as this comment long claimed)
+      // and the WORST offender — ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239)
+      // despite the coord-hook block + an escalating steer; message-based fixes can't break
+      // the reflex, so it is disabled at the omp-config layer instead (eval.py/eval.js=false,
+      // ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches the
+      // surface. The kickoff tools:invoke escape hatch remains the positive redirect.
       '--no-lsp',
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
