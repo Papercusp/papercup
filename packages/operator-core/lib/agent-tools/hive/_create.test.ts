@@ -494,6 +494,8 @@ describe('createHiveHarness', () => {
       expect(res.path).toBe(join(tmpParent, 'fresh-hive'));
       expect(readdirSync(tmpParent)).toContain('fresh-hive');
       expect(existsSync(join(res.path!, '.papercusp', 'blueprint.yaml'))).toBe(true);
+      // No existingPath -> no repo context for the resolver -> localDirs stays [] (unchanged).
+      expect(resolveExtendsCalls).toEqual([{ localDirs: [] }]);
     });
   });
 });
