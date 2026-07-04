@@ -126,8 +126,26 @@ const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) ||
  *  only ensures the compaction's own output has begun, so the gate reads it as mid-turn
  *  rather than the pre-compaction at-prompt quiet. Distinct from CLEAR_SETTLE_MS: /clear
  *  is a fast repaint budget, /compact runs a summarizer (seconds-to-minutes, variable),
- *  so the carry-note is gated on completion, NOT a fixed settle. */
+ *  so the carry-note is gated on completion, NOT a fixed settle.
+ *
+ *  WI-1872 (2), START-RACE: this used to be a bare fixed delay before the
+ *  completion-wait began. If `/compact`'s own summarizer is slow to emit its
+ *  first byte, the busy-gate's output-quiet check at the 2s mark can still read
+ *  as quiet (pre-compaction idle, never updated) → the completion-wait resolves
+ *  IMMEDIATELY, and the continuation types into a still-compacting/thinking TUI
+ *  (wedge / lost turn). `waitUntilBusy` (below) turns this into a BOUNDED poll
+ *  for the agent to actually go busy, falling back to the old fixed-delay
+ *  behavior if busy is never observed (e.g. a CLI that doesn't repaint during
+ *  compaction) — same default budget, strictly safer in the race case. */
 const COMPACT_START_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_START_MS) || 2_000;
+
+/** WI-1872 (1), COMPLETION-CAP DROP: the completion-wait for `/compact` used to
+ *  reuse TURN_INJECT_BUSY_CAP_MS (180s) — sized for a normal wake turn, not a
+ *  summarizer over a large transcript. A compaction that runs longer than 180s
+ *  hit the cap and silently DROPPED the carry-note (the loop then sat cold with
+ *  no continuation). Give compaction its own, generous, env-tunable completion
+ *  budget — separate from (and independent of) the wake-turn busy cap. */
+const COMPACT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS) || 600_000;
 
 /** How long a RECYCLE waits for the killed child to actually exit before it
  *  spawns the fresh one, so we never double-spawn into a still-dying pty
@@ -318,9 +336,14 @@ export function makeAgentBusyGate({
       return t - (getLast() || 0);
     },
     /** Resolve once output has been quiet for quietMs (agent at its prompt), or
-     *  defer after capMs (agent still mid-turn — drop the live inject). */
-    async waitAtPrompt() {
-      const deadline = now() + capMs;
+     *  defer after capMs (agent still mid-turn — drop the live inject).
+     *  WI-1872 (1): `overrideCapMs` lets a caller use a DIFFERENT completion
+     *  budget than this gate's own construction-time `capMs` (e.g. compaction's
+     *  generous COMPACT_BUSY_CAP_MS vs the wake-turn's TURN_INJECT_BUSY_CAP_MS)
+     *  without needing a second gate instance over the same activity tracker. */
+    async waitAtPrompt(overrideCapMs) {
+      const effectiveCapMs = overrideCapMs ?? capMs;
+      const deadline = now() + effectiveCapMs;
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -330,6 +353,23 @@ export function makeAgentBusyGate({
         const need = quietMs - quietFor;
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
+      }
+    },
+    /** WI-1872 (2): the START-RACE fix. Resolves as soon as output goes BUSY
+     *  (quietForMs drops below quietMs — the agent started emitting), so a
+     *  caller can safely gate the NEXT wait (waitAtPrompt, for completion) on
+     *  actual activity instead of a fixed delay. Falls back to `{ started:
+     *  false }` after `capMs` if busy is never observed — the caller should
+     *  treat that exactly like the old fixed-delay behavior (proceed anyway;
+     *  the completion-wait's own quiet check still protects against writing
+     *  into a truly still-busy TUI). Pure — exported via the gate object. */
+    async waitUntilBusy(capMs) {
+      const deadline = now() + capMs;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (this.quietForMs() < quietMs) return { started: true };
+        if (now() >= deadline) return { started: false };
+        await new Promise((r) => setTimeout(r, Math.max(10, Math.min(50, deadline - now()))));
       }
     },
   };
@@ -500,6 +540,14 @@ export function compactCommandForAgent(agent, focus) {
  *  as fallback. */
 export function compactStartMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_START_MS, COMPACT_START_MS);
+}
+
+/** The compaction COMPLETION-wait budget (WI-1872 (1)): dedicated, generous cap for how
+ *  long the host waits for a `/compact` to finish before dropping the carry-note — distinct
+ *  from TURN_INJECT_BUSY_CAP_MS (sized for a normal wake turn, not a summarizer pass over a
+ *  large transcript). Env-tunable, module default as fallback. */
+export function compactBusyCapMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS, COMPACT_BUSY_CAP_MS);
 }
 
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
@@ -842,15 +890,25 @@ export function hostThroughPty(o) {
           // (1) submit /compact <focus>
           await submit(compactCmd);
           if (!msg.data) return; // bare compact — no continuation requested
-          // (2) let the compaction begin so the busy gate reads it as mid-turn
-          await new Promise((r) => setTimeout(r, compactStartMs(env)));
-          // (3) wait through the compaction to completion (or DROP the carry on cap)
-          const done = await agentBusyGate.waitAtPrompt();
+          // (2) WI-1872 (2): wait for the compaction to actually go BUSY (bounded —
+          // falls back to the old fixed compactStartMs(env) delay if busy is never
+          // observed), instead of unconditionally sleeping a fixed delay and hoping
+          // the compaction has started by then. Fixes the START-RACE: a slow-to-emit
+          // summarizer used to still read as quiet at the fixed-delay mark, so the
+          // completion-wait below resolved immediately and typed the continuation
+          // into a still-compacting TUI.
+          await agentBusyGate.waitUntilBusy(compactStartMs(env));
+          // (3) wait through the compaction to completion (or DROP the carry on cap).
+          // WI-1872 (1): a DEDICATED, generous completion budget (compactBusyCapMs),
+          // not the wake-turn's TURN_INJECT_BUSY_CAP_MS — a large-transcript compaction
+          // can legitimately run past 180s and used to be dropped silently on that cap.
+          const compactCapMs = compactBusyCapMs(env);
+          const done = await agentBusyGate.waitAtPrompt(compactCapMs);
           if (done.deferred) {
             try {
               process.stderr.write(
                 `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
-                  `(compaction still running > ${turnInjectBusyCapMs}ms cap); ` +
+                  `(compaction still running > ${compactCapMs}ms cap); ` +
                   `the agent's loop / next turn resumes it\n`,
               );
             } catch {

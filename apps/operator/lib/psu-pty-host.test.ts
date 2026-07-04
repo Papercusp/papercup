@@ -19,6 +19,7 @@ import {
   resetWritesForAgent,
   compactCommandForAgent,
   compactStartMs,
+  compactBusyCapMs,
   fireSessionCompactedEvent,
   SESSION_COMPACTED_EMIT_ENTRY,
   fleetOscFromEnv,
@@ -250,6 +251,15 @@ describe('compactStartMs (WI-1804 compaction START delay)', () => {
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '3500' })).toBe(3500);
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: 'nope' })).toBe(2000);
     expect(compactStartMs({ PAPERCUSP_PSU_PTY_COMPACT_START_MS: '-5' })).toBe(2000);
+  });
+});
+
+describe('compactBusyCapMs (WI-1872 (1) — dedicated compaction completion budget)', () => {
+  it('defaults to 600000ms (10min); env override wins; a bad override falls back', () => {
+    expect(compactBusyCapMs({})).toBe(600_000);
+    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '900000' })).toBe(900_000);
+    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: 'nope' })).toBe(600_000);
+    expect(compactBusyCapMs({ PAPERCUSP_PSU_PTY_COMPACT_BUSY_CAP_MS: '-5' })).toBe(600_000);
   });
 });
 
@@ -529,5 +539,64 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
     const r = await g.waitAtPrompt();
     expect(r.deferred).toBe(true);
     expect(r.reason).toBe('agent-busy');
+  });
+
+  // WI-1872 (1): the compaction completion-wait needs a DIFFERENT (generous)
+  // cap than the gate's own construction-time capMs (sized for a wake turn) —
+  // waitAtPrompt(overrideCapMs) lets one gate instance serve both budgets.
+  it('waitAtPrompt(overrideCapMs) uses the override instead of the gate\'s own capMs', async () => {
+    let t = 0;
+    const g = makeAgentBusyGate({
+      lastOutputAt: () => t, // perpetually busy
+      quietMs: 1_000_000,
+      capMs: 30, // the gate's OWN (small) cap — must be ignored here
+      now: () => (t += 10),
+    });
+    const r = await g.waitAtPrompt(1000); // a much larger override
+    expect(r.deferred).toBe(true);
+    expect(r.reason).toBe('agent-busy');
+    expect(t).toBeGreaterThanOrEqual(1000); // ran the OVERRIDE budget, not the 30ms one
+  });
+
+  it('waitAtPrompt() with no override still uses the gate\'s own capMs (back-compat)', async () => {
+    let t = 0;
+    const g = makeAgentBusyGate({
+      lastOutputAt: () => t,
+      quietMs: 1_000_000,
+      capMs: 30,
+      now: () => (t += 10),
+    });
+    const r = await g.waitAtPrompt();
+    expect(r.deferred).toBe(true);
+    expect(t).toBeLessThan(200); // stayed close to the small 30ms cap, not a large one
+  });
+
+  // WI-1872 (2): the START-RACE fix — waitUntilBusy resolves the moment output
+  // goes busy, instead of a blind fixed delay that can race a slow-to-emit
+  // compaction summarizer.
+  describe('waitUntilBusy (WI-1872 (2) — bounded wait for the agent to go busy)', () => {
+    it('resolves { started:true } as soon as output is observed busy', async () => {
+      let t = 0;
+      let busyAt = 50; // output goes busy at t=50
+      const g = makeAgentBusyGate({
+        lastOutputAt: () => (t >= busyAt ? t : 0),
+        quietMs: 5, // "busy" = quiet-for < 5ms
+        now: () => (t += 10),
+      });
+      const r = await g.waitUntilBusy(1000);
+      expect(r.started).toBe(true);
+      expect(t).toBeGreaterThanOrEqual(busyAt);
+    });
+
+    it('falls back to { started:false } after capMs when busy is never observed', async () => {
+      let t = 0;
+      const g = makeAgentBusyGate({
+        lastOutputAt: () => 0, // never emits — always reads as quiet/at-prompt
+        quietMs: 5,
+        now: () => (t += 10),
+      });
+      const r = await g.waitUntilBusy(30);
+      expect(r.started).toBe(false);
+    });
   });
 });

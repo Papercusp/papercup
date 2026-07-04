@@ -8,9 +8,10 @@
  * embedder cascade is `./embedder`. All three are mocked here so we isolate
  * exactly the handler-only logic:
  *
- *   - scope normalization: `all` (or empty/absent) → the 4 default sources
- *     (escalations/brainstorm/turns/decisions); an explicit subset passes
- *     through verbatim;
+ *   - scope normalization: empty/absent → the 4 historic default sources
+ *     (escalations/brainstorm/turns/decisions, unchanged so existing unscoped
+ *     callers see no behavior change); explicit `all` → all 5 (+ work_item,
+ *     EI-6984); an explicit subset passes through verbatim;
  *   - `SEARCH_SOURCES.filter(scope.includes(name))` → which sources reach
  *     the engine;
  *   - limit defaulting (5) + workspaceId fallback ('' when ctx.workspaceId
@@ -104,10 +105,14 @@ describe('search:fulltext — scope normalization', () => {
     expect(ftCalls[0].sourceNames).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
   });
 
-  it('scope:["all"] expands to the same 4 defaults', async () => {
+  // EI-6984: 'work_item' is opt-in-only for the OMITTED-scope default (a bare
+  // search:fulltext call keeps returning exactly the historic 4 sources so
+  // existing unscoped callers see no behavior change) but an EXPLICIT
+  // scope:['all'] means "every source", so it expands to all 5.
+  it('scope:["all"] expands to all 5 sources (the 4 historic defaults + work_item)', async () => {
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'x', scope: ['all'] } as never, CTX() as never);
-    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions']);
+    expect(payloadOf(res as never).scope).toEqual(['escalations', 'brainstorm', 'turns', 'decisions', 'work_item']);
   });
 
   it('an explicit subset is passed through and limits the sources reaching the engine', async () => {
@@ -115,6 +120,15 @@ describe('search:fulltext — scope normalization', () => {
     const res = await tool.handler({ query: 'x', scope: ['brainstorm', 'decisions'] } as never, CTX() as never);
     expect(payloadOf(res as never).scope).toEqual(['brainstorm', 'decisions']);
     expect(ftCalls[0].sourceNames).toEqual(['brainstorm', 'decisions']);
+  });
+
+  // EI-6984: the actual bug this closes — scope:['work_item'] used to be silently
+  // dropped (not a recognized enum value at all), so a dedup-before-filing check
+  // always reused the same 4-source scope with no error and no work_item results.
+  it('scope:["work_item"] is accepted and echoed (the EI-6984 fix) — not silently dropped', async () => {
+    const tool = (await import('./fulltext')).default;
+    const res = await tool.handler({ query: 'x', scope: ['work_item'] } as never, CTX() as never);
+    expect(payloadOf(res as never).scope).toEqual(['work_item']);
   });
 
   // GAP 12 — scope edge: `!args.scope?.length` (an empty array, distinct from
