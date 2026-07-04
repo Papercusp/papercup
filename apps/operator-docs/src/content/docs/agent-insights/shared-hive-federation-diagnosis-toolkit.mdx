@@ -306,7 +306,8 @@ landed with no diagnostic signal at all.
   gist gate, so the owner's own announce was rejected before the bootstrap could rescue it.
   **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now
   hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) —
-  `boot.ts` ~1727. Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap`
+  `boot.ts` ~2290 (line drifts as the file grows; anchor on the function name).
+  Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap`
   fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan
   `shared-hive-public-release-2026-06-22` D-011.
 - **GOTCHA — a stale `kind=topic` harness on the same hive topic INTERCEPTS the owner
