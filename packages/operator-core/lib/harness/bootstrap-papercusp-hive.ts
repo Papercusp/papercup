@@ -43,7 +43,7 @@ import {
   type CanonicalHiveInvite,
 } from './papercusp-hive-join';
 import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
-import { restoreHiveSeed, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
+import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';
@@ -180,13 +180,17 @@ async function defaultFindJoinedCanonical(pubkeyBase64: string): Promise<{ slug:
 async function defaultRestoreHiveSeed(
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<RestoreHiveSeedResult> {
-  // --no-seed escape hatch: force the cold join path even if a seed is bundled.
-  if (process.env.PAPERCUSP_NO_SEED) {
+  // Resolve the bundled seed dir: --no-seed escape hatch, then PAPERCUSP_SEED_DIR
+  // override, then Tauri bundled-resource autodetect (<resourceRoot>/seed). A
+  // wrong/empty candidate resolves to null → the unchanged cold path.
+  const resolved = resolveSeedDir();
+  if (resolved.disabled) {
     record?.('clone', 'running', { detail: 'seed: disabled (PAPERCUSP_NO_SEED) — cold join' });
     return { ran: false, outcomes: [], deferred: [] };
   }
-  const seedDir = process.env.PAPERCUSP_SEED_DIR;
+  const seedDir = resolved.seedDir;
   if (!seedDir) return { ran: false, outcomes: [], deferred: [] };
+  record?.('clone', 'running', { detail: `seed: found (${resolved.source}) — restoring before join` });
   const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
   // Restore the corestore into the canonical hive's store dir; the git checkout into
   // the clones dir the join would otherwise populate.

@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { generateSeedKey } from '@papercusp/seed-bundle';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import { cutHiveSeed } from './seed-cutter';
-import { restoreHiveSeed, SEED_MANIFEST_FILE } from './restore-hive-seed';
+import { restoreHiveSeed, resolveSeedDir, SEED_MANIFEST_FILE } from './restore-hive-seed';
 
 const exec = promisify(execFile);
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -100,6 +100,56 @@ async function corestoreSeededLength(targetStoreDir: string, keyHex: string): Pr
   await core.ready();
   return core.length;
 }
+
+describe('resolveSeedDir — bundled-seed-dir resolution (P-010 live-wire 1)', () => {
+  const MANIFEST = `/${SEED_MANIFEST_FILE}`;
+  /** exists() that returns true only for the listed absolute dir+manifest paths. */
+  const existsOnly = (present: string[]) => (p: string) => present.includes(p);
+
+  it('PAPERCUSP_NO_SEED ⇒ disabled cold path, beats an otherwise-valid SEED_DIR', () => {
+    const r = resolveSeedDir({
+      env: { PAPERCUSP_NO_SEED: '1', PAPERCUSP_SEED_DIR: '/seed' },
+      exists: existsOnly([`/seed${MANIFEST}`]),
+    });
+    expect(r).toEqual({ seedDir: null, disabled: true, source: 'no-seed' });
+  });
+
+  it('PAPERCUSP_SEED_DIR with a manifest ⇒ explicit override (source: env)', () => {
+    const r = resolveSeedDir({ env: { PAPERCUSP_SEED_DIR: '/seed' }, exists: existsOnly([`/seed${MANIFEST}`]) });
+    expect(r).toEqual({ seedDir: '/seed', disabled: false, source: 'env' });
+  });
+
+  it('PAPERCUSP_SEED_DIR without a manifest ⇒ cold path (source: env-missing), never a broken restore', () => {
+    const r = resolveSeedDir({ env: { PAPERCUSP_SEED_DIR: '/seed' }, exists: existsOnly([]) });
+    expect(r).toEqual({ seedDir: null, disabled: false, source: 'env-missing' });
+  });
+
+  it('autodetects <resourceRoot>/seed from a sibling resource env (dirname + /seed)', () => {
+    // Tauri hands PAPERCUSP_PROMPTS_DIR=<root>/prompts; the seed dir is <root>/seed.
+    const r = resolveSeedDir({
+      env: { PAPERCUSP_PROMPTS_DIR: '/opt/app/resources/prompts' },
+      exists: existsOnly([`/opt/app/resources/seed${MANIFEST}`]),
+    });
+    expect(r).toEqual({ seedDir: '/opt/app/resources/seed', disabled: false, source: 'autodetect:PAPERCUSP_PROMPTS_DIR' });
+  });
+
+  it('falls through sibling envs to the first whose <root>/seed holds a manifest', () => {
+    const r = resolveSeedDir({
+      env: { PAPERCUSP_PROMPTS_DIR: '/a/prompts', PAPERCUSP_HARNESS_DIR: '/b/harness' },
+      exists: existsOnly([`/b/seed${MANIFEST}`]), // only the harness-derived candidate has a manifest
+    });
+    expect(r).toEqual({ seedDir: '/b/seed', disabled: false, source: 'autodetect:PAPERCUSP_HARNESS_DIR' });
+  });
+
+  it('no env + no autodetect hit ⇒ cold path (source: none) — dev boxes + seed-less builds', () => {
+    const r = resolveSeedDir({ env: { PAPERCUSP_PROMPTS_DIR: '/a/prompts' }, exists: existsOnly([]) });
+    expect(r).toEqual({ seedDir: null, disabled: false, source: 'none' });
+  });
+
+  it('empty env ⇒ cold path (source: none)', () => {
+    expect(resolveSeedDir({ env: {}, exists: existsOnly([]) })).toEqual({ seedDir: null, disabled: false, source: 'none' });
+  });
+});
 
 describe('restoreHiveSeed — restore-before-join orchestration', () => {
   it('no seed present ⇒ cold path (ran:false), never throws', async () => {

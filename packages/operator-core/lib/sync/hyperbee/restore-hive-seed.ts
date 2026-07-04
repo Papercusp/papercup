@@ -28,7 +28,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   decodeManifest,
   restoreSeed,
@@ -42,6 +42,71 @@ import { createGitSeedProvider } from './seed-provider-git';
 import { createCorestoreSeedProvider } from './seed-provider-corestore';
 
 export const SEED_MANIFEST_FILE = 'manifest.json';
+
+/**
+ * Resource-dir env vars the Tauri sidecar hands the operator (see
+ * papercusp-desktop/src-tauri/src/main.rs — each is `sidecar_dir.join("<name>")`).
+ * The bundled seed dir is a SIBLING of these (`sidecar_dir.join("seed")`, bundled
+ * via the tauri.conf seed resource glob), so it resolves to
+ * `<dirname(any of these)>/seed`. Ordered by how reliably each is set on boot.
+ */
+const SEED_SIBLING_RESOURCE_ENVS = ['PAPERCUSP_PROMPTS_DIR', 'PAPERCUSP_HARNESS_DIR', 'PAPERCUSP_PG_SQL_DIR'] as const;
+
+export interface ResolveSeedDirResult {
+  /** The seed dir to restore from, or null ⇒ take the cold path. */
+  readonly seedDir: string | null;
+  /** True iff `--no-seed` forced the cold path — DISTINCT from "no seed found"
+   *  (both yield seedDir:null, but only this one is an explicit operator opt-out). */
+  readonly disabled: boolean;
+  /** How the dir was resolved (telemetry/debug):
+   *  'no-seed' | 'env' | 'env-missing' | `autodetect:${string}` | 'none'. */
+  readonly source: string;
+}
+
+/**
+ * Resolve WHERE the installer-bundled seed lives — headless-testably (pure over an
+ * injected env + existence check; the P-010 live-wire that replaces the bare
+ * PAPERCUSP_SEED_DIR default with real Tauri bundled-resource autodetect + an env
+ * override). Precedence:
+ *
+ *   1. `PAPERCUSP_NO_SEED`  → disabled (cold path), regardless of anything else —
+ *      the operator's kill-switch + how the cold-join canary forces a real join.
+ *   2. `PAPERCUSP_SEED_DIR` → explicit override (release/test hook); honored only
+ *      when it actually holds a manifest, else cold path.
+ *   3. AUTODETECT the bundled seed dir at `<sidecarResourceRoot>/seed` by deriving
+ *      it from a sibling resource dir the sidecar is already handed
+ *      (`dirname(<sibling>)/seed`), accepted only when its manifest is present.
+ *   4. Otherwise none — dev boxes + current seed-less packaged builds keep the
+ *      unchanged cold join.
+ *
+ * Accepting a candidate ONLY when its manifest.json exists means a wrong guess (or
+ * an empty placeholder seed dir) degrades to the cold path, never a broken restore.
+ */
+export function resolveSeedDir(
+  opts: { env?: Record<string, string | undefined>; exists?: (path: string) => boolean } = {},
+): ResolveSeedDirResult {
+  const env = opts.env ?? process.env;
+  const exists = opts.exists ?? existsSync;
+  const hasManifest = (dir: string): boolean => exists(join(dir, SEED_MANIFEST_FILE));
+
+  if (env.PAPERCUSP_NO_SEED) return { seedDir: null, disabled: true, source: 'no-seed' };
+
+  const explicit = env.PAPERCUSP_SEED_DIR;
+  if (explicit) {
+    return hasManifest(explicit)
+      ? { seedDir: explicit, disabled: false, source: 'env' }
+      : { seedDir: null, disabled: false, source: 'env-missing' };
+  }
+
+  for (const key of SEED_SIBLING_RESOURCE_ENVS) {
+    const sib = env[key];
+    if (!sib) continue;
+    const candidate = join(dirname(sib), 'seed');
+    if (hasManifest(candidate)) return { seedDir: candidate, disabled: false, source: `autodetect:${key}` };
+  }
+
+  return { seedDir: null, disabled: false, source: 'none' };
+}
 
 export interface RestoreHiveSeedCtx {
   /** The installed seed resource dir (holds manifest.json + per-store subdirs).
