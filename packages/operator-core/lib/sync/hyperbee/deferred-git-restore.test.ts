@@ -13,7 +13,7 @@ import type { EpochKey } from './hive-epoch-crypto';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
 import { resolveSeedDecryptionKey, triggerDeferredGitRestore } from './deferred-git-restore';
-import type { RestoreHiveSeedResult } from './restore-hive-seed';
+import type { RestoreHiveSeedCtx, RestoreHiveSeedResult } from './restore-hive-seed';
 
 const KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => i));
 
@@ -109,7 +109,7 @@ describe('triggerDeferredGitRestore', () => {
   });
 
   it('key resolves ⇒ re-restores the git store SCOPED to onlyKinds:[git], with the key', async () => {
-    const restore = vi.fn(async () => okRestore('git'));
+    const restore = vi.fn(async (_ctx: RestoreHiveSeedCtx) => okRestore('git'));
     const res = await triggerDeferredGitRestore({
       ...dirs,
       epochKeyProvider: providerWith(KEY),
@@ -118,7 +118,7 @@ describe('triggerDeferredGitRestore', () => {
     });
     expect(res).toEqual({ ran: true, restored: ['git'], stillDeferred: [] });
     expect(restore).toHaveBeenCalledTimes(1);
-    const arg = restore.mock.calls[0][0];
+    const arg = restore.mock.calls[0]![0];
     expect(arg.decryptionKey).toEqual(KEY);
     expect(arg.onlyKinds).toEqual(['git']);
     expect(arg.targetRepoDir).toBe('/repo');

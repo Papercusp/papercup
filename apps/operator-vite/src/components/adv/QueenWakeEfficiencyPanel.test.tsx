@@ -15,6 +15,9 @@ let qeffResult: Record<string, unknown> = { data: [], loading: false, fetching: 
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => qeffResult,
 }));
+// Lexicon resolver mocked to ECHO its key (t('brain') → 'brain') — isolates the
+// Queen→Brain routed copy from the THE_HIVE flag hook (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
 
@@ -45,7 +48,7 @@ describe('QueenWakeEfficiencyPanel', () => {
   it('renders the headline stats, rollup, and the recent per-wake strip', () => {
     qeffResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<QueenWakeEfficiencyPanel />);
-    expect(screen.getByText('Queen efficiency')).toBeTruthy();
+    expect(screen.getByText('brain efficiency')).toBeTruthy();
     // Headline stats (each value is unique enough to assert directly).
     expect(screen.getByText('2/3')).toBeTruthy(); // cached wakes (P-003 "cache is real" signal)
     expect(screen.getByText('4.5')).toBeTruthy(); // avg turns/wake (Win-2)
@@ -68,18 +71,18 @@ describe('QueenWakeEfficiencyPanel', () => {
       invalidate: vi.fn(),
     };
     render(<QueenWakeEfficiencyPanel />);
-    expect(screen.getByText(/No Queen wakes recorded yet/)).toBeTruthy();
+    expect(screen.getByText(/No brain wakes recorded yet/)).toBeTruthy();
   });
 
   it('degrades to the empty state on a malformed snapshot (defensive shape guard)', () => {
     qeffResult = { data: [{ totally: 'unexpected' }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<QueenWakeEfficiencyPanel />);
-    expect(screen.getByText(/No Queen wakes recorded yet/)).toBeTruthy();
+    expect(screen.getByText(/No brain wakes recorded yet/)).toBeTruthy();
   });
 
   it('renders the empty state while loading with no data', () => {
     qeffResult = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
     render(<QueenWakeEfficiencyPanel />);
-    expect(screen.getByText(/No Queen wakes recorded yet/)).toBeTruthy();
+    expect(screen.getByText(/No brain wakes recorded yet/)).toBeTruthy();
   });
 });

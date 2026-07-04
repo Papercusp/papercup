@@ -17,6 +17,7 @@
  */
 import { useSyncQuery } from '@papercusp/sync';
 import { Crown, RefreshCw } from 'lucide-react';
+import { useLexicon } from '@/lib/useLexicon';
 import type { QueenWakeEfficiency } from '@papercusp/operator-core/lib/hive/queen-wake-efficiency';
 
 /** A [0,1] ratio → integer percent. */
@@ -30,6 +31,7 @@ function compact(n: number): string {
 }
 
 export function QueenWakeEfficiencyPanel() {
+  const t = useLexicon();
   const sync = useSyncQuery<QueenWakeEfficiency>({
     queryName: 'learning.queenWakeEfficiency',
     args: {},
@@ -41,16 +43,16 @@ export function QueenWakeEfficiencyPanel() {
   const recent = samples.slice(0, 8);
 
   return (
-    <section className="pc-qeff" aria-label="Queen per-wake efficiency">
+    <section className="pc-qeff" aria-label={`${t('brain')} per-wake efficiency`}>
       <div className="pc-qeff__head">
         <h3 className="pc-qeff__title">
-          <Crown size={14} aria-hidden /> Queen efficiency
+          <Crown size={14} aria-hidden /> {t('brain')} efficiency
         </h3>
-        <span className="pc-qeff__sub">per-wake prompt cache (Win-1) + round-trips (Win-2) for the live Queen</span>
+        <span className="pc-qeff__sub">per-wake prompt cache (Win-1) + round-trips (Win-2) for the live {t('brain')}</span>
         <button
           type="button"
           className="pc-qeff__refresh"
-          aria-label="Reload Queen efficiency"
+          aria-label={`Reload ${t('brain')} efficiency`}
           disabled={sync.fetching}
           onClick={() => sync.invalidate()}
         >
@@ -60,7 +62,7 @@ export function QueenWakeEfficiencyPanel() {
 
       {wakes === 0 ? (
         <p className="pc-qeff__empty">
-          No Queen wakes recorded yet. Per-wake cache + turn efficiency appears once the Queen runs — the brief-cache
+          No {t('brain')} wakes recorded yet. Per-wake cache + turn efficiency appears once the {t('brain')} runs — the brief-cache
           (frozen prefix + precomputed brief) is what these numbers measure.
         </p>
       ) : (
@@ -91,7 +93,7 @@ export function QueenWakeEfficiencyPanel() {
             {snap!.turnsReportedWakes > 0 ? ` · ${snap!.turnsReportedWakes} reported turns` : ' · no turn counts yet'}
           </p>
           {recent.length > 0 ? (
-            <ul className="pc-qeff__list" aria-label="recent Queen wakes (newest first)">
+            <ul className="pc-qeff__list" aria-label={`recent ${t('brain')} wakes (newest first)`}>
               {recent.map((s, i) => {
                 const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
                 const hit = prompt > 0 ? s.cacheReadTokens / prompt : 0;
