@@ -49,3 +49,26 @@ TEMPLATE_CHECKS_CONFIG=<config> npm test -w @papercusp/templates   # the full un
 Worked consumer-#1 config (runs green against quartermaster):
 [`agentic-desktop-app/reference/quartermaster.checks-config.json`](agentic-desktop-app/reference/quartermaster.checks-config.json).
 Per-check contracts: each template's `checks/README.md`.
+
+## The template gym (landed: P-009)
+
+Anti-rot cadence (D-007: *the template is tested by building an app from it*):
+the `template-gym` system routine (`system:template-gym`, every 6h) re-verifies
+five legs — the P-013 verbatim-materialization invariant (`<id>/checks/*.test.ts`
+⇄ quartermaster `packages/template-checks/`, byte-identical;
+`composition-integrity` is declared repo-side-only), docs⇄catalog drift
+(`COMPONENT_CATALOG` ids ⊆ the published catalog page), the template-kit drift
+pins, this workspace's suite, and consumer #1's configured union inside the
+quartermaster repo. A standing RED auto-files ONE `template-drift` work-item
+(stable watchdogKey `template-gym:<leg>`); the gym is advisory and never gates.
+
+Code: `packages/operator-core/lib/harness/routines/template-gym-{runner,action}.ts`
+(+ `seed-template-gym-routine.ts`). On-demand run + per-leg re-run:
+
+```sh
+npx tsx packages/operator-core/lib/harness/routines/template-gym-runner.ts \
+  [--legs materialization,docs-catalog,kit-suite,template-suite,app-checks] \
+  [--qm-root <quartermaster clone>]        # default: the sibling ../quartermaster
+```
+
+Run history: `~/.papercusp/template-gym/` (`last-run.json` + `runs.jsonl`).

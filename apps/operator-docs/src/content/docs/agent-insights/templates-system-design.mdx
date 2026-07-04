@@ -189,7 +189,18 @@ agent's choices reviewable.
   true no-hand-holding test, because a retrofit lets author knowledge leak in.
 - **Template gym:** a cadence routine rebuilds consumer #1's composition from the
   templates and runs its checks; a red auto-files a template-drift work-item. *The
-  template is tested by building an app from it.*
+  template is tested by building an app from it.* **Landed (P-009):** the
+  `template-gym` system routine (`system:template-gym`, every 6h — seeded ACTIVE;
+  `packages/operator-core/lib/harness/routines/template-gym-{runner,action}.ts`)
+  re-verifies five legs: the P-013 verbatim-materialization invariant
+  (`templates/<id>/checks` ⇄ quartermaster `packages/template-checks`,
+  byte-identical), docs⇄catalog drift (`COMPONENT_CATALOG` ids ⊆ the catalog
+  page), the kit's manifest drift pins, the `@papercusp/templates` suite, and
+  consumer #1's configured union inside the quartermaster repo. A standing RED
+  auto-files ONE `template-drift` work-item (stable watchdogKey, exact-lookup
+  dedup); advisory — it never gates. On-demand:
+  `npx tsx packages/operator-core/lib/harness/routines/template-gym-runner.ts`;
+  history at `~/.papercusp/template-gym/`.
 
 ## Roadmap
 
