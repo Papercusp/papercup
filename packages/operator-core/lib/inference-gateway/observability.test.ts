@@ -43,11 +43,15 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
 test('projectHeadroom — maps the unified window + queue into the read-model', () => {
   const now = 1_000_000;
   const stats = baseStats({
+    processStartedAt: now - 12_345,
+    processUptimeMs: 12_345,
     unified: { window: '5h', utilization: 0.83, resetAt: now + 3600_000, rejected: false },
   });
   const h = projectHeadroom(stats, now);
   assert.equal(h.reachable, true);
   assert.equal(h.accountId, 'acct-main');
+  assert.equal(h.processStartedAt, now - 12_345);
+  assert.equal(h.processUptimeMs, 12_345);
   assert.equal(h.window, '5h');
   assert.equal(h.utilizationPct, 83);
   assert.equal(h.rejected, false);
@@ -55,6 +59,13 @@ test('projectHeadroom — maps the unified window + queue into the read-model', 
   assert.equal(h.paused, false);
   assert.equal(h.queueDepth, 5);
   assert.deepEqual(h.byPriority, [{ priority: 100, count: 1 }, { priority: 0, count: 4 }]);
+});
+
+test('projectHeadroom — derives process uptime from processStartedAt for mixed-version stats readers', () => {
+  const now = 1_000_000;
+  const h = projectHeadroom(baseStats({ processStartedAt: now - 5_000 }), now);
+  assert.equal(h.processStartedAt, now - 5_000);
+  assert.equal(h.processUptimeMs, 5_000);
 });
 
 test('projectHeadroom — paused/rejected window reflected', () => {

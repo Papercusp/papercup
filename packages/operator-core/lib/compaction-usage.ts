@@ -20,8 +20,8 @@ import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnde
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
 // robustness. Re-exported here so existing importers (+ compaction-usage.test.ts) are
-// unaffected; the estimate fallback below still calls it.
-export { newestTranscriptUnderOwner } from './claude-sessions';
+// unaffected; the estimate fallback below (estimateContextTokensForOwner) still calls it.
+export { newestTranscriptUnderOwner };
 
 export interface SessionRef {
   /** Backend: 'claude' | 'omp' | 'codex' | null (unknown → treated as claude). */
@@ -100,52 +100,6 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
     `;
     if (!rows.length) return null;
     return { agent: rows[0].agent, sessionId: rows[0].session_id };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * P-016 fallback resolver: the newest `*.jsonl` under this owner's isolation root
- * `<base>/<owner>/projects/<cwd>/` (excluding the `history.jsonl` shell log).
- *
- * Covers the cohort-independence gap that caused the 2026-07-04 dark-drift: the
- * `session_id` recorded in adv_sessions can go STALE (a resume mints a fresh Claude
- * UUID, so `<sessionId>.jsonl` no longer exists though a live transcript does), and
- * some launch cohorts write a `<sessionId>/` directory rather than a flat file. When
- * the exact-id lookup misses, the newest jsonl under the owner root is the session's
- * current transcript regardless of its UUID. Best-effort + single-owner-dir scan
- * (cheap — one readdir per project dir, never the 12k-owner sweep): null on any error.
- */
-export function newestTranscriptUnderOwner(
-  ownerId: string,
-  isolationBase: string = papercuspSessionClaudeBase(),
-): string | null {
-  // Guard the path join — owner ids are our own UUIDs, but never escape the root.
-  if (!ownerId || ownerId.includes('/') || ownerId.includes('..')) return null;
-  try {
-    const projectsRoot = path.join(isolationBase, ownerId, 'projects');
-    let best: { p: string; mtimeMs: number } | null = null;
-    for (const projDir of fs.readdirSync(projectsRoot)) {
-      const dir = path.join(projectsRoot, projDir);
-      let entries: string[];
-      try {
-        entries = fs.readdirSync(dir);
-      } catch {
-        continue; // not a dir / unreadable
-      }
-      for (const name of entries) {
-        if (!name.endsWith('.jsonl') || name === 'history.jsonl') continue;
-        const p = path.join(dir, name);
-        try {
-          const st = fs.statSync(p);
-          if (st.isFile() && (!best || st.mtimeMs > best.mtimeMs)) best = { p, mtimeMs: st.mtimeMs };
-        } catch {
-          /* vanished mid-scan */
-        }
-      }
-    }
-    return best?.p ?? null;
   } catch {
     return null;
   }

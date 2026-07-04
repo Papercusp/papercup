@@ -197,6 +197,15 @@ export interface RosterEntry {
    *  "in the middle of thinking" indicator). Best-effort proxy; false for agents
    *  with no resolvable transcript. */
   thinking: boolean;
+  /** Whether a transcript actually RESOLVES for this agent's live-thinking pane —
+   *  i.e. clicking it would show turns rather than an empty "waiting/stalled" pane.
+   *  Stamped for interactive CLAUDE sessions (sessionId): false when the recorded
+   *  session_id resolves to no transcript (a parked/ended agent whose transcript is
+   *  gone, or a stale id with no fallback) — the client then offers the honest
+   *  "Live thinking unavailable" note instead of opening an empty modal (WI-2680).
+   *  Defaults true for every other backend (bee run-log / codex / omp), whose
+   *  own handle-presence gates the affordance. */
+  thinkingResolvable: boolean;
 }
 
 /**
@@ -461,6 +470,9 @@ export function mergeRosterEntries(
       runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
       harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? null,
       thinking: false, // annotated by mergeRosterWithAssignments (transcript mtime)
+      // Default true (non-claude backends gate on their own handle); a claude session
+      // whose transcript doesn't resolve is flipped false in mergeRosterWithAssignments.
+      thinkingResolvable: true,
     };
   });
 }
@@ -529,6 +541,7 @@ export function pendingLaunchesToRosterEntries(
       runId: null,
       harnessSlug: null,
       thinking: false,
+      thinkingResolvable: true,
     };
   });
 }
@@ -756,13 +769,20 @@ export async function mergeRosterWithAssignments(
   // backend's transcript path is cached, so this is one cheap stat/agent. Claude
   // sessions key by sessionId (+owner fast path); codex by the adv row id (its
   // CODEX_HOME key); omp by thread id.
-  const { isSessionThinking, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
+  const { resolveSessionThinkingState, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
   const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
   const nowMs = Date.now();
   await Promise.all(
     active.map(async (e) => {
       if (e.sessionId) {
-        e.thinking = await isSessionThinking(e.sessionId, { owner: e.ownerId, nowMs }).catch(() => false);
+        // ONE resolve → both signals: `thinking` (transcript mtime recent) AND
+        // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended
+        // claude session whose transcript is gone flips resolvable→false so the client
+        // shows the honest "Live thinking unavailable" note, not an empty pane (WI-2680).
+        const state = await resolveSessionThinkingState(e.sessionId, { owner: e.ownerId, nowMs })
+          .catch(() => ({ resolvable: false, thinking: false }));
+        e.thinking = state.thinking;
+        e.thinkingResolvable = state.resolvable;
       } else if (e.agent === 'codex' && e.advSessionId != null) {
         e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
       } else if (e.ompThreadId) {

@@ -46,7 +46,15 @@ async function gatherCapacity(): Promise<BriefCapacity | undefined> {
     const hr = await fetchGatewayHeadroom({ timeoutMs: 1200 });
     if (!hr.reachable) return undefined;
     const r = buildCapacityReport(hr, { clampArmed: false, tierMap: parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP) });
-    return { factor: r.factor, dispatchBudget: r.dispatchBudget, utilizationPct: r.utilizationPct, paused: r.paused, advice: r.advice };
+    return {
+      factor: r.factor,
+      dispatchBudget: r.dispatchBudget,
+      utilizationPct: r.utilizationPct,
+      paused: r.paused,
+      restartRecovering: r.restartRecovering,
+      processUptimeMs: r.processUptimeMs,
+      advice: r.advice,
+    };
   } catch {
     return undefined;
   }

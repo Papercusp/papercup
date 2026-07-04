@@ -45,7 +45,7 @@ registry's *shape* changed.
 
 Today the registry is
 `REGISTRY` in `packages/operator-core/lib/sync-resolver/index.ts` (the "v2"
-resolver) — a flat `Record<string, QueryEntry>` (~51 entries as of 2026-07-04) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
+resolver) — a flat `Record<string, QueryEntry>` (152 entries as of 2026-07-04) keyed by a **dotted string name** (`'featuresConsolidated.bySlug'`,
 `'snapshotsConsolidated.bySlug'`, `'storage.usage'`, …), each entry pairing
 a Zod `argsSchema` with an async `resolve(args)` that runs a normal
 drizzle/PG query and returns a flat row array. There is no `defineQueries`
@@ -67,14 +67,14 @@ tables in `harness_shared`, each read by a `.bySlug` query keyed on
 |---|---|---|
 | `featuresConsolidated.bySlug` | `FeatureRow[]` | `{ harnessSlug }` |
 | `issuesConsolidated.bySlug` | `IssueRow[]` | `{ harnessSlug }` |
-| `agentRunsConsolidated.bySlug` (or `.recent`) | `AgentRunRow[]` | `{ harnessSlug }` |
+| `agentRunsConsolidated.bySlug` (or `agentRunsConsolidated.recent`) | `AgentRunRow[]` | `{ harnessSlug }` |
 | `snapshotsConsolidated.bySlug` | `SnapshotRow[]` | `{ harnessSlug }` |
 | `harnessProjects.lite` | `ProjectRow[]` | (none) |
 | `harnessWorkspaces.byHarness` | `WorkspaceRow[]` | `{ harnessSlug }` |
 
-`featuresConsolidated` also carries `.byHive` (cross-member browse, WI-259 P-006/D-010) and `.byPlanSlug`.
+`featuresConsolidated` also carries `featuresConsolidated.byHive` (cross-member browse, WI-259 P-006/D-010) and `featuresConsolidated.byPlanSlug`.
 
-The doc text claiming a `needsReview` variant, a `.bySourcePlan` form, or a `.all` form is drift —
+The doc text claiming a `needsReview` variant, a `bySourcePlan` form, or an `all` form is drift —
 those queries do not exist in the registry. Adding a new harness still doesn't add a query — the slug
 is a regular row value, not a schema name.
 
@@ -185,8 +185,8 @@ constraint is gone along with Zero, but the trigger-attachment reason still
 holds on its own, so the architecture is unchanged.
 
 The cross-harness `/features` page reads from the consolidated table via the
-`.byHive` named query. (The doc previously claimed a `featuresConsolidated.all`
-query — that does not exist; it was drift.)
+`featuresConsolidated.byHive` named query. Earlier versions of this page
+claimed an all-features query existed; that was drift.
 
 If you need another cross-harness aggregation, the recipe is:
 

@@ -255,6 +255,10 @@ export interface CapacityReport {
   capByTier: { tier: number; cap: number | null; inFlight: number; queued: number }[] | null;
   inFlight: number | null;
   queueDepth: number | null;
+  /** Milliseconds since the gateway process started, when the stats payload exposes it. */
+  processUptimeMs: number | null;
+  /** True when a blocked/zero-capacity reading is within the fresh-gateway restart grace window. */
+  restartRecovering: boolean;
   /** Pool spare-capacity factor in [0,1] (1 = full headroom, 0 = no fresh capacity). */
   factor: number;
   /** When `headroom` was supplied: that raw fresh-spawn count clamped to spare capacity. */
@@ -295,6 +299,7 @@ export function buildCapacityReport(
     rejected: hr.rejected,
     queueDepth: hr.queueDepth,
     inFlight: hr.inFlight,
+    processUptimeMs: hr.processUptimeMs,
   };
 
   if (!hr.reachable) {
@@ -303,6 +308,7 @@ export function buildCapacityReport(
       utilization: null, utilizationPct: null, paused: false, rejected: false, resetInSec: null,
       healthyAccounts: null, tier1Reserve: null, beeTier,
       dispatchBudget: null, capByTier: null, inFlight: null, queueDepth: null,
+      processUptimeMs: null, restartRecovering: false,
       factor: 1, recommendedHeadroom: opts.headroom ?? null, throttled: opts.headroom != null ? false : null,
       advice: 'gateway unreachable → place at your normal ceiling (fail-safe, no capacity clamp)',
     };
@@ -315,6 +321,7 @@ export function buildCapacityReport(
   signal.healthyAccounts = pt?.healthyAccounts ?? null;
   signal.dispatchBudget = dispatchBudget;
   const factor = capacityFactor(signal, config);
+  const restartRecovering = isFreshGatewayRestart(signal, config);
   const tieredSpareCapacity = hasTieredBeeCapacity(signal);
   // A weekly-capped account reports BOTH paused:true and rejected:true; trust the tier oracle
   // (healthy accounts + bee-tier spare slots) over the bound-account block — same rationale as
@@ -330,7 +337,9 @@ export function buildCapacityReport(
     throttled = decision.throttled;
   }
 
-  const advice = poolBlocked
+  const advice = restartRecovering
+    ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
+    : poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
     : factor <= 0.25
       ? `scarce (factor ${factor.toFixed(2)}) → place the top-ranked items only, hold the rest${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
@@ -354,6 +363,8 @@ export function buildCapacityReport(
     capByTier,
     inFlight: hr.inFlight ?? null,
     queueDepth: hr.queueDepth ?? null,
+    processUptimeMs: hr.processUptimeMs ?? null,
+    restartRecovering,
     factor,
     recommendedHeadroom,
     throttled,

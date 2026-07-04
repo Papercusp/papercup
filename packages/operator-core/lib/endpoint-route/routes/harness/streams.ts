@@ -667,7 +667,7 @@ const sessionThinkingStream = defineTool({
       signal: req.signal,
       heartbeatMs: 15_000,
       setup: async (sink) => {
-        const { findSessionTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
+        const { resolveInteractiveTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
         const { findCodexRolloutPath, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
         const { createCodexTimelineParser, createOmpTimelineParser } = await import('../../../session-timeline-parsers');
         const source = codexSessionKey
@@ -675,7 +675,11 @@ const sessionThinkingStream = defineTool({
           : ompThreadId
             ? { resolve: () => findOmpSessionPath(ompThreadId), newParser: createOmpTimelineParser }
             : sessionId
-              ? { resolve: () => findSessionTranscript(sessionId, { owner }), newParser: createAgentTimelineParser }
+              // P-016 fallback (WI-2680): resolve the exact recorded session_id first,
+              // then — on a miss — the newest transcript under the owner root, so a
+              // session that RESUMED (fresh uuid ⇒ stale recorded id) still streams its
+              // CURRENT transcript instead of an empty "waiting/stalled" pane.
+              ? { resolve: () => resolveInteractiveTranscript(sessionId, { owner }), newParser: createAgentTimelineParser }
               : null;
         if (!source) { sink.event('backfill', []); sink.done({}); return; }
         let path = await source.resolve();

@@ -1,6 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { composeOrient } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
+
+const foldFactsMock = vi.hoisted(() => vi.fn(async () => []));
+
+vi.mock('../../../agent-facts/store', () => ({
+  foldFacts: foldFactsMock,
+}));
+
+beforeEach(() => {
+  foldFactsMock.mockResolvedValue([]);
+});
 
 function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => unknown>): {
   call: InnerCall;

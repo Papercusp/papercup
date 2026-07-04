@@ -154,12 +154,23 @@ beforeAll(async () => {
   // Migration 379: the maintained readiness sidecar (some claim-path code paths reference
   // work_item_blocked even on the inline arm via the sidecar table; apply it for parity).
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  // WI-2118 reserved-plan-lane floor: the issue-claim path now LEFT-references these two tables
+  // (harness_plans.status='active' + a live plan_item_claims lease). Minimal DDL — just the columns
+  // the reservedPlanLaneExclusionSql floor reads (see work-items.ts).
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
+      plan_slug text PRIMARY KEY, status text );
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
+      plan_slug text NOT NULL, item_id text NOT NULL, owner text NOT NULL,
+      expires_ts timestamptz NOT NULL,
+      PRIMARY KEY (plan_slug, item_id) );`).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
+                       harness_shared.harness_plans, harness_shared.plan_item_claims`;
   h.issuesClaimable = false;
 });
 

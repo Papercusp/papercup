@@ -8,6 +8,7 @@ import {
   queenCapacityHeadroom,
   DEFAULT_CAPACITY_DISPATCH_CONFIG as CFG,
   buildFleetSizingAdvisory,
+  buildCapacityReport,
 } from './capacity-dispatch';
 import { planBatchPlacement } from './batch-placement';
 import type { PlacementTask } from './placement-affinity';
@@ -148,6 +149,66 @@ test('a GENUINELY all-paused pool (no healthy accounts) still throttles to the f
   assert.equal(capacityFactor({ reachable: true, paused: true, healthyAccounts: 0, dispatchBudget: 0 }), 0);
 });
 
+test('fresh gateway restart avoids treating startup zero-capacity snapshot as sustained exhaustion', () => {
+  const signal = {
+    reachable: true,
+    paused: true,
+    rejected: true,
+    utilization: 1,
+    queueDepth: 0,
+    healthyAccounts: 0,
+    dispatchBudget: 0,
+    processUptimeMs: 5_000,
+  };
+  assert.equal(capacityFactor(signal), 1);
+  const d = computeCapacityHeadroom(13, signal);
+  assert.equal(d.factor, 1);
+  assert.equal(d.headroom, 13);
+  assert.equal(d.throttled, false);
+  assert.match(d.reason, /capacity-recovering/);
+});
+
+test('expired gateway restart grace still treats no-capacity paused pool as saturated', () => {
+  const signal = {
+    reachable: true,
+    paused: true,
+    rejected: true,
+    utilization: 1,
+    healthyAccounts: 0,
+    dispatchBudget: 0,
+    processUptimeMs: 45_000,
+  };
+  assert.equal(capacityFactor(signal), 0);
+  const d = computeCapacityHeadroom(13, signal);
+  assert.equal(d.headroom, CFG.minHeadroom);
+  assert.equal(d.throttled, true);
+});
+
+test('capacity report labels fresh gateway zero-capacity snapshot as recovering advice', () => {
+  const r = buildCapacityReport(
+    {
+      reachable: true,
+      paused: true,
+      rejected: true,
+      utilization: 1,
+      utilizationPct: 100,
+      queueDepth: 0,
+      processUptimeMs: 4_000,
+      priorityTiers: {
+        healthyAccounts: 0,
+        tier1Reserve: 0,
+        tiers: [{ tier: 3, cap: 20, inFlight: 20, queued: 0 }],
+      },
+    },
+    { clampArmed: true, headroom: 13 },
+  );
+  assert.equal(r.restartRecovering, true);
+  assert.equal(r.factor, 1);
+  assert.equal(r.recommendedHeadroom, 13);
+  assert.equal(r.throttled, false);
+  assert.match(r.advice, /startup capacity snapshot is recovering/);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');
@@ -164,10 +225,12 @@ test('resolveCapacityConfig — env tuning over defaults; bad values fall back',
     QUEEN_CAPACITY_MIN_HEADROOM: '5',
     QUEEN_CAPACITY_QUEUE_SOFT_CAP: '48',
     QUEEN_CAPACITY_UTIL_HIGH: '0.9',
+    QUEEN_CAPACITY_RESTART_GRACE_MS: '15000',
   } as NodeJS.ProcessEnv);
   assert.equal(c.minHeadroom, 5);
   assert.equal(c.queueSoftCap, 48);
   assert.equal(c.utilizationHigh, 0.9);
+  assert.equal(c.restartRecoveryWindowMs, 15_000);
   const bad = resolveCapacityConfig(undefined, { QUEEN_CAPACITY_MIN_HEADROOM: 'nope' } as NodeJS.ProcessEnv);
   assert.equal(bad.minHeadroom, CFG.minHeadroom);
 });

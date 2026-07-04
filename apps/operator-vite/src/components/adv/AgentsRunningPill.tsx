@@ -63,6 +63,13 @@ export interface RosterAgent {
    *  the last few seconds) — drives the roster's pulsing "in the middle of
    *  thinking" indicator. */
   thinking?: boolean | null;
+  /** Whether a transcript actually RESOLVES for this agent's live-thinking pane.
+   *  Stamped by the server for interactive CLAUDE sessions: false when the recorded
+   *  session_id resolves to no transcript (a parked/ended agent whose transcript is
+   *  gone). Gates the "Live thinking" affordance so clicking never opens an empty
+   *  pane — an unresolvable session shows the honest "unavailable" note instead
+   *  (WI-2680). Absent/true for every other backend (bee / codex / omp). */
+  thinkingResolvable?: boolean;
   /** The adv_sessions row id + the OS terminal-window handle for this agent, when
    *  recorded. `windowId` (an X11 window id, resolved via wmctrl) is the ONLY
    *  reliable focus target — every gnome-terminal shares one server pid, so a pid
@@ -82,10 +89,19 @@ export function canFocusWindow(a: Pick<RosterAgent, 'windowId'>): boolean {
 
 /** Whether an agent has a viewable thinking stream — a spawned bee's run-log, a
  *  claude session's transcript, a codex session's rollout (keyed by its adv row
- *  id), or an omp session's thread jsonl. Pure — exported for tests. */
+ *  id), or an omp session's thread jsonl. Pure — exported for tests.
+ *
+ *  `thinkingResolvable === false` VETOES the affordance: the server resolved the
+ *  interactive claude session's transcript and found none (a parked/ended agent
+ *  whose transcript is gone), so opening the pane would show an empty
+ *  "waiting/stalled" state. Gating here turns that into the honest "unavailable"
+ *  note instead of a misleading empty modal (WI-2680). The veto is safe — it only
+ *  fires when the stream WOULD be empty; a live session's transcript file always
+ *  resolves, so a working pane is never hidden. */
 export function hasThinking(
-  a: Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId'>,
+  a: Pick<RosterAgent, 'runId' | 'harnessSlug' | 'sessionId' | 'agent' | 'advSessionId' | 'ompThreadId' | 'thinkingResolvable'>,
 ): boolean {
+  if (a.thinkingResolvable === false) return false;
   return Boolean(
     (a.runId && a.harnessSlug)
     || a.sessionId
@@ -561,11 +577,13 @@ function AgentDetailStrip({
         <dt>Doing</dt><dd>{agent.intent || '(no declared intent)'}</dd>
       </dl>
       {/* Guarded: only an agent with a resolvable thinking source (bee run-log,
-          or a claude/codex/omp transcript handle) gets the action — no dead
-          button otherwise. The rare row WITHOUT one (a presence-only process
-          that never recorded a launch/session handle) gets an explicit note
-          instead of a silently-inert row, so "clicking does nothing" reads as a
-          known limitation, not a broken pane. */}
+          or a claude/codex/omp transcript that ACTUALLY resolves) gets the action —
+          no dead button otherwise. Two "no thinking" cases get an explicit,
+          accurate note instead of a silently-inert row OR an empty modal (WI-2680):
+          (a) a presence-only process that never recorded a session/run/thread
+          handle, and (b) a claude session WITH a handle whose transcript no longer
+          resolves (parked/ended agent, transcript rotated/cleaned away) — flagged
+          by thinkingResolvable===false. */}
       {hasThinking(agent) ? (
         <button
           type="button"
@@ -575,6 +593,11 @@ function AgentDetailStrip({
         >
           ▶ Live thinking
         </button>
+      ) : agent.thinkingResolvable === false ? (
+        <div className="pc-agents-roster__nothinking" data-testid="agent-no-thinking-note">
+          Live thinking unavailable — no transcript to stream (this session has ended or
+          its transcript was rotated away since it last took a turn).
+        </div>
       ) : (
         <div className="pc-agents-roster__nothinking" data-testid="agent-no-thinking-note">
           Live thinking unavailable — this {agent.agent ?? 'session'} process recorded no

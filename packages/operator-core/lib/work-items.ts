@@ -1664,6 +1664,50 @@ export async function schedulerIssuesClaimableEnabled(): Promise<boolean> {
 }
 
 /**
+ * WI-2118 (the P-009 leak): the "reserved plan-lane" self-select EXCLUSION floor for issue-family
+ * claims. An issue-family work-item can carry a `payload.plan_item` back-pointer binding it to a
+ * plan-item LANE (P-NNN of some plan). When that lane is being ACTIVELY driven — the parent plan is
+ * `active`, or the plan-item is under a LIVE lease held by ANOTHER agent — the item belongs to that
+ * lane's own dispatch, NOT the general backlog-clearance drain. Without this floor the drain SCOOPS
+ * such an item into the shared claim pool; members that know the lane is reserved (its plan's
+ * `## Now`) correctly REFUSE + release it, and the scheduler immediately re-serves it — the
+ * claim→refuse→re-serve CHURN the owner flagged (WI-2118 was served to 3 different members in
+ * minutes). The floor is the durable fix: a reserved-lane item is never offered to self-select at all.
+ *
+ * SOUND + narrow: it fires ONLY when (a) the linked plan's status is `active` (a plan under execution
+ * reserves its items), or (b) a non-lapsed `plan_item_claims` lease is held by a DIFFERENT owner. A
+ * plan that is draft/ready/shipped/superseded, or a lane whose lease has lapsed with no active plan,
+ * is NOT excluded — those items drain normally (no starvation of genuinely-free backlog). A member
+ * can still claim a reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately
+ * owns the lane. Assumes the table is aliased `wi` (both call sites do).
+ *
+ * ONE source of truth, shared by {@link claimNextIssueWorkItem} (the claim) and
+ * {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss" diagnosis can never
+ * disagree with what the claim actually serves.
+ */
+export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
+  // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
+  // `'{}'::jsonb ? 'plan_item'` = FALSE ⇒ NOT(FALSE AND …) = TRUE ⇒ the row is INCLUDED
+  // (never excluded). A bare `NULL ? 'plan_item'` would yield NULL and wrongly drop the row.
+  return sql`NOT (
+    COALESCE(wi.payload, '{}'::jsonb) ? 'plan_item' AND (
+      EXISTS (
+        SELECT 1 FROM harness_shared.harness_plans p
+         WHERE p.plan_slug = wi.payload->'plan_item'->>'plan_slug'
+           AND p.status = 'active'
+      )
+      OR EXISTS (
+        SELECT 1 FROM harness_shared.plan_item_claims c
+         WHERE c.plan_slug = wi.payload->'plan_item'->>'plan_slug'
+           AND c.item_id  = wi.payload->'plan_item'->>'item_id'
+           AND c.expires_ts > now()
+           AND c.owner <> ${assignee}
+      )
+    )
+  )`;
+}
+
+/**
  * The issue family's CLAIMABLE statuses — the not-yet-settled `open` state (the issue
  * dialect's single in-flight state; the engineer_issues CHECK has only open|resolved|closed).
  * The scheduler issue-claim branch self-picks an `open`, unblocked issue; terminal
@@ -1907,7 +1951,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
                        AND bi.state NOT IN ('resolved', 'closed')
                   )
                 )
-         )`;
+         )
+         -- WI-2118 (P-009 leak): a reserved-plan-lane item is NOT ready to self-select — count it
+         -- as pending-but-gated (present in the POOL above, excluded here), the SAME floor the claim
+         -- applies, so the miss diagnosis never disagrees with what claim_next actually serves.
+         AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -1994,6 +2042,8 @@ export async function claimNextIssueWorkItem(
                    )
                  )
           )
+          -- WI-2118 (P-009 leak): never self-select an item reserved by another active plan lane.
+          AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
         ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

@@ -70,6 +70,9 @@ export interface BriefCapacity {
   dispatchBudget: number | null;
   utilizationPct: number | null;
   paused: boolean;
+  /** Fresh-gateway startup grace: a blocked/zero-capacity snapshot is recovering, not sustained exhaustion. */
+  restartRecovering?: boolean;
+  processUptimeMs?: number | null;
   /** One-line dispatch advice (place broadly / hold the tail / tier-1 only). */
   advice: string;
 }
@@ -367,7 +370,9 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     out.push(
       `**Inference capacity:** ${c.dispatchBudget != null ? `~${c.dispatchBudget} bee slot(s) free` : 'tier layer off'} · ` +
         `util ${c.utilizationPct != null ? `${c.utilizationPct}%` : 'n/a'} · factor ${c.factor.toFixed(2)}` +
-        `${c.paused ? ' · ⚠ POOL PAUSED' : ''} — ${c.advice}`,
+        `${c.paused && !c.restartRecovering ? ' · ⚠ POOL PAUSED' : ''}` +
+        `${c.restartRecovering && c.processUptimeMs != null ? ` · gateway uptime ${Math.round(c.processUptimeMs / 1000)}s` : ''}` +
+        ` — ${c.advice}`,
     );
   }
 

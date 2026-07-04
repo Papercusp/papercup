@@ -127,6 +127,7 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: false });
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps `;
 });
 
