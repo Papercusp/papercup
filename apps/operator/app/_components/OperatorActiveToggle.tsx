@@ -237,7 +237,7 @@ export function OperatorActiveToggle() {
           ? `${persona} interaction mode: active. Click to set passive.`
           : `${persona} interaction mode: passive. Click to turn off.`;
   const title = off
-    ? `${persona} is off — Sentinel voice is muted. Click to turn it back on.`
+    ? `${persona} is off — ${persona} voice is muted. Click to turn it back on.`
     : sleeping
       ? `${persona} went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
       : quiet

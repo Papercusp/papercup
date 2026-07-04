@@ -1809,6 +1809,88 @@ export function ircBlockReason(): string {
   );
 }
 
+/** SESSION-cumulative budget for blocked "curl the MCP endpoint" attempts (ornith failure
+ *  mode #3, 2026-07-04 / WI-2382). A weak local model (ornith IQ3_M) that HAS the papercusp MCP
+ *  tools wired still reflexively tries to reach the MCP server over HTTP — it copies the
+ *  `http://127.0.0.1:9071/api/mcp?superuser=1…` endpoint straight out of its own mcp.json and
+ *  `curl`s it (wrong: no session, wrong transport, and the tools are meant to be CALLED, not
+ *  fetched) instead of calling `plans:get` / `tools:invoke` directly. A live corrective nudge
+ *  ("that is a TOOL you call directly, not an HTTP endpoint") rescued a stuck leader this way, so
+ *  this makes the rescue STRUCTURAL. Session-cumulative (not turn-scoped) for the same reason as
+ *  the eval budget: each curl is its own turn and the model varies the JSON body, so a turn-reset
+ *  or consecutive-identical counter would never escalate. Test-seam reset only. */
+export const MCP_CURL_BLOCK_ESCALATE_AFTER = 3;
+let _mcpCurlBlockCount = 0;
+
+/** Count an MCP-endpoint-curl block for this session; returns the new cumulative total. */
+export function noteMcpCurlBlock(): number {
+  return ++_mcpCurlBlockCount;
+}
+
+/** Test seam: reset the session-cumulative MCP-curl block budget. */
+export function resetMcpCurlBudget(): void {
+  _mcpCurlBlockCount = 0;
+}
+
+/** After this many CUMULATIVE blocked MCP-endpoint curls in one session the guard gives up on
+ *  prose and STRUCTURALLY terminates the session — same lever + rationale + threshold as
+ *  EVAL_BLOCK_KILL_AFTER (a weak model that has ignored this many hard redirects will keep
+ *  doom-looping; a fast fail + relaunch beats an unbounded hang). Reuses _haltRunawaySession, so
+ *  the SIGTERM handler runs the defensive lock cleanup first. isAgentSession-gated — an owner
+ *  curling the endpoint to debug is never touched (D-003). */
+export const MCP_CURL_BLOCK_KILL_AFTER = 10;
+
+/** True when a bash command is an agent trying to reach the papercusp MCP server over HTTP
+ *  (curl / wget / xh) rather than calling the tool it wants directly. Requires BOTH an HTTP-client
+ *  verb at a COMMAND position (start, or after a real separator ; && || | newline ( `) AND an
+ *  MCP-specific target, so a legitimate curl to a real external API or an app health route — and
+ *  prose that merely mentions "curl" and "/api/mcp" (e.g. a commit message) — does NOT match:
+ *    - `/api/mcp`   the exact MCP endpoint path (copied straight from the model's mcp.json)
+ *    - `superuser=` the MCP superuser query param (MCP-only)
+ *    - `:9071`      the papercusp MCP bundle-server port (agents have no other use for it)
+ *    - a `/mcp` path aimed at a local host / operator port (localhost / 127.0.0.1 / :30x0 / :9071)
+ *  Pure. */
+export function isMcpEndpointCurl(cmd: string): boolean {
+  const c = (cmd || '').toLowerCase();
+  // Must actually INVOKE an HTTP client from the shell at a command position — the verb must sit
+  // at the start or right after a real command separator (; && || | newline ( `), NOT after any
+  // plain space, so `curl` mentioned inside a quoted argument (a commit message, an echo, prose)
+  // does not false-positive. A bare `http(s)://` in some other command's args never counts.
+  if (!/(?:^|[;&|\n(`]|&&|\|\|)\s*(?:curl|wget|xh)\b/.test(c)) return false;
+  if (c.includes('/api/mcp')) return true;
+  if (c.includes('superuser=')) return true;
+  if (c.includes(':9071')) return true;
+  const local = /(localhost|127\.0\.0\.1|0\.0\.0\.0|:30\d0|:9071)/.test(c);
+  if (local && /\/mcp(?:$|[/?'"\s&])/.test(c)) return true;
+  return false;
+}
+
+/** The redirect returned when an agent session curls the papercusp MCP endpoint. The papercusp
+ *  tools are TOOLS the model calls directly (like Bash), NOT an HTTP endpoint — this is the
+ *  live-validated rescue text, made structural. ESCALATES once the session has ignored the block
+ *  more than MCP_CURL_BLOCK_ESCALATE_AFTER times into a hard, copy-pasteable next action. Pure. */
+export function mcpCurlBlockReason(count = 1): string {
+  if (count <= MCP_CURL_BLOCK_ESCALATE_AFTER) {
+    return (
+      'mcp-curl-blocked: you tried to reach the Papercusp MCP server over HTTP (curl/wget). The ' +
+      'Papercusp tools are NOT an HTTP endpoint you curl — they are TOOLS you call directly, the ' +
+      'same way you call Bash. To read your plan, call `plans:get` directly (or `tools:invoke ' +
+      '{name:"plans:get", args:{slug:"<your plan slug>", harness:"papercusp"}}`); for any other ' +
+      'Papercusp tool use `tools:invoke {name:"<group>:<verb>", args:{…}}`. Do NOT curl ' +
+      'localhost / :9071 / /api/mcp — retry your intended action as a direct tool call now.'
+    );
+  }
+  return (
+    `mcp-curl-blocked (×${count}): STOP — you have tried to curl the Papercusp MCP endpoint ` +
+    `${count} times and every attempt is blocked. The MCP server is NOT reachable by curl from ` +
+    'here and never will be; the Papercusp tools are TOOLS you invoke directly. Your next action ' +
+    'must be EXACTLY: `tools:invoke {name:"plans:get", args:{slug:"<your plan slug>", ' +
+    'harness:"papercusp"}}` to read your plan, or `tools:invoke {name:"<group>:<verb>", args:{…}}` ' +
+    'for any other tool. Do NOT run curl/wget against localhost again. If you genuinely cannot ' +
+    'proceed, report the blocker via `coord:send` to your launcher.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -1881,6 +1963,23 @@ export async function onToolCall(
     const gitOp = destructiveGitCommandOp(cmd);
     if (gitOp) {
       return { block: true, reason: destructiveGitDenyReason(gitOp) };
+    }
+    // MCP-endpoint-curl guard (ornith failure mode #3, 2026-07-04 / WI-2382): a weak local model
+    // that HAS the papercusp MCP tools wired still reflexively curls the MCP server's HTTP endpoint
+    // (it copies http://127.0.0.1:9071/api/mcp?superuser=1… out of its own mcp.json) instead of
+    // calling plans:get / tools:invoke directly — a stuck leader was rescued live by "that is a TOOL
+    // you call directly, not an HTTP endpoint," so make that rescue structural. Block the curl (it
+    // would fail anyway — no session, wrong transport) and return the redirect; escalate the message
+    // on repeats, and after MCP_CURL_BLOCK_KILL_AFTER cumulative ignored blocks self-terminate the
+    // runaway session (same lever + rationale as the eval doom-loop guard — a varied JSON body dodges
+    // the consecutive-identical breaker, so this needs its own session-cumulative counter). Agent
+    // sessions only (owner debugging with curl is never touched, D-003).
+    if (isMcpEndpointCurl(cmd)) {
+      const n = noteMcpCurlBlock();
+      if (n >= MCP_CURL_BLOCK_KILL_AFTER) {
+        _haltRunawaySession(`mcp-curl doom-loop: ${n} blocked MCP-endpoint curls in one session`);
+      }
+      return { block: true, reason: mcpCurlBlockReason(n) };
     }
   }
 

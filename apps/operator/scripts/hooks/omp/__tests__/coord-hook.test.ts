@@ -52,6 +52,12 @@ import {
   askBlockReason,
   isIrcCall,
   ircBlockReason,
+  isMcpEndpointCurl,
+  mcpCurlBlockReason,
+  MCP_CURL_BLOCK_ESCALATE_AFTER,
+  noteMcpCurlBlock,
+  resetMcpCurlBudget,
+  MCP_CURL_BLOCK_KILL_AFTER,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -554,6 +560,152 @@ describe('onToolCall eval guard (agent sessions only)', () => {
       for (let i = 0; i < EVAL_BLOCK_KILL_AFTER + 3; i++) {
         const r = await evalCall(`owner_${i}()`);
         expect(r.block).toBeUndefined(); // an owner's eval is never even blocked, let alone halted
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+});
+
+describe('isMcpEndpointCurl + mcpCurlBlockReason (MCP-endpoint-curl guard, ornith mode #3 / WI-2382)', () => {
+  it('matches an agent curling the MCP endpoint in the shapes a model copies from mcp.json', () => {
+    // the exact endpoint path
+    expect(isMcpEndpointCurl('curl http://127.0.0.1:9071/api/mcp')).toBe(true);
+    // the superuser query param (MCP-only), on any host
+    expect(isMcpEndpointCurl('curl "http://localhost:3070/api/mcp?superuser=1&client=x"')).toBe(true);
+    // the bundle-server port alone
+    expect(isMcpEndpointCurl('curl -s http://127.0.0.1:9071/')).toBe(true);
+    // a POST with a bearer + JSON-RPC body, uppercased, still matches on /api/mcp
+    expect(
+      isMcpEndpointCurl(
+        'CURL -X POST http://127.0.0.1:9071/api/mcp -H "Authorization: Bearer PCVq" -d \'{"method":"tools/call"}\'',
+      ),
+    ).toBe(true);
+    // a /mcp path on a local operator port (no /api prefix)
+    expect(isMcpEndpointCurl('curl localhost:3170/mcp')).toBe(true);
+    // wget / xh / httpie clients, and curl after a shell separator
+    expect(isMcpEndpointCurl('wget http://127.0.0.1:9071/api/mcp -O -')).toBe(true);
+    expect(isMcpEndpointCurl('cd /tmp && curl http://localhost:9071/api/mcp')).toBe(true);
+    expect(isMcpEndpointCurl('xh POST 127.0.0.1:9071/api/mcp')).toBe(true);
+  });
+  it('does NOT match a legitimate external curl or a non-MCP local API probe', () => {
+    expect(isMcpEndpointCurl('curl https://api.github.com/repos/x/y')).toBe(false);
+    expect(isMcpEndpointCurl('curl -s https://example.com/mcp-docs')).toBe(false); // remote host, mcp-docs not a /mcp path
+    expect(isMcpEndpointCurl('curl http://127.0.0.1:3070/api/health')).toBe(false); // operator health, not MCP
+    expect(isMcpEndpointCurl('echo "see http://127.0.0.1:9071/api/mcp for the endpoint"')).toBe(false); // no client verb
+    expect(isMcpEndpointCurl('git commit -m "wire /api/mcp curl helper"')).toBe(false); // curl is prose, not a client verb
+    expect(isMcpEndpointCurl('')).toBe(false);
+    expect(isMcpEndpointCurl('ls -la')).toBe(false);
+  });
+  it('the reason tells the model the tools are TOOLS, not an HTTP endpoint (the live-validated rescue)', () => {
+    const r = mcpCurlBlockReason();
+    expect(r).toContain('mcp-curl-blocked');
+    expect(r).toContain('TOOLS you call directly');
+    expect(r).toContain('tools:invoke');
+    expect(r).toContain('plans:get');
+  });
+  it('escalates to a hard, copy-pasteable directive once the block is ignored past the threshold', () => {
+    // At/under the threshold: the polite redirect (no STOP).
+    expect(mcpCurlBlockReason(MCP_CURL_BLOCK_ESCALATE_AFTER)).not.toContain('STOP');
+    // Past it: a hard STOP naming the run length, with the literal tools:invoke next-action.
+    const hard = mcpCurlBlockReason(MCP_CURL_BLOCK_ESCALATE_AFTER + 1);
+    expect(hard).toContain('STOP');
+    expect(hard).toContain('tools:invoke');
+    expect(hard).toContain(`×${MCP_CURL_BLOCK_ESCALATE_AFTER + 1}`);
+  });
+  it('noteMcpCurlBlock is session-cumulative and resetMcpCurlBudget clears it', () => {
+    resetMcpCurlBudget();
+    expect(noteMcpCurlBlock()).toBe(1);
+    expect(noteMcpCurlBlock()).toBe(2);
+    resetMcpCurlBudget();
+    expect(noteMcpCurlBlock()).toBe(1);
+  });
+});
+
+describe('onToolCall MCP-endpoint-curl guard (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetMcpCurlBudget();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    resetMcpCurlBudget();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const curlCall = (command: string) =>
+    onToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'mc', input: { command } });
+
+  it('blocks a curl-the-MCP-endpoint bash command on #1 — even with a DIFFERENT body each time (non-adjacent runs)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    // The consecutive-identical loop-breaker would never catch this (each JSON body differs);
+    // the command-content block must fire on the very first call.
+    const first = await curlCall('curl http://127.0.0.1:9071/api/mcp -d \'{"name":"plans:get"}\'');
+    expect(first.block).toBe(true);
+    expect(first.reason).toContain('mcp-curl-blocked');
+    const second = await curlCall('curl http://127.0.0.1:9071/api/mcp -d \'{"name":"coord:orient"}\'');
+    expect(second.block).toBe(true);
+  });
+
+  it('escalates the block after the session ignores it past the threshold (session-cumulative)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < MCP_CURL_BLOCK_ESCALATE_AFTER + 2; i++) {
+      const r = await curlCall(`curl http://127.0.0.1:9071/api/mcp -d '{"attempt":${i}}'`); // different body each time
+      expect(r.block).toBe(true);
+      reason = r.reason ?? '';
+    }
+    expect(reason).toContain('STOP');
+    expect(reason).toContain('tools:invoke');
+  });
+
+  it('leaves a legitimate non-MCP bash command alone (operator health probe)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await curlCall('curl -s http://127.0.0.1:3070/api/health');
+    expect(r.block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const r = await curlCall('curl http://127.0.0.1:9071/api/mcp');
+    expect(r.block).toBeUndefined();
+  });
+
+  it('structurally HALTS the session after MCP_CURL_BLOCK_KILL_AFTER cumulative blocked curls (mode #3 / WI-2382)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Calls 1..K-1 are blocked but must NOT halt yet — prose escalation gets its chance first.
+      for (let i = 0; i < MCP_CURL_BLOCK_KILL_AFTER - 1; i++) {
+        const r = await curlCall(`curl http://127.0.0.1:9071/api/mcp -d '{"i":${i}}'`); // different body each time
+        expect(r.block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      // Call #K: still blocked AND the structural halt fires exactly once, naming the run length.
+      const kth = await curlCall('curl http://127.0.0.1:9071/api/mcp -d \'{"i":"final"}\'');
+      expect(kth.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain(String(MCP_CURL_BLOCK_KILL_AFTER));
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < MCP_CURL_BLOCK_KILL_AFTER + 3; i++) {
+        const r = await curlCall(`curl http://127.0.0.1:9071/api/mcp -d '{"i":${i}}'`);
+        expect(r.block).toBeUndefined(); // an owner's curl is never even blocked, let alone halted
       }
       expect(halts).toHaveLength(0);
     } finally {
