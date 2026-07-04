@@ -126,17 +126,6 @@ export default function AdvAgentsPanel({ params, api }: PanelComponentProps) {
     'agentsView',
     parseAsStringEnum<'working' | 'runs'>(['working', 'runs']).withDefault('working'),
   );
-  const t = useLexicon();
-  // Render-time kind legend — internal `kind` id kept for the glyph/key; the
-  // user-facing role words routed through the lexicon (restore-pot-lexicon P-007).
-  const kindLegend: Array<{ kind: string; label: string; hint: string }> = [
-    { kind: 'queen', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
-    { kind: 'overwatch', label: 'overwatch', hint: `Overwatch — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
-    { kind: 'bee', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
-    { kind: 'sentinel', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
-    { kind: 'planner', label: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
-    { kind: 'su', label: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
-  ];
 
   if (!slug) {
     return <div className="pc-advpanel__empty">No harness slug in params.</div>;
@@ -215,6 +204,20 @@ function WorkingView({
     for (const a of agents ?? []) set.add(a.agentPaneKind);
     return Array.from(set).sort();
   }, [agents]);
+
+  const t = useLexicon();
+  // Render-time kind legend — internal `kind` id kept for the glyph/key (plan
+  // D-001); the user-facing role words routed through the lexicon (queen→Brain,
+  // bee→Cup, sentinel→Operator — restore-pot-lexicon P-007). overwatch/planner/su
+  // have no TermKey and stay literal.
+  const kindLegend: Array<{ kind: string; label: string; hint: string }> = [
+    { kind: 'queen', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
+    { kind: 'overwatch', label: 'overwatch', hint: `Overwatch — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
+    { kind: 'bee', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
+    { kind: 'sentinel', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
+    { kind: 'planner', label: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
+    { kind: 'su', label: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
+  ];
 
   const columns: ColumnDef<WorkingAgent>[] = [
     {
