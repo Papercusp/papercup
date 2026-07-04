@@ -332,7 +332,7 @@ describe('resolveTierSpec compactionLimit', () => {
   it('derives the model default from the resolved spec when the tier sets none', () => {
     const r = resolveTierSpec({ tier: 'standard', role: 'bee' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.compactionLimit).toBe(500_000); // standard = sonnet[1m] → the [1m] 500k cap
+    if (r.ok) expect(r.compactionLimit).toBe(400_000); // standard = sonnet[1m] → the [1m] 400k cap
   });
 
   it('honors an explicit per-tier limit and reflects a [1m] window', () => {
@@ -347,15 +347,15 @@ describe('resolveTierSpec compactionLimit', () => {
     const lean = resolveTierSpec({ tier: 'lean', role: 'bee', tiers });
     expect(lean.ok && lean.compactionLimit).toBe(90_000);
     const vast = resolveTierSpec({ tier: 'vast', role: 'bee', tiers });
-    expect(vast.ok && vast.compactionLimit).toBe(500_000); // [1m] ⇒ the uniform 500k spend cap (marker-keyed, 2026-07-02)
+    expect(vast.ok && vast.compactionLimit).toBe(400_000); // [1m] ⇒ the uniform 400k spend cap (marker-keyed, 2026-07-03)
     const wide = resolveTierSpec({ tier: 'wide', role: 'bee', tiers });
-    expect(wide.ok && wide.compactionLimit).toBe(500_000); // [1m] ⇒ 500k cap (owner directive 2026-07-02)
+    expect(wide.ok && wide.compactionLimit).toBe(400_000); // [1m] ⇒ 400k cap (owner directive 2026-07-03)
   });
 
   it('a budget downgrade adopts the downgraded-to tier limit', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'haiku' }));
     const dg = downgradeOpusTierForBudget({ currentSpec: 'opus:xhigh', currentTier: 'max', role: 'bee' });
     expect(dg.downgraded).toBe(true);
-    expect(dg.compactionLimit).toBe(500_000); // standard target = sonnet[1m] → the [1m] 500k cap
+    expect(dg.compactionLimit).toBe(400_000); // standard target = sonnet[1m] → the [1m] 400k cap
   });
 });

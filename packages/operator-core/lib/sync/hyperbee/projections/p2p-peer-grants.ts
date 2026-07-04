@@ -27,6 +27,7 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { advanceGrantorHighWater } from '../../../p2p/grant-store';
 import { bumpRefusedOpCounter } from '../../../p2p/receipts';
+import { reapForeignSessionsForRevocation } from '../../../p2p/revocation-reaper';
 
 /** Wire-shape of a federated p2p_peer_grants row. Defensive on every field. */
 export interface P2pPeerGrantWireRow {
@@ -126,8 +127,9 @@ async function writeToPg(
   // row.grantor_github_user_id. Fail-CLOSED on any resolution failure: a grant
   // (or a forged revocation-suppressing re-grant) from an unverifiable device
   // never applies.
+  let sourceLogDevice: string | null = null;
   if (provenance?.origin === 'remote' && opts.hiveHomeSlug) {
-    const sourceLogDevice = provenance.authorPubkey
+    sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
     if (!sourceLogDevice) {

@@ -157,19 +157,19 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
     ]);
   });
 
-  it('clamps to the spec-derived ceiling: 200k window caps at 158k, any [1m] spec at the uniform 500k spend cap', () => {
+  it('clamps to the spec-derived ceiling: 200k window caps at 158k, any [1m] spec at the uniform 400k spend cap', () => {
     // (window − 10k margin) ÷ 1.2 — the 20% overshoot allowance (D-001).
     expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 900_000 }])).toEqual([
       { name: 'std', spec: 'haiku', compactionLimit: 158_000 },
     ]);
-    // EVERY [1m]-marked spec caps at 500k — the cap is keyed on the marker
+    // EVERY [1m]-marked spec caps at 400k — the cap is keyed on the marker
     // (the actual window signal), not the model family, so it compacts
-    // preemptively despite the 1M window (owner directive 2026-07-02).
+    // preemptively despite the 1M window (owner directive 2026-07-03).
     expect(parseTiers([{ name: 'vast', spec: 'haiku[1m]', compactionLimit: 900_000 }])).toEqual([
-      { name: 'vast', spec: 'haiku[1m]', compactionLimit: 500_000 },
+      { name: 'vast', spec: 'haiku[1m]', compactionLimit: 400_000 },
     ]);
     expect(parseTiers([{ name: 'deep', spec: 'opus[1m]:high', compactionLimit: 900_000 }])).toEqual([
-      { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 500_000 },
+      { name: 'deep', spec: 'opus[1m]:high', compactionLimit: 400_000 },
     ]);
     // floor clamp
     expect(parseTiers([{ name: 'std', spec: 'haiku', compactionLimit: 5 }])).toEqual([

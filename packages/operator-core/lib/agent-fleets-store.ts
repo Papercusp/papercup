@@ -81,6 +81,25 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
+/**
+ * WI-2006 (P-101 publish leg): every fleet lifecycle write refreshes the
+ * owner-signed directory card (p2p/fleet-directory-publish) so the fleet is
+ * hive-browsable and its scope roster widens cross-node. Lazy dynamic import +
+ * fire-and-forget: the store stays PG-pure, a publish fault never fails the
+ * fleet write, and unit tests (which pass a per-file `sql` schema) never touch
+ * identity/keychain/hive resolution.
+ */
+function refreshDirectoryCard(
+  workspaceId: string,
+  fleetSlug: string,
+  opts?: { archived?: boolean; sql?: Sql },
+): void {
+  if (opts?.sql) return; // test-schema override ⇒ never publish for real
+  void import('./p2p/fleet-directory-publish')
+    .then((m) => m.publishFleetDirectoryRecordBestEffort({ workspaceId, fleetSlug, archived: opts?.archived }))
+    .catch(() => {});
+}
+
 const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, created_at, updated_at`;
 
 /**
@@ -179,6 +198,10 @@ export async function createFleetIfAbsent(
       now,
     ],
   )) as unknown as FleetRow[];
+  // Create AND ensure both refresh the card: the ensure path self-heals fleets
+  // that predate the publish leg, and the module's no-churn gate keeps an
+  // unchanged card from re-federating on every launch.
+  refreshDirectoryCard(input.workspaceId, input.fleetSlug, { sql });
   if (inserted[0]) return { record: rowToRecord(inserted[0]), created: true };
   const existing = await getFleet(input.workspaceId, input.fleetSlug, sql);
   if (!existing) {
@@ -207,6 +230,7 @@ export async function setFleetLeader(
       RETURNING ${COLS}`,
     [workspaceId, fleetSlug, leaderOwnerId, Date.now()],
   )) as unknown as FleetRow[];
+  if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
@@ -227,6 +251,7 @@ export async function updateFleetMeta(
       RETURNING ${COLS}`,
     [workspaceId, fleetSlug, meta.title ?? null, meta.description ?? null, Date.now()],
   )) as unknown as FleetRow[];
+  if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
@@ -241,6 +266,9 @@ export async function deleteFleet(
     `DELETE FROM harness_shared.agent_fleets WHERE workspace_id = $1 AND fleet_slug = $2 RETURNING fleet_slug`,
     [workspaceId, fleetSlug],
   )) as unknown as Array<{ fleet_slug: string }>;
+  // Archive (not delete) the directory card — remote projections need the
+  // signed archived record to stop resolving members/scopes (D-006/H10).
+  if (rows.length > 0) refreshDirectoryCard(workspaceId, fleetSlug, { archived: true, sql });
   return rows.length > 0;
 }
 
