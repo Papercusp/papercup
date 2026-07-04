@@ -67,6 +67,19 @@ const TERMINAL_SPAWN_STATES = new Set(['done', 'failed', 'cancelled', 'reaped'])
  *  from STUCK_BLOCKER_STATES above, which is about a unit BLOCKING downstream
  *  work, not a unit that IS itself parked. */
 const UNIT_PARKED_STATES = new Set(['blocked', 'needs-human']);
+/** EI-6650 — the brief-facing "open placements" summary independently re-derives
+ *  "is this unit still active" from `harness_features_consolidated.status`, rather
+ *  than trusting `hive_placements.status` (which the reconcile-side isUnitParked fix
+ *  above already stops re-flagging as `recovering`). Existing rows placed BEFORE that
+ *  fix — or ones reconcileOneHive simply hasn't revisited since (it only reconciles
+ *  units with a recent bee-spawn event, not a periodic full sweep) — sit frozen at
+ *  `recovering` in the DB (observed live: WI-329/341/356/357/359/360/369/371/372/1439,
+ *  stuck `recovering` since 2026-07-03 with zero reconcile activity since). Excluding
+ *  UNIT_PARKED_STATES here too (in addition to TERMINAL_UNIT_STATES) means the Queen
+ *  brief's "Placements — drive to terminal / re-place NOW" list stops telling her to
+ *  re-place a unit a human/owner has deliberately parked, regardless of whether the
+ *  underlying placement row has caught up yet. */
+const SUMMARY_INACTIVE_UNIT_STATES = [...TERMINAL_UNIT_STATES, ...UNIT_PARKED_STATES];
 
 export function isUnitTerminal(status: string | null | undefined): boolean {
   return status != null && TERMINAL_UNIT_STATES.has(status);
@@ -1536,7 +1549,7 @@ export async function summarizeOpenPlacements(
            AND p.install_slug = ${installSlug}
            AND p.status IN ('recovering', 'cursed', 'stranded', 'working')
            AND f.feature_id IS NOT NULL
-           AND f.status <> ALL(${Array.from(TERMINAL_UNIT_STATES)}::text[])
+           AND f.status <> ALL(${SUMMARY_INACTIVE_UNIT_STATES}::text[])
            AND (
              p.status <> 'working'
              OR (
@@ -1561,7 +1574,7 @@ export async function summarizeOpenPlacements(
            AND p.install_slug = ${installSlug}
            AND p.status IN ('recovering', 'cursed', 'stranded', 'working')
            AND f.feature_id IS NOT NULL
-           AND f.status <> ALL(${Array.from(TERMINAL_UNIT_STATES)}::text[])
+           AND f.status <> ALL(${SUMMARY_INACTIVE_UNIT_STATES}::text[])
            AND (
              p.status <> 'working'
              OR (

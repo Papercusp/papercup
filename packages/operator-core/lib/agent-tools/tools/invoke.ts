@@ -47,8 +47,25 @@ export default defineTool({
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */
     name: z.string().min(1).max(120),
+    // EI-6681: some MCP clients intermittently stringify a moderately-long/complex
+    // nested `args` object before it reaches this schema (root cause not isolated —
+    // this server's own dispatch path never stringifies it; see the endpoint-system
+    // docs). A preprocess step tolerates that: a STRING value is JSON.parsed before
+    // the record check, so a client-side serialization quirk degrades to a normal
+    // call instead of a client-facing "expected record, received string" failure
+    // with no actionable next step. A non-JSON string still fails validation
+    // naturally (parse throws → the original string reaches the record check).
     /** The target tool's arguments object (its own schema). Defaults to {}. */
-    args: z.record(z.string(), z.unknown()).optional(),
+    args: z
+      .preprocess((v) => {
+        if (typeof v !== 'string') return v;
+        try {
+          return JSON.parse(v);
+        } catch {
+          return v;
+        }
+      }, z.record(z.string(), z.unknown()))
+      .optional(),
   }),
   async handler(args, ctx) {
     const name = args.name.trim();

@@ -179,6 +179,19 @@ async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWire
         Date.now(),
       );
     }
+    if (memberDecision === 'drop' && !sourceLogDevice && provenance?.authorPubkey && opts.pendingMemberContent) {
+      opts.pendingMemberContent.deferUnresolvedSourceLog(
+        {
+          sourceLogKey: provenance.authorPubkey,
+          tableTag: 'plan-parts',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => applyPart(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
     return;
   }
   // The plan ROW applies under its AUTHORED harness_slug (harness-plans keeps row.harness_slug),

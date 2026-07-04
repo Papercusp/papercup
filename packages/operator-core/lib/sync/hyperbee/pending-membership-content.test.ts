@@ -10,6 +10,7 @@ import {
   reapplyDrainedMemberContent,
   DEFAULT_MAX_PENDING_MEMBER_CONTENT,
   type DeferMemberContentInput,
+  type DeferSourceLogContentInput,
 } from './pending-membership-content';
 
 const noop = async () => {};
@@ -17,6 +18,18 @@ const noop = async () => {};
 function entry(over: Partial<DeferMemberContentInput> = {}): DeferMemberContentInput {
   return {
     authorDevice: 'devA',
+    tableTag: 'features-by-id',
+    rowKey: 'F-1',
+    fedHlc: 'hlc-1',
+    fedTs: 1000,
+    reapply: noop,
+    ...over,
+  };
+}
+
+function sourceEntry(over: Partial<DeferSourceLogContentInput> = {}): DeferSourceLogContentInput {
+  return {
+    sourceLogKey: 'logA',
     tableTag: 'features-by-id',
     rowKey: 'F-1',
     fedHlc: 'hlc-1',
@@ -75,6 +88,29 @@ describe('PendingMembershipContent', () => {
     expect(buf.size()).toBe(1);
   });
 
+  it('buckets unresolved source-log ops until that log identity is admitted', () => {
+    const buf = new PendingMembershipContent();
+    expect(buf.deferUnresolvedSourceLog(sourceEntry({ sourceLogKey: 'logA', rowKey: 'F-1' }), 0)).toBe(true);
+    expect(buf.deferUnresolvedSourceLog(sourceEntry({ sourceLogKey: 'logA', rowKey: 'F-2' }), 0)).toBe(true);
+    expect(buf.deferUnresolvedSourceLog(sourceEntry({ sourceLogKey: 'logB', rowKey: 'F-3' }), 0)).toBe(true);
+    expect(buf.size()).toBe(3);
+    expect(buf.bucketCount()).toBe(2);
+
+    const drained = buf.drainForSourceLogKeys(['logA'], 1);
+    expect(drained.map((d) => d.rowKey)).toEqual(['F-1', 'F-2']);
+    expect(buf.size()).toBe(1);
+    expect(buf.drainForSourceLogKeys(['logB'], 1).map((d) => d.rowKey)).toEqual(['F-3']);
+    expect(buf.size()).toBe(0);
+  });
+
+  it('dedupes unresolved source-log deferrals by projected row version', () => {
+    const buf = new PendingMembershipContent();
+    expect(buf.deferUnresolvedSourceLog(sourceEntry(), 0)).toBe(true);
+    expect(buf.deferUnresolvedSourceLog(sourceEntry(), 5)).toBe(false);
+    expect(buf.deferUnresolvedSourceLog(sourceEntry({ fedHlc: 'hlc-2', fedTs: 2000 }), 5)).toBe(true);
+    expect(buf.size()).toBe(2);
+  });
+
   it('evicts entries past their TTL (genuine non-member content expires)', () => {
     const TTL = 1_000;
     const buf = new PendingMembershipContent(100, TTL);
@@ -107,6 +143,18 @@ describe('PendingMembershipContent', () => {
     expect(buf.size()).toBe(MAX);
     expect(buf.drainForDevices(['dev0'], 2)).toEqual([]); // evicted
     expect(buf.drainForDevices(['devNew'], 2).map((d) => d.rowKey)).toEqual(['F-new']);
+  });
+
+  it('enforces the hard size cap across device and source-log buckets', () => {
+    const buf = new PendingMembershipContent(2, 1_000_000);
+    buf.deferUnresolvedSourceLog(sourceEntry({ sourceLogKey: 'logOld', rowKey: 'F-old' }), 0);
+    buf.defer(entry({ authorDevice: 'devA', rowKey: 'F-dev' }), 1);
+    buf.deferUnresolvedSourceLog(sourceEntry({ sourceLogKey: 'logNew', rowKey: 'F-new' }), 2);
+
+    expect(buf.size()).toBe(2);
+    expect(buf.drainForSourceLogKeys(['logOld'], 3)).toEqual([]);
+    expect(buf.drainForDevices(['devA'], 3).map((d) => d.rowKey)).toEqual(['F-dev']);
+    expect(buf.drainForSourceLogKeys(['logNew'], 3).map((d) => d.rowKey)).toEqual(['F-new']);
   });
 
   it('default size cap is the documented backstop', () => {

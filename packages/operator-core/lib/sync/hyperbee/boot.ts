@@ -1278,6 +1278,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
       }
     }
+    if (newlyResolvedSourceLogs.length > 0) {
+      await reapplyDrainedMemberContent(
+        pendingMemberContent.drainForSourceLogKeys(newlyResolvedSourceLogs, Date.now()),
+      );
+    }
   }
 
   // ── Channel-2 re-verify for admitted peers (rev-v2 Component A) ──
@@ -2919,11 +2924,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         }
       }
-    }
-    if (newlyResolvedSourceLogs.length > 0) {
-      await reapplyDrainedMemberContent(
-        pendingMemberContent.drainForSourceLogKeys(newlyResolvedSourceLogs, Date.now()),
-      );
     }
   }
   function armPendingRetry(): void {

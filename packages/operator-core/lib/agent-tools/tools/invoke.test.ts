@@ -32,6 +32,21 @@ describe('tools:invoke registration', () => {
     expect(def.args.safeParse({}).success).toBe(false); // name required
     expect(def.args.safeParse({ name: '' }).success).toBe(false); // non-empty
   });
+
+  it('tolerates a JSON-stringified args payload (EI-6681 client-serialization quirk)', () => {
+    const r = def.args.safeParse({
+      name: 'flags:set',
+      args: JSON.stringify({ key: 'x', value: true, nested: { a: [1, 2, 3] } }),
+    }) as { success: true; data: { args: unknown } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.args).toEqual({ key: 'x', value: true, nested: { a: [1, 2, 3] } });
+    }
+  });
+
+  it('still rejects a non-JSON string args payload (no silent pass-through)', () => {
+    expect(def.args.safeParse({ name: 'flags:set', args: 'not-json {' }).success).toBe(false);
+  });
 });
 
 describe('tools:invoke handler', () => {

@@ -129,6 +129,19 @@ async function writeToPg(
         Date.now(),
       );
     }
+    if (memberDecision === 'drop' && !sourceLogDevice && provenance?.authorPubkey && opts.pendingMemberContent) {
+      opts.pendingMemberContent.deferUnresolvedSourceLog(
+        {
+          sourceLogKey: provenance.authorPubkey,
+          tableTag: 'issues',
+          rowKey: composeKey(row),
+          fedHlc: provenance?.fedHlc ?? null,
+          fedTs: provenance?.ts ?? null,
+          reapply: () => writeToPg(opts, row, provenance),
+        },
+        Date.now(),
+      );
+    }
     return;
   }
   const sql = opts.sql ?? getOrgPg().sql;
