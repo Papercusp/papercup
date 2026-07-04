@@ -304,7 +304,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
     // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22):
     // top-to-bottom (owner ask 2026-06-22): 🛡 sentinel (the front-door agent leads
-    // the dock), 👁 overwatch, ♛ queen, 🐝 colony (dock-driver + its bee TUIs), ⏸ wakes.
+    // the dock), 👁 overwatch, ♛ queen, ☕ colony (dock-driver + its bee TUIs), ⏸ wakes.
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
@@ -339,7 +339,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                 }}
             }}
         }}
-        pane name="🐝 colony" stacked=true size="12%" {{{driver_pane_block}
+        pane name="☕ colony" stacked=true size="12%" {{{driver_pane_block}
         }}{wake_pane_block}
     }}"#
         )
@@ -843,7 +843,7 @@ mod tests {
         // must never reappear.
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
-        assert!(kdl.contains("name=\"🐝 colony\""));
+        assert!(kdl.contains("name=\"☕ colony\""));
         assert!(kdl.contains("name=\"🛡 sentinel\"")); // lex("sentinel"), P-010 glyph
         assert!(kdl.contains("name=\"♛ brain\""));
         assert!(kdl.contains("stacked=true"));
@@ -1062,10 +1062,10 @@ mod tests {
         assert!(on.contains("args \"network-pane\""));
         assert!(on.contains("args \"plans-pane\""));
         // Order: brain precedes her side column; the queen split precedes the
-        // 🐝 colony stack; the dock-driver is inside that colony stack.
+        // ☕ colony stack; the dock-driver is inside that colony stack.
         let queen_at = on.find("name=\"♛ queen\"").expect("queen container");
         let stack_at = on
-            .find("name=\"🐝 colony\" stacked=true")
+            .find("name=\"☕ colony\" stacked=true")
             .expect("colony stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");

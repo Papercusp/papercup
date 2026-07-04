@@ -892,7 +892,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
             let dot = Theme::liveness_marker(r.stale, &r.liveness);
             // P-004 (progress-tab-agents-convergence, owner ask 2026-06-11): the
-            // kind GLYPH leads each roster row — ♛ queen · 🐝 bee · 🛡 sentinel ·
+            // kind GLYPH leads each roster row — ♛ queen · ☕ bee · 🛡 sentinel ·
             // 📋 planner · 🛠 su (the owner's own psu sessions) — so workers and
             // owner sessions read apart at a glance, same vocabulary as the pane
             // titles. Flag-on; flag-off keeps the legacy dot-only row.
@@ -1041,7 +1041,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         )
     };
     // Styled column header above the roster (D-005) — one compact legend line
-    // rides above it (owner ask 2026-06-11): the kind glyphs (♛ 🐝 🛡 📋 🛠,
+    // rides above it (owner ask 2026-06-11): the kind glyphs (♛ ☕ 🛡 📋 🛠,
     // flag-on — flag-off rows carry no glyphs) + the liveness dots with their
     // heartbeat-age thresholds (always — the dots render regardless of flag).
     let header = format!("    {:<7}{:<31}{}", "agent", "doing now", "todos");

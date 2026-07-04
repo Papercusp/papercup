@@ -65,7 +65,7 @@ impl AgentPaneKind {
         match self {
             Self::Queen => "♛",
             Self::Overwatch => "👁",
-            Self::Bee => "🐝",
+            Self::Bee => "☕",
             Self::Sentinel => "🛡",
             Self::Planner => "📋",
             Self::Su => "🛠",
@@ -139,7 +139,7 @@ pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>) -> String {
     }
 }
 
-/// All kinds in display order — the order the legend and docs read (♛ 👁 🐝 🛡 📋 🛠).
+/// All kinds in display order — the order the legend and docs read (♛ 👁 ☕ 🛡 📋 🛠).
 pub const ALL_KINDS: [AgentPaneKind; 6] = [
     AgentPaneKind::Queen,
     AgentPaneKind::Overwatch,
@@ -150,7 +150,7 @@ pub const ALL_KINDS: [AgentPaneKind; 6] = [
 ];
 
 /// One compact legend line for the colony roster header (owner ask 2026-06-11):
-/// `♛ queen · 🐝 bee · 🛡 sentinel · 📋 planner · 🛠 su`, each entry tinted in
+/// `♛ queen · ☕ bee · 🛡 sentinel · 📋 planner · 🛠 su`, each entry tinted in
 /// its kind color (the same color the rows use), separators dim. Pure — the
 /// caller decides where to draw it (flag-on only; flag-off rows carry no glyphs
 /// so a legend would explain nothing).
@@ -235,7 +235,7 @@ mod tests {
         // known kind → glyph prefixed (P-010)
         assert_eq!(
             glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)),
-            "🐝 worker · ab12"
+            "☕ worker · ab12"
         );
         assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "♛ Q");
         // unknown/missing kind → unchanged
@@ -278,7 +278,7 @@ mod tests {
     fn from_glyph_prefix_recovers_the_kind_from_a_pane_name() {
         // P-011 regrouper input: the P-010 glyph-prefixed zellij pane names.
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("🐝 claude · F-12"),
+            AgentPaneKind::from_glyph_prefix("☕ claude · F-12"),
             Some(AgentPaneKind::Bee)
         );
         assert_eq!(

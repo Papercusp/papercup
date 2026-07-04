@@ -265,9 +265,9 @@ mod tests {
             "coalesced count: {s}"
         );
         assert!(s.contains("cadence tick (×5)"), "second wake: {s}");
-        // (asserted separately: the 🐝 glyph is double-width, so the test
+        // (asserted separately: the ☕ glyph is double-width, so the test
         // backend pads a cell between it and the label)
-        assert!(s.contains("🐝"), "bee glyph: {s}");
+        assert!(s.contains("☕"), "bee glyph: {s}");
         assert!(s.contains("bee su-664d2 — 1 staged"), "bee header: {s}");
         // ×1 rows render WITHOUT a count suffix.
         assert!(s.contains("Queen placement — WI-108"), "{s}");

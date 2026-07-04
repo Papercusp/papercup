@@ -6624,7 +6624,7 @@ mod tests {
         assert_eq!(specs.len(), 4);
         // Bees (rank 2) before planners (rank 3); roster order within a group.
         assert!(
-            titles[0].starts_with("🐝") && titles[1].starts_with("🐝"),
+            titles[0].starts_with("☕") && titles[1].starts_with("☕"),
             "{titles:?}"
         );
         assert!(
@@ -6724,10 +6724,10 @@ mod tests {
             tabs: vec![],
             panes: vec![
                 topo_pane(1, "🛡 operator"),
-                topo_pane(2, "🐝 claude · F-12"),
+                topo_pane(2, "☕ claude · F-12"),
                 topo_pane(3, "♛ brain"),
                 topo_pane(4, "📋 planner · my-plan"),
-                topo_pane(5, "🐝 codex · F-9"),
+                topo_pane(5, "☕ codex · F-9"),
                 topo_pane(6, "colony"),
             ],
         };
@@ -6740,8 +6740,8 @@ mod tests {
             panes: vec![
                 topo_pane(1, "🛡 operator"),
                 topo_pane(3, "♛ brain"),
-                topo_pane(2, "🐝 claude · F-12"),
-                topo_pane(5, "🐝 codex · F-9"),
+                topo_pane(2, "☕ claude · F-12"),
+                topo_pane(5, "☕ codex · F-9"),
                 topo_pane(4, "📋 planner · my-plan"),
             ],
         };
@@ -6758,7 +6758,7 @@ mod tests {
         a.dock_agent_panes = true;
         let mis = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![topo_pane(2, "🐝 claude · F-12"), topo_pane(1, "🛡 operator")],
+            panes: vec![topo_pane(2, "☕ claude · F-12"), topo_pane(1, "🛡 operator")],
         };
         // First mis-ordered snapshot → the stack repair fires.
         match a.update(Event::Topology(mis.clone())) {
@@ -6770,7 +6770,7 @@ mod tests {
         // A grouped snapshot re-arms the guard.
         let grouped = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![topo_pane(1, "🛡 operator"), topo_pane(2, "🐝 claude · F-12")],
+            panes: vec![topo_pane(1, "🛡 operator"), topo_pane(2, "☕ claude · F-12")],
         };
         assert_eq!(a.update(Event::Topology(grouped)), Action::Render);
         assert!(a.last_regroup.is_none());

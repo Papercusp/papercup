@@ -1,5 +1,5 @@
 ornith LEADER-test fixture BRAVO — throwaway, safe to overwrite between runs.
 
-STATUS: FIXED
+STATUS: BROKEN
 
 (Task: change the STATUS line above from BROKEN to FIXED. Nothing else.)
