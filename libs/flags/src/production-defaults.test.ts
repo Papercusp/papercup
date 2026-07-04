@@ -210,7 +210,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // P-001, owner-directed): gates not-ready tutorial items. Count 11 → 12.
     // 2026-07-04 — papercusp-the-hive flips default-OFF (restore-pot-lexicon-public-release,
     // owner-directed): public ships the Pot lexicon; Swarm skin is TESTING-gated. Count 12 → 13.
-    expect(offCount).toBe(13);
+    // 2026-07-04 (EI-7230) — papercusp-watchdog-auto-close: BUG-FIX correction, not a new
+    // darkening (see the PRE_INVERSION_DEFAULT_OFF comment above). Count 13 → 14.
+    expect(offCount).toBe(14);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {
