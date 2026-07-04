@@ -51,7 +51,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'queen', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
-      { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'bee', 'overwatch', 'su', 'tuning', 'per-hive', 'domain'] },
+      { href: '/settings/hive-customization', label: 'Hive customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
       { href: '/settings/trust', label: 'Trusted users', keywords: ['trust', 'trusted', 'github', 'author', 'admission', 'auto-run', 'shared hive', 'security', 'grant', 'verified', 'remote'] },
       { href: '/settings/p2p', label: 'P2P work sharing', keywords: ['p2p', 'peers', 'work sharing', 'foreign work', 'grants', 'capability', 'opt-in', 'kill switch', 'kill-switch', 'attestation', 'device', 'fleet', 'budgets', 'allotment', 'delegate', 'observer', 'collaborator', 'operator grant'] },
       { href: '/settings/voice', label: 'Voice & speech', keywords: ['voice', 'speech', 'stt', 'tts', 'microphone', 'wake word', 'elevenlabs', 'openai', 'cartesia', 'deepgram'] },
@@ -220,7 +220,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
             options={SETTINGS_GROUPS.flatMap((group) =>
               group.links.map((link) => ({
                 value: link.href,
-                label: `${link.label} · ${group.label}`,
+                label: `${labelFor(link)} · ${group.label}`,
               })),
             )}
             triggerClassName="pc-settings-mobile-trigger"
@@ -244,7 +244,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                       className="pc-settings-nav-link"
                       aria-current={active ? 'page' : undefined}
                     >
-                      <span className="pc-settings-nav-link-label">{link.label}</span>
+                      <span className="pc-settings-nav-link-label">{labelFor(link)}</span>
                       {link.advanced && <span className="pc-settings-nav-chip">Advanced</span>}
                       {link.href === '/settings/setup-wizard' && wizardProgress && (
                         <span

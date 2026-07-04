@@ -286,6 +286,12 @@ function ConfigOverrideEditor({
 
 export default function HiveCustomizationPage() {
   const t = useLexicon();
+  // Role ids are internal (D-001 — never renamed); only their DISPLAYED label routes
+  // through the lexicon, so the dropdown reads in the active vocabulary (queen→brain,
+  // bee→cup). Lower-cased to match the other raw role ids shown (su/overwatch/operator,
+  // whose classic label is unchanged). The Select `value` stays the raw role id.
+  const roleLabel = (r: string): string =>
+    r === 'queen' ? t('brain', { lower: true }) : r === 'bee' ? t('contributor', { lower: true }) : r;
   const { data: hiveData, loading: hivesLoading } = useSyncQuery<HiveRow>({ queryName: 'learning.hiveList' });
   const hives = useMemo<HiveRow[]>(() => hiveData ?? [], [hiveData]);
 
@@ -417,7 +423,7 @@ export default function HiveCustomizationPage() {
                 ariaLabel="Role"
                 options={roleOptions.map((r) => ({
                   value: r,
-                  label: promptByRole[r] ? `${r} ●` : r,
+                  label: promptByRole[r] ? `${roleLabel(r)} ●` : roleLabel(r),
                 }))}
               />
             </div>
