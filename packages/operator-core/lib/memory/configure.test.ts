@@ -54,7 +54,33 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
   return { deps, buildOpenAi, buildLocal, resolveKey, localInstalled };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  __resetOpenAiEmbedCooldownForTest();
+});
+
+describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 cooldown tracker', () => {
+  it('is not in cooldown before any failure is marked', () => {
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(false);
+  });
+
+  it('is in cooldown at the instant a failure is marked, and stays in cooldown shortly after', () => {
+    markOpenAiEmbedFailure(1_000_000);
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(true);
+    expect(isOpenAiEmbedInCooldown(1_000_010)).toBe(true);
+  });
+
+  it('lapses well after the cooldown window (bounded, self-healing — never a permanent local pin)', () => {
+    markOpenAiEmbedFailure(1_000_000);
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999)).toBe(false);
+  });
+
+  it('a second failure extends the cooldown from ITS OWN mark time (never shortens it)', () => {
+    markOpenAiEmbedFailure(1_000_000);
+    markOpenAiEmbedFailure(1_000_010); // fired again shortly after, e.g. two callers racing
+    expect(isOpenAiEmbedInCooldown(1_000_010)).toBe(true);
+  });
+});
 
 describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP 4)', () => {
   // The full truth table: 4 preferences × {key} × {local installed}. Each row
