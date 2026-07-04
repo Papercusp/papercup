@@ -506,19 +506,18 @@ export function evaluatePull(input: PullEvaluationInput): PullDecision {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Recurrence guard for the X11 activation contract (called by the test; cheap
+ * Recurrence guard for the X11 dormancy contract (called by the test; cheap
  * enough to assert at boot). Returns the list of VIOLATED invariants (empty =
  * healthy). Mirrors rollout-tiers.rolloutTiersInvariant.
  * ───────────────────────────────────────────────────────────────────────── */
 export function pullerActivationInvariant(activationLanded = PULLER_ACTIVATION_LANDED): string[] {
   const violations: string[] = [];
-  // X11 landed 2026-07-04 (WI-1936, claim-path soak evidence: EI-6797 resolved
-  // + this fleet's own sustained concurrent claim_next traffic). The module now
-  // ships ACTIVATED. Guard against a SILENT revert: if the module constant
-  // flips back to false without this call site / docstring being updated to
-  // document why, that is a real regression to surface, not a quiet no-op.
-  if (activationLanded === PULLER_ACTIVATION_LANDED && (PULLER_ACTIVATION_LANDED as boolean) !== true) {
-    violations.push('PULLER_ACTIVATION_LANDED regressed to false after X11 activation landed (WI-1936, 2026-07-04) — confirm this is an intentional, documented rollback.');
+  // The dormancy contract: while activation has NOT landed, an evaluatePull with
+  // active defaulted (i.e. reading PULLER_ACTIVATION_LANDED) MUST NOT emit a
+  // claim/steal — it must skip 'puller_inactive'. We can only assert the shape
+  // when the module constant is still false (the pre-P-003 world).
+  if (!activationLanded && (PULLER_ACTIVATION_LANDED as boolean) !== false) {
+    violations.push('PULLER_ACTIVATION_LANDED must be false until the P-003 claim-path soak lands (X11).');
   }
   return violations;
 }
