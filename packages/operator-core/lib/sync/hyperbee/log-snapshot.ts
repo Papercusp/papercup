@@ -68,8 +68,33 @@ export interface SnapshotPayload {
    * `coversUpTo` forward instead of from 0.
    */
   coversUpTo: number;
-  /** The minimal current-state put-set (latest live put per key). */
+  /**
+   * The minimal current-state put-set (latest live put per key) carried by THIS
+   * chunk. For a multi-chunk snapshot (WI-2313) each chunk holds a disjoint subset
+   * of the folded rows; the reader must fold ALL chunks of the set to reconstitute
+   * the full state.
+   */
   rows: SnapshotRow[];
+  /**
+   * WI-2313 — 0-based index of this chunk within its snapshot SET. Every chunk of
+   * one set shares the same `coversUpTo`. ABSENT ⇒ a legacy single-op snapshot,
+   * read as chunk 0. The snapshot rows for a large own log (papercup: thousands of
+   * keys) serialized to a single op that exceeded hypercore's 15 MiB block ceiling
+   * (`Hypercore.MAX_SUGGESTED_BLOCK_SIZE`) → `BAD_ARGUMENT` on append → the snapshot
+   * never landed → seeding had nothing to fold from → every sidecar restart replayed
+   * admitted member logs from index 0 (the WI-2105 REV-leg restart loop). Splitting
+   * the rows across size-bounded chunk ops keeps each block under the ceiling.
+   */
+  chunkIdx?: number;
+  /**
+   * WI-2313 — total number of chunks in this snapshot set. ABSENT ⇒ a legacy
+   * single-op snapshot (count 1). CRASH-CONSISTENCY (the correctness constraint):
+   * the reader may only seed a fresh merge cursor past the summarized prefix once
+   * ALL `chunkCount` chunks are durably present + contiguous; a partial/torn set
+   * must fall back to a full replay from 0, NEVER a forward seed that would silently
+   * skip the ops the missing chunks summarize.
+   */
+  chunkCount?: number;
 }
 
 /** True iff `op` is a snapshot op (reserved table tag). */
