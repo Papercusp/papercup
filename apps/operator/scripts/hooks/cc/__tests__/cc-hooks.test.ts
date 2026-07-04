@@ -322,7 +322,9 @@ describe('cc fleet statusline — render + fail-open', () => {
     }));
     const r = runStatusline({ PAPERCUSP_SID: 'su-me-self', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('papercusp');
+    // The static 'papercusp' label was REMOVED 2026-07-03 at owner request (it only ate
+    // line width; the ◇ id already identifies the pane) — the line leads with the self chip.
+    expect(r.stdout).not.toContain('papercusp');
     expect(r.stdout).toContain('◇ su-me'); // THIS agent's own shorthand id chip
     expect(r.stdout).toContain('2 peers'); // su-074be + su-a6146, not me
     expect(r.stdout).toContain('4be3de'); // newest peer's short id
@@ -335,7 +337,8 @@ describe('cc fleet statusline — render + fail-open', () => {
     fs.writeFileSync(fixture, JSON.stringify({ activity: [{ owner_id: 'su-only-me', summary: '✎ x.ts', kind: 'tool' }], count: 1 }));
     const r = runStatusline({ PAPERCUSP_SID: 'su-only-me', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('papercusp · ◇ su-only · solo');
+    // no static 'papercusp' prefix (removed 2026-07-03 at owner request)
+    expect(r.stdout).toBe('◇ su-only · solo');
   });
 
   it('not a psu session → prints nothing (Claude falls back to default), exit 0', () => {

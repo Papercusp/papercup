@@ -23,7 +23,7 @@
  * active grants IN-TXN BEFORE this runs, so the epoch fence is applied upstream;
  * the reaper never un-reaps and is idempotent (terminal rows are never matched).
  *
- * SCOPE (v1 — what lands NOW on existing substrate). Three follow-ups are
+ * SCOPE (v1 — what lands NOW on existing substrate). Two follow-ups remain
  * DEFERRED and DOCUMENTED, never silently dropped:
  *   1. MECHANICAL KILL after the X13 wind-down grace (cgroup / dedicated OS user)
  *      is P-105's sandbox tier, which is unbuilt. Until it lands, the fail-closed
@@ -32,9 +32,12 @@
  *   2. CANCELLING UNCLAIMED OFFERS (the item's second clause) needs the P-102
  *      signed-offer store, which is unbuilt. Wire it into this same path when it
  *      lands (a matching offer-store predicate + a cancel write).
- *   3. FEDERATED reap (revoke on machine A → reap on the executor machine B) needs
- *      the p2p-peer-grants PROJECTION-apply hook. The LOCAL owner-revoke path
- *      (the p2p-grant-set route) is wired now; both call THIS reaper.
+ * A third follow-up is now WIRED (WI-1940): FEDERATED reap (revoke on machine A
+ * → reap on the executor machine B) — the p2p-peer-grants PROJECTION's
+ * writeToPg calls this reaper for a landed, remote-origin, fleet-grant
+ * revocation (sync/hyperbee/projections/p2p-peer-grants.ts). The LOCAL
+ * owner-revoke path (the p2p-grant-set route) also calls THIS reaper directly
+ * on the grantor's own host; both paths converge here.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from '../work-items';

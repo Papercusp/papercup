@@ -168,7 +168,7 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
-  await sql`
+  const upsertResult = await sql`
     INSERT INTO harness_shared.p2p_peer_grants
       (workspace_id, harness_slug, grantor_github_user_id, grantor_login,
        grantee_kind, grantee_ref, capabilities, preset, status, grantor_epoch,
@@ -213,6 +213,56 @@ async function writeToPg(
     },
     sql,
   );
+
+  // P-106 deferred #3 (revocation-reaper.ts): FEDERATED reap. A fleet-grant
+  // revocation that LANDED here (upsertResult.count > 0 — the LWW guard above
+  // rejects stale replays, and those must never trigger a reap) means a peer
+  // withdrew consent for a fleet that THIS host may be running foreign
+  // sessions for right now. The LOCAL owner-revoke path (p2p-grant-set.ts)
+  // already reaps synchronously on the grantor's OWN host; this hook is what
+  // makes that same withdrawal reach every OTHER host in the hive that
+  // receives the federated row (revoke on machine A → reap on executor
+  // machine B). Only remote-origin ops trigger it — a local op never reaches
+  // writeToPg (skipOwnOps), so this only fires for genuinely inbound rows,
+  // and only when hiveHomeSlug gated the RECEIVER-ENFORCED identity check
+  // above, so row.grantor_github_user_id is already verified-authentic.
+  // Pool grants have no p2p_foreign_workspaces rows (grantee_kind === 'fleet'
+  // gate mirrors p2p-grant-set.ts). Best-effort: a reap failure/throw must
+  // never unwind the grant write that already landed above (D-004 loud, not
+  // silently dropped — surfaced via console.warn).
+  if (
+    (upsertResult.count ?? 0) > 0 &&
+    row.status === 'revoked' &&
+    row.grantee_kind === 'fleet' &&
+    provenance?.origin === 'remote' &&
+    opts.hiveHomeSlug
+  ) {
+    try {
+      const r = await reapForeignSessionsForRevocation(
+        {
+          workspaceId: opts.workspaceId,
+          hiveSlug: row.harness_slug,
+          responderGithubUserId: row.grantor_github_user_id,
+          responderDevicePubkey: sourceLogDevice,
+          trigger: { kind: 'grant-revoked', fleetSlug: row.grantee_ref },
+          actor: `p2p-peer-grants-projection:${row.grantor_github_user_id}`,
+          reason: 'federated-revocation',
+        },
+        sql,
+      );
+      if (!r.ok) {
+        console.warn(
+          `[p2p-peer-grants] federated reap refused for revoked fleet grant ` +
+            `(grantor=${row.grantor_github_user_id} fleet=${row.grantee_ref}): ${r.refusal.code} — ${r.refusal.detail}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[p2p-peer-grants] federated reap threw for revoked fleet grant ` +
+          `(grantor=${row.grantor_github_user_id} fleet=${row.grantee_ref}): ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
 }
 
 async function deleteFromPg(

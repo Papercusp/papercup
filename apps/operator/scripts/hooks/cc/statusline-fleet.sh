@@ -3,7 +3,7 @@
 # `coord:glance` (papercusp-worker-integration-2026-06-04 D-005 + the
 # coord-glance combined read, 2026-06-12). Two lines:
 #
-#   🔭 wire objective display · papercusp · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
+#   🔭 wire objective display · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
 #   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
 #   ⋯ run /mcp__papercusp-su__tool:coord:glance for detail
 #
