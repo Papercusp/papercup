@@ -33,10 +33,17 @@ describe('configureLexicon / ambient resolution', () => {
   it('reflects a live selector change (flag flip)', () => {
     let on = false;
     configureLexicon({ activePackId: () => (on ? 'the-hive' : 'classic') });
-    expect(term('operator')).toBe('Operator');
+    // classic/public = the Papercup cup-character cast (restore-pot-lexicon D-006)
+    expect(term('operator')).toBe('Papercup');
+    expect(term('brain')).toBe('Mug');
+    expect(term('overwatch')).toBe('Kettle');
+    expect(term('scout')).toBe('Blender');
     on = true;
+    // the-hive keeps the bee-theme role names
     expect(term('operator')).toBe('Sentinel'); // renamed from "Sentinel Bee" (hive-agent-tabs P-003)
     expect(term('brain')).toBe('Queen');
+    expect(term('overwatch')).toBe('Overwatch');
+    expect(term('scout')).toBe('Scout');
     expect(term('human', { plural: true })).toBe('Keepers');
   });
 

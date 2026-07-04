@@ -1377,9 +1377,12 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.DESIGN, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.TESTING, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.THE_HIVE, { case: 'parked', reason: 'restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public release ships the Pot (Papercup) lexicon by DEFAULT. The `the-hive`/Swarm skin is BUILT and kept, but cut from public V1 — reachable only via the TESTING-gated BrandSwitcher (P-004). OFF ⇒ the classic/pot pack (the public default); ON ⇒ the bee skin for internal/testing use.' }],
+    // TEST_COMPLETION_GATE graduated 2026-07-04 (dark-flag-age review, EI-7280):
+    // enforce-system-on-generic-work-2026-06-29 P-014 verified it LIVE + enabled
+    // (flags:get confirmed true) with zero blast radius (done-without-test watchdog
+    // signalCount:0 across every tick since activation) — default ON.
     // incomplete — the code is not fully working / unverified on a path that matters
     [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'the external-bench grader adapter is incomplete (M2 in-container modality unbuilt) + infra-heavy (Docker/GB image pulls); dark until the P-009 ~50-task pilot proves the end-to-end path.' }],
-    [FLAGS.TEST_COMPLETION_GATE, { case: 'incomplete', reason: 'the test-completion gate can REFUSE a real work_items:complete; dark until the done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion byte-identical; FAIL-OPEN even when ON.' }],
     [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
     [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
     // PER_HIVE_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
@@ -1410,7 +1413,17 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
 //                             the bump is the LAST step, never the only one.
 //   DARK_FLAGS_HIGH_WATERMARK — the post-sweep size ceiling; the dark set may only
 //                             SHRINK below it. Raising it needs explicit owner sign-off.
-export const DARK_FLAGS_REVIEW_BY = '2026-07-15';
+//
+// 2026-07-04 review (EI-7280, pushed the date out — the review is the point, not the
+// bump): walked every non-owner-authority dark flag against its stated graduation
+// condition. Ready + graduated: TEST_COMPLETION_GATE (verified live+enabled, zero
+// blast radius). Checked + still genuinely not ready: EXTERNAL_BENCH (grader
+// adapter incomplete, M2 unbuilt), CODEX_GATEWAY_OAUTH_PROXY (WI-2198, owner-
+// attended canary not yet run), ONBOARDING_PREVIEW_FEATURES (backing features —
+// telemetry consent, mobile pairing, auto-update channel — not shipped), PRESENCE_GOSSIP
+// (cross-machine-coord-parity-and-trust-2026-07-01 P-108 replication-layer bug still
+// WIP, blocking the D6 flip). owner-authority entries are the owner's call, not swept here.
+export const DARK_FLAGS_REVIEW_BY = '2026-08-01';
 export const DARK_FLAGS_HIGH_WATERMARK = 22;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag

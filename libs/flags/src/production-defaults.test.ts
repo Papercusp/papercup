@@ -55,7 +55,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // count assertion below dropped from 10 to 9 to match.
   'papercusp-auth-config-overrides',
   'papercusp-external-bench',
-  'papercusp-test-completion-gate',
+  // papercusp-test-completion-gate GRADUATED to default-ON 2026-07-04 (dark-flag-age
+  // review, EI-7280 — see libs/flags/src/types.ts DARK_FLAGS): enforce-system-on-
+  // generic-work-2026-06-29 P-014 verified it LIVE + enabled with zero blast radius
+  // (done-without-test watchdog signalCount:0 since activation) — removed from this
+  // snapshot; the count assertion below dropped to match.
   // Added AFTER the snapshot (deliberate new dark flags, not inversion drift):
   // 2026-07-01 — presence-off-log gossip cutover (cross-machine-coord-parity
   // P-004 D-008): every hive peer must carry the gossip READER before a writer
@@ -212,7 +216,9 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // owner-directed): public ships the Pot lexicon; Swarm skin is TESTING-gated. Count 12 → 13.
     // 2026-07-04 (EI-7230) — papercusp-watchdog-auto-close: BUG-FIX correction, not a new
     // darkening (see the PRE_INVERSION_DEFAULT_OFF comment above). Count 13 → 14.
-    expect(offCount).toBe(14);
+    // 2026-07-04 (EI-7280) — papercusp-test-completion-gate GRADUATED to default-ON
+    // (dark-flag-age review): verified live+enabled, zero blast radius. Count 14 → 13.
+    expect(offCount).toBe(13);
   });
 
   it('sanity: the four cut-for-V1 flags + the two owner-authority security flags are still dark', () => {

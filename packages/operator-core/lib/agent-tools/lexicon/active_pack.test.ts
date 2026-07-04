@@ -40,7 +40,13 @@ describe('lexicon:active_pack', () => {
     // the 2026-06-16 "pot is canonically Hive in the baseline" directive.
     expect(out.terms.pot).toEqual({ one: 'Pot', other: 'Pots' });
     expect(out.terms.fleet.one).toBe('Fleet');
-    expect(out.terms.operator.one).toBe('Operator');
+    // restore-pot-lexicon D-006 (owner 2026-07-04): classic role names = the
+    // Papercup cup-character cast. operator→Papercup, brain→Mug, overwatch→Kettle,
+    // scout→Blender (the-hive keeps the bee-theme names, asserted below).
+    expect(out.terms.operator.one).toBe('Papercup');
+    expect(out.terms.brain.one).toBe('Mug');
+    expect(out.terms.overwatch.one).toBe('Kettle');
+    expect(out.terms.scout.one).toBe('Blender');
     expect(out.terms.cupboard.one).toBe('Cupboard');
   });
 
@@ -56,6 +62,8 @@ describe('lexicon:active_pack', () => {
     expect(out.terms.brain.one).toBe('Queen');
     expect(out.terms.human.one).toBe('Keeper');
     expect(out.terms.cupboard.one).toBe('Comb');
+    expect(out.terms.overwatch.one).toBe('Overwatch');
+    expect(out.terms.scout.one).toBe('Scout');
     expect(out.terms.contributor.one).toBe('Bee');
     // Kept names stay identical across packs.
     expect(out.terms.harness.one).toBe('Harness');
