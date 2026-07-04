@@ -22,6 +22,7 @@ import {
   spawnSubstrateSidecar,
   registerSidecarShutdownHooks,
   stopSubstrateSidecar,
+  onSidecarRespawned,
 } from './substrate-sidecar-spawn';
 import { getSubstrateIpcClient } from './substrate-ipc-client';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
@@ -32,6 +33,7 @@ import {
   gatherBootedHarnessFacts,
   evictBootedHarnessEngine,
   setSubstrateBootDefaults,
+  reconcileRemoteHandlesAfterSidecarRestart,
 } from './boot-all';
 import {
   startSubstrateEvictionReaper,
@@ -70,6 +72,28 @@ let reaper: SubstrateEvictionReaper | null = null;
 
 /** Module singleton — one keepalive listener per process. */
 let keepalive: OutboxKeepaliveHandle | null = null;
+
+/** WI-1877: register the post-respawn reconcile hook at most once per process
+ *  (spawnSubstrateSidecar's respawn machinery is itself a module singleton, so
+ *  double-registering here would re-boot every remote harness twice per respawn). */
+let respawnReconcileRegistered = false;
+function ensureSidecarRespawnReconcileRegistered(): void {
+  if (respawnReconcileRegistered) return;
+  respawnReconcileRegistered = true;
+  onSidecarRespawned(() => {
+    void reconcileRemoteHandlesAfterSidecarRestart().catch((e) => {
+      console.error(
+        '[substrate-boot] post-respawn reconcile threw (harnesses may still be dark on the new sidecar):',
+        e instanceof Error ? e.message : String(e),
+      );
+    });
+  });
+}
+
+/** Test seam — allow re-registering the respawn hook between unit tests. */
+export function _resetSidecarRespawnReconcileRegistrationForTests(): void {
+  respawnReconcileRegistered = false;
+}
 
 /**
  * Start the LAZY_SUBSTRATE_BOOT eviction reaper if the flag is ON and it isn't

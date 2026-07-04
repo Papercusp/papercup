@@ -47,6 +47,50 @@ export const RESPAWN_WINDOW_MS = 5 * 60_000;
 let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn schedules
 let respawnTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ── WI-1877: post-respawn reconcile hook ─────────────────────────────────────
+//
+// THE BUG this closes: `scheduleRespawn` below only re-starts the sidecar
+// PROCESS. Nothing re-issues `bootHarness` (substrate:bootHarness over IPC)
+// for the harnesses that were booted onto the OLD (now-gone) sidecar instance
+// — the new process starts with ZERO harnesses registered, so it joins no
+// swarm topics and federation goes silently dark until a full app restart
+// (live repro: mac VM 2026-07-03, 10+ min with zero topic joins post-respawn).
+//
+// `onSidecarRespawned` lets a higher layer (substrate-boot-wrapper, which
+// already owns the `handles` map of booted harnesses in boot-all.ts) register
+// a callback that fires once a crash-triggered auto-respawn SUCCEEDS (the new
+// sidecar is ready) — this module stays agnostic of what "re-boot every
+// harness" means; it only reports the fact that a fresh sidecar just came up.
+type RespawnListener = () => void;
+const respawnListeners = new Set<RespawnListener>();
+
+/** Register a callback fired after an unexpected-crash auto-respawn SUCCEEDS
+ *  (the new sidecar process passed its ready handshake). Never fires for the
+ *  FIRST (non-respawn) spawn, and never for a deliberate stop. Returns an
+ *  unsubscribe fn. Listener errors are caught + logged — one bad listener
+ *  must never break the others or the respawn itself. */
+export function onSidecarRespawned(listener: RespawnListener): () => void {
+  respawnListeners.add(listener);
+  return () => {
+    respawnListeners.delete(listener);
+  };
+}
+
+function notifySidecarRespawned(): void {
+  for (const listener of respawnListeners) {
+    try {
+      listener();
+    } catch (e) {
+      console.error('[substrate-sidecar] onSidecarRespawned listener threw:', e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+/** Test seam — clear registered respawn listeners between unit tests. */
+export function _resetSidecarRespawnListenersForTests(): void {
+  respawnListeners.clear();
+}
+
 /** Per-sidecar memory cap (GiB) for the isolated spawn scope (systemd-run --user
  *  --scope). WI-1504: the sidecar leaks under peer-sync load (27GB bursts observed
  *  in the wild) — scoping it means a balloon OOM-kills ONLY the sidecar's own
@@ -114,9 +158,16 @@ function scheduleRespawn(socketPath: string): void {
   );
   respawnTimer = setTimeout(() => {
     respawnTimer = null;
-    spawnSubstrateSidecar(socketPath).catch((err) => {
-      console.error('[substrate-sidecar] auto-respawn failed:', err);
-    });
+    spawnSubstrateSidecar(socketPath)
+      .then(() => {
+        // WI-1877: the process is back, but the new instance knows about
+        // ZERO harnesses — notify so the harness-level reconcile (owned by
+        // boot-all.ts via substrate-boot-wrapper) re-registers each one.
+        notifySidecarRespawned();
+      })
+      .catch((err) => {
+        console.error('[substrate-sidecar] auto-respawn failed:', err);
+      });
   }, backoffMs);
 }
 

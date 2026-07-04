@@ -1022,6 +1022,76 @@ export async function rekeyHarness(
   return { rekeyed: true };
 }
 
+export interface ReconcileRemoteHandlesResult {
+  /** `${workspaceId}::${harnessSlug}` keys successfully re-booted onto the new sidecar. */
+  rebooted: string[];
+  /** Keys that failed to re-boot, with the error. */
+  failed: Array<{ key: string; error: string }>;
+}
+
+/**
+ * WI-1877 — after a substrate-sidecar crash+respawn, every cached
+ * `RemoteBootedHarnessHandle` in THIS process still refers to the OLD sidecar
+ * instance's (now-gone) in-memory store: the new sidecar process boots with
+ * ZERO harnesses registered (no topic joins, no swarm, no federation) and
+ * `bootSingleHarness` would otherwise short-circuit every one of them to
+ * `already-booted` forever (the cache says it's booted, so nothing ever
+ * re-issues the boot call onto the fresh sidecar) — silently dark until a full
+ * app restart (live repro: mac VM 2026-07-03, 10+ min zero topic joins).
+ *
+ * Call this once a fresh sidecar is confirmed ready after an auto-respawn
+ * (wired via `onSidecarRespawned` in substrate-boot-wrapper.ts). Re-issues
+ * `bootHarness` (via `rebootHarness`, which closes the stale handle then boots
+ * fresh) for every currently-cached REMOTE handle, in bounded-concurrency
+ * batches — mirrors `bootAllHarnessesForActiveWorkspace`'s WI-779 guard so a
+ * respawn during a many-harness boot doesn't saturate the fresh sidecar the
+ * same way an unbounded initial boot once did. In-process (non-remote)
+ * handles are left untouched — a sidecar crash never affects them. Per-harness
+ * failures are collected, never thrown — one bad harness must never block the
+ * rest from re-registering.
+ */
+export async function reconcileRemoteHandlesAfterSidecarRestart(
+  bootConcurrency?: number,
+): Promise<ReconcileRemoteHandlesResult> {
+  const remoteKeys = [...handles.entries()]
+    .filter(([, h]) => h instanceof RemoteBootedHarnessHandle)
+    .map(([k]) => k);
+
+  const envConcurrency = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_CONCURRENCY);
+  const concurrency =
+    bootConcurrency ?? (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 4);
+
+  const failed: Array<{ key: string; error: string }> = [];
+  const rebooted: string[] = [];
+  await mapWithConcurrency(remoteKeys, concurrency, async (k) => {
+    const parsed = parseKey(k);
+    if (!parsed) return;
+    try {
+      const { boot } = await rebootHarness(parsed.workspaceId, parsed.harnessSlug);
+      if (boot.state === 'booted') {
+        rebooted.push(k);
+      } else {
+        failed.push({ key: k, error: boot.error ?? `unexpected post-respawn state '${boot.state}'` });
+      }
+    } catch (e) {
+      failed.push({ key: k, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  if (failed.length > 0) {
+    console.error(
+      `[boot-all] sidecar-respawn reconcile: ${failed.length}/${remoteKeys.length} harness(es) failed to re-boot onto the new sidecar:`,
+      failed,
+    );
+  }
+  if (rebooted.length > 0) {
+    console.log(
+      `[boot-all] sidecar-respawn reconcile: re-booted ${rebooted.length}/${remoteKeys.length} harness(es) onto the new sidecar: ${rebooted.join(', ')}`,
+    );
+  }
+  return { rebooted, failed };
+}
+
 /** Tear down every cached handle. For test cleanup + process shutdown. */
 export async function closeAllBootedHarnesses(): Promise<number> {
   const entries = Array.from(handles.entries());
