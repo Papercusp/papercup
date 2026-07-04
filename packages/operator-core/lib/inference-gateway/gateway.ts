@@ -3298,6 +3298,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const isSse = (outHeaders['content-type'] ?? '').includes('text/event-stream');
         const endStreamWithError = (reason: string): void => {
           if (res.writableEnded || res.destroyed) return;
+          // EI-7168 (asymmetric AIMD caution): this request was ADMITTED and got a 2xx status — it already
+          // recorded aimd.recordSuccess() above (line ~3243) — then died mid-relay. That is the EXPENSIVE
+          // failure this ticket describes (billed input read, wasted concurrency slot), unlike a cheap
+          // at-the-door 429 that recordThrottle() already handles with its own sustained-pressure buffer.
+          // Correct the earlier optimistic recordSuccess() with an immediate hard clamp — every genuine
+          // mid-stream death funnels through this one function (stream error, idle-stall abort), so this is
+          // the single wiring point. Guarded by the early-return above: fires at most once per request.
+          aimd.recordHardFailure();
           if (!isSse) {
             try { res.destroy(); } catch { /* already torn down */ }
             return;

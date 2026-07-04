@@ -11,6 +11,7 @@
     "packages/*",
     "libs/agent-chat",
     "libs/generic/chat-protocol",
+    "libs/generic/seed-bundle",
     "libs/generic/git-graph",
     "libs/generic/ui-primitives",
     "libs/generic/dock-workbench",
