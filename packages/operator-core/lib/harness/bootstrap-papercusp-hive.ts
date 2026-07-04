@@ -58,7 +58,7 @@ import { FLAGS } from '@papercusp/flags';
  * safe-by-construction (any restore failure falls back to the cold path — P-008), so
  * a flag-read hiccup must not silently force cold.
  */
-async function seedBundleEnabled(): Promise<boolean> {
+export async function seedBundleEnabled(): Promise<boolean> {
   try {
     return await getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system');
   } catch {
