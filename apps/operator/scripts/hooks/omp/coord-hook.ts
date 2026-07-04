@@ -1628,6 +1628,35 @@ export function fleetLaunchBudgetReason(count: number): string {
   );
 }
 
+/** True for an `eval`/python code-execution call in any surface spelling. The
+ *  trimmed OMP surface hands a weak local model (ornith IQ3_M) tools:find +
+ *  tools:invoke as its ONLY discovery/invocation path — every MCP/papercusp tool
+ *  is reachable THROUGH them. A raw `eval`/`python` tool is neither, and a weak
+ *  model reaches for it to "call" a tool as code (ornith run-3, 2026-07-04:
+ *  session 10177 called `eval` ~148× → "(no output)" → never reached plans:get,
+ *  never gated). The consecutive-identical loop-breaker never caught it because
+ *  each call carried different code, so the runs were non-adjacent. This is a
+ *  tool-NAME block that fires on call #1 regardless of args. Strips a `group:`
+ *  prefix first so a legitimately-namespaced verb (e.g. `code:run` → `run`) is
+ *  NOT swept up. Pure. */
+export function isEvalCall(toolName: string): boolean {
+  const n = (toolName || '').toLowerCase().replace(/[_-]/g, '');
+  const bare = n.replace(/^.*:/, '');
+  return bare === 'eval' || bare === 'evaltool' || bare === 'runpython' || bare === 'python';
+}
+
+/** The redirect returned when an agent session invokes `eval`. Forces the model
+ *  back onto the native tool / tools:invoke / Bash triad it actually has. Pure. */
+export function evalBlockReason(): string {
+  return (
+    'eval-blocked: the `eval` (python) tool is DISABLED for papercusp agent sessions. ' +
+    'Do NOT invoke MCP/papercusp tools through eval — call the tool NATIVELY by its name ' +
+    '(e.g. call `plans:get` directly with its args), or if it is not directly callable use ' +
+    'the `tools:invoke` tool ({ name, args }). For files or shell use the `Bash` tool. ' +
+    'Retry your intended action with the correct tool now.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -1714,6 +1743,18 @@ export async function onToolCall(
   // gets its answer this turn. Gated on the agent-session marker (owner sessions unrestricted, D-003).
   if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isNativeToolSearch(event.toolName)) {
     return { block: true, reason: await buildToolFindRedirect(event.input) };
+  }
+
+  // eval doom-loop guard (ornith run-3, 2026-07-04 / WI-2299): a weak local model
+  // reaches for a raw `eval`/python tool to "call" a tool as code — session 10177
+  // did it ~148× ("(no output)" each time) and never reached plans:get or the gate.
+  // The consecutive-identical breaker below never caught it (each eval carried
+  // different code, so the runs were non-adjacent), so block by tool-NAME on call
+  // #1 and redirect onto the native tool / tools:invoke / Bash triad. Placed with
+  // the specific guards so it wins before the generic loop-breaker. Owner sessions
+  // unrestricted (D-003).
+  if (process.env.PAPERCUSP_AGENT_SESSION === '1' && isEvalCall(event.toolName)) {
+    return { block: true, reason: evalBlockReason() };
   }
 
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the

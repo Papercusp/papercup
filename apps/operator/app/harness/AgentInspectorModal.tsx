@@ -14,22 +14,24 @@ import {
 
 /**
  * AgentInspectorModal — the pinned, full-height view of a run's live thinking
- * stream. Opened from the hover popover's "Open full inspector" button.
+ * stream. Opened by clicking a running agent's row in the AgentsRoster
+ * (operator-vite's AgentsRunningPill → onInspect), the LIVE surface for this
+ * — NOT a hover popover (EI-5917: the `AgentThinkingPopover` default-exported
+ * hover component this file imports FROM has no JSX caller anywhere in the
+ * tree; only its shared hook/renderer exports below are reused here).
  *
- * Unlike the hover popover it does NOT dismiss on mouse-leave, so the whole
- * transcript can be read + scrolled. It reuses the shared stream hook + Entry
- * renderer, but presents the timeline grouped into TURNS, NEWEST-FIRST: the turn
- * the agent is currently working streams live at the TOP as "● Live turn" (with a
- * pulsing thinking indicator), and when it completes it becomes the top of the
+ * It does NOT dismiss on mouse-leave, so the whole transcript can be read +
+ * scrolled. It reuses the shared stream hook + Entry renderer, but presents
+ * the timeline grouped into TURNS, NEWEST-FIRST: the turn the agent is
+ * currently working streams live at the TOP as "● Live turn" (with a pulsing
+ * thinking indicator), and when it completes it becomes the top of the
  * completed-turns list below it — each older turn beneath, latest highest.
- * Before this the "Open full inspector" button was a dead stub (it only closed
- * the popover) — there was no inspector in operator-vite to open.
  *
  * Empty-timeline state reuses the shared `waitingMessage` helper (WI-1325): a
  * live run producing ZERO output for STALL_AFTER_MS escalates from a hopeful
  * "Waiting…" to a "⚠ no output for {elapsed} — stalled/rate-limited" warning +
  * a "stalled?" header, so a wedged agent stops reading as an eternal green
- * "live · No output yet". Mirrors the hover popover's behavior.
+ * "live · No output yet".
  */
 export default function AgentInspectorModal({
   slug,

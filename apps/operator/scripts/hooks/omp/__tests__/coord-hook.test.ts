@@ -40,6 +40,8 @@ import {
   isFleetLaunchCall,
   resetFleetLaunchBudget,
   fleetLaunchBudgetReason,
+  isEvalCall,
+  evalBlockReason,
   hookOwnerId,
   linkAdvSessionFromContext,
   onSessionShutdown,
@@ -360,6 +362,76 @@ describe('onToolCall doom-loop breaker (agent sessions only)', () => {
     });
     expect(r.block).toBe(true);
     expect(r.reason).toContain('shared-tree guard'); // git message, not the loop message
+  });
+});
+
+describe('isEvalCall + evalBlockReason (eval doom-loop guard, WI-2299)', () => {
+  it('matches a raw eval/python code-exec tool in every spelling', () => {
+    expect(isEvalCall('eval')).toBe(true);
+    expect(isEvalCall('eval_tool')).toBe(true);
+    expect(isEvalCall('run_python')).toBe(true);
+    expect(isEvalCall('python')).toBe(true);
+    expect(isEvalCall('EVAL')).toBe(true); // case-insensitive
+    expect(isEvalCall('mcp__ollama_cc:eval')).toBe(true); // strips a group prefix
+  });
+  it('does NOT sweep up legitimately-namespaced verbs or unrelated tools', () => {
+    expect(isEvalCall('code:run')).toBe(false); // bare verb `run`, not `runpython`
+    expect(isEvalCall('code_run')).toBe(false);
+    expect(isEvalCall('plans:get')).toBe(false);
+    expect(isEvalCall('bash')).toBe(false);
+    expect(isEvalCall('tools:invoke')).toBe(false);
+    expect(isEvalCall('evaluate')).toBe(false); // not an exact bare match
+    expect(isEvalCall('')).toBe(false);
+  });
+  it('the reason redirects onto the native tool / tools:invoke / Bash triad', () => {
+    const r = evalBlockReason();
+    expect(r).toContain('eval-blocked');
+    expect(r).toContain('tools:invoke');
+    expect(r).toContain('Bash');
+    expect(r).toContain('NATIVELY');
+  });
+});
+
+describe('onToolCall eval guard (agent sessions only)', () => {
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+  });
+  afterEach(() => {
+    resetToolCallLoopState();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const evalCall = (code: string) =>
+    onToolCall({ type: 'tool_call', toolName: 'eval', toolCallId: 'e', input: { code } });
+
+  it('blocks an eval call on #1 — even with DIFFERENT code each time (non-adjacent runs)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    // The consecutive-identical loop-breaker would NEVER catch this (each call differs);
+    // the tool-name block must fire on the very first call.
+    const first = await evalCall('plans.get(slug="x")');
+    expect(first.block).toBe(true);
+    expect(first.reason).toContain('eval-blocked');
+    const second = await evalCall('plans.get(slug="y")'); // different code
+    expect(second.block).toBe(true);
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    expect((await evalCall('anything')).block).toBeUndefined();
+  });
+
+  it('leaves a legitimate namespaced tool (code:run) alone', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'code:run',
+      toolCallId: 'c',
+      input: { code: 'ok' },
+    });
+    expect(r.block).toBeUndefined();
   });
 });
 

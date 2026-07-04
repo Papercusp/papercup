@@ -232,8 +232,12 @@ beforeAll(async () => {
       updated_at bigint DEFAULT 0 NOT NULL
     )
   `);
+  // resolvePlanScope also requires plans be Hive-scoped: the registry entry must
+  // be its OWN Hive home (harness_kind:'hive') or belong to one (hive_slug), or
+  // it fails loud ("plans are Hive-scoped, but '<slug>' is not a Hive home and
+  // does not belong to one"). This test's harness is its own Hive home.
   await rootSql.unsafe(
-    `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp"}]}'::jsonb)`,
+    `INSERT INTO harness_shared.harness_registry (workspace_id, payload) VALUES ('${WS}', '{"projects":[{"slug":"papercusp","path":"/tmp/papercusp","harness_kind":"hive"}]}'::jsonb)`,
   );
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
