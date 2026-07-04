@@ -19,7 +19,20 @@ import { createResilientEventSource } from '@papercusp/sse';
  *   - The popover catches its own mouseenter/mouseleave so the cursor
  *     can transit from the pill into the popover without a flicker close.
  *     Mouse leaving the popover triggers onClose.
- *   - The pill controls the open state via parent component (HarnessDashboard).
+ *
+ * ⚠ ORPHANED (EI-5917, 2026-07): the default-exported `AgentThinkingPopover`
+ * component below has ZERO JSX callers anywhere in the tree — the "pill
+ * controls the open state via parent component" it once described
+ * (HarnessDashboard, a since-removed apps/operator surface) no longer exists.
+ * The LIVE surface is AgentInspectorModal.tsx (a click-to-open, non-dismissing
+ * modal), opened from operator-vite's AgentsRunningPill/AgentsRoster. Only
+ * this file's NAMED exports are reused today — TimelineEntry, waitingMessage,
+ * useAgentThinkingStream, ThinkingDot, Turn, groupEntriesIntoTurns, Entry,
+ * fmtEntryTime, STALL_AFTER_MS. Before touching the popover component itself
+ * (below), confirm you actually want the hover surface revived rather than
+ * fixing AgentInspectorModal — the next real fix here should either wire this
+ * back in as a genuine hover-preview, or delete it and keep only the shared
+ * exports (EI-5917 has the full analysis).
  */
 
 export interface TimelineEntry {

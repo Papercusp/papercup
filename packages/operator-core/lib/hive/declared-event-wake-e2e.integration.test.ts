@@ -106,7 +106,6 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
   const parsed: unknown = text ? JSON.parse(text) : {};
-  if (process.env.DEBUG_DISPATCH) console.error('DISPATCH_DEBUG', tool, '|||', text);
   // EI-7217: every defineTool handler now returns the canonical `{ data }`
   // envelope (definetool-token-optimization-adoption P-006/D-008), one level
   // OUTSIDE whatever the handler itself returns — plans:start's bulk envelope
@@ -318,7 +317,11 @@ describe('the declared event wake, end to end (P-008)', () => {
       { installSlug: string; kickoff?: string },
     ];
     expect(blueprintId).toBe('coding');
-    expect(launchOpts.installSlug).toBe('papercup');
+    // EI-7217: the 'papercup' harness slug this test dispatches with is canonicalized
+    // to 'papercusp' (RETIRED_HARNESS_SLUG_ALIASES, the 2026-06-19 papercup->papercusp
+    // rename-compat shim) by the time it reaches the launch — the CANONICAL name is
+    // what a real launch actually uses.
+    expect(launchOpts.installSlug).toBe('papercusp');
     expect(launchOpts.kickoff).toContain('subscribed event');
     expect(launchOpts.kickoff).toContain('P-008 burst test');
 

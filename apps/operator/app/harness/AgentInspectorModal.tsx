@@ -115,7 +115,7 @@ export default function AgentInspectorModal({
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
   const waiting = waitingMessage(status, elapsedMs);
   // A live run sitting on zero output past the stall threshold reads as
-  // "stalled?" instead of a reassuring green "live" (mirrors the hover popover).
+  // "stalled?" instead of a reassuring green "live" (shared waitingMessage logic).
   const stalledNow = events.length === 0 && status === 'live' && waiting.stalled;
   const statusLabel = stalledNow ? 'stalled?' : status === 'connecting' ? 'connecting…' : status;
   const statusColor = stalledNow ? '#d97757'
