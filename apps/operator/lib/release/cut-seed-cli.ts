@@ -117,18 +117,16 @@ async function main(): Promise<void> {
   // --- git half ---
   let git: GitCutSpec | null = null;
   if (wantGit) {
-    const keyHex = str(args, 'encrypt-key-hex') ?? process.env.PAPERCUSP_SEED_KEY_HEX;
-    let encryption: GitCutSpec['encryption'];
-    if (keyHex) {
-      const key = Buffer.from(keyHex, 'hex');
-      if (key.length !== 32) throw new Error(`--encrypt-key-hex must be 32 bytes (64 hex chars); got ${key.length}`);
-      encryption = { key, keyRef: { via: 'seed-key-op', hiveId: hive } };
-    } else {
-      console.warn(
-        '[cut-seed] ⚠ NO encryption key — git bundles will be PLAINTEXT. The dogfood repo is PRIVATE; a real ' +
-          'release MUST pass --encrypt-key-hex (or PAPERCUSP_SEED_KEY_HEX). Proceeding UNENCRYPTED (dev/fixture only).',
-      );
-    }
+    const encryption = await pickGitEncryption({
+      keyHex: str(args, 'encrypt-key-hex') ?? process.env.PAPERCUSP_SEED_KEY_HEX,
+      workspaceId,
+      epochProvided: str(args, 'epoch') !== undefined,
+      hive,
+      cutAtEpoch,
+      // Lazily resolve the crypto ONLY on the epoch path (keyHex/plaintext never touch it).
+      deriveEpochKey: async (h, e) => (await resolveHiveEpochCrypto(true)).deriveEpochKey(h, e),
+      warn: (m) => console.warn(m),
+    });
     git = { sourceRepoDir: repo, originUrl: origin, rev, ...(encryption ? { encryption } : {}) };
   }
 
