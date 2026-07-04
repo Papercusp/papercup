@@ -191,9 +191,22 @@ beforeAll(async () => {
       output_ref text, output_size bigint, error_message text,
       args_json jsonb, transport text, event_count integer, metadata_json jsonb,
       principal_kind text, principal_auth_method text, principal_trust text,
-      error_code text
+      error_code text,
+      coord_owner_id text
     )
   `);
+  // The hive started/paused KV (hive/started.ts + overwatch control-state) —
+  // the start path reads/writes it; baseline shape + workspace_id (mig 453,
+  // every write stamps activeWorkspaceId()).
+  await rootSql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.operator_settings (
+      key text NOT NULL,
+      value text NOT NULL,
+      description text,
+      updated_at bigint DEFAULT 0 NOT NULL,
+      workspace_id text NOT NULL,
+      CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
+    )`);
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();

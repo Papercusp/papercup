@@ -303,6 +303,7 @@ import desktopGitIdentity from './desktop/git-identity';
 import desktopLocalModelInstall from './desktop/local-model-install';
 import desktopLocalModelStatus from './desktop/local-model-status';
 import desktopPreflight from './desktop/preflight';
+import desktopOnboardingStatus from './desktop/onboarding-status';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
 import desktopSetupWizardState from './desktop/setup-wizard-state';
@@ -739,6 +740,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopLocalModelStatus as AnyRoute),
   ...flatten(desktopLocalModelInstall as AnyRoute),
   ...flatten(desktopPreflight as AnyRoute[]),
+  ...flatten(desktopOnboardingStatus as AnyRoute),
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),
   ...flatten(desktopSetupWizardState as AnyRoute[]),

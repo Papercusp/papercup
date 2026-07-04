@@ -203,6 +203,18 @@ beforeAll(async () => {
   await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
   // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // The hive started/paused KV (hive/started.ts + overwatch control-state) —
+  // the declare-wake path reads it; baseline shape + workspace_id (mig 453,
+  // every write stamps activeWorkspaceId()).
+  await rootSql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.operator_settings (
+      key text NOT NULL,
+      value text NOT NULL,
+      description text,
+      updated_at bigint DEFAULT 0 NOT NULL,
+      workspace_id text NOT NULL,
+      CONSTRAINT operator_settings_pkey PRIMARY KEY (key)
+    )`);
   h.sql = rootSql;
   // Deliberately NOT arming the default subscriptions — every rule in this test
   // comes from the Pot's own hive:declare-wake call (the declared path).

@@ -23,15 +23,19 @@
  * active grants IN-TXN BEFORE this runs, so the epoch fence is applied upstream;
  * the reaper never un-reaps and is idempotent (terminal rows are never matched).
  *
- * SCOPE (v1 — what lands NOW on existing substrate). Two follow-ups remain
+ * SCOPE (v1 — what lands NOW on existing substrate). One follow-up remains
  * DEFERRED and DOCUMENTED, never silently dropped:
  *   1. MECHANICAL KILL after the X13 wind-down grace (cgroup / dedicated OS user)
  *      is P-105's sandbox tier, which is unbuilt. Until it lands, the fail-closed
  *      guard is the boundary for honest sessions and the `reaped` registry state
  *      + a coord wake is the wind-down signal; a hostile shell is P-105's problem.
- *   2. CANCELLING UNCLAIMED OFFERS (the item's second clause) needs the P-102
- *      signed-offer store, which is unbuilt. Wire it into this same path when it
- *      lands (a matching offer-store predicate + a cancel write).
+ * The second follow-up is now WIRED (WI-1935): CANCELLING UNCLAIMED OFFERS —
+ * the P-102 signed-offer store landed (offer-store.ts, mig 490), and this path
+ * marks every still-open offer the revocation covers with a HOST-LOCAL
+ * disposition (setLocalOfferDisposition). Deliberately UNSIGNED + NON-FEDERATED:
+ * this host cannot re-sign the publisher's record — it just stops serving it
+ * (list reads + the puller exclude disposed rows); the publisher's own signed
+ * cancel remains the only federated status change.
  * A third follow-up is now WIRED (WI-1940): FEDERATED reap (revoke on machine A
  * → reap on the executor machine B) — the p2p-peer-grants PROJECTION's
  * writeToPg calls this reaper for a landed, remote-origin, fleet-grant
@@ -49,6 +53,7 @@ import {
 } from './foreign-workspaces';
 import { resolveP2pGrantWorkspace } from './grant-store';
 import { emitP2pReceipt } from './receipts';
+import { setLocalOfferDisposition, type LocalDispositionPredicate } from './offer-store';
 
 /**
  * States where a foreign session is still LIVE and therefore reapable. The
@@ -123,6 +128,13 @@ export type ReapResult =
       /** Reaped sessions whose receipt emit FAILED — surfaced, never swallowed
        *  (the reap itself still landed; the origin just may not learn why). */
       receiptFailures: number;
+      /** WI-1935 (deferred #2): still-open offers the revocation covers, newly
+       *  refused HOST-LOCALLY (offer-store local_disposition — unsigned,
+       *  non-federated; the puller stops claiming them on this host). */
+      offersCancelled: number;
+      /** The offer-cancel sweep failed (the session reap still landed) —
+       *  surfaced, never swallowed. */
+      offerCancelError: string | null;
     }
   | { ok: false; refusal: { code: string; detail: string } };
 
@@ -132,12 +144,14 @@ export interface ReaperDeps {
   listForeignWorkspaces: typeof listForeignWorkspaces;
   setForeignWorkspaceState: typeof setForeignWorkspaceState;
   emitP2pReceipt: typeof emitP2pReceipt;
+  setLocalOfferDisposition: typeof setLocalOfferDisposition;
 }
 
 const defaultDeps: ReaperDeps = {
   listForeignWorkspaces,
   setForeignWorkspaceState,
   emitP2pReceipt,
+  setLocalOfferDisposition,
 };
 
 /**
@@ -226,5 +240,22 @@ export async function reapForeignSessionsForRevocation(
     }
   }
 
-  return { ok: true, reaped, receiptsEmitted, receiptFailures };
+  // WI-1935 (deferred #2): the revocation also covers UNCLAIMED offers — mark
+  // every still-open offer it matches with a host-local disposition so the
+  // puller stops claiming them HERE. Unsigned + non-federated by design (this
+  // host cannot re-sign the publisher's record). Best-effort like the receipts:
+  // a failure is surfaced in the result, never allowed to undo the session reap.
+  const offerPredicate: LocalDispositionPredicate =
+    args.trigger.kind === 'grant-revoked'
+      ? { fleetSlug: args.trigger.fleetSlug }
+      : { publisherGithubUserId: args.trigger.originGithubUserId };
+  let offersCancelled = 0;
+  let offerCancelError: string | null = null;
+  try {
+    offersCancelled = await deps.setLocalOfferDisposition(ws, hive, offerPredicate, parkReason, sql);
+  } catch (e) {
+    offerCancelError = e instanceof Error ? e.message : String(e);
+  }
+
+  return { ok: true, reaped, receiptsEmitted, receiptFailures, offersCancelled, offerCancelError };
 }

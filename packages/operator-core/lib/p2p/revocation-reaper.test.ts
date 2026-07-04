@@ -48,13 +48,17 @@ function makeDeps(rows: ForeignWorkspace[], overrides: Partial<ReaperDeps> = {})
   );
   const emit = vi.fn(async (_args: Record<string, unknown>) => ({ ok: true as const, receipt: { receiptId: 'r' } as never }));
   const list = vi.fn(async () => rows);
+  // WI-1935 deferred #2: the offer-cancel sweep — stubbed so unit runs never
+  // touch the real offer store (and its PG edge).
+  const cancelOffers = vi.fn(async () => 0);
   const deps: Partial<ReaperDeps> = {
     listForeignWorkspaces: list as unknown as ReaperDeps['listForeignWorkspaces'],
     setForeignWorkspaceState: setState as unknown as ReaperDeps['setForeignWorkspaceState'],
     emitP2pReceipt: emit as unknown as ReaperDeps['emitP2pReceipt'],
+    setLocalOfferDisposition: cancelOffers as unknown as ReaperDeps['setLocalOfferDisposition'],
     ...overrides,
   };
-  return { deps, list, setState, emit };
+  return { deps, list, setState, emit, cancelOffers };
 }
 
 describe('REAPABLE_STATES (the live-session set)', () => {
@@ -226,5 +230,70 @@ describe('reapForeignSessionsForRevocation (orchestration)', () => {
     expect(res.ok && res.reaped).toHaveLength(0);
     expect(setState).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('unclaimed-offer cancel sweep (WI-1935 — the wired deferred #2)', () => {
+  const base = { hiveSlug: 'my-hive', responderGithubUserId: 42 };
+
+  it('grant-revoked → host-locally disposes the fleet\'s open offers (predicate by fleetSlug)', async () => {
+    const { deps, cancelOffers } = makeDeps([], {
+      setLocalOfferDisposition: vi.fn(async () => 3) as unknown as ReaperDeps['setLocalOfferDisposition'],
+    });
+    const res = await reapForeignSessionsForRevocation(
+      { ...base, workspaceId: 'ws1', trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
+      sqlStub,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.offersCancelled).toBe(3);
+    expect(res.offerCancelError).toBeNull();
+    const sweep = deps.setLocalOfferDisposition as ReturnType<typeof vi.fn>;
+    expect(sweep).toHaveBeenCalledTimes(1);
+    const [wsArg, hiveArg, predicate, disposition] = sweep.mock.calls[0]!;
+    expect(wsArg).toBe('ws1');
+    expect(hiveArg).toBe('my-hive');
+    expect(predicate).toEqual({ fleetSlug: 'fleet-x' });
+    expect(disposition).toBe('revocation:grant-revoked');
+    expect(cancelOffers).not.toHaveBeenCalled(); // the override won, not the default stub
+  });
+
+  it('publisher-revoked → predicate by publisherGithubUserId, reason threaded into the disposition', async () => {
+    const { deps } = makeDeps([]);
+    const res = await reapForeignSessionsForRevocation(
+      {
+        ...base,
+        workspaceId: 'ws1',
+        trigger: { kind: 'publisher-revoked', originGithubUserId: 777 },
+        reason: 'roster-rekey',
+      },
+      sqlStub,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const sweep = deps.setLocalOfferDisposition as ReturnType<typeof vi.fn>;
+    expect(sweep.mock.calls[0]![2]).toEqual({ publisherGithubUserId: 777 });
+    expect(sweep.mock.calls[0]![3]).toBe('revocation:publisher-revoked:roster-rekey');
+  });
+
+  it('a sweep failure is surfaced (offerCancelError) — the session reap still lands ok:true', async () => {
+    const rows = [ws({ offerId: 'A', fleetSlug: 'fleet-x', state: 'active' })];
+    const { deps } = makeDeps(rows, {
+      setLocalOfferDisposition: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as unknown as ReaperDeps['setLocalOfferDisposition'],
+    });
+    const res = await reapForeignSessionsForRevocation(
+      { ...base, workspaceId: 'ws1', trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
+      sqlStub,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.reaped).toHaveLength(1); // the safety-critical half landed
+    expect(res.offersCancelled).toBe(0);
+    expect(res.offerCancelError).toBe('pg down');
   });
 });

@@ -117,6 +117,41 @@ export async function delegateResource(
     }
   };
 
+  // D-005 (P-007): an agent_slot delegation federates as a standing SEAT-OFFER
+  // (p2p/offer-store-publish.ts) so the fleet owner's operator sees this
+  // machine's seats — set → open/paused, remove → cancelled. Best-effort +
+  // fire-and-forget: the LOCAL allotment write never waits on (or fails with)
+  // the offer leg. Skipped under a test-schema override (unit tests must not
+  // publish; both production callers — the MCP tool and the /res loopback —
+  // pass no override).
+  const publishSeatOffer = (args: { removed: boolean; count: number; paused: boolean }) => {
+    if (!isSlot || opts?.sqlOverride) return;
+    // A remove-by-ref caller may omit the trio — recover it from the row key
+    // (`model:effort:account`; no part contains a colon by construction).
+    let [m, e, a] = [model, effort, account];
+    if (!m || !e) {
+      const parts = resourceRef.split(':');
+      m = m || parts[0] || '';
+      e = e || parts[1] || '';
+      a = parts[2] || a || AUTO_ACCOUNT;
+    }
+    if (!m || !e) return; // nothing derivable — never publish a junk trio
+    void import('../../p2p/offer-store-publish')
+      .then((mod) =>
+        mod.publishSeatOfferForDelegationBestEffort({
+          workspaceId: input.workspaceId,
+          fleetSlug: input.fleetSlug,
+          model: m,
+          effort: e,
+          account: a,
+          count: args.count,
+          paused: args.paused,
+          removed: args.removed,
+        }),
+      )
+      .catch(() => {});
+  };
+
   if (input.remove) {
     const removed = await removeResourceAllotment(
       {
@@ -128,6 +163,10 @@ export async function delegateResource(
       opts?.sqlOverride,
     );
     await invalidate();
+    // Cancel the federated seat-offer even when 0 rows matched locally — a
+    // stray offer with no backing allotment must not keep advertising seats
+    // (the publish leg no-ops when no offer exists).
+    publishSeatOffer({ removed: true, count: 1, paused: false });
     return { ok: true, action: 'remove', removed: removed.removed };
   }
 
@@ -148,6 +187,11 @@ export async function delegateResource(
   const result = await setResourceAllotment(storeArgs, opts?.sqlOverride);
   if (!result.ok) return { ok: false, refusal: result.refusal };
   await invalidate();
+  publishSeatOffer({
+    removed: false,
+    count: result.allotment.quantity ?? input.count ?? 1,
+    paused: result.allotment.status === 'paused',
+  });
   return { ok: true, action: 'set', allotment: result.allotment };
 }
 
