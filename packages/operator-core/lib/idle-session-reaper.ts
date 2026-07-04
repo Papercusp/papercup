@@ -159,6 +159,14 @@ export interface IdleSessionReapResult {
    *  keptOnDesktop for the no-OS-window case. Subset of keptLive (folded into the
    *  protected set). */
   keptViewerAttached: number;
+  /** WINDOWS conservative-on-stale (WI-1967): sessions that WOULD have been reaped
+   *  (dead-owner, past grace, no other protection) but were spared because the
+   *  on-desktop window signal was UNAVAILABLE on this Windows host (GUI
+   *  closed/backgrounded → no fresh renderer push → we can't tell which wt.exe
+   *  terminals are open). Always 0 on Linux/macOS and whenever the window cache is
+   *  fresh. A non-zero value here every sweep means the GUI reporter is down while
+   *  sessions run — worth surfacing (the durable fix is a non-GUI enumeration). */
+  keptWindowSignalUnknown: number;
   dryRun: boolean;
 }
 
@@ -181,6 +189,7 @@ export async function runIdleSessionReap(
     keptLive: 0,
     keptOnDesktop: 0,
     keptViewerAttached: 0,
+    keptWindowSignalUnknown: 0,
     dryRun,
   };
   const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
@@ -214,11 +223,34 @@ export async function runIdleSessionReap(
       coordOwnerId: r.coord_owner_id,
       startedAtMs: new Date(r.started_at).getTime(),
     }));
+    // WI-1967 — Windows conservative-on-stale. When the on-desktop window signal
+    // is UNAVAILABLE (Windows host + no fresh renderer push → we can't tell which
+    // wt.exe terminals are still open), do NOT reap on the absent window signal:
+    // protect EVERY open session's owner this sweep. Windows-only + purely
+    // additive (pre-change Windows had no on-desktop exemption at all — see
+    // WI-1675), so this can only ever protect more, never reap more; Linux/macOS
+    // (windowSignalUnknown always false) is completely unchanged. Snapshot the
+    // protected set FIRST so keptWindowSignalUnknown can count exactly the
+    // sessions this fold rescued (dead-owner + past-grace, i.e. otherwise-reaped).
+    const nowMs = Date.now();
+    const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
+    const windowSignalUnknown = onDesktop?.windowSignalUnknown === true;
+    let keptWindowSignalUnknown = 0;
+    if (windowSignalUnknown) {
+      const protectedBeforeUnknown = new Set(protectedOwners);
+      for (const s of sessions) if (s.coordOwnerId) protectedOwners.add(s.coordOwnerId);
+      keptWindowSignalUnknown = sessions.filter(
+        (s) =>
+          s.coordOwnerId != null &&
+          !protectedBeforeUnknown.has(s.coordOwnerId) &&
+          nowMs - s.startedAtMs >= graceMs,
+      ).length;
+    }
     const plan = planIdleSessionReap({
       sessions,
       protectedOwners,
-      nowMs: Date.now(),
-      graceMs: opts.graceMs,
+      nowMs,
+      graceMs,
     });
     if (!dryRun) {
       // markAdvSessionEnded re-checks `ended_at IS NULL`, so a row that ended
@@ -240,6 +272,7 @@ export async function runIdleSessionReap(
       keptLive: plan.keptLive.length,
       keptOnDesktop,
       keptViewerAttached,
+      keptWindowSignalUnknown,
       dryRun,
     };
   } catch (e) {

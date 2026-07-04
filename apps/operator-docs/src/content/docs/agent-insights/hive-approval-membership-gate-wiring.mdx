@@ -12,9 +12,10 @@ documents:
 
 A shared hive's `membership:'approval'` policy is enforced **on the OWNER side**, at the
 substrate admission seam (`boot.ts` `drainAdmissionQueue`), via
-**`ownerAdmitOrPend`** (`hive-membership-admission.ts`). When the owner admits a
-binding-verified peer's announce it does NOT unconditionally trust-admit; it consults
-the owner-signed policy:
+**`admitAnnouncedPeerAsOwner`**, which resolves the peer's Hive home + self-gates to the
+owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in
+`hive-membership-admission.ts`). When the owner admits a binding-verified peer's announce
+it does NOT unconditionally trust-admit; it consults the owner-signed policy:
 
 - **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
 - **not a member, open/allowlisted** → `upsertHiveMember` (trust-admit).

@@ -106,6 +106,28 @@ is now **120s** — 2.5s re-announces keep a cold node aggressively discoverable
 until it pairs, then it drops to the bounded SLOW keepalive. Still re-armed on
 last-peer-loss; still bounded (no forever-hammering).
 
+## Update (2026-07-02, cross-machine-coord-parity-and-trust-2026-07-01 P-004/D-008): directory-swarm.ts is now a thin instantiation of the generic `topic-gossip.ts` chassis
+
+The hive-**directory** gossip's two-speed refresh loop referenced throughout this
+doc no longer lives inline in `directory-swarm.ts` — it moved to a generic
+`createTopicGossip<Frame>()` chassis in the new `topic-gossip.ts`, which
+`directory-swarm.ts` now calls as a thin instantiation (`createDirectoryGossip`
+→ `createTopicGossip({ protocol: HIVE_DIRECTORY_PROTOCOL, ... })`); the
+presence-gossip transport is the chassis's second instantiation. The refresh
+defaults for the directory path are unchanged and still live as constants
+re-exported from `topic-gossip.ts` (`DEFAULT_REFRESH_MS` = 2.5s,
+`DEFAULT_FAST_WINDOW_MS` = **30s** — not widened, unlike the substrate path
+below — `DEFAULT_SLOW_REFRESH_MS` = 60s). Public API and existing callers/tests
+(`hive-directory-boot.ts`) are unchanged.
+
+The **substrate** swarm (`joinHarnessSwarm` in `swarm.ts`, the subject of the
+fix below) has **not** been migrated onto this chassis — it still runs its own
+bespoke `managedSetInterval`-based refresh loop with its own
+`DEFAULT_SUBSTRATE_*` constants (verified current as of 2026-07-04). Don't
+assume "the same loop" means "the same source file" anymore: for the
+hive-directory side, read `topic-gossip.ts`; for the per-harness substrate
+side, read `swarm.ts` directly.
+
 ## Gotcha
 
 `admission-pending-retry.test.ts > "…announce was built >5 min before retry

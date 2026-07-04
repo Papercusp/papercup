@@ -63,7 +63,13 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { listLiveHosts } from './events/await/psu-pty-discovery';
-import { listWindowsByTitle, parseSessionIdFromWindowTitle, isWindowsDesktopHost } from './windows-desktop-windows';
+import {
+  listWindowsByTitle,
+  parseSessionIdFromWindowTitle,
+  isWindowsDesktopHost,
+  getOnDesktopWindowsCache,
+  type WindowsDesktopWindow,
+} from './windows-desktop-windows';
 
 const execFileAsync = promisify(execFile);
 
@@ -202,10 +208,23 @@ export interface OnDesktopSets {
   sessionIds: Set<string>;
   /** adv_session row ids on the desktop — the /adv/sessions surface key. */
   advSessionIds: Set<number>;
+  /**
+   * WINDOWS conservative-on-stale (WI-1967): TRUE when this is a Windows desktop
+   * host AND the renderer-pushed window cache is unavailable (null — GUI
+   * closed/backgrounded or the last push aged past its TTL), so we genuinely
+   * CANNOT tell which `wt.exe` terminals are open. Unlike the Linux path — where
+   * an empty window list is a DEFINITE "headless / nothing open" signal — a null
+   * Windows cache is "unknown", not "empty". The reaper reads this to stay
+   * conservative (protect every open session rather than reap on the absent
+   * window signal); non-reaper consumers (presence, /adv/sessions) ignore it.
+   * Always FALSE on Linux/macOS and whenever the cache is fresh (even if that
+   * fresh push is an empty list — that IS a definite "no windows open").
+   */
+  windowSignalUnknown: boolean;
 }
 
 function emptyOnDesktopSets(): OnDesktopSets {
-  return { owners: new Set(), sessionIds: new Set(), advSessionIds: new Set() };
+  return { owners: new Set(), sessionIds: new Set(), advSessionIds: new Set(), windowSignalUnknown: false };
 }
 
 /**
@@ -349,6 +368,12 @@ export interface GatherOnDesktopDeps {
   listHosts?: () => Array<{ ownerId: string; pid: number }>;
   /** /proc stat reader for the ancestry walk. Default: real /proc. */
   readStat?: (pid: number) => Promise<string | null>;
+  /** Is this the Windows desktop host? Default: isWindowsDesktopHost(). Injected
+   *  so the WI-1967 windowSignalUnknown branch unit-tests off the Linux dev box. */
+  isWindowsHost?: () => boolean;
+  /** The renderer-pushed Windows window cache (null ⇒ unknown). Default:
+   *  getOnDesktopWindowsCache(). Injected alongside isWindowsHost for tests. */
+  readWindowsCache?: () => WindowsDesktopWindow[] | null;
 }
 
 /**
@@ -373,6 +398,17 @@ export async function gatherOnDesktopSessions(
   if (onDesktopCache && now - onDesktopCache.at < ttl) return onDesktopCache.sets;
 
   let sets = emptyOnDesktopSets();
+  // WI-1967 — Windows "unknown window signal" detection, computed up front (a pure
+  // in-memory read that never throws, and independent of the window/PG reads
+  // below). On a Windows desktop host the ONLY on-desktop signal is the
+  // renderer-pushed cache; when it's null (GUI closed/backgrounded, or the last
+  // push aged out) listWindowsByTitle collapses it to [], which is
+  // indistinguishable from a genuine "no windows" — so we surface the ambiguity
+  // explicitly for the reaper. On Linux/macOS this is always false (an empty
+  // wmctrl list there is a definite headless signal, never "unknown").
+  const windowSignalUnknown =
+    (opts.deps?.isWindowsHost ?? isWindowsDesktopHost)() &&
+    (opts.deps?.readWindowsCache ?? getOnDesktopWindowsCache)() === null;
   try {
     const windows = await (opts.deps?.listWindows ?? listOpenWindows)();
     // No open windows (headless box / no DISPLAY) → nobody is on the desktop.
@@ -430,6 +466,11 @@ export async function gatherOnDesktopSessions(
     console.warn('[desktop-window-liveness] gather failed (non-fatal):', (e as Error)?.message ?? e);
     sets = emptyOnDesktopSets();
   }
+  // Stamp the unknown-signal flag last, so it survives the `sets =
+  // selectOnDesktopSessions(...)` reassignment in the success path AND rides the
+  // catch-reset empty sets (a Windows host with a null cache should read
+  // "unknown" even if the PG join threw).
+  sets.windowSignalUnknown = windowSignalUnknown;
   onDesktopCache = { at: now, sets };
   return sets;
 }
