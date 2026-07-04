@@ -481,6 +481,9 @@ describe('createHiveHarness', () => {
       expect(res.error).toBe('path_not_found');
       expect(registry.projects.find((p) => p.slug === 'missing-path-hive')).toBeUndefined();
       expect(ensureCalls).toEqual([]); // rejected before identity mint
+      // Blueprint resolution runs before the path-exists guard (harmless — building
+      // a resolver does no I/O), and still derives localDirs from existingPath.
+      expect(resolveExtendsCalls).toEqual([{ localDirs: [join(missing, '.papercusp', 'blueprints')] }]);
     });
 
     it('the fresh-dir path (no existingPath) is unchanged', async () => {

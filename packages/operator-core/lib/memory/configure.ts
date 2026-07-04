@@ -396,13 +396,22 @@ export interface ResolveEmbedderDeps {
   localInstalled: () => Promise<boolean>;
   buildOpenAi: (key: string) => EmbedFn;
   buildLocal: () => Promise<EmbedFn>;
+  /** EI-3381: is OpenAI embedding in its post-failure cooldown (a recent hard quota/billing
+   *  stop, or a fully-exhausted retry budget)? Only consulted by the 'auto' cascade — a
+   *  user-FORCED 'openai' preference still tries the key regardless (that's an explicit
+   *  override, not a "pick the best available" decision). Sync + cheap (in-memory only), so
+   *  it's checked on every 'auto' resolution with no extra I/O. */
+  isOpenAiRecentlyExhausted: () => boolean;
 }
 
 /**
  * Pure cascade core. 'disabled' is a hard stop; 'openai'/'local' are forced
  * (fall to disabled with a specific reason if their dependency is missing);
- * 'auto' cascades openai → local → disabled. No runtime behavior differs from
- * the previous inline form — the seams are just injected.
+ * 'auto' cascades openai → local → disabled, EXCEPT while OpenAI is in its
+ * post-failure cooldown (EI-3381), when it cascades local → openai → disabled
+ * instead — a sustained single-key exhaustion (org-wide TPM drain from another
+ * process, or a billing stop) no longer hard-fails memory:* when a local
+ * embedder is installed; it degrades to local until the cooldown lapses.
  */
 export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<ResolvedEmbedder> {
   const preference = await deps.readPreference();
@@ -424,6 +433,12 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
   }
 
+  // 'auto': prefer local while OpenAI is in its post-failure cooldown (EI-3381) — a sustained
+  // single-key exhaustion must not keep re-trying a key we just learned is unusable when a
+  // local embedder can serve the request instead.
+  if (deps.isOpenAiRecentlyExhausted() && (await deps.localInstalled())) {
+    return { mode: 'local', dims: EMBEDDER_DIM, embed: await deps.buildLocal() };
+  }
   // 'auto' — openai first, then local, then disabled.
   if (key) return { mode: 'openai', dims: EMBEDDER_DIM, embed: deps.buildOpenAi(key) };
   if (await deps.localInstalled()) {
@@ -434,7 +449,8 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
 
 /**
  * Resolve the embedder for the current user preference. 'disabled' is a
- * hard stop; 'auto' cascades openai → local → disabled. Thin production
+ * hard stop; 'auto' cascades openai → local → disabled (or local → openai
+ * while OpenAI is in its EI-3381 post-failure cooldown). Thin production
  * wrapper over `resolveEmbedderWith` with the real seams.
  */
 async function resolveEmbedder(): Promise<ResolvedEmbedder> {
@@ -444,6 +460,7 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
     localInstalled: localAvailable,
     buildOpenAi: buildOpenAiEmbedder,
     buildLocal: buildLocalEmbedder,
+    isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
   });
 }
 
