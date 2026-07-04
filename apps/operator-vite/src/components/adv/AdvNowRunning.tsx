@@ -136,7 +136,7 @@ export default function AdvNowRunning({ slug }: Props) {
     setStarting(true);
     try {
       await runHiveControl('hive:start', hive.slug);
-      toast.success('Hive started', { description: 'Queen woken — autonomous wakes enabled' });
+      toast.success(`${t('pot')} started`, { description: `${t('brain')} woken — autonomous wakes enabled` });
       setAwaitingAgent(true);
     } catch (e) {
       toast.error('Start failed', { description: String(e) });
@@ -149,15 +149,15 @@ export default function AdvNowRunning({ slug }: Props) {
   const stopHive = useCallback(async () => {
     if (!hive) return;
     const ok = await askConfirm({
-      title: `Pause hive (${hive.slug})?`,
-      body: 'Live bees are asked to wrap up; no new wakes fire until Start.',
-      confirmLabel: 'Pause hive',
+      title: `Pause ${t('pot', { lower: true })} (${hive.slug})?`,
+      body: `Live ${t('contributor', { plural: true, lower: true })} are asked to wrap up; no new wakes fire until Start.`,
+      confirmLabel: `Pause ${t('pot', { lower: true })}`,
       destructive: true,
     });
     if (!ok) return;
     try {
       await runHiveControl('hive:pause', hive.slug, { drainBees: true });
-      toast.success('Hive paused', { description: 'Autonomous wakes staged; bees draining' });
+      toast.success(`${t('pot')} paused`, { description: `Autonomous wakes staged; ${t('contributor', { plural: true, lower: true })} draining` });
       setAwaitingAgent(false);
     } catch (e) {
       toast.error('Pause failed', { description: String(e) });
@@ -197,7 +197,7 @@ export default function AdvNowRunning({ slug }: Props) {
       {/* Start (when paused) / Stop (when started) — THE hive control.
           Hidden when no hive is registered. */}
       {hive && !effectivelyAlive && (
-        <Tooltip label={`Start hive (${hive.slug}) — wake the Queen and enable autonomous wakes`}>
+        <Tooltip label={`Start ${t('pot', { lower: true })} (${hive.slug}) — wake the ${t('brain')} and enable autonomous wakes`}>
           <button
             type="button"
             className="pc-advshell__action pc-advshell__action--start"
@@ -205,19 +205,19 @@ export default function AdvNowRunning({ slug }: Props) {
             disabled={starting || isLoading}
           >
             <Play size={11} aria-hidden />
-            {starting ? 'Starting…' : 'Start hive'}
+            {starting ? 'Starting…' : `Start ${t('pot', { lower: true })}`}
           </button>
         </Tooltip>
       )}
       {hive && effectivelyAlive && (
-        <Tooltip label={`Pause hive (${hive.slug}) — stage autonomous wakes and drain live bees`}>
+        <Tooltip label={`Pause ${t('pot', { lower: true })} (${hive.slug}) — stage autonomous wakes and drain live ${t('contributor', { plural: true, lower: true })}`}>
           <button
             type="button"
             className="pc-advshell__action pc-advshell__action--stop"
             onClick={stopHive}
           >
             <Square size={11} aria-hidden />
-            Stop hive
+            {`Stop ${t('pot', { lower: true })}`}
           </button>
         </Tooltip>
       )}

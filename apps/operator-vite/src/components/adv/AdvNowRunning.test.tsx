@@ -65,6 +65,12 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// Lexicon resolver mocked to ECHO its key (t('pot')→'pot', t('brain')→'brain',
+// t('contributor')→'contributor') — isolates the routed Start/Stop/toast/confirm
+// copy from the THE_HIVE flag hook; classic pack renders 'Pot'/'Brain'/'Cup(s)'
+// at runtime (restore-pot-lexicon P-006).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import { toast } from 'sonner';
 import AdvNowRunning from './AdvNowRunning';
 
@@ -121,13 +127,13 @@ describe('AdvNowRunning', () => {
     const bar = container.querySelector('.pc-advshell__harness-bar');
     expect(bar?.className).toContain('is-checking');
     // no hive row yet → neither Start nor Stop
-    expect(screen.queryByText(/Start hive/)).toBeNull();
-    expect(screen.queryByText(/Stop hive/)).toBeNull();
+    expect(screen.queryByText(/Start pot/)).toBeNull();
+    expect(screen.queryByText(/Stop pot/)).toBeNull();
   });
 
   it('stopped hive → Start button, no Active label', async () => {
     const { container } = render(<AdvNowRunning slug="pot-a" />);
-    expect(await screen.findByText('Start hive')).toBeTruthy();
+    expect(await screen.findByText('Start pot')).toBeTruthy();
     expect(container.querySelector('.pc-advshell__harness-bar')?.className).toContain('is-stopped');
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
@@ -135,51 +141,51 @@ describe('AdvNowRunning', () => {
   it('started hive → Stop button, no per-agent status label (moved to the unified roster)', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
-    expect(await screen.findByText('Stop hive')).toBeTruthy();
-    expect(screen.queryByText('Start hive')).toBeNull();
+    expect(await screen.findByText('Stop pot')).toBeTruthy();
+    expect(screen.queryByText('Start pot')).toBeNull();
     expect(screen.queryByText(/Active —/)).toBeNull(); // the "Active — N running" label is gone
   });
 
   it('Start fires hive:start via the palette bridge and flips to waiting-for-agent', async () => {
     render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Start hive'));
+    fireEvent.click(await screen.findByText('Start pot'));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
         { name: 'hive:start', args: { harness: 'hive-1' }, confirmed: true },
       ]),
     );
-    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Hive started', expect.anything()));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot started', expect.anything()));
     // Optimistic active → the Stop control replaces Start (no per-agent label anymore).
-    expect(await screen.findByText('Stop hive')).toBeTruthy();
-    expect(screen.queryByText('Start hive')).toBeNull();
+    expect(await screen.findByText('Stop pot')).toBeTruthy();
+    expect(screen.queryByText('Start pot')).toBeNull();
   });
 
   it('a refused hive:start surfaces toast.error and stays stopped', async () => {
     runToolResponse = { ok: false, error: 'governor gate closed' };
     render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Start hive'));
+    fireEvent.click(await screen.findByText('Start pot'));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Start failed', expect.anything()));
-    expect(screen.getByText('Start hive')).toBeTruthy();
+    expect(screen.getByText('Start pot')).toBeTruthy();
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
 
   it('Stop confirms, then fires hive:pause with drainBees', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Stop hive'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Pause hive' }));
+    fireEvent.click(await screen.findByText('Stop pot'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause pot' }));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
         { name: 'hive:pause', args: { harness: 'hive-1', drainBees: true }, confirmed: true },
       ]),
     );
-    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Hive paused', expect.anything()));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot paused', expect.anything()));
   });
 
   it('a declined confirm aborts the pause entirely', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Stop hive'));
+    fireEvent.click(await screen.findByText('Stop pot'));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
     expect(runToolCalls).toEqual([]);
     expect(toastMock.success).not.toHaveBeenCalled();
@@ -202,7 +208,7 @@ describe('AdvNowRunning', () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
     planRows = [{ startStatus: 'started' }, { startStatus: 'started' }];
     render(<AdvNowRunning slug="pot-a" />);
-    await screen.findByText('Stop hive');
+    await screen.findByText('Stop pot');
     // started hive → stopped=false → plans.list disabled (no fetch) → no nudge
     expect(syncEnabled['plans.list']).toBe(false);
     expect(screen.queryByText(/plans? waiting/)).toBeNull();

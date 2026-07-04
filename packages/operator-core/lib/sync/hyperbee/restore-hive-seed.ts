@@ -126,6 +126,11 @@ export interface RestoreHiveSeedCtx {
    *  wires this from the PAPERCUSP_NO_SEED env — the operator's kill-switch if a
    *  shipped seed ever misbehaves, and how the cold-join canary forces a real join. */
   readonly disabled?: boolean;
+  /** Restrict restore to these store kinds (e.g. `['git']`). Absent ⇒ all stores.
+   *  The post-admission deferred-git-restore trigger (P-010 live-wire 2) uses this to
+   *  re-restore ONLY the now-decryptable git store, without re-copying the corestore
+   *  that already restored pre-join. */
+  readonly onlyKinds?: readonly string[];
   /** Seams (tests inject; defaults are the real filesystem + providers). */
   readonly readManifest?: (seedDir: string) => Promise<SeedManifest | null>;
   readonly registry?: SeedProviderRegistry;
@@ -184,9 +189,11 @@ export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreH
   }
 
   const hasKey = Boolean(ctx.decryptionKey);
+  const onlyKinds = ctx.onlyKinds;
   const restoreNow: SeedStoreEntry[] = [];
   const deferred: string[] = [];
   for (const entry of manifest.stores) {
+    if (onlyKinds && !onlyKinds.includes(entry.kind)) continue; // scoped restore (e.g. git-only)
     if (isDeferred(entry, hasKey)) {
       deferred.push(entry.kind);
       log(`[seed] deferring ${entry.kind} store — encrypted, key not yet available (post-admission)`);
