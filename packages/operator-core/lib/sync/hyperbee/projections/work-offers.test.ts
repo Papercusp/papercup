@@ -11,9 +11,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const listHiveMembersMock = vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []);
 const loadRevokedMock = vi.fn(async (..._args: unknown[]): Promise<Set<string>> => new Set<string>());
+const honorSpawnMock = vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ outcome: 'skipped', reason: 'test' }));
 vi.mock('../../../hive-membership-store', () => ({
   listHiveMembers: (...args: unknown[]) => listHiveMembersMock(...args),
   loadRevokedHivePubkeys: (...args: unknown[]) => loadRevokedMock(...args),
+}));
+// The P-009 honor hook is dynamically imported by writeToPg — mock the module
+// so a projection unit test can never open a real terminal.
+vi.mock('../../../p2p/delegated-spawn-honor', () => ({
+  honorSpawnRequestFromProjection: (...args: unknown[]) => honorSpawnMock(...args),
 }));
 
 import {
@@ -94,6 +100,7 @@ function attestPublisherDevice() {
 beforeEach(() => {
   listHiveMembersMock.mockReset().mockResolvedValue([]);
   loadRevokedMock.mockReset().mockResolvedValue(new Set());
+  honorSpawnMock.mockReset().mockResolvedValue({ outcome: 'skipped', reason: 'test' });
 });
 
 describe('p2p-work-offers projection (pure seams)', () => {
@@ -218,5 +225,71 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
     expect(calls[0]!.text).toMatch(/fed_order_key/);
     expect(calls[0]!.vals).toContain(PUBLISHER);
     expect(calls[0]!.vals).toContain('seat-abc123');
+  });
+});
+
+/** fakeTemplateSql whose result carries postgres-js's `count` (an APPLIED
+ *  upsert) — the honor hook keys on it. */
+function fakeAppliedSql(count: number) {
+  const calls: { text: string; vals: unknown[] }[] = [];
+  const sql = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+    calls.push({ text: strings.join('?'), vals });
+    return Promise.resolve(Object.assign([], { count }));
+  }) as never;
+  return { sql, calls };
+}
+
+describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
+  const spawnReqOver = {
+    offerId: 'spawnreq-0123456789abcdef',
+    kind: 'spawn_request',
+    seat: null,
+    spawnRequest: {
+      targetPublisherGithubUserId: 1567022,
+      targetOfferId: 'seat-abc123',
+      count: 2,
+      planSlug: 'plan-x-2026-07-04',
+      requesterOwnerId: 'su-a',
+      requestedAtMs: 1_751_600_000_000,
+      launchContext: null,
+    },
+  };
+
+  it('fires for a landed REMOTE open spawn_request (and hands it row + scope + sql)', async () => {
+    const { sql } = fakeAppliedSql(1);
+    const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
+    const row = signedRow(spawnReqOver);
+    await p.writeToPg(row, { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'hlc' } as never);
+    expect(honorSpawnMock).toHaveBeenCalledTimes(1);
+    expect(honorSpawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: WS, hiveHomeSlug: HIVE, row, sql }),
+    );
+  });
+
+  it('does NOT fire for local origin / a seat row / an LWW-skipped upsert', async () => {
+    const applied = fakeAppliedSql(1);
+    const p1 = buildWorkOffersProjection({ ...opts, sql: applied.sql, verifyRecord: async () => true });
+    await p1.writeToPg(signedRow(spawnReqOver), undefined); // origin defaults 'local'
+    await p1.writeToPg(signedRow(), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never); // kind seat
+    const skipped = fakeAppliedSql(0); // LWW guard filtered the upsert
+    const p2 = buildWorkOffersProjection({ ...opts, sql: skipped.sql, verifyRecord: async () => true });
+    await p2.writeToPg(signedRow(spawnReqOver), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never);
+    expect(honorSpawnMock).not.toHaveBeenCalled();
+  });
+
+  it('a throwing honor hook never unwinds the landed write (best-effort, warns loudly)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      honorSpawnMock.mockRejectedValueOnce(new Error('boom'));
+      const { sql, calls } = fakeAppliedSql(1);
+      const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
+      await expect(
+        p.writeToPg(signedRow(spawnReqOver), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never),
+      ).resolves.toBeUndefined();
+      expect(calls.length).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('spawn-request honor hook failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

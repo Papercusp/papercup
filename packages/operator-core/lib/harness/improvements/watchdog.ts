@@ -1657,6 +1657,15 @@ export function isInProcessLaunchRow(row: { spawn_id: string; run_id?: string | 
  * the one liveness proxy the jam cannot fake. The fire condition is conservative —
  * the suspect rows must OUTNUMBER the live-streaming ones and clear the slack — so a
  * busy fleet (many streaming bees) and a couple of quiet/long-tool-call bees never trip it.
+ *
+ * SCOPE — supervised bee spawns only (EI-7215). `last_output_at` is populated ONLY
+ * for invoke-once bee children (whose stdout the supervisor observes). In-process
+ * loopback launches — durable-spawn workers, `launch-*` launch-blueprints,
+ * Queen/overwatch wakes — never stream it, so this proxy is meaningless for them and
+ * they are EXCLUDED from the classification (see isInProcessLaunchRow). Counting them
+ * treated every live in-process launch as a stale debit and fired a false-positive
+ * jam on any healthy fleet of ≥`slack` such launches; their reclaim is the
+ * boot-id-aware sweep / boot reconcile's job (spawn-reclaim.ts), not this signal's.
  */
 export function ceilingJamSignalsFromRows(
   rows: CeilingJamRow[],

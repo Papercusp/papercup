@@ -222,12 +222,26 @@ export async function materializeLoop(
  * (`loop-<ownerId>`) so a session can stop its loop without re-supplying the exact
  * harness it armed under. Returns true if a routine was deactivated. Never
  * flag-gated by callers: you must always be able to stop an armed loop.
+ *
+ * EI-3748: also clears any stale `metadata.last_error` stamp. The watchdog's
+ * `routine-failure` collector (harness/improvements/watchdog.ts) only sees
+ * ACTIVE routines, but a transient error (e.g. a one-off DBOS-executor-reaper
+ * "stuck fire" auto-requeue — expected, self-healing behavior, not a wedge) that
+ * was recorded on this routine, followed by the OWNER ending the loop rather
+ * than firing again, left the stamp in place forever: the reaper's own
+ * clear-on-next-successful-fire (dbos-executor-reaper.ts) never gets a chance to
+ * run once the routine stops firing entirely. That stranded stamp is cosmetic
+ * (the routine can't fire — inactive — so it can't actually be wedged) but the
+ * filed watchdog issue is confusing/stale noise for whoever triages it later.
+ * Unconditional (not source-scoped like the reaper's clear): ending the loop
+ * makes ANY residual error moot, regardless of who recorded it.
  */
 export async function deactivateLoop(ownerId: string, opts: { sql?: Sql } = {}): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
   const result = await sql`
     UPDATE harness_shared.routines
-       SET active = FALSE, updated_at = now()
+       SET active = FALSE, updated_at = now(),
+           metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source'
      WHERE name = ${loopRoutineName(ownerId)} AND active = TRUE
   `;
   return Number((result as { count: number }).count ?? 0) > 0;
