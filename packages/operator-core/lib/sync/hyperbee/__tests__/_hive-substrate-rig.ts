@@ -182,6 +182,10 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   // D-001 (mig 314): the fed_hlc ordering column the hive projections now write.
   await sql.unsafe(`ALTER TABLE harness_shared.hive_members  ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
   await sql.unsafe(`ALTER TABLE harness_shared.hive_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  // EI-6983-class gap (mig 495): the drainer's own-log-key attribution column on
+  // substrate_outbox, written by outbox-drain.ts's drainOutboxOnce. This rig only
+  // applies the archive-102 baseline for that table, which predates mig 495.
+  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
 }
 
 /** Per-peer apply over the REAL hive_members + hive_settings projections bound to

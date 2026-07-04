@@ -21,6 +21,7 @@ import {
   replicationStallEiTitle,
   _resetReplicationStallEiForTests,
   type ReplicationStallEiDeps,
+  type StallEiEpisode,
 } from '../replication-stall-ei';
 import { assessHarnessSubstrateHealth } from '../health';
 
@@ -279,6 +280,30 @@ describe('durable EI escalation (replication-stall-ei)', () => {
     const id = await fileReplicationStallEi({ ...episode, kind: 'frozen' }, deps);
     expect(id).toBe('EI-999');
     expect(created).toHaveLength(1);
+  });
+
+  it('WI-2136 drain_orphan_tail files under its own dead-key title + runbook body', async () => {
+    const { deps, created } = fakeDeps([]);
+    let body = '';
+    deps.create = async (input) => {
+      created.push({ title: input.title });
+      body = input.body;
+      return { id: 'EI-999' };
+    };
+    // logKeyHex is the DEAD prior-era key so distinct dead eras page separately.
+    const orphan: StallEiEpisode = {
+      ...episode,
+      kind: 'drain_orphan_tail',
+      logKeyHex: 'bb'.repeat(32),
+      detail: 'orphan-tail probe',
+    };
+    const id = await fileReplicationStallEi(orphan, deps);
+    expect(id).toBe('EI-999');
+    expect(created[0]!.title).toBe(replicationStallEiTitle(orphan));
+    expect(created[0]!.title).toContain('drain_orphan_tail');
+    // The body carries the runbook (drained_at=NULL re-emit) + the root fix hint.
+    expect(body).toContain('drained_at=NULL');
+    expect(body).toContain('keypair');
   });
 });
 

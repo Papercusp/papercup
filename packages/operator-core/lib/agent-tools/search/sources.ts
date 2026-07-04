@@ -269,5 +269,60 @@ const decisions: SearchSource = {
   },
 };
 
-/** The four prose surfaces, keyed by `scope` name. */
-export const SEARCH_SOURCES: SearchSource[] = [escalations, brainstorm, turns, decisions];
+/**
+ * EI-6984: `search:fulltext` had no work-item scope at all, so an agent filing a new
+ * tracker (EI-*) had no cheap existence check before creating a likely duplicate —
+ * `work_items:list` doesn't scale past ~500 rows and has no text search. Bm25-only
+ * (`harness_shared.engineer_issues` has no embedding column yet, so this source is
+ * absent from search:semantic's hybrid fusion — see SearchSource.embedding being
+ * optional). Reuses the table's EXISTING generated `_search` tsvector (title
+ * weight A / body weight B) + its GIN index — no migration needed.
+ */
+const workItem: SearchSource = {
+  name: 'work_item',
+  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const rows = (await sql`
+      SELECT issue_id, scope, title, body, kind, state, severity,
+             ts_rank_cd(_search, plainto_tsquery('english', ${query})) AS rank,
+             ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
+               plainto_tsquery('english', ${query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspaceId}
+         -- `scope` here stores 'operator' | 'harness:<slug>' — a bare harness_slug
+         -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
+         AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
+         AND _search @@ plainto_tsquery('english', ${query})
+    ORDER BY rank DESC LIMIT ${limit}
+    `) as unknown as Array<{
+      issue_id: string;
+      scope: string;
+      title: string;
+      body: string;
+      kind: string;
+      state: string;
+      severity: string;
+      rank: number;
+      highlight: string;
+    }>;
+    return rows.map((r) => {
+      const body = `${r.title}\n${r.body}`.trim();
+      return {
+        key: `work_item:${r.issue_id}`,
+        score: r.rank,
+        row: {
+          source: 'work_item',
+          source_id: r.issue_id,
+          scope: r.scope,
+          excerpt: `[${r.kind}/${r.state}/${r.severity}] ${trunc(body)}`,
+          highlight: r.highlight,
+          score: r.rank,
+          rankers: ['bm25'],
+        },
+      };
+    });
+  },
+};
+
+/** The five prose surfaces, keyed by `scope` name. */
+export const SEARCH_SOURCES: SearchSource[] = [escalations, brainstorm, turns, decisions, workItem];
