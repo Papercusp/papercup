@@ -516,20 +516,33 @@ function runFinale(script) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const base = operatorUrlFrom(args);
+  // Kick off the network fetch IMMEDIATELY so it overlaps the dynamic import + the
+  // welcome-banner animation below, instead of blocking the user before anything
+  // shows (perf #1). Settle-wrap so an early rejection can't trip an unhandled
+  // rejection while we're mid-import / mid-animation.
+  const scriptResult = fetchScript(base, args.tutorial).then(
+    (value) => ({ ok: true, value }),
+    (error) => ({ ok: false, error }),
+  );
+
   const prompts = await import('@inquirer/prompts');
   const { select, input } = prompts;
   const interactive = Boolean(process.stdout.isTTY) && Boolean(process.stdin.isTTY);
 
-  let script;
-  try {
-    script = await fetchScript(base, args.tutorial);
-  } catch (e) {
+  // The banner animates (~0.8s) while the fetch is in flight — the fetch latency is
+  // hidden under work we'd do anyway rather than added in front of it.
+  await welcomeBanner();
+
+  const settled = await scriptResult;
+  if (!settled.ok) {
+    const e = settled.error;
     say(
       `I can't reach the Papercusp server at ${base} (${e?.message ?? e}).\n` +
         dim('Make sure the desktop app / server is running, then try again.'),
     );
     return 1;
   }
+  const script = settled.value;
 
   const sections = script.sections ?? [];
   if (!sections.length) {
@@ -545,7 +558,6 @@ async function main() {
       : 'claude');
   const bin = script.agentBinaries?.[agent] ?? null;
 
-  await welcomeBanner();
   say(
     args.tutorial
       ? bold('The Papercusp tutorial — welcome back.')

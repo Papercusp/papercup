@@ -97,7 +97,7 @@ export default defineTool({
       guiTabTour: GUI_TAB_TOUR,
       // Absolute agent-CLI paths so the runner can one-shot the Q&A agent even when
       // the Tauri pty child inherits no PATH (same detection the concierge login uses).
-      agentBinaries: detectBinaries(),
+      agentBinaries,
     });
   },
 });

@@ -106,6 +106,10 @@ vi.mock('../../harness/Checkbox', () => ({
   ),
 }));
 
+// Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
+// routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import P2pSettingsPage from './page';
 
 /* ── Fixtures ── */
@@ -185,7 +189,8 @@ describe('/settings/p2p render', () => {
     h.devices = [identityRow]; // identity but no hive membership rows
     render(<P2pSettingsPage />);
     const peers = screen.getByRole('region', { name: 'Peers' });
-    expect(within(peers).getByText(/No hive memberships resolved/i)).toBeTruthy();
+    // Copy is routed through the lexicon (echoed key 'pot'), not the hardcoded "hive".
+    expect(within(peers).getByText(/No pot memberships resolved/i)).toBeTruthy();
   });
 
   it('renders the P-104-gated live foreign-work view + P-201-gated budgets as explicit pending copy', () => {
