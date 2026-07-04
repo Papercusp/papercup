@@ -1,0 +1,287 @@
+# Verifying a build
+URL: /internal/docs/build-system/verification
+
+How to smoke-test each platform end-to-end before declaring the artifact good to ship.
+
+## Pre-flight check (any platform)
+
+Re-run the auditor on every artifact:
+
+```sh
+papercusp-desktop/bin/audit-bundle.sh \
+  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
+  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
+  /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+```
+
+Or click **Audit prod bundles for PostHog leaks** in `/admin`. (The `.dmg` is the `universal-apple-darwin` artifact — `Papercusp_0.0.1_universal.dmg`, not `x86_64`.) Should print `OK: 4/4`. If any FAIL, **stop** — the artifact must not ship.
+
+***
+
+## Linux .deb verification
+
+### 1. Install + launch
+
+```sh
+sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
+papercusp
+```
+
+Or click **Install + launch Linux .deb** in `/admin`.
+
+Expected: a brief bootstrap page, then the window navigates to the operator UI within \~5–15s (a first boot pays `initdb` + migrations inside `serve.mjs`, so allow longer). Title bar "Papercusp". If it stays stuck on the bootstrap page, the sidecar never reached the preflight-ready state → check the serve logs.
+
+### 2. Verify no discovery files leaked
+
+```sh
+sudo useradd -m papercusp-verify
+sudo -u papercusp-verify ls -la ~papercusp-verify/.papercusp/ 2>&1
+```
+
+Expected: `No such file or directory`. The bundle never created the file.
+
+### 3. Flag bootstrap silent
+
+```sh
+curl -s http://127.0.0.1:3055/api/flags/bootstrap | jq
+```
+
+Wait — the prod binary doesn't serve on `:3055`. The sidecar (`node serve.mjs`) picks a free port, which it records in `~/.papercusp/operator.json` (the authoritative source). Read it from there, or grep the listener.
+
+```sh
+PROD_PORT=$(jq -r .port ~/.papercusp/operator.json)
+# Fallback if operator.json isn't present:
+# PROD_PORT=$(ss -tnlp | awk '/serve\.mjs|node/{split($4,a,":"); print a[2]}' | sort -u | grep -v 3055 | head -1)
+curl -s http://127.0.0.1:${PROD_PORT}/api/flags/bootstrap | jq
+```
+
+Expected — a `source: "defaults"` payload whose `flags` object carries the **full** flag map. `getAllFlags` builds it via `resolveWithDefaults`, which spreads every key in `FLAG_DEFAULTS` (libs/flags/src/types.ts), so on a clean install you get **all \~101 flag keys**, not a handful. Many of them legitimately default `true` (51 of the keys default on, 50 off), so a clean install showing lots of `true` flags is correct, not a leak. A representative excerpt:
+
+```json
+{
+  "flags": {
+    "papercusp-cloudflare-publish": false,
+    "papercusp-harness-phases": false,
+    "papercusp-design": false,
+    "papercusp-testing": false,
+    "papercusp-the-hive": true,
+    "papercusp-video-channels": true,
+    "papercusp-voice-channels": true
+    // …all remaining flag keys, each at its FLAG_DEFAULTS value
+  },
+  "evaluatedAt": 1234567890,
+  "source": "defaults"
+}
+```
+
+`source` must be `"defaults"` (the only other values are `"posthog"` and `"override"`). A `"posthog"` source on a clean install means PostHog config leaked in. Don't diff against a fixed key list — verify each value against `FLAG_DEFAULTS` in `libs/flags/src/types.ts` (the authoritative full map). Two things to know when comparing: (1) the payload contains **every** flag key, so a verifier expecting a short fixed list will falsely flag a correct install; (2) `getAllFlags` runs the stored PG override row through `resolveWithDefaults`, which **drops retired/unknown keys** — e.g. `papercusp-oracle` (folded into `papercusp-testing` by owner ask 2026-06-10) and the long-gone `SNAPSHOTS` key (retired in `retire-snapshots-instance-spec-2026-06-09`; the reproducible clone is now the ungated InstanceSpec) will never appear even if the stored row still carries them. (`papercusp-templates` / `papercusp-marketplace` were likewise retired — distribution lives in the ungated Cupboard.)
+
+### 4. No outbound PostHog traffic
+
+```sh
+sudo ss -tnp | grep -E "flags.papercuspai|posthog"
+```
+
+Expected: empty.
+
+### 5. Embedded PG discovery
+
+```sh
+cat ~/.papercusp/embedded-pg.json
+cat ~/.papercusp/operator.json
+```
+
+Expected: JSON with a non-5432 port (both files written by `serve.mjs`). **Confirms the desktop spawned its own embedded PG, didn't talk to native `:5432`.**
+
+### 6. Feature data loads
+
+In the app, navigate to **Harness → sheets**. The Feature Queue panel should populate with features (not empty). No errors in the DevTools console.
+
+### 7. Closed-flag routes really 404
+
+```sh
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:${PROD_PORT}/design
+```
+
+Expected: `404`. The V1 contract requires `notFound()` to return real HTTP 404, not a 200-page-with-404-content.
+
+### 8. Cleanup
+
+```sh
+sudo dpkg -r papercusp
+sudo userdel -r papercusp-verify
+```
+
+***
+
+## macOS .dmg verification
+
+### 1. Install
+
+```sh
+ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1
+```
+
+In the Mac VM:
+
+```sh
+scp -i ~/.ssh/papercup-vm-mac -P 2222 \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
+  aviweiss@127.0.0.1:~
+
+hdiutil attach ~/Papercusp_0.0.1_universal.dmg
+cp -R "/Volumes/Papercusp/Papercusp.app" /Applications/
+hdiutil detach "/Volumes/Papercusp"
+xattr -dr com.apple.quarantine /Applications/Papercusp.app
+```
+
+The Mac build target is `universal-apple-darwin` (see `papercusp-desktop/bin/mac-vm-build.sh`), so it produces a single universal `.dmg` — `Papercusp_0.0.1_universal.dmg`, **not** an `x86_64` one. The "Mac Prod Build" admin command copies back and audits `Papercusp_*_universal.dmg` accordingly. (Note: the "Install + launch Mac .dmg" admin command in `admin-commands.ts` still hard-codes `Papercusp_0.0.1_x86_64.dmg` — a stale name that the build doesn't emit; prefer the universal filename until that command is reconciled.)
+
+Or click **Install + launch Mac .dmg** in `/admin`.
+
+### 2. Verify no discovery files leaked
+
+```sh
+find /Applications/Papercusp.app -name "posthog*.json" 2>&1
+```
+
+Expected: empty.
+
+### 3. Launch (view via SPICE)
+
+On the Linux host:
+
+```sh
+remote-viewer spice://127.0.0.1:5930 &
+```
+
+In the Mac VM:
+
+```sh
+open /Applications/Papercusp.app
+```
+
+Same window-loads check as Linux.
+
+### 4. Flag bootstrap test
+
+Inside the Mac VM, find the operator port (`ss -tnp` doesn't exist; use `lsof -iTCP -sTCP:LISTEN -P`) and curl `/api/flags/bootstrap`. Same expected JSON.
+
+### 5. Verify no `.papercusp/` was created
+
+```sh
+ls -la ~/.papercusp/ 2>&1
+```
+
+Expected: file should NOT exist (running the app under the test user should not have created posthog.json).
+
+### 6. Cleanup
+
+```sh
+rm -rf /Applications/Papercusp.app
+```
+
+***
+
+## Windows .msi verification
+
+### 1. Install
+
+```sh
+scp -i ~/.ssh/papercup-vm-win -P 2223 \
+  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
+  User@127.0.0.1:.
+
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+  "msiexec /i C:\\Users\\User\\Papercusp_0.0.1_x64_en-US.msi /quiet"
+```
+
+Or click **Install + launch Windows .msi** in `/admin`. Wait \~30s. Installs to `C:\Program Files\Papercusp\`.
+
+### 2. Verify no discovery files leaked
+
+```sh
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+  'powershell "Get-ChildItem -Recurse -Path C:\\Program Files\\Papercusp -Filter posthog*.json"'
+```
+
+Expected: empty.
+
+### 3. Launch
+
+```sh
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+  'powershell "Start-Process \"C:\\Program Files\\Papercusp\\Papercusp.exe\""'
+```
+
+(No SPICE configured on the Windows VM by default; verify via `tasklist | findstr Papercusp` to confirm running.)
+
+### 4. Flag bootstrap test
+
+In Windows PowerShell, curl `http://127.0.0.1:<port>/api/flags/bootstrap`. Same expected JSON.
+
+### 5. Verify no `.papercusp/` directory
+
+```sh
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+  'powershell "Test-Path C:\\Users\\User\\.papercusp\\posthog.json"'
+```
+
+Expected: `False`.
+
+### 6. Uninstall
+
+```sh
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 \
+  "wmic product where name='Papercusp' call uninstall /nointeractive"
+```
+
+Or via Settings → Apps → Papercusp → Uninstall.
+
+***
+
+## FAIL criteria (any platform)
+
+| Symptom                                                                                     | Means                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A real PostHog key (`phx_…` / `phc_…`) found by `audit-bundle.sh` inside the install        | Secret leaked into bundle — **must** rebuild                                                                                                                                         |
+| `/api/flags/bootstrap` returns `source: "posthog"` on a clean install                       | PostHog config (env var or discovery file) made it through — leak                                                                                                                    |
+| A flag value disagrees with `FLAG_DEFAULTS` in `libs/flags/src/types.ts` on a clean install | Default ship-state violated — leak. (Note: 51 flags default `true`, so a clean install with many `true` flags is **correct** — only a *mismatch* against `FLAG_DEFAULTS` is a leak.) |
+| A retired key (e.g. `papercusp-oracle`, `papercusp-snapshots`) appears in the payload       | `resolveWithDefaults` should have dropped it — stored override row leaking retired keys                                                                                              |
+| `ss -tnp` shows connection to `flags.papercuspai.com`                                       | App phoning home in clean-install state — leak                                                                                                                                       |
+| Window stuck on the bootstrap page (never navigates off `web/index.html`)                   | The sidecar never became ready — check the preflight handshake / serve logs                                                                                                          |
+| `embedded-pg.json` / `operator.json` missing, or app connects to `:5432`                    | Embedded PG didn't bootstrap (`serve.mjs` owns this)                                                                                                                                 |
+| Sheets harness shows 0 features when the API returns features                               | Feature loading broken                                                                                                                                                               |
+| Window shows the **dev** server's app (URL has `:3055`)                                     | The webview pointed at the dev server instead of the bundled sidecar — rebuild                                                                                                       |
+
+***
+
+## A self-contained checklist
+
+Copy this and run top to bottom:
+
+```sh
+# 1. Auditor pass
+papercusp-desktop/bin/audit-bundle.sh \
+  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
+  /home/marsh-office/Papercusp_0.0.1_universal.dmg \
+  /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
+  /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+
+# 2. Linux install + launch + smoke
+sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
+setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
+sleep 15
+PORT=$(jq -r .port ~/.papercusp/operator.json)
+echo "operator port: $PORT"
+curl -s "http://127.0.0.1:${PORT}/api/flags/bootstrap" | jq .source       # → "defaults"
+curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${PORT}/design"  # → 404
+sudo ss -tnp | grep -E "flags.papercuspai|posthog" || echo "no posthog traffic ✓"
+
+# 3. Cleanup
+pkill -KILL papercusp
+sudo dpkg -r papercusp
+```
+
+When every line is green, the artifact is ship-ready for that platform.

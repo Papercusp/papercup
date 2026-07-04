@@ -917,6 +917,16 @@ This is the send-side twin of the handoff corollary above: there, a wake looked 
 
 **What this means for you:** the same rule as the rest of this doc — **read the result, not your assumption.** After sending to any audience selector, check `recipients_resolved`; a `zero_recipients` warning (or the hard refusal) means nobody live got it, full stop — don’t sit “awaiting compliance” on a broadcast that never left the building.
 
+## The fourth corollary: on a FEDERATED hive, “never seen here” is not “dead” (WI-1999, 2026-07-03)
+
+[Section titled “The fourth corollary: on a FEDERATED hive, “never seen here” is not “dead” (WI-1999, 2026-07-03)”](#the-fourth-corollary-on-a-federated-hive-never-seen-here-is-not-dead-wi-1999-2026-07-03)
+
+The reconciler itself (§5, `reclaimStaleWorkItemClaims` / `reclaimStaleIssueClaims`, `work-items-stale-claims.ts`) had its own instance of this same root cause, on the DEAD leg specifically. `work_items`/`engineer_issues` rows **federate** across a shared hive’s member nodes, but `coord_presence` (and `spawned_agents`) are **local-by-design** — a holder alive on a peer node is simply invisible to this node’s liveness table. The DEAD leg used to conclude “not in `live_holder`” ⇒ dead and reap it — which is correct for a holder this node has ever *seen* go stale-then-silent, but wrong for a holder this node has **never seen at all**: absence-from-fresh-presence and absence-from-ever-seen are different claims, and only the first means “not alive **here**.” Live incident (2026-07-03): a mac-VM’s sweep shredded a live tower holder’s claims — dead- lettering an actively-driven item 5×, requeuing another 5× — because the tower’s alias never had a `coord_presence` row on the mac-VM node.
+
+**The fix:** a `known_holder` fragment (`knownHolderFragment`, shared by both reapers) — every alias this node has **ever** recorded in `coord_presence` or `spawned_agents`, regardless of freshness. The DEAD leg now reaps a claim only if its holder is in `known_holder` (genuinely presumed dead) **or** the claim is old enough to hit a long-horizon fallback — `STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS` (24h) — measured from `taken_at` (or `updated_ts` for a NULL-anchor claim, since an actively-federated remote item keeps refreshing `updated_ts`). A never-seen-here holder is therefore **not** reclaimed on the normal \~10-minute grace window; it is presumed possibly-remote-and-alive until the 24h fallback lapses, at which point it frees regardless (so a genuinely abandoned row still doesn’t leak forever).
+
+**What this means for you:** don’t be surprised if a stale-looking claim (`taken_by` some alias `fleet:assignments`/`coord:presence` on THIS node has never heard of) survives well past the usual \~10-minute stale-claim grace — that is the federation guard working as intended, not a bug. If you need to confirm a claim is truly abandoned rather than live-on-another-node, check the hive’s other member nodes (or wait out the 24h fallback) before assuming it’s free.
+
 # Agent-mcp routes slow but /health fast = main-event-loop saturation (not a leak/pool/DB issue)
 
 > When :3070 agent-mcp routes degrade to many seconds and MCP clients time out while /api/health stays fast, the cause is sustained main-thread CPU saturating the event loop — every await hop pays the loop delay, so hop-heavy routes degrade ~Nx while health (~2 hops) barely moves. Read the event-loop-lag gauge first, not the PG pool.
@@ -1025,9 +1035,9 @@ Superseded — the wake API was redesigned (directed-wake-honesty)
 
 Two parts of this runbook’s wake surface no longer match the code. The always-arm wiring, the standing-row upsert + migration 183, the `await-inbox` annotation, the full `turn:interrupt` dual, and both EI-151 owner-scoping rungs all still verify — only the `coord:send` wake API drifted.
 
-* **No more `wake.warning` / `woken:0` warning.** The “woken:0 warning” section below quotes a `wake.warning` string for the fired-but-woke-nobody case. That field was **renamed and redesigned**: a `required` wake that reached wakeable targets but woke nobody (and staged nobody) now returns `wake.recipient_absent: true` plus a `wake.note` — see `packages/operator-core/lib/agent-tools/coordination/tools/send.ts:152-157` (the comment at `:147-151` says this is “replacing the old silent woken:0 warning”). There is no `wake.warning` field anywhere in `send.ts`.
+* **No more `wake.warning` / `woken:0` warning.** The “woken:0 warning” section below quotes a `wake.warning` string for the fired-but-woke-nobody case. That field was **renamed and redesigned**: a `required` wake (or an `optimistic` one with no declared `backstop`) that reached wakeable targets but woke nobody (and staged nobody) now sets `wake.recipient_absent: true` plus a `wake.note` — see the `missed` / `loud` branch (`wake.recipient_absent = true`) in `packages/operator-core/lib/agent-tools/coordination/tools/send.ts`. There is no `wake.warning` field anywhere in `send.ts`. (Citations here are symbol-anchored, not line-numbered, so they survive `send.ts` edits.)
 
-* **`wake` is no longer a boolean.** The body writes the API as `coord:send {wake:true}`. `wake` is now a tri-value intent union `boolean | 'required' | 'optimistic'` (`send.ts:52-57`), coerced at `send.ts:65-66` (`true → 'required'`, `false`/omit → no wake). Legacy `{wake:true}` examples still **function**, but the documented intent surface and the warning text they reference are stale — prefer `wake:'required'` (loud miss → `recipient_absent`) or `wake:'optimistic'` (silent best-effort over a durable backstop).
+* **`wake` is no longer a boolean.** The body writes the API as `coord:send {wake:true}`. `wake` is now a tri-value intent union `boolean | 'required' | 'optimistic'` (the `wake?:` field on the `send` schema in `send.ts`), coerced to the internal `wakeMode` (`true → 'required'`, `false`/omit → no wake). Legacy `{wake:true}` examples still **function**, but the documented intent surface and the warning text they reference are stale — prefer `wake:'required'` (loud miss → `recipient_absent`) or `wake:'optimistic'` (best-effort over a *named* durable `backstop`; an optimistic miss with no backstop is now reported as loudly as a required miss).
 
 See plan `directed-wake-honesty-and-spawn-handoff-2026-06-14`. The original narrative below is preserved.
 
@@ -1117,7 +1127,7 @@ Wake re-invokes a *sleeping* agent; **`turn:interrupt`** ends a *running* one’
 * **`cooperative`** (the polite default) — injects a high-priority `yield` coord message (glyph `|`) into the peer’s `[coord+N]` block mid-turn. The peer follows the yield policy every role’s prompt now carries (the dual clause to this page’s wake guidance): reach a safe checkpoint, persist partial state to the work\_item, release locks, write a one-line successor note, end the turn. It is **not** killed. It **DEFERS** when the target holds file locks (a critical section) — a hard yield mid-edit can orphan a lock or half-write a file, so it lets the atomic edit finish and the lock release first, then you retry.
 * **`force`** — ends the turn NOW, mid-thinking. A managed-pty session gets Ctrl+C over its control socket (the Phase-3 `interruptViaPty` seam); a headless spawn gets SIGINT to the session pid. The **turn** ends, not the agent — the session stays resumable by id. On a critical section `force` WARNS (orphaned-edit hazard) but proceeds.
 
-**Guardrails (D-009):** `reason` required; every call audited (`turn.interrupt_cooperative` / `_force` / `_deferred` / `_rate_limited` / `_failed` in `harness_shared.audit_log`); storm-limited to 10/min/actor (the audit log is the rate source) so a confused or looping agent can’t halt the fleet; self-interrupt refused.
+**Guardrails (D-009):** `reason` required; every call audited (`turn.interrupt_cooperative` / `_force` / `_deferred` / `_rate_limited` / `_failed` in `harness_shared.audit_log`); storm-limited so a confused or looping agent can’t halt the fleet. The base ceiling is `STORM_MAX` (10 / 60s / actor, the audit log is the rate source), but `stormMaxFor(actor)` raises it for trusted SYSTEM recovery actors that legitimately force-ESC many *distinct* owners in one burst — a fleet-wide recovery loop was tripping the flat cap after \~10 different owners (`gateway-mass-outage-storm-guard-2026-07-01`). Self-interrupt refused.
 
 **Reach for cooperative first**; use `force` only when cooperative was ignored or there’s no time. To re-invoke an *idle* peer use `coord:send {wake:true}` — interrupt is for a *running* peer. The `yield` glyph + every other line type are sourced from the one `COORD_LEGEND`; see [the coord injection protocol](/internal/docs/agent-insights/coord-injection-protocol).
 
@@ -1581,9 +1591,9 @@ It does **not** lift the `autoKinds` kind-gate (a separate Phase-4 dial), infra-
 
 Superseded — codex now resumes, not parks
 
-The **“codex sessions park instead of resuming”** gotcha below (formerly the per-session `CODEX_HOME` “isn’t re-derivable yet” claim) is now the OPPOSITE of the code. Since `turn-lifecycle-control-2026-06-08`, codex wakes **resume**: `executeWake` derives the per-session home with `codexHomeForAdvSession(handle.advSessionId)`, recovers the conversation UUID from that home’s rollout via `findCodexRolloutSessionId(home)`, and delivers the wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set (`packages/operator-core/lib/events/await/wake-executor.ts:201-223`, `:461-469`, `:521`). codex only falls back to park if the home dir is missing or no session id can be recovered — parking is no longer the default for codex.
+The **“codex sessions park instead of resuming”** gotcha below (formerly the per-session `CODEX_HOME` “isn’t re-derivable yet” claim) is now the OPPOSITE of the code. Since `turn-lifecycle-control-2026-06-08`, codex wakes **resume**: `executeWake` derives the per-session home with `codexHomeForAdvSession(handle.advSessionId)`, recovers the conversation UUID from that home’s rollout via `findCodexRolloutSessionId(home)`, and delivers the wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set (symbols in `packages/operator-core/lib/events/await/wake-executor.ts`: `findCodexRolloutSessionId` + `codexHomeForAdvSession` + `resumeCommandFor`). codex only falls back to park if the home dir is missing or no session id can be recovered — parking is no longer the default for codex.
 
-Everything else in this runbook still checks out against the code; only that one gotcha is reversed (current citations: `packages/operator-core/lib/events/await/wake-executor.ts:296-319` for the `codex exec resume <uuid> <prompt>` args, `:783-787` for the `codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery, `:855` for `env.CODEX_HOME` — line numbers drift as the file grows, re-grep the symbol names if these are stale again). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive — `events:await {key}` == `watch(key, { wake: true, once: true })`, at `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake semantics are unchanged.)
+Everything else in this runbook still checks out against the code; only that one gotcha is reversed. The relevant symbols, all in `packages/operator-core/lib/events/await/wake-executor.ts`, are `resumeCommandFor` (builds the `codex exec resume <uuid> <prompt>` args), the `codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery pair, and the `env.CODEX_HOME` assignment on the non-PTY resume path — grep the symbol names, not line numbers (they drift as the file grows; this doc was de-fragilized to symbol anchors on 2026-07-03 for exactly that reason). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive — `events:await {key}` == `watch(key, { wake: true, once: true })`, at `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake semantics are unchanged.)
 
 ## What it is
 
@@ -1595,6 +1605,8 @@ Agents that needed X-to-happen-before-proceeding used to **poll, block, or pivot
 events:await { event: '<key>', note, timeout_sec, on_timeout: 'wake'|'expire' }
 → END YOUR TURN. You are re-invoked when the key fires (or at the deadline).
 ```
+
+**Default timeout behavior:** As of 2026-07-03, the default `on_timeout` is **‘wake’**, not ‘expire’ — an undelivered event at the deadline now wakes you with a TIMEOUT marker (safe-by-default, await-timeout-fallback-defaults-2026-07-03). This means a caller that sets a `timeout_sec` deadline but forgets to name `on_timeout` will be woken to re-orient rather than silently lapsing. Every real caller passes ‘wake’ explicitly, so this changes no behavior today — it only guards a future caller who forgets.
 
 Sources fire keys with `events:emit { event, summary, payload, to? }` (agents) or `emitAwaitedEvent(...)` (host code). The layering (plan D-001): the **source** resolves who an event concerns (a lock grants to ONE waiter and emits a targeted key; CI-green broadcasts); the **delivery** layer is dumb — per recipient, honor their declared policy. `wake` re-invokes you (one-shot by construction — it can never wake-loop); `notify` (topics, follows) goes to your coord inbox and **never** wakes.
 
@@ -1655,7 +1667,7 @@ A wake = a re-invocation = a turn = tokens. Hence: `notify` is the default and n
 
 * **Workspace scoping is normalized.** Awaits/deliveries live in the ONE coord workspace regardless of your identity’s scoping — an early build registered ’\*‘-scoped awaits that never matched system emits. Event keys embed globally-unique ids, so one namespace is collision-free by construction.
 * **Exact key by default; glob/macro only if you opt in (P-201).** A plain key (`work-item:done:WI-12`) matches only the literal string, same as before. `*` or a leading `@` makes it a **pattern** (see “Pattern awaits” above) — don’t put a literal `*` in an exact key, it will be parsed as a wildcard.
-* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`; migration 480: the partial index backing pattern candidate lookups); the awaitable-key registry is `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` + every sugar verb read from); pattern matching is `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
+* The store + engine live at `packages/operator-core/lib/events/await/` (migration 163: `event_awaits` + `event_wake_deliveries`; migration 480: the partial index backing pattern candidate lookups); the awaitable-key registry is `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` + every sugar verb read from); pattern matching is `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`. **Timeout constants are unified:** `AWAIT_DEFAULT_TIMEOUT_SEC` and `AWAIT_MAX_TIMEOUT_SEC` live in `packages/operator-core/lib/events/await/types.ts` and are imported by all callers (`events:await`, sugar verbs, the pump) to keep them consistent (await-timeout-fallback-defaults-2026-07-03).
 
 # Bare "fetch failed" spawn failures = loopback retry swallowing undici UND_ERR_* codes during restarts
 
@@ -3951,7 +3963,7 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 * **`pg_notify` is OK** for “wake up and re-read state” patterns — e.g., a UI subscribing to row changes. Not for command dispatch.
 * **If you find yourself writing a polling loop**, stop and ask whether the right answer is an HTTP call or an SSE subscription.
 
-**Seen in the wild:** `endpoint-route/routes/agent-mcp/p2p-grant-set.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `store.setPeerGrant`/`store.revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change. `endpoint-route/routes/agent-mcp/p2p-allotment-set.ts` (the `/res` Resources-board owner write path, P-201) is a second instance of the same shape: `set`/`remove` persist to the `p2p/resource-allotments` store, then a **name-only** `notifySyncInvalidate('p2p.allotments')` fires (no args — the board reads with none, so an args-scoped emit would never match a subscriber, per the adding-a-sync-query gotcha).
+**Seen in the wild:** `packages/operator-core/lib/p2p/grant-store.ts` (the Peers-capability owner write path) is a clean instance of the shape — the POST handler calls `p2p/grant-store`’s `store.setPeerGrant`/`store.revokePeerGrant` to persist the outcome to PG, then fires an **args-scoped** `notifySyncInvalidate('p2p.grants', { hiveSlug })` from `sync-sse.ts` so only subscribers to that same `{hiveSlug}` args tuple repaint — no client polls the grants table to notice a change. `packages/operator-core/lib/p2p/resource-allotments.ts` (the `/res` Resources-board owner write path, P-201) is a second instance of the same shape: `set`/`remove` persist to the `p2p/resource-allotments` store, then a **name-only** `notifySyncInvalidate('p2p.allotments')` fires (no args — the board reads with none, so an args-scoped emit would never match a subscriber, per the adding-a-sync-query gotcha).
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
@@ -4301,6 +4313,8 @@ Setting `status` alone is **not** enough — the index keys on `deduplication_id
 > 5 min (a dead executor), and purges its orphaned `workflow_queue` rows. It runs once at boot **and** on a 2-min `setInterval` started from `dbos/bootstrap.ts` right after `DBOS.launch()` — deliberately a process-level interval, **NOT** a DBOS scheduled routine, because a scheduled reaper would queue on the very executor that wedges and so couldn’t fire when it’s most needed. Kill-switch: `PAPERCUSP_DBOS_EXECUTOR_REAPER=0`. Still open after this: an optional dedup-TTL safety valve (for a hung-but-live executor) and a “no green verdict in N hours” alarm independent of the red counter.
 
 **UPDATE 2026-06-20 — the “no green in N hours” alarm is now implemented too.** The blind spot above (a routine that *never verdicts*, or never *fires*, never trips `consecutiveReds`) is now covered by `packages/operator-core/lib/release/green-stall-watchdog.ts` — a second process-level sweep (started in `dbos/bootstrap.ts` right after the reaper, same “NOT a DBOS routine” rationale) that alarms when an `active` green-checkpoint routine is **fire-stale** (`last_fired_at` > 3h ⇒ the scheduler isn’t running it — the exact case the in-routine detector structurally cannot see) or **verdict-stale** (`lastGreenAt` > 12h, a deep backstop set past the in-routine 6h alarm so the two don’t double-ping). It reuses the same `notifyAttention` (urgent) + durable `harness_escalations` surfaces under its own phase `green-checkpoint-watchdog` and dedup flag `watchdogAlerted`, with cross-process exactly-once and an idempotent recovery clear. Kill-switch: `PAPERCUSP_GREEN_STALL_WATCHDOG=0`. (Note: an earlier P-006 fix already made `error` / timeout count as a red, so a *crashing/hanging* suite is caught in-routine; the watchdog specifically closes the “routine not firing at all” axis.) Still open under EI-455: only the optional dedup-TTL safety valve (for a hung-but-live executor).
+
+**UPDATE 2026-07-03 — routine-engine stale suppresses symptom alarms (EI-2994).** When the root DBOS `routinesTick` engine is itself stale (no `routinesTick` fire in >6min), every scheduled routine — including green-checkpoint — will appear to stall downstream. To avoid a restart cascade from separate independent alarms on each stuck routine, the green-stall watchdog now reads `readRoutineEngineLiveness` (checks the max `created_at` of `routinesTick` in `dbos.workflow_status`) and, when the root engine is stale, suppresses the fire-stale and verdict-stale alarms — the infra-liveness alarm owns the single “background routine engine frozen” escalation and will auto-resolve it. If `routineEngine.unknown` (data unavailable), alarms proceed (fail-open). This moves the primary detection up the stack to where it belongs: an infra-liveness watchdog at the request path (invoked on every API call) will catch the root-cause freeze immediately (see `packages/operator-core/lib/release/routine-engine-liveness.ts`), while green-stall remains a secondary verification channel for the symptom layer.
 
 This applies to **any** routine, not just green-checkpoint — a `system:git-sync`, `release-trigger`, gym, etc. can wedge the same way (a gym cycle wedged 7.5h on a dead repro host, 2026-06-12).
 
@@ -12870,6 +12884,15 @@ The P-010 work-item unification has **physically landed**: `harness_features_con
 
 **Before changing the default or trusting the sidecar on a new DB, verify zero drift.** Run `reconcileReadiness()` (or the inline SQL: `EXCEPT` both ways between `work_item_blocked` and the `work_item_is_blocked()` set over features) — `drift = missing + extra` must be 0. `missing` (oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a bee claims blocked work. The claim test pins both arms explicitly (an inline-OFF describe + a sidecar-ON describe) so a fragment bug in either path is caught.
 
+## `claimFloorsWhereSql` grew sibling floors — don’t mistake them for readiness (2026-07-03)
+
+[Section titled “claimFloorsWhereSql grew sibling floors — don’t mistake them for readiness (2026-07-03)”](#claimfloorswheresql-grew-sibling-floors--dont-mistake-them-for-readiness-2026-07-03)
+
+Two unrelated hardening changes landed inside the SAME `claimFloorsWhereSql` fragment this doc describes. Neither touches readiness/`work_item_blocked` semantics — call them out so a reader diffing the function doesn’t assume they did:
+
+* **Release-cooldown floor** (`fleet-scheduler-hardening-2026-07-03` P-005 / EI-6956, migration `485`): a `cooldownAssignee` opt adds a `last_released_by`/`last_released_at` NULL-safe clause that excludes a row from claiming **only for the agent that just voluntarily released it**, for `PAPERCUSP_RELEASE_COOLDOWN_SEC` (default 300s) — kills the claim/release ping-pong where a released row resets to `todo`, re-sorts to the top under a stable rank, and the same bee re-claims it immediately. `releaseWorkItem` stamps the provenance; every other agent can still claim the row instantly. This is a **fairness/anti-thrash** floor, not a correctness-of-readiness one — a cooled-down row is still fully “ready” by the oracle’s definition, just temporarily off-limits to one claimant.
+* **`CLAIM_STATES_ALLOWLIST`** (`['todo', 'open', 'failing']`, WI-1912): closes the exact same *floor-widening* class this doc’s D-002 already fixed for the readiness predicate, but on the sibling caller-supplied `states` arg (`scheduler:get_next` / `work_items:claim_next`) — a fleet member had passed `states:['todo','open','blocked']` and pulled a leader-triage-only item. Same principle as this doc’s core claim (a caller must never widen past a floor state), applied one layer up from `claimFloorsWhereSql` itself.
+
 ## Gotchas
 
 [Section titled “Gotchas”](#gotchas)
@@ -13662,6 +13685,10 @@ SELECT (SELECT count(*) FROM mcp WHERE tool_name='code:run')   AS coderun,
 
 **Nudge→conversion funnel (2026-07-03):** every inline batch-hint fire is now recorded (migration `482`, `harness_shared.code_run_nudge_fires`) and `dev:code_run_adoption` returns `nudge: { nudgedSessions, convertedSessions }` — the direct measure of whether a nudged session then called `code:run`/`recipes:run`. Details + the structural-lockout finding (kits/caps/surface gate adoption before wording does): [code-run-adoption-metric](/agent-insights/code-run-adoption-metric/).
 
+**The structural-lockout finding, closed (`code-run-self-state-adoption-2026-07-03` P-001/P-003):** the lockout the metric above documented — `code:run` scoped to `SU_ROLES` only, so BEE/QUEEN-kit agents (the bulk of fleet adoption opportunity) could never reach it no matter how the nudge was worded — is now fixed at the root. `prompt-build.ts`’s `CODE_RUN_NUDGE` self-gate comment used to read “self-gated … since the tool is SU\_ROLES-scoped, so roles without it ignore it”; since P-001 it instead self-gates on “roles whose surface/envelope still lacks it”, because the BEE/QUEEN kits
+
+* the CORE spine now carry `code:run` and the self-gate resolves **TRUE fleet-wide** — SU\_ROLES scoping was the lockout signature, not a wording problem. P-003 closed the same class one layer down: `role-principal-caps.ts` had **drifted behind** several roles’ own seeded kits (a role’s kit advertised a tool its principal caps then denied — measured via 14d of `role-not-allowed` telemetry: the herald’s `memory:search`/`recipes:search` denied at wake every time, the queen’s `memory:search` denied 106×, bees denied on their own kit’s `capability:git`/`capability:read`/etc. dozens of times). **Practical effect for this A/B methodology:** the in-process `su` target’s `excludeTools`/kit simulation was always accurate for the SU surface, but any fleet-wide adoption number pulled from `harness_shared.tool_invocations` (§ Production telemetry below) measured against the OLD lockout baseline — re-run metric #2 post-P-001/P-003 before trusting a “still \~0%” adoption read; a role that structurally couldn’t reach `code:run` before now can, so the honest floor moved.
+
 ### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
 
 [Section titled “3. Redundant-bootstrap rate — orient duplication (the bigger leak)”](#3-redundant-bootstrap-rate--orient-duplication-the-bigger-leak)
@@ -13967,6 +13994,7 @@ Two program shapes, discriminated by the gate (no schema field):
 * A deterministic op must **fail loud** on a missing `ctx.workspaceId` (a misconfigured fire), not silently mine the wrong scope.
 * `runProgramCore` maps a gateless completed run (`no-gate-match` from the generic runner) to a clean `done` — don’t reintroduce a gate just to terminate.
 * **Gating varies per loop** — replicate the ACTUAL gate: most are flag + learning- governor; change-ledger is flag-only (pure bookkeeping); scout is structural (cadence/fire-gate/claim/budget, no flag); iq-battery is owner-budget (refuse if no `budgetUsd`). Read the action; don’t assume flag+governor.
+* **A `system:blueprint-run` fire spawns into the FIRING install by default — override via a `launchInstallSlug`-family payload key when the routine must launch work into a DIFFERENT named install/hive than the one whose routine fired.** `handleBlueprintRun` builds its durable-spawn `installSlug` (and the idempotency key) from `ctx.installSlug` unless the routine’s `payload_template` sets one of `launchInstallSlug` / `hiveSlug` / `hiveInstallSlug` / `targetInstallSlug` (checked in that order; first non-blank string wins) — the DBOS no-first-step routineFire requeue guard surfaced this when a routine requeued after a reaper-cancelled fire and the replay needed to keep targeting the same install, not wherever it happened to be re-picked-up. Set the override key in the blueprint’s seeded `payload_template` for any cross-install program-mode blueprint; omit it and the fire targets its own firing install (the common case).
 * **Editing the seed `.ts` does NOT repoint the LIVE routine row — you MUST re-run the seed (step 4 is a runtime act, not just a source edit).** Changing `target` / `payload_template` in the seed script only affects FUTURE upserts. An already-seeded `harness_shared.routines` row — *especially one an owner ACTIVATED before the migration deployed* — still has `target_role = 'system:<loop>'` (now retired, no registered handler) and the old payload shape, so when it fires it hits a dead target and silently no-ops. After the migration lands, **re-run each loop’s seed against the live workspace DB** (`PAPERCUSP_WORKSPACE_ID=<ws> tsx lib/.../seed-<loop>-routine.ts [--active]`); the upsert’s `ON CONFLICT` repoints target + payload (and the well- written seeds preserve owner payload keys — change-ledger keeps `sinceDays`, iq-battery keeps `budgetUsd`). This bit **`iq-battery-gen`, `scout-cycle`, `change-ledger-scan`** — all active, all firing at a retired target (Scout + change-ledger loops were dead) until re-seeded 2026-06-13. **Corollary — the INACTIVE migrated rows are latent traps:** flipping `active=true` in the routines admin WITHOUT re-seeding fires the retired target. Arm a migrated loop by **re-running its seed with `--active`**, never by an admin active-flip alone. (Quick audit: `SELECT name,target_role,active FROM harness_shared.routines WHERE target_role <> 'system:blueprint-run'` — every row whose target isn’t a still-registered action is suspect.)
 
 ## Files (pilot A — negative-space, the reference)
@@ -19387,6 +19415,66 @@ Layers 1–2 prevent inconsistent trees from reaching the live operator (either 
 
 **Corollary for arming (P-001).** A consumer loop needs BOTH budgets set to actually run: its own loop (distillation/selection spend) AND `frontier:replay-harness` (battery spend) — plus both flags. An armed consumer with a dark/unbudgeted replay loop fails its tests with “governed replay refused (replay-dark)” — that’s the designed refusal, not a bug.
 
+# Replication-liveness detector: live debugging + the per-join counter blind spot
+
+> How to read the WI-1840 replication-liveness registry on a live sidecar (RPC, socket path, PG creds), and the detector blind-spot class that made it silent on its first live proof: per-join swarm-connection counters cannot see sockets that pre-date their registration.
+
+Written 2026-07-04 (su-b5d1c, plan `shared-hive-p2p-release-readiness-2026-07-03` P-004 / WI-1840, WI-183 class). Two things live here: the **diagnostic recipe** for the replication-liveness detector on a live frame, and the **blind-spot class** its first live proof exposed.
+
+## The one-line lesson
+
+[Section titled “The one-line lesson”](#the-one-line-lesson)
+
+**A detector’s own liveness must be live-proven.** WI-1840’s `connected_never_replicated` axis was 17/17 green in-process and completely silent on a live rig with a genuine stall in front of it (run `m1783120511`). In-process green ≠ live green applies to the watchdog, not just the watched.
+
+## The blind-spot class: per-join counters on shared event emitters
+
+[Section titled “The blind-spot class: per-join counters on shared event emitters”](#the-blind-spot-class-per-join-counters-on-shared-event-emitters)
+
+`joinHarnessSwarm` (operator-core `lib/sync/hyperbee/swarm.ts`) hand-rolled a `liveConnectionCount` (`++` on `'connection'`, `--` on socket `close`). Two mechanisms make such a counter read 0 while a peer is demonstrably replicating:
+
+1. **Shared-swarm dedup** — one Hyperswarm instance serves every topic and emits `'connection'` ONCE per peer socket. A join registered AFTER the socket exists never sees the event (the interface doc on `HyperswarmLike.connections` states exactly this).
+2. **Rekey reset** — the hive first-join `rekey()` replaces the handle with a fresh join whose counter starts at 0; live sockets don’t re-emit.
+
+Result: the merge-pass sampler fed `swarmConnections: 0` → the axis treated the node as offline (never alarms, by design) → silence in exactly the zombie-connection scenario the axis exists for.
+
+**Fix (landed):** the handle getter prefers the swarm’s OWN live set — `swarm.connections.size` — with the counter only as a fallback for minimal test fakes. Generalize: when a shared emitter exposes authoritative live state, **read the state, don’t shadow it with event arithmetic**. Regression pins in `__tests__/swarm.test.ts` (“shared-swarm late join”) and the b8 matrix scenario (a red-SLA soak now asserts the detector line exists — a silent detector on a real stall self-announces as `DETECTOR REGRESSION`).
+
+## Diagnostic recipe: read the live registry on a frame
+
+[Section titled “Diagnostic recipe: read the live registry on a frame”](#diagnostic-recipe-read-the-live-registry-on-a-frame)
+
+The registry lives in whichever process runs the merge loop — under `papercusp-substrate-sidecar` (default-ON on rig frames, WI-1994) that is the sidecar child, and its console output lands in `serve.log` prefixed `[substrate-sidecar]` / `[substrate-sidecar-err]`.
+
+1. **Grep the fire line** (what the b8 scenario pins):
+
+   ```plaintext
+   grep "replication-liveness" /home/pcusp/serve.log
+   # [replication-liveness] replication_stalled (connected_never_replicated) harness=… swarm has N live connection(s) …
+   ```
+
+2. **Read the registry** — JSON-RPC 2.0, newline-framed, over the sidecar’s unix socket (`/tmp/papercusp-substrate-<spawner-pid>.sock`); no auth:
+
+   ```plaintext
+   {"jsonrpc":"2.0","method":"substrate:getReplicationLiveness","params":{},"id":1}
+   ```
+
+   Key fields per log: `verdict` (`live` / `never_connected` / `no_replicator` / `frozen` / `sampling_stale` — a FIRED connected-never latch derives `no_replicator`), `peersCount`, `msSinceSampled` (\~1s when the merge poll is healthy — a big value means the merge loop itself is dead), and **`lastSwarmConnections`** — the exact value the axis saw on the last sample. `null` = the sampler never passed one (axis disabled at the source); `0` while a peer is connected = the counter blind spot above.
+
+3. **Durable escalation** — EIs land in `harness_shared.engineer_issues` (`psql 'postgresql://harness_admin:harness_admin_pwd@localhost:39532/papercusp'` on a rig frame; note the id column is `issue_id`, not `id`). One open EI per (harness, log, kind); rows federate to peers once replication heals.
+
+4. **Admin HTTP route** (`/api/admin/dogfood-substrate-status`) is trust-gated: bare loopback curl gets 403 `unverified-loopback`. Bearer the frame’s superuser token (`/home/pcusp/.papercusp/superuser-token`, the `rig_ban_member` pattern in `deb-hetzner-rig.sh`). The RPC socket needs none.
+
+## Grace/churn semantics (why the axis is quiet when it should be)
+
+[Section titled “Grace/churn semantics (why the axis is quiet when it should be)”](#gracechurn-semantics-why-the-axis-is-quiet-when-it-should-be)
+
+* Fire requires `swarmConnections > 0` samples accumulating ≥ 3min (`DEFAULT_LIVENESS_GRACE_MS`) on a log with **zero replicator attach this process lifetime**. Zombie connections churn (\~10s lives), so swarm=0 resets the window only after 60s sustained (`SWARM_CHURN_TOLERANCE_MS`).
+* Edge-triggered once per latch; recovery (a real replicator attach) re-arms.
+* The axis never fires when the substrate/swarm never came up (`swarmConnections` undefined) — genuinely-offline peers must not page.
+
+Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the detector exists to catch) is written up on WI-183 / ledger row 13 of `shared-hive-release-testing/RELEASE-READINESS.md`.
+
 # Repo-less hive data layer: member-repo resolution, per-hive outbox-drain, dead-executor reaper
 
 > A kind:'hive' harness can be repo-LESS — its code lives in a MEMBER repo (e.g. papercusp's member is papercup). Three facets must resolve that correctly or the hive looks broken: (1) repo-backed surfaces (Docs/Tests) must read the member repo, not the empty hive dir; (2) the hive must arm its OWN cross-hive-outbox-drain on create or its substrate_outbox grows unbounded; (3) the DBOS routine scheduler must survive dead-executor dedup wedges (the reaper) or NOTHING fires — including the drain. All three were the root of papercusp looking half-broken on 2026-06-19.
@@ -19986,7 +20074,9 @@ See also [Scheduled plans](/internal/docs/spec/scheduled-plans) (the routine thi
 
 > The audit (dbos-scheduler-consolidation-2026-06-03) moved every portable periodic job onto DBOS scheduled workflows. This is the catalog of the loops that deliberately did NOT move, with the one-line reason for each — so the next agent doesn't try to "finish the migration" by porting something that can't or shouldn't be a DBOS cron.
 
-The scheduler-consolidation pass ported the portable periodic jobs (harness-status sweep, backup orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/ embed/completion-ref timers, test-runs prune) onto **DBOS scheduled workflows** (`packages/operator-core/lib/dbos/periodic-workflows.ts`). A set of recurring loops were **deliberately kept off DBOS**. If you’re tempted to “finish the migration,” check this list first — these are conscious keeps, not stragglers.
+The scheduler-consolidation pass ported the portable periodic jobs (backup orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/embed timers, test-runs prune) onto **DBOS scheduled workflows** (`packages/operator-core/lib/dbos/periodic-workflows.ts` — grep `DBOS.registerScheduled` for the live set). A set of recurring loops were **deliberately kept off DBOS**. If you’re tempted to “finish the migration,” check this list first — these are conscious keeps, not stragglers.
+
+> **Correction (EI-1622):** the original pass ALSO put a batch of high-frequency, no-durability-need checks on DBOS — `harnessStatusSweep` (the harness-status sweep), `completionRefVerify` (the completion-ref verifier), `systemHealth`, `connectionPressure`, `serviceHealth`, `spawnReclaimSweep`, `staleClaimSweep`, `learningInfraHealth`, `steeringChurnSweep`. Those were later converted **back off DBOS** to lightweight in-process intervals (`dbos/in-process-periodic.ts`, armed from `host-bootstrap`): they wrote \~200k `dbos.workflow_status` rows/day for zero durability gain (the recurring routine-engine freeze). So they are NOT in `periodic-workflows.ts` anymore — grep the symbol names in `in-process-periodic.ts` instead. This is the doc’s own rule of thumb in action: no durability need ⇒ don’t keep it on DBOS.
 
 ## The keep list (consolidation D-002)
 
@@ -20688,6 +20778,8 @@ Layer 1 admits a peer on *slug* identity. Layer 2 only *widens* scope to cross-m
 
 **Path B — member-set admission (`classifySameHiveMember`).** For every other peer: admit iff `frame.device_pubkey ∈ loadHiveMembers(hiveHome)` — **D-002 (admit by AUTHOR IDENTITY)**: the check is purely by device pubkey membership, not by `github_user_id` (the earlier per-user query via `loadHiveMemberDevicePubkeys` was replaced by `resolveHiveMemberDeviceSet`, which returns ALL device pubkeys for the hive without a per-user filter). On `admit` → `announce_admitted same_hive_member`. On **`miss`** (a plausible same-hive cross-member whose `hive_members` row has not federated to us yet — the asymmetric A→B stall) the frame is **BUFFERED** for retry, **not** conclusively dropped: a 5s loop re-runs Layer-1 `admit()` + this check each tick, admitting the instant membership federates in, or dropping after the 30-min grace.
 
+**Path B’s owner-gate exception (D-023 BUG C).** On a membership `miss`, `resolveSameHiveMember` also asks: is *this* box the hive’s owner? If so it must ADMIT the brand-new joiner immediately instead of buffering (else `admitAnnouncedPeerAsOwner`, the upsert seam, never runs and open-mode auto-admission deadlocks) → `announce_admitted owner_admit_joiner origin=… hive=…`. **As of WI-1981 (wake-#5515, 2026-07)** that owner check is `isCanonicalHiveOwner` (`packages/operator-core/lib/hive-identity.ts`) — holding *a* private key is not enough; the held pubkey must MATCH the hive’s canonical record (the `hives` row, or the joined view’s verified `hive_pubkey`) — replacing the earlier mere-key-presence check (`loadHivePubkey != null`). A stale/divergent local key (e.g. a partial keychain-delete survivor in the encrypted-FILE tier) used to make a JOINER box wrongly resolve `isOwner=true`, mint fresh-random epoch keys instead of unwrapping the true owner’s wrapped rows, and produce a permanent mutual `epoch_decrypt_fail` with no re-mint. A detected mismatch now fires a deduped divergent-key health signal (`hive-owner-key-health.ts`) and reports **not**-owner instead.
+
 > The merge loop iterates **only `admitted.values()`** (`boot.ts`), and `admitted`
 >
 > * `admittedIdentities` are populated together from the same announce frame — so for any op that actually merged, the source identity is present. That is why a live “0 rows” is virtually never the apply-guard’s `!sourceLogDevicePubkey` drop branch; it is one of the admission outcomes above (binding\_invalid / buffered-miss / never-swarmed), or the genuine owner-home apply asymmetry documented separately in `owner-side-cross-member-content-apply-gap`.
@@ -20718,7 +20810,7 @@ fed.sh b api GET '/api/admin/dogfood-substrate-boot-history?harness_slug=<hive-h
 
 The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 
-* `announce_admitted` — admission succeeded. The `message` says **which path**: `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B).
+* `announce_admitted` — admission succeeded. The `message` says **which path**: `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B), `owner_admit_joiner origin=… hive=…` (Path B’s owner-gate exception, D-023 BUG C — this box is the canonical owner admitting a brand-new joiner instead of buffering it).
 * `announce_rejected` — Layer-1 conclusive reject. Look at the reason — **`binding_invalid`** (gist/identity, fix that — see WI-797), `revoked` (read-cut, correct), `bad_sig`.
 * `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss` buffered for retry. Will self-resolve if the cause clears; otherwise it ages out at 30 min.
 * `swarm_join_failed` / `peer_connected` / `peer_rejected` / `peer_rate_limited` / `peer_capped` / `peer_revoked` — the **transport** layer. No `peer_connected` for the hive topic at all ⇒ a swarm/registry/gh-auth problem, **upstream of admission** — go back to the registry-gating and `federation-rig-restart-runbook` (missing gh-auth is the #1 silent-local-only cause after a VM reset).
@@ -20751,7 +20843,7 @@ These six `epoch_*` kinds are WI-808 (content-federation drop diagnosis, 2026-06
 * A live “rosters but no content” is an **admission** or **swarm-registry** problem, not a merge bug — the merge/guard is integration-green.
 * `fed.sh` (self-discovering ports) is the access tool: `ports`/`rediscover`/`sql`/`api`/`mcp`/`ssh`.
 * Admission = **identity decider** (`revoked→bad_sig→verifyBinding→admit/pending/binding_invalid`) feeding **two same-hive scope paths**: **owner-log bootstrap-admit** (trusts the one directory-cache-bound owner device to break the empty-member-set deadlock) and **member-set admission** (device ∈ `hive_members`, else buffer-and-retry).
-* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less / fresh-join-window owner used to be the live wall (WI-797): owner-bootstrap sat AFTER the gist gate, so the owner’s own announce was rejected before the bootstrap could rescue it. **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) — `boot.ts` \~1727. Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap` fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan `shared-hive-public-release-2026-06-22` D-011.
+* **`binding_invalid` = conclusive identity/gist failure, never retried** — a gist-less / fresh-join-window owner used to be the live wall (WI-797): owner-bootstrap sat AFTER the gist gate, so the owner’s own announce was rejected before the bootstrap could rescue it. **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) — `boot.ts` \~2290 (line drifts as the file grows; anchor on the function name). Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap` fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan `shared-hive-public-release-2026-06-22` D-011.
 * **GOTCHA — a stale `kind=topic` harness on the same hive topic INTERCEPTS the owner announce.** A bare `/api/harness/join-link` (vs `/api/discovery/join-hive`) binds the member as `swarmBinding.kind=topic` (no `hive_pubkey`). If that junk harness boots FIRST on the topic it owns the connection’s announce channel and rejects the owner frame `binding_invalid`, and the proper `kind=hive` handlers never see it (no per-frame A-003 trace for them). Symptom: only the topic-harness logs the rejection; `is-even`/`<hive>` show `boot_ok`+`peer_connected` but no admission event. Fix: remove the junk harness (registry `jsonb` filter + clone dir) and relaunch — the owner-bootstrap then fires.
 * **The new finish line is the CONTENT layer, not admission.** With WI-797 fixed, the owner log merges and control rows (`hive-members`, `hive-epoch-keys` — plaintext per `hive-epoch-content-ops.ts`) apply, but **encrypted content ops** (features/work-items/ plans/issues) can still drop on apply even with the epoch key wrapped for the joiner’s device — the GATE-2 content-apply layer (`owner-side-cross-member-content-apply-gap`, D-003, WI-367 content-before-key ordering-drop + the `drainQueuedEpochContent` replay). Isolate lag-vs-drop with a fresh op; if a NEW op also never lands, it’s a drop, not lag.
 * Substrate boot + swarm join are **registry-gated**: a node swarms only registry hives, not merely-rostered ones.
@@ -24000,14 +24092,11 @@ SELECT
   round(100.0*count(*) FILTER (WHERE status='invalid-input')/nullif(count(*),0),3) AS invalid_input_pct,
   count(*) FILTER (WHERE status='invalid-input'
                     AND error_message LIKE '%Too big: expected string%') AS string_limit_fails,
-  -- (3) orient-dedup — loose proxy (see caveat); orient calls vs the 4 bootstrap tools orient already
-  --     returns (memory:search · coord:inbox · coord:plan-events · coord:declare-intent). Note: as of
-  --     2026-06-27 orient ALSO folds in the caller's own identity (self: { ownerId, ownerLabel } —
-  --     orient.ts resolveSelfRef overlay), but coord:whoami is a debug tool, not a bootstrap step, so
-  --     it is NOT added to this list — that keeps the metric focused on mandatory session-bootstrap dedup.
+  -- (3) orient-dedup — coarse call-volume trend only; for the real post-orient re-fetch rate use
+  --     dev:orient_dedup_rate, whose SQL ignores coord:orient's own internal subreads.
   count(*) FILTER (WHERE tool_name='coord:orient') AS orient_calls,
   count(*) FILTER (WHERE tool_name IN
-    ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS redundant_followups
+    ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS subsumed_tool_calls
 FROM harness_shared.tool_invocations
 WHERE transport='mcp' AND invoked_at > now() - interval '24 hours';
 ```
@@ -24059,7 +24148,7 @@ GROUP BY 1,2 ORDER BY 3 DESC;
 
 [Section titled “Caveat on the redundant-bootstrap metric”](#caveat-on-the-redundant-bootstrap-metric)
 
-The raw `redundant_followups` count (13,406) is **not** the redundant-bootstrap rate — those four tools are called constantly in contexts that never followed a `coord:orient`. The true metric needs a per-session correlation (a follow-up call by the **same actor within \~N seconds after** that actor’s orient). `tool_invocations` has no first-class session id (ephemeral spawns get a fresh `spawn_id` per call), so a precise number needs either a session key threaded into `metadata_json` or a windowed self-join on `role`+time. Until then, track the **ratio trend** (`redundant_followups / orient_calls`) as a coarse directional signal, not an absolute rate, and treat a *downward* trend after the `ORIENT_DEDUP_NUDGE` deploy as the win. Refining this into a real per-session metric is the one open follow-up for this scorecard.
+The raw `subsumed_tool_calls` count is **not** the redundant-bootstrap rate — those four tools are called constantly in contexts that never followed a `coord:orient`, and `coord:orient` itself logs its internal inbox/plan-events/memory/declare-intent subreads under the same spawn just before the orient row. Treat this query as a call-volume trend only. The true regression guard is `dev:orient_dedup_rate`, backed by `packages/operator-core/lib/orient-dedup-rate.ts`: it finds the first orient row per spawn and counts only subsumed-tool calls with `invoked_at > first_orient_at`.
 
 **Orient `self` field (added 2026-06-27):** `coord:orient` now also folds in the caller’s own coordination identity as a top-level `self: { ownerId, ownerLabel }` at response-assembly time (same overlay pattern as `coord:glance` and `coord:watermark`; see `coordination/self-marker.ts`). Agents no longer need a separate `coord:whoami` call to learn their own `ownerId` from within an orient turn. Since `coord:whoami` is a debug tool rather than a mandatory bootstrap step, it is **not** added to the `redundant_followups` query and this change does not affect the three scorecard metrics. The four tracked bootstrap tools (`memory:search`, `coord:inbox`, `coord:plan-events`, `coord:declare-intent`) remain unchanged in both `ORIENT_SUBSUMED_NORMALIZED` (`code-run-batch-nudge.ts`) and the SQL above.
 
@@ -29567,6 +29656,46 @@ No remaining open questions.
 
 **Implementation begins with PR 0** — user-side dashboard work to create the ElevenLabs agent. Once you have the agent ID + verified test conversation, PR 1 starts.
 
+# Context compaction — surviving the window limit
+
+> What happens when an agent session outgrows its context window — auto-compaction, the flush-before-summarize discipline, and the carry surfaces that make continuity lossless.
+
+Every agent session has a finite context window. A long-running session eventually **compacts**: the conversation so far is summarized, the summary replaces the history, and the session continues with a fresh window. Done naively this loses state — the summary is prose, prose drifts, and a live multi-agent system’s facts go stale the moment they’re written. Papercusp’s answer is a discipline plus purpose-built carry surfaces.
+
+## The two kinds of compaction
+
+[Section titled “The two kinds of compaction”](#the-two-kinds-of-compaction)
+
+* **Deliberate** — the agent notices context filling (the \~80% rule) and requests compaction at a clean boundary, *after* flushing state.
+* **Auto** — the runtime compacts mid-task because the window filled. The summary must then carry the unflushed detail verbatim and instruct the successor to park it properly on its first turn.
+
+## Flush BEFORE you summarize
+
+[Section titled “Flush BEFORE you summarize”](#flush-before-you-summarize)
+
+The core rule: **externalize state to re-injected surfaces, then let the summary carry pointers, not copies.** The surfaces:
+
+| State                        | Surface                                        | Re-injected when                                     |
+| ---------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| In-flight work-item progress | `work_items:checkpoint { id, checkpoint }`     | The item’s next invocation (yours or a successor’s)  |
+| An armed loop’s progress     | `loop:checkpoint { did, left, insight, next }` | The next loop wake                                   |
+| Scoped standing conclusions  | `facts:assert { scope, key, body }`            | Every future orient/brief, verbatim, until retracted |
+| Fuzzy background knowledge   | `memory:remember`                              | Semantic recall (`coord:orient` / `memory:search`)   |
+
+Checkpoints and facts live in Postgres (`harness_shared.carry_notes` — see [checkpoints and facts](/internal/docs/coordination/checkpoints-and-facts)), so they survive compaction *losslessly* while summary prose degrades.
+
+## What the summary itself should be
+
+[Section titled “What the summary itself should be”](#what-the-summary-itself-should-be)
+
+An **index into live sources to re-verify**, not a state dump: the identity block (session id, fleet, harness), session-mode flags, open commitments and owner-gated walls verbatim, named artifacts (plan slugs, WI-/F- ids, files), and the next concrete action — opening with an instruction to re-run `coord:orient` and reconcile before trusting any liveness claim. The per-machine compaction strategy is versioned at `~/.papercusp/compaction-strategy.md` and injected into every session’s instructions.
+
+## Enforcement
+
+[Section titled “Enforcement”](#enforcement)
+
+A compaction-compliance watchdog audits sessions that compacted without flushing (see `packages/operator-core/lib/system-health/` — the `compaction-compliance-watchdog` suite). The failure it exists to catch: a session auto-compacts mid-task, the successor trusts a stale prose claim, and work is silently redone or dropped.
+
 # Docs retrieval
 
 > The docs-engine package, the doc surfaces, and how agents read documentation across them.
@@ -30597,6 +30726,55 @@ Only `auditor`, `operator`, and `oracle` have a `.persona.md` here. The 13 `*.to
 * [Endpoint System → Writing a tool](/internal/docs/endpoint-system/writing-a-tool) — how to add `guidance` to a `defineTool` call
 * [Endpoint System → Tool catalog](/internal/docs/endpoint-system/tool-catalog) — the full live tool list
 * [Agents → Operator persona](/internal/docs/agents/operator-persona) — the canonical persona example with tone, behavior, and modality rules
+
+# Session modes — AUTO, IDEATE, DRAIN
+
+> The owner-switchable standing modes an interactive (su) agent session runs under — what each authorizes, how they compose, and how to turn them on and off.
+
+An interactive agent session (an su / engineer-collaborator) runs under a set of **standing modes** the owner switches with plain words. A mode is a session-wide grant — it carries across turns and topics until explicitly turned off, the session ends, or the goal completes. The canonical, binding statement of each mode lives in the su playbook (the persona every su session is launched with); this page is the orientation view.
+
+## AUTO — “act, don’t ask”
+
+[Section titled “AUTO — “act, don’t ask””](#auto--act-dont-ask)
+
+**On:** “AUTO mode”, “run autonomously”, “don’t ask — use your judgment”, “just keep going”. **Off:** “exit AUTO mode”, “pause”, “ask me first again”.
+
+AUTO suspends the default confirm-before-acting posture: the agent chooses the route, passes approval gates on its own judgment, and **replaces every question with a disclosure** — assumptions and deferrals are stated in the report, never asked as menu check-ins (“want me to X or Y?” is banned). For open-ended directives the agent arms an engine loop (`loop:arm`) so the work recurs across turns instead of stopping to ask “what next?”.
+
+What still stops an AUTO session: nothing owner-shaped. The one hard rail is data integrity — never destroying a **peer’s** uncommitted work (tree-wide destructive git ops on the shared checkout). Genuinely unresolvable product-direction forks become disclosed assumptions, not pauses.
+
+## IDEATE — “invent net-new, don’t just patch”
+
+[Section titled “IDEATE — “invent net-new, don’t just patch””](#ideate--invent-net-new-dont-just-patch)
+
+**On:** “ideate mode”, “brainstorm features”, “think bigger”. **Off:** “stop ideating”, “just fixes”. Default OFF; orthogonal to AUTO.
+
+IDEATE makes ambition part of the job: the agent runs deliberate ideation passes — mining its own recent observations, `curation:state-of-hive`, rubric freshness, and past graded proposals — and files net-new feature proposals via `improvements:capture { kind:"feature" }`. No quality gate, no quota; blue-sky is licensed. With AUTO also on, the strongest ideas get **built**, flag-ON and disclosed, not just filed.
+
+## DRAIN — “drive the queue to terminal”
+
+[Section titled “DRAIN — “drive the queue to terminal””](#drain--drive-the-queue-to-terminal)
+
+**On:** “drain mode”, “clear the backlog”. Implies AUTO ON.
+
+DRAIN sets the *objective*: take a work-item backlog and drive every item to a terminal state (done / resolved / deprecated / needs\_human), usually by leading a fleet. The operating loop: triage + rank first · capacity preflight · canary launch, then the fleet · feed by claim-spec (never hand-assignment) · a leader monitor loop each wake · wind down with a residue report. Completion integrity outranks burn-down speed — nothing goes terminal without evidence.
+
+## How they compose
+
+[Section titled “How they compose”](#how-they-compose)
+
+|                | AUTO off                                          | AUTO on                                              |
+| -------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| **IDEATE off** | File observations; fixes wait for approval.       | Implement fixes/improvements you encountered.        |
+| **IDEATE on**  | Run ideation passes; file proposals, don’t build. | Run passes AND build the strongest ideas, disclosed. |
+
+DRAIN layers the queue→terminal mission on top of whichever cell is active.
+
+## Where the truth lives
+
+[Section titled “Where the truth lives”](#where-the-truth-lives)
+
+The full binding rules (what each mode suspends, the anti-footgun rail, the end-of-turn test, loop cadence) are in the su persona/playbook sources — see [prompt assembly](/internal/docs/agents/prompt-assembly) for how those reach a live session, and the [su-persona render + edit path](/internal/docs/agent-insights/su-persona-render-and-edit-path) before editing them.
 
 # Impartial benchmark suite — overview
 
@@ -32975,6 +33153,46 @@ Processes our infrastructure launches are fully supervisable: fleet bees (operat
 * `WEDGE_REAP_SILENT_MS` (30min, env `PAPERCUSP_WEDGE_REAP_MS`, reaper threshold — distinct from and longer than the badge’s) — `fleet/operator-spawn.ts`
 * `WEDGE_AUTO_REAP` flag (default ON, D-006) — `libs/flags/src/types.ts`
 * Liveness windows: `LIVE_MS` 60s / `STALE_MS` 10min (`liveness.ts`) · claim-sweep grace `STALE_CLAIM_GRACE_MS` 10min (`work-items-stale-claims.ts`)
+
+# Checkpoints and facts — the durable carry surfaces
+
+> The memory layers that carry agent state across turns, wakes, compactions, and successors — work-item checkpoints, loop checkpoints, standing facts, and where each is stored and re-injected.
+
+Agents are transient; work is not. Papercusp gives a session four distinct places to park state, each with a different **delivery guarantee** — route by how the state must come back, not by habit.
+
+## The four layers
+
+[Section titled “The four layers”](#the-four-layers)
+
+| Layer                | Verb                                           | Delivery                                                                              | Use for                                                                                        |
+| -------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Work-item checkpoint | `work_items:checkpoint { id, checkpoint }`     | Re-injected when the item is next picked up — by you or any successor                 | In-flight progress on one item: what’s done, what’s left, the next step                        |
+| Loop checkpoint      | `loop:checkpoint { did, left, insight, next }` | Re-injected on the armed loop’s next wake; a cold wake reconstructs from it           | An engine loop’s iteration state                                                               |
+| Standing fact        | `facts:assert { scope, scopeRef?, key, body }` | Folded **verbatim** into every relevant orient/brief until retracted (TTL default 7d) | Scoped conclusions future turns must see deterministically (“X is owner-residue — exclude it”) |
+| Shared memory        | `memory:remember`                              | Semantic recall (orient’s mem0 hit list, `memory:search`)                             | Fuzzy background worth recalling, not guaranteed delivery                                      |
+
+Rules of thumb: a checkpoint is *per unit of work*, a fact is *per conclusion*, memory is *per thing worth knowing*. Live ephemera (intents, handoffs, presence) belong to `coord:*`, not to any of these.
+
+## Where checkpoints actually live
+
+[Section titled “Where checkpoints actually live”](#where-checkpoints-actually-live)
+
+Work-item, loop, and hive checkpoints are rows in **`harness_shared.carry_notes`**, keyed by scope (`workitem:<harness>:<WI-id>`, `loop:…`, `hive`) — migration 472. Two traps:
+
+* `harness_shared.work_item_checkpoints` is a **legacy, empty** table — never query it.
+* `work_items:get` at the trimmed payload tier does **not** surface an item’s checkpoint — absence of a checkpoint in a `get` is not evidence none exists. Read directly: `select note from harness_shared.carry_notes where scope like 'workitem:%:<id>'`.
+
+## Facts discipline
+
+[Section titled “Facts discipline”](#facts-discipline)
+
+`facts:list { scope }` before asserting (upsert is by key — don’t fork a second key for the same conclusion). `facts:retract` the moment a fact stops being true: a stale fact delivered verbatim into every future brief is worse than none. Bodies store at ≤500 chars — write tight conclusions, not essays.
+
+## Why this exists
+
+[Section titled “Why this exists”](#why-this-exists)
+
+Compaction ([context compaction](/internal/docs/agents/compaction)) and session death are routine, not exceptional. State parked on these surfaces survives both losslessly; state carried only in conversation prose degrades into a summary and goes stale. The discipline is: flush first, then let prose point at what was flushed.
 
 # Data Sync overview
 
@@ -63760,6 +63978,45 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
 
 For a one-page summary of recent migrations and their commit hashes, see `/home/marsh-office/.claude/projects/-tmp/memory/project_omp_routing_migration.md` and `/home/marsh-office/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md`.
 
+# Observations — the friction-capture pipeline
+
+> How agents file what they notice (improvements:capture), where observations land, how they're triaged and digested, and how they feed ideation and the learning loop.
+
+Every agent in the system doubles as a **sensor**: when work exposes friction — a workaround written for an awkward tool, a misleading doc, a failure that fought back past a few attempts, a degradation signal — the agent files it the moment it’s noticed, instead of letting it evaporate into conversation prose.
+
+## The capture verb
+
+[Section titled “The capture verb”](#the-capture-verb)
+
+`improvements:capture { kind, title, detail?, paths?, rubricRef?, ratings? }`
+
+* **`kind`/lane** routes it: `observation` (a sensor reading — the default reflex, on in every mode) vs `feature` (a reviewed proposal for net-new capability — the [IDEATE](/internal/docs/agents/session-modes) lane).
+* Evidence-bearing signal only — a genuine, repeatable friction the next agent would also hit; not one-off slips. Sparseness keeps the queue clean.
+* When a ratified rubric covers what was just measured, captures carry `rubricRef` + `ratings` with concrete evidence — see [rubrics and scorecards](/internal/docs/system/rubrics-scorecards).
+
+Captures land as rows in the engineer-issues store (kind-tagged, lane-tagged, `EI-NNN` ids) scoped to the papercusp workspace itself; problems in a *managed* harness are `work_items:create` instead.
+
+## Downstream: who reads them
+
+[Section titled “Downstream: who reads them”](#downstream-who-reads-them)
+
+* **`improvements:digest`** — the triage surface: dedupe, rank, promote to real work items, close the stale.
+* **The Learning tab** (GUI) — the owner’s pull surface for the workspace-wide improvement backlog; it replaced push notifications by design.
+* **The scout/queen ideation loop** — observations are the corpus `curation:state-of-hive` synthesizes and scouts mine for the pattern behind several frictions; graded proposals flow back via `scout:grade-idea`.
+* **The watchdog** — the automated sibling: tool-error clustering files the objective signals (`improvements:watchdog-status` shows its state), while capture carries the subjective ones.
+
+## The completion-time reflect
+
+[Section titled “The completion-time reflect”](#the-completion-time-reflect)
+
+Completing a work item prompts a one-time reflect: did tooling friction, lock contention, or a validation/review bounce bite during this unit of work? If genuinely repeatable, capture it then — that prompt is the pipeline’s main intake point, deliberately placed at the moment the friction is freshest.
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+This pipeline is the input side of [learning packs](/internal/docs/system/learning-packs) and the [scout loop](/internal/docs/system/scout-loop): the system’s self-improvement is only as good as what its agents bother to file. Dogfooding makes it real — the builders live inside the product, so the queue fills with lived friction, not speculation.
+
 # Repo conventions — the long form
 
 > The full detail behind CLAUDE.md's pointers — deployment model, retired surfaces, borrowable libs, branch/commit discipline, two-port model, database topology, test infrastructure.
@@ -63923,6 +64180,40 @@ Every agent-facing prompt is ASSEMBLED at launch/spawn time from source files; t
 * **Never edit rendered outputs:** `~/.papercusp/*-collaborator*.md` (vestigial installer dumps, not read at launch), anything under the `papercup-release` checkout, or an assembled prompt captured from a live session.
 
 In dev, prompt-source edits load immediately (`PAPERCUSP_RELOAD_PROMPTS=1`, default in development). After editing a `<role>.tools.md`, run the sync test: `cd packages/operator-core && npx vitest run tools-md-sync`. After a substantial edit to the SU engineer playbook, run the behavioral suite (`npm --prefix apps/operator run llm-test -- --target su`).
+
+# Rubrics and scorecards — measuring what "good" means
+
+> The shared grading standards agents propose and ratify (rubrics), the graded observations emitted against them (scorecards), and the freshness/trend machinery that monitors the monitor.
+
+Free-text observations tell you *something* is off; they don’t tell you whether it’s getting better. **Rubrics** fix that: a rubric is the shared, ratified definition of what “good” means for one system characteristic — named criteria, a rating scale — so different agents grading at different times produce comparable signal. **Scorecards** are the graded observations emitted against a rubric.
+
+## The lifecycle
+
+[Section titled “The lifecycle”](#the-lifecycle)
+
+1. **Propose** — `rubrics:propose`. Any agent may; the typical trigger is noticing a cluster of free-text observations about one characteristic with no rubric covering it. Status `proposed`; idempotent on `rubric_id` (re-propose updates content).
+2. **Ratify** — `rubrics:ratify` (the Queen/owner gate). An `active` rubric becomes the standard every agent grades against.
+3. **Grade** — a rubric-graded observation is an `improvements:capture` with `rubricRef` + per-criterion `{ rating, evidence }` — never a bare score. The Overwatch emits a scorecard every wake; any agent can grade when a ratified rubric covers what it just measured.
+4. **Read back** — `scorecards:list` (filter by rubricRef / sourceHive / since; each row exposes completeness via `nKeys` + `missingKeys`) and `rubrics:trend` (per-criterion direction over time: improving / worsening / stable / unknown).
+
+Discovery: `rubrics:list` / `rubrics:search` show what the system already knows how to measure — check before proposing a near-duplicate.
+
+## Monitoring the monitor
+
+[Section titled “Monitoring the monitor”](#monitoring-the-monitor)
+
+Scorecards are only useful if they keep arriving, complete:
+
+* **`scorecards:freshness`** — has a COMPLETE scorecard landed for a rubric since a given time? `fresh` / `partial-only` (silent truncation) / `stale` (silent emission gap).
+* **`rubrics:trend`’s staleness signal** — criteria the grader persistently rates `unknown` mean the rubric’s model has drifted from reality; it should re-enter the propose↔ratify loop.
+
+A stale scorecard is itself a finding — ideation passes treat it as a prompt (“why did we stop being able to measure this?”).
+
+## How this feeds the loop
+
+[Section titled “How this feeds the loop”](#how-this-feeds-the-loop)
+
+Rubric-graded signal is the quantitative backbone of the [observations pipeline](/internal/docs/system/observations) and the [scout loop](/internal/docs/system/scout-loop): trends tell the Queen where to aim work, and graded evidence makes “this improved” a claim with data behind it. Grading **enriches** ideation but never gates it — a low self-grade is context for the owner, not a reason to withhold a proposal.
 
 # The Scout loop — autonomous generative ideation
 

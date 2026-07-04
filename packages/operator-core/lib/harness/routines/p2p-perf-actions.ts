@@ -259,6 +259,9 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
   }
 }
 
+/** Exported for the watchdogKey-stability unit test (EI-3909). */
+export const _testing = { fileFindings };
+
 async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeoutMs: number): Promise<void> {
   const root = integrationRoot();
   const label = tier === '--tier1' ? 'nightly Tier-1' : 'weekly Tier-2';

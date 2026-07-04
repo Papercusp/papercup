@@ -305,6 +305,26 @@ a nudged session then called `code:run`/`recipes:run`. Details + the structural-
 finding (kits/caps/surface gate adoption before wording does):
 [code-run-adoption-metric](/agent-insights/code-run-adoption-metric/).
 
+**The structural-lockout finding, closed (`code-run-self-state-adoption-2026-07-03` P-001/P-003):**
+the lockout the metric above documented — `code:run` scoped to `SU_ROLES` only, so BEE/QUEEN-kit
+agents (the bulk of fleet adoption opportunity) could never reach it no matter how the nudge was
+worded — is now fixed at the root. `prompt-build.ts`'s `CODE_RUN_NUDGE` self-gate comment used to
+read "self-gated … since the tool is SU\_ROLES-scoped, so roles without it ignore it"; since P-001
+it instead self-gates on "roles whose surface/envelope still lacks it", because the BEE/QUEEN kits
+
+* the CORE spine now carry `code:run` and the self-gate resolves **TRUE fleet-wide** — SU\_ROLES
+  scoping was the lockout signature, not a wording problem. P-003 closed the same class one layer
+  down: `role-principal-caps.ts` had **drifted behind** several roles' own seeded kits (a role's kit
+  advertised a tool its principal caps then denied — measured via 14d of `role-not-allowed`
+  telemetry: the herald's `memory:search`/`recipes:search` denied at wake every time, the queen's
+  `memory:search` denied 106×, bees denied on their own kit's `capability:git`/`capability:read`/etc.
+  dozens of times). **Practical effect for this A/B methodology:** the in-process `su` target's
+  `excludeTools`/kit simulation was always accurate for the SU surface, but any fleet-wide adoption
+  number pulled from `harness_shared.tool_invocations` (§ Production telemetry below) measured
+  against the OLD lockout baseline — re-run metric #2 post-P-001/P-003 before trusting a "still \~0%"
+  adoption read; a role that structurally couldn't reach `code:run` before now can, so the honest
+  floor moved.
+
 ### 3. Redundant-bootstrap rate — orient duplication (the bigger leak)
 
 The win is agents NOT re-calling what `coord:orient` already returned. Baseline: orient co-fires with

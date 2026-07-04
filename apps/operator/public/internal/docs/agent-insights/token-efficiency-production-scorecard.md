@@ -36,14 +36,11 @@ SELECT
   round(100.0*count(*) FILTER (WHERE status='invalid-input')/nullif(count(*),0),3) AS invalid_input_pct,
   count(*) FILTER (WHERE status='invalid-input'
                     AND error_message LIKE '%Too big: expected string%') AS string_limit_fails,
-  -- (3) orient-dedup — loose proxy (see caveat); orient calls vs the 4 bootstrap tools orient already
-  --     returns (memory:search · coord:inbox · coord:plan-events · coord:declare-intent). Note: as of
-  --     2026-06-27 orient ALSO folds in the caller's own identity (self: { ownerId, ownerLabel } —
-  --     orient.ts resolveSelfRef overlay), but coord:whoami is a debug tool, not a bootstrap step, so
-  --     it is NOT added to this list — that keeps the metric focused on mandatory session-bootstrap dedup.
+  -- (3) orient-dedup — coarse call-volume trend only; for the real post-orient re-fetch rate use
+  --     dev:orient_dedup_rate, whose SQL ignores coord:orient's own internal subreads.
   count(*) FILTER (WHERE tool_name='coord:orient') AS orient_calls,
   count(*) FILTER (WHERE tool_name IN
-    ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS redundant_followups
+    ('memory:search','coord:inbox','coord:plan-events','coord:declare-intent')) AS subsumed_tool_calls
 FROM harness_shared.tool_invocations
 WHERE transport='mcp' AND invoked_at > now() - interval '24 hours';
 ```
@@ -115,15 +112,12 @@ GROUP BY 1,2 ORDER BY 3 DESC;
 
 ### Caveat on the redundant-bootstrap metric
 
-The raw `redundant_followups` count (13,406) is **not** the redundant-bootstrap rate — those four
-tools are called constantly in contexts that never followed a `coord:orient`. The true metric needs a
-per-session correlation (a follow-up call by the **same actor within \~N seconds after** that actor's
-orient). `tool_invocations` has no first-class session id (ephemeral spawns get a fresh `spawn_id`
-per call), so a precise number needs either a session key threaded into `metadata_json` or a windowed
-self-join on `role`+time. Until then, track the **ratio trend** (`redundant_followups / orient_calls`)
-as a coarse directional signal, not an absolute rate, and treat a *downward* trend after the
-`ORIENT_DEDUP_NUDGE` deploy as the win. Refining this into a real per-session metric is the one open
-follow-up for this scorecard.
+The raw `subsumed_tool_calls` count is **not** the redundant-bootstrap rate — those four tools are
+called constantly in contexts that never followed a `coord:orient`, and `coord:orient` itself logs its
+internal inbox/plan-events/memory/declare-intent subreads under the same spawn just before the orient
+row. Treat this query as a call-volume trend only. The true regression guard is
+`dev:orient_dedup_rate`, backed by `packages/operator-core/lib/orient-dedup-rate.ts`: it finds the
+first orient row per spawn and counts only subsumed-tool calls with `invoked_at > first_orient_at`.
 
 **Orient `self` field (added 2026-06-27):** `coord:orient` now also folds in the caller's own
 coordination identity as a top-level `self: { ownerId, ownerLabel }` at response-assembly time

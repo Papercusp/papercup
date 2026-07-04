@@ -1,0 +1,96 @@
+# The cross-platform env switcher (dev/prod/staging/local + release) and its enabled-state
+URL: /internal/docs/agent-insights/env-switcher-and-local-env-provisioning
+
+How the in-webview EnvSwitcherBar works on every platform — the GET /api/desktop/dev-operators discovery feed (server-side reachability, CORS-safe), the "release" escape env (the immutable bundled package code), and how an agent reads + toggles which envs are enabled (POST /api/desktop/dev-operators/set-enabled). Read this before touching the env bar or the planned install-time local-operator provisioning.
+
+## What this is
+
+The env switcher started as a **Linux-only native GTK bar** (`dev_wrapper.rs`, now retired —
+superseded 2026-06-30 by `env_switch.rs`) that navigated the webview between four operator
+stacks on fixed local ports — `prod :3070` (green/release tree), `staging :3170` (staging
+tree), `dev :3270` (working tree), and `local :3055` (Vite HMR). `EnvSwitcherBar` is now the
+**single, cross-platform, in-webview** bar (data-driven, ships in public builds, works on
+macOS/Windows/Linux); `env_switch.rs` is its Rust-side plumbing (the authoritative `list_envs`
+probe, `/api` retargeting, persisted-target restore, and the native menu/shortcut backstop) —
+not a second visible bar.
+
+It is mounted **ungated** in `apps/operator-vite/src/routes/__root.tsx`, but **self-hides
+unless ≥2 ENV operators are reachable** — so a plain single-operator install shows nothing
+until install-time provisioning brings the other envs up.
+
+## The contract — `GET /api/desktop/dev-operators`
+
+Returns `{ ok, operators, selfPort }`. Each operator:
+
+```ts
+{ id, label, port, tooltip, origin, reachable, sha, isSelf, kind, enabled }
+```
+
+* **Reachability is probed SERVER-side.** A webview served from one origin (`:3070`) cannot
+  cross-origin `fetch` a sibling operator's `/version` (CORS), so the operator itself probes
+  the localhost ports. The **switch** is a top-level `window.location` navigation (carrying
+  the current route + query), which is **not** CORS-bound.
+* **`kind: 'env' | 'release'`.** The four branch operators are `kind:'env'`. There is also one
+  `kind:'release'` entry — the **"release" button**: it switches to the **unchanged code from
+  the installed release package** (the immutable bundled operator, which local edits can't
+  break — the always-good escape hatch). Its origin = `PAPERCUSP_RELEASE_ORIGIN` (set by the
+  Tauri host / provisioning) and falls back to `prod :3070` on the dev box. There is **no**
+  remote-main git-reset button (the `POST /api/desktop/git/reset-to-remote-main` endpoint
+  still exists as a backend-only recovery API).
+
+## Enabling / disabling envs — and how an AGENT does it
+
+A user can **right-click an env** in the bar to turn it off (it won't be provisioned/started,
+and renders struck-through). This is persisted **per-machine** in
+`~/.papercusp/env-switcher-prefs.json` (`{ disabled: string[] }`, via `env-switcher-prefs.ts`)
+— **not** in browser localStorage — precisely so it's legible + controllable outside the UI.
+
+An agent can therefore **see and change** which envs are on:
+
+* **Read:** `GET /api/desktop/dev-operators` → each op's `enabled` flag.
+* **Toggle:** `POST /api/desktop/dev-operators/set-enabled` with `{ id, enabled }` (loopback +
+  a cross-site CSRF guard). e.g. re-enable staging: `{ "id": "staging", "enabled": true }`.
+
+The **`release`** env is the immutable escape hatch and can **never** be disabled (the toggle
+and the prefs reader both refuse it).
+
+## Install-time provisioning (P-017) — the launcher
+
+The launcher that brings the env operators up lives in
+`packages/operator-core/lib/harness/env-operator-launcher.ts` (owner chose full parity with
+per-env disable; D-006/D-007). It spawns each **enabled, not-yet-running** env (dev :3270 /
+prod :3070 / staging :3170) from the **cloned `papercup` source** on its fixed port, sharing the
+one embedded Postgres. `local :3055` (Vite HMR, no operator of its own) and `release` (the
+immutable bundled sidecar) are never spawned from source.
+
+* **Pure planner** — `planEnvOperatorLaunch(...)` decides spawn-or-skip per env with a
+  deterministic reason: `disabled` → `is-self` → `already-reachable` → `no-source-tree` →
+  `no-toolchain` → `spawn`. It is idempotent (an already-served port + this operator's own port
+  are skipped) and graceful (a missing toolchain/source tree marks the env unavailable, never an
+  error). Fully unit-tested (`env-operator-launcher.test.ts`).
+* **Effectful launcher** — `launchEnvOperators(...)` reads the enabled prefs, probes the ports,
+  runs the planner, then spawns each planned operator **staggered** (default 4s, only between
+  real boots) to avoid cold-boot migration contention. Probe / spawn / source-detect / toolchain
+  / tree-prepare are all injected seams.
+* **EI-126 single-writer safety** — every spawned operator is **request-only**
+  (`PAPERCUSP_BACKGROUND_WORKERS=0`, DBOS off, IPC off): only the PRIMARY runs the shared-DB
+  background machinery, so the extra envs can't re-create the double-writer substrate echo. They
+  are reached by top-level navigation, not the primary's IPC fast path.
+
+**Default-OFF, ships dark.** The boot integration (`apps/operator/bin/host-bootstrap.ts`) arms the
+launcher only when `PAPERCUSP_DESKTOP=1` **and** `PAPERCUSP_PROVISION_ENV_OPERATORS=1` (the idiom of
+the other boot toggles — `PAPERCUSP_DBOS_ENABLE`, `PAPERCUSP_GIT_EXPORT_COMMIT`), fire-and-forget +
+non-fatal, deferred \~20s so the primary's migrations/substrate win the boot race. A release build
+turns it on by exporting that env before the sidecar build (mirroring the `PAPERCUP_DOGFOOD_HIVE_*`
+injection in `bin/release-local.sh`). It is dark because the spawn path is toolchain-dependent and
+only **end-to-end** verifiable on a real packaged build (D-009 folds that verify into P-008/P-010).
+
+**Branch differentiation is built (`env-tree-prepare.ts`).** The launcher's default `prepareTree`
+gives each env its real D-006 tree: `dev` runs the working tree in place; `prod` / `staging` each get
+their own **git worktree** on `main` / `staging` under `~/.papercusp/env-trees/<id>` (outside the repo,
+so the git-sync auto-commit never sweeps it in). It is idempotent (reuses an existing worktree),
+best-effort fetches the branch first (a shallow single-branch dogfood clone may not have it), and
+returns `null` on any git failure so that env is skipped gracefully (the switcher self-hides it). All
+unit-tested (`env-tree-prepare.test.ts`). What still needs a real packaged build is only the **live
+spawn verify** — that the spawned operators actually come up + the switcher lights up cross-platform
+(P-008/P-010).

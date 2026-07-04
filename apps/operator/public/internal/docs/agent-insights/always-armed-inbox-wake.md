@@ -11,21 +11,23 @@ all still verify — only the `coord:send` wake API drifted.
 
 * **No more `wake.warning` / `woken:0` warning.** The "woken:0 warning" section
   below quotes a `wake.warning` string for the fired-but-woke-nobody case. That
-  field was **renamed and redesigned**: a `required` wake that reached wakeable
-  targets but woke nobody (and staged nobody) now returns
-  `wake.recipient_absent: true` plus a `wake.note` — see
-  `packages/operator-core/lib/agent-tools/coordination/tools/send.ts:152-157`
-  (the comment at `:147-151` says this is "replacing the old silent woken:0
-  warning"). There is no `wake.warning` field anywhere in `send.ts`.
+  field was **renamed and redesigned**: a `required` wake (or an `optimistic` one
+  with no declared `backstop`) that reached wakeable targets but woke nobody (and
+  staged nobody) now sets `wake.recipient_absent: true` plus a `wake.note` — see
+  the `missed` / `loud` branch (`wake.recipient_absent = true`) in
+  `packages/operator-core/lib/agent-tools/coordination/tools/send.ts`. There is no
+  `wake.warning` field anywhere in `send.ts`. (Citations here are symbol-anchored,
+  not line-numbered, so they survive `send.ts` edits.)
 
 * **`wake` is no longer a boolean.** The body writes the API as
   `coord:send {wake:true}`. `wake` is now a tri-value intent union
-  `boolean | 'required' | 'optimistic'`
-  (`send.ts:52-57`), coerced at `send.ts:65-66` (`true → 'required'`,
+  `boolean | 'required' | 'optimistic'` (the `wake?:` field on the `send` schema
+  in `send.ts`), coerced to the internal `wakeMode` (`true → 'required'`,
   `false`/omit → no wake). Legacy `{wake:true}` examples still **function**, but
   the documented intent surface and the warning text they reference are stale —
-  prefer `wake:'required'` (loud miss → `recipient_absent`) or
-  `wake:'optimistic'` (silent best-effort over a durable backstop).
+  prefer `wake:'required'` (loud miss → `recipient_absent`) or `wake:'optimistic'`
+  (best-effort over a *named* durable `backstop`; an optimistic miss with no
+  backstop is now reported as loudly as a required miss).
 
 See plan `directed-wake-honesty-and-spawn-handoff-2026-06-14`. The original
 narrative below is preserved.
@@ -183,9 +185,12 @@ REQUIRED and audited.
 
 **Guardrails (D-009):** `reason` required; every call audited
 (`turn.interrupt_cooperative` / `_force` / `_deferred` / `_rate_limited` / `_failed`
-in `harness_shared.audit_log`); storm-limited to 10/min/actor (the audit log is the
-rate source) so a confused or looping agent can't halt the fleet; self-interrupt
-refused.
+in `harness_shared.audit_log`); storm-limited so a confused or looping agent can't
+halt the fleet. The base ceiling is `STORM_MAX` (10 / 60s / actor, the audit log is
+the rate source), but `stormMaxFor(actor)` raises it for trusted SYSTEM recovery
+actors that legitimately force-ESC many *distinct* owners in one burst — a
+fleet-wide recovery loop was tripping the flat cap after \~10 different owners
+(`gateway-mass-outage-storm-guard-2026-07-01`). Self-interrupt refused.
 
 **Reach for cooperative first**; use `force` only when cooperative was ignored or
 there's no time. To re-invoke an *idle* peer use `coord:send {wake:true}` — interrupt

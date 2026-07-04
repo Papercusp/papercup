@@ -191,3 +191,38 @@ result, not your assumption.** After sending to any audience selector, check
 `recipients_resolved`; a `zero_recipients` warning (or the hard refusal) means
 nobody live got it, full stop — don't sit "awaiting compliance" on a broadcast
 that never left the building.
+
+## The fourth corollary: on a FEDERATED hive, "never seen here" is not "dead" (WI-1999, 2026-07-03)
+
+The reconciler itself (§5, `reclaimStaleWorkItemClaims` /
+`reclaimStaleIssueClaims`, `work-items-stale-claims.ts`) had its own instance of
+this same root cause, on the DEAD leg specifically. `work_items`/`engineer_issues`
+rows **federate** across a shared hive's member nodes, but `coord_presence` (and
+`spawned_agents`) are **local-by-design** — a holder alive on a peer node is
+simply invisible to this node's liveness table. The DEAD leg used to conclude
+"not in `live_holder`" ⇒ dead and reap it — which is correct for a holder this
+node has ever *seen* go stale-then-silent, but wrong for a holder this node has
+**never seen at all**: absence-from-fresh-presence and absence-from-ever-seen are
+different claims, and only the first means "not alive **here**." Live incident
+(2026-07-03): a mac-VM's sweep shredded a live tower holder's claims — dead-
+lettering an actively-driven item 5×, requeuing another 5× — because the tower's
+alias never had a `coord_presence` row on the mac-VM node.
+
+**The fix:** a `known_holder` fragment (`knownHolderFragment`, shared by both
+reapers) — every alias this node has **ever** recorded in `coord_presence` or
+`spawned_agents`, regardless of freshness. The DEAD leg now reaps a claim only if
+its holder is in `known_holder` (genuinely presumed dead) **or** the claim is old
+enough to hit a long-horizon fallback —
+`STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS` (24h) — measured from `taken_at`
+(or `updated_ts` for a NULL-anchor claim, since an actively-federated remote
+item keeps refreshing `updated_ts`). A never-seen-here holder is therefore
+**not** reclaimed on the normal \~10-minute grace window; it is presumed
+possibly-remote-and-alive until the 24h fallback lapses, at which point it frees
+regardless (so a genuinely abandoned row still doesn't leak forever).
+
+**What this means for you:** don't be surprised if a stale-looking claim
+(`taken_by` some alias `fleet:assignments`/`coord:presence` on THIS node has
+never heard of) survives well past the usual \~10-minute stale-claim grace — that
+is the federation guard working as intended, not a bug. If you need to confirm a
+claim is truly abandoned rather than live-on-another-node, check the hive's other
+member nodes (or wait out the 24h fallback) before assuming it's free.

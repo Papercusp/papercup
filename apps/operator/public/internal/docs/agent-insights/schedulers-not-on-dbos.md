@@ -3,12 +3,25 @@ URL: /internal/docs/agent-insights/schedulers-not-on-dbos
 
 The audit (dbos-scheduler-consolidation-2026-06-03) moved every portable periodic job onto DBOS scheduled workflows. This is the catalog of the loops that deliberately did NOT move, with the one-line reason for each — so the next agent doesn't try to "finish the migration" by porting something that can't or shouldn't be a DBOS cron.
 
-The scheduler-consolidation pass ported the portable periodic jobs (harness-status
-sweep, backup orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/
-embed/completion-ref timers, test-runs prune) onto **DBOS scheduled workflows**
-(`packages/operator-core/lib/dbos/periodic-workflows.ts`). A set of recurring loops were
-**deliberately kept off DBOS**. If you're tempted to "finish the migration," check
-this list first — these are conscious keeps, not stragglers.
+The scheduler-consolidation pass ported the portable periodic jobs (backup
+orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/embed timers,
+test-runs prune) onto **DBOS scheduled workflows**
+(`packages/operator-core/lib/dbos/periodic-workflows.ts` — grep `DBOS.registerScheduled`
+for the live set). A set of recurring loops were **deliberately kept off DBOS**. If
+you're tempted to "finish the migration," check this list first — these are conscious
+keeps, not stragglers.
+
+> **Correction (EI-1622):** the original pass ALSO put a batch of high-frequency,
+> no-durability-need checks on DBOS — `harnessStatusSweep` (the harness-status sweep),
+> `completionRefVerify` (the completion-ref verifier), `systemHealth`,
+> `connectionPressure`, `serviceHealth`, `spawnReclaimSweep`, `staleClaimSweep`,
+> `learningInfraHealth`, `steeringChurnSweep`. Those were later converted **back off
+> DBOS** to lightweight in-process intervals (`dbos/in-process-periodic.ts`, armed from
+> `host-bootstrap`): they wrote \~200k `dbos.workflow_status` rows/day for zero
+> durability gain (the recurring routine-engine freeze). So they are NOT in
+> `periodic-workflows.ts` anymore — grep the symbol names in `in-process-periodic.ts`
+> instead. This is the doc's own rule of thumb in action: no durability need ⇒ don't
+> keep it on DBOS.
 
 ## The keep list (consolidation D-002)
 

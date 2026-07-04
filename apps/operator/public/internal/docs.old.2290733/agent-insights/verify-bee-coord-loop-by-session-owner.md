@@ -1,0 +1,77 @@
+# Proving a bee:spawn bee can actually report: join coord_event_log to spawned_agents.session_owner
+URL: /internal/docs/agent-insights/verify-bee-coord-loop-by-session-owner
+
+A bee:spawn bee can do its FILE work perfectly yet be coordination-MUTE — zero coord/MCP writes under its real identity — because its platform MCP tools are DEFERRED behind Claude Code's ToolSearch and a small backend degrades to raw curl with the WRONG id (EI-311/EI-317). Unit tests pass; the reporting half of the Queen↔bee model silently doesn't exist (EI-75). You cannot see this from a green test run — verify it operationally with one SQL probe: coord_event_log.body->>'from' JOIN spawned_agents.session_owner WHERE child_role='bee'. Zero across N bees = mute. Non-zero with writer_key set = the loop is alive.
+
+## The mistake this prevents
+
+"The bee ran, its files landed, tests are green — the spawn works." **That tells
+you nothing about whether the bee could *report*.** A spawned bee has two halves:
+it does work (file edits) **and** it coordinates (coord:send acks, plan-item
+flips, wake-sends, friction capture). The second half can be **entirely missing**
+while the first looks perfect — the bee is *coordination-mute* (EI-75: 0 coord
+rows across \~15 bees, every one of which edited files fine).
+
+You will not catch this from a unit-test suite or by eyeballing the bee's output.
+The bee even *thinks* it reported — it wrote a `coord:send`-shaped HTTP call. It
+just went to the wrong place under the wrong identity.
+
+## Why it happens
+
+A bee:spawn bee's platform tools (`mcp__papercusp__<group>_<verb>`) are
+**DEFERRED** behind Claude Code's ToolSearch — they are not eager-loaded into the
+tool list. A small/cheap backend (often haiku) that doesn't know the contract
+concludes *"I don't have a way to call MCP tools,"* writes a bash script, and
+`curl`s the operator's HTTP routes — self-identifying by the **Run ID** its
+prompt showed, not its real **Spawn ID**. Result: the write is rejected (auth) or
+lands under a forked identity (EI-311), never under the bee's
+`spawned_agents.session_owner`. The Queen, querying by session\_owner, sees
+silence and must do per-bee psql/git archaeology instead.
+
+The fix is the **deferred-tools recipe** baked into every spawned role's prompt
+(`libs/papercusp/packages/orchestrator/src/prompt-build.ts` §2d, guarded by a
+test in `prompt-build.test.ts`): *load via one ToolSearch select, then CALL the
+tools directly; NEVER fall back to raw HTTP/curl — it is not attributed to your
+identity and corrupts fleet state.* Plus `bee.tools.md` (the playbook).
+
+## The verification probe (the part that's non-obvious)
+
+A code fix to the prompt is necessary but **not sufficient** — bees spawn from
+the GREEN `:3070` release checkout, so a staging prompt fix only takes effect
+once it deploys. The only honest close criterion is operational. Run this against
+the live DB (resolve the URL from `$PAPERCUSP_DATABASE_URL` / `getHarnessAdminUrl`):
+
+```sql
+-- coord writes authored by a bee under its REAL identity, last 48h
+SELECT count(*),
+       count(DISTINCT s.spawn_id)            AS distinct_bees,
+       count(*) FILTER (WHERE e.writer_key IS NOT NULL) AS mcp_attributed
+FROM harness_shared.coord_event_log e
+JOIN harness_shared.spawned_agents s
+  ON e.body->>'from' = s.session_owner
+WHERE s.child_role = 'bee'
+  AND s.started_at > now() - interval '48 hours';
+```
+
+* **0** → still mute (the EI-75 condition).
+* **Non-zero with `writer_key` set on (nearly) all rows** → the loop is alive,
+  via the authenticated MCP path. A `writer_key IS NULL` row is the degraded
+  curl path — count those separately; they signal a bee that fell back.
+* Bucket by `date_trunc('day', e.ts)` to *see the 0→nonzero transition* line up
+  with the deploy — that's what distinguishes "fixed" from "always worked."
+
+Watch the join key: it is `body->>'from' = session_owner`, **not** `run_id`.
+Coord rows whose `from` is `s-1781…` may be interactive engineer shells
+(omp-hook-session), which do **not** join `spawned_agents` — don't count them as
+bee activity.
+
+## Rules of thumb
+
+* **A green test run does not prove a spawned agent can coordinate.** Tests check
+  the prompt *contains* the recipe; only the live coord-by-session\_owner probe
+  proves a real bee *used* it.
+* **Prompt fixes for spawned roles ride the release gate to `:3070`.** Re-run the
+  probe *after the next green deploy*; verifying on staging proves nothing about
+  the host bees actually spawn from.
+* **`writer_key` is your authenticity signal.** Set = the attributed MCP path;
+  NULL = a bare-curl degradation worth chasing.

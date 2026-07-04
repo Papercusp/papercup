@@ -140,6 +140,17 @@ Two program shapes, discriminated by the gate (no schema field):
   governor; change-ledger is flag-only (pure bookkeeping); scout is structural
   (cadence/fire-gate/claim/budget, no flag); iq-battery is owner-budget (refuse if no
   `budgetUsd`). Read the action; don't assume flag+governor.
+- **A `system:blueprint-run` fire spawns into the FIRING install by default — override
+  via a `launchInstallSlug`-family payload key when the routine must launch work into a
+  DIFFERENT named install/hive than the one whose routine fired.** `handleBlueprintRun`
+  builds its durable-spawn `installSlug` (and the idempotency key) from `ctx.installSlug`
+  unless the routine's `payload_template` sets one of `launchInstallSlug` / `hiveSlug` /
+  `hiveInstallSlug` / `targetInstallSlug` (checked in that order; first non-blank string
+  wins) — the DBOS no-first-step routineFire requeue guard surfaced this when a routine
+  requeued after a reaper-cancelled fire and the replay needed to keep targeting the same
+  install, not wherever it happened to be re-picked-up. Set the override key in the
+  blueprint's seeded `payload_template` for any cross-install program-mode blueprint;
+  omit it and the fire targets its own firing install (the common case).
 - **Editing the seed `.ts` does NOT repoint the LIVE routine row — you MUST re-run the
   seed (step 4 is a runtime act, not just a source edit).** Changing `target` /
   `payload_template` in the seed script only affects FUTURE upserts. An already-seeded

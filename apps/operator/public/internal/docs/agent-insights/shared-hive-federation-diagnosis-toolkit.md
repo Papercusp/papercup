@@ -148,6 +148,23 @@ federated to us yet — the asymmetric A→B stall) the frame is **BUFFERED** fo
 **not** conclusively dropped: a 5s loop re-runs Layer-1 `admit()` + this check each
 tick, admitting the instant membership federates in, or dropping after the 30-min grace.
 
+**Path B's owner-gate exception (D-023 BUG C).** On a membership `miss`,
+`resolveSameHiveMember` also asks: is *this* box the hive's owner? If so it must
+ADMIT the brand-new joiner immediately instead of buffering (else
+`admitAnnouncedPeerAsOwner`, the upsert seam, never runs and open-mode
+auto-admission deadlocks) → `announce_admitted owner_admit_joiner origin=…
+hive=…`. **As of WI-1981 (wake-#5515, 2026-07)** that owner check is
+`isCanonicalHiveOwner` (`packages/operator-core/lib/hive-identity.ts`) — holding
+*a* private key is not enough; the held pubkey must MATCH the hive's canonical
+record (the `hives` row, or the joined view's verified `hive_pubkey`) — replacing
+the earlier mere-key-presence check (`loadHivePubkey != null`). A stale/divergent
+local key (e.g. a partial keychain-delete survivor in the encrypted-FILE tier) used
+to make a JOINER box wrongly resolve `isOwner=true`, mint fresh-random epoch keys
+instead of unwrapping the true owner's wrapped rows, and produce a permanent mutual
+`epoch_decrypt_fail` with no re-mint. A detected mismatch now fires a deduped
+divergent-key health signal (`hive-owner-key-health.ts`) and reports **not**-owner
+instead.
+
 > The merge loop iterates **only `admitted.values()`** (`boot.ts`), and `admitted`
 >
 > * `admittedIdentities` are populated together from the same announce frame — so for
@@ -194,7 +211,9 @@ fed.sh b api GET '/api/admin/dogfood-substrate-boot-history?harness_slug=<hive-h
 The diagnostically-loaded `kind`s (`boot-history.ts` `BootHistoryKind`):
 
 * `announce_admitted` — admission succeeded. The `message` says **which path**:
-  `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B).
+  `owner_bootstrap …` (Path A), `same_hive_member origin=… hive=…` (Path B),
+  `owner_admit_joiner origin=… hive=…` (Path B's owner-gate exception, D-023 BUG C —
+  this box is the canonical owner admitting a brand-new joiner instead of buffering it).
 * `announce_rejected` — Layer-1 conclusive reject. Look at the reason — **`binding_invalid`**
   (gist/identity, fix that — see WI-797), `revoked` (read-cut, correct), `bad_sig`.
 * `announce_pending` — Layer-1 transient (`pending`) OR a Layer-2 membership `miss`
@@ -275,7 +294,8 @@ landed with no diagnostic signal at all.
   gist gate, so the owner's own announce was rejected before the bootstrap could rescue it.
   **FIXED 2026-06-25** (su-ed33c735, A2 su-5394073c): the owner-device bootstrap is now
   hoisted into `admitsAsKnownHiveMember` (the IDENTITY stage, BEFORE the gist gate) —
-  `boot.ts` \~1727. Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap`
+  `boot.ts` \~2290 (line drifts as the file grows; anchor on the function name).
+  Live-proven on the fed-a/fed-b rig: `announce_admitted owner_bootstrap`
   fires and roster+epoch federate owner→joiner `origin=remote`. See WI-797 / plan
   `shared-hive-public-release-2026-06-22` D-011.
 * **GOTCHA — a stale `kind=topic` harness on the same hive topic INTERCEPTS the owner

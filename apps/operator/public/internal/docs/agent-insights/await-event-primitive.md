@@ -11,17 +11,19 @@ the code. Since `turn-lifecycle-control-2026-06-08`, codex wakes **resume**:
 `codexHomeForAdvSession(handle.advSessionId)`, recovers the conversation UUID
 from that home's rollout via `findCodexRolloutSessionId(home)`, and delivers the
 wake through `codex exec resume <uuid> <prompt>` with `env.CODEX_HOME` set
-(`packages/operator-core/lib/events/await/wake-executor.ts:201-223`,
-`:461-469`, `:521`). codex only falls back to park if the home dir is missing or
+(symbols in `packages/operator-core/lib/events/await/wake-executor.ts`:
+`findCodexRolloutSessionId` + `codexHomeForAdvSession` + `resumeCommandFor`).
+codex only falls back to park if the home dir is missing or
 no session id can be recovered — parking is no longer the default for codex.
 
 Everything else in this runbook still checks out against the code; only that one
-gotcha is reversed (current citations:
-`packages/operator-core/lib/events/await/wake-executor.ts:296-319` for the
-`codex exec resume <uuid> <prompt>` args, `:783-787` for the
-`codexHomeForAdvSession` / `findCodexRolloutSessionId` recovery, `:855` for
-`env.CODEX_HOME` — line numbers drift as the file grows, re-grep the symbol
-names if these are stale again). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive —
+gotcha is reversed. The relevant symbols, all in
+`packages/operator-core/lib/events/await/wake-executor.ts`, are `resumeCommandFor`
+(builds the `codex exec resume <uuid> <prompt>` args), the `codexHomeForAdvSession`
+/ `findCodexRolloutSessionId` recovery pair, and the `env.CODEX_HOME` assignment on
+the non-PTY resume path — grep the symbol names, not line numbers (they drift as the
+file grows; this doc was de-fragilized to symbol anchors on 2026-07-03 for exactly
+that reason). (See also the framing note: `events:await {key}` is now named sugar over a unified `events:watch` primitive —
 `events:await {key}` == `watch(key, { wake: true, once: true })`, at
 `packages/operator-core/lib/agent-tools/events/watch.ts` — the one-shot-wake
 semantics are unchanged.)
@@ -38,6 +40,13 @@ turn, plan-run completion was a poll-based sweep. As of
 events:await { event: '<key>', note, timeout_sec, on_timeout: 'wake'|'expire' }
 → END YOUR TURN. You are re-invoked when the key fires (or at the deadline).
 ```
+
+**Default timeout behavior:** As of 2026-07-03, the default `on_timeout` is **'wake'**,
+not 'expire' — an undelivered event at the deadline now wakes you with a TIMEOUT marker
+(safe-by-default, await-timeout-fallback-defaults-2026-07-03). This means a caller that
+sets a `timeout_sec` deadline but forgets to name `on_timeout` will be woken to re-orient
+rather than silently lapsing. Every real caller passes 'wake' explicitly, so this changes
+no behavior today — it only guards a future caller who forgets.
 
 Sources fire keys with `events:emit { event, summary, payload, to? }` (agents)
 or `emitAwaitedEvent(...)` (host code). The layering (plan D-001): the
@@ -212,4 +221,7 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
   `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
   every sugar verb read from); pattern matching is
   `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at
-  `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`.
+  `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`. **Timeout constants
+  are unified:** `AWAIT_DEFAULT_TIMEOUT_SEC` and `AWAIT_MAX_TIMEOUT_SEC` live in
+  `packages/operator-core/lib/events/await/types.ts` and are imported by all callers
+  (`events:await`, sugar verbs, the pump) to keep them consistent (await-timeout-fallback-defaults-2026-07-03).

@@ -67,6 +67,28 @@ the inline predicate) and pass the boolean into the shared fragment, so the two 
 blocked work. The claim test pins both arms explicitly (an inline-OFF describe + a sidecar-ON describe)
 so a fragment bug in either path is caught.
 
+## `claimFloorsWhereSql` grew sibling floors — don't mistake them for readiness (2026-07-03)
+
+Two unrelated hardening changes landed inside the SAME `claimFloorsWhereSql` fragment this doc
+describes. Neither touches readiness/`work_item_blocked` semantics — call them out so a reader
+diffing the function doesn't assume they did:
+
+* **Release-cooldown floor** (`fleet-scheduler-hardening-2026-07-03` P-005 / EI-6956, migration
+  `485`): a `cooldownAssignee` opt adds a `last_released_by`/`last_released_at` NULL-safe clause
+  that excludes a row from claiming **only for the agent that just voluntarily released it**,
+  for `PAPERCUSP_RELEASE_COOLDOWN_SEC` (default 300s) — kills the claim/release ping-pong where a
+  released row resets to `todo`, re-sorts to the top under a stable rank, and the same bee
+  re-claims it immediately. `releaseWorkItem` stamps the provenance; every other agent can still
+  claim the row instantly. This is a **fairness/anti-thrash** floor, not a correctness-of-readiness
+  one — a cooled-down row is still fully "ready" by the oracle's definition, just temporarily
+  off-limits to one claimant.
+* **`CLAIM_STATES_ALLOWLIST`** (`['todo', 'open', 'failing']`, WI-1912): closes the exact same
+  *floor-widening* class this doc's D-002 already fixed for the readiness predicate, but on the
+  sibling caller-supplied `states` arg (`scheduler:get_next` / `work_items:claim_next`) — a fleet
+  member had passed `states:['todo','open','blocked']` and pulled a leader-triage-only item. Same
+  principle as this doc's core claim (a caller must never widen past a floor state), applied one
+  layer up from `claimFloorsWhereSql` itself.
+
 ## Gotchas
 
 * The sidecar key is `(workspace_id, harness_slug, feature_id)` — the feature's **real** workspace, not
