@@ -55,3 +55,63 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     expect(COMPACTION_HINT_PCT).toBe(85);
   });
 });
+
+describe('contextGaugeBand (P-013/P-015 banding)', () => {
+  it('is silent (null) below the QUIET threshold', () => {
+    expect(contextGaugeBand(null)).toBeNull();
+    expect(contextGaugeBand(undefined)).toBeNull();
+    expect(contextGaugeBand(0)).toBeNull();
+    expect(contextGaugeBand(CONTEXT_GAUGE_QUIET_PCT - 1)).toBeNull();
+  });
+  it('bands quiet / loud / critical at the boundaries', () => {
+    expect(contextGaugeBand(CONTEXT_GAUGE_QUIET_PCT)).toBe('quiet'); // 65
+    expect(contextGaugeBand(CONTEXT_GAUGE_LOUD_PCT - 1)).toBe('quiet'); // 79
+    expect(contextGaugeBand(CONTEXT_GAUGE_LOUD_PCT)).toBe('loud'); // 80
+    expect(contextGaugeBand(CONTEXT_GAUGE_CRITICAL_PCT - 1)).toBe('loud'); // 89
+    expect(contextGaugeBand(CONTEXT_GAUGE_CRITICAL_PCT)).toBe('critical'); // 90
+    expect(contextGaugeBand(140)).toBe('critical');
+  });
+  it('exposes the owner-proposed thresholds', () => {
+    expect([CONTEXT_GAUGE_QUIET_PCT, CONTEXT_GAUGE_LOUD_PCT, CONTEXT_GAUGE_CRITICAL_PCT]).toEqual([
+      65, 80, 90,
+    ]);
+  });
+});
+
+describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
+  it('is silent below the quiet band and when usage is uncomputable', () => {
+    expect(renderBandedContextGauge(50_000, 158_000)).toBeNull(); // ~32%
+    expect(renderBandedContextGauge(64, 100)).toBeNull(); // 64%
+    expect(renderBandedContextGauge(null, 300_000)).toBeNull();
+    expect(renderBandedContextGauge(1000, 0)).toBeNull();
+  });
+
+  it('renders a bare fact in the quiet band (65–79%), no affordance', () => {
+    const line = renderBandedContextGauge(70, 100);
+    expect(line).toBe('context: 70/100 (70%)');
+    expect(line).not.toMatch(/request-compaction/);
+    expect(line).not.toMatch(/⚠/);
+  });
+
+  it('renders a LOUD ⚠ action line in 80–89%', () => {
+    const line = renderBandedContextGauge(85, 100);
+    expect(line).toContain('⚠ context: 85/100 (85%)');
+    expect(line).toContain('session:request-compaction');
+    expect(line).toMatch(/approaching your soft compaction limit/i);
+  });
+
+  it('renders a CRITICAL ⚠ urgent line at/above 90%', () => {
+    const line = renderBandedContextGauge(95, 100);
+    expect(line).toContain('⚠ context: 95/100 (95%)');
+    expect(line).toContain('CRITICAL');
+    expect(line).toContain('session:request-compaction');
+    expect(line).toMatch(/do not merely narrate ending the turn/i);
+  });
+
+  it('bands exactly on the rounded percent at each boundary', () => {
+    expect(renderBandedContextGauge(64, 100)).toBeNull(); // 64 silent
+    expect(renderBandedContextGauge(65, 100)).toBe('context: 65/100 (65%)'); // quiet
+    expect(renderBandedContextGauge(80, 100)).toMatch(/approaching/); // loud
+    expect(renderBandedContextGauge(90, 100)).toMatch(/CRITICAL/); // critical
+  });
+});
