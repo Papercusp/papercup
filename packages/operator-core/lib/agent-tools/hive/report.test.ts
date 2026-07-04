@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   resolveLocalGithubIdentity: vi.fn(),
   fileReport: vi.fn(),
   getHiveMember: vi.fn(),
+  countReportsSince: vi.fn(),
 }));
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -19,7 +20,7 @@ vi.mock('../../hive-policy-store', () => ({ getHivePolicy: h.getHivePolicy }));
 vi.mock('../../identity/resolve-local-github-identity', () => ({
   resolveLocalGithubIdentity: h.resolveLocalGithubIdentity,
 }));
-vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport }));
+vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport, countReportsSince: h.countReportsSince }));
 vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getHiveMember }));
 
 import tool from './report';
@@ -37,6 +38,7 @@ beforeEach(() => {
   h.getHivePolicy.mockResolvedValue({ policy: { moderation: { reportable: true } } });
   h.resolveLocalGithubIdentity.mockResolvedValue({ kind: 'ok', githubUserId: 123, githubLogin: 'alice' });
   h.getHiveMember.mockResolvedValue({ githubUserId: 123, bindingStatus: 'verified' });
+  h.countReportsSince.mockResolvedValue(0);
   h.fileReport.mockImplementation(async (input) => ({
     ...input,
     reportId: 'r-1',
@@ -169,6 +171,32 @@ describe('hive:report handler (member-filed moderation reports)', () => {
     const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
     expect(b).toMatchObject({ ok: false, code: 'not_a_member' });
     expect(h.fileReport).not.toHaveBeenCalled();
+  });
+
+  it('WI-567: report-spam vector — reporter at the rate limit is rejected before fileReport is called', async () => {
+    h.countReportsSince.mockResolvedValue(20);
+    const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: false, code: 'rate_limited' });
+    expect(h.fileReport).not.toHaveBeenCalled();
+  });
+
+  it('WI-567: reporter just under the rate limit is still allowed', async () => {
+    h.countReportsSince.mockResolvedValue(19);
+    const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: true });
+    expect(h.fileReport).toHaveBeenCalled();
+  });
+
+  it('WI-567: rate-limit lookup checks the CURRENT reporter + hive, not a stale scope', async () => {
+    await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(h.countReportsSince).toHaveBeenCalledWith('default', 'sheets', 123, expect.any(Number));
+  });
+
+  it('WI-567: a rate-limit lookup error fails OPEN (abuse guard, not a correctness gate)', async () => {
+    h.countReportsSince.mockRejectedValue(new Error('db unavailable'));
+    const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });
+    expect(b).toMatchObject({ ok: true });
+    expect(h.fileReport).toHaveBeenCalled();
   });
 
   it('self-report allowed (member can report own content)', async () => {

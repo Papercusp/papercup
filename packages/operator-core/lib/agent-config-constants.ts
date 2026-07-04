@@ -267,14 +267,17 @@ export interface CloudModelSpecResult {
 }
 
 /**
- * Validate a hand-typed CLOUD `--model` spec, catching the two malformed-alias
+ * Validate a hand-typed CLOUD `--model` spec, catching the malformed-alias
  * classes that otherwise reach the CLI as an unrunnable model and fail the launch
  * with NO useful hint (WI-1979):
  *   (1) a psu-INTERNAL `[1m]` 1M-window marker typed as INPUT on a bare non-family
  *       alias (`fabel5[1m]`) — psu APPENDS `[1m]` (see normalizeModelSpec); it is
  *       never something you type;
  *   (2) a bare short cloud alias that is a CLOSE misspelling of a known one
- *       (`fabel`→fable, `sonet`, `sonnet5`, `opus4`).
+ *       (`fabel`→fable, `sonet`, `sonnet5`, `opus4`);
+ *   (3) a known alias glued or dash/dot-separated to a version — `sonnet-5`,
+ *       `opus-4.8`, `haiku-4` — the marketing name typed instead of the bare alias
+ *       (or a full `claude-…` id). The single most common agent typo.
  * Deliberately LENIENT — cloud model ids are an OPEN set (the CLI/gateway own the
  * canonical list). It only inspects values that unambiguously look like a bare short
  * alias (pure letters, or letters+digits). A dashed/dotted/slashed/versioned id
@@ -301,6 +304,23 @@ export function validateCloudModelSpec(spec?: string | null): CloudModelSpecResu
   const isPure = /^[a-z]+$/i.test(core); // opus, fabel
   const isLettersDigits = /^[a-z]+[0-9]+$/i.test(core); // fabel5, sonnet5, o3
   if (isPure && (KNOWN_CLOUD_ALIASES as readonly string[]).includes(core.toLowerCase())) return { ok: true };
+  // (3) a known alias glued or dash/dot-separated to a version — `sonnet-5`, `opus-4.8`, `haiku-4`,
+  //     `sonnet5` — the marketing name typed instead of the BARE alias (or a full id). The single most
+  //     common malformed spec agents produce: psu resolves the bare alias to the latest generation and
+  //     appends [1m], so `sonnet-5` reaches the CLI as an unrunnable id. A genuine full id starts with a
+  //     VENDOR prefix (`claude-…`, `anthropic.…`), never a bare alias, so it is unaffected — checked HERE,
+  //     BEFORE the dash/version passthrough below that would otherwise wave `sonnet-5` through as a full id.
+  const aliasVer = core.toLowerCase().match(/^(opus|sonnet|haiku|fable)(?=[-.]?[0-9])/);
+  if (aliasVer) {
+    const fam = aliasVer[1];
+    return {
+      ok: false,
+      message:
+        `\`${s}\` is not a recognized model spec. Did you mean \`${effort ? `${fam}:${effort}` : fam}\`? ` +
+        `Type the BARE alias (${KNOWN_CLOUD_ALIASES.join('/')}) — psu resolves it to the latest generation, appending the [1m] 1M-context window — ` +
+        `not a versioned shorthand; pin a specific generation only as a full id (e.g. claude-${fam}-5).`,
+    };
+  }
   // A full/provider id (dashes/dots/slashes/version) is NOT alias-shaped → open set, pass —
   // including a legit '[1m]' round-trip on a full id (e.g. 'claude-fable-5[1m]').
   if (!isPure && !isLettersDigits) return { ok: true };

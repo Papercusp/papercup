@@ -205,6 +205,64 @@ input,
   background: rgba(3, 8, 16, 0.55);
 }
 
+/* Admonitions / callouts (Starlight asides).
+ *
+ * The frost theme overrides Starlight's gray/accent scale but NOT the per-hue
+ * palette vars (--sl-color-orange-low/-high, red, green, blue) that asides use
+ * for their background + title. Under the forced-dark scheme those hue-lows
+ * stay LIGHT, so a caution/"Superseded" callout renders near-white title text
+ * on a light background — unreadable (reported live 2026-07-04). Give every
+ * aside an explicit dark frost panel with readable light text and a per-type
+ * accent, independent of the hue vars. */
+.sl-markdown-content .starlight-aside {
+  background: rgba(7, 16, 29, 0.92) !important;
+  border-radius: 8px;
+  color: var(--docs-text-soft) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 12px 34px rgba(0, 0, 0, 0.28);
+}
+.sl-markdown-content .starlight-aside__title {
+  color: var(--docs-accent-soft) !important;
+}
+.sl-markdown-content .starlight-aside__content,
+.sl-markdown-content .starlight-aside__content :where(p, li, td, th, span, em) {
+  color: var(--docs-text-soft) !important;
+}
+.sl-markdown-content .starlight-aside__content strong {
+  color: #f4fbff !important;
+}
+.sl-markdown-content .starlight-aside a {
+  color: var(--docs-accent-soft) !important;
+}
+.sl-markdown-content .starlight-aside :not(pre) > code {
+  color: #eaf7ff !important;
+  background: rgba(56, 189, 252, 0.16) !important;
+  border-color: rgba(125, 211, 252, 0.24) !important;
+}
+/* Per-type accent (left border + title tint). */
+.sl-markdown-content .starlight-aside--note {
+  border-color: var(--docs-accent) !important;
+}
+.sl-markdown-content .starlight-aside--tip {
+  border-color: #34d399 !important;
+}
+.sl-markdown-content .starlight-aside--tip .starlight-aside__title {
+  color: #6ee7b7 !important;
+}
+.sl-markdown-content .starlight-aside--caution {
+  border-color: #fbbf24 !important;
+}
+.sl-markdown-content .starlight-aside--caution .starlight-aside__title {
+  color: #fcd34d !important;
+}
+.sl-markdown-content .starlight-aside--danger {
+  border-color: #fb7185 !important;
+}
+.sl-markdown-content .starlight-aside--danger .starlight-aside__title {
+  color: #fda4af !important;
+}
+
 @media (max-width: 768px) {
   .sl-markdown-content h1 {
     font-size: 2.25rem;

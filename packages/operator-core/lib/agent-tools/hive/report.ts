@@ -12,13 +12,21 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
-import { fileReport } from '../../hive-reports-store';
+import { fileReport, countReportsSince } from '../../hive-reports-store';
 import { getHiveMember } from '../../hive-membership-store';
 import { softText, clampText, LIMITS } from '../limits';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
+
+// WI-567 (report-spam abuse vector): cap how many reports one reporter can file in a
+// Hive within a rolling window. Fixed, generous constants (not policy-configurable —
+// no brief calls for owner tuning) so a scripted report-flood can't drown a real
+// moderation queue; a legitimate reporter filing a handful of distinct reports never
+// hits this.
+const REPORT_RATE_LIMIT_MAX = 20;
+const REPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 
 export default defineTool({
   name: 'hive:report',
@@ -75,6 +83,23 @@ export default defineTool({
         ok: false,
         code: 'not_a_member',
         detail: 'you are not an admitted member of this Hive (left, banned, or never joined) — only admitted members may file reports',
+      });
+    }
+
+    // WI-567 (report-spam abuse vector): rate-gate before writing. Fail OPEN on a
+    // count-lookup error (never let a transient store fault block a legitimate
+    // report — this is an abuse guard, not a correctness gate).
+    const recentCount = await countReportsSince(
+      workspaceId,
+      args.hive,
+      identity.githubUserId,
+      Date.now() - REPORT_RATE_LIMIT_WINDOW_MS,
+    ).catch(() => 0);
+    if (recentCount >= REPORT_RATE_LIMIT_MAX) {
+      return text({
+        ok: false,
+        code: 'rate_limited',
+        detail: `you have filed ${recentCount} reports in this Hive in the last ${REPORT_RATE_LIMIT_WINDOW_MS / 60000} minutes (limit ${REPORT_RATE_LIMIT_MAX}) — wait before filing more`,
       });
     }
 

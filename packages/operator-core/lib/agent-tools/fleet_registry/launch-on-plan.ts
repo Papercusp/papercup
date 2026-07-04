@@ -450,7 +450,8 @@ export default defineTool({
       // windows that each die at psu boot with no useful hint. Mirror psu-launcher's validateModelSpec
       // at the TOOL BOUNDARY so the leader's call fails cleanly, BEFORE any window opens. Local/ornith
       // specs return ok:true here (fuzzyEnum owns those); the check is deliberately lenient on the open
-      // cloud id set — it only rejects the two unambiguous malformed classes.
+      // cloud id set — it only rejects the unambiguous malformed classes (incl. the `sonnet-5`
+      // versioned-shorthand leak, the most common agent typo).
       .superRefine((value, ctx) => {
         const v = validateCloudModelSpec(value);
         if (!v.ok) {
@@ -462,7 +463,8 @@ export default defineTool({
         'psu --model: a per-member model spec, e.g. "opus:high" (default the role/tier default). A ' +
           'LOCAL/gateway model (ollama-cc/…, ornith) is fuzzy-validated against the registered local ' +
           'backends — an invalid id returns the nearest registered model + the allowed list (generic-' +
-          'tool-arg-fuzzy-validation). A non-local model (claude/codex alias) is an open set, unchecked.',
+          'tool-arg-fuzzy-validation). A non-local (claude/codex) alias is the open set — full ids pass, ' +
+          'but a malformed alias (a versioned shorthand like `sonnet-5`, or a typo) is caught + corrected.',
       ),
     feature: z.string().optional().describe('psu --feature: a feature id each member should pick up.'),
     launchContext: z

@@ -1765,6 +1765,94 @@ export function resetReflexiveBlockBudget(): void {
   _reflexiveBlockCount = 0;
 }
 
+// ── Stall watchdog (ornith failure mode #5, 2026-07-04 / WI-2382) ──────
+/** The doom-loop guards (eval/curl/irc/ask + the generic consecutive-identical
+ *  breaker) all catch a RAPID loop — a session firing a disabled/wrong call over
+ *  and over. iter17 surfaced the OPPOSITE failure: an ornith IQ3_M leader made a
+ *  few tool calls, then WEDGED — its transcript froze for 7.5+ min, the process
+ *  alive but sleeping (Ssl+), no tool activity, never routing. A per-call guard
+ *  cannot see SILENCE (there is no call to inspect), so a stall hangs
+ *  indefinitely and needs a manual kill — worse for an autonomous campaign than a
+ *  loop (which now self-terminates). This is a HEARTBEAT watchdog: every hook
+ *  event (session_start / turn_start / turn_end / tool_call / tool_result) POKES
+ *  it, rearming a countdown; if NO event fires for STALL_WATCHDOG_MS the session
+ *  is wedged → structural halt (same lever + fast-relaunch rationale as the
+ *  doom-loop halts). Three correctness properties:
+ *   1. The timer is unref()'d, so it NEVER holds an otherwise-finished process
+ *      open (a finished session should exit, not be held alive then falsely
+ *      "stall-halted"). It can only fire while the event loop is alive for
+ *      ANOTHER reason — a wedged session awaiting model output that never
+ *      comes — which is exactly the stall.
+ *   2. In-flight awareness: a long but LEGIT tool (a big build/test in Bash)
+ *      produces the same silence as a wedge. tool_call/tool_result track whether
+ *      a tool is executing; while one is, the timeout EXTENDS instead of halting
+ *      — bounded by STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS so a genuinely hung
+ *      tool still halts (never regresses to an unbounded hang), just later.
+ *   3. isAgentSession-gated inside the poke (defense-in-depth, not reliant on
+ *      every call site): an owner may idle a session forever — never watchdog'd.
+ *  Client-side omp `-e` hook ⇒ LIVE for the next omp launch, no deploy/flag dep. */
+export const STALL_WATCHDOG_MS = 6 * 60 * 1000; // 6 min of between-events silence ⇒ wedged. ~9× a typical IQ3_M turn, well above the slowest legit generation. Tunable.
+/** A legit long-running tool gets up to this many extra STALL_WATCHDOG_MS windows
+ *  (in-flight) before we halt anyway — so a build/test that runs several minutes
+ *  is not killed, but a hung tool still terminates (at (1+N)×the window). */
+export const STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS = 3;
+let _stallTimer: ReturnType<typeof setTimeout> | null = null;
+let _stallToolInFlight = false;
+let _stallInflightExtensions = 0;
+
+/** Record whether a tool is currently executing — set true at tool_call, false at
+ *  tool_result. Read only by the (agent-only) armed timer to decide extend-vs-halt;
+ *  a no-op flag in a session that never arms the watchdog. */
+export function noteStallToolInFlight(inFlight: boolean): void {
+  _stallToolInFlight = inFlight;
+}
+
+/** The countdown elapsed with no intervening hook event. If a tool is genuinely
+ *  in flight, extend (bounded) rather than kill a slow-but-legit build; otherwise
+ *  the session is wedged between events (the iter17 failure) → structural halt. */
+function _onStallWatchdogTimeout(): void {
+  if (_stallToolInFlight && _stallInflightExtensions < STALL_WATCHDOG_MAX_INFLIGHT_EXTENSIONS) {
+    _stallInflightExtensions += 1;
+    _stallTimer = setTimeout(_onStallWatchdogTimeout, STALL_WATCHDOG_MS);
+    if (typeof _stallTimer.unref === 'function') _stallTimer.unref();
+    return;
+  }
+  const elapsedS = Math.round((STALL_WATCHDOG_MS * (1 + _stallInflightExtensions)) / 1000);
+  _stallTimer = null;
+  _haltRunawaySession(
+    `stall-watchdog: no hook activity for ${elapsedS}s — session wedged ` +
+      `(a stall, not a loop — the doom-loop halts cannot see silence)`,
+  );
+}
+
+/** (Re)arm the stall watchdog. Called at the top of every hook event: any event
+ *  means the session is progressing, so clear the pending countdown and start a
+ *  fresh one, resetting the in-flight extension budget. isAgentSession-gated — an
+ *  owner session is never armed (so never halted). The timer is unref()'d so it
+ *  never keeps the process alive on its own. */
+export function pokeStallWatchdog(): void {
+  if (!isAgentSession()) return;
+  if (_stallTimer) clearTimeout(_stallTimer);
+  _stallInflightExtensions = 0;
+  _stallTimer = setTimeout(_onStallWatchdogTimeout, STALL_WATCHDOG_MS);
+  if (typeof _stallTimer.unref === 'function') _stallTimer.unref();
+}
+
+/** Clear the watchdog — on clean session_shutdown and as a test-cleanup seam. */
+export function disarmStallWatchdog(): void {
+  if (_stallTimer) {
+    clearTimeout(_stallTimer);
+    _stallTimer = null;
+  }
+  _stallToolInFlight = false;
+  _stallInflightExtensions = 0;
+}
+
+/** Test seam: is the watchdog currently armed? (Assert arm/disarm without waiting.) */
+export function _stallWatchdogArmed(): boolean {
+  return _stallTimer !== null;
+}
+
 /** The redirect returned when an agent session invokes `eval`. Forces the model back
  *  onto the native tool / tools:invoke / Bash triad it actually has. ESCALATES once the
  *  session has ignored the block more than EVAL_BLOCK_ESCALATE_AFTER times: a weak model
@@ -2389,6 +2477,7 @@ const ORIENTATION_PRIMER = [
 
 export default function register(pi: HookApi): void {
   pi.on('session_start', async (_event, ctx) => {
+    pokeStallWatchdog(); // heartbeat: arm the stall watchdog at the very first event
     await safe(() => onSessionStart(ctx), undefined);
     // WS4 orientation primer — inject once, model-facing (display:false,
     // attribution:'agent' = not billed to the user), same channel as the
@@ -2406,6 +2495,7 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('turn_start', async (_event, ctx) => {
+    pokeStallWatchdog(); // heartbeat: a new turn ⇒ the session is progressing
     // Scope the doom-loop breaker's consecutive-repeat run to this turn (a loop is
     // emitted inside one turn; a legit re-call across two turns must not accrue).
     resetToolCallLoopState();

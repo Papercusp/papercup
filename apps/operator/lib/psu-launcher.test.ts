@@ -1652,6 +1652,21 @@ describe('validateModelSpec + --model guard (WI-1979 — reject a malformed mode
       expect(r.message, bad).toContain(want);
     }
   });
+  it('rejects the alias-glued-to-version shorthand (sonnet-5 / opus-4.8 / haiku-4) — the common leak that reached the CLI as an unrunnable id', () => {
+    for (const [bad, want] of [
+      ['sonnet-5', 'sonnet'], ['sonnet-5:high', 'sonnet:high'], ['opus-4.8', 'opus'],
+      ['haiku-4', 'haiku'], ['fable-5:xhigh', 'fable:xhigh'], ['opus-4-8', 'opus'], ['sonnet5', 'sonnet'],
+    ] as const) {
+      const r = validateModelSpec(bad);
+      expect(r.ok, bad).toBe(false);
+      expect(r.message, bad).toContain(want);
+    }
+  });
+  it('keeps genuine full/versioned ids valid (claude-<fam>-<ver>) — the vendor prefix distinguishes them from the bare-alias shorthand', () => {
+    for (const s of ['claude-sonnet-5', 'claude-sonnet-5:high', 'claude-opus-4-8', 'claude-fable-5[1m]']) {
+      expect(validateModelSpec(s).ok, s).toBe(true);
+    }
+  });
   it('parseArgs THROWS the corrective error for --model=fabel5[1m] (covers every launch path)', () => {
     expect(() => parseArgs(['--model=fabel5[1m]'])).toThrow(/fable/);
   });
@@ -1671,12 +1686,14 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
     // valid
     'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
     'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
-    'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    'claude-sonnet-5:high', 'claude-opus-4-8', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
     'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
     // plausible-unknown (pass)
     'o3', 'gpt4', 'grok',
     // rejected
     'fabel5[1m]', 'fabel', 'sonet', 'sonnet5', 'opus4', 'opuss', 'fabel5:xhigh', 'opus[1m]x',
+    // rejected: alias-glued-to-version shorthand (the sonnet-5 leak this guard closes)
+    'sonnet-5', 'sonnet-5:high', 'opus-4.8', 'haiku-4', 'fable-5:xhigh', 'opus-4-8',
   ];
   it('the two copies return an identical { ok, message } for every spec', () => {
     for (const s of VECTORS) {

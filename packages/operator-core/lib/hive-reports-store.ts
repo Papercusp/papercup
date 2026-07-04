@@ -154,6 +154,28 @@ export async function listReports(
   return rows.map(rowToRecord);
 }
 
+/**
+ * Count reports filed by one reporter in a Hive since `sinceMs` (epoch ms) —
+ * WI-567 (report-spam abuse vector): the caller (hive:report) uses this to rate-gate
+ * a single reporter hammering the queue. Counts across ALL statuses (a spammer
+ * dismissed-and-refiled still consumed queue attention).
+ */
+export async function countReportsSince(
+  workspaceId: string,
+  hiveHomeSlug: string,
+  reporterGithubUserId: number,
+  sinceMs: number,
+  sql?: Sql,
+): Promise<number> {
+  const rows = (await pg(sql).unsafe(
+    `SELECT count(*)::int AS n FROM harness_shared.hive_reports
+      WHERE workspace_id = $1 AND harness_slug = $2 AND reporter_github_user_id = $3
+        AND created_at >= $4`,
+    [workspaceId, hiveHomeSlug, reporterGithubUserId, sinceMs],
+  )) as unknown as Array<{ n: number }>;
+  return rows[0]?.n ?? 0;
+}
+
 /** Owner resolves a report ('actioned' | 'dismissed'). Federates back. */
 export async function setReportStatus(
   workspaceId: string,
