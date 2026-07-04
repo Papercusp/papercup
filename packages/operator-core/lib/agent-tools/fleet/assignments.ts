@@ -16,11 +16,18 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
 import {
+  fetchWakeability,
+  deriveSessionState,
+  type SessionState,
+  type WakeabilitySignals,
+} from '../coordination/presence-wakeability';
+import {
   groupByAgent,
   listFleetAssignments,
   orphanedClaims,
   stalledClaims,
   summarizeOrphan,
+  type AgentAssignment,
 } from '../../fleet/assignments';
 import {
   getAllPlanItemCoverage,
@@ -138,9 +145,31 @@ export default defineTool({
       harness: args.harness,
       activeOnly: !args.include_lapsed,
     });
-    const agents = groupByAgent(rows).filter(
-      (g) => args.include_stale || g.claims.length > 0 || g.alive,
-    );
+    const agentsRaw: (AgentAssignment & { sessionState?: SessionState | null })[] =
+      groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
+    // EI-6077: `alive` above is heartbeat-freshness only (EI-6374 already downgrades
+    // it for a CONFIRMED-ended session, but a session that is simply not
+    // coord-wakeable — no live `coord:inbox-wake:<id>` await, e.g. it never
+    // registered one — still read `alive:true` here while coord:dispatch/coord:send
+    // could not actually reach it). Port the SAME reconciliation fleet:status
+    // already applies (EI-5858, fleet/fleet-roster.ts foldFleetRoster): derive
+    // `sessionState` from wakeability and gate `alive` on it, so the two "who's
+    // running" tools agree instead of leaving the Queen to notice the mismatch by
+    // cross-calling both. Best-effort — a query failure just leaves today's
+    // heartbeat-only `alive` and an absent `sessionState` (state unknown).
+    try {
+      const wakeability = await fetchWakeability(agentsRaw.map((a) => a.agentId));
+      for (const a of agentsRaw) {
+        const w: WakeabilitySignals | undefined = wakeability.get(a.agentId);
+        if (!w) continue;
+        const sessionState = deriveSessionState({ stale: !a.alive, wakeable: w.wakeable, liveTurn: w.liveTurn });
+        a.sessionState = sessionState;
+        if (sessionState === 'ended') a.alive = false;
+      }
+    } catch {
+      // Non-fatal — omit sessionState, keep heartbeat-only alive (today's behavior).
+    }
+    const agents = agentsRaw;
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so

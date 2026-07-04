@@ -397,9 +397,14 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
   if (process.env.PAPERCUSP_INFRA_LIVENESS_ALARM === '0') return { stop() {} };
   const envMs = Number(process.env.PAPERCUSP_INFRA_LIVENESS_ALARM_MS);
   const intervalMs = opts.intervalMs ?? (Number.isFinite(envMs) && envMs > 0 ? envMs : DEFAULT_INTERVAL_MS);
-  const timer = managedSetInterval('liveness-alarm', intervalMs, () => runLivenessAlarmTick().catch(() => {}), {
-    category: 'watchdog',
-  });
+  // .then(() => undefined) narrows to Promise<void> for the registry WITHOUT hiding the
+  // promise — a tick that looked synchronous would release the re-entrancy guard early.
+  const timer = managedSetInterval(
+    'liveness-alarm',
+    intervalMs,
+    () => runLivenessAlarmTick().then(() => undefined, () => undefined),
+    { category: 'watchdog' },
+  );
   return {
     stop() {
       timer.stop();

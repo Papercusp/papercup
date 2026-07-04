@@ -208,7 +208,7 @@ describe('restart-resume via PG-cursor (WI-2105 — the REV-leg fix)', () => {
     const result = await mergeAdmittedLogsIncremental([fakeLog('logA', ops)], cursor, {
       getTimeoutMs: 0,
       applyImpl: async (op: OpEnvelope) => {
-        applied.push(op.hbKey);
+        applied.push(op.hbKey ?? '');
         return true;
       },
     });

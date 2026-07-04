@@ -63,3 +63,33 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
     expect(tokensFromFileSize(join(dir, 'nope.jsonl'))).toBeNull();
   });
 });
+
+describe('newestTranscriptUnderOwner (P-016 resume-rotation / dark-cohort fallback)', () => {
+  const base = mkdtempSync(join(tmpdir(), 'compaction-owner-'));
+  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  const OWNER = 'su-11111111-2222-3333-4444-555555555555';
+  const projDir = join(base, OWNER, 'projects', '-home-x-papercusp');
+
+  it('picks the NEWEST session *.jsonl under the owner root, ignoring history.jsonl', () => {
+    mkdirSync(projDir, { recursive: true });
+    const older = join(projDir, 'aaaa1111-1111-1111-1111-111111111111.jsonl');
+    const newer = join(projDir, 'bbbb2222-2222-2222-2222-222222222222.jsonl');
+    const hist = join(projDir, 'history.jsonl');
+    writeFileSync(older, 'x');
+    writeFileSync(newer, 'y');
+    writeFileSync(hist, 'z'.repeat(4096)); // bigger + newest mtime, but must be excluded
+    utimesSync(older, new Date(1_000_000), new Date(1_000_000));
+    utimesSync(newer, new Date(2_000_000), new Date(2_000_000));
+    utimesSync(hist, new Date(3_000_000), new Date(3_000_000));
+    expect(newestTranscriptUnderOwner(OWNER, base)).toBe(newer);
+  });
+
+  it('returns null when the owner root holds no session transcript', () => {
+    expect(newestTranscriptUnderOwner('su-99999999-0000-0000-0000-000000000000', base)).toBeNull();
+  });
+
+  it('refuses a path-escaping owner id', () => {
+    expect(newestTranscriptUnderOwner('../../etc', base)).toBeNull();
+    expect(newestTranscriptUnderOwner('a/b', base)).toBeNull();
+  });
+});
