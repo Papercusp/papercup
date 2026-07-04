@@ -331,6 +331,71 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
   });
 });
 
+describe('live-config reach (agent-managed-compaction P-017)', () => {
+  it('lowers a stale-above-cap limit on a running MEMBER to the current shaped default (300k)', async () => {
+    estimateMock.mockResolvedValue(40_000); // under the new limit ⇒ no force
+    specMock.mockResolvedValue('sonnet[1m]:high');
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          { owner_id: 'stale', owner_label: 'su · stale', compaction_limit: 500_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+        ],
+      }),
+    );
+    expect(setLimitMock).toHaveBeenCalledWith('stale', 300_000);
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 300_000 }]);
+    expect(out.overLimit).toEqual([]); // 40k < the corrected 300k
+  });
+
+  it('a leader/solo stale limit is lowered to the leader cap (400k), not the member 300k', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    specMock.mockResolvedValue('opus[1m]');
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          { owner_id: 'lead', owner_label: 'su · lead', compaction_limit: 500_000, fleet_slug: 'backlog-clearance', fleet_role: 'leader' },
+          { owner_id: 'solo', owner_label: 'su · solo', compaction_limit: 500_000, fleet_slug: null, fleet_role: null },
+        ],
+      }),
+    );
+    expect(setLimitMock).toHaveBeenCalledWith('lead', 400_000);
+    expect(setLimitMock).toHaveBeenCalledWith('solo', 400_000);
+    expect(out.relimited.map((r) => r.to)).toEqual([400_000, 400_000]);
+  });
+
+  it('does NOT touch a limit AT/BELOW the cap (respects a valid explicit override; no spec resolution)', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          { owner_id: 'ok', owner_label: 'su · ok', compaction_limit: 300_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+          { owner_id: 'atcap', owner_label: 'su · atcap', compaction_limit: 400_000, fleet_slug: null, fleet_role: null },
+        ],
+      }),
+    );
+    expect(out.relimited).toEqual([]);
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(specMock).not.toHaveBeenCalled(); // cheap >cap gate skipped the spec resolution entirely
+  });
+
+  it('a re-limit CASCADES: a now-over session (est between old & new limit) force-compacts the same pass', async () => {
+    estimateMock.mockResolvedValue(450_000); // < old 500k (was safe) but ≥ the new 300k
+    specMock.mockResolvedValue('sonnet[1m]');
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/stale.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          { owner_id: 'stale', owner_label: 'su · stale', compaction_limit: 500_000, fleet_slug: 'backlog-clearance', fleet_role: 'member' },
+        ],
+      }),
+    );
+    expect(out.relimited).toEqual([{ owner: 'stale', from: 500_000, to: 300_000 }]);
+    expect(out.overLimit).toEqual(['stale']); // 450k ≥ the corrected 300k
+    expect(out.forceCompacted).toEqual(['stale']); // and the P-012 rung fires on the corrected limit
+  });
+});
+
 describe('context-death detector (context-trimming-tiers P-019)', () => {
   it('a "Prompt is too long" transcript raises ONE blocker escalation, deduped across passes', async () => {
     resetContextDeathEscalationsForTests();
