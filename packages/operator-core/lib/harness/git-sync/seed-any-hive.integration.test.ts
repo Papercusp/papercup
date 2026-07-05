@@ -214,6 +214,8 @@ const metaOf = (row: Row | undefined): Record<string, unknown> =>
 
 beforeAll(async () => {
   db = await createOrgTestDb();
+  // eslint-disable-next-line no-console -- TEMP DIAGNOSTIC, will be removed
+  console.error('DIAG db.adminDsn=', db.adminDsn, 'PGBOUNCER=', process.env.PAPERCUSP_PGBOUNCER);
 
   // Env-route EVERY production connection at the migrated throwaway DB
   // (the _baseline-coord-fixture pattern): getOrgPg() (admin role) and the
@@ -229,6 +231,8 @@ beforeAll(async () => {
   _resetHarnessAdminUrlCacheForTests();
   await resetDbOrgPools();
   await resetLocksPools();
+  // eslint-disable-next-line no-console -- TEMP DIAGNOSTIC, will be removed
+  console.error('DIAG post-reset PGBOUNCER=', process.env.PAPERCUSP_PGBOUNCER);
 
   tmpRoot = await mkdtemp(join(tmpdir(), 'gsah-it-'));
 }, 180_000);

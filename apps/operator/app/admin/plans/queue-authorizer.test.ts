@@ -75,11 +75,14 @@ describe('whyLine (P-005)', () => {
   });
 
   it('routes queen-eligible items with their reason', () => {
+    // Copy routes through the bound lexicon (restore-pot-lexicon P-007) — assert
+    // the SAME routed key, never a hardcoded cast name (t('brain') → "Mug" under
+    // the classic/public pack; the-hive pack renders "Brain").
     expect(whyLine(mk({ id: 'c', authorizer: 'queen-eligible', whyGated: 'unarmed' }), t)).toBe(
-      "the Brain could take this · the Brain isn't armed yet",
+      `the ${t('brain')} could take this · the ${t('brain')} isn't armed yet`,
     );
     expect(whyLine(mk({ id: 'd', authorizer: 'queen-eligible', whyGated: 'above-ceiling' }), t)).toBe(
-      "the Brain could take this · above the Brain's autonomy ceiling",
+      `the ${t('brain')} could take this · above the ${t('brain')}'s autonomy ceiling`,
     );
   });
 
