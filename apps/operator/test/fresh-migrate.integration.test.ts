@@ -22,6 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
+// eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path publication DDL
+import { ensureZeroHarnessPublication } from '../../../libs/papercusp/packages/embedded-postgres-server/src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');

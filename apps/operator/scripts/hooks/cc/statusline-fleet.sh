@@ -273,6 +273,24 @@ def loop_part(g):
     return f'⟳ {fmt_interval(lp.get("intervalSec"))}'
 
 
+def modes_part(g):
+    """The standing-modes chip from the glance payload's `self.modes` (EI-7626 /
+    modes-and-intake-ux P-007): the session's OFFICIAL agent_modes set rendered as
+    `▣ auto+ideate`, so the human sees the standing grants (autonomy dial + overlays)
+    every tick without opening a tool. Distinct glyph from the ▶/⏸ WAKE-GATE chip —
+    'auto' appears in both but means different things (mode grant vs wake delivery).
+    ADDITIVE + FAIL-OPEN: None when absent / empty / old operator."""
+    if not isinstance(g, dict):
+        return None
+    m = (g.get('self') or {}).get('modes')
+    if not isinstance(m, list):
+        return None
+    m = [str(x) for x in m if isinstance(x, str) and x]
+    if not m:
+        return None
+    return '▣ ' + '+'.join(m[:4])
+
+
 def context_part(g):
     """The `ctx N%` context-usage gauge chip from the glance payload's `self.context`
     (agent-managed-compaction P-015): an ambient readout of how full THIS session's context
@@ -566,6 +584,11 @@ parts = ([obj] if obj else []) + lead()
 lpchip = loop_part(glance)
 if lpchip:
     parts.append(lpchip)
+# ▣ <modes> — the session's OFFICIAL standing modes (agent_modes / EI-7626), right
+# after the loop cadence so the autonomy state reads as one cluster.
+modeschip = modes_part(glance)
+if modeschip:
+    parts.append(modeschip)
 # ctx N% — this session's ambient context-usage gauge (agent-managed-compaction P-015),
 # ⚠-prefixed ≥80% so an approaching compaction is visible in the bottom line every tick.
 ctxchip = context_part(glance)

@@ -34,6 +34,7 @@ import { getLoopStatus } from '../../../harness/routines/loop';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getFleet, listFleetsLedBy, resolveFleetScheme } from '../../../agent-fleets-store';
 import { nearestColorSquareEmoji } from '../../../console-color-schemes';
+import { getModes } from '../../../modes/store';
 
 const DEFAULT_ACTIVITY_LIMIT = 12;
 
@@ -193,6 +194,10 @@ export default defineTool({
     // surfaced here so the statusline can render an ambient `ctx N%` segment every tick
     // with NO extra call. null when usage can't be computed (no limit / no estimate).
     let selfContext: { tokens: number; limit: number; pct: number } | null = null;
+    // self.modes — the caller's OFFICIAL standing modes (agent_modes rows, e.g.
+    // ['auto','ideate']), so the statusline/GUI can render mode chips every tick with
+    // NO extra call (EI-7626). Empty when none set. FAIL-OPEN like its siblings.
+    let selfModes: string[] = [];
     try {
       const { ownerId } = resolveAgentIdentity(ctx);
       if (ownerId) {
@@ -259,6 +264,17 @@ export default defineTool({
         } catch {
           selfFleets = []; // fail-open: a fleet-read error never breaks the render
         }
+        // Official modes — own try so a modes-read hiccup never wipes the segments above.
+        try {
+          const wsId =
+            (ctx as { workspaceId?: string }).workspaceId &&
+            (ctx as { workspaceId?: string }).workspaceId !== '*'
+              ? (ctx as { workspaceId?: string }).workspaceId!
+              : activeWorkspaceId();
+          selfModes = (await getModes(wsId, ownerId)).map((m) => m.mode);
+        } catch {
+          selfModes = [];
+        }
       }
     } catch {
       selfObjective = null;
@@ -285,7 +301,7 @@ export default defineTool({
             governor: { anyPaused: governorPaused.length > 0, paused: governorPaused },
             activity,
             tips,
-            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext },
+            self: { objective: selfObjective, loop: selfLoop, fleets: selfFleets, context: selfContext, modes: selfModes },
             // Loud tier marker (D-004): a non-full session sees the smaller
             // activity window is tier-derived (widen via activity_limit /
             // payloadTier:"full").
