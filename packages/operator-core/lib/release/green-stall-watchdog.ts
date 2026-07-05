@@ -147,6 +147,8 @@ export function greenStallEscalationBody(opts: {
   lastFiredMs: number | null;
   lastGreenAt: number | null;
   nowMs: number;
+  /** EI-7505: gate_health.failingTests, when available (verdict-staleness only). */
+  failingTests?: string[];
 }): string {
   return JSON.stringify({
     kind: WATCHDOG_KIND,
@@ -155,7 +157,9 @@ export function greenStallEscalationBody(opts: {
     verdictStale: opts.verdict.verdictStale,
     lastFiredAt: opts.lastFiredMs != null ? new Date(opts.lastFiredMs).toISOString() : null,
     lastGreenAt: opts.lastGreenAt != null ? new Date(opts.lastGreenAt).toISOString() : null,
+    failingTests: (opts.failingTests ?? []).slice(0, 20),
     emitted_at: opts.nowMs,
+    // `verdict.reason` already carries the failing-test suffix (EI-7505) when present.
     detail: `green-checkpoint silent stall (watchdog): ${opts.verdict.reason}. ` +
       `\`main\` is frozen and the in-routine stall detector cannot see this (it runs only when the routine fires). ` +
       `The dead-executor reaper should auto-recover a wedge; if this persists the bg-host / DBOS engine needs a look.`,
@@ -186,7 +190,7 @@ export async function checkGreenStall(
         install_slug: string;
         workspace_id: string;
         last_fired_ms: string | number | null;
-        gh: { lastGreenAt?: number; watchdogAlerted?: boolean } | null;
+        gh: { lastGreenAt?: number; watchdogAlerted?: boolean; failingTests?: string[] } | null;
       }[]
     >`
       SELECT install_slug,
@@ -203,7 +207,10 @@ export async function checkGreenStall(
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const lastGreenAt = row.gh?.lastGreenAt ?? null;
       const watchdogAlerted = row.gh?.watchdogAlerted ?? false;
-      const verdict = evaluateGreenStall({ lastFiredMs, lastGreenAt, watchdogAlerted, routineEngineStale: routineEngine.stale }, now, opts);
+      // EI-7505: gate_health.failingTests, threaded through by trackGateStall
+      // (release-actions.ts) on the last red green-checkpoint tick.
+      const failingTests = row.gh?.failingTests ?? [];
+      const verdict = evaluateGreenStall({ lastFiredMs, lastGreenAt, watchdogAlerted, routineEngineStale: routineEngine.stale, failingTests }, now, opts);
 
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery
@@ -259,6 +266,7 @@ export async function checkGreenStall(
               lastFiredMs,
               lastGreenAt,
               nowMs: now,
+              failingTests,
             })}, ${now}, ${row.workspace_id})
             ON CONFLICT (harness_slug, phase)
             DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;

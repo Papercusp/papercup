@@ -112,3 +112,62 @@ describe('trackGateStall gate_health cross-writer preservation (EI-7472)', () =>
     expect(written!.consecutiveReds).toBe(0);
   });
 });
+
+/**
+ * EI-7505: the green-checkpoint action already parses `failingTests` from the
+ * verdict and passes them into `trackGateStall`, but the function previously
+ * discarded them — the persisted `gate_health` `next` object never carried a
+ * `failingTests` key, forcing a responder to hand-spelunk
+ * `harness_shared.test_runs` (inconclusive — it mixes every agent's local
+ * dev-test runs with the verdict run) during a live deploy-freeze just to see
+ * which test(s) are failing the gate. These tests assert the list is now
+ * persisted on a red tick and cleared on recovery.
+ */
+describe('trackGateStall persists failingTests into gate_health (EI-7505)', () => {
+  it('persists the failing-test list on a RED tick', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error', 'deadbeefcafe', ['pkgA/foo.test.ts', 'pkgB/bar.test.ts']);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.failingTests).toEqual(['pkgA/foo.test.ts', 'pkgB/bar.test.ts']);
+  });
+
+  it('truncates the persisted list to 20 entries', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+    const tests = Array.from({ length: 30 }, (_, i) => `pkg/file-${i}.test.ts`);
+
+    await trackGateStall(ctx, 'error', 'deadbeefcafe', tests);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.failingTests).toHaveLength(20);
+    expect(written!.failingTests).toEqual(tests.slice(0, 20));
+  });
+
+  it('persists an empty list on a RED tick with no failingTests param (never undefined)', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.failingTests).toEqual([]);
+  });
+
+  it('clears failingTests on a GREEN/reset tick (a stale list must not linger past recovery)', async () => {
+    seededGh = {
+      consecutiveReds: 5,
+      stallAlerted: true,
+      lastGreenAt: Date.now() - 60_000,
+      failingTests: ['pkgA/foo.test.ts'],
+    };
+
+    await trackGateStall(ctx, 'advanced');
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.failingTests).toEqual([]);
+  });
+});
