@@ -87,7 +87,12 @@ vi.mock('./console-launcher', () => ({
     mode: 'shell',
   })),
 }));
-vi.mock('./adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+vi.mock('./adv-sessions', () => ({
+  recordAdvSession: recordAdvSessionMock,
+  // bootstrap-su's inbox-wake arm resolves the caller's freshest adv session via
+  // this; missing it made the arm's non-fatal error log trip fail-on-console.
+  latestAdvSessionByCoordOwner: vi.fn(async () => null),
+}));
 vi.mock('./role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
 }));
