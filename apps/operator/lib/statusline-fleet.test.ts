@@ -297,7 +297,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       tips: [],
       self: { objective: null, loop: { active: true, intervalSec: 120, parked: false, reachable: true } },
     });
-    expect(out).toContain('⟳ 2m loop');
+    expect(out).toContain('⟳ 2m');
     expect(out).not.toContain('unreachable');
   });
 
@@ -311,7 +311,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       tips: [],
       self: { objective: null, loop: { active: true, intervalSec: 120, parked: true, reachable: false } },
     });
-    expect(out).toContain('⟳ 2m loop ⚠unreachable');
+    expect(out).toContain('⟳ 2m ⚠unreachable');
   });
 
   it('a loop payload WITHOUT the reachable field (older operator) → plain chip, no scary text', () => {
@@ -324,7 +324,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       tips: [],
       self: { objective: null, loop: { active: true, intervalSec: 1800, parked: false } },
     });
-    expect(out).toContain('⟳ 30m loop');
+    expect(out).toContain('⟳ 30m');
     expect(out).not.toContain('unreachable');
   });
 
