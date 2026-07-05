@@ -130,6 +130,13 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
         origin        TEXT NOT NULL DEFAULT 'local',
         fed_ts        BIGINT,
         fed_hlc       TEXT,
+        -- writeToPg's column list also carries the plan-template + promote-policy
+        -- scalars and the owner-author bind (writer columns added after the stub;
+        -- missing any of them 42703s EVERY per-part write — broke the 2026-07-05 gate).
+        template            TEXT,
+        template_data       JSONB,
+        promote_policy      JSONB,
+        owner_author_pubkey TEXT,
         PRIMARY KEY (workspace_id, harness_slug, plan_slug)
       );
     `);
