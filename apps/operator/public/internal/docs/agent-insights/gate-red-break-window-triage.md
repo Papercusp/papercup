@@ -84,8 +84,10 @@ migration restructures its target (mig 383 dropped 366's trigger; mig 374 made
 * **Quiet-cut**: the run judges the newest commit **≥240s old** — fire too soon after
   your fix commit and the verdict is on the PRE-fix candidate. Wait out the window
   (`until [ $(($(date +%s) - $(git log -1 --format=%ct))) -ge 245 ]; do sleep 15; done`).
-* `checkpoint:await` arms `release:green`/`green-checkpoint:red` **globally** — a wake
-  may be ANOTHER pipeline's verdict. Verify the payload sha is in YOUR repo's lineage
-  (`git merge-base --is-ancestor`) before acting.
+* `checkpoint:await` with no args arms `release:green`/`green-checkpoint:red`
+  **globally** — a wake may be ANOTHER pipeline's verdict (lineage-check
+  `payload.sha`/`payload.pipeline` before acting). Since EI-7646, pass
+  `{ pipeline: 'papercusp' }` (the integration root's basename) to arm the
+  pipeline-scoped keys and wake only on YOUR gate.
 * The gate ABSORBS load-flakes (red under 8-fork load, green on isolated re-run) — an
   absorbed advance lists `flakeSuspects`; don't chase those as real reds.

@@ -1115,3 +1115,12 @@ describe('quiet-cut — never judge a tip younger than the quiet window (2026-07
     expect(r).toMatchObject({ advanced: true, candidate: c3 });
   });
 });
+
+describe('pipelineName (EI-7646 — the pipeline-scoped verdict-key segment)', () => {
+  it('is the sanitized basename of the integration root', async () => {
+    const { pipelineName } = await import('./green-checkpoint');
+    expect(pipelineName('/home/x/papercupai-workspace/papercusp')).toBe('papercusp');
+    expect(pipelineName('/home/x/papercupai-workspace/papercup/')).toBe('papercup');
+    expect(pipelineName('/weird/dir with spaces!')).toBe('dir-with-spaces-');
+  });
+});

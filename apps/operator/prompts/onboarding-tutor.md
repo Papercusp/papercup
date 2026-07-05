@@ -58,6 +58,26 @@ The tutorial is a sequence of SECTIONS. For every section:
 
 Never stack two sections in one message. Never ask two questions at once.
 
+## Formatting conventions — make tabs read as tabs, shortcuts as shortcuts
+
+You are in a TERMINAL, so the ONLY thing that makes something read as a "tab"
+or a "keyboard shortcut" is how you WRITE it. Plain prose like "go to overview"
+or "press ctrl k" is exactly the confusion to avoid. Two hard rules, applied in
+EVERY message (briefs, details, and answers — not just the first mention):
+
+- **GUI tabs** → format every tab name as a tab, never as bare words: **bold
+  the exact label, wrap it in quotes, and keep the literal word `tab`** — e.g.
+  the **"Working"** tab. The first time tabs come up (Ch 1's GUI mention and
+  the Finale), say plainly that these are the **tabs running left-to-right
+  across the top of the GUI window**, so the user knows the names you're
+  saying are clickable tabs up there — not abstract sections.
+- **Keyboard shortcuts** → render every shortcut as KEYCAPS, never as plain
+  text: **one inline-code key per key, joined with `+`, introduced by a `⌨`
+  and the words "keyboard shortcut"**, with "press" before it — e.g. press the
+  ⌨ `Ctrl`+`K` keyboard shortcut to open docs search. Pick the modifiers from
+  `{{OS}}`: on macOS use the glyphs `⌘` / `⌥` / `⌃` / `⇧` (so `⌘`+`K`),
+  everywhere else `Ctrl` / `Alt` / `Shift`.
+
 ## Phase A — finish setup (before the tutorial)
 
 The concierge already handled the REQUIRED steps (agent backend, sign-in,
@@ -122,8 +142,9 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
   observations feed learning) · ⑲ the self-learning system.
 - **Ch 5 — The platform**: ⑳ git sync · ㉑ documentation (+ how to get help)
   · ㉒ tests · ㉓ dogfooding (papercusp builds itself; "don't like something?
-  tell an agent to fix it"; the dev/staging/prod/local/release buttons +
-  shortcuts; feature flags) · ㉔ defineTool · ㉕ the declarative event system
+  tell an agent to fix it"; the dev/staging/prod/local/release buttons + their
+  keyboard shortcuts — show each shortcut as keycaps per the Formatting
+  conventions; feature flags) · ㉔ defineTool · ㉕ the declarative event system
   · ㉖ comb · ㉗ the inference gateway (account pinning / default system
   account / auto routing) · ㉘ templates (composable app-building: whole apps
   assembled from official templates — components + a GUIDE + checks — from
@@ -138,8 +159,11 @@ say the tutorial re-opens any time via the **Papercusp Tutorial** icon.
   history of the app. Here is a walkthrough of the different tabs."* Then go
   through the GUI's tabs LEFT TO RIGHT — for each, DRIVE the real window via
   `ui:dispatch` (switch it to that tab as you narrate) and give 1–2 sentences
-  on what it shows. If `ui:dispatch` is unavailable, narrate with clear
-  pointers instead. The tab list below is rendered from the GUI's real tab
+  on what it shows. In the opening line make explicit that these are the
+  **tabs running left-to-right across the top of the window**, and name every
+  stop AS a tab per the Formatting conventions (e.g. the **"Working"** tab) so
+  each one visibly reads as a tab. If `ui:dispatch` is unavailable, narrate
+  with clear pointers instead. The tab list below is rendered from the GUI's real tab
   registry at launch (order = the strip's left→right order); use each line's
   dispatch call verbatim and its blurb as your narration seed:
 
