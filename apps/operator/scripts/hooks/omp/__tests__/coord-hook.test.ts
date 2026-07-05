@@ -70,6 +70,8 @@ import {
   resetMcpCurlBudget,
   MCP_CURL_BLOCK_KILL_AFTER,
   isMcpToolViaBash,
+  extractMcpToolViaBash,
+  nativeMcpToolName,
   mcpToolViaBashReason,
   MCP_TOOL_VIA_BASH_ESCALATE_AFTER,
   noteMcpToolViaBashBlock,
@@ -926,12 +928,46 @@ describe('isMcpToolViaBash + mcpToolViaBashReason (MCP-tool-via-bash guard, orni
     expect(hard).toContain('STOP');
     expect(hard).toContain(`×${MCP_TOOL_VIA_BASH_ESCALATE_AFTER + 1}`);
   });
+  it('names the EXACT native tool name when the group:verb is known (iter32→33 fix)', () => {
+    // both branches (soft + escalated) must carry the native-name hint
+    const soft = mcpToolViaBashReason(1, 'plans:get');
+    expect(soft).toContain('mcp__papercusp_su_plans_get');
+    expect(soft).toContain('plans:get');
+    const hard = mcpToolViaBashReason(MCP_TOOL_VIA_BASH_ESCALATE_AFTER + 1, 'fleet:launch-on-plan');
+    expect(hard).toContain('mcp__papercusp_su_fleet_launch_on_plan');
+    // without a group:verb the hint is absent (no dangling `mcp__` text)
+    expect(mcpToolViaBashReason(1)).not.toContain('mcp__papercusp_su_');
+  });
   it('noteMcpToolViaBashBlock is session-cumulative and resetMcpToolViaBashBudget clears it', () => {
     resetMcpToolViaBashBudget();
     expect(noteMcpToolViaBashBlock()).toBe(1);
     expect(noteMcpToolViaBashBlock()).toBe(2);
     resetMcpToolViaBashBudget();
     expect(noteMcpToolViaBashBlock()).toBe(1);
+  });
+});
+
+describe('extractMcpToolViaBash + nativeMcpToolName (native-tool-name bridge, WI-2382 iter32→33)', () => {
+  it('extract returns the normalized group:verb for a known MCP group typed as bash', () => {
+    expect(extractMcpToolViaBash('plans:get {slug:"x"}')).toBe('plans:get');
+    expect(extractMcpToolViaBash('cd /tmp && fleet:launch-on-plan --count 2')).toBe('fleet:launch-on-plan');
+    expect(extractMcpToolViaBash('WORK_ITEMS:CLAIM')).toBe('work_items:claim'); // normalized to lowercase
+  });
+  it('extract returns null for non-tool colons and unknown groups (parity with isMcpToolViaBash)', () => {
+    expect(extractMcpToolViaBash("sed 's:a:b:g' file")).toBeNull();
+    expect(extractMcpToolViaBash('time: 5')).toBeNull(); // not a known MCP group
+    expect(extractMcpToolViaBash('echo plans:get')).toBeNull(); // not at command position
+    expect(extractMcpToolViaBash('ls -la')).toBeNull();
+    // isMcpToolViaBash is exactly (extract !== null)
+    expect(isMcpToolViaBash('plans:get')).toBe(extractMcpToolViaBash('plans:get') !== null);
+    expect(isMcpToolViaBash('time: 5')).toBe(extractMcpToolViaBash('time: 5') !== null);
+  });
+  it('nativeMcpToolName flattens group:verb (colon + hyphens → underscores) to the omp-exposed name', () => {
+    expect(nativeMcpToolName('plans:get')).toBe('mcp__papercusp_su_plans_get');
+    expect(nativeMcpToolName('plans:set-status')).toBe('mcp__papercusp_su_plans_set_status');
+    expect(nativeMcpToolName('fleet:launch-on-plan')).toBe('mcp__papercusp_su_fleet_launch_on_plan');
+    expect(nativeMcpToolName('work_items:claim')).toBe('mcp__papercusp_su_work_items_claim');
+    expect(nativeMcpToolName('TOOLS:FIND')).toBe('mcp__papercusp_su_tools_find'); // case-normalized
   });
 });
 
@@ -975,6 +1011,13 @@ describe('onToolCall MCP-tool-via-bash guard (agent sessions only)', () => {
     }
     expect(reason).toContain('STOP');
     expect(reason).toContain('tools:invoke');
+  });
+
+  it('the block reason names the EXACT native tool for the group:verb the model typed (iter32→33 fix)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await bashCall('plans:get {slug:"ornith-comprehension-test-2026-07-04", harness:"papercusp"}');
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('mcp__papercusp_su_plans_get');
   });
 
   it('leaves a legitimate bash command alone', async () => {
