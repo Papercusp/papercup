@@ -206,6 +206,16 @@ beforeAll(async () => {
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.projects (
       slug text PRIMARY KEY, workspace_id text, parent_slug text)`);
+  // resolvePlanScope's registry FALLBACK (EI-1511: projects is the org-blueprint
+  // projection, sparse by design) now reads the AUTHORITATIVE slug→workspace
+  // registry — the harness_registry operator-state row (workspace_id, payload
+  // {projects:[{slug,…}]}, updated_at; operator-state-pg per-key table shape).
+  // Missing it 42P01s the seed-plan write (broke the 2026-07-05 gate). Empty is
+  // fine — the scaffold path registers the child, and an empty registry just
+  // falls through exactly like a no-match.
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_registry (
+      workspace_id text PRIMARY KEY, payload jsonb, updated_at bigint)`);
 }, 90_000);
 
 afterAll(async () => {
