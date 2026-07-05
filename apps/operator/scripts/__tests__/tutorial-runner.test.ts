@@ -194,7 +194,7 @@ describe('renderProgressBar', () => {
 describe('chapterEmoji', () => {
   it('maps known chapters and falls back for unknown', () => {
     expect(chapterEmoji(1)).toBe('🧭');
-    expect(chapterEmoji(3)).toBe('🐝');
+    expect(chapterEmoji(3)).toBe('☕');
     expect(chapterEmoji(99)).toBe('📘');
   });
 });

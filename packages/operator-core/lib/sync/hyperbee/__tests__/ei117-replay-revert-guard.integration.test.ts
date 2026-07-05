@@ -161,6 +161,12 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
       workspaceId: WS,
       harnessSlug: HARNESS,
       sql: db.sql,
+      // EI-117 guards the WHOLE-BLOB LWW revert path — the PLAN_PART_FEDERATION-OFF
+      // branch. With the flag ON (now the production default) writeToPg is bootstrap-
+      // only (ON CONFLICT DO NOTHING; per-part recompose owns updates), which
+      // plan-part-federation-cutover.integration.test.ts covers. Pin OFF here so this
+      // suite keeps exercising the LWW guard instead of trivially passing on DO NOTHING.
+      isFlagOn: () => false,
     });
     writeRemote = (row, ts) =>
       projection.writeToPg(row, { authorPubkey: 'REMOTE-LOG-KEY', origin: 'remote', ts });

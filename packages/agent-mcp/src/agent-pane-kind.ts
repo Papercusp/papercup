@@ -85,7 +85,7 @@ export function classifyAgentPane(input: {
   // role an active brain session carries (BRAIN_PRINCIPAL_ROLE), or the
   // registered `queen` role itself (hive invoke-route launches; EI-286
   // follow-up — before the role was registered the live Queen fell to the bee
-  // arm and glyphed 🐝).
+  // arm and glyphed ☕).
   if (input.launch === 'brain' || role === 'brain' || role === 'queen') {
     return { kind: 'queen', driveMode: 'auto' };
   }

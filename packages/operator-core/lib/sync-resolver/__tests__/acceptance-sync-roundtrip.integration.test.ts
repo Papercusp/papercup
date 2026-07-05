@@ -53,7 +53,11 @@ const h = vi.hoisted(() => ({
 
 // The two connection-injection seams, pointed at the throwaway test DB —
 // same mocks (and only those) as sync-sse-backfill.integration.test.ts.
-vi.mock('../../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.url }));
+vi.mock('../../embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => h.url,
+  // sync-sse now resolves the URL via the source-annotated variant — keep both exports in step.
+  getHarnessAdminUrlWithSource: () => ({ url: h.url, source: 'test-mock' }),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ sql: h.sql, drizzle: h.db, db: h.db }) };

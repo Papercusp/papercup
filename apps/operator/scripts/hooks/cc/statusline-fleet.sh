@@ -3,7 +3,7 @@
 # `coord:glance` (papercusp-worker-integration-2026-06-04 D-005 + the
 # coord-glance combined read, 2026-06-12). Two lines:
 #
-#   🔭 wire objective display · ◇ su-9859e · ⏸ manual ✉2 · 🐝1 · 5 peers · ◆ su-074be ✎ catalog.ts
+#   🔭 wire objective display · ◇ su-9859e · ⏸ manual ✉2 · ☕1 · 5 peers · ◆ su-074be ✎ catalog.ts
 #   💡 Wake mode is manual — 2 staged wakes waiting; … /mcp__papercusp-su__tool:coord:wake-mode mode=auto
 #   ⋯ run /mcp__papercusp-su__tool:coord:glance for detail
 #
@@ -580,7 +580,7 @@ if mode in ('auto', 'manual'):
     glyph = '▶ auto' if mode == 'auto' else '⏸ manual'
     parts.append(glyph + (f' ✉{staged}' if staged else ''))
 if bees:
-    parts.append(f'🐝{bees}')
+    parts.append(f'☕{bees}')
 if gov.get('anyPaused'):
     keys = ','.join(p.get('key', '?') for p in (gov.get('paused') or []))
     parts.append(f'⏳ {keys}'[:40])

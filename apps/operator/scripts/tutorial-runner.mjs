@@ -181,7 +181,7 @@ export const OPTION_LINE =
   '[1] Continue · [2] More details · [s] Search · [m] Menu · [f] Finish · or just type your question';
 
 /** Per-chapter emoji (pure). Falls back to a generic book. */
-export const CHAPTER_EMOJI = { 1: '🧭', 2: '🎯', 3: '🐝', 4: '🧠', 5: '🏗️', 6: '🚧' };
+export const CHAPTER_EMOJI = { 1: '🧭', 2: '🎯', 3: '☕', 4: '🧠', 5: '🏗️', 6: '🚧' };
 export function chapterEmoji(n) {
   return CHAPTER_EMOJI[n] ?? '📘';
 }

@@ -19,7 +19,11 @@ import { getTestPg } from '@papercusp/test-config';
 
 const h = vi.hoisted(() => ({ url: '', sql: null as unknown as import('postgres').Sql }));
 
-vi.mock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => h.url }));
+vi.mock('./embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => h.url,
+  // sync-sse now resolves the URL via the source-annotated variant — keep both exports in step.
+  getHarnessAdminUrlWithSource: () => ({ url: h.url, source: 'test-mock' }),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ sql: h.sql, db: {} }) };

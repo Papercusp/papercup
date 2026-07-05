@@ -18,6 +18,7 @@ const {
   setEstimateMock,
   setLimitMock,
   deathMock,
+  resolveSessionRefMock,
   openEscalationMock,
   getFlagMock,
   findLiveHostMock,
@@ -29,6 +30,9 @@ const {
   setEstimateMock: vi.fn(async () => {}),
   setLimitMock: vi.fn(async () => {}),
   deathMock: vi.fn(async (_owner: string) => false),
+  resolveSessionRefMock: vi.fn(
+    async (_owner: string) => null as null | { agent: string | null; sessionId: string | null },
+  ),
   openEscalationMock: vi.fn(async () => ({ msg_id: 'esc-1' })),
   // P-012 force-compact deps. Defaults keep the EXISTING over-limit tests unaffected:
   // flag ON but NO live host ⇒ maybeForceCompact no-ops (out.forceCompacted stays []).
@@ -41,6 +45,7 @@ vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
+  resolveSessionRef: resolveSessionRefMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
@@ -615,5 +620,28 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.contextDeaths).toEqual(['blind']);
     expect(out.bootConfigAlerts).toEqual([]); // never reached the dark-telemetry counter
+  });
+
+  it('does NOT flag an OMP/Codex session — its null estimate is BY DESIGN, not blindness (WI-2910)', async () => {
+    // OMP self-compacts natively and Codex has no compaction, so estimateContextTokensForOwner
+    // returns null for those agents by design. The watchdog must NOT raise a dark-telemetry
+    // alarm for them (they cannot silently overflow); only genuinely-blind Claude sessions do.
+    const ompSeeded = [{ owner_id: 'omp-sess', owner_label: 'su · omp-sess', compaction_limit: 300_000 }];
+    estimateMock.mockResolvedValue(null);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'omp', sessionId: 's-omp' });
+    openEscalationMock.mockClear();
+    let last;
+    for (let i = 0; i < 5; i++) last = await checkCompactionCompliance(fakeSql({ seeded: ompSeeded }));
+    expect(last!.bootConfigAlerts).toEqual([]); // never flagged despite 5 consecutive null sweeps
+    expect(openEscalationMock).not.toHaveBeenCalled();
+
+    // A codex session is likewise exempt.
+    resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex' });
+    const codexSeeded = [{ owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 300_000 }];
+    for (let i = 0; i < 4; i++) last = await checkCompactionCompliance(fakeSql({ seeded: codexSeeded }));
+    expect(last!.bootConfigAlerts).toEqual([]);
+    expect(openEscalationMock).not.toHaveBeenCalled();
+
+    resolveSessionRefMock.mockResolvedValue(null); // reset default for any later tests
   });
 });

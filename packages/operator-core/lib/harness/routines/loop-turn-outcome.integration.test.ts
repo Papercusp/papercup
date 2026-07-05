@@ -77,8 +77,10 @@ describe('handleLoopResumeTurnExit — real-PG raw-sql legs (P0b/P1a integration
 
     expect(res.handled).toBe(true);
     expect(res.class).toBe('rate_limited');
-    // recordFire got the loop's EXACT fire-gate key (install_slug + name) + 'error'.
-    expect(recordFire).toHaveBeenCalledWith(HARNESS, id, expect.stringContaining('rate_limited'), 'error');
+    // recordFire got the loop's EXACT fire-gate key (install_slug + name). A 429 death
+    // classifies as 'infra-error' (autoloop-classify classifyFireError) — an infra fault,
+    // not a role failure, so it never feeds the failure-streak fire-gate.
+    expect(recordFire).toHaveBeenCalledWith(HARNESS, id, expect.stringContaining('rate_limited'), 'infra-error');
     // The real UPDATE moved it off 'infinity' to ~now + interval (no retry-after in the msg → interval floor).
     const fire = await readFire(id);
     expect(fire.parked).toBe(false);

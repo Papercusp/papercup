@@ -1671,7 +1671,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // fleet:assignments assembly (presence + plan-item claims + work-item claims,
   // claim-primary, with each agent's ordered work-list) filtered to one harness,
   // each agent stamped with its AgentPaneKind so the desktop shares the colony
-  // tab's glyph vocabulary (♛/👁/🐝/🛡/📋/🛠). Role context joins from adv_sessions
+  // tab's glyph vocabulary (♛/👁/☕/🛡/📋/🛠). Role context joins from adv_sessions
   // (queen/sentinel/planner kinds are role-keyed; su falls out of the ownerId
   // prefix). Invalidated via the table bridge from coord_presence /
   // feature_claims / claim_audit / spawned_agents.

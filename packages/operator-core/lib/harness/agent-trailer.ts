@@ -25,7 +25,7 @@ export const AGENT_COAUTHOR_TRAILER = `Co-authored-by: ${PAPERCUSP_BEE_NAME} <${
 
 /** Human-visible one-liner: this PR was opened by an agent on the operator's behalf. */
 export const AGENT_BODY_MARKER =
-  '🐝 Agent-authored by a Papercusp Bee — opened as the human operator; only the agency is marked.';
+  '☕ Agent-authored by a Papercusp Bee — opened as the human operator; only the agency is marked.';
 
 /** True when `body` already carries the agent co-author trailer. */
 export function hasAgentTrailer(body: string): boolean {

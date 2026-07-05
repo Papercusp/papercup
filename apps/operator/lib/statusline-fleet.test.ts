@@ -1,7 +1,7 @@
 /**
  * statusline-fleet.test.ts — the fleet statusline's render logic, driven
  * through the script's PAPERCUSP_STATUSLINE_FIXTURE sync mode (no operator, no
- * token). Asserts the glance render (wake glyph / staged ✉ / 🐝 / governor ⏳ /
+ * token). Asserts the glance render (wake glyph / staged ✉ / ☕ / governor ⏳ /
  * peers / 💡 tip / ⋯ detail-affordance row) and the quiet-state single line.
  */
 import { execFileSync, spawn } from 'node:child_process';
@@ -89,7 +89,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(lines[0]).toContain('◇ su-me');
     expect(lines[0]).toContain('◇ su-me'); // THIS agent's own shorthand id chip
     expect(lines[0]).toContain('⏸ manual ✉2');
-    expect(lines[0]).toContain('🐝1');
+    expect(lines[0]).toContain('☕1');
     expect(lines[0]).toContain('2 peers');
     expect(lines[0]).toContain('◆ aaaaaa ✎ catalog.ts');
     expect(lines[1]).toBe(
@@ -112,7 +112,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).toContain('▶ auto');
     expect(out).toContain('solo');
     expect(out).not.toContain('💡');
-    expect(out).not.toContain('🐝');
+    expect(out).not.toContain('☕');
   });
 
   it('governor pause renders ⏳ with the bucket key', () => {
@@ -147,7 +147,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     );
     const lines = out.split('\n');
     // Code points, not UTF-16 units — python truncates/wraps per code point,
-    // and 💡/🐝 are 2 UTF-16 units each.
+    // and 💡/☕ are 2 UTF-16 units each.
     for (const line of lines) expect([...line].length).toBeLessThanOrEqual(50);
     expect(lines.length).toBeLessThanOrEqual(6); // fleet row + ≤4 tip rows + ⋯ detail row
   });

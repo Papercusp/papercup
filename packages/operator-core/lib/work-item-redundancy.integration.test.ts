@@ -286,8 +286,17 @@ describe('judgeRedundancyGroup — judge each replica, pick + adopt the winner',
     expect(byIdx[b.replica.replicaIndex].judgeComposite).not.toBeNull();
     expect(byIdx[a.replica.replicaIndex].judgeRationale).toBe('weak');
 
-    // Adopted: the item settled to done (alias → passed for feature-family).
-    expect(wm.setWorkItemState).toHaveBeenCalledWith('F-040', 'done', { harness: HARNESS });
+    // Adopted: the item settled to done (alias → passed for feature-family), stamped with
+    // completion provenance (who adopted + the judge's completionRef evidence line).
+    expect(wm.setWorkItemState).toHaveBeenCalledWith(
+      'F-040',
+      'done',
+      expect.objectContaining({
+        harness: HARNESS,
+        by: 'su-b',
+        completionRef: expect.stringContaining('Redundancy judge picked replica'),
+      }),
+    );
   });
 
   // G15 [P1] — DIVERGENCE detection. The "strong beats weak" case above contrasts a
@@ -365,7 +374,15 @@ describe('judgeRedundancyGroup — judge each replica, pick + adopt the winner',
       const byIdx = Object.fromEntries(replicas.map((r) => [r.replicaIndex, r]));
       expect(byIdx[b.replica.replicaIndex].status).toBe('winner');
       expect(byIdx[a.replica.replicaIndex].status).toBe('loser');
-      expect(wm.setWorkItemState).toHaveBeenCalledWith('F-042', 'done', { harness: HARNESS });
+      expect(wm.setWorkItemState).toHaveBeenCalledWith(
+        'F-042',
+        'done',
+        expect.objectContaining({
+          harness: HARNESS,
+          by: 'su-right',
+          completionRef: expect.stringContaining('Redundancy judge picked replica'),
+        }),
+      );
     });
 
     it('the deterministic tie-break is the SAFETY NET, not the decider, on a near-tie', async () => {

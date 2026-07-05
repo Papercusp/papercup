@@ -12,7 +12,7 @@
 > `P-032` hive-backlog layer) and the owner signs off (`P-017`). Items that depend on
 > peer-owned code still shipping are marked **[provisional — confirm against code]**.
 
-> 🐝 **What we benchmark (D-010): the Hive, not the per-task harness.** The subject is
+> ☕ **What we benchmark (D-010): the Hive, not the per-task harness.** The subject is
 > the **Queen + bee fleet** draining a whole backlog. The per-task `coding` run is the
 > **L1 competence floor** and the atomic unit the fleet places. The **headline baseline
 > is the Queen-ablated fleet** (same fleet, naive FIFO scheduler) — *not* the native
