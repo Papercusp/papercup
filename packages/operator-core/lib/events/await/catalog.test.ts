@@ -68,6 +68,13 @@ describe('buildKey', () => {
     expect(buildKey('git-sync', { sha: 'def456' })).toBe('git-sync:committed:def456');
   });
 
+  it('gate-verdict keys scope per pipeline when supplied, global when omitted (EI-7646)', () => {
+    expect(buildKey('checkpoint', {})).toBe('release:green');
+    expect(buildKey('checkpoint', { pipeline: 'papercusp' })).toBe('release:green:papercusp');
+    expect(buildKey('checkpoint-red', {})).toBe('green-checkpoint:red');
+    expect(buildKey('checkpoint-red', { pipeline: 'papercup' })).toBe('green-checkpoint:red:papercup');
+  });
+
   it('a no-param family is a literal key', () => {
     expect(buildKey('checkpoint')).toBe('release:green');
     expect(buildKey('checkpoint-red')).toBe('green-checkpoint:red');

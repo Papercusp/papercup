@@ -92,8 +92,13 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   },
   {
     family: 'checkpoint',
-    keyTemplate: 'release:green',
-    params: [],
+    keyTemplate: 'release:green:<pipeline>',
+    // EI-7646: several pipelines (papercusp operator + papercup dogfood) share the
+    // global key, so a waiter woke on EVERY pipeline's verdict and had to lineage-
+    // check payload.sha by hand each time. The emitter now fires BOTH the global
+    // key and the pipeline-scoped one (basename of its integration root), mirroring
+    // the release:deployed:<sha> precedent (P-102). Omit pipeline → the global key.
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's green (global key)" }],
     describe: 'The green-checkpoint PASSED — the candidate advanced onto main (the gate is green).',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,
@@ -103,8 +108,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
   },
   {
     family: 'checkpoint-red',
-    keyTemplate: 'green-checkpoint:red',
-    params: [],
+    keyTemplate: 'green-checkpoint:red:<pipeline>',
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's red (global key)" }],
     describe: 'The green-checkpoint is HELD — candidate not green (payload.summary = failing-test tail).',
     emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
     exists: true,

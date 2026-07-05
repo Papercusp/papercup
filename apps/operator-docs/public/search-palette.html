@@ -167,40 +167,103 @@
         outline-offset: 2px;
       }
 
-      /* ---- "Ask a question" mode (WI-2844) ---- */
-      /* A slim bar under the search box: keyword search stays the default; this
-         is the shortcut into the agent-answers-from-real-docs Q&A. */
+      /* ---- "Chat with an agent" mode (WI-2844) ----
+         Keyword search stays the DEFAULT; this is the prominent, unmistakable
+         entry into the agent Q&A that answers from the REAL docs with
+         citations. Owner ask (2026-07-05): make the chat affordance obvious —
+         a full-width primary CTA card, not a slim easy-to-miss link. */
       #askbar {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-top: 8px;
+        margin-top: 12px;
         flex: 0 0 auto;
       }
       #ask-btn {
-        background: linear-gradient(180deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.08));
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        text-align: left;
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(56, 189, 248, 0.07));
         border: 1px solid var(--frost-border-strong);
         color: var(--frost-text);
-        border-radius: 9px;
-        padding: 8px 12px;
+        border-radius: 12px;
+        padding: 12px 14px;
         font: inherit;
-        font-size: 13px;
         cursor: pointer;
+        transition:
+          border-color 0.15s ease,
+          box-shadow 0.15s ease,
+          transform 0.05s ease;
       }
       #ask-btn:hover {
         border-color: var(--frost-accent);
+        box-shadow:
+          0 0 0 1px rgba(56, 189, 248, 0.35),
+          0 10px 30px rgba(0, 0, 0, 0.32);
+      }
+      #ask-btn:active {
+        transform: translateY(1px);
+      }
+      .ask-btn__icon {
+        flex: 0 0 auto;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 9px;
+        background: rgba(56, 189, 248, 0.18);
+        border: 1px solid var(--frost-border-strong);
+        font-size: 18px;
+      }
+      .ask-btn__text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .ask-btn__title {
+        font-size: 14px;
+        font-weight: 600;
         color: #f0fbff;
       }
-      .askbar-hint {
-        color: var(--frost-text-muted);
+      .ask-btn__sub {
         font-size: 12px;
+        color: var(--frost-text-muted);
       }
-      .askbar-hint .k {
+      .ask-btn__kbd {
+        margin-left: auto;
+        flex: 0 0 auto;
+        color: var(--frost-text-muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .ask-btn__kbd .k,
+      .ask-you-label .k {
         border: 1px solid var(--frost-border);
         border-radius: 4px;
         padding: 0 4px;
         margin: 0 1px;
         color: var(--frost-text-soft);
+      }
+      /* Answer view labels — frame the exchange as a chat: the user's question,
+         then the agent's grounded reply. */
+      .ask-you-label,
+      .ask-agent-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--frost-text-muted);
+      }
+      .ask-agent-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .ask-agent-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--frost-accent);
+        box-shadow: 0 0 8px var(--frost-accent);
       }
 
       /* Answer view — replaces the results list while an answer streams. */
@@ -273,12 +336,20 @@
   <body>
     <div id="search"></div>
     <div id="askbar">
-      <button id="ask-btn" type="button">💬 Ask a question about the docs</button>
-      <span class="askbar-hint">or press <span class="k">Ctrl</span><span class="k">↵</span> from the search box</span>
+      <button id="ask-btn" type="button" aria-label="Chat with an agent about the docs">
+        <span class="ask-btn__icon" aria-hidden="true">💬</span>
+        <span class="ask-btn__text">
+          <span class="ask-btn__title">Chat with an agent about the docs</span>
+          <span class="ask-btn__sub">Type your question above — answered from the real docs, with sources.</span>
+        </span>
+        <span class="ask-btn__kbd" aria-hidden="true">or <span class="k">Ctrl</span><span class="k">↵</span></span>
+      </button>
     </div>
     <div id="answer" hidden>
       <button id="ask-back" type="button">← Back to search</button>
+      <div class="ask-you-label">You asked</div>
       <div id="ask-q"></div>
+      <div class="ask-agent-label"><span class="ask-agent-dot" aria-hidden="true"></span> Agent · answered from the docs</div>
       <div id="ask-body"></div>
       <div id="ask-cites"></div>
     </div>

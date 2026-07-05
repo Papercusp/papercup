@@ -124,12 +124,28 @@ defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
+    pipeline: z
+      .string()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "Scope to ONE pipeline's gate — the repo basename of its integration root (e.g. 'papercusp'). " +
+          "Omit for the global keys, which wake on EVERY co-hosted pipeline's verdict (EI-7646: you then " +
+          'must lineage-check payload.sha/payload.pipeline yourself on each wake).',
+      ),
     note: z.string().max(LIMITS.ANNOTATION).optional().describe('Why you are waiting — echoed into the wake turn.'),
     timeout_sec: timeoutArg,
   }),
   async handler(args, ctx) {
-    const keys = [buildKey('checkpoint'), buildKey('checkpoint-red')];
-    return reply(await armAwaits(ctx, keys, args.note ?? 'checkpoint:await — blocked until the green gate resolves', args.timeout_sec));
+    const keys = [
+      buildKey('checkpoint', { pipeline: args.pipeline }),
+      buildKey('checkpoint-red', { pipeline: args.pipeline }),
+    ];
+    const note =
+      args.note ??
+      `checkpoint:await${args.pipeline ? ` [${args.pipeline}]` : ''} — blocked until the green gate resolves`;
+    return reply(await armAwaits(ctx, keys, note, args.timeout_sec));
   },
 });
 

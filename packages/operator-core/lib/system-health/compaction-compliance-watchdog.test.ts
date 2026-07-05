@@ -383,12 +383,12 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
   });
 
   it('window cap AT/BELOW the soft limit ⇒ the note says there is NO self-compact band (owner 2026-07-05: "~190k ≈ 1.3 × 400k" was false math)', async () => {
-    specMock.mockResolvedValue('sonnet'); // 200k window ⇒ cap 190k, BELOW the 400k soft limit
-    estimateMock.mockResolvedValue(676_000); // the real 2026-07-05 incident numbers
+    specMock.mockResolvedValue('sonnet'); // 200k window ⇒ cap 190k, BELOW the 300k soft limit
+    estimateMock.mockResolvedValue(310_000); // over the limit, under the 2× contradiction bar
     findLiveHostMock.mockReturnValue({ sock: '/tmp/big.sock', caps: ['compact'] });
     hostSupportsMock.mockReturnValue(true);
     const out = await checkCompactionCompliance(
-      fakeSql({ seeded: [{ owner_id: 'big', owner_label: 'su · big', compaction_limit: 400_000 }] }),
+      fakeSql({ seeded: [{ owner_id: 'big', owner_label: 'su · big', compaction_limit: 300_000 }] }),
     );
     expect(out.forceCompacted).toEqual(['big']);
     const [, payload] = injectMock.mock.calls[0] as unknown as [string, { data: string }];
@@ -397,6 +397,25 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(payload.data).toContain('config:set-compaction-limit');
     expect(payload.data).not.toContain('≈ 1.3 ×');
     expect(payload.data).not.toContain('anywhere between it and the FORCE threshold');
+  });
+
+  it('EI-7632 stale-window guard: an estimate ≥2× the resolved window disproves it — falls back to the unknown-window bound', async () => {
+    // The real 2026-07-05 incident: a live [1m] session estimating ~676k while the
+    // shared settings.json (rewritten by a mid-session /model toggle) resolved a bare
+    // spec ⇒ 200k window. A session truly past its window dies (P-019); a live one
+    // this far past has proven the resolution stale — don't cap on it.
+    specMock.mockResolvedValue('sonnet'); // stale resolution: 200k window
+    estimateMock.mockResolvedValue(676_000); // alive at ≥2× that ⇒ contradiction
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/big.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(
+      fakeSql({ seeded: [{ owner_id: 'big', owner_label: 'su · big', compaction_limit: 400_000 }] }),
+    );
+    expect(out.forceCompacted).toEqual(['big']); // 676k ≥ 480k overshoot bound — still forced
+    const [, payload] = injectMock.mock.calls[0] as unknown as [string, { data: string }];
+    expect(payload.data).toContain('conservative bound used when the model window is unknown');
+    expect(payload.data).toContain('1.2 × your soft limit of 400k');
+    expect(payload.data).not.toContain('model-window cap');
   });
 
   it('a [1m] session gets the full 130% band: forced at ≥390k on a 300k limit, not before', async () => {

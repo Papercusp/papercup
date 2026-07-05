@@ -138,6 +138,17 @@ export interface CheckpointRunLock {
   release(): void;
 }
 
+/**
+ * EI-7646: the pipeline identity stamped on gate-verdict events + used as the
+ * pipeline-scoped event-key segment (`release:green:<pipeline>`). The basename of
+ * the integration root distinguishes the co-hosted pipelines on one box (e.g.
+ * `papercusp` vs `papercup`); sanitized so it is always a safe key segment.
+ */
+export function pipelineName(integrationRoot: string): string {
+  const base = path.basename(path.resolve(integrationRoot));
+  return (base.replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+}
+
 function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -1092,14 +1103,16 @@ export async function runGreenCheckpoint(
     // it also unblocks any agent that `events:await`s the gate verdict. The
     // `summary` is the de-noised failing-test tail already captured above.
     void import('@papercusp/operator-core/lib/events/await/engine')
-      .then(({ emitAwaitedEvent }) =>
-        emitAwaitedEvent({
-          key: 'green-checkpoint:red',
-          summary: `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`,
-          payload: { sha: candidate, from: lastReady ?? null, summary: summary + alreadyFixedNote },
-          source: 'green-checkpoint',
-        }),
-      )
+      .then(async ({ emitAwaitedEvent }) => {
+        const redSummary = `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+        const pipeline = pipelineName(cfg.integrationRoot);
+        const payload = { sha: candidate, from: lastReady ?? null, pipeline, summary: summary + alreadyFixedNote };
+        // Global key (back-compat) + pipeline-scoped key (EI-7646: a waiter on ONE
+        // pipeline's gate must not wake on every OTHER pipeline's verdict) — the
+        // release:deployed:<sha> dual-emit precedent (P-102).
+        await emitAwaitedEvent({ key: 'green-checkpoint:red', summary: redSummary, payload, source: 'green-checkpoint' });
+        await emitAwaitedEvent({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload, source: 'green-checkpoint' });
+      })
       .catch(() => {});
     // P-002: durable human-facing escalation (transition-only, cleared on green).
     await deps.escalate?.(
@@ -1196,14 +1209,14 @@ export async function runGreenCheckpoint(
   // an agent blocked on "the next green ready" sleeps on it (events:await)
   // instead of polling the checkpoint. Fire-and-forget.
   void import('@papercusp/operator-core/lib/events/await/engine')
-    .then(({ emitAwaitedEvent }) =>
-      emitAwaitedEvent({
-        key: 'release:green',
-        summary: `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`,
-        payload: { sha: candidate, from: adv.from },
-        source: 'green-checkpoint',
-      }),
-    )
+    .then(async ({ emitAwaitedEvent }) => {
+      const greenSummary = `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
+      const pipeline = pipelineName(cfg.integrationRoot);
+      const payload = { sha: candidate, from: adv.from, pipeline };
+      // Global key (back-compat) + pipeline-scoped key (EI-7646) — see the red emit.
+      await emitAwaitedEvent({ key: 'release:green', summary: greenSummary, payload, source: 'green-checkpoint' });
+      await emitAwaitedEvent({ key: `release:green:${pipeline}`, summary: greenSummary, payload, source: 'green-checkpoint' });
+    })
     .catch(() => {});
   return {
     advanced: adv.advanced,

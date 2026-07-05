@@ -50,6 +50,15 @@ const OVER_LIMIT_FRACTION = 1.0;
  *  fall back to limit × COMPACTION_OVERSHOOT_FACTOR, the bound clampCompactionLimit
  *  already guarantees safe for whatever window legally produced that limit. */
 const FORCE_COMPACT_FRACTION = 1.3;
+/** EI-7632 stale-window guard: a LIVE session estimating ≥ this × the resolved window
+ *  has DISPROVEN the resolution — a session genuinely past its window dies on "Prompt
+ *  is too long" (P-019 owns that), it doesn't keep taking turns. The window inputs are
+ *  box-shared and mutable (an argv-less session resolves through the settings.json
+ *  symlink to the SHARED box default, which a mid-session /model toggle rewrites for
+ *  all ~46 sessions at once — the 2026-07-05 incident: a 676k-est [1m] session
+ *  window-resolved at 200k and force-noted nonsense numbers). est is bytes/4 and can
+ *  overshoot real tokens ~1.5–2×, so require the full 2× before distrusting. */
+const WINDOW_CONTRADICTED_FACTOR = 2;
 /** Max limit-less live sessions seeded per pass — bounds fs/PG work per sweep. */
 const MAX_SEEDS_PER_PASS = 25;
 
@@ -618,7 +627,15 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // attempt is NOT recorded, so it retries next pass until it lands (or
         // the session recovers below).
         if (!forceCompactedOwners.has(r.owner_id)) {
-          const window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+          let window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+          if (window != null && est >= window * WINDOW_CONTRADICTED_FACTOR) {
+            console.warn(
+              `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): resolved window ${window} is ` +
+                `CONTRADICTED by a live ~${est}-token estimate (≥${WINDOW_CONTRADICTED_FACTOR}×) — ` +
+                `stale/shared model-spec input (EI-7632); treating the window as unknown.`,
+            );
+            window = null;
+          }
           const fractionAt = r.compaction_limit * FORCE_COMPACT_FRACTION;
           const capAt =
             window != null
