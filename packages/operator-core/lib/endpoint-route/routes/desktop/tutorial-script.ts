@@ -20,7 +20,6 @@ import { platform } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { detectBinariesCached } from '../../../agent-bin-detect';
 import {
   chaptersFrom,
   loadTutorialPack,
@@ -59,16 +58,15 @@ export default defineTool({
       (await readOperatorState<SetupWizardState>('setup_wizard_state').catch(() => null)) ?? null;
     const distinctId = wizard?.install_id ?? 'onboarding';
 
-    // previewEnabled (a flag read that can touch PostHog) and agentBinaries (4
-    // subprocess probes) are independent — resolve them CONCURRENTLY, and time-box
-    // the flag so a slow/unreachable flag backend can't stall first paint. The pack
-    // load below is memoized (see tutorial-pack). (perf #1)
-    const [previewEnabled, agentBinaries] = await Promise.all([
-      withTimeout(getFlag(FLAGS.ONBOARDING_PREVIEW_FEATURES, distinctId), 750, false).catch(
-        () => false,
-      ),
-      detectBinariesCached(),
-    ]);
+    // Time-box the flag read (it can touch PostHog) so a slow/unreachable flag
+    // backend can't stall first paint. The pack load below is memoized (see
+    // tutorial-pack). (perf #1) — Q&A no longer needs agent-CLI detection here;
+    // it is answered server-side by /api/desktop/docs-qa (WI-2844).
+    const previewEnabled = await withTimeout(
+      getFlag(FLAGS.ONBOARDING_PREVIEW_FEATURES, distinctId),
+      750,
+      false,
+    ).catch(() => false);
 
     const root = resolvePackRoot();
     const sections = root ? loadTutorialPack(root) : [];
@@ -95,9 +93,6 @@ export default defineTool({
       optionalSetup: visibleOptionalSetupItems(previewEnabled),
       // Finale GUI tour — the runner narrates these left→right.
       guiTabTour: GUI_TAB_TOUR,
-      // Absolute agent-CLI paths so the runner can one-shot the Q&A agent even when
-      // the Tauri pty child inherits no PATH (same detection the concierge login uses).
-      agentBinaries,
     });
   },
 });
