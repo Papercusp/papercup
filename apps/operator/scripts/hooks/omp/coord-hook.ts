@@ -2308,7 +2308,7 @@ export function mcpCurlBlockReason(count = 1): string {
  *  Scoped to the groups a leader/member actually reaches for at kickoff + delegation. */
 const MCP_TOOL_GROUPS = new Set([
   'fleet', 'plans', 'plan_items', 'plan_item', 'coord', 'work_items', 'work_item', 'tools',
-  'locks', 'memory', 'facts', 'docs', 'hive', 'rubrics', 'events', 'blueprint', 'harness',
+  'locks', 'memory', 'facts', 'docs', 'pot', 'rubrics', 'events', 'blueprint', 'harness',
   'recipes', 'agent_chats', 'deploy', 'scheduler', 'goals', 'topics',
 ]);
 

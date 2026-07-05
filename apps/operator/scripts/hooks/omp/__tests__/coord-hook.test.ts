@@ -903,6 +903,7 @@ describe('isMcpToolViaBash + mcpToolViaBashReason (MCP-tool-via-bash guard, orni
     expect(isMcpToolViaBash('coord:send')).toBe(true);
     expect(isMcpToolViaBash('work_items:list')).toBe(true);
     expect(isMcpToolViaBash('memory:remember')).toBe(true);
+    expect(isMcpToolViaBash('pot:status')).toBe(true); // post pot-rename cutover (was 'hive'; hive:* now 404)
     expect(isMcpToolViaBash('cd /tmp && plans:get')).toBe(true); // command position after &&
   });
   it('does NOT false-positive on ordinary shell commands or a colon that is not a tool name', () => {
