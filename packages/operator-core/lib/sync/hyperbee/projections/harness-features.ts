@@ -338,7 +338,16 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(work_items.fed_hlc, work_items.fed_ts)
+    -- WI-2923 (mig 504): at an EQUAL order key the WRITER tie-break decides —
+    -- the bare `>=` applied unconditionally on ties, so two cells that each
+    -- completed the same item in the same clock tick SWAPPED values on heal
+    -- (each applied the other's write, echo suppression froze the swap, and
+    -- convergence reported a fixed point over divergent replicas —
+    -- composition-chaos P-002). fed_apply_wins mirrors lwwPick's clock-tie
+    -- writer rule, so every replica settles on the same writer's value.
+    WHERE harness_shared.fed_apply_wins(
+            EXCLUDED.fed_hlc, EXCLUDED.fed_ts, EXCLUDED.author_pubkey,
+            work_items.fed_hlc, work_items.fed_ts, work_items.author_pubkey)
   `;
 }
 
