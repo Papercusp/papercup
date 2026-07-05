@@ -15,14 +15,22 @@
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, catchUp: 5, meChars: 2_400 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, catchUp: 8, meChars: 6_000 },
+  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200 },
+  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400 },
 } as const;
 
 type TierName = keyof typeof CAPS;
 
 const cap = (s: unknown, n: number): unknown =>
   typeof s === 'string' && s.length > n ? `${s.slice(0, n - 1)}…` : s;
+
+/** Priority for keeping a standing fact when the count is capped: owner-scope
+ *  (owner-walls / unverified claims) and this harness's facts are load-bearing;
+ *  workspace-scope shared facts are the noisiest and drop first. Array.sort is
+ *  stable, so within a rank the fold's original (recency) order is preserved. */
+const FACT_SCOPE_RANK: Record<string, number> = { owner: 0, work_item: 1, harness: 1, role: 2, workspace: 3 };
+const factRank = (f: unknown): number =>
+  FACT_SCOPE_RANK[(f as { scope?: string } | null)?.scope ?? ''] ?? 2;
 
 /** Project one claimable work-item row to its placement-relevant core.
  *  Drops the duplicated summary, null fields, timestamps, and the fat payload
@@ -82,6 +90,20 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
     out.claimable = d.claimable.slice(0, c.claimable).map((r) => projectClaimable(r, c.title));
     if (total > c.claimable) {
       out.claimableTruncated = { total, shown: c.claimable, more: 'work_items:list (or payloadTier:"full")' };
+    }
+  }
+
+  // Standing facts are folded VERBATIM and grow unboundedly as agents assert
+  // them (the coord:orient 59.8KB overflow, WI-2859). Cap count + body, keeping
+  // owner/harness-scope facts first, with a fetch-pointer for the rest.
+  if (Array.isArray(d.facts)) {
+    const total = d.facts.length;
+    const ranked = [...d.facts].sort((a, b) => factRank(a) - factRank(b));
+    out.facts = ranked.slice(0, c.facts).map((f) =>
+      f && typeof f === 'object' ? { ...(f as Record<string, unknown>), body: cap((f as Record<string, unknown>).body, c.factsBody) } : f,
+    );
+    if (total > c.facts) {
+      out.factsTruncated = { total, shown: c.facts, more: 'facts:list' };
     }
   }
 
