@@ -325,6 +325,38 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       tags           TEXT[] NOT NULL DEFAULT '{}',
       PRIMARY KEY (workspace_id, id)
     );
+    -- WI-2118 reserved-plan-lane floor: the REAL claim paths the rig drives now AND in
+    -- reservedPlanLaneExclusionSql, whose EXISTS subqueries read harness_plans (plan_slug,
+    -- status) + plan_item_claims (plan_slug, item_id, owner, expires_ts). Same rationale as
+    -- datatype_registry above: the subqueries just need to RUN (empty ⇒ no exclusion), or
+    -- every claim/diagnose SELECT errors with 42P01 (undefined_table) — which is exactly how
+    -- fleet-monitors / composition-chaos went red on the 2026-07-05 green gate. Prod-faithful
+    -- key columns (test-friendly DEFAULTs), matching migration 141 / the live harness_plans
+    -- key, so a test layering the real DDL in either order composes instead of colliding.
+    CREATE TABLE harness_shared.harness_plans (
+      workspace_id TEXT NOT NULL DEFAULT 'default',
+      harness_slug TEXT NOT NULL DEFAULT 'papercup',
+      plan_slug    TEXT NOT NULL,
+      status       TEXT,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+    CREATE TABLE harness_shared.plan_item_claims (
+      workspace_id     TEXT NOT NULL DEFAULT 'default',
+      harness_slug     TEXT NOT NULL DEFAULT 'papercup',
+      plan_slug        TEXT NOT NULL,
+      item_id          TEXT NOT NULL,
+      claim_id         UUID DEFAULT gen_random_uuid() NOT NULL,
+      owner            TEXT NOT NULL,
+      owner_label      TEXT,
+      owner_name       TEXT,
+      intent           TEXT DEFAULT '' NOT NULL,
+      liveness_mode    TEXT DEFAULT 'availability' NOT NULL,
+      ttl_sec          INTEGER DEFAULT 1200 NOT NULL,
+      acquired_ts      TIMESTAMPTZ DEFAULT clock_timestamp() NOT NULL,
+      expires_ts       TIMESTAMPTZ NOT NULL,
+      last_activity_ts TIMESTAMPTZ DEFAULT clock_timestamp() NOT NULL,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
+    );
   `);
 
   // WI-1644: the writeToPg projection (harness-features.ts) INSERTs a wider
