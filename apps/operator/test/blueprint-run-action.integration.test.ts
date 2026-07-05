@@ -19,6 +19,7 @@ import { getTestPg } from '@papercusp/test-config';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { _resetForTests } from '@papercusp/db-org';
 import { getSystemAction, type SystemActionCtx } from '@papercusp/operator-core/lib/harness/routines/system-actions';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { setBlueprintResolver, setBlueprintRunFire } from '@papercusp/operator-core/lib/blueprint/blueprint-run-action';
 // Side-effect import: registers system:blueprint-run (the path routinesTick imports).
 import '@papercusp/operator-core/lib/harness/routines/register-system-actions';
@@ -36,6 +37,10 @@ let dbName: string;
 let sql: postgres.Sql;
 
 const WS = 'ws_test';
+// The operator-home slug the learning-singleton code (readLegacyRow / cutover) keys the
+// legacy routine lookup on. Was the literal 'papercup' until the papercup→papercusp rename
+// (2026-06-19); derive it from the SAME source of truth so this can't re-rot on a future rename.
+const HOME_SLUG = operatorHomeHarnessSlug();
 const coding = loadBuiltinBlueprint('coding-factory').blueprint;
 // A blueprint whose work-item is a non-'feature' FEATURE-FAMILY kind (chunk) + payload —
 // exercises blueprint-run's generic kind/payload handling via the features view. (Named
@@ -362,7 +367,7 @@ describe('materializeLearningSingletons — the seed-replacement cutover (P-144)
   const seedLegacyGraduation = (active: boolean) => sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template, active, workspace_id)
-    VALUES ('rt_papercup_graduation-scan', 'papercup', 'graduation-scan', 'cron',
+    VALUES ('rt_papercup_graduation-scan', ${HOME_SLUG}, 'graduation-scan', 'cron',
             ${JSON.stringify({ cron: '0 5 4 * * *' })}::text::jsonb, 'system:blueprint-run',
             ${JSON.stringify({ blueprintId: 'graduation' })}::text::jsonb, ${active}, ${WS})`;
 
@@ -380,7 +385,7 @@ describe('materializeLearningSingletons — the seed-replacement cutover (P-144)
     expect(sing).toHaveLength(1);
     expect(sing[0].active).toBe(false); // dark
     expect(sing[0].bp).toBe('graduation'); // fires the right program
-    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME_SLUG} AND name='graduation-scan'`;
     expect(legacy).toHaveLength(0); // legacy retired
   });
 
@@ -392,7 +397,7 @@ describe('materializeLearningSingletons — the seed-replacement cutover (P-144)
     expect(res[0].legacy.deleted).toBe(false);
     // legacy untouched (still firing); NO @singleton row created beside it
     const legacy = await sql<{ active: boolean }[]>`
-      SELECT active FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+      SELECT active FROM harness_shared.routines WHERE install_slug=${HOME_SLUG} AND name='graduation-scan'`;
     expect(legacy).toHaveLength(1);
     expect(legacy[0].active).toBe(true);
     const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
@@ -415,7 +420,7 @@ describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template,
        concurrency, catchup, active, last_fired_at, next_fire_at, workspace_id)
-    VALUES ('rt_papercup_graduation-scan', 'papercup', 'graduation-scan', 'cron',
+    VALUES ('rt_papercup_graduation-scan', ${HOME_SLUG}, 'graduation-scan', 'cron',
             ${JSON.stringify({ cron: '0 5 4 * * *' })}::text::jsonb, 'system:blueprint-run',
             ${JSON.stringify({ blueprintId: 'graduation', ...payloadExtra })}::text::jsonb,
             'skip', 'skip-old', ${active}, now(), now(), ${WS})`;
@@ -436,7 +441,7 @@ describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-
     expect(sing[0].tuning).toBe('7'); // owner tuning preserved
     expect(sing[0].concurrency).toBe('skip'); // copied verbatim
     expect(sing[0].nfa).not.toBeNull(); // cadence preserved
-    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME_SLUG} AND name='graduation-scan'`;
     expect(legacy).toHaveLength(0); // legacy retired in the SAME transaction (no firing gap, no dup)
   });
 
@@ -445,7 +450,7 @@ describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-
     const r = await cutoverActiveLearningSingleton(sql, WS, { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' }, { execute: true });
     expect(r.skipped).toBe('legacy-dark');
     expect(r.cutOver).toBe(false);
-    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME_SLUG} AND name='graduation-scan'`;
     expect(legacy).toHaveLength(1); // untouched
     const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
     expect(sing).toHaveLength(0);
@@ -456,7 +461,7 @@ describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-
     const r = await cutoverActiveLearningSingleton(sql, WS, { blueprintId: 'graduation', legacyRoutine: 'graduation-scan' }, { execute: false });
     expect(r.legacyActive).toBe(true);
     expect(r.cutOver).toBe(false);
-    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug='papercup' AND name='graduation-scan'`;
+    const legacy = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${HOME_SLUG} AND name='graduation-scan'`;
     expect(legacy).toHaveLength(1); // untouched
     const sing = await sql`SELECT 1 FROM harness_shared.routines WHERE install_slug=${SINGLETON_TRIGGER_HOST_SLUG}`;
     expect(sing).toHaveLength(0); // nothing created

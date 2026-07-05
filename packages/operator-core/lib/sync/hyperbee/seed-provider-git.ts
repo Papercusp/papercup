@@ -65,8 +65,15 @@ export interface GitCutContext {
   /** The canonical origin URL a restored clone should point at (e.g. the GitHub repo). */
   readonly originUrl: string;
   /** `git bundle create` revision selector; default `--all`. Pass `HEAD` (+ a
-   *  configured `--depth` upstream) for a shallow seed (P-006 Q-1). */
+   *  configured `depth`) for a shallow seed (P-006 Q-1). */
   readonly rev?: string;
+  /** Shallow-bundle depth. When set (typically 1), the bundle is created with
+   *  `--depth=<n>` so it carries only the last <n> commit(s) of history — the
+   *  full working tree AT THE TIP, but not the whole history. Restores as a
+   *  shallow clone; a later `git fetch` from the re-pointed origin back-fills
+   *  the rest lazily. Turns an un-shippable full-history bundle (~1.8GB for this
+   *  repo) into ~tens of MB. Needs a `rev` that names a commit (e.g. `HEAD`). */
+  readonly depth?: number;
   /** Encrypt the bundle bytes at rest (required for a PRIVATE repo shipped in a
    *  public installer). The key is delivered to the joiner only post-admission
    *  (via `keyRef`); it is NEVER in the installer. */
@@ -154,15 +161,18 @@ export function createGitSeedProvider(): SeedProvider {
     kind: GIT_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceRepoDir, stagingDir, originUrl, rev, encryption } = ctx as unknown as GitCutContext;
+      const { sourceRepoDir, stagingDir, originUrl, rev, depth, encryption } = ctx as unknown as GitCutContext;
       await mkdir(join(stagingDir, 'submodules'), { recursive: true });
       const revSel = rev ?? '--all';
-      await git(sourceRepoDir, ['bundle', 'create', join(stagingDir, 'super.bundle'), revSel]);
+      // `--depth` is a rev-list arg to `git bundle create` → a SHALLOW bundle
+      // (only the last <depth> commits): the full tree at the tip, no history.
+      const depthArgs = depth ? [`--depth=${depth}`] : [];
+      await git(sourceRepoDir, ['bundle', 'create', join(stagingDir, 'super.bundle'), ...depthArgs, revSel]);
 
       const submodules: GitSeedSubmodule[] = [];
       for (const sub of await readSubmodules(sourceRepoDir)) {
         const bundleRel = join('submodules', sub.name.replace(/[/\\]/g, '__') + '.bundle');
-        await git(join(sourceRepoDir, sub.path), ['bundle', 'create', join(stagingDir, bundleRel), revSel]);
+        await git(join(sourceRepoDir, sub.path), ['bundle', 'create', join(stagingDir, bundleRel), ...depthArgs, revSel]);
         submodules.push({ path: sub.path, url: sub.url, bundle: bundleRel });
       }
 
