@@ -123,7 +123,12 @@ async function dirSize(root: string): Promise<number> {
   return total;
 }
 
-/** Enumerate submodules from `.gitmodules` (path + url pairs). */
+/** Enumerate submodules from `.gitmodules` (path + url pairs).
+ *  SKIPS any submodule whose working tree is not checked out (no `<path>/.git`):
+ *  `.gitmodules` can declare a submodule the source tree never initialized — e.g. a
+ *  RETIRED one (`libs/zero-harness`) — and blindly `git bundle`-ing in a nonexistent
+ *  cwd throws `spawn git ENOENT`, aborting the whole cut. An uninitialized submodule
+ *  simply isn't seeded (a fresh member cold-clones it); data-safe by construction. */
 async function readSubmodules(repoDir: string): Promise<Array<{ name: string; path: string; url: string }>> {
   if (!existsSync(join(repoDir, '.gitmodules'))) return [];
   const pathLines = await git(repoDir, ['config', '-f', '.gitmodules', '--get-regexp', 'path']).catch(() => '');
@@ -131,6 +136,13 @@ async function readSubmodules(repoDir: string): Promise<Array<{ name: string; pa
   for (const line of pathLines.split('\n').filter(Boolean)) {
     const [key, p] = line.split(/\s+/);
     const name = key.slice('submodule.'.length, -'.path'.length);
+    // A checked-out submodule has a `.git` gitlink (file) or dir at its path; an
+    // uninitialized/retired one has a missing or empty dir → skip it (with a warning)
+    // rather than spawn git in a cwd that doesn't exist.
+    if (!existsSync(join(repoDir, p, '.git'))) {
+      console.warn(`[seed:git] skipping submodule '${name}' (${p}) — not checked out in ${repoDir}; a fresh member will cold-clone it.`);
+      continue;
+    }
     const url = await git(repoDir, ['config', '-f', '.gitmodules', `submodule.${name}.url`]).catch(() => '');
     out.push({ name, path: p, url });
   }
