@@ -183,9 +183,14 @@ describe('acceptance: sync read → write → invalidate roundtrip (toastLog.rec
   it('invalidate: notifySyncInvalidate reaches a subscribed listener over real pg_notify → LISTEN', async () => {
     await subscribe((e) => received.push(e));
 
-    // The route's exact post-commit call: write commits, then notify.
+    // The route's exact post-commit call: write commits, then notify. SCOPED
+    // args (not undefined) so this fire's dedupe key `toastLog.recent|{…}|`
+    // differs from the FULL-BUST key `toastLog.recent||` the bridge test below
+    // synthesizes — the bus routes explicit notifies AND bridged targets
+    // through ONE shared source-side dedupe (WI-840, 90s window), so two
+    // same-key fires seconds apart would legitimately suppress the second.
     await insertToast('fourth toast');
-    await notifySyncInvalidate('toastLog.recent', undefined);
+    await notifySyncInvalidate('toastLog.recent', { probe: 'explicit-leg' });
 
     await vi.waitFor(
       () => expect(received.some((e) => e.name === 'toastLog.recent')).toBe(true),
@@ -208,11 +213,6 @@ describe('acceptance: sync read → write → invalidate roundtrip (toastLog.rec
 
     const bridgedBefore = received.filter((e) => e.name === 'toastLog.recent').length;
     await insertToast('fifth toast (trigger)');
-    // TEMP DEBUG (su-8dc11) — remove before commit
-    await new Promise((r) => setTimeout(r, 3000));
-    console.log('DEBUG received names:', JSON.stringify(received.map((e) => e.name)));
-    const trg = await h.sql`SELECT tgname, tgenabled FROM pg_trigger WHERE tgname = 'emit_change_notify_trg'`;
-    console.log('DEBUG trigger row:', JSON.stringify(trg));
 
     // Raw trigger event arrives with the <schema>.<table>.changed name…
     await vi.waitFor(
