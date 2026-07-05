@@ -2095,6 +2095,81 @@ export function mcpCurlBlockReason(count = 1): string {
   );
 }
 
+/** Known Papercusp/MCP tool GROUPS (the part before the `:` in a `group:verb` tool name). Used ONLY
+ *  to recognize when a weak model has typed an MCP tool name as a bash COMMAND (ornith iter21,
+ *  2026-07-04 / WI-2382 — failure mode #7). A whitelist keeps the detector from false-positiving on
+ *  an ordinary shell command that merely contains a colon (a URL, a `sed 's:a:b:'`, a `time:` label).
+ *  Scoped to the groups a leader/member actually reaches for at kickoff + delegation. */
+const MCP_TOOL_GROUPS = new Set([
+  'fleet', 'plans', 'plan_items', 'plan_item', 'coord', 'work_items', 'work_item', 'tools',
+  'locks', 'memory', 'facts', 'docs', 'hive', 'rubrics', 'events', 'blueprint', 'harness',
+  'recipes', 'agent_chats', 'deploy', 'scheduler', 'goals', 'topics',
+]);
+
+/** True when a bash command is really an agent trying to INVOKE a Papercusp MCP tool by typing its
+ *  `group:verb` name as a shell command (ornith iter21, 2026-07-04 / WI-2382 — failure mode #7). A
+ *  weak local model (IQ3_M) that loses the native tool-call path falls into calling e.g.
+ *  `fleet:launch-on-plan` / `tools:invoke {…}` / `plans:get {…}` through Bash — which fails with
+ *  `command not found: fleet:launch-on-plan` (exit 127) or `syntax error at end of input`, never
+ *  runs the tool, and doom-loops (iter21: 20+ attempts, delegation FULLY blocked — the leader could
+ *  not spawn a fleet, so ornith-as-leader was blocked). Matches a `group:verb` token at a COMMAND
+ *  position (start, or right after a real separator ; && || | newline ( `) whose group is a known
+ *  MCP group — so a URL (`http://…`), a `sed 's:a:b:'`, or prose that merely mentions a tool name
+ *  never false-positives. Pure. */
+export function isMcpToolViaBash(cmd: string): boolean {
+  const m = (cmd || '').match(
+    /(?:^|[;&|\n(`]|&&|\|\|)\s*([a-z][a-z0-9_]*):([a-z][a-z0-9][a-z0-9_-]*)/i,
+  );
+  if (!m) return false;
+  return MCP_TOOL_GROUPS.has(m[1].toLowerCase());
+}
+
+/** Dedicated escalation counter for failure mode #7 (the block MESSAGE hardens on repeats). The
+ *  structural HALT is delegated to the SHARED reflexive backstop (noteReflexiveBlock at the call
+ *  site), so this needs no own kill threshold. Session-cumulative (each attempt is its own turn and
+ *  the commands vary, so a turn-reset or consecutive-identical counter would never escalate — same
+ *  reason as the eval / curl budgets). Test-seam reset only. */
+export const MCP_TOOL_VIA_BASH_ESCALATE_AFTER = 3;
+let _mcpToolViaBashCount = 0;
+
+/** Count an MCP-tool-via-bash block for this session; returns the new cumulative total. */
+export function noteMcpToolViaBashBlock(): number {
+  return ++_mcpToolViaBashCount;
+}
+
+/** Test seam: reset the #7 escalation counter. */
+export function resetMcpToolViaBashBudget(): void {
+  _mcpToolViaBashCount = 0;
+}
+
+/** The redirect returned when an agent types an MCP tool name as a bash command. Papercusp tools are
+ *  TOOLS the model calls directly (like Bash / read / edit), NEVER shell commands — this is the
+ *  structural version of the live nudge that rescues a stuck leader. ESCALATES past
+ *  MCP_TOOL_VIA_BASH_ESCALATE_AFTER into a hard, copy-pasteable direct-tool-call directive. Pure. */
+export function mcpToolViaBashReason(count = 1): string {
+  if (count <= MCP_TOOL_VIA_BASH_ESCALATE_AFTER) {
+    return (
+      'mcp-tool-via-bash blocked: you tried to run a Papercusp tool (a `group:verb` name like ' +
+      '`fleet:launch-on-plan`) as a SHELL command. Papercusp tools are NOT shell commands and are ' +
+      'NOT available in bash — they are TOOLS you call DIRECTLY, the same way you call Bash / read / ' +
+      'edit. Do NOT wrap them in bash, python, echo, heredocs, or the `omp` CLI. To launch a fleet, ' +
+      'call the tool directly: `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
+      'plan:"<plan-slug>", count:2, agent:"omp"}}`. To read your plan: `tools:invoke ' +
+      '{name:"plans:get", args:{slug:"<plan-slug>", harness:"papercusp"}}`. Retry as a DIRECT tool ' +
+      'call now — not through bash.'
+    );
+  }
+  return (
+    `mcp-tool-via-bash blocked (×${count}): STOP — you have tried ${count} times to invoke a ` +
+    'Papercusp tool through the shell and EVERY attempt fails (`command not found` / `syntax ' +
+    'error`). The shell will NEVER run a `group:verb` tool. Emit a DIRECT tool call instead — your ' +
+    'next action must be EXACTLY: `tools:invoke {name:"fleet:launch-on-plan", args:{name:"<fleet>", ' +
+    'plan:"<plan-slug>", count:2, agent:"omp"}}` (or the tool you need via `tools:invoke ' +
+    '{name:"<group>:<verb>", args:{…}}`). Do NOT type the tool into bash again. If you truly cannot ' +
+    'emit a tool call, report the blocker via `coord:send` to your launcher.'
+  );
+}
+
 /** The steer returned when the loop-breaker trips — names the repeated tool and
  *  the run length and redirects by tool family (resolve / shell / generic). Pure. */
 export function loopBreakReason(toolName: string, count: number): string {
@@ -2184,6 +2259,21 @@ export async function onToolCall(
         _haltRunawaySession(`mcp-curl doom-loop: ${n} blocked MCP-endpoint curls in one session`);
       }
       return { block: true, reason: mcpCurlBlockReason(n) };
+    }
+    // MCP-tool-via-bash guard (ornith iter21, 2026-07-04 / WI-2382 — failure mode #7): a weak local
+    // model that loses the native tool-call path types the MCP tool NAME as a shell command
+    // (`fleet:launch-on-plan`, `tools:invoke {…}`, `plans:get {…}`) — which fails with `command not
+    // found` / `syntax error at end of input`, never runs the tool, and doom-loops. iter21's leader
+    // did this 20+ times and could NOT delegate (fleet:launch-on-plan never fired → no members
+    // spawned → route C failed). Block it (it fails anyway) and return the "call it as a DIRECT tool,
+    // not bash" redirect — the structural version of the live nudge. Feeds the SHARED reflexive
+    // backstop (noteReflexiveBlock) so the doom-loop self-terminates after REFLEXIVE_BLOCK_KILL_AFTER,
+    // and a dedicated counter escalates the message. Placed after the curl guard (a curl to /api/mcp
+    // is caught there first). Owner sessions unrestricted (D-003).
+    if (isMcpToolViaBash(cmd)) {
+      const n = noteMcpToolViaBashBlock();
+      noteReflexiveBlock('mcp-bash');
+      return { block: true, reason: mcpToolViaBashReason(n) };
     }
   }
 

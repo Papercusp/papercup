@@ -58,6 +58,11 @@ import {
   noteMcpCurlBlock,
   resetMcpCurlBudget,
   MCP_CURL_BLOCK_KILL_AFTER,
+  isMcpToolViaBash,
+  mcpToolViaBashReason,
+  MCP_TOOL_VIA_BASH_ESCALATE_AFTER,
+  noteMcpToolViaBashBlock,
+  resetMcpToolViaBashBudget,
   REFLEXIVE_BLOCK_KILL_AFTER,
   REFLEXIVE_BLOCK_ESCALATE_AFTER,
   noteReflexiveBlock,
@@ -722,6 +727,134 @@ describe('onToolCall MCP-endpoint-curl guard (agent sessions only)', () => {
       for (let i = 0; i < MCP_CURL_BLOCK_KILL_AFTER + 3; i++) {
         const r = await curlCall(`curl http://127.0.0.1:9071/api/mcp -d '{"i":${i}}'`);
         expect(r.block).toBeUndefined(); // an owner's curl is never even blocked, let alone halted
+      }
+      expect(halts).toHaveLength(0);
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+});
+
+describe('isMcpToolViaBash + mcpToolViaBashReason (MCP-tool-via-bash guard, ornith mode #7 / WI-2382)', () => {
+  it('matches a papercusp group:verb typed as a shell command (with or without args, after a separator)', () => {
+    expect(isMcpToolViaBash('fleet:launch-on-plan')).toBe(true);
+    expect(isMcpToolViaBash('fleet:launch-on-plan --count 2')).toBe(true);
+    expect(isMcpToolViaBash('plans:get {slug:"x", harness:"papercusp"}')).toBe(true);
+    expect(isMcpToolViaBash('tools:invoke {name:"fleet:launch-on-plan"}')).toBe(true);
+    expect(isMcpToolViaBash('coord:send')).toBe(true);
+    expect(isMcpToolViaBash('work_items:list')).toBe(true);
+    expect(isMcpToolViaBash('memory:remember')).toBe(true);
+    expect(isMcpToolViaBash('cd /tmp && plans:get')).toBe(true); // command position after &&
+  });
+  it('does NOT false-positive on ordinary shell commands or a colon that is not a tool name', () => {
+    expect(isMcpToolViaBash('curl http://127.0.0.1:9071/api/mcp')).toBe(false); // URL, not group:verb at cmd pos
+    expect(isMcpToolViaBash("sed 's:a:b:g' file")).toBe(false); // sed is the command; colon is not a tool
+    expect(isMcpToolViaBash('echo fleet:launch-on-plan')).toBe(false); // merely echoing, not invoking
+    expect(isMcpToolViaBash('git log --oneline')).toBe(false);
+    expect(isMcpToolViaBash('time: 5')).toBe(false); // group not a known MCP group
+    expect(isMcpToolViaBash('note:todo fix later')).toBe(false);
+    expect(isMcpToolViaBash('ls -la')).toBe(false);
+    expect(isMcpToolViaBash('')).toBe(false);
+  });
+  it('the reason says call it as a DIRECT tool (not bash) and escalates to a hard STOP', () => {
+    const base = mcpToolViaBashReason();
+    expect(base).toContain('mcp-tool-via-bash');
+    expect(base).toContain('tools:invoke');
+    expect(base).toContain('fleet:launch-on-plan');
+    expect(base).not.toContain('STOP —');
+    const hard = mcpToolViaBashReason(MCP_TOOL_VIA_BASH_ESCALATE_AFTER + 1);
+    expect(hard).toContain('STOP');
+    expect(hard).toContain(`×${MCP_TOOL_VIA_BASH_ESCALATE_AFTER + 1}`);
+  });
+  it('noteMcpToolViaBashBlock is session-cumulative and resetMcpToolViaBashBudget clears it', () => {
+    resetMcpToolViaBashBudget();
+    expect(noteMcpToolViaBashBlock()).toBe(1);
+    expect(noteMcpToolViaBashBlock()).toBe(2);
+    resetMcpToolViaBashBudget();
+    expect(noteMcpToolViaBashBlock()).toBe(1);
+  });
+});
+
+describe('onToolCall MCP-tool-via-bash guard (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetMcpToolViaBashBudget();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetMcpToolViaBashBudget();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  const bashCall = (command: string) =>
+    onToolCall({ type: 'tool_call', toolName: 'bash', toolCallId: 'mb', input: { command } });
+
+  it('blocks fleet:launch-on-plan typed as bash on #1 — even with DIFFERENT args each time (the iter21 loop)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const first = await bashCall('fleet:launch-on-plan --count 2 --agent omp');
+    expect(first.block).toBe(true);
+    expect(first.reason).toContain('mcp-tool-via-bash');
+    const second = await bashCall('tools:invoke {name:"fleet:launch-on-plan", args:{count:3}}');
+    expect(second.block).toBe(true);
+  });
+
+  it('escalates the block after the session ignores it past the threshold (session-cumulative)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    let reason = '';
+    for (let i = 0; i < MCP_TOOL_VIA_BASH_ESCALATE_AFTER + 2; i++) {
+      const r = await bashCall(`plans:get {attempt:${i}}`); // different each time — dodges the identical breaker
+      expect(r.block).toBe(true);
+      reason = r.reason ?? '';
+    }
+    expect(reason).toContain('STOP');
+    expect(reason).toContain('tools:invoke');
+  });
+
+  it('leaves a legitimate bash command alone', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    expect((await bashCall('ls -la apps/operator/lib/llm-testing/fixtures/')).block).toBeUndefined();
+    expect((await bashCall("sed -i 's/BROKEN/FIXED/' file.txt")).block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    expect((await bashCall('fleet:launch-on-plan --count 2')).block).toBeUndefined();
+  });
+
+  it('feeds the SHARED reflexive backstop — the doom-loop HALTS after the threshold (naming mcp-bash)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
+        const r = await bashCall(`fleet:launch-on-plan --attempt ${i}`); // different each time
+        expect(r.block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      const kth = await bashCall('fleet:launch-on-plan --final');
+      expect(kth.block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain(String(REFLEXIVE_BLOCK_KILL_AFTER));
+      expect(halts[0]).toContain('mcp-bash');
+    } finally {
+      setHaltForTest(prevHalt);
+    }
+  });
+
+  it('never HALTS the owner’s own session even far past the kill threshold (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER + 3; i++) {
+        expect((await bashCall(`fleet:launch-on-plan --i ${i}`)).block).toBeUndefined();
       }
       expect(halts).toHaveLength(0);
     } finally {

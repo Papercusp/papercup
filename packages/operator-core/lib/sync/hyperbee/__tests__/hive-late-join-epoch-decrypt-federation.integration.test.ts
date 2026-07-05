@@ -182,6 +182,11 @@ const CONTENT_AND_KEY_DDL = `
     created_ts    bigint,
     updated_ts    bigint,
     ts            bigint,
+    -- engineer-issues projection writeToPg INSERTs these (P-010 work_items unification);
+    -- the minimal DDL must carry them or the epoch-decrypted work_item INSERT throws
+    -- (swallowed by the drain's best-effort try/catch → the row silently never lands).
+    terminal_owner          text,
+    terminal_completion_ref text,
     PRIMARY KEY (harness_slug, feature_id)
   );
 `;
@@ -376,8 +381,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
           : tag === 'engineer-issues'
             ? (issuesProj as TableProjection<unknown>)
             : null;
-      const _traces: string[] = [];
-      const joinerGate = buildEpochDecryptGate({ crypto, resolveKey: joinerResolveKey, hiveId: HIVE_SLUG, pending, onTrace: (p, d) => _traces.push(`${p}: ${d}`) });
+      const joinerGate = buildEpochDecryptGate({ crypto, resolveKey: joinerResolveKey, hiveId: HIVE_SLUG, pending });
       const joinerApply = joinerGate((op) => applyOpVia(contentLookup, op, { ownLogKeyHex: JOINER_LOG_HEX }));
 
       // ── 3a. NEGATIVE CONTROL (the regression state): content arrives BEFORE the
@@ -433,7 +437,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       // ── 6. DRAIN: re-run the deferred content through the SAME gate — the joiner can
       //       now unwrap epoch-0 → decrypt → the real projections land the plaintext rows. ──
       const reapplied = await drainQueuedEpochContent({ pending, drainQueue, applyImpl: joinerApply });
-      expect(reapplied, 'both deferred content ops re-applied + converged\nTRACES:\n' + _traces.join('\n')).toBe(2);
+      expect(reapplied, 'both deferred content ops re-applied + converged').toBe(2);
       expect(pending.size(), 'the defer buffer drained — no silent loss').toBe(0);
 
       // ── ACCEPTANCE: the joiner's PG holds the DECRYPTED plan + work_item. ──
