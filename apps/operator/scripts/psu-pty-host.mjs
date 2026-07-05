@@ -90,23 +90,6 @@ const CODEX_TURN_SUBMIT_CR_DELAY_MS =
 const CODEX_TURN_RESUBMIT_CR_DELAY_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS) || 300;
 
-/** WI-2930 submit VERIFICATION. An injected submit's CR can be SWALLOWED on any
- *  backend — the paste-settle race exists on Claude too, and a compact/reset
- *  carry can be typed into a TUI whose submission is momentarily locked (the
- *  agent-busy gate reads "compaction done" off output-quiet, which a silent
- *  summarizer gap / the post-compaction context-restore can fake). The failure
- *  is invisible-but-fatal: the turn text sits staged in the composer and the
- *  session parks until a human presses Enter (owner-reported, 6h stall).
- *  So after the FINAL CR of any injected submit the host VERIFIES instead of
- *  firing-and-forgetting: it polls the pty-output activity for a bounded window
- *  and, at each poll that finds the output QUIET (no turn running — a submitted
- *  turn repaints continuously), injects one bare resubmit CR. A bare CR at an
- *  idle prompt with an EMPTY composer is a no-op, so a redundant resubmit is
- *  harmless; one with staged text is exactly the Enter a human would press. */
-const SUBMIT_VERIFY_POLL_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) || 5_000;
-const SUBMIT_VERIFY_POLLS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS) || 6;
-const SUBMIT_VERIFY_MAX_RESUBMITS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR) || 3;
-
 /** Mid-turn inject safety (coord-wake-mid-turn-2026-06-30). A wake `turn` (text +
  *  CR) written into a TUI that is MID-TURN — the agent is generating / mid
  *  tool-call — wedges the turn: the line lands as queued/garbled input and the
@@ -388,66 +371,6 @@ export function makeAgentBusyGate({
         if (now() >= deadline) return { started: false };
         await new Promise((r) => setTimeout(r, Math.max(10, Math.min(50, deadline - now()))));
       }
-    },
-  };
-}
-
-/**
- * Submit verifier (WI-2930) — the POST-submit sibling of makeAgentBusyGate. The
- * gates above decide when it is safe to WRITE an injected turn; nothing verified
- * the submit actually TOOK (the CR can be swallowed by paste-settle, or land in a
- * briefly-locked TUI right around a compaction). This polls the output activity
- * for a bounded window after the final CR and, at each poll that finds the output
- * quiet (no turn running), writes one bare resubmit CR — capped, and harmless
- * when the composer is empty.
- *
- * Deliberately NO early-exit on a busy observation: around a compaction, "busy"
- * can be residual summarizer/context-restore output resuming after the quiet gap
- * that let the carry through — exactly the trap that strands the text. Polling
- * the full window costs seconds on a rare path and covers it.
- *
- * Human-input abort: any human keystroke after verification starts cancels the
- * remaining polls (never fight a human who is editing the staged line —
- * `lastInputAt` is the same signal makeIdleGate defers on).
- *
- * Pure (injectable clock/sleep + getters); exported for tests.
- */
-export function makeSubmitVerifier({
-  lastOutputAt,
-  writeCr,
-  lastInputAt = () => 0,
-  quietMs = OUTPUT_QUIET_MS,
-  pollMs = SUBMIT_VERIFY_POLL_MS,
-  polls = SUBMIT_VERIFY_POLLS,
-  maxResubmits = SUBMIT_VERIFY_MAX_RESUBMITS,
-  now = Date.now,
-  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  onResubmit = () => {},
-} = {}) {
-  const getOut = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
-  const getIn = typeof lastInputAt === 'function' ? lastInputAt : () => 0;
-  return {
-    /** Poll for the verify window; resubmit a bare CR at each quiet observation.
-     *  Returns { polls, resubmits, aborted } (aborted = 'human-input' | null). */
-    async verify() {
-      const inputAtStart = getIn() || 0;
-      let resubmits = 0;
-      let i = 0;
-      for (; i < polls; i++) {
-        await sleep(pollMs);
-        if ((getIn() || 0) > inputAtStart) return { polls: i + 1, resubmits, aborted: 'human-input' };
-        const quietFor = now() - (getOut() || 0);
-        if (quietFor < quietMs) continue; // output flowing — a turn is running
-        if (resubmits >= maxResubmits) break;
-        resubmits++;
-        try {
-          writeCr();
-        } catch {
-          /* child may have exited mid-verify */
-        }
-        onResubmit(resubmits);
-      }
-      return { polls: i, resubmits, aborted: null };
     },
   };
 }
@@ -901,35 +824,6 @@ export function hostThroughPty(o) {
     RECYCLE_CARRY_RETRY_BACKOFF_MS,
   );
 
-  // WI-2930: verify every injected submit actually started a turn — resubmit a
-  // bare CR at each quiet observation in a bounded post-submit window (see
-  // makeSubmitVerifier). writeCr reads the live `child` closure so it survives a
-  // recycle; a fresh verifier per call keeps the human-input abort baseline fresh.
-  const verifySubmitted = async (label) => {
-    const verifier = makeSubmitVerifier({
-      lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
-      lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
-      writeCr: () => child.write('\r'),
-      quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
-      pollMs: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS, SUBMIT_VERIFY_POLL_MS),
-      polls: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS, SUBMIT_VERIFY_POLLS),
-      maxResubmits: positiveNumber(
-        env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
-        SUBMIT_VERIFY_MAX_RESUBMITS,
-      ),
-      onResubmit: (n) => {
-        try {
-          process.stderr.write(
-            `psu-pty-host: ${label} submit not confirmed for ${ownerId} — resubmit CR #${n} (WI-2930)\n`,
-          );
-        } catch {
-          /* never let a diagnostic write break the session */
-        }
-      },
-    });
-    return verifier.verify();
-  };
-
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
   // P-013: a 'turn' (wake) is deferred until the user's input line is idle so a
@@ -993,11 +887,8 @@ export function hostThroughPty(o) {
               child.write(step.data);
             }
           };
-          // (1) submit /compact <focus> — VERIFIED (WI-2930): a swallowed CR here
-          // would leave "/compact …" staged and, worse, let the quiet gate below
-          // pass immediately and type the carry into the same stranded composer.
+          // (1) submit /compact <focus>
           await submit(compactCmd);
-          await verifySubmitted('compact command');
           if (!msg.data) return; // bare compact — no continuation requested
           // (2) WI-1872 (2): wait for the compaction to actually go BUSY (bounded —
           // falls back to the old fixed compactStartMs(env) delay if busy is never
@@ -1031,11 +922,8 @@ export function hostThroughPty(o) {
           // ONLY here: the host observes completion only on the continuation path, and only a
           // settled, non-deferred compaction is a true "member compacted" signal.
           fireSessionCompactedEvent(ownerId, msg.focus);
-          // (4) open the compacted context on the continuation turn — VERIFIED
-          // (WI-2930): this is the exact write that stranded a builder for ~6h
-          // when its CR landed in a briefly-locked post-compaction TUI.
+          // (4) open the compacted context on the continuation turn
           await submit(msg.data);
-          await verifySubmitted('compact carry-note');
           return;
         }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
@@ -1049,12 +937,6 @@ export function hostThroughPty(o) {
         for (const step of controlWritesForAgent(msg, env.PAPERCUSP_AGENT, env)) {
           if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
           sink.write(step.data);
-        }
-        // WI-2930: a turn/reset submit targets the agent's stdin and must be
-        // verified like the compact writes above (raw = control bytes and osc =
-        // display bytes have no submit to verify).
-        if (msg.mode === 'turn' || msg.mode === 'reset') {
-          await verifySubmitted(`${msg.mode} inject`);
         }
       } catch {
         /* child may have exited mid-inject */
@@ -1271,10 +1153,6 @@ export function hostThroughPty(o) {
                 /* fresh child may have exited */
               }
             }
-            // WI-2930: the recycle carry is a normal submit — verify it took
-            // (writeCr reads the live child; a superseding recycle makes the
-            // resubmit a harmless bare CR on the newer child's idle prompt).
-            if (child === injectChild) await verifySubmitted('recycle carry-note');
             return; // injected — done
           }
           // Deferred: the fresh child is still mid-boot / mid-turn. Retry until
