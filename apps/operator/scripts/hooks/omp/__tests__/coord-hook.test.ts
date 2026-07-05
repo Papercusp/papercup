@@ -1644,11 +1644,12 @@ describe('onToolCall fleet-launch member-model guard (ornith mode #8 / WI-2382)'
   it('does NOT consume the fleet-launch budget on a wrong-model block (a corrected retry stays possible)', async () => {
     process.env.PAPERCUSP_AGENT_SESSION = '1';
     withOwnModel(ORNITH);
-    // 3 wrong-model attempts — all model-blocked, none reach the budget counter…
-    for (let i = 0; i < 3; i++) expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+    // 3 wrong-model attempts (varied fleet name so the generic identical-call breaker doesn't
+    // short-circuit them) — all model-blocked, none reach the budget counter…
+    for (let i = 0; i < 3; i++) expect((await launch({ name: 'wm' + i, plan: 'p' })).block).toBe(true);
     // …so a correct launch is still allowed (budget of 2 not yet spent).
-    expect((await launch({ name: 'f', plan: 'p', model: ORNITH })).block).toBeUndefined();
-    expect((await launch({ name: 'f', plan: 'p', model: ORNITH })).block).toBeUndefined();
+    expect((await launch({ name: 'ok1', plan: 'p', model: ORNITH })).block).toBeUndefined();
+    expect((await launch({ name: 'ok2', plan: 'p', model: ORNITH })).block).toBeUndefined();
   });
 
   it('feeds the SHARED reflexive backstop — a persistent wrong-model loop HALTS (naming fleet-model)', async () => {
@@ -1657,11 +1658,13 @@ describe('onToolCall fleet-launch member-model guard (ornith mode #8 / WI-2382)'
     const halts: string[] = [];
     const prevHalt = setHaltForTest((reason) => halts.push(reason));
     try {
+      // Varied fleet name each call so the generic identical-call breaker never short-circuits them
+      // (each must reach the #8 guard, which feeds the shared reflexive backstop).
       for (let i = 0; i < REFLEXIVE_BLOCK_KILL_AFTER - 1; i++) {
-        expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+        expect((await launch({ name: 'f' + i, plan: 'p' })).block).toBe(true);
       }
       expect(halts).toHaveLength(0);
-      expect((await launch({ name: 'f', plan: 'p' })).block).toBe(true);
+      expect((await launch({ name: 'f-final', plan: 'p' })).block).toBe(true);
       expect(halts).toHaveLength(1);
       expect(halts[0]).toContain('fleet-model');
     } finally {

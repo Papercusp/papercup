@@ -2447,6 +2447,30 @@ export async function onToolCall(
     }
   }
 
+  // Fleet-launch member-model guard (ornith iter22, 2026-07-04 / WI-2382 — failure mode #8): a
+  // LOCAL-model (ornith) agent that launches a fleet WITHOUT pinning a local member model silently
+  // spawns CLOUD `claude` members (fleet:launch-on-plan's default), NOT its own model — iter22's
+  // leader dropped agent:"omp" and launched 2 claude members invisibly, invalidating the ornith-
+  // member test. Enforce it structurally: if THIS session runs a local model but the launch omits a
+  // local member model, BLOCK with a re-call-with-model redirect naming the session's own model.
+  // Placed BEFORE the generic consecutive-identical breaker (not just before the budget check
+  // below): a wrong-model retry loop calls fleet:launch-on-plan with THE SAME (wrong) args every
+  // time, so the generic breaker would otherwise intercept it at its own IDENTICAL_CALL_LOOP_LIMIT
+  // (3) with an unrelated "loop-breaker" reason — starving this guard's OWN shared reflexive-block
+  // backstop (below REFLEXIVE_BLOCK_KILL_AFTER) of the counts it needs to ever reach its threshold,
+  // and (separately) meaning a corrected retry right after 3 identical wrong-model attempts would
+  // still read as "the 4th identical repeat" and get generic-breaker-blocked instead of allowed.
+  // Feeds the shared reflexive backstop so a leader that keeps launching wrong-model self-halts.
+  // Only fires for a local-model session (a cloud omp session is untouched) and only in agent
+  // sessions (D-003).
+  if (isAgentSession() && isFleetLaunchCall(event.toolName, event.input)) {
+    const own = getOwnLaunchedModel();
+    if (own && isLocalModel(own) && !isLocalModel(fleetLaunchMemberModel(event.input))) {
+      noteReflexiveBlock('fleet-model');
+      return { block: true, reason: fleetLaunchModelReason(own) };
+    }
+  }
+
   // Doom-loop breaker (ornith-reliability-2026-07-03 / EI-7076 + EI-7092): block the
   // Nth CONSECUTIVE identical (toolName+args) call from an agent session — the
   // deterministic backstop against a weak model wedging in a degenerate tool loop.
@@ -2466,26 +2490,13 @@ export async function onToolCall(
     if (isShellTool(event.toolName) && noteShellCall() > SHELL_CALLS_PER_TURN_LIMIT) {
       return { block: true, reason: shellBudgetReason(_shellCallsThisTurn) };
     }
-    // Fleet-launch member-model guard (ornith iter22, 2026-07-04 / WI-2382 — failure mode #8): a
-    // LOCAL-model (ornith) agent that launches a fleet WITHOUT pinning a local member model silently
-    // spawns CLOUD `claude` members (fleet:launch-on-plan's default), NOT its own model — iter22's
-    // leader dropped agent:"omp" and launched 2 claude members invisibly, invalidating the ornith-
-    // member test. Enforce it structurally: if THIS session runs a local model but the launch omits a
-    // local member model, BLOCK with a re-call-with-model redirect naming the session's own model.
-    // Runs BEFORE the budget check so a corrected retry does NOT burn the launch budget; feeds the
-    // shared reflexive backstop so a leader that keeps launching wrong-model self-halts. Only fires
-    // for a local-model session (a cloud omp session is untouched) and only in agent sessions (D-003).
-    if (isFleetLaunchCall(event.toolName, event.input)) {
-      const own = getOwnLaunchedModel();
-      if (own && isLocalModel(own) && !isLocalModel(fleetLaunchMemberModel(event.input))) {
-        noteReflexiveBlock('fleet-model');
-        return { block: true, reason: fleetLaunchModelReason(own) };
-      }
-    }
     // Session-cumulative fleet-launch budget (ornith run-10): the launch verb is
     // one-shot; a weak leader re-calling it between checkpoints dodges the
     // consecutive-identical breaker (each repeat is non-adjacent). Past the budget,
-    // block with a supervise-instead steer. Counted across turns on purpose.
+    // block with a supervise-instead steer. Counted across turns on purpose. The
+    // member-model guard above already returned for a wrong-model call, so reaching
+    // here means either the model was fine or this session's own model is not local
+    // (untouched) — either way a corrected retry does NOT burn the launch budget.
     if (
       isFleetLaunchCall(event.toolName, event.input) &&
       noteFleetLaunchCall() > FLEET_LAUNCH_CALLS_PER_SESSION
