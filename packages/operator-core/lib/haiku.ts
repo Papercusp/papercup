@@ -47,7 +47,7 @@ export interface HaikuTurnResult {
  */
 export async function runHaikuTurn(
   prompt: string,
-  opts: { maxTokens?: number; timeoutMs?: number } = {},
+  opts: { maxTokens?: number; timeoutMs?: number; attribution?: { role?: string; runId?: string; sessionId?: string; toolName?: string } } = {},
 ): Promise<HaikuTurnResult | null> {
   const ac = new AbortController();
   const killer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 15_000);
@@ -63,6 +63,10 @@ export async function runHaikuTurn(
       model: HAIKU_MODEL,
       maxTokens: opts.maxTokens ?? 200,
       signal: ac.signal,
+      // Default attribution: every haiku utility call is at least labeled 'haiku'
+      // on its usage row instead of anonymous; callers pass a feature-specific
+      // role (+ toolName/runId) to refine.
+      usageAttribution: opts.attribution ?? { role: 'haiku' },
     })) {
       // the stateless backend emits a single `delta` with the full final
       // text (non-streaming round-trip), then a `result` with the

@@ -199,6 +199,30 @@ describe('recordUsageHeaders (rate-limit header parsing)', () => {
     expect(row.source).toBe('headers');
     expect(row.input_tokens).toBe(12);
   });
+
+  it('EI-7625: persists caller attribution (role/runId/sessionId/toolName/model) on a header sample', async () => {
+    await recordUsageHeaders(
+      'b',
+      'anthropic',
+      'haiku',
+      {},
+      {
+        inputTokens: 12,
+        model: 'claude-haiku-4-5',
+        role: 'memory-extraction',
+        runId: 'run-9',
+        sessionId: 'sess-1',
+        toolName: 'memory:remember',
+      },
+    );
+    const row = lastInsert();
+    expect(row.source).toBe('headers');
+    expect(row.role).toBe('memory-extraction');
+    expect(row.run_id).toBe('run-9');
+    expect(row.session_id).toBe('sess-1');
+    expect(row.tool_name).toBe('memory:remember');
+    expect(row.model).toBe('claude-haiku-4-5');
+  });
 });
 
 describe('recordUsageSample (best-effort persistence + cost honesty)', () => {

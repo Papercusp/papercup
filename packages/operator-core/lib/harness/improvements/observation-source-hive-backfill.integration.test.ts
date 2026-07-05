@@ -10,9 +10,13 @@
  * This is an INTEGRATION test (real Postgres) because the backfill is pure SQL — jsonb_set +
  * a CASE derivation + DISABLE TRIGGER + partial expression indexes — which a mocked unit test
  * cannot exercise. We RE-RUN THE REAL migration body from the .sql file (not a re-implementation),
- * so the asserted derivation can never drift from what ships. The migration already ran once at
- * DB creation (000→head) against an empty table; it is idempotent, so re-running it after we
- * insert fixtures backfills exactly those fixtures.
+ * so the asserted derivation can never drift from what ships.
+ *
+ * WI-2924: the fixture is PINNED to the 325-ERA schema (a real engineer_issues TABLE built in a
+ * fresh scratch DB) — NOT a head-migrated DB. Migration 374 later converted engineer_issues into
+ * a VIEW over work_items, so the 325 body (ALTER TABLE … DISABLE TRIGGER USER) can no longer
+ * re-run at head; the derivation guarded here is frozen history (the runner never re-runs 325),
+ * and the era pin decouples this guard from all future schema evolution (the ei117 pattern).
  *
  * Asserts:
  *  1. derivation — each scope/workspace shape maps to the right sourceHive;
@@ -27,7 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../..');
@@ -72,11 +76,46 @@ const OBS_FIXTURES: ObsFixture[] = [
 ];
 
 describe('migration 325 — observation sourceHive backfill', () => {
-  let db: OrgTestDb;
+  let db: FreshPgDb;
+  let sql: FreshPgDb['sql'];
 
   beforeAll(async () => {
-    db = await createOrgTestDb();
-    const sql = db.adminSql;
+    // WI-2924: pin the fixture to the 325-ERA schema instead of a head-migrated DB.
+    // Migration 374 later turned engineer_issues into a VIEW over work_items, so
+    // re-running 325's body (ALTER TABLE … DISABLE TRIGGER USER) at HEAD schema
+    // fails with "cannot be performed on relation" — the test had been red since
+    // 2026-07-02. The derivation being guarded is FROZEN HISTORY (325 ran everywhere
+    // long ago and the runner never re-runs it); pinning the era-faithful TABLE
+    // decouples this guard from all future schema evolution (the ei117 pattern).
+    db = await createFreshPgDb('obs-backfill-325');
+    sql = db.sql;
+    // Era-faithful column subset (everything the seeds + the 325 body touch), plus
+    // a REAL updated_at bump trigger standing in for engineer_issues_updated_at_trg
+    // — so the DISABLE/ENABLE TRIGGER USER leg actually suppresses something and the
+    // "silent backfill" assertion below keeps its teeth.
+    await sql.unsafe(`
+      CREATE TABLE harness_shared.engineer_issues (
+        workspace_id text NOT NULL DEFAULT 'default',
+        issue_id     text NOT NULL,
+        scope        text NOT NULL DEFAULT 'operator',
+        title        text,
+        kind         text,
+        payload      jsonb,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        updated_at   timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (workspace_id, issue_id)
+      );
+      CREATE OR REPLACE FUNCTION harness_shared.ei_test_bump_updated_at() RETURNS trigger
+      LANGUAGE plpgsql AS $t$
+      BEGIN
+        NEW.updated_at := now();
+        RETURN NEW;
+      END;
+      $t$;
+      CREATE TRIGGER engineer_issues_updated_at_trg
+        BEFORE UPDATE ON harness_shared.engineer_issues
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.ei_test_bump_updated_at();
+    `);
     // Seed pre-v2 fixtures (no sourceHive) with a FIXED past updated_at, plus an idempotency row
     // (already carries sourceHive) and a non-observation control row.
     for (const f of OBS_FIXTURES) {
@@ -111,7 +150,7 @@ describe('migration 325 — observation sourceHive backfill', () => {
 
   it('derives the right sourceHive for every scope/workspace shape', async () => {
     for (const f of OBS_FIXTURES) {
-      const [row] = await db.adminSql<{ source_hive: string | null }[]>`
+      const [row] = await sql<{ source_hive: string | null }[]>`
         SELECT payload -> 'observation' ->> 'sourceHive' AS source_hive
           FROM harness_shared.engineer_issues
          WHERE workspace_id = ${f.workspace} AND issue_id = ${f.id}`;
@@ -120,7 +159,7 @@ describe('migration 325 — observation sourceHive backfill', () => {
   });
 
   it('creates the observation object on a bare free-text observation (only sourceHive added)', async () => {
-    const [row] = await db.adminSql<{ obs: Record<string, unknown> }[]>`
+    const [row] = await sql<{ obs: Record<string, unknown> }[]>`
       SELECT payload -> 'observation' AS obs
         FROM harness_shared.engineer_issues
        WHERE issue_id = 'EI-OBS-BARE'`;
@@ -128,7 +167,7 @@ describe('migration 325 — observation sourceHive backfill', () => {
   });
 
   it('preserves the existing structured keys when adding sourceHive', async () => {
-    const [row] = await db.adminSql<{ obs: Record<string, unknown> }[]>`
+    const [row] = await sql<{ obs: Record<string, unknown> }[]>`
       SELECT payload -> 'observation' AS obs
         FROM harness_shared.engineer_issues
        WHERE issue_id = 'EI-OBS-OP-DEFAULT'`;
@@ -136,7 +175,7 @@ describe('migration 325 — observation sourceHive backfill', () => {
   });
 
   it('is idempotent — never clobbers a sourceHive already present', async () => {
-    const [row] = await db.adminSql<{ source_hive: string }[]>`
+    const [row] = await sql<{ source_hive: string }[]>`
       SELECT payload -> 'observation' ->> 'sourceHive' AS source_hive
         FROM harness_shared.engineer_issues
        WHERE issue_id = 'EI-OBS-PRESET'`;
@@ -144,14 +183,14 @@ describe('migration 325 — observation sourceHive backfill', () => {
   });
 
   it('never touches a non-observation engineer_issue', async () => {
-    const [row] = await db.adminSql<{ payload: Record<string, unknown> }[]>`
+    const [row] = await sql<{ payload: Record<string, unknown> }[]>`
       SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'EI-NOT-OBS'`;
     expect(row?.payload).toEqual({ paths: ['a.ts'] });
     expect(row?.payload).not.toHaveProperty('observation');
   });
 
   it('is silent — does not bump updated_at on the backfilled rows', async () => {
-    const rows = await db.adminSql<{ issue_id: string; updated_at: Date }[]>`
+    const rows = await sql<{ issue_id: string; updated_at: Date }[]>`
       SELECT issue_id, updated_at FROM harness_shared.engineer_issues
        WHERE issue_id = ANY(${OBS_FIXTURES.map((f) => f.id)})`;
     expect(rows.length).toBe(OBS_FIXTURES.length);
@@ -161,7 +200,7 @@ describe('migration 325 — observation sourceHive backfill', () => {
   });
 
   it('creates the supporting partial indexes', async () => {
-    const idx = await db.adminSql<{ indexname: string }[]>`
+    const idx = await sql<{ indexname: string }[]>`
       SELECT indexname FROM pg_indexes
        WHERE schemaname = 'harness_shared' AND tablename = 'engineer_issues'
          AND indexname IN ('engineer_issues_obs_source_hive_idx', 'engineer_issues_obs_rubric_ref_idx')`;

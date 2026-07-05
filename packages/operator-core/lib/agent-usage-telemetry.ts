@@ -34,13 +34,14 @@ export interface UsageSample {
   model?: string;
   /** 'provider' (reported by the backend) vs 'estimated' (tokens × list price). Derived when omitted. */
   costSource?: 'provider' | 'estimated';
-  /** Run attribution (migration 170) — set on the subprocess path; null on bare header samples. */
+  /** Run attribution (migration 170) — set on the subprocess path; on header samples,
+   *  filled from the caller's `usageAttribution` (the EI-7625 stateless seam) when passed. */
   harnessSlug?: string;
   runId?: string;
   role?: string;
   /** Per-call attribution (B-TOK-2, migration 279 + 330): the native session id, the
    *  plan the call served, and the tool/feature that made it. NULL where a path can't
-   *  supply them (the in-process header path has no session/plan/tool context today). */
+   *  supply them (on the in-process header path, only what `usageAttribution` carried). */
   sessionId?: string;
   planId?: string;
   toolName?: string;
@@ -131,14 +132,27 @@ export async function recordUsageHeaders(
   provider: string,
   modelClass: string,
   headers: Record<string, string | undefined>,
-  tokens?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-    costUsd?: number;
-    accountId?: string;
-  },
+  /** Token counts + any caller attribution (role/runId/sessionId/toolName — the
+   *  stateless `usageAttribution` seam) — spread verbatim onto the sample. */
+  tokens?: Partial<
+    Pick<
+      UsageSample,
+      | 'inputTokens'
+      | 'outputTokens'
+      | 'cacheReadTokens'
+      | 'cacheCreationTokens'
+      | 'costUsd'
+      | 'accountId'
+      | 'model'
+      | 'harnessSlug'
+      | 'runId'
+      | 'role'
+      | 'sessionId'
+      | 'planId'
+      | 'toolName'
+      | 'turnTrigger'
+    >
+  >,
 ): Promise<void> {
   const h: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(headers)) h[k.toLowerCase()] = v;

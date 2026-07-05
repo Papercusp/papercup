@@ -216,6 +216,7 @@ const defaultRunTurn: SessionTurnRunner = async ({
       maxTokens,
       temperature: 0,
       signal: ac.signal,
+      usageAttribution: { role: 'memory-extraction' },
     })) {
       if (ev.type === 'delta') text = ev.text;
       else if (ev.type === 'result') {

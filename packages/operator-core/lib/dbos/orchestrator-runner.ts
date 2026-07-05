@@ -1395,7 +1395,11 @@ export function wireOrchestratorInvokeRunner(): void {
       cacheReadTokens: ev.cacheReadTokens,
       cacheCreationTokens: ev.cacheCreationTokens,
       costUsd: ev.costUsd,
+      model: ev.model,
       accountId: process.env.PAPERCUSP_ACCOUNT_ID,
+      // Caller attribution (the stateless usageAttribution seam) — before this,
+      // every source:'headers' row was anonymous (null role/run/session).
+      ...(ev.attribution ?? {}),
     });
   });
   setPipelineInvokeRunner(realRunner);

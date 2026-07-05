@@ -219,6 +219,9 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     // the pacing gateway tiers this caller (e.g. 'scout' → tier 1) instead of the
     // first-shed default band. No-op for the subprocess backends.
     priority: opts.priority,
+    // Usage attribution: the priority label already names the caller ('gym',
+    // 'scout'); reuse it so this client's header samples stop being anonymous.
+    usageAttribution: { role: opts.priority ?? 'llm-client' },
     // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
     // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
     // subprocess). Without this, each sim-user/judge `claude` spawn does a

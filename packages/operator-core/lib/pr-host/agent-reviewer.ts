@@ -97,6 +97,7 @@ export const defaultLlmRunner: LlmRunner = async ({ systemPrompt, prompt, model,
       maxTokens: REVIEW_MAX_TOKENS,
       temperature: 0,
       signal: ac.signal,
+      usageAttribution: { role: 'pr-reviewer' },
     })) {
       if (ev.type === 'delta') out = ev.text;
       else if (ev.type === 'result') {
