@@ -226,6 +226,99 @@ export async function getNextForBee(args: {
   });
 }
 
+/**
+ * EI-7678: the READ counterpart to setClaimSpec — a bee's/fleet's claim spec was write-only
+ * from the tool surface (verifying a live spec meant grepping source for the zod grammar, or a
+ * raw `bee_claim_specs` query). Full record, not just the resolved spec: which row actually
+ * answered (a per-bee spec, an inherited fleet spec, or neither ⇒ DEFAULT_CLAIM_SPEC), plus its
+ * revision/updatedBy/updatedAt/harnessSlug so a leader can confirm a re-steer actually landed
+ * before relying on it.
+ */
+export interface ClaimSpecRecord {
+  /** Which row answered: a per-bee spec always wins; 'fleet' when inherited via membership;
+   *  'default' when neither a per-bee nor a fleet spec exists (DEFAULT_CLAIM_SPEC applies). */
+  source: 'bee' | 'fleet' | 'default';
+  spec: ClaimSpec;
+  revision: number | null;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  /** The federation hive scope the row rides (null ⇒ operator-scope/local-only). Absent on 'default'. */
+  harnessSlug?: string | null;
+  /** Set when `source === 'fleet'`: the fleet slug whose spec this bee inherited. */
+  fleetSlug?: string;
+}
+
+/**
+ * Load the full claim-spec RECORD for a bee (or, via `fleetSpecBeeKey`, a fleet sentinel) —
+ * mirrors getClaimSpec's resolution order (bee spec → fleet spec → DEFAULT_CLAIM_SPEC) but
+ * returns the row metadata instead of silently collapsing to just the resolved spec, so a
+ * caller can tell an explicit override from an inherited or absent one.
+ */
+export async function getClaimSpecRecord(
+  args: { beeId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<ClaimSpecRecord> {
+  const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const rows = (await sql`
+    SELECT spec, revision, updated_by, updated_at, harness_slug
+      FROM harness_shared.bee_claim_specs
+     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId} LIMIT 1`) as Array<{
+    spec: unknown;
+    revision: number;
+    updated_by: string | null;
+    updated_at: string;
+    harness_slug: string | null;
+  }>;
+  if (rows.length > 0) {
+    const row = rows[0]!;
+    const v = validateClaimSpec(row.spec);
+    return {
+      source: 'bee',
+      spec: v.ok && v.spec ? v.spec : DEFAULT_CLAIM_SPEC,
+      revision: row.revision,
+      updatedBy: row.updated_by,
+      updatedAt: row.updated_at,
+      harnessSlug: row.harness_slug,
+    };
+  }
+  // No per-bee row — try the fleet the bee belongs to (same inheritance getClaimSpec applies).
+  try {
+    const { latestFleetMembership } = await import('../fleet-membership-store');
+    const membership = await latestFleetMembership(ws, args.beeId);
+    if (membership?.fleetSlug) {
+      const frows = (await sql`
+        SELECT spec, revision, updated_by, updated_at, harness_slug
+          FROM harness_shared.bee_claim_specs
+         WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as Array<{
+        spec: unknown;
+        revision: number;
+        updated_by: string | null;
+        updated_at: string;
+        harness_slug: string | null;
+      }>;
+      if (frows.length > 0) {
+        const frow = frows[0]!;
+        const fv = validateClaimSpec(frow.spec);
+        if (fv.ok && fv.spec) {
+          return {
+            source: 'fleet',
+            spec: fv.spec,
+            revision: frow.revision,
+            updatedBy: frow.updated_by,
+            updatedAt: frow.updated_at,
+            harnessSlug: frow.harness_slug,
+            fleetSlug: membership.fleetSlug,
+          };
+        }
+      }
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  return { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null };
+}
+
 /** The claim-spec head (specId@revision) a bee is running under — the live-execution view's
  *  per-run spec column (P-001). */
 export interface ClaimSpecHead {

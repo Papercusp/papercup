@@ -30,8 +30,8 @@ describe('plans:new buildTemplate — one-call body', () => {
 
   it('with body: emits frontmatter + the caller body, NOT the template', () => {
     const out = buildTemplate({ ...base, body: '# X Plan\n\n## Now\n\nReady.\n' });
-    // Frontmatter is generated (exactly one block).
-    expect(out.match(/^---\n/gm)?.length).toBe(1);
+    // Exactly ONE frontmatter block = 2 `---` delimiter lines (open + close).
+    expect(out.match(/^---$/gm)?.length).toBe(2);
     expect(out).toContain('slug: x-plan-2026-07-05');
     expect(out).toContain('## Now\n\nReady.');
     // The empty-template placeholder must be gone.
@@ -43,8 +43,8 @@ describe('plans:new buildTemplate — one-call body', () => {
   it('with body: strips a caller-supplied frontmatter block (we own frontmatter)', () => {
     const withFm = '---\ntitle: WRONG\nslug: wrong\n---\n\n## Now\n\nBody.\n';
     const out = buildTemplate({ ...base, body: withFm });
-    // Only ONE frontmatter block, and it is OURS (correct slug), not the caller's.
-    expect(out.match(/^---\n/gm)?.length).toBe(1);
+    // Only ONE frontmatter block (2 delimiter lines), and it is OURS (correct slug).
+    expect(out.match(/^---$/gm)?.length).toBe(2);
     expect(out).toContain('slug: x-plan-2026-07-05');
     expect(out).not.toContain('slug: wrong');
     expect(out).not.toContain('title: WRONG');

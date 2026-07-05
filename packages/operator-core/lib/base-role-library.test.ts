@@ -96,12 +96,12 @@ describe('the hive is the self-contained Queen + colony blueprint (Phase 3)', ()
     }
   });
 
-  it('a hive-context spawn resolves bee from blueprints/coding/prompts/bee.md', () => {
+  it('a hive-context spawn resolves cup from blueprints/coding/prompts/cup.md', () => {
     const found = resolvePromptFile(
       { harnessDir: HARNESS_DIR, phase: '', dept: '', blueprintId: 'coding' },
       'cup',
     );
-    expect(found).toBe(join(HARNESS_DIR, 'blueprints', 'coding', 'prompts', 'bee.md'));
+    expect(found).toBe(join(HARNESS_DIR, 'blueprints', 'coding', 'prompts', 'cup.md'));
   });
 
   it('a hive-context spawn resolves the queen/overwatch OVERRIDE over the base copy', () => {

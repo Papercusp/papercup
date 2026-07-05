@@ -259,14 +259,14 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
     expect(d.created[0].payload?.sourceRole).toBeUndefined();
   });
 
-  it('adds improvement-source topic tag when sourceRole is Queen or bee (P-010)', async () => {
+  it('adds improvement-source topic tag when sourceRole is Queen or cup (P-010)', async () => {
     const d1 = deps();
     await captureImprovement({ title: 'queen-filed idea', kind: 'bug', sourceRole: 'Queen' }, d1);
     expect(d1.created[0].topics).toContain('improvement-source:Queen');
 
     const d2 = deps();
-    await captureImprovement({ title: 'bee-filed idea', kind: 'bug', sourceRole: 'cup' }, d2);
-    expect(d2.created[0].topics).toContain('improvement-source:bee');
+    await captureImprovement({ title: 'cup-filed idea', kind: 'bug', sourceRole: 'cup' }, d2);
+    expect(d2.created[0].topics).toContain('improvement-source:cup');
   });
 
   it('respects per-Hive scope (harness:<slug>) alongside sourceRole (P-010)', async () => {

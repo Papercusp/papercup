@@ -334,8 +334,8 @@ test('resolvePriorityTiers — GATEWAY_PRIORITY_MAP + GATEWAY_T1_RESERVE_FRAC en
     env: { GATEWAY_PRIORITY_MAP: '{"cup":4,"newrole":2}', GATEWAY_T1_RESERVE_FRAC: '0.25' },
   });
   assert.equal(r!.config.tier1Reserve, 5, 'ceil(20*0.25)=5');
-  // bee remapped to tier 4; newrole added at 2. The default/gym tiers remain present.
-  assert.equal(r!.map.bee, 4, 'bee override applied');
+  // cup remapped to tier 4; newrole added at 2. The default/gym tiers remain present.
+  assert.equal(r!.map.cup, 4, 'cup override applied');
   assert.equal(r!.map.newrole, 2, 'new role added');
   assert.equal(r!.config.caps![2], 15, 'tier 2 may use the shared pool');
   assert.equal(r!.config.caps![4], 8, 'tier 4 remains a bounded benchmark/gym-style frame');

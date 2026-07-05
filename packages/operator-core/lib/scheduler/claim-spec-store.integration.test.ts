@@ -23,7 +23,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { setClaimSpec, getClaimSpec, getClaimSpecHeadsForBees, resolveClaimSpecWorkspace } =
+const { setClaimSpec, getClaimSpec, getClaimSpecRecord, getClaimSpecHeadsForBees, resolveClaimSpecWorkspace, fleetSpecBeeKey } =
   await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
@@ -87,6 +87,42 @@ describe('bee_claim_specs store (mig 372)', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeGreaterThan(0);
     expect(await getClaimSpec({ beeId: 'su-bee-2' }, db.sql)).toEqual(DEFAULT_CLAIM_SPEC);
+  });
+});
+
+describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_claim_spec)', () => {
+  it('returns source:"bee" + the full row metadata for a bee with an explicit spec', async () => {
+    await setClaimSpec({ beeId: 'su-rec-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-x' }, db.sql);
+    const rec = await getClaimSpecRecord({ beeId: 'su-rec-1' }, db.sql);
+    expect(rec.source).toBe('bee');
+    expect(rec.spec.specId).toBe(DEFAULT_CLAIM_SPEC.specId);
+    expect(rec.revision).toBe(DEFAULT_CLAIM_SPEC.revision);
+    expect(rec.updatedBy).toBe('leader-x');
+    expect(rec.updatedAt).not.toBeNull();
+    expect(rec.harnessSlug ?? null).toBeNull(); // operator-scope (no hiveSlug passed)
+    expect(rec.fleetSlug).toBeUndefined();
+  });
+
+  it('the revision bumps are visible on re-read (confirms a re-steer landed)', async () => {
+    await setClaimSpec({ beeId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    const before = await getClaimSpecRecord({ beeId: 'su-rec-2' }, db.sql);
+    await setClaimSpec({ beeId: 'su-rec-2', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-y' }, db.sql);
+    const after = await getClaimSpecRecord({ beeId: 'su-rec-2' }, db.sql);
+    expect(after.revision).toBe((before.revision ?? 0) + 1);
+    expect(after.updatedBy).toBe('leader-y');
+  });
+
+  it('returns source:"default" (DEFAULT_CLAIM_SPEC, no metadata) for a bee/fleet with no stored spec', async () => {
+    const rec = await getClaimSpecRecord({ beeId: 'no-such-bee-rec' }, db.sql);
+    expect(rec).toEqual({ source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null });
+  });
+
+  it('reads a FLEET-level spec directly via its sentinel key (fleetSpecBeeKey)', async () => {
+    const fleetKey = fleetSpecBeeKey('drain-fleet-x');
+    await setClaimSpec({ beeId: fleetKey, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-z' }, db.sql);
+    const rec = await getClaimSpecRecord({ beeId: fleetKey }, db.sql);
+    expect(rec.source).toBe('bee'); // the sentinel row itself IS the "bee" row for this key
+    expect(rec.updatedBy).toBe('leader-z');
   });
 });
 

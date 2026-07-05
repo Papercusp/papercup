@@ -75,6 +75,13 @@ vi.mock('../../../inference-gateway/observability', () => ({
   fetchGatewayHeadroom: (...args: unknown[]) => fetchGatewayHeadroomMock(...args),
 }));
 
+const setClaimSpecMock = vi.fn();
+vi.mock('../../../scheduler/claim-spec-store', () => ({
+  setClaimSpec: (...args: unknown[]) => setClaimSpecMock(...args),
+  fleetSpecBeeKey: (slug: string) => `fleet:${slug}`,
+  resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
+}));
+
 import tool, {
   memberLaunchCommand,
   composeMemberLaunchContext,
@@ -573,5 +580,70 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// EI-7671: the handler must apply the fleet-level kind-filter claim spec BEFORE opening
+// any member terminal (closing the boot-race where members self-pull under the
+// unrestricted DEFAULT_CLAIM_SPEC before the leader manually steers them).
+describe('fleet:launch-on-plan handler — claimKinds wiring (EI-7671)', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+  });
+
+  it('sets the fleet claim spec BEFORE any member terminal opens, when claimKinds is passed', async () => {
+    const callOrder: string[] = [];
+    setClaimSpecMock.mockImplementation(async () => {
+      callOrder.push('setClaimSpec');
+      return { ok: true, revision: 1 };
+    });
+    spawnConsoleMock.mockImplementation(() => {
+      callOrder.push('spawnConsole');
+      return { status: 'ok', terminal: 'term-1', pid: 123 };
+    });
+    const res = await tool.handler(
+      { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    const call = setClaimSpecMock.mock.calls[0][0] as {
+      beeId: string;
+      spec: { view: { filter: { field: string; op: string; value: string[] } } };
+    };
+    expect(call.beeId).toBe('fleet:drain-fleet');
+    expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
+    expect(payload.claimKindsApplied).toEqual({ ok: true, revision: 1 });
+    // Order matters: the spec must land before members can race a get_next pull.
+    expect(callOrder.indexOf('setClaimSpec')).toBeLessThan(callOrder.indexOf('spawnConsole'));
+  });
+
+  it('does NOT set a claim spec when claimKinds is omitted (unchanged default behavior)', async () => {
+    const res = await tool.handler(
+      { name: 'No Kinds Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+    expect(payload.claimKindsApplied).toBeNull();
+  });
+
+  it('best-effort: a claim-spec write failure never blocks the launch', async () => {
+    setClaimSpecMock.mockRejectedValue(new Error('db unavailable'));
+    const res = await tool.handler(
+      { name: 'Resilient Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['task'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.claimKindsApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
   });
 });

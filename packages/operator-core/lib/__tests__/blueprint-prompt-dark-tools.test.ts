@@ -195,15 +195,15 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   // base/queen.base.md — the shared Queen method prose names a broad surface. These are
   // described/peer-routed actions in the generic base persona, not the coding-Queen's own
   // declared call set (her deps wire her concrete tools); left undeclared by design.
-  'coding/queen/db:next-migration',
-  'coding/queen/pot:survey',
-  'coding/queen/plans:promote',
-  'coding/queen/plans:set-plan-status',
+  'coding/mug/db:next-migration',
+  'coding/mug/pot:survey',
+  'coding/mug/plans:promote',
+  'coding/mug/plans:set-plan-status',
   // The Scout-routed draft review section names the rubric-ratify verb in the shared
   // persona prose (a rubric proposal is ratified by filling templateData + promoting);
   // like the plan-lifecycle verbs above it is a generic-persona mention, not in the
   // coding-Queen's concrete deps.
-  'coding/queen/rubrics:ratify',
+  'coding/mug/rubrics:ratify',
   // coding/operator.md — operator decision-tree prose naming routed/peer actions + a wake event.
   'coding/operator/coord:escalate',
   'coding/operator/db:next-migration',
@@ -211,17 +211,11 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   'coding/operator/events:emit',
   // base/documenter.md — names the doc-record verb in prose for the documenter pipeline role.
   'coding-factory/documenter/harness_docs:record',
-  // base/bee.base.md — tools the bee RECEIVES / a surface it's described against, never calls:
-  //   turn:interrupt — "the Queen or operator ISSUED a turn:interrupt" (the bee is the target).
-  //   pot:status    — "invisible to Pause/pot:status" (describing the Queen's visibility surface).
-  'bee/bee/turn:interrupt',
-  'bee/bee/pot:status',
   // base/bee.base.md + base/queen.base.md — fleet:leave is NAMED, not called: the bee is
   // "told to drop the work" and the Queen tells a PEER to `fleet:leave` (a routed action).
-  // Neither role calls it itself; their concrete fleet-membership tools are in deps.
+  // The role never calls it itself; its concrete fleet-membership tools are in deps.
   // (gate-greening 2026-06-30)
-  'bee/bee/fleet:leave',
-  'coding/queen/fleet:leave',
+  'coding/mug/fleet:leave',
 ]);
 
 // ─── 5. The blueprints under guard ──────────────────────────────────────────
@@ -301,9 +295,9 @@ describe('blueprint prompt dark-tools (no prompt may reference a tool absent fro
     parseToolMentions(text).has(qualified) || new RegExp('`' + bareVerb + '`').test(text);
 
   it('bee blueprint: the bee prompt CALLS get_next AND the blueprint DECLARES scheduler:get_next (P-003 lock)', () => {
-    const deps = effectiveDeps('cup');
+    const deps = effectiveDeps('bee');
     expect(deps.has('scheduler:get_next')).toBe(true); // the wiring that was missing
-    const promptText = resolvePromptFiles('cup', 'cup').map((f) => readFileSync(f, 'utf8')).join('\n');
+    const promptText = resolvePromptFiles('bee', 'cup').map((f) => readFileSync(f, 'utf8')).join('\n');
     expect(referencesTool(promptText, 'scheduler:get_next', 'get_next')).toBe(true);
   });
 

@@ -13,7 +13,7 @@
  * getOrgPg is env-routed at the throwaway DB (the _baseline-coord-fixture
  * pattern); the registry write goes through the real operator-state PG path.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, beforeEach } from 'vitest';
 import { teardownTestPg } from '@papercusp/test-config';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
@@ -22,6 +22,18 @@ const SLUG = 'canary-h';
 
 process.env.PAPERCUSP_WORKSPACE_ID = WS;
 process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+
+// EI-7655: hive-canary-action's Phase 2 now wakes the Hive after queuing a
+// genuinely NEW canary (requestUrgentHiveWake — the same bypass work_items:
+// create's `urgent` flag uses) so the demand isn't invisible to the
+// event-driven wake path. That function's real implementation fires an actual
+// hive launch (fireLaunchBlueprint) — far too heavy/slow for this unit, and
+// exactly the kind of side effect a routine-level test must NOT perform for
+// real. Mock it and assert the ROUTINE calls it correctly instead.
+const urgentWakeSpy = vi.fn().mockResolvedValue({ fired: true, coalesced: false });
+vi.mock('../../hive/urgent-wake', () => ({
+  requestUrgentHiveWake: (...args: unknown[]) => urgentWakeSpy(...args),
+}));
 
 let db: OrgTestDb;
 let getSystemAction: typeof import('./system-actions').getSystemAction;
@@ -70,6 +82,10 @@ async function canaryRows(): Promise<Array<{ feature_id: string; status: string;
 }
 
 describe('hive-canary action (P-009)', () => {
+  beforeEach(() => {
+    urgentWakeSpy.mockClear();
+  });
+
   it('self-gates cleanly when the canary harness is not registered', async () => {
     await fire('not-registered');
     const rows = await db.adminSql`
@@ -86,6 +102,14 @@ describe('hive-canary action (P-009)', () => {
     expect(rows.map((r) => r.feature_id)).toEqual([canaryIdFor(Date.now())]);
     expect(rows[0].status).toBe('todo');
     expect(rows[0].payload?.canary).toBe(true);
+
+    // EI-7655: the Hive is woken EXACTLY once — for the genuinely NEW canary on
+    // the first fire, never again on the idempotent same-day replay (no double
+    // wake per day, and a no-op tick never wakes at all).
+    expect(urgentWakeSpy).toHaveBeenCalledTimes(1);
+    expect(urgentWakeSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: SLUG, reason: expect.stringContaining(canaryIdFor(Date.now())) }),
+    );
   });
 
   it('reports an overdue canary ONCE with forensics attached, never a terminal or fresh one', async () => {

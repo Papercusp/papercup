@@ -797,14 +797,14 @@ export async function spawnAgentInHarness(
     }
   } else if (!spawnModelSpec) {
     try {
-      const [{ resolveRoleOwnModelSpec }, eff] = await Promise.all([
+      const [{ resolveRoleOwnModelSpec, roleTierCeiling }, eff] = await Promise.all([
         import('./model-tiers'),
         readEffectiveSpawnTierConfig(input.workspaceId),
       ]);
       const spec = resolveRoleOwnModelSpec(role, eff);
       if (spec) {
         spawnModelSpec = spec;
-        spawnModelTier = eff.tierCeilings?.[role]?.trim() || null;
+        spawnModelTier = roleTierCeiling(eff.tierCeilings, role) ?? null;
       }
     } catch (e) {
       console.warn(`[operator-spawn] default model steering skipped (fail-soft): ${(e as Error).message}`);

@@ -42,6 +42,8 @@ import {
   getFleetScheme,
   releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
+import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
+import { fleetSpecBeeKey, resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
@@ -378,6 +380,28 @@ export function composeMemberLaunchContext(opts: {
   return `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`;
 }
 
+/**
+ * EI-7671: build the FLEET-level claim spec that restricts every member's
+ * scheduler:get_next self-pull to `kinds`. Pure + exported for a unit test — the
+ * shape must satisfy validateClaimSpec (see scheduler:set_claim_spec's docstring
+ * for the concrete field/op vocabulary). Rank/limits are inherited from
+ * DEFAULT_CLAIM_SPEC unchanged: only the view.filter narrows (D-002 — a spec can
+ * only narrow + reorder within the global floors, never widen past them).
+ */
+export function buildFleetKindClaimSpec(
+  fleetSlug: string,
+  kinds: readonly string[],
+): Record<string, unknown> {
+  return {
+    specVersion: '1.0',
+    specId: `fleet-launch-${fleetSlug}-kinds`,
+    revision: 1,
+    view: { filter: { field: 'kind', op: 'in', value: [...kinds] } },
+    rank: DEFAULT_CLAIM_SPEC.rank,
+    limits: DEFAULT_CLAIM_SPEC.limits,
+  };
+}
+
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
@@ -507,6 +531,19 @@ export default defineTool({
       .describe(
         'Escape hatch for any other psu flag: each element is one full token (e.g. ["--yes", "--add-dir=/x"]), appended verbatim to every member\'s psu launch — covers psu args without a first-class field above.',
       ),
+    claimKinds: z
+      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .min(1)
+      .max(5)
+      .optional()
+      .describe(
+        'EI-7671: restrict every member\'s scheduler:get_next self-pull to these work-item kinds — e.g. ' +
+          '["bug","change","task"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
+          'BEFORE any member terminal opens, closing the boot-race where members start pulling under the ' +
+          'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
+          'leader gets around to calling scheduler:set_claim_spec by hand. A member\'s own later per-bee ' +
+          'spec still overrides this fleet default. Omit to leave scheduling exactly as before (no spec set).',
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
@@ -595,6 +632,27 @@ export default defineTool({
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
 
+    // EI-7671: apply the fleet-level kind-filter claim spec (when requested) BEFORE any
+    // member terminal opens — closing the boot-race where members self-pull via
+    // scheduler:get_next under the empty-filter DEFAULT_CLAIM_SPEC (admits every kind,
+    // including feature/chunk) before the leader gets around to calling
+    // scheduler:set_claim_spec by hand after the fact. Best-effort: a spec-write failure
+    // never blocks the launch (members still start, just unsteered — no worse than today).
+    let claimKindsApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
+    if (args.claimKinds?.length) {
+      try {
+        claimKindsApplied = await setClaimSpec({
+          beeId: fleetSpecBeeKey(fleetSlug),
+          workspaceId: resolveClaimSpecWorkspace(workspaceId),
+          spec: buildFleetKindClaimSpec(fleetSlug, args.claimKinds),
+          updatedBy: ownerId,
+          hiveSlug: null,
+        });
+      } catch (e: any) {
+        claimKindsApplied = { ok: false, errors: [e?.message ?? String(e)] };
+      }
+    }
+
     // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
     // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
     // minutes apart (2026-07-03 second incident: leader 10040 re-fired at +5 min and +9 min — each
@@ -626,6 +684,7 @@ export default defineTool({
         liveMembers,
         sizingAdvisory: null,
         memberBaselineApplied: false,
+        claimKindsApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -675,6 +734,7 @@ export default defineTool({
         capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: false,
+        claimKindsApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -762,6 +822,7 @@ export default defineTool({
         requested: count,
         sizingAdvisory: null,
         memberBaselineApplied: false,
+        claimKindsApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath: null,
         briefReadError: null,
@@ -943,6 +1004,7 @@ export default defineTool({
         capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: baselineApplied,
+        claimKindsApplied,
         memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
         memberLaunchContextPath,
         briefReadError,

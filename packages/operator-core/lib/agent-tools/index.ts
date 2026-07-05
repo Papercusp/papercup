@@ -760,6 +760,9 @@ import './work_items/observe';
 // floors (the richer sibling of claim_next); the Queen steers via scheduler:set_claim_spec.
 import './scheduler/get_next';
 import './scheduler/set_claim_spec';
+// EI-7678: the READ counterpart to set_claim_spec — confirm a bee's/fleet's current spec
+// (source/revision/updatedBy/updatedAt) without grepping source or guessing.
+import './scheduler/get_claim_spec';
 // p2p-work-distribution-2026-07-02 P-004: the cross-machine refusal-receipt timeline.
 import './p2p/trace';
 // agent-allocation-framework-2026-07-03 P-002 (D-004): the ONE delegation write path —

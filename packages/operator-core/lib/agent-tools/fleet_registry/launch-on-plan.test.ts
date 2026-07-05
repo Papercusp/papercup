@@ -17,6 +17,7 @@ import launchOnPlan, {
   memberLaunchCommand,
   isOmpLocalModel,
   resolveFleetAgent,
+  buildFleetKindClaimSpec,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 
@@ -170,5 +171,66 @@ describe('model arg — cloud model-spec validation at the tool boundary (WI-199
     ]) {
       expect(() => parseModel(m), m).not.toThrow();
     }
+  });
+});
+
+// EI-7671: fleet:launch-on-plan previously never set an initial claim spec, so members
+// booted and self-pulled via scheduler:get_next under the empty-filter DEFAULT_CLAIM_SPEC
+// (admits every kind, including feature/chunk) before the leader got around to calling
+// scheduler:set_claim_spec by hand — a drain fleet told "bugs only" could still grab
+// feature-family work in that boot-race window. buildFleetKindClaimSpec is the pure spec
+// builder the handler now calls BEFORE opening any member terminal.
+describe('buildFleetKindClaimSpec (EI-7671 — fleet-level kind-filter claim spec)', () => {
+  it('builds a valid-shaped spec restricting to the given kinds', () => {
+    const spec = buildFleetKindClaimSpec('atlas-fleet', ['bug', 'change', 'task']);
+    expect(spec).toMatchObject({
+      specVersion: '1.0',
+      revision: 1,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] } },
+    });
+    expect(typeof spec.specId).toBe('string');
+    expect((spec.specId as string).length).toBeGreaterThan(0);
+  });
+
+  it('names the fleet in specId so specs for different fleets never collide', () => {
+    const a = buildFleetKindClaimSpec('atlas-fleet', ['bug']);
+    const b = buildFleetKindClaimSpec('other-fleet', ['bug']);
+    expect(a.specId).not.toBe(b.specId);
+  });
+
+  it('copies the kinds array (mutating the input after the call does not affect the spec)', () => {
+    const kinds = ['bug', 'change'];
+    const spec = buildFleetKindClaimSpec('atlas-fleet', kinds);
+    kinds.push('feature');
+    expect((spec.view as { filter: { value: string[] } }).filter.value).toEqual(['bug', 'change']);
+  });
+
+  it('inherits rank + limits unchanged (only view.filter narrows, per D-002)', () => {
+    const spec = buildFleetKindClaimSpec('atlas-fleet', ['bug']);
+    expect(spec.rank).toBeTruthy();
+    expect(spec.limits).toBeTruthy();
+  });
+});
+
+describe('claimKinds arg (EI-7671)', () => {
+  const parse = (claimKinds: unknown) =>
+    (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan', claimKinds });
+
+  it('accepts a valid kind list', () => {
+    expect(() => parse(['bug', 'change', 'task'])).not.toThrow();
+  });
+
+  it('rejects an unknown kind', () => {
+    expect(() => parse(['bogus'])).toThrow();
+  });
+
+  it('rejects an empty array (min 1)', () => {
+    expect(() => parse([])).toThrow();
+  });
+
+  it('is optional — omitting it entirely still parses', () => {
+    expect(() =>
+      (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan' }),
+    ).not.toThrow();
   });
 });

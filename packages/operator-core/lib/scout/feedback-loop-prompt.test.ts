@@ -5,7 +5,7 @@
  * The loop's behaviour lives entirely in PROMPT GUIDANCE (the wiring — Scout's
  * coord-inbox read + the cadence bypass + the deprecate emission — are sibling
  * briefs). This test is the anti-drift guard for that guidance: the Queen side
- * (`blueprints/base/prompts/queen.base.md`) and the Scout side
+ * (`blueprints/base/prompts/mug.base.md` — renamed queen→mug, WI-2932) and the Scout side
  * ({@link SCOUT_FEEDBACK_LOOP_GUIDANCE}) must each carry the loop's invariants,
  * and must stay in LOCK-STEP — a refactor that strips the handshake out of either
  * surface, or lets the two drift apart, trips here.
@@ -19,7 +19,7 @@ import { buildScoutPlanTemplate } from './scout-plan-draft';
 /** Collapse whitespace so assertions survive line-wrapping / re-indentation. */
 const squish = (s: string) => s.replace(/\s+/g, ' ');
 
-const QUEEN_BASE = harnessPath('blueprints', 'base', 'prompts', 'queen.base.md');
+const QUEEN_BASE = harnessPath('blueprints', 'base', 'prompts', 'mug.base.md');
 const queen = squish(readFileSync(QUEEN_BASE, 'utf8'));
 const scout = squish(SCOUT_FEEDBACK_LOOP_GUIDANCE);
 

@@ -98,6 +98,28 @@ function tierRankOfSpec(tiers: readonly ModelTier[], spec: string): number {
   return tiers.findIndex((t) => specFamilyKey(t.spec) === key);
 }
 
+/** EXPAND-phase rows (WI-2932 pot-rename): owner-steering / agent-config
+ *  `tierCeilings` (and `modelOverrides`) rows persisted BEFORE the rename still
+ *  key on the old role ids. Canonical key first, then the legacy alias. DELETE
+ *  this map when the S2 config-key migration rewrites the stored rows. */
+const LEGACY_ROLE_KEY: Record<string, string> = {
+  cup: 'bee',
+  mug: 'queen',
+  kettle: 'overwatch',
+  blender: 'scout',
+  papercup: 'sentinel',
+};
+
+/** A role's configured tier ceiling, tolerant of pre-rename stored keys. */
+export function roleTierCeiling(
+  tierCeilings: Record<string, string> | undefined,
+  role: string,
+): string | undefined {
+  const raw = tierCeilings?.[role] ?? (LEGACY_ROLE_KEY[role] ? tierCeilings?.[LEGACY_ROLE_KEY[role]] : undefined);
+  const v = raw?.trim();
+  return v ? v : undefined;
+}
+
 /**
  * Resolve `tier` for `role` against the user's menu + bounds. Pass the
  * AgentConfig-stored `tiers`/`tierCeilings` (empty → DEFAULT_MODEL_TIERS /
@@ -126,7 +148,7 @@ export function resolveTierSpec(opts: {
   // Ceiling, then floor — so when the two conflict (ceiling configured BELOW
   // the role's default) the floor wins: running at the role's default is what
   // happens with no tier at all, so a ceiling can never force a downgrade.
-  const ceilingName = opts.tierCeilings?.[opts.role]?.trim().toLowerCase();
+  const ceilingName = roleTierCeiling(opts.tierCeilings, opts.role)?.toLowerCase();
   if (ceilingName) {
     const ceilIdx = tiers.findIndex((t) => t.name.toLowerCase() === ceilingName);
     // An unknown ceiling name is a config bug — ignore it (no ceiling) rather
@@ -279,7 +301,7 @@ export function resolveRoleOwnModelSpec(
   role: string,
   eff: { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> },
 ): string | null {
-  const tier = eff.tierCeilings?.[role]?.trim() || roleHomeTier(role);
+  const tier = roleTierCeiling(eff.tierCeilings, role) || roleHomeTier(role);
   if (!tier) return null;
   const r = resolveTierSpec({ tier, role, tiers: eff.tiers, tierCeilings: eff.tierCeilings });
   if (!r.ok) return null;

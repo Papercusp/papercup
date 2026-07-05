@@ -226,7 +226,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     h.getFlag.mockResolvedValue(true); // all flags ON incl. GATEWAY_PRIORITY_TIERS
     h.selectSpawnAccount.mockResolvedValue('acct-7');
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', role: 'mug' });
-    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-priority: queen');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('x-papercusp-priority: mug');
   });
 
   test('tier flag OFF → NO priority header even with a role (flag-OFF byte-identical)', async () => {

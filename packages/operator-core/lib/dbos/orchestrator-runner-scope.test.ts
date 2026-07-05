@@ -87,7 +87,7 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(args).toContain('--property=MemorySwapMax=0');
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
-    expect(args.join(' ')).toContain('/x/invoke-once --role bee');
+    expect(args.join(' ')).toContain('/x/invoke-once --role cup');
     expect(spawnOpts.detached).toBe(true); // pgid tree-kill still covers the scope wrapper
   });
 

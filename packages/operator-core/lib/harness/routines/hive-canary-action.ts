@@ -195,9 +195,13 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   // whether the owner currently has pauseNewWork set — an intentional pause, not
   // an autonomous-loop failure, so a stuck canary under it shouldn't file a bug.
   let isPaused = false;
+  // EI-7655: resolved here for the pause check, reused below to wake the
+  // correct Hive (a MEMBER harness's demand event must wake ITS hive home,
+  // not itself) after Phase 2 queues a genuinely new canary.
+  let hiveHomeSlug = installSlug;
   try {
     const reg = await loadHarnessRegistry(workspaceId);
-    const hiveHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
+    hiveHomeSlug = reg.projects.find((p) => p.slug === installSlug)?.hive_slug ?? installSlug;
     const steering = await getOwnerSteering(workspaceId, hiveHomeSlug, sql);
     isPaused = isPausedNow(steering, Date.now());
   } catch (e) {
@@ -274,6 +278,24 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
       RETURNING feature_id`;
     if (inserted.length > 0) {
       console.log(`[hive-canary] queued ${installSlug}/${plan.queueId} (deadline ${deadlineHours}h)`);
+      // EI-7655: this raw INSERT bypasses work_items:create's `emits` demand
+      // event, so without an explicit wake the newly-queued canary is invisible
+      // to the Queen's event-driven wake path. Mirror the `urgent` bypass
+      // (fail-soft by contract — never throws, worst case is a floor-bounded
+      // coalesce) so the canary is woken-for promptly instead of relying on
+      // incidental unrelated Hive demand.
+      try {
+        const wake = await requestUrgentHiveWake({
+          reason: `hive-canary: queued today's canary ${plan.queueId} in ${installSlug}`,
+          harness: hiveHomeSlug,
+          workspaceId,
+        });
+        if (wake.error) {
+          console.warn(`[hive-canary] urgent wake for ${installSlug}/${plan.queueId} failed (canary still queued): ${wake.error}`);
+        }
+      } catch (e) {
+        console.warn(`[hive-canary] urgent wake threw for ${installSlug}/${plan.queueId} (canary still queued): ${e instanceof Error ? e.message : e}`);
+      }
     } else {
       console.log(`[hive-canary] ${installSlug}/${plan.queueId} already queued from previous run`);
     }

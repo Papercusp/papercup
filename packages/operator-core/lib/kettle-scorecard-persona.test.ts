@@ -1,11 +1,17 @@
 /**
- * overwatch-scorecard-persona.test.ts — the OWNER-#1 anti-drift guard
+ * kettle-scorecard-persona.test.ts — the OWNER-#1 anti-drift guard
  * (rubric-driven-observations-2026-06-20 P-004 / B7, D-002).
  *
- * The owner's #1 requirement: the Overwatch role MUST, EVERY turn, emit a STRUCTURED
+ * (Renamed from overwatch-scorecard-persona.test.ts: the `overwatch` role was
+ * renamed to `kettle` in the papercup-theme rename (WI-2932) and the canonical
+ * persona now ships as `blueprints/coding/prompts/kettle.md`. The criterion KEYS
+ * below deliberately KEEP the pre-rename tokens — they are the shared contract
+ * with the seeded DB rubric + capture accept-schema and only move in lockstep.)
+ *
+ * The owner's #1 requirement: the Kettle role MUST, EVERY turn, emit a STRUCTURED
  * SCORECARD against the (now 14-point) `hive-coordination-health` rubric (rate each criterion
  * + cite evidence), IN ADDITION TO its free-form observations. That requirement lives in
- * the canonical Overwatch persona (`blueprints/coding/prompts/overwatch.md`) as prompt
+ * the canonical Kettle persona (`blueprints/coding/prompts/kettle.md`) as prompt
  * instructions — there is no runtime that forces an LLM to emit a tool call, so the
  * persona text IS the contract. A refactor that softens "every turn" to "when relevant",
  * drops the emit shape, or renames a criterion key (silently desyncing from the seeded
@@ -24,7 +30,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { harnessPath } from './harness-paths';
 
-const CANONICAL = harnessPath('blueprints', 'coding', 'prompts', 'overwatch.md');
+const CANONICAL = harnessPath('blueprints', 'coding', 'prompts', 'kettle.md');
 
 /** The per-characteristic criterion keys — the founding 13 (owner Q1..Q13) plus
  *  `scheduler-usage` (14th, rubric mig 371 / hybrid-bee-scheduler-work-stealing-2026-06-22
@@ -46,7 +52,7 @@ const CRITERION_KEYS = [
   'scheduler-usage', // Q14 (scheduler P-004)
 ] as const;
 
-describe('overwatch persona — the owner #1 hive-coordination-health scorecard mandate (D-002)', () => {
+describe('kettle persona — the owner #1 hive-coordination-health scorecard mandate (D-002)', () => {
   const persona = readFileSync(CANONICAL, 'utf8');
 
   it('MANDATES the scorecard EVERY turn (not "when relevant"), against the named rubric', () => {
