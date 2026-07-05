@@ -189,6 +189,22 @@ export const AGENT_ROLES = [
   'tester',
   'test-writer',
   'monitor',
+  // ── pot-rename SLICE-2 (EXPAND, code half) — ADDITIVE new canonical role-ids,
+  //    registered ALONGSIDE their still-named predecessors (kept — a later CONTRACT
+  //    slice removes the old ids). Each resolves its persona through the orchestrator's
+  //    ROLE_ALIASES map (packages/orchestrator/src/prompt-resolve.ts):
+  //      cup → bee · mug → queen · papercup → sentinel · kettle → overwatch · blender → scout.
+  //    Listed here so a `role=<new>` launch — and every tool `roles:` allowlist,
+  //    `byRole` guidance key, and `rolesQuota` key — type-checks against
+  //    BuiltinAgentRole during EXPAND. BuiltinAgentRole is derived from this array, so
+  //    it simply WIDENS to the union of old ∪ new; the `satisfies readonly
+  //    BuiltinAgentRole[]` pins on SU_ROLES / SU_WRITE_ROLES / OPERATOR_CONFIG_WRITE_ROLES
+  //    / FROZEN_OVERLAY_ROLES still hold (a widened union never breaks a subset pin).
+  'cup',
+  'mug',
+  'papercup',
+  'kettle',
+  'blender',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */

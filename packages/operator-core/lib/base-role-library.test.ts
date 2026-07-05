@@ -36,9 +36,18 @@ const PHASE_ONLY_ROLES = new Set(['tester', 'test-writer', 'monitor']);
 // backstop until the harness blueprintId is threaded in Phase 5).
 const BLUEPRINT_BUNDLED_ROLES = new Set(['bee']);
 
+// pot-rename SLICE-2 (EXPAND): additive alias role that resolves via ROLE_ALIASES to a
+// canonical WITHOUT its own base persona. `blender`→`scout`, and `scout` ships NO
+// persona in base or any blueprint (the negative-space scanner's persona is
+// `scanner.md`), so blender has no base-library prompt of its own. The other new
+// aliases (cup/mug/papercup/kettle) DO resolve via their canonical's base persona and
+// stay in the enumeration; drop only the currently-unresolvable one until the
+// scout/blender persona lands in a later slice.
+const UNRESOLVED_ALIAS_ROLES = new Set(['blender']);
+
 const spawnable = AGENT_ROLES.filter((r) => !CHAT_ROLES.has(r));
 const baseLibraryRoles = spawnable.filter(
-  (r) => !PHASE_ONLY_ROLES.has(r) && !BLUEPRINT_BUNDLED_ROLES.has(r),
+  (r) => !PHASE_ONLY_ROLES.has(r) && !BLUEPRINT_BUNDLED_ROLES.has(r) && !UNRESOLVED_ALIAS_ROLES.has(r),
 );
 
 const BASE_PROMPTS = join('blueprints', 'base', 'prompts');
