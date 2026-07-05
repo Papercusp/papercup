@@ -109,6 +109,46 @@ describe('git seed provider', () => {
     expect(readFileSync(join(target, 'vendor/sub/lib.txt'), 'utf8')).toBe('sublib'); // submodule restored + checked out
   });
 
+  it('depth=1 cuts an offline-cloneable one-commit snapshot and keeps submodule gitlinks coherent', async () => {
+    const subSrc = tmpDir('gseed-depth-sub-');
+    await initRepo(subSrc);
+    writeFileSync(join(subSrc, 'lib.txt'), 'sub v1');
+    await g(subSrc, ['add', '.']);
+    await g(subSrc, ['commit', '-qm', 'sub v1']);
+    writeFileSync(join(subSrc, 'lib.txt'), 'sub v2');
+    await g(subSrc, ['commit', '-aqm', 'sub v2']);
+
+    const superSrc = tmpDir('gseed-depth-super-');
+    await initRepo(superSrc);
+    writeFileSync(join(superSrc, 'top.txt'), 'top v1');
+    await g(superSrc, ['add', '.']);
+    await g(superSrc, ['commit', '-qm', 'top v1']);
+    await g(superSrc, ['-c', 'protocol.file.allow=always', 'submodule', 'add', subSrc, 'vendor/sub']);
+    writeFileSync(join(superSrc, 'top.txt'), 'top v2');
+    await g(superSrc, ['add', '.']);
+    await g(superSrc, ['commit', '-qm', 'top v2 + sub']);
+
+    const provider = createGitSeedProvider();
+    const staging = tmpDir('gseed-depth-stage-');
+    const { entry, payload } = await provider.cut({ sourceRepoDir: superSrc, stagingDir: staging, originUrl: 'https://example/super', rev: 'HEAD', depth: 1 });
+    expect((entry.meta as { depth?: number }).depth).toBe(1);
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    const target = join(tmpDir('gseed-depth-tgt-'), 'checkout');
+    await provider.restore(entry, payload, { targetRepoDir: target });
+    expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top v2');
+    expect(readFileSync(join(target, 'vendor/sub/lib.txt'), 'utf8')).toBe('sub v2');
+    expect(Number(await g(target, ['rev-list', '--count', 'HEAD']))).toBe(1);
+    expect(Number(await g(join(target, 'vendor/sub'), ['rev-list', '--count', 'HEAD']))).toBe(1);
+    expect(await g(target, ['status', '--short'])).toBe('');
+
+    writeFileSync(join(superSrc, 'top.txt'), 'top v3');
+    await g(superSrc, ['commit', '-aqm', 'top v3']);
+    await g(target, ['fetch', '-q', superSrc, 'main']);
+    await g(target, ['reset', '-q', '--hard', 'FETCH_HEAD']);
+    expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top v3');
+  });
+
   it('encrypts the seed at rest; restores with the key; fails without/with a wrong key', async () => {
     const src = tmpDir('gseed-enc-src-');
     await initRepo(src);

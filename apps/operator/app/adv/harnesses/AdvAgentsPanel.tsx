@@ -39,9 +39,10 @@ import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 // the pui colony roster; the tooltip carries the one-line "what is this kind".
 // `kind` stays the internal pane-kind id (glyph lookup + React key, plan D-001);
 // the display `label` + `hint` route the user-facing role words through the
-// lexicon (queen→Brain, bee→Cup, sentinel→Operator — restore-pot-lexicon P-007).
-// Built at render time (see kindLegend) because the terms depend on the hook.
-// overwatch/planner/su have no TermKey and stay literal.
+// lexicon (queen→Mug, bee→Cup, sentinel→Papercup, overwatch→Kettle in the
+// classic/Pot pack — restore-pot-lexicon P-007). Built at render time (see
+// kindLegend) because the terms depend on the hook. planner/su have no TermKey
+// and stay literal.
 
 // Liveness legend (owner ask 2026-06-11) — thresholds read straight off the
 // canonical constants (lib/liveness — the same leaf deriveLiveness uses), so
@@ -207,17 +208,25 @@ function WorkingView({
 
   const t = useLexicon();
   // Render-time kind legend — internal `kind` id kept for the glyph/key (plan
-  // D-001); the user-facing role words routed through the lexicon (queen→Brain,
-  // bee→Cup, sentinel→Operator — restore-pot-lexicon P-007). overwatch/planner/su
-  // have no TermKey and stay literal.
+  // D-001); the user-facing role words routed through the lexicon (queen→Mug,
+  // bee→Cup, sentinel→Papercup, overwatch→Kettle in the classic/Pot pack —
+  // restore-pot-lexicon P-007). planner/su have no TermKey and stay literal.
   const kindLegend: Array<{ kind: string; label: string; hint: string }> = [
     { kind: 'queen', label: t('brain', { lower: true }), hint: `${t('brain')} — the autonomous brain session (cadence-driven)` },
-    { kind: 'overwatch', label: 'overwatch', hint: `Overwatch — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
+    { kind: 'overwatch', label: t('overwatch', { lower: true }), hint: `${t('overwatch')} — the autonomous system-health supervisor (a ${t('brain')} sibling); watches + nudges, never edits` },
     { kind: 'bee', label: t('contributor', { lower: true }), hint: `${t('contributor')} — ${t('brain')}-spawned headless worker (invoke-once); ephemeral` },
     { kind: 'sentinel', label: t('operator', { lower: true }), hint: `${t('operator')} — the always-on, owner-facing operator chat persona` },
     { kind: 'planner', label: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
     { kind: 'su', label: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
   ];
+
+  // Reuse the lexicon-routed legend labels for the kind-filter dropdown so the
+  // Select options speak the same cast words as the legend (not the raw wire
+  // pane-kind id). Falls back to the raw kind for any id without a legend entry.
+  const kindLabelById = useMemo(
+    () => new Map(kindLegend.map((l) => [l.kind, l.label])),
+    [kindLegend],
+  );
 
   const columns: ColumnDef<WorkingAgent>[] = [
     {
@@ -367,7 +376,7 @@ function WorkingView({
           triggerClassName="pc-advpanel__select"
           options={[
             { value: ALL_KINDS, label: 'all kinds' },
-            ...kinds.map((k) => ({ value: k, label: `${AGENT_KIND_GLYPH[k] ?? '·'} ${k}` })),
+            ...kinds.map((k) => ({ value: k, label: `${AGENT_KIND_GLYPH[k] ?? '·'} ${kindLabelById.get(k) ?? k}` })),
           ]}
         />
         <Tooltip label="Refresh agents">

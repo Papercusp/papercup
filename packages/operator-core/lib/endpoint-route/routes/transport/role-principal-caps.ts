@@ -80,6 +80,25 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'memory:read',
     'intel:read',
   ],
+  // pot-rename dual-accept (P1 MIGRATE): `papercup` is the additive twin of the `sentinel`
+  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  papercup: [
+    'coord:read',
+    'coord:write',
+    'work_items:read',
+    'work_items:write',
+    'issues:read',
+    'harness:read',
+    'activity:read',
+    'search:read',
+    'curation:read',
+    'plans:read',
+    'operator:converse',
+    'operator:read',
+    'operator:write',
+    'memory:read',
+    'intel:read',
+  ],
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).
   // READ-EVERYTHING + NUDGE/OBSERVE/ESCALATE ONLY. Like the sentinel its only world-writes
@@ -112,6 +131,21 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // code-run-self-state-adoption-2026-07-03 P-003: coord:orient's internal mem0 recall was
     // denied 32×/14d (role-not-allowed) — the system-health supervisor woke blind to its own
     // memory every cycle. Read cap only; the no-write/no-exec design is unchanged.
+    'memory:read',
+  ],
+  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
+  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  kettle: [
+    'coord:read',
+    'coord:write',
+    'work_items:read',
+    'harness:read',
+    'intel:read',
+    'plans:read',
+    'notifications:read',
+    'activity:read',
+    'search:read',
+    'messages:write',
     'memory:read',
   ],
   // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
@@ -190,6 +224,29 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'intel:read', // recipes:search/candidates (graduation duty), dev:rate_governor_status
     'plans:write',
     'capability:bash', // code:run / recipes:run / capability:bash — the batching + exec surface her kit advertises
+    'capability:fs-write',
+    'capability:fs-read',
+    'capability:git',
+    'capability:net',
+  ],
+  // pot-rename dual-accept (P1 MIGRATE): `mug` is the additive twin of the `queen`
+  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  mug: [
+    'harness:read',
+    'harness:write',
+    'work_items:read',
+    'work_items:write',
+    'curation:read',
+    'activity:read',
+    'coord:read',
+    'coord:write',
+    'plans:read',
+    'routines:write',
+    'memory:read',
+    'memory:write',
+    'intel:read',
+    'plans:write',
+    'capability:bash',
     'capability:fs-write',
     'capability:fs-read',
     'capability:git',
@@ -284,6 +341,35 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // capability:read (fs-read) 55×, capability:fetch (net) 11×, capability:inspect
     // (code-inspect) 11×. A kit-advertised tool whose cap is missing is a dead tool;
     // grant the four so the kit and the gate agree.
+    'capability:fs-read',
+    'capability:git',
+    'capability:net',
+    'capability:code-inspect',
+  ],
+  // pot-rename dual-accept (P1 MIGRATE): `cup` is the additive twin of the `bee`
+  // role — SAME cap array, so the twin resolves identically during the dual-accept window.
+  cup: [
+    'harness:read',
+    'harness:write',
+    'work_items:read',
+    'work_items:write',
+    'coord:read',
+    'coord:write',
+    'plans:read',
+    'plans:write',
+    'docs:read',
+    'docs:write',
+    'search:read',
+    'memory:read',
+    'memory:write',
+    'tasks:read',
+    'tasks:write',
+    'intel:read',
+    'locks:read',
+    'locks:write',
+    'issues:read',
+    'capability:fs-write',
+    'capability:bash',
     'capability:fs-read',
     'capability:git',
     'capability:net',

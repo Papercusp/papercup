@@ -1439,7 +1439,9 @@ export async function emitStatusDisplay(
     buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
   if (osc.length > 0) {
     try {
-      const fh = await fsp.open('/dev/tty', 'w');
+      // PAPERCUSP_OBJECTIVE_TTY: test seam (mirrors the codex hook) — production leaves it
+      // unset and writes the controlling tty.
+      const fh = await fsp.open(process.env.PAPERCUSP_OBJECTIVE_TTY || '/dev/tty', 'w');
       try {
         await fh.write(osc);
       } finally {

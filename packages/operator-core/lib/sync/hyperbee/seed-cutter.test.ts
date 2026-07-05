@@ -188,6 +188,38 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
     console.log(`[seed Q-1] git --all=${full.sizeReport.totalBytes}B  HEAD=${head.sizeReport.totalBytes}B  saved=${fullSize - headSize}B`);
   });
 
+  it('Q-1: depth=1 snapshots the current tree without reachable history', async () => {
+    const repo = tmpDir('cutter-depth-repo-');
+    await initFixtureRepo(repo);
+    writeFileSync(join(repo, 'reachable-heavy.bin'), randomBytes(512 * 1024));
+    await g(repo, ['add', '.']);
+    await g(repo, ['commit', '-qm', 'reachable heavy blob']);
+    await g(repo, ['rm', '-q', 'reachable-heavy.bin']);
+    await g(repo, ['commit', '-qm', 'return to small tree']);
+
+    const headOut = tmpDir('cutter-depth-head-');
+    const head = await cutHiveSeed({
+      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      outDir: headOut,
+      git: { sourceRepoDir: repo, originUrl: 'u', rev: 'HEAD' },
+      corestore: null,
+    });
+
+    const shallowOut = tmpDir('cutter-depth-shallow-');
+    const shallow = await cutHiveSeed({
+      hiveId: 'papercusp', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+      outDir: shallowOut,
+      git: { sourceRepoDir: repo, originUrl: 'u', rev: 'HEAD', depth: 1 },
+      corestore: null,
+    });
+
+    const headSize = head.sizeReport.stores.find((s) => s.subdir === GIT_SUBDIR)!.sizeBytes;
+    const shallowSize = shallow.sizeReport.stores.find((s) => s.subdir === GIT_SUBDIR)!.sizeBytes;
+    expect(headSize).toBeGreaterThan(shallowSize);
+    expect(headSize - shallowSize).toBeGreaterThan(256 * 1024);
+    expect(shallow.manifest.stores[0]?.meta).toMatchObject({ depth: 1 });
+  });
+
   it('carries encryption through the combined cutter (git store sealed at rest)', async () => {
     const repo = tmpDir('cutter-enc-repo-');
     await initFixtureRepo(repo);

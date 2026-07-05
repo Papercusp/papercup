@@ -15,6 +15,8 @@ import {
   reclaimOrphanedSpawns,
   reclaimWedgedSpawns,
   type WedgedSpawnCandidate,
+  reclaimFirstOutputStalledSpawns,
+  type FirstOutputStallCandidate,
   heartbeatSpawns,
   recordSpawnPid,
   isSpawnProcessAlive,
@@ -94,6 +96,8 @@ async function insertSpawn(
     parentRole?: string;
     /** Seconds-ago for last_output_at (wedge tests). Omitted ⇒ NULL (no output yet). */
     lastOutputAgoSec?: number;
+    /** Seconds-ago for started_at (first-output-stall tests). Default 10 minutes ago. */
+    startedAgoSec?: number;
   } = {},
 ) {
   const lastOutput =
@@ -105,7 +109,7 @@ async function insertSpawn(
       (spawn_id, workspace_id, harness_slug, child_role, parent_role, feature_id, item_id, run_id, status, started_at, heartbeat_at, last_output_at, pid, launcher_host, launcher_boot_id)
     VALUES (${spawnId}, ${WS}, 'papercup', ${rec.childRole ?? 'worker'}, ${rec.parentRole ?? null},
             ${rec.featureId ?? null}, ${rec.itemId ?? null}, ${rec.runId ?? 'r-' + spawnId}, ${status},
-            now() - interval '10 minutes', now() - ${heartbeatAgoSec}::int * interval '1 second', ${lastOutput},
+            now() - ${rec.startedAgoSec ?? 600}::int * interval '1 second', now() - ${heartbeatAgoSec}::int * interval '1 second', ${lastOutput},
             ${rec.pid ?? null}, ${rec.host ?? null}, ${rec.bootId ?? null})`;
 }
 

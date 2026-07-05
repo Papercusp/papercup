@@ -93,6 +93,43 @@ impl AgentPaneKind {
         }
     }
 
+    /// The active-lexicon cast TERM key for this pane-kind (queen→`brain`,
+    /// overwatch→`overwatch`, bee→`contributor`, sentinel→`operator`), or None
+    /// for kinds with no cast term (planner/su keep a static display word).
+    /// This is the DISPLAY channel — the wire string (`as_wire`) is unchanged.
+    pub fn lexicon_term(self) -> Option<&'static str> {
+        match self {
+            Self::Queen => Some("brain"),
+            Self::Overwatch => Some("overwatch"),
+            Self::Bee => Some("contributor"),
+            Self::Sentinel => Some("operator"),
+            Self::Planner | Self::Su => None,
+        }
+    }
+
+    /// The static display word for a kind with no cast term (planner/su). Only
+    /// meaningful when `lexicon_term()` is None.
+    fn static_label(self) -> &'static str {
+        match self {
+            Self::Planner => "Planner",
+            Self::Su => "SU",
+            // Cast kinds route through the lexicon term instead.
+            _ => "",
+        }
+    }
+
+    /// The user-facing DISPLAY label for this kind under the active Hive lexicon
+    /// (Mug/Kettle/Cup/Papercup under CLASSIC; the-hive → its own words) — NEVER
+    /// the old wire word ("queen"/"bee"/…). Cast kinds resolve their term through
+    /// `lex`; planner/su use their static word. Mirrors the pattern brain_view.rs
+    /// uses for its header label.
+    pub fn display_label(self, lex: &crate::lexicon::Lexicon) -> String {
+        match self.lexicon_term() {
+            Some(term) => lex.lex(term),
+            None => self.static_label().to_string(),
+        }
+    }
+
     /// The dock-stack GROUP order (P-011): same-type panes stack together, in
     /// this rank order — Sentinel (owner-facing chat) leads, then Overwatch, then
     /// the Queen, then the worker Bees (colony), then Planners. Matches the static
@@ -142,7 +179,7 @@ pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>) -> String {
     }
 }
 
-/// All kinds in display order — the order the legend and docs read (♛ 👁 ☕ 🛡 📋 🛠).
+/// All kinds in display order — the order the legend and docs read (🍵 🫖 ☕ 🥤 📋 🛠).
 pub const ALL_KINDS: [AgentPaneKind; 6] = [
     AgentPaneKind::Queen,
     AgentPaneKind::Overwatch,
@@ -153,11 +190,13 @@ pub const ALL_KINDS: [AgentPaneKind; 6] = [
 ];
 
 /// One compact legend line for the colony roster header (owner ask 2026-06-11):
-/// `♛ queen · ☕ bee · 🛡 sentinel · 📋 planner · 🛠 su`, each entry tinted in
-/// its kind color (the same color the rows use), separators dim. Pure — the
-/// caller decides where to draw it (flag-on only; flag-off rows carry no glyphs
-/// so a legend would explain nothing).
-pub fn legend_line() -> ratatui::text::Line<'static> {
+/// `🍵 mug · 🫖 kettle · ☕ cup · 🥤 papercup · 📋 planner · 🛠 su`, each entry
+/// tinted in its kind color (the same color the rows use), separators dim. The
+/// LABEL routes through the active Hive lexicon (`display_label`) — never the old
+/// wire word — so it reads the same vocabulary as the pane titles + brain view.
+/// The caller passes its active `lex` (flag-on only; flag-off rows carry no
+/// glyphs so a legend would explain nothing).
+pub fn legend_line(lex: &crate::lexicon::Lexicon) -> ratatui::text::Line<'static> {
     use ratatui::style::{Color, Style};
     use ratatui::text::Span;
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
@@ -166,7 +205,7 @@ pub fn legend_line() -> ratatui::text::Line<'static> {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
         }
         spans.push(Span::styled(
-            format!("{} {}", k.glyph(), k.as_wire()),
+            format!("{} {}", k.glyph(), k.display_label(lex)),
             Style::default().fg(k.color()),
         ));
     }
@@ -313,12 +352,20 @@ mod tests {
 
     #[test]
     fn legend_line_carries_every_kind_in_display_order_with_its_color() {
-        let line = legend_line();
+        // CLASSIC lexicon: brain→Mug · overwatch→Kettle · contributor→Cup ·
+        // operator→Papercup · planner/su → their static word. NEVER the old wire
+        // word ("queen"/"bee"/"sentinel"/"overwatch").
+        let lex = crate::lexicon::Lexicon::default();
+        let line = legend_line(&lex);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        // Every kind appears as "<glyph> <wire-name>", in ALL_KINDS order.
+        // The old wire words must NOT leak into the display legend.
+        for wire in ["queen", "bee", "sentinel", "overwatch"] {
+            assert!(!text.contains(wire), "legend leaked wire word {wire:?}: {text}");
+        }
+        // Every kind appears as "<glyph> <lexicon-label>", in ALL_KINDS order.
         let mut last = 0usize;
         for k in ALL_KINDS {
-            let entry = format!("{} {}", k.glyph(), k.as_wire());
+            let entry = format!("{} {}", k.glyph(), k.display_label(&lex));
             let pos = text
                 .find(&entry)
                 .unwrap_or_else(|| panic!("legend missing {entry:?}: {text}"));
@@ -333,6 +380,11 @@ mod tests {
                 k.color()
             );
         }
+        // The cast labels resolve to the classic vessel words.
+        assert!(text.contains("🍵 Mug"), "{text}");
+        assert!(text.contains("🫖 Kettle"), "{text}");
+        assert!(text.contains("☕ Cup"), "{text}");
+        assert!(text.contains("🥤 Papercup"), "{text}");
         // Dim separators between entries (5 gaps for 6 kinds).
         assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 5);
     }

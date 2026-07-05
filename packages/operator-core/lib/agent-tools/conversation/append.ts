@@ -29,7 +29,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['sentinel', 'operator'],
-  rolesQuota: { sentinel: { perRun: 4000 }, operator: { perRun: 400 } },
+  rolesQuota: { sentinel: { perRun: 4000 }, papercup: { perRun: 4000 }, operator: { perRun: 400 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
   args: z.object({
     role: z.enum(['user', 'assistant']).describe("Who said it — 'user' (the app user) or 'assistant' (you)."),
     text: z.string().min(1).describe('The turn text (what was said).'),

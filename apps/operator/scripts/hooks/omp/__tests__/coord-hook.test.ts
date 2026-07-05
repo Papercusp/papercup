@@ -11,8 +11,12 @@ import { join } from 'node:path';
 
 import {
   buildActivityArgs,
+  buildDisplayTitleOsc,
   buildObjectiveTitleOsc,
   callMcpTool,
+  emitStatusDisplay,
+  statusNoticeKey,
+  _resetStatusNoticeDedup,
   resolveHookWorkspace,
   collapseDigestNotifies,
   destructiveGitCommandOp,
@@ -3944,6 +3948,149 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
     // Exactly one BEL (the terminator) and one ESC (the introducer).
     expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
     expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
+  });
+});
+
+describe('buildDisplayTitleOsc + statusNoticeKey (single-source display pipe, 2026-07-05)', () => {
+  const ESC = '\x1b]0;';
+  const BEL = '\x07';
+
+  it('wraps the server-rendered title VERBATIM — no local re-assembly', () => {
+    expect(buildDisplayTitleOsc('👑 roman 🟪 · ⟳1m · su-abc12 · 🔭 wire the pipe')).toBe(
+      `${ESC}👑 roman 🟪 · ⟳1m · su-abc12 · 🔭 wire the pipe${BEL}`,
+    );
+  });
+
+  it('absent / blank / non-string title → no escape (falls through to the legacy render)', () => {
+    expect(buildDisplayTitleOsc(null)).toBe('');
+    expect(buildDisplayTitleOsc(undefined)).toBe('');
+    expect(buildDisplayTitleOsc('   ')).toBe('');
+    expect(buildDisplayTitleOsc(42 as unknown as string)).toBe('');
+  });
+
+  it('strips control chars that could break out of the OSC string', () => {
+    const osc = buildDisplayTitleOsc('safe\x1b]0;pwn\x07 title');
+    expect(osc).toBe(`${ESC}safe]0;pwn title${BEL}`);
+    expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
+    expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
+  });
+
+  it('statusNoticeKey: id|text, "tip" fallback id, empty when there is nothing to show', () => {
+    expect(statusNoticeKey({ id: 'wake-mode-manual', text: '💡 back to auto' })).toBe('wake-mode-manual|💡 back to auto');
+    expect(statusNoticeKey({ text: '💡 anon tip' })).toBe('tip|💡 anon tip');
+    expect(statusNoticeKey({ id: 'x', text: '   ' })).toBe('');
+    expect(statusNoticeKey(null)).toBe('');
+    expect(statusNoticeKey(undefined)).toBe('');
+  });
+});
+
+describe('emitStatusDisplay (OMP display pipe: title verbatim + 💡 notice on change)', () => {
+  const originalFetch = global.fetch;
+  const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
+  const prevToken = process.env.PAPERCUSP_SUPERUSER_TOKEN;
+  const prevSid = process.env.PAPERCUSP_SID;
+  const prevTty = process.env.PAPERCUSP_OBJECTIVE_TTY;
+  let ttyFile = '';
+  let payload: Record<string, unknown> = {};
+
+  function installFetch() {
+    global.fetch = (async () => ({
+      ok: true,
+      text: async () =>
+        `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } })}\n\n`,
+    })) as unknown as typeof fetch;
+  }
+
+  beforeEach(async () => {
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://operator.test';
+    process.env.PAPERCUSP_SUPERUSER_TOKEN = 'su-token';
+    process.env.PAPERCUSP_SID = 'su-fcdb9bd8-dcf5-4a20-b5a6-ba78d1f2eb93';
+    ttyFile = join(tmpdir(), `omp-display-tty-${Math.random().toString(36).slice(2)}`);
+    process.env.PAPERCUSP_OBJECTIVE_TTY = ttyFile;
+    payload = { ok: true };
+    _resetHookOwnerIdForTests();
+    _resetStatusNoticeDedup();
+    installFetch();
+  });
+  afterEach(async () => {
+    global.fetch = originalFetch;
+    if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
+    if (prevToken === undefined) delete process.env.PAPERCUSP_SUPERUSER_TOKEN;
+    else process.env.PAPERCUSP_SUPERUSER_TOKEN = prevToken;
+    if (prevSid === undefined) delete process.env.PAPERCUSP_SID;
+    else process.env.PAPERCUSP_SID = prevSid;
+    if (prevTty === undefined) delete process.env.PAPERCUSP_OBJECTIVE_TTY;
+    else process.env.PAPERCUSP_OBJECTIVE_TTY = prevTty;
+    _resetHookOwnerIdForTests();
+    _resetStatusNoticeDedup();
+    await fs.rm(ttyFile, { force: true });
+  });
+
+  it('writes display.title VERBATIM as OSC-0 (display wins over a local objective)', async () => {
+    payload = {
+      ok: true,
+      self: { objective: 'LOCAL objective (must not render)' },
+      display: { title: '👑 f 🟦 · ⏸ ✉3 · su-abc12', statusline: [], notice: null },
+    };
+    await emitStatusDisplay();
+    expect(await fs.readFile(ttyFile, 'utf8')).toBe('\x1b]0;👑 f 🟦 · ⏸ ✉3 · su-abc12\x07');
+  });
+
+  it('no display block (older operator) → the legacy objective title fallback', async () => {
+    payload = { ok: true, self: { objective: 'legacy obj' } };
+    await emitStatusDisplay();
+    expect(await fs.readFile(ttyFile, 'utf8')).toBe(
+      buildObjectiveTitleOsc('legacy obj', process.env.PAPERCUSP_SID),
+    );
+  });
+
+  it('delivers a NEW notice to the model + human, DEDUPES repeats, re-emits on CHANGE', async () => {
+    const sent: Array<{ customType: string; content: string }> = [];
+    const notes: Array<{ m: string; t?: string }> = [];
+    const pi = { sendMessage: (m: { customType: string; content: string }) => { sent.push(m); } };
+    const ctx = { hasUI: true, ui: { notify: (m: string, t?: string) => { notes.push({ m, t }); } } };
+    payload = {
+      ok: true,
+      display: { title: 'su-abc12', statusline: [], notice: { id: 'wake-mode-manual', text: '💡 back to auto: coord:wake-mode mode=auto' } },
+    };
+    await emitStatusDisplay(pi as never, ctx);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].customType).toBe('papercusp-status-tip');
+    expect(sent[0].content).toContain('papercusp-status-tip');
+    expect(sent[0].content).toContain('💡 back to auto: coord:wake-mode mode=auto');
+    expect(sent[0].content).toContain('coord:glance for detail');
+    expect(notes).toEqual([{ m: '💡 back to auto: coord:wake-mode mode=auto', t: 'info' }]);
+    // Same notice again → deduped (no spam on every turn).
+    await emitStatusDisplay(pi as never, ctx);
+    expect(sent).toHaveLength(1);
+    expect(notes).toHaveLength(1);
+    // A CHANGED notice re-emits.
+    payload = {
+      ok: true,
+      display: { title: 'su-abc12', statusline: [], notice: { id: 'governor-paused', text: '💡 governor paused' } },
+    };
+    await emitStatusDisplay(pi as never, ctx);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].content).toContain('governor paused');
+  });
+
+  it('no notice → nothing sent, no ui.notify (title leg still runs)', async () => {
+    const sent: unknown[] = [];
+    const pi = { sendMessage: (m: unknown) => { sent.push(m); } };
+    payload = { ok: true, display: { title: 'su-abc12', statusline: [], notice: null } };
+    await emitStatusDisplay(pi as never, { hasUI: false });
+    expect(sent).toHaveLength(0);
+    expect(await fs.readFile(ttyFile, 'utf8')).toBe('\x1b]0;su-abc12\x07');
+  });
+
+  it('a ui-less ctx (headless omp) still injects the model-facing notice', async () => {
+    const sent: Array<{ content: string }> = [];
+    const pi = { sendMessage: (m: { content: string }) => { sent.push(m); } };
+    payload = { ok: true, display: { title: null, statusline: [], notice: { id: 't', text: '💡 headless tip' } } };
+    await emitStatusDisplay(pi as never, undefined);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].content).toContain('headless tip');
   });
 });
 

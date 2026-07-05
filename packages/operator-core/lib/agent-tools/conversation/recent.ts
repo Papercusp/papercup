@@ -24,7 +24,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['sentinel', 'operator'],
-  rolesQuota: { sentinel: { perRun: 4000 }, operator: { perRun: 400 } },
+  rolesQuota: { sentinel: { perRun: 4000 }, papercup: { perRun: 4000 }, operator: { perRun: 400 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
   args: z.object({
     limit: z.number().int().min(1).max(100).optional().describe('How many recent turns to return (default 20).'),
   }),

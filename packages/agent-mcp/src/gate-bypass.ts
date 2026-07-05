@@ -53,6 +53,12 @@ export const TESTING_FULL_ACCESS_ROLES: ReadonlySet<string> = new Set([
   'overwatch',
   'sentinel',
   'scout',
+  // pot-rename dual-accept (P1 MIGRATE): additive twins of the old role-ids above.
+  'mug', // twin of `queen`
+  'cup', // twin of `bee`
+  'kettle', // twin of `overwatch`
+  'papercup', // twin of `sentinel`
+  'blender', // twin of `scout`
 ]);
 
 /**

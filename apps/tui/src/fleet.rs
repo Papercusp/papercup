@@ -892,8 +892,8 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
             let dot = Theme::liveness_marker(r.stale, &r.liveness);
             // P-004 (progress-tab-agents-convergence, owner ask 2026-06-11): the
-            // kind GLYPH leads each roster row — ♛ queen · ☕ bee · 🛡 sentinel ·
-            // 📋 planner · 🛠 su (the owner's own psu sessions) — so workers and
+            // kind GLYPH leads each roster row — 🍵 mug · 🫖 kettle · ☕ cup ·
+            // 🥤 papercup · 📋 planner · 🛠 su (the owner's own psu sessions) — so workers and
             // owner sessions read apart at a glance, same vocabulary as the pane
             // titles. Flag-on; flag-off keeps the legacy dot-only row.
             let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
@@ -1041,13 +1041,13 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         )
     };
     // Styled column header above the roster (D-005) — one compact legend line
-    // rides above it (owner ask 2026-06-11): the kind glyphs (♛ ☕ 🛡 📋 🛠,
+    // rides above it (owner ask 2026-06-11): the kind glyphs (🍵 🫖 ☕ 🥤 📋 🛠,
     // flag-on — flag-off rows carry no glyphs) + the liveness dots with their
     // heartbeat-age thresholds (always — the dots render regardless of flag).
     let header = format!("    {:<7}{:<31}{}", "agent", "doing now", "todos");
     let mut legend_spans: Vec<Span<'static>> = Vec::new();
     if app.hive_agent_tabs {
-        legend_spans.extend(crate::agent_pane_kind::legend_line().spans);
+        legend_spans.extend(crate::agent_pane_kind::legend_line(&app.lexicon).spans);
         legend_spans.push(Span::raw("   "));
     } else {
         legend_spans.push(Span::raw(" "));

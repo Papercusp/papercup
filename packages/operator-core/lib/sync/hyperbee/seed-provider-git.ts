@@ -109,7 +109,7 @@ interface GitSeedIndex {
   /** True ⇒ every bundle file is encrypted at rest (decrypt before clone). */
   readonly encrypted: boolean;
   /** Present when bundles contain synthetic one-commit snapshots. */
-  readonly snapshot?: { readonly depth: 1 };
+  readonly snapshot?: { readonly depth: 1; readonly branch: string };
 }
 
 async function walkFiles(root: string, dir: string = root, acc: string[] = []): Promise<string[]> {
@@ -195,11 +195,11 @@ async function snapshotCommit(
   }
 }
 
-async function bundleCommit(repoDir: string, bundlePath: string, commit: string): Promise<void> {
+async function bundleCommit(repoDir: string, bundlePath: string, commit: string, branch: string): Promise<void> {
   // `git bundle create <raw-sha>` refuses to advertise a ref, so a fresh clone
   // cannot check it out. Publish the snapshot through a transient branch ref
   // while writing the bundle, then remove the ref immediately.
-  const ref = `refs/heads/papercusp-seed-snapshot-${randomUUID()}`;
+  const ref = `refs/heads/${branch}`;
   try {
     await git(repoDir, ['update-ref', ref, commit]);
     await git(repoDir, ['bundle', 'create', bundlePath, ref]);
@@ -220,6 +220,7 @@ export function createGitSeedProvider(): SeedProvider {
       if (depth && revSel === '--all') {
         throw new Error('git seed depth requires a single commit-ish --rev; --all cannot be depth-limited');
       }
+      const snapshotBranch = depth ? `papercusp-seed-snapshot-${randomUUID()}` : undefined;
 
       const submodules: GitSeedSubmodule[] = [];
       const submoduleCommits = new Map<string, string>();
@@ -228,7 +229,7 @@ export function createGitSeedProvider(): SeedProvider {
         const subRepo = join(sourceRepoDir, sub.path);
         if (depth) {
           const commit = await snapshotCommit(subRepo, revSel, stagingDir);
-          await bundleCommit(subRepo, join(stagingDir, bundleRel), commit);
+          await bundleCommit(subRepo, join(stagingDir, bundleRel), commit, snapshotBranch!);
           submoduleCommits.set(sub.path, commit);
         } else {
           await git(subRepo, ['bundle', 'create', join(stagingDir, bundleRel), revSel]);
@@ -237,7 +238,7 @@ export function createGitSeedProvider(): SeedProvider {
       }
       if (depth) {
         const commit = await snapshotCommit(sourceRepoDir, revSel, stagingDir, submoduleCommits);
-        await bundleCommit(sourceRepoDir, join(stagingDir, 'super.bundle'), commit);
+        await bundleCommit(sourceRepoDir, join(stagingDir, 'super.bundle'), commit, snapshotBranch!);
       } else {
         await git(sourceRepoDir, ['bundle', 'create', join(stagingDir, 'super.bundle'), revSel]);
       }
@@ -257,7 +258,7 @@ export function createGitSeedProvider(): SeedProvider {
         originUrl,
         submodules,
         encrypted: Boolean(encryption),
-        ...(depth ? { snapshot: { depth } } : {}),
+        ...(depth ? { snapshot: { depth, branch: snapshotBranch! } } : {}),
       };
       await writeFile(join(stagingDir, 'index.json'), JSON.stringify(index, null, 2));
 
@@ -310,7 +311,7 @@ export function createGitSeedProvider(): SeedProvider {
       };
 
       // Clone the superproject from its bundle (offline), then re-point origin.
-      await execFileP('git', [...ALLOW_FILE, 'clone', await materialize(index.super), targetRepoDir], {
+      await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(index.super), targetRepoDir], {
         maxBuffer: GIT_MAX_BUFFER,
       });
       if (index.snapshot) await git(targetRepoDir, ['branch', '-M', 'main']);
@@ -319,7 +320,7 @@ export function createGitSeedProvider(): SeedProvider {
       // Restore each submodule from its bundle into the submodule working path.
       for (const sub of index.submodules) {
         const subTarget = join(targetRepoDir, sub.path);
-        await execFileP('git', [...ALLOW_FILE, 'clone', await materialize(sub.bundle), subTarget], {
+        await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(sub.bundle), subTarget], {
           maxBuffer: GIT_MAX_BUFFER,
         });
         if (index.snapshot) await git(subTarget, ['branch', '-M', 'main']);
