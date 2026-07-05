@@ -1489,6 +1489,13 @@ export interface ClaimNextFilter {
    * `redundancy` column, byte-identical to before.
    */
   excludeRedundant?: boolean;
+  /**
+   * WI-2796: the caller actually has (or coordinates) a live ≥2-machine / Hetzner
+   * federation rig, so items carrying `payload.needs_2_machine_rig:true` should NOT be
+   * excluded from self-select for it. Omitted (the single-box default) ⇒ those items
+   * are excluded — see {@link crossMachineRigExclusionSql}.
+   */
+  rigAvailable?: boolean;
 }
 
 /**
@@ -1706,6 +1713,33 @@ export function reservedPlanLaneExclusionSql(sql: OrgSql, assignee: string) {
       )
     )
   )`;
+}
+
+/**
+ * WI-2796: the "cross-machine rig required" self-select EXCLUSION floor for issue-family
+ * claims. Some issue-family work-items (mostly task-kind shared-hive-p2p Briefs/scenarios)
+ * carry `payload.needs_2_machine_rig: true` because their actual execution needs a LIVE
+ * ≥2-machine / Hetzner federation rig a single-box fleet member cannot provide. Without
+ * this floor a single-box drain member self-selects one via claim_next, discovers it is
+ * un-doable solo, and releases it — pure recycle churn (WI-2796 observed 19 such items
+ * cycling this way during the 2026-07-04 backlog-clearance drain).
+ *
+ * `rigAvailable` is the caller-declared bypass: a fleet that DOES have/coordinate a real
+ * multi-machine rig passes `rigAvailable:true` and the floor becomes a no-op (`TRUE`) so
+ * those items surface to it normally. Omitted/false (the default, single-box case) ⇒ any
+ * `needs_2_machine_rig:true` row is excluded from self-select. A member can still claim
+ * such an item DIRECTLY BY ID (the named-claim floor bypass, same shape as the reserved-
+ * plan-lane floor above) when it legitimately has rig access.
+ *
+ * ONE source of truth, shared by {@link claimNextIssueWorkItem} (the claim) and
+ * {@link diagnoseClaimNextMiss} (the READY count) so the miss diagnosis can never
+ * disagree with what the claim actually serves.
+ */
+export function crossMachineRigExclusionSql(sql: OrgSql, rigAvailable: boolean | undefined) {
+  if (rigAvailable) return sql`TRUE`;
+  // COALESCE the payload so a NULL-payload row (no rig tag) reads as '{}'::jsonb->>'...' =
+  // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
+  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needs_2_machine_rig' IS DISTINCT FROM 'true'`;
 }
 
 /**
@@ -1956,7 +1990,10 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- WI-2118 (P-009 leak): a reserved-plan-lane item is NOT ready to self-select — count it
          -- as pending-but-gated (present in the POOL above, excluded here), the SAME floor the claim
          -- applies, so the miss diagnosis never disagrees with what claim_next actually serves.
-         AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}`;
+         AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
+         -- WI-2796: a cross-machine-rig-gated item is likewise pending-but-gated for a
+         -- single-box caller — same floor the claim applies.
+         AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -2045,6 +2082,9 @@ export async function claimNextIssueWorkItem(
           )
           -- WI-2118 (P-009 leak): never self-select an item reserved by another active plan lane.
           AND ${reservedPlanLaneExclusionSql(sql, filter.assignee)}
+          -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller
+          -- declared it has rig access.
+          AND ${crossMachineRigExclusionSql(sql, filter.rigAvailable)}
         ORDER BY ${filter.swarmId ? sql`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, wi.feature_order ASC NULLS LAST,` : sql``} wi.created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

@@ -76,6 +76,12 @@ export default defineTool({
       .describe(
         'How many of the OLDEST unclaimed items to claim (default 1, max 25). >1 loops the same race-free SKIP-LOCKED claim path N times, stopping at the first miss — so you may get FEWER than `count` when the queue runs dry. count>1 returns { ok, claimed: [...] }; omitted/1 keeps the single-item { ok, workItem } shape (backward-compatible).',
       ),
+    rigAvailable: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-2796: pass true ONLY when you actually have/coordinate a live ≥2-machine or Hetzner federation rig. Default (false/omitted): items tagged payload.needs_2_machine_rig are excluded from self-select — a single-box caller cannot execute them anyway, and claiming-then-releasing one is pure recycle churn. A rig-equipped fleet passes true to see them.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -107,6 +113,7 @@ export default defineTool({
         states: args.states,
         swarmId,
         excludeRedundant,
+        rigAvailable: args.rigAvailable,
       });
       // P-004 / D-002 (D-007 hybrid), flag-gated default-OFF: once the owner ratifies
       // (the WORKITEM_CLAIM_LEASE flag), the local SKIP-LOCKED claim is arbitrated by
@@ -139,6 +146,7 @@ export default defineTool({
         states: args.states,
         swarmId,
         excludeRedundant,
+        rigAvailable: args.rigAvailable,
       });
       // EI-6480: a lease-ARBITRATION loss is NOT a peer race. When claimOne claimed a row
       // locally but lost the per-Hive authority lease, the misleading 'retry' hint sent callers

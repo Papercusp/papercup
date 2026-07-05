@@ -212,6 +212,84 @@ export function listLiveHosts(
   return out;
 }
 
+function safeUnlink(p: string): void {
+  try {
+    if (existsSync(p)) unlinkSync(p);
+  } catch {
+    /* best-effort — a concurrent host cleaning up the same file races harmlessly */
+  }
+}
+
+/**
+ * Remove discovery files (+ their sockets) whose host is no longer a live psu session
+ * (WI-2510). `pruneDead()` in psu-pty-host.mjs runs ONLY opportunistically — when a NEW
+ * host boots on the box, scanning every file — so on a box with no new psu launches for
+ * hours, a dead host's `~/.papercusp/psu-pty/<owner>.json` (+ orphaned socket) lingers
+ * indefinitely (a slow disk leak; `listLiveHosts` also pays a per-file /proc read as they
+ * accumulate). WI-2339 fix B already closed the correctness risk (a stale file can no
+ * longer masquerade as a live host, via `pidIsPsuHost`'s cmdline cross-check), so this is
+ * pure hygiene — it reuses the EXACT SAME liveness test `findLiveHost`/`listLiveHosts` apply
+ * (pid alive + socket exists + `pidIsPsuHost` identity), so it only ever removes a file that
+ * already reads as "no live host" to every consumer; a corrupt/unreadable file is pruned too
+ * (it can never resolve to a live host either). Returns the count removed, for tests/logging.
+ */
+export function pruneDeadDiscoveryFiles(
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): number {
+  const verify = opts.verifyIdentity ?? pidIsPsuHost;
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return 0; // no discovery dir yet — nothing to prune
+  }
+  let pruned = 0;
+  for (const f of files) {
+    const metaPath = join(dir, f);
+    let h: PsuPtyHost | null = null;
+    try {
+      h = JSON.parse(readFileSync(metaPath, 'utf8')) as PsuPtyHost;
+    } catch {
+      safeUnlink(metaPath); // corrupt/partial write — can never resolve to a live host
+      pruned += 1;
+      continue;
+    }
+    const alive = !!(h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid));
+    if (alive) continue;
+    safeUnlink(metaPath);
+    if (h?.sock) safeUnlink(h.sock);
+    pruned += 1;
+  }
+  return pruned;
+}
+
+const JANITOR_INTERVAL_MS = 30 * 60 * 1000; // hygiene only, no urgency (WI-2510)
+
+type JanitorGlobals = typeof globalThis & { __papercuspPsuPtyJanitorStarted?: boolean };
+const _janitorGlobals = globalThis as JanitorGlobals;
+
+/**
+ * Arm the standing sweep once (WI-2510), idempotently. Started LAZILY on first real use
+ * (`findLiveHost` / `listLiveHosts`) rather than at module-import time — mirrors
+ * `pty-bridge.ts`'s `startReaper()` pattern — so importing this module in isolation (e.g. a
+ * unit test exercising `sanitizeKey`/`pidIsPsuHost`) never arms a real background timer;
+ * only the operator's actual runtime use of the discovery path (wake delivery, desktop
+ * window liveness, …) does.
+ */
+function startJanitor(): void {
+  if (_janitorGlobals.__papercuspPsuPtyJanitorStarted) return;
+  _janitorGlobals.__papercuspPsuPtyJanitorStarted = true;
+  managedSetInterval(
+    'psu-pty-discovery-janitor',
+    JANITOR_INTERVAL_MS,
+    () => {
+      pruneDeadDiscoveryFiles();
+    },
+    { category: 'global-sweep' },
+  );
+}
+
 /**
  * Inject one control message into a live host's socket. `mode:'turn'` = a wake
  * turn (idle-gated host-side, then submitted); `mode:'raw'` = verbatim +

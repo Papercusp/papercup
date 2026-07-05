@@ -58,6 +58,12 @@ export default defineTool({
       .describe(
         "claimable states — subset of ['todo','open','failing'] (default ['todo']). 'blocked'/'cursed' are resolver-owned floors (blocked items are leader-triage-only) and terminal states are settled — neither is requestable (D-002 / WI-1912).",
       ),
+    rigAvailable: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-2796: pass true ONLY when you actually have/coordinate a live ≥2-machine or Hetzner federation rig. Default (false/omitted): items tagged payload.needs_2_machine_rig are excluded — a single-box caller cannot execute them anyway.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -75,6 +81,7 @@ export default defineTool({
       harness: args.harness,
       heldPaths: args.heldPaths,
       states: args.states,
+      rigAvailable: args.rigAvailable,
       ignoreStoredSpec: !specOn,
     });
     return {

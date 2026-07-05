@@ -89,6 +89,8 @@ export interface GetNextOpts {
   excludeRedundant?: boolean;
   /** Claimable statuses floor (default ['todo']). */
   states?: string[];
+  /** WI-2796: caller has/coordinates a live ≥2-machine rig — see crossMachineRigExclusionSql. */
+  rigAvailable?: boolean;
 }
 
 export interface GetNextResult {
@@ -574,6 +576,7 @@ export async function getNextWorkItem(
         states: opts.states,
         swarmId: opts.swarmId,
         excludeRedundant: opts.excludeRedundant,
+        rigAvailable: opts.rigAvailable,
       },
       ws,
       { issueKinds },

@@ -274,10 +274,12 @@ export default function ThrottleSection({
             <div className="pc-queen__toggles">
               {IDLE_KINDS.map((kind) => {
                 const on = idleEnabled(idleActivities, kind);
+                // 'scout' pack-routes to the active cast word (classic → "Blender").
+                const label = kind === 'scout' ? t('scout') : IDLE_LABEL[kind];
                 return (
                   <label key={kind} className={`pc-queen__toggle${on ? '' : ' pc-queen__toggle--off'}`}>
-                    <Checkbox className="pc-queen__check" checked={on} disabled={busy} ariaLabel={`${IDLE_LABEL[kind]} idle activity`} onChange={(c) => onToggleIdle(kind, c)} />
-                    <span>{IDLE_LABEL[kind]}</span>
+                    <Checkbox className="pc-queen__check" checked={on} disabled={busy} ariaLabel={`${label} idle activity`} onChange={(c) => onToggleIdle(kind, c)} />
+                    <span>{label}</span>
                   </label>
                 );
               })}

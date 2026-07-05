@@ -208,6 +208,8 @@ export async function getNextForBee(args: {
   swarmId?: string;
   excludeRedundant?: boolean;
   states?: string[];
+  /** WI-2796: caller has/coordinates a live ≥2-machine rig — see crossMachineRigExclusionSql. */
+  rigAvailable?: boolean;
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
@@ -220,6 +222,7 @@ export async function getNextForBee(args: {
     ...(args.swarmId ? { swarmId: args.swarmId } : {}),
     ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
     ...(args.states ? { states: args.states } : {}),
+    ...(args.rigAvailable ? { rigAvailable: true } : {}),
   });
 }
 
