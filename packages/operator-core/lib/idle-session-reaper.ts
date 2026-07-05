@@ -41,7 +41,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
-import { interruptViaPty, findLiveHost } from './events/await/psu-pty-discovery';
+import { interruptViaPty, findLiveHost, listLiveHosts } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
@@ -139,14 +139,71 @@ export function planWindowUnknownProtection(opts: {
 }
 
 /**
+ * PURE (WI-2858): the coord-owner ids that have a LIVE psu-pty host on this box.
+ * `listLiveHosts()` self-validates (pid alive + socket exists + psu-host identity)
+ * and records each host's owning coord id as `ownerId` — so this is exactly "the
+ * owners whose interactive session could be injected/relaunched right now". This
+ * is the signal that BREAKS the slice-1↔slice-4 mutual-protection deadlock: a
+ * standing inbox-wake await (slice-1's old leg) and an open adv_session (slice-4's
+ * leg) each STOP being self-justifying "alive" signals; a live host (or a fresh
+ * heartbeat, kept as its own leg) is what actually protects. Structural param so it
+ * unit-tests without constructing a full PsuPtyHost.
+ */
+export function liveHostOwnerSet(hosts: ReadonlyArray<{ ownerId?: string | null }>): Set<string> {
+  const out = new Set<string>();
+  for (const h of hosts) if (h?.ownerId) out.add(h.ownerId);
+  return out;
+}
+
+/**
+ * PURE (WI-2858): which owners' OPEN adv_session counts as genuinely RESUMABLE —
+ * only those with a LIVE psu-host that can relaunch/inject the wake. An open
+ * adv_session ALONE is NOT enough: that was the slice-4 half of the deadlock — a
+ * SIGKILLed session keeps `ended_at IS NULL` forever, so counting it "resumable"
+ * kept its dangling inbox-wake await alive, which (via slice-1) kept the
+ * adv_session "alive". A stale-heartbeat session with no live host is genuinely
+ * gone; its await must be reclaimable so coord:presence shows it `ended`.
+ */
+export function resumableOpenSessionOwners(
+  openAdvSessionOwners: Iterable<string>,
+  liveHostOwners: ReadonlySet<string>,
+): string[] {
+  return [...new Set(openAdvSessionOwners)].filter((o) => o && liveHostOwners.has(o));
+}
+
+/**
+ * Best-effort: the coord-owner ids with a LIVE psu-pty host on this box. Never
+ * throws — a missing discovery dir / FS error yields an EMPTY set, in which case
+ * host-liveness protects nobody and protection falls back to the heartbeat / bee /
+ * wake-delivery legs alone (a genuinely-live session still heartbeats every 60s, so
+ * it stays protected regardless; only the stale-heartbeat-but-live-host COLD cohort
+ * relies on this leg). Local — the sweep functions call it once each.
+ */
+function safeLiveHostOwners(): Set<string> {
+  try {
+    return liveHostOwnerSet(listLiveHosts());
+  } catch {
+    return new Set<string>();
+  }
+}
+
+/**
  * The set of coord owner ids that are ALIVE / must never be reaped — the same
  * alias-aware liveness as work-items-stale-claims (presence + running nursery
- * aliases) UNION registered wakes (the wake-executor will resume them) UNION
- * any work-item claim holder (never reap a session mid-claim). One read.
+ * aliases) UNION in-flight wake deliveries (the owner is mid-resume) UNION any
+ * work-item claim holder (never reap a session mid-claim) UNION any owner with a
+ * LIVE psu-host (`liveHostOwners`; it can inject/relaunch the wake). One read.
+ *
+ * WI-2858: the old bare `event_awaits` leg (protect ANY owner with an
+ * unfired/uncancelled await) is REMOVED — every parked session holds an
+ * always-armed inbox-wake await, so that leg protected every dead session and was
+ * the slice-1 half of the mutual-protection deadlock. A live HOST now carries the
+ * "a wake can still reach it" protection WITHOUT the deadlock; a genuinely-live
+ * session is independently protected by its fresh supervisor heartbeat.
  */
 export async function gatherProtectedSessionOwners(
   sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
-  opts: { graceMs?: number } = {},
+  opts: { graceMs?: number; liveHostOwners?: ReadonlySet<string> } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
   const rows = await sql<Array<{ alias: string }>>`
@@ -164,10 +221,6 @@ export async function gatherProtectedSessionOwners(
          AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
       UNION
       SELECT subscriber_id AS alias
-        FROM harness_shared.event_awaits
-       WHERE fired_at IS NULL AND cancelled_at IS NULL
-      UNION
-      SELECT subscriber_id AS alias
         FROM harness_shared.event_wake_deliveries
        WHERE status IN ('pending', 'parked', 'delivering')
       UNION
@@ -176,7 +229,11 @@ export async function gatherProtectedSessionOwners(
        WHERE taken_by IS NOT NULL
     )
     SELECT DISTINCT alias FROM owners WHERE alias IS NOT NULL AND alias <> ''`;
-  return new Set(rows.map((r) => r.alias));
+  const protectedOwners = new Set(rows.map((r) => r.alias));
+  // WI-2858: a LIVE psu-host protects (it can inject/relaunch the wake) — this
+  // REPLACES the removed bare-await leg without the slice-1↔slice-4 deadlock.
+  for (const o of opts.liveHostOwners ?? []) protectedOwners.add(o);
+  return protectedOwners;
 }
 
 export interface IdleSessionReapResult {
@@ -242,8 +299,11 @@ export async function runIdleSessionReap(
     // "ghost" however long its heartbeat has lapsed (owner decision 2026-06-29).
     // gatherOnDesktopSessions is best-effort → empty (headless box / wmctrl
     // failure), so this can only ever PROTECT MORE, never reap more.
+    // WI-2858: live psu-host owners protect (a host can inject/relaunch the wake),
+    // and REPLACE the removed bare-await leg that deadlocked slice-1 against slice-4.
+    const liveHostOwners = safeLiveHostOwners();
     const [protectedOwners, onDesktop, viewerOwners] = await Promise.all([
-      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs }),
+      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners }),
       gatherOnDesktopSessions().catch(() => null),
       gatherViewerAttachedOwners().catch(() => new Set<string>()),
     ]);
@@ -954,46 +1014,55 @@ export function planDeadAwaitReclaim(opts: {
 /**
  * The set of owners that are genuinely LIVE *or* RESUMABLE — so their standing
  * inbox-wake await must be PRESERVED. Deliberately distinct from
- * `gatherProtectedSessionOwners`: it ADDS open adv_sessions (resumable parked
- * sessions) and DROPS the standing-await leg (counting the very rows we are
- * GC'ing as "alive" would make the sweep a no-op). One read.
+ * `gatherProtectedSessionOwners`: it DROPS the standing-await leg (counting the
+ * very rows we are GC'ing as "alive" would make the sweep a no-op).
  *   - fresh coord_presence heartbeat (process alive), OR
  *   - a RUNNING/RESTARTING bee on any alias (spawn_id/session_owner/run_id), OR
- *   - an OPEN adv_session (ended_at IS NULL — the wake-executor can --resume it), OR
- *   - an IN-FLIGHT wake delivery (the owner is mid-resume right now).
+ *   - an IN-FLIGHT wake delivery (the owner is mid-resume right now), OR
+ *   - an OPEN adv_session (ended_at IS NULL) *whose owner has a LIVE psu-host* —
+ *     WI-2858: an open adv_session ALONE is no longer proof of resumability (that
+ *     was the slice-4 half of the deadlock — a SIGKILLed session keeps
+ *     `ended_at IS NULL` forever). The wake-executor can only relaunch/inject a
+ *     parked session when a live host exists, so gate the leg on `liveHostOwners`.
+ * One read for the unconditional legs, one for the open-adv-session owners.
  */
 export async function gatherLiveOrResumableOwners(
   sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
-  opts: { graceMs?: number } = {},
+  opts: { graceMs?: number; liveHostOwners?: ReadonlySet<string> } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
-  const rows = await sql<Array<{ alias: string }>>`
-    WITH live AS (
-      SELECT owner_id AS alias
-        FROM harness_shared.coord_presence
-       WHERE heartbeat_at IS NOT NULL
-         AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
-      UNION
-      SELECT a.alias
-        FROM harness_shared.spawned_agents n
-        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
-       WHERE n.status IN ('running', 'restarting')
-         AND n.heartbeat_at IS NOT NULL
-         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
-      UNION
-      -- Resumable PARKED sessions: an OPEN adv_session can be --resume'd by the
-      -- wake-executor, so its inbox-wake await is its lifeline — never cancel it.
-      SELECT coord_owner_id AS alias
+  const [liveRows, openRows] = await Promise.all([
+    sql<Array<{ alias: string }>>`
+      WITH live AS (
+        SELECT owner_id AS alias
+          FROM harness_shared.coord_presence
+         WHERE heartbeat_at IS NOT NULL
+           AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+        UNION
+        SELECT a.alias
+          FROM harness_shared.spawned_agents n
+          CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+         WHERE n.status IN ('running', 'restarting')
+           AND n.heartbeat_at IS NOT NULL
+           AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+        UNION
+        -- Mid-resume: a wake is being delivered to this owner right now.
+        SELECT subscriber_id AS alias
+          FROM harness_shared.event_wake_deliveries
+         WHERE status IN ('pending', 'parked', 'delivering')
+      )
+      SELECT DISTINCT alias FROM live WHERE alias IS NOT NULL AND alias <> ''`,
+    sql<Array<{ alias: string }>>`
+      SELECT DISTINCT coord_owner_id AS alias
         FROM harness_shared.adv_sessions
-       WHERE ended_at IS NULL
-      UNION
-      -- Mid-resume: a wake is being delivered to this owner right now.
-      SELECT subscriber_id AS alias
-        FROM harness_shared.event_wake_deliveries
-       WHERE status IN ('pending', 'parked', 'delivering')
-    )
-    SELECT DISTINCT alias FROM live WHERE alias IS NOT NULL AND alias <> ''`;
-  return new Set(rows.map((r) => r.alias));
+       WHERE ended_at IS NULL AND coord_owner_id IS NOT NULL AND coord_owner_id <> ''`,
+  ]);
+  const liveOrResumable = new Set(liveRows.map((r) => r.alias));
+  // WI-2858: an OPEN adv_session is resumable ONLY when a live psu-host can relaunch
+  // it — otherwise it is a SIGKILLed ghost whose dangling await must be reclaimed.
+  for (const o of resumableOpenSessionOwners(openRows.map((r) => r.alias), opts.liveHostOwners ?? new Set()))
+    liveOrResumable.add(o);
+  return liveOrResumable;
 }
 
 export interface AwaitReclaimResult {
@@ -1037,6 +1106,10 @@ export async function reclaimDanglingInboxWakeAwaits(
   try {
     const { sql } = getOrgPg();
     const wakePrefix = `${COORD_INBOX_WAKE_PREFIX}%`;
+    // WI-2858: gate the "open adv_session ⇒ resumable" leg on a LIVE psu-host, so a
+    // SIGKILLed session (open adv_session but no host + stale heartbeat) is no longer
+    // counted resumable and its dangling inbox-wake await is reclaimed.
+    const liveHostOwners = safeLiveHostOwners();
     const [awaitRows, liveOrResumable] = await Promise.all([
       sql<Array<{ subscriber_id: string }>>`
         SELECT DISTINCT subscriber_id
@@ -1046,7 +1119,7 @@ export async function reclaimDanglingInboxWakeAwaits(
            AND fired_at IS NULL AND cancelled_at IS NULL
            AND (expires_ts IS NULL OR expires_ts > now())
            AND subscriber_id IS NOT NULL AND subscriber_id <> ''`,
-      gatherLiveOrResumableOwners(sql, { graceMs: opts.graceMs }),
+      gatherLiveOrResumableOwners(sql, { graceMs: opts.graceMs, liveHostOwners }),
     ]);
     const awaitOwners = awaitRows.map((r) => r.subscriber_id);
     const dead = planDeadAwaitReclaim({ awaitOwners, liveOrResumable });

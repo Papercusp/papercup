@@ -7,6 +7,8 @@ import {
   planZombieReap,
   reapZombieResumeProcs,
   planDeadAwaitReclaim,
+  liveHostOwnerSet,
+  resumableOpenSessionOwners,
   parseForegroundFromStat,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
@@ -567,8 +569,9 @@ describe('planDeadAwaitReclaim (slice 4: reclaim-lane — dangling inbox-wake aw
     expect(dead.sort()).toEqual(['su-ghost-1', 'su-ghost-2']);
   });
 
-  it('a PARKED-but-resumable owner (open adv_session ⇒ in the live set) keeps its await', () => {
-    // su-parked has no fresh heartbeat but an OPEN adv_session → in liveOrResumable.
+  it('a PARKED-but-resumable owner (open adv_session + LIVE psu-host ⇒ in the live set) keeps its await', () => {
+    // WI-2858: su-parked has no fresh heartbeat but an OPEN adv_session whose owner
+    // has a LIVE psu-host → gatherLiveOrResumableOwners keeps it in liveOrResumable.
     const dead = planDeadAwaitReclaim({
       awaitOwners: ['su-parked', 'su-dead'],
       liveOrResumable: new Set(['su-parked']),
@@ -595,5 +598,87 @@ describe('planDeadAwaitReclaim (slice 4: reclaim-lane — dangling inbox-wake aw
 
   it('empty await set ⇒ nothing to do', () => {
     expect(planDeadAwaitReclaim({ awaitOwners: [], liveOrResumable: new Set(['x']) })).toEqual([]);
+  });
+});
+
+describe('liveHostOwnerSet (WI-2858: map live psu-hosts → protected coord owners)', () => {
+  it('collects each live host owner id, dropping null/empty', () => {
+    const set = liveHostOwnerSet([
+      { ownerId: 'su-a' },
+      { ownerId: 'su-b' },
+      { ownerId: '' }, // never-launched / partial file → not an owner
+      { ownerId: null },
+      {}, // no ownerId field
+    ]);
+    expect(set).toEqual(new Set(['su-a', 'su-b']));
+  });
+
+  it('empty host list ⇒ empty set (headless box / no discovery dir → host-liveness protects nobody)', () => {
+    expect(liveHostOwnerSet([])).toEqual(new Set());
+  });
+
+  it('dedupes two hosts recorded for the same owner', () => {
+    expect(liveHostOwnerSet([{ ownerId: 'su-x' }, { ownerId: 'su-x' }])).toEqual(new Set(['su-x']));
+  });
+});
+
+describe('resumableOpenSessionOwners (WI-2858: an OPEN adv_session is resumable only WITH a live host)', () => {
+  it('keeps an open-adv-session owner that HAS a live host', () => {
+    expect(resumableOpenSessionOwners(['su-cold'], new Set(['su-cold']))).toEqual(['su-cold']);
+  });
+
+  it('DROPS an open-adv-session owner with NO live host (the SIGKILLed-ghost case — its await is reclaimable)', () => {
+    expect(resumableOpenSessionOwners(['su-zombie'], new Set())).toEqual([]);
+  });
+
+  it('partitions a mixed batch: only the host-backed owners are resumable', () => {
+    const out = resumableOpenSessionOwners(['su-cold', 'su-zombie', 'su-other'], new Set(['su-cold', 'su-unrelated']));
+    expect(out).toEqual(['su-cold']);
+  });
+
+  it('dedupes repeated owners and drops empty ids', () => {
+    expect(resumableOpenSessionOwners(['su-cold', 'su-cold', ''], new Set(['su-cold']))).toEqual(['su-cold']);
+  });
+});
+
+describe('WI-2858 deadlock break — end-to-end at the pure boundary (slice-1 reap ⋈ slice-4 reclaim)', () => {
+  // The exact invariant WI-2858 asks for: a stale-heartbeat + no-live-host +
+  // dangling-await owner (a SIGKILLed desktop-restart ghost) is BOTH reaped by
+  // slice-1 AND has its await reclaimed by slice-4, while a session spared by
+  // EITHER a fresh heartbeat OR a live psu-host survives both. This composes the
+  // real host-liveness helpers (liveHostOwnerSet / resumableOpenSessionOwners) with
+  // the real plan functions, mimicking how the fixed gather functions build the sets.
+  const OLD = 5 * IDLE_SESSION_GRACE_MS; // all three sessions are well past the grace floor
+
+  // Three owners, each with an open adv_session AND a standing (dangling) inbox-wake await:
+  //   su-zombie — SIGKILLed: stale heartbeat, NO live host        → must be reaped + reclaimed
+  //   su-cold   — cold-parked: stale heartbeat, LIVE psu-host      → spared (host can relaunch)
+  //   su-warm   — alive: FRESH heartbeat, no host needed           → spared (heartbeat)
+  const freshHeartbeatOwners = new Set(['su-warm']); // the coord_presence fresh leg
+  const liveHostOwners = liveHostOwnerSet([{ ownerId: 'su-cold' }]); // listLiveHosts() → owners
+  const openAdvSessionOwners = ['su-zombie', 'su-cold', 'su-warm'];
+  const danglingAwaitOwners = ['su-zombie', 'su-cold', 'su-warm'];
+
+  it('slice-1: reaps ONLY the SIGKILLed ghost; the live-host and fresh-heartbeat owners are protected', () => {
+    // Mimic the fixed gatherProtectedSessionOwners: fresh-heartbeat ∪ live-host.
+    const protectedOwners = new Set([...freshHeartbeatOwners, ...liveHostOwners]);
+    const sessions = [
+      session(1, 'su-zombie', old(OLD)),
+      session(2, 'su-cold', old(OLD)),
+      session(3, 'su-warm', old(OLD)),
+    ];
+    const plan = planIdleSessionReap({ sessions, protectedOwners, nowMs: NOW });
+    expect(plan.reap.map((s) => s.coordOwnerId)).toEqual(['su-zombie']);
+    expect(new Set(plan.keptLive.map((s) => s.coordOwnerId))).toEqual(new Set(['su-cold', 'su-warm']));
+  });
+
+  it('slice-4: reclaims ONLY the SIGKILLed ghost’s await; the live-host and fresh-heartbeat awaits are preserved', () => {
+    // Mimic the fixed gatherLiveOrResumableOwners: fresh-heartbeat ∪ (open-adv ∩ live-host).
+    const liveOrResumable = new Set([
+      ...freshHeartbeatOwners,
+      ...resumableOpenSessionOwners(openAdvSessionOwners, liveHostOwners),
+    ]);
+    const dead = planDeadAwaitReclaim({ awaitOwners: danglingAwaitOwners, liveOrResumable });
+    expect(dead).toEqual(['su-zombie']); // only the ghost — su-cold (host) + su-warm (heartbeat) keep their awaits
   });
 });

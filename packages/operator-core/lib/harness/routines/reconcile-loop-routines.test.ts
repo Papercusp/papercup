@@ -687,7 +687,13 @@ describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escala
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 }));
-    const sql = fakeSql([parkedRow({ presence_last_active_at: pgString(T0 + 9 * 60_000) })], updates); // active at +9min
+    // GENUINELY still-active: last activity 30s ago — inside FALLBACK_QUIET_MS (60s), so the
+    // presence-quiescence settle path does NOT fire (that would legitimately re-arm a
+    // worked-then-quiet turn, a DIFFERENT leg). completionSignal → null, so we actually reach the
+    // quick-retry pre-filter, whose `presence_last_active_at > last_fired` test leaves this healthy
+    // loop untouched. (A +9min/+10min fixture is 60s-quiet = exactly settled → re-arms via
+    // presence-quiescence, which is NOT what this test means to assert.)
+    const sql = fakeSql([parkedRow({ presence_last_active_at: pgString(T0 + 10 * 60_000 - 30_000) })], updates); // active 30s ago
     const res = await reconcileLoopRoutines({
       sql,
       nowMs: T0 + 10 * 60_000, // past the quick-retry floor, but presence shows genuine post-fire activity
