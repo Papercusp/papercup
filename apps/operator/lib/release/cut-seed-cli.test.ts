@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { parseGitDepth, pickGitEncryption } from './cut-seed-cli';
+import { parseGitDepth, pickGitEncryption, assertEpochSealIdentityPresent } from './cut-seed-cli';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
 const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
@@ -69,6 +69,38 @@ describe('pickGitEncryption', () => {
     await expect(
       pickGitEncryption({ workspaceId: 'ws', epochProvided: false, hive: 'papercusp', cutAtEpoch: 0, deriveEpochKey }),
     ).rejects.toThrow(/expected 32/);
+  });
+});
+
+describe('assertEpochSealIdentityPresent (load-don\'t-mint guard, WI-2903/WI-1981)', () => {
+  const base = { workspaceId: 'papercusp-workspace', hive: 'papercusp', allowMint: false };
+
+  it('identity present ⇒ proceeds (and names the pubkey in the warn)', async () => {
+    const warn = vi.fn();
+    await expect(
+      assertEpochSealIdentityPresent({ ...base, warn, loadStatus: async () => ({ kind: 'ok', pubkeyBase64: 'dt7o6ioLxyz' }) }),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dt7o6ioL/));
+  });
+
+  it('identity ABSENT ⇒ refuses: deriveEpochKey is get-or-create, sealing here would mint a divergent key', async () => {
+    await expect(
+      assertEpochSealIdentityPresent({ ...base, loadStatus: async () => ({ kind: 'not_found' }) }),
+    ).rejects.toThrow(/REFUSING epoch seal.*NO private key/s);
+  });
+
+  it('keychain read ERROR ⇒ fails CLOSED (a key may exist but be unreadable — not the same as absent)', async () => {
+    await expect(
+      assertEpochSealIdentityPresent({ ...base, loadStatus: async () => ({ kind: 'error', reason: 'secret-tool timeout' }) }),
+    ).rejects.toThrow(/keychain read FAILED \(secret-tool timeout\)/);
+  });
+
+  it('--allow-mint-epoch-key ⇒ proceeds on absent identity (new-hive bootstrap escape hatch), loudly', async () => {
+    const warn = vi.fn();
+    await expect(
+      assertEpochSealIdentityPresent({ ...base, allowMint: true, warn, loadStatus: async () => ({ kind: 'not_found' }) }),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/WILL mint/));
   });
 });
 
