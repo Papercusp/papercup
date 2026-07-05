@@ -214,7 +214,7 @@ async function writeToPg(
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
     -- WI-2923 (mig 504): at an EQUAL order key the WRITER tie-break decides —
-    -- the bare `>=` applied unconditionally on ties, so two cells that each
+    -- the bare ">=" applied unconditionally on ties, so two cells that each
     -- completed the same item in the same clock tick SWAPPED values on heal
     -- (each applied the other's write, echo suppression froze the swap, and
     -- convergence reported a fixed point over divergent replicas —
