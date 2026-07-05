@@ -897,6 +897,154 @@ describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, rea
   });
 });
 
+/**
+ * reclaimFirstOutputStalledSpawns (EI-7345) — the "never even started, not just
+ * wedged" half of the spawn-reclaim floor. reclaimWedgedSpawns deliberately
+ * ignores a row with NO observed output ("absence of signal ≠ wedge" above);
+ * this sweep is precisely the complement — it selects supervised-LIVE rows that
+ * have NEVER produced a byte of output past the (short) first-output threshold,
+ * launched by THIS incarnation, and hands each to the injected reap seam. A row
+ * that has emitted at least once (even if now silent) is reclaimWedgedSpawns's
+ * job, never this one's.
+ */
+describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclaim, real PG)', () => {
+  const ME3 = hostname();
+  const BOOT = launcherBootId();
+  const CHILD_PID = process.pid + 1;
+  const SILENT = { silentMs: 5 * 60_000, staleMs: 5 * 60_000 };
+
+  function recordingReap() {
+    const seen: FirstOutputStallCandidate[] = [];
+    const fn = async (c: FirstOutputStallCandidate) => {
+      seen.push(c);
+      return true;
+    };
+    return { fn, seen };
+  }
+
+  /** Insert a row that IS a valid first-output-stall candidate unless an override
+   *  breaks one rule: fresh heartbeat, NO output ever, started well past the
+   *  first-output threshold, launched by this host+incarnation with a real child pid. */
+  async function insertFirstOutputStall(
+    spawnId: string,
+    over: {
+      status?: string;
+      heartbeatAgoSec?: number;
+      startedAgoSec?: number;
+      lastOutputAgoSec?: number;
+      host?: string;
+      bootId?: string;
+      pid?: number;
+    } = {},
+  ) {
+    await insertSpawn(spawnId, over.status ?? 'running', over.heartbeatAgoSec ?? 5, {
+      host: over.host ?? ME3,
+      bootId: over.bootId ?? BOOT,
+      pid: over.pid ?? CHILD_PID,
+      startedAgoSec: over.startedAgoSec ?? 6 * 60, // started 6 min ago > 5-min threshold
+      lastOutputAgoSec: over.lastOutputAgoSec, // omitted ⇒ NULL (never produced output)
+    });
+  }
+
+  it('reaps a same-host this-incarnation child: fresh heartbeat + zero output past the first-output threshold', async () => {
+    await insertFirstOutputStall('stalled');
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['stalled']);
+    expect(r.workspaces).toEqual([WS]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].spawnId).toBe('stalled');
+    expect(seen[0].silentMs).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  it('does NOT reap a spawn started recently (under the first-output threshold — still a legitimate boot)', async () => {
+    await insertFirstOutputStall('booting', { startedAgoSec: 30 }); // 30s old
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('does NOT reap a spawn that HAS produced output — even if long silent (that is reclaimWedgedSpawns\'s job)', async () => {
+    await insertFirstOutputStall('emitted-once', { lastOutputAgoSec: 6 * 60 });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('does NOT reap a stale-heartbeat spawn — the orphan sweep owns that one', async () => {
+    await insertFirstOutputStall('stale-host', { heartbeatAgoSec: 10 * 60 });
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap a DIFFERENT-host stalled row (the owning host reaps it)', async () => {
+    await insertFirstOutputStall('remote', { host: 'some-other-box' });
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap a PRIOR-incarnation row (boot-id mismatch — not locally killable)', async () => {
+    await insertFirstOutputStall('prior', { bootId: 'some-dead-prior-boot-id' });
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('does NOT reap an in-process launch recorded with the operator pid (never kills the Queen/operator)', async () => {
+    await insertFirstOutputStall('queen-launch', { pid: process.pid });
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('never touches terminal rows', async () => {
+    for (const status of ['done', 'failed', 'cancelled', 'reaped']) {
+      await insertFirstOutputStall(`term-${status}`, { status });
+    }
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+  });
+
+  it('counts only the rows the seam ACCEPTS (a declined row is not reclaimed)', async () => {
+    await insertFirstOutputStall('take');
+    await insertFirstOutputStall('decline');
+    const r = await reclaimFirstOutputStalledSpawns(
+      db.sql,
+      async (c) => c.spawnId === 'take',
+      SILENT,
+    );
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['take']);
+  });
+
+  it('is idempotent — a row the seam settled terminal is not re-reaped next sweep', async () => {
+    await insertFirstOutputStall('once');
+    const reapAndSettle = async (c: FirstOutputStallCandidate) => {
+      await db.sql`UPDATE harness_shared.spawned_agents SET status = 'cancelled' WHERE spawn_id = ${c.spawnId}`;
+      return true;
+    };
+    const first = await reclaimFirstOutputStalledSpawns(db.sql, reapAndSettle, SILENT);
+    expect(first.reclaimed).toBe(1);
+    const { fn, seen } = recordingReap();
+    const second = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(second.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('reaps restarting rows too (they also hold a concurrency slot)', async () => {
+    await insertFirstOutputStall('restarting-stall', { status: 'restarting' });
+    const { fn } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
+  });
+});
+
 // ————————————————————————————————————————————————————————————————————————————
 // Dead-holder claim release (2026-07-02): reclaiming a nursery row to 'failed'
 // must also free the durable claims the dead spawn still holds — feature

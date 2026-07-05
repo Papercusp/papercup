@@ -62,6 +62,10 @@ the packaged form of exactly the stack the reference webapp runs on.**
 4. **Observability seam** — `instrumentation.ts` + @vercel/otel wiring. Cost: **LOW** as an optional
    FREE-tier GUIDE block, not a component.
 
+There is **no** canonical `@papercusp/template-kit` / `libs/generic/template-kit` package in this
+tree yet. P-029 is a template chassis extraction, not a live import target; callers should compose
+the existing generic libs listed in (a) plus the future `templates/papercusp-web-host/` skeleton.
+
 **(c) Domain-bound (leave in the reference webapp):** marketplace adapters + all `apps/*` services, shop-sdk,
 universal-schema, catalog-search/typesense/mongo/redis infra choices, fumadocs content, Zero
 (`libs/zero` + ZeroProvider — papercusp's own data-sync aspect is the papercusp-native answer;

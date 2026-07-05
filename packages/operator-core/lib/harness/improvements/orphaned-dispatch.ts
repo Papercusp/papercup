@@ -64,6 +64,14 @@ export const ORPHAN_EVIDENCE_WINDOW_MS = 48 * 60 * 60 * 1000;
 /** Cap signals per sweep (the watchdog has its own per-tick cap on top). */
 export const ORPHAN_MAX_SIGNALS = 5;
 
+/**
+ * EI-7348: when orphaned dispatches affect many distinct items at once, the
+ * actionable object is the spawn/dispatch storm, not N per-item EIs. Keep the
+ * threshold above small coincidences so one or two broken items still surface
+ * with their item-specific key.
+ */
+export const ORPHAN_STORM_MIN_ITEMS = 4;
+
 /** Ledger rows the glue reads per sweep (newest-first; ~10 days at the lane's cadence). */
 export const ORPHAN_SCAN_READ_LIMIT = 500;
 
@@ -244,6 +252,55 @@ export function isCauseUnknownOrphan(r: ImprovementDispatchRow): boolean {
   return r.resolvedBy === 'orphaned-dispatch-collector' && (r.fireError ?? '').trim() === '';
 }
 
+export function orphanStormSignature(r: ImprovementDispatchRow): string {
+  const err = (r.fireError ?? '').toLowerCase();
+  const exit = err.match(/\b(?:worker )?exit(?:ed)?\s+(-?\d+)\b/);
+  if (exit?.[1]) return `worker-exit-${exit[1]}`;
+  if (err.includes('empty') && err.includes('output')) return 'empty-output';
+  if (r.fireResult === 'pending') return 'dispatcher-pending';
+  if (r.fireResult && r.fireResult !== 'ok') return `fire-${r.fireResult}`;
+  if (isCauseUnknownOrphan(r)) return 'collector-cause-unknown';
+  if (r.resolvedBy) return r.resolvedBy.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  return 'worker-orphan';
+}
+
+function latestResolvedAt(rows: ImprovementDispatchRow[]): string {
+  return rows.map((r) => r.resolvedAt as string).sort().at(-1) as string;
+}
+
+function newestDispatch(rows: ImprovementDispatchRow[]): ImprovementDispatchRow {
+  return rows.reduce((a, b) => ((a.firedAt ?? '') > (b.firedAt ?? '') ? a : b));
+}
+
+function buildStormSignal(signature: string, rows: ImprovementDispatchRow[]): WatchdogSignal {
+  const newest = newestDispatch(rows);
+  const itemIds = [...new Set(rows.map((r) => r.itemId))].sort();
+  const runIds = [...new Set(rows.map((r) => r.spawnedRunId).filter(Boolean))] as string[];
+  return {
+    source: 'orphaned-dispatch',
+    key: `storm:${signature}`,
+    // Stable title: no counts or timestamps, so search-first dedup folds repeats.
+    title: `Auto-implement dispatch storm (${signature}) — orphaned workers across items`,
+    body:
+      `${rows.length} orphaned dispatch row(s) across ${itemIds.length} improvement item(s) share ` +
+      `failure signature \`${signature}\`: ${itemIds.join(', ')}.\n` +
+      `Latest: item ${newest.itemId}, attempt ${newest.attempt}, fired ${newest.firedAt}, ` +
+      `fire_result=${newest.fireResult}` +
+      (newest.runnerHarness ? `, runner '${newest.runnerHarness}'` : '') +
+      (runIds.length ? `, spawned run(s): ${runIds.join(', ')}` : ', no spawn correlation recorded') +
+      `.\n\nTreat this as a condition-level spawn/dispatch failure, not ${itemIds.length} unrelated ` +
+      `item failures. Investigate the shared runner harness spawn path, worker timeout, or fire ` +
+      `transport for this signature before filing or working per-item duplicates.`,
+    severity: 'major',
+    kind: 'bug',
+    paths: [
+      'packages/operator-core/lib/harness/routines/improvement-actions.ts',
+      'packages/operator-core/lib/harness/improvements/dispatch-ledger.ts',
+    ],
+    latestAt: latestResolvedAt(rows),
+  };
+}
+
 /**
  * Pure: one signal per ITEM with orphaned-dispatch evidence inside the window.
  * `evidence` is rows with outcome 'orphaned' (just-marked rows included, with
@@ -274,14 +331,39 @@ export function buildOrphanedDispatchSignals(
     byItem.set(r.itemId, list);
   }
 
-  const newestTs = (rows: ImprovementDispatchRow[]): string =>
-    rows.map((r) => r.resolvedAt as string).sort().at(-1) as string;
+  const bySignature = new Map<string, ImprovementDispatchRow[]>();
+  for (const r of inWindow) {
+    const signature = orphanStormSignature(r);
+    const list = bySignature.get(signature) ?? [];
+    list.push(r);
+    bySignature.set(signature, list);
+  }
 
-  return [...byItem.entries()]
-    .sort(([, a], [, b]) => (newestTs(a) < newestTs(b) ? 1 : -1))
-    .slice(0, maxSignals)
+  const stormGroups = [...bySignature.entries()]
+    .map(([signature, rows]) => ({
+      signature,
+      rows,
+      itemCount: new Set(rows.map((r) => r.itemId)).size,
+      latestAt: latestResolvedAt(rows),
+    }))
+    .filter((g) => g.itemCount >= ORPHAN_STORM_MIN_ITEMS)
+    .sort((a, b) => {
+      const d = b.itemCount - a.itemCount;
+      if (d !== 0) return d;
+      return a.latestAt < b.latestAt ? 1 : -1;
+    });
+
+  const stormItemIds = new Set<string>();
+  const stormSignals = stormGroups.slice(0, maxSignals).map((g) => {
+    for (const r of g.rows) stormItemIds.add(r.itemId);
+    return buildStormSignal(g.signature, g.rows);
+  });
+
+  const itemSignals = [...byItem.entries()]
+    .filter(([itemId]) => !stormItemIds.has(itemId))
+    .sort(([, a], [, b]) => (latestResolvedAt(a) < latestResolvedAt(b) ? 1 : -1))
     .map(([itemId, rows]) => {
-      const newest = rows.reduce((a, b) => ((a.firedAt ?? '') > (b.firedAt ?? '') ? a : b));
+      const newest = newestDispatch(rows);
       const runIds = [...new Set(rows.map((r) => r.spawnedRunId).filter(Boolean))] as string[];
       return {
         source: 'orphaned-dispatch' as const,
@@ -304,9 +386,11 @@ export function buildOrphanedDispatchSignals(
           'packages/operator-core/lib/harness/routines/improvement-actions.ts',
           'packages/operator-core/lib/harness/improvements/dispatch-ledger.ts',
         ],
-        latestAt: newestTs(rows),
+        latestAt: latestResolvedAt(rows),
       };
     });
+
+  return [...stormSignals, ...itemSignals].slice(0, maxSignals);
 }
 
 /** True when the error is PG's undefined_table (migration 238 not applied yet).

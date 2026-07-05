@@ -704,6 +704,186 @@ export async function reclaimWedgedSpawns(
 }
 
 /**
+ * FIRST-OUTPUT STALL threshold (EI-7345): a spawn that has NEVER produced a
+ * single byte of output (`last_output_at IS NULL`) this long after `started_at`
+ * is presumed stuck before its first model turn (the observed signature: "PG
+ * bootstrap ok -> prompt-budget computed -> [nothing] -> eventual SIGTERM at
+ * 15-52min"), not merely thinking — a bee that ever emits at all moves
+ * `last_output_at` off NULL immediately, so this reaper and
+ * {@link reclaimWedgedSpawns} are mutually exclusive by construction (one
+ * requires `last_output_at IS NULL`, the other `IS NOT NULL`). Deliberately
+ * SHORT relative to {@link WEDGE_REAP_SILENT_MS} (30min) — there is no
+ * legitimate reason for zero output this early (unlike a long local tool call
+ * once a turn is underway), so the safe wait is minutes, not half an hour.
+ * Override: PAPERCUSP_FIRST_OUTPUT_STALL_MS (floor 60s).
+ */
+export const FIRST_OUTPUT_STALL_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_FIRST_OUTPUT_STALL_MS);
+  return Number.isFinite(raw) && raw >= 60_000 ? raw : 5 * 60_000;
+})();
+
+/**
+ * Classify a spawn row as first-output-stalled: supervised-live (fresh
+ * heartbeat), has NEVER emitted any output, and was started longer ago than the
+ * first-output threshold. Absence of a heartbeat, or a heartbeat gone stale
+ * (the orphan sweep's territory), or ANY recorded output (however old — that is
+ * {@link isPossiblyWedged}'s territory) all classify false. Pure; exported for
+ * tests.
+ */
+export function isFirstOutputStalled(
+  row: {
+    status: string;
+    heartbeatAt?: Date | string | null;
+    lastOutputAt?: Date | string | null;
+    startedAt?: Date | string | null;
+  },
+  opts: { now?: number; silentMs?: number; staleMs?: number } = {},
+): boolean {
+  const now = opts.now ?? Date.now();
+  const silentMs = opts.silentMs ?? FIRST_OUTPUT_STALL_MS;
+  const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
+  if (row.status !== 'running' && row.status !== 'restarting') return false;
+  if (row.lastOutputAt) return false; // has emitted at least once → not this reaper's case
+  if (!row.heartbeatAt) return false;
+  const getMs = (v: unknown): number => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === 'string') return new Date(v).getTime();
+    if (typeof v === 'number') return v;
+    return NaN;
+  };
+  const heartbeatMs = getMs(row.heartbeatAt);
+  if (isNaN(heartbeatMs) || now - heartbeatMs > staleMs) return false; // not supervised-live → the orphan sweep owns it
+  if (!row.startedAt) return false;
+  const startedMs = getMs(row.startedAt);
+  return !isNaN(startedMs) && now - startedMs > silentMs;
+}
+
+/**
+ * One first-output-stalled spawn the durable reaper may reclaim. Mirrors
+ * {@link WedgedSpawnCandidate}, substituting the observed silence-since-birth
+ * for silence-since-last-output (there was never a last output).
+ */
+export interface FirstOutputStallCandidate {
+  spawnId: string;
+  workspaceId: string;
+  launcherHost: string | null;
+  launcherBootId: string | null;
+  pid: number | null;
+  heartbeatAt: string | null;
+  startedAt: string;
+  /** ms elapsed since started_at with zero output ever observed. */
+  silentMs: number;
+}
+
+/**
+ * The durable reap seam (INJECTED by the caller — host periodic sweep), mirrors
+ * {@link ReapWedgedSpawnFn}. Returns true when reaped; a false/throw leaves the
+ * row running for the next tick to retry.
+ */
+export type ReapFirstOutputStallFn = (candidate: FirstOutputStallCandidate) => Promise<boolean>;
+
+/**
+ * Reclaim FIRST-OUTPUT-STALLED spawns (EI-7345) — the "never even started, not
+ * just wedged" half of the spawn-reclaim floor. Where {@link reclaimWedgedSpawns}
+ * frees rows that emitted at least once and then went silent,
+ * this frees rows that are supervised-LIVE (fresh heartbeat) yet have NEVER
+ * produced a single byte of output past the (short) first-output threshold —
+ * the exact class {@link isPossiblyWedged}'s "absence of signal is not evidence
+ * of a wedge" guard deliberately excludes. Left unhandled, these spawns
+ * previously rode all the way to whatever outer SIGTERM/budget timeout finally
+ * killed them (observed: 15-52min average per role), burning wall-clock and
+ * holding a concurrency-ceiling slot the whole time for a spawn that never got a
+ * single model turn.
+ *
+ * SAFETY (mirrors reclaimWedgedSpawns — it kills a live process):
+ *   • Only rows THIS operator incarnation launched + supervises are eligible
+ *     (`launcher_host` = me AND `launcher_boot_id` = this boot id).
+ *   • In-process loopback launches (pid = the operator's own pid) are excluded.
+ *   • `isFirstOutputStalled` is re-applied per row as the authoritative gate.
+ *
+ * Flag-gated OFF by the caller (same RECLAIM_STALLED switch as
+ * reclaimWedgedSpawns — killing a live agent is a hot-path placement change).
+ * Because the reap seam here does NOT route through the stale-claim sweep's
+ * requeue-count bump (it settles the row directly, same as reclaimWedgedSpawns),
+ * a spawn reaped by this sweep never has a "retry attempt" charged against its
+ * work-item — it never got a model turn, so nothing was actually attempted; the
+ * work-item's own dispatch/retry clock simply re-offers it next cadence.
+ */
+export async function reclaimFirstOutputStalledSpawns(
+  sql: Db,
+  reap: ReapFirstOutputStallFn,
+  opts: { silentMs?: number; staleMs?: number; now?: number } = {},
+): Promise<ReclaimResult> {
+  const silentMs = opts.silentMs ?? FIRST_OUTPUT_STALL_MS;
+  const staleMs = opts.staleMs ?? RECLAIM_STALE_MS;
+  const now = opts.now ?? Date.now();
+  const silentSec = Math.max(1, Math.round(silentMs / 1000));
+  const staleSec = Math.max(1, Math.round(staleMs / 1000));
+  const me = hostname();
+
+  const candidates = await sql<
+    {
+      spawn_id: string;
+      workspace_id: string;
+      launcher_host: string | null;
+      launcher_boot_id: string | null;
+      pid: number | null;
+      heartbeat_at: string;
+      started_at: string;
+    }[]
+  >`
+    SELECT spawn_id, workspace_id, launcher_host, launcher_boot_id, pid,
+           heartbeat_at, started_at
+      FROM harness_shared.spawned_agents
+     WHERE status IN ('running', 'restarting')
+       AND launcher_host = ${me}
+       AND launcher_boot_id = ${LAUNCHER_BOOT_ID}
+       AND pid IS NOT NULL
+       AND pid <> ${process.pid}
+       AND heartbeat_at >= now() - ${staleSec}::int * interval '1 second'
+       AND last_output_at IS NULL
+       AND started_at < now() - ${silentSec}::int * interval '1 second'`;
+  if (candidates.length === 0) {
+    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+  }
+
+  const reaped: string[] = [];
+  const workspaces = new Set<string>();
+  for (const c of candidates) {
+    if (
+      !isFirstOutputStalled(
+        { status: 'running', heartbeatAt: c.heartbeat_at, lastOutputAt: null, startedAt: c.started_at },
+        { now, silentMs, staleMs },
+      )
+    ) {
+      continue;
+    }
+    const startedMs = new Date(c.started_at).getTime();
+    try {
+      const ok = await reap({
+        spawnId: c.spawn_id,
+        workspaceId: c.workspace_id,
+        launcherHost: c.launcher_host,
+        launcherBootId: c.launcher_boot_id,
+        pid: c.pid,
+        heartbeatAt: c.heartbeat_at,
+        startedAt: c.started_at,
+        silentMs: Math.max(0, now - startedMs),
+      });
+      if (ok) {
+        reaped.push(c.spawn_id);
+        if (c.workspace_id) workspaces.add(c.workspace_id);
+      }
+    } catch (err) {
+      console.warn(
+        `[first-output-stall-reclaim] reap failed for ${c.spawn_id} (will retry next tick): ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+  return { reclaimed: reaped.length, spawnIds: reaped, workspaces: [...workspaces] };
+}
+
+/**
  * Boot-time spawn-admission reconcile (EI-2186) — the release-on-host-restart
  * half of the spawn chokepoint.
  *

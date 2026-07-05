@@ -19,6 +19,7 @@ import {
   isEnvFailureDeath,
   laneInEnvOutage,
   isCauseUnknownOrphan,
+  orphanStormSignature,
   ORPHAN_EVIDENCE_WINDOW_MS,
 } from './orphaned-dispatch';
 import { readRecentDispatches, markDispatchOrphaned, type ImprovementDispatchRow } from './dispatch-ledger';
@@ -126,6 +127,62 @@ describe('buildOrphanedDispatchSignals — one signal per item, stable identity'
     );
     const signals = buildOrphanedDispatchSignals(evidence, { nowMs: NOW, maxSignals: 2 });
     expect(signals.map((s) => s.key)).toEqual(['EI-1', 'EI-2']); // EI-1 newest (1h), EI-3 dropped
+  });
+
+  it('EI-7348: folds a cross-item orphan storm into ONE signature-keyed signal', () => {
+    const evidence = ['EI-1', 'EI-2', 'EI-3', 'EI-4'].map((itemId, i) =>
+      row({
+        id: `d${i}`,
+        itemId,
+        outcome: 'orphaned',
+        resolvedAt: hoursAgo(1),
+        firedAt: hoursAgo(i + 2),
+        resolvedBy: 'orphaned-dispatch-collector',
+      }),
+    );
+
+    const signals = buildOrphanedDispatchSignals(evidence, { nowMs: NOW });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      source: 'orphaned-dispatch',
+      key: 'storm:collector-cause-unknown',
+      severity: 'major',
+      kind: 'bug',
+    });
+    expect(signals[0].title).toBe(
+      'Auto-implement dispatch storm (collector-cause-unknown) — orphaned workers across items',
+    );
+    expect(signals[0].body).toMatch(/4 orphaned dispatch row\(s\) across 4 improvement item\(s\)/);
+    expect(signals[0].body).toMatch(/EI-1, EI-2, EI-3, EI-4/);
+    expect(signals[0].latestAt).toBe(hoursAgo(1));
+  });
+
+  it('EI-7348: keeps per-item signals below the storm threshold', () => {
+    const evidence = ['EI-1', 'EI-2', 'EI-3'].map((itemId, i) =>
+      row({ id: `d${i}`, itemId, outcome: 'orphaned', resolvedAt: hoursAgo(i + 1), resolvedBy: 'orphaned-dispatch-collector' }),
+    );
+
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW }).map((s) => s.key)).toEqual(['EI-1', 'EI-2', 'EI-3']);
+  });
+
+  it('EI-7348: uses failure signatures, not item ids, for storm keys', () => {
+    expect(
+      orphanStormSignature(
+        row({
+          id: 'd1',
+          itemId: 'EI-1',
+          outcome: 'orphaned',
+          resolvedAt: hoursAgo(1),
+          fireError: 'worker exit 17 after 12s [no resolve recorded; attempt charged]: boom',
+        }),
+      ),
+    ).toBe('worker-exit-17');
+    expect(
+      orphanStormSignature(
+        row({ id: 'd2', itemId: 'EI-2', outcome: 'orphaned', resolvedAt: hoursAgo(1), fireResult: 'pending' }),
+      ),
+    ).toBe('dispatcher-pending');
   });
 });
 

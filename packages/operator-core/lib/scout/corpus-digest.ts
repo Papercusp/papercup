@@ -513,6 +513,22 @@ function truncate(s: string, n = 120): string {
   return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
 }
 
+/** Rubric-graded observation scorecards have their own structured lane
+ *  (`rubricRatings`). Keeping them in free-text friction mining lets the every-wake
+ *  scorecard emitter dominate `recurringFriction` by title volume, drowning real
+ *  friction. Free-text observations stay eligible for friction clustering; only
+ *  scorecard-shaped observations are excluded here. */
+function isRubricScorecardObservation(c: ImprovementCandidate): boolean {
+  const observation = c.observation;
+  if (!observation) return false;
+  if (typeof observation.rubricRef === 'string' && observation.rubricRef.trim()) return true;
+  return (observation as { synthesized?: unknown }).synthesized === true;
+}
+
+function frictionMiningCandidates(friction: ImprovementCandidate[]): ImprovementCandidate[] {
+  return friction.filter((c) => !isRubricScorecardObservation(c));
+}
+
 /** A scored, pre-normalisation row. We carry the raw salience so each lane can
  *  max-normalise it into MetaPattern.weight (0..1, top = 1.0). */
 interface Scored {
@@ -910,13 +926,14 @@ export async function synthesizeStateOfHive(
   // Shared friction clustering (computed ONCE): recurringFriction + rubricGaps read
   // the SAME clusters (P-008 "reuse data the digest already has"), so the O(n²)
   // near-dup pass in findLikelyDuplicates runs once, not twice.
-  const frictionById = new Map(friction.map((c) => [c.id, c] as const));
-  const frictionClusters = findLikelyDuplicates(friction).filter((c) => c.ids.length > 1);
+  const frictionForMining = frictionMiningCandidates(friction);
+  const frictionById = new Map(frictionForMining.map((c) => [c.id, c] as const));
+  const frictionClusters = findLikelyDuplicates(frictionForMining).filter((c) => c.ids.length > 1);
 
   const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit);
   const timeTokenSinks = buildTimeTokenSinks(spend, limit);
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
-  const capabilityGaps = buildCapabilityGaps(friction, nowMs, limit);
+  const capabilityGaps = buildCapabilityGaps(frictionForMining, nowMs, limit);
   const revertPatterns = buildReverts(reverts, limit);
   const rubricRatings = buildRubricRatings(observations, limit);
   const rubricGaps = buildRubricGaps(frictionClusters, frictionById, rubrics, limit);
@@ -925,7 +942,7 @@ export async function synthesizeStateOfHive(
   const corpus = {
     completions: completions.length,
     reverts: reverts.length,
-    frictionCaptured: friction.length,
+    frictionCaptured: frictionForMining.length,
     deferrals: deferrals.length,
     spendUsd,
     spendBuckets: spend.length,

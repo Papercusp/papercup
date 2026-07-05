@@ -50,6 +50,37 @@ The existing `TAURI_SIGNING_PRIVATE_KEY` / `tauri signer sign` step produces the
 to **Authenticode** (proves the publisher to Windows/SmartScreen). Both are
 needed for a public release; this runbook is about the Authenticode half.
 
+## Pipeline capability — VERIFIED end-to-end (self-signed dry-run, 2026-07-05)
+
+Every link the pipeline OWNS was exercised on the Windows VM with a throwaway
+self-signed code-signing cert (WI-2749; the cert + PFX were deleted after) — so
+the owner's real cert-drop is a credentials swap, not a debugging session:
+
+* **`signtool` present** — Windows SDK `10.0.26100` (`…\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe`).
+* **Our actual installer signs** — a self-signed cert signed the real 611 MB
+  `Papercusp GUI_…-setup.exe`: `Successfully signed`, signature attaches
+  (`Get-AuthenticodeSignature` → SignerCertificate populated). (A self-signed cert
+  fails `verify /pa` trust-chain — expected; a real OV/EV cert chains to a public CA.)
+* **RFC3161 timestamping works** — `signtool /tr … /td sha256` succeeded against
+  `timestamp.digicert.com`, `timestamp.sectigo.com`, and `timestamp.comodoca.com`.
+* **The config glue is exact** — the in-VM PFX-import → thumbprint-readback → JSON
+  patch produced precisely `bundle.windows.{certificateThumbprint, timestampUrl,
+  digestAlgorithm:"sha256", tsp:true}` (valid JSON, round-trips).
+* **The final link is confirmed in tauri's source** — `tauri-bundler`
+  `windows/sign.rs::sign_command_default` reads exactly those fields and runs
+  `signtool sign /fd <digest> /sha1 <thumbprint> /d <product>` plus, when `tsp:true`,
+  `/tr <url> /td <digest>` — i.e. the exact invocation proven above.
+
+**Fix shipped from the dry-run:** the pipeline now defaults **`tsp:true`**
+(`WINDOWS_SIGN_TSP`, RFC3161). Previously `tsp` was unset, so tauri emitted the
+**legacy `/t` timestamp** — which RFC3161-only CAs (SSL.com eSigner, common for EV)
+reject. The default is now the modern, verified-working path.
+
+Not exercised (needs the owner's cert): a real public CA trust-chain, and a
+`tauri build` that actually emits the signed bundle (core tauri behavior, config
+confirmed byte-exact above). A full signed rebuild is one command once the cert
+lands — see below.
+
 ## What the OWNER must provide (one-time)
 
 **OV path** — a code-signing `.pfx`/`.p12` (from DigiCert, Sectigo, SSL.com, …)
@@ -76,13 +107,17 @@ build. Set **one** of the two paths:
 export WINDOWS_CERT_PFX_BASE64="$(base64 -w0 codesign.pfx)"   # the .pfx, base64
 export WINDOWS_CERT_PASSWORD='<pfx-password>'
 # optional (sensible defaults shown):
-export WINDOWS_SIGN_TIMESTAMP_URL='http://timestamp.digicert.com'   # RFC3161 timestamp
+export WINDOWS_SIGN_TIMESTAMP_URL='http://timestamp.digicert.com'
 export WINDOWS_SIGN_DIGEST='sha256'
+export WINDOWS_SIGN_TSP='true'   # RFC3161 timestamp (default). Set false ONLY for a
+                                 # legacy server that lacks RFC3161. tsp=true is required
+                                 # by RFC3161-only CAs like SSL.com eSigner (common for EV).
 
 # ── EV / already-in-store path: sign by thumbprint (cert already in the VM's
 #    CurrentUser\My store — e.g. installed by the token CSP / cloud-HSM connector)
 export WINDOWS_CERTIFICATE_THUMBPRINT='<40-hex-sha1-thumbprint>'
 export WINDOWS_SIGN_TIMESTAMP_URL='http://timestamp.digicert.com'
+export WINDOWS_SIGN_TSP='true'
 ```
 
 What the build does with them (no manual steps in the VM):
@@ -90,7 +125,7 @@ What the build does with them (no manual steps in the VM):
 * **OV/PFX**: decodes the PFX in the VM, `Import-PfxCertificate` into
   `Cert:\CurrentUser\My`, reads back its thumbprint.
 * Patches the in-VM `src-tauri/tauri.windows.conf.json` →
-  `bundle.windows.{certificateThumbprint, timestampUrl, digestAlgorithm}` so
+  `bundle.windows.{certificateThumbprint, timestampUrl, digestAlgorithm, tsp}` so
   `tauri build` signs every produced binary + the installer.
 * **Timestamping** is always set when signing — a timestamped signature stays
   valid after the cert expires.

@@ -328,6 +328,8 @@ import './dev/pg_query';
 import './dev/build_status';
 // git-sync-dx-hardening-2026-06-17 P-002 — "where is my change / is it live?" probe
 import './dev/pipeline_position';
+// EI-7349 — "why is nothing shipping?" causal-chain explainer (gate -> deploy -> pool)
+import './dev/why';
 // coord-lifecycle-automation-2026-06-04 D-006 — the re-runnable corpus categorizer
 import './dev/coord_categorize';
 import './dev/dogfood_substrate_status';

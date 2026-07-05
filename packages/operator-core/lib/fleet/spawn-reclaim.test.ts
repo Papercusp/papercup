@@ -8,7 +8,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isPossiblyWedged, WEDGE_SILENT_MS, shouldRelaunchReclaimedSpawn } from './spawn-reclaim';
+import {
+  isPossiblyWedged,
+  WEDGE_SILENT_MS,
+  shouldRelaunchReclaimedSpawn,
+  isFirstOutputStalled,
+  FIRST_OUTPUT_STALL_MS,
+} from './spawn-reclaim';
 
 const NOW = Date.parse('2026-06-14T02:00:00.000Z');
 const opts = { now: NOW, staleMs: 60 * 60_000, silentMs: WEDGE_SILENT_MS }; // 60m stale, 10m silent
@@ -50,6 +56,83 @@ describe('isPossiblyWedged — Date/string heartbeat normalization (EI-482/EI-49
   it('is false when output is recent (fresh heartbeat, not silent past the threshold)', () => {
     const recentOutput = '2026-06-14T01:58:00.000Z'; // 2m ago < 10m silent
     expect(isPossiblyWedged({ status: 'running', heartbeatAt: fresh, lastOutputAt: recentOutput }, opts)).toBe(false);
+  });
+});
+
+/**
+ * isFirstOutputStalled (EI-7345) — the complement of isPossiblyWedged: a spawn
+ * that has NEVER produced any output (last_output_at NULL) past the (short)
+ * first-output threshold, while still supervised-live. The two classifiers are
+ * mutually exclusive by construction — one requires lastOutputAt present, the
+ * other requires it absent.
+ */
+describe('isFirstOutputStalled — never-emitted spawns past the first-output threshold (EI-7345)', () => {
+  const NOW2 = Date.parse('2026-07-05T02:00:00.000Z');
+  const fopts = { now: NOW2, staleMs: 60 * 60_000, silentMs: FIRST_OUTPUT_STALL_MS }; // 60m stale, 5m first-output
+  const fresh2 = '2026-07-05T01:59:00.000Z'; // heartbeat 1m ago (supervised-live)
+  const bornStale = '2026-07-05T01:50:00.000Z'; // started 10m ago (> 5m threshold)
+  const bornFresh = '2026-07-05T01:58:00.000Z'; // started 2m ago (< 5m threshold)
+
+  it('is true for a fresh-heartbeat, never-emitted spawn started past the threshold', () => {
+    expect(
+      isFirstOutputStalled(
+        { status: 'running', heartbeatAt: fresh2, lastOutputAt: null, startedAt: bornStale },
+        fopts,
+      ),
+    ).toBe(true);
+  });
+
+  it('classifies identically whether heartbeat/startedAt are Date or string (parity)', () => {
+    const asString = isFirstOutputStalled(
+      { status: 'running', heartbeatAt: fresh2, lastOutputAt: null, startedAt: bornStale },
+      fopts,
+    );
+    const asDate = isFirstOutputStalled(
+      { status: 'running', heartbeatAt: new Date(fresh2), lastOutputAt: null, startedAt: new Date(bornStale) },
+      fopts,
+    );
+    expect(asString).toBe(asDate);
+    expect(asDate).toBe(true);
+  });
+
+  it('is false once ANY output has been observed — however old (that is isPossiblyWedged\'s territory)', () => {
+    expect(
+      isFirstOutputStalled(
+        { status: 'running', heartbeatAt: fresh2, lastOutputAt: bornStale, startedAt: bornStale },
+        fopts,
+      ),
+    ).toBe(false);
+  });
+
+  it('is false when started too recently (still a legitimate boot window)', () => {
+    expect(
+      isFirstOutputStalled(
+        { status: 'running', heartbeatAt: fresh2, lastOutputAt: null, startedAt: bornFresh },
+        fopts,
+      ),
+    ).toBe(false);
+  });
+
+  it('is false for a stale heartbeat (the orphan sweep owns that one, not this reaper)', () => {
+    const staleHb = '2026-07-05T00:00:00.000Z'; // 2h ago > 60m staleMs
+    expect(
+      isFirstOutputStalled(
+        { status: 'running', heartbeatAt: staleHb, lastOutputAt: null, startedAt: bornStale },
+        fopts,
+      ),
+    ).toBe(false);
+  });
+
+  it('is false when not running, when there is no heartbeat, and when there is no startedAt', () => {
+    expect(
+      isFirstOutputStalled({ status: 'done', heartbeatAt: fresh2, lastOutputAt: null, startedAt: bornStale }, fopts),
+    ).toBe(false);
+    expect(
+      isFirstOutputStalled({ status: 'running', heartbeatAt: null, lastOutputAt: null, startedAt: bornStale }, fopts),
+    ).toBe(false);
+    expect(
+      isFirstOutputStalled({ status: 'running', heartbeatAt: fresh2, lastOutputAt: null, startedAt: null }, fopts),
+    ).toBe(false);
   });
 });
 

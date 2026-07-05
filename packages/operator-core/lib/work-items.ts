@@ -205,11 +205,15 @@ export interface WorkItem {
   updatedAt: string;
 }
 
-/** The propose/dispose author of a work-item's rank (local-hive D-008). */
-export type RankWriter = 'bee' | 'queen';
-export const RANK_WRITERS: readonly RankWriter[] = ['bee', 'queen'];
+/** The propose/dispose author of a work-item's rank (local-hive D-008).
+ *  pot-rename dual-accept (P1 MIGRATE): `cup`/`mug` are the additive twins of
+ *  `bee`/`queen` — accepted ALONGSIDE the old ids (migration 506 widened the
+ *  `rank_writer` CHECK to IN ('bee','queen','cup','mug')). Producers still emit
+ *  the old ids during MIGRATE; a later CONTRACT phase removes them. */
+export type RankWriter = 'bee' | 'queen' | 'cup' | 'mug';
+export const RANK_WRITERS: readonly RankWriter[] = ['bee', 'queen', 'cup', 'mug'];
 export function isRankWriter(v: unknown): v is RankWriter {
-  return v === 'bee' || v === 'queen';
+  return v === 'bee' || v === 'queen' || v === 'cup' || v === 'mug';
 }
 
 // ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────

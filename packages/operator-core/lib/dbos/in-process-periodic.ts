@@ -194,9 +194,13 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
   intervalMs: 60_000,
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
-    const { reclaimOrphanedSpawns, reclaimWedgedSpawns, WEDGE_REAP_SILENT_MS } = await import(
-      '../fleet/spawn-reclaim'
-    );
+    const {
+      reclaimOrphanedSpawns,
+      reclaimWedgedSpawns,
+      WEDGE_REAP_SILENT_MS,
+      reclaimFirstOutputStalledSpawns,
+      FIRST_OUTPUT_STALL_MS,
+    } = await import('../fleet/spawn-reclaim');
     const sql = getOrgPg().sql;
     const { emitAwaitedEvent } = await import('../events/await/engine');
     const { spawnSlotEventKey } = await import('../fleet/operator-spawn');
@@ -270,6 +274,56 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
       }
     } catch (err) {
       console.warn('[wedge-reclaim] sweep failed (non-fatal — retries next tick):', err);
+    }
+
+    // EI-7345: the "never even started, not just wedged" half — durably reclaim
+    // spawns that are supervised-LIVE but have NEVER produced a single byte of
+    // output past the (short) first-output threshold. reclaimWedgedSpawns above
+    // deliberately excludes these ("absence of signal is not evidence of a
+    // wedge" — that guard is about a row that HAS emitted before going quiet);
+    // left alone, these previously rode 15-52min to whatever outer SIGTERM/budget
+    // timeout finally killed them, burning wall-clock and a concurrency slot for
+    // a spawn that never got a single model turn. Same RECLAIM_STALLED gate as
+    // the wedge reap (killing a live process is the same risk class).
+    try {
+      const [{ getFlag }, { FLAGS }] = await Promise.all([
+        import('@papercusp/flags/server'),
+        import('@papercusp/flags'),
+      ]);
+      if (await getFlag(FLAGS.RECLAIM_STALLED, 'system')) {
+        const { cancelSubtree } = await import('../fleet/nursery');
+        const { abortLocalSpawn } = await import('../fleet/operator-spawn');
+        const fr = await reclaimFirstOutputStalledSpawns(sql, async (c) => {
+          const silentMin = Math.round(c.silentMs / 60_000);
+          await cancelSubtree(sql, {
+            workspaceId: c.workspaceId,
+            rootSpawnId: c.spawnId,
+            reason: `reclaimed: first-output stall — alive but produced zero output ${silentMin}min ` +
+              `(> ${Math.round(FIRST_OUTPUT_STALL_MS / 60_000)}min, RECLAIM_STALLED durable reaper, EI-7345) ` +
+              `— never got a model turn, no retry attempt charged`,
+            actor: {
+              ownerId: 'first-output-stall-reclaim-sweep',
+              ownerLabel: 'system · first-output-stall-reclaim-sweep',
+              source: 'signed-spawn',
+              workspaceId: c.workspaceId,
+              userId: null,
+            },
+          });
+          abortLocalSpawn(c.spawnId);
+          return true;
+        });
+        if (fr.reclaimed > 0) {
+          console.warn(
+            `[first-output-stall-reclaim] durably reaped ${fr.reclaimed} first-output-stalled spawn(s): ${fr.spawnIds.join(', ')}`,
+          );
+          await announceFreed(
+            fr.workspaces,
+            `${fr.reclaimed} first-output-stalled spawn slot(s) reclaimed (RECLAIM_STALLED durable reaper, EI-7345)`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[first-output-stall-reclaim] sweep failed (non-fatal — retries next tick):', err);
     }
   },
 };

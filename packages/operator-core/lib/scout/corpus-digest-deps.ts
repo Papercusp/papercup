@@ -195,8 +195,9 @@ function normalizeObservationRatings(raw: unknown): Record<string, ObservationRa
 
 /** Map an observation candidate → the clean StructuredObservationRecord the digest
  *  groups over. Returns undefined for FREE-TEXT observations (no rubricRef/ratings) —
- *  only RUBRIC-GRADED scorecards become records (they still flow through the friction
- *  lane as free-text). So corpus.observations counts exactly the rubric-graded ones. */
+ *  only RUBRIC-GRADED scorecards become records. The pure digest excludes those
+ *  scorecard-shaped observations from friction mining so routine scorecard emitters
+ *  do not dominate recurringFriction. */
 function toStructuredObservation(c: ImprovementCandidate): StructuredObservationRecord | undefined {
   const view = observationViewOf(c);
   if (!view) return undefined;
@@ -233,7 +234,9 @@ export function buildStateOfHiveReaders(): StateOfHiveReaders {
       // Observations (turn-end-reflection-observations-2026-06-14 D-005) are PRE-IDEA
       // friction signals whose SOLE consumer is Scout. Union them into the friction
       // lane so a RECURRING observation gets clustered into a meta-pattern and can be
-      // promoted to a real idea — the only path from observation → work.
+      // promoted to a real idea — the only path from observation → work. The pure
+      // digest filters rubric-graded scorecards out of free-text friction mining;
+      // those have the dedicated rubricRatings lane.
       const [improvements, observations] = await Promise.all([
         readImprovementItems(),
         readObservationItems(),

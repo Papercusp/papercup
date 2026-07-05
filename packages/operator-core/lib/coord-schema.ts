@@ -278,7 +278,9 @@ export function renderCoordLegend(): string {
     'atomic step in hand, then REPLY FIRST, before the next step of your own task.',
     'If the full answer needs real work, ACK now with an ETA so the asker is never',
     'blind-waiting; reply directly (`coord:send` + `related_msg_id`, wake if parked),',
-    'never batched to turn-end. Your minutes are a blocked peer’s hours. Broadcasts',
-    'and FYI chatter carry no such claim.',
+    'never batched to turn-end. Your terminal/final-response text does NOT reach the',
+    'asker — an answer not SENT back via `coord:send` was never delivered; answering',
+    'only in your own transcript is a silent drop. Your minutes are a blocked peer’s',
+    'hours. Broadcasts and FYI chatter carry no such claim.',
   ].join('\n');
 }

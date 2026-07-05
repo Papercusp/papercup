@@ -165,6 +165,9 @@ NOT in papercup libs/generic — evaluate importing vs. skeleton-only (recommend
 <li><strong>Observability seam</strong> — <code dir="auto">instrumentation.ts</code> + @vercel/otel wiring. Cost: <strong>LOW</strong> as an optional
 FREE-tier GUIDE block, not a component.</li>
 </ol>
+<p>There is <strong>no</strong> canonical <code dir="auto">@papercusp/template-kit</code> / <code dir="auto">libs/generic/template-kit</code> package in this
+tree yet. P-029 is a template chassis extraction, not a live import target; callers should compose
+the existing generic libs listed in (a) plus the future <code dir="auto">templates/papercusp-web-host/</code> skeleton.</p>
 <p><strong>(c) Domain-bound (leave in the reference webapp):</strong> marketplace adapters + all <code dir="auto">apps/*</code> services, shop-sdk,
 universal-schema, catalog-search/typesense/mongo/redis infra choices, fumadocs content, Zero
 (<code dir="auto">libs/zero</code> + ZeroProvider — papercusp’s own data-sync aspect is the papercusp-native answer;

@@ -148,6 +148,75 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(lock.ref).toMatch(/^wi:EI-[12]$/);
       expect(lock.detail).toContain('recurred 2×');
     });
+
+    it('excludes rubric scorecard observations from friction mining while keeping free-text observations', async () => {
+      const scorecardRows: ImprovementCandidate[] = [
+        {
+          id: 'EI-SC-1', kind: 'bug', scope: 'operator', title: 'hive-coordination-health scorecard',
+          state: 'open', updatedAt: daysAgo(1),
+          observation: {
+            sourceHive: 'papercusp',
+            rubricRef: 'hive-coordination-health',
+            ratings: { 'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck' } },
+          },
+        },
+        {
+          id: 'EI-SC-2', kind: 'bug', scope: 'operator', title: 'hive-coordination-health scorecard',
+          state: 'open', updatedAt: daysAgo(2),
+          observation: {
+            sourceHive: 'papercusp',
+            rubricRef: 'hive-coordination-health',
+            ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'placements slow' } },
+          },
+        },
+        {
+          id: 'EI-FLOOR-1', kind: 'bug', scope: 'operator', title: 'scorecard (synthesized floor)',
+          state: 'open', updatedAt: daysAgo(1),
+          observation: { kind: 'friction', synthesized: true } as unknown as ImprovementCandidate['observation'],
+        },
+        {
+          id: 'EI-FLOOR-2', kind: 'bug', scope: 'operator', title: 'scorecard (synthesized floor)',
+          state: 'open', updatedAt: daysAgo(2),
+          observation: { kind: 'friction', synthesized: true } as unknown as ImprovementCandidate['observation'],
+        },
+        {
+          id: 'EI-FT-1', kind: 'bug', scope: 'operator', title: 'free-text observation reports stuck dispatch',
+          state: 'open', updatedAt: daysAgo(1), observation: { kind: 'friction' },
+        },
+        {
+          id: 'EI-FT-2', kind: 'bug', scope: 'operator', title: 'free-text observation reports stuck dispatch',
+          state: 'open', updatedAt: daysAgo(3), observation: { kind: 'friction' },
+        },
+      ];
+
+      const digest = await synthesizeStateOfHive(
+        fixtureReaders({
+          friction: async () => scorecardRows,
+          observations: async () => [
+            {
+              id: 'EI-SC-1', title: 'hive-coordination-health scorecard',
+              sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+              ratings: { 'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck' } },
+            },
+            {
+              id: 'EI-SC-2', title: 'hive-coordination-health scorecard',
+              sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(2),
+              ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'placements slow' } },
+            },
+          ],
+        }),
+        { nowMs: NOW },
+      );
+
+      const frictionSummaries = digest.recurringFriction.map((p) => p.summary);
+      expect(frictionSummaries).toEqual(['free-text observation reports stuck dispatch']);
+      expect(frictionSummaries).not.toContain('hive-coordination-health scorecard');
+      expect(frictionSummaries).not.toContain('scorecard (synthesized floor)');
+      expect(digest.corpus.frictionCaptured).toBe(2);
+      expect(digest.rubricRatings.map((p) => p.summary)).toContain(
+        'hive-coordination-health · end-to-end-flow @ papercusp: broken',
+      );
+    });
   });
 
   describe('timeTokenSinks', () => {
