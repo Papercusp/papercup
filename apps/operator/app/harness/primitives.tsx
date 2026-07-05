@@ -257,6 +257,13 @@ const AGENT_KIND_TERM: Partial<Record<string, TermKey>> = {
   papercup: 'operator',
   kettle: 'overwatch',
   cup: 'contributor',
+  // Pre-rename agent-kind values (WI-2932): live session/spawn rows minted
+  // before the rename still carry the old kinds — route them to the same pack
+  // terms so the pill never shows the retired static label mid-transition.
+  queen: 'brain',
+  sentinel: 'operator',
+  overwatch: 'overwatch',
+  bee: 'contributor',
 };
 
 /** Agent kind badge — cup-cast glyph + label chip, colored from the canonical

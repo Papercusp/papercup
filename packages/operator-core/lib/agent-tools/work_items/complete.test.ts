@@ -1,19 +1,24 @@
 /**
  * Unit tests for work_items:complete (coord-lifecycle-automation-2026-06-04 D-004),
  * dual-arity keyed-array contract (bulk-endpoint-standardization-2026-06-21). The
- * engine (getWorkItem/setWorkItemState) is mocked — this exercises the tool's
- * contract: existence check, optional terminal transition, the structured completion
- * record the lifecycle emits-rule reads, and per-item fan-out for items:[…].
+ * engine (getWorkItem/setWorkItemStateWithAliasInfo) is mocked — this exercises the
+ * tool's contract: existence check, optional terminal transition, the structured
+ * completion record the lifecycle emits-rule reads, and per-item fan-out for items:[…].
+ *
+ * EI-7712: complete.ts calls the shared `setWorkItemStateWithAliasInfo` helper (not the
+ * bare `setWorkItemState`) so every terminal transition also carries the fail-loud
+ * aliased/requestedState/appliedState discriminator — see the dedicated describe block
+ * near the end of this file.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getWorkItem = vi.fn();
-const setWorkItemState = vi.fn();
+const setWorkItemStateWithAliasInfo = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
-  setWorkItemState: (...a: unknown[]) => setWorkItemState(...a),
+  setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
 }));
@@ -47,9 +52,20 @@ const one = async (x: unknown) => (await env(x)).results[0];
 
 const item = { id: 'F-12', kind: 'feature', family: 'feature', state: 'in_progress', harness: 'papercup' };
 
+/** A clean (non-aliased) setWorkItemStateWithAliasInfo resolution: the item lands
+ *  exactly on the state it already carries — mirrors the common "it worked" mock. */
+function okState(workItem: Record<string, unknown>) {
+  return {
+    workItem,
+    aliased: false,
+    requestedState: workItem.state as string,
+    appliedState: workItem.state as string,
+  };
+}
+
 beforeEach(() => {
   getWorkItem.mockReset();
-  setWorkItemState.mockReset();
+  setWorkItemStateWithAliasInfo.mockReset();
   mergeWorkItemOutputPayload.mockReset();
   // Default: gate flag OFF + (when consulted) gate OK — reproduces today's behavior. The
   // flag mock MUST resolve a promise so the `.catch(() => false)` guard in completeOne works.
@@ -65,7 +81,7 @@ describe('work_items:complete (keyed-array)', () => {
     const out = await env({ id: 'F-404', completion: { workItem: 'F-404', summary: 'x' } });
     expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
     expect(out.results[0]).toEqual({ ok: false, id: 'F-404', error: "work_item 'F-404' not found" });
-    expect(setWorkItemState).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('records + returns the completion WITHOUT changing state when `state` omitted', async () => {
@@ -80,7 +96,7 @@ describe('work_items:complete (keyed-array)', () => {
         deferred: ['live smoke pending'],
       },
     });
-    expect(setWorkItemState).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(r.ok).toBe(true);
     expect(r.id).toBe('F-12');
     expect(r.workItem).toMatchObject({ id: 'F-12' });
@@ -92,9 +108,9 @@ describe('work_items:complete (keyed-array)', () => {
 
   it('transitions to the terminal state when `state` provided', async () => {
     getWorkItem.mockResolvedValue(item);
-    setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
     const r = await one({ id: 'F-12', state: 'passed', completion: { workItem: 'F-12', summary: 'shipped' } });
-    expect(setWorkItemState).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
     expect(r.workItem.state).toBe('passed');
     expect(r.ok).toBe(true);
   });
@@ -102,20 +118,26 @@ describe('work_items:complete (keyed-array)', () => {
   it('surfaces aliasNote when the requested state aliases instead of silently leaving the item open', async () => {
     const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
     getWorkItem.mockResolvedValue(issue);
-    setWorkItemState.mockImplementation(async (_id, state, opts?: { onAlias?: (info: { requested: string; resolved: string }) => void }) => {
-      opts?.onAlias?.({ requested: state as string, resolved: 'open' });
-      return { ...issue, state: 'open' };
-    });
+    setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+      workItem: { ...issue, state: 'open' },
+      aliased: true,
+      requestedState: state,
+      appliedState: 'open',
+      aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+    }));
     const r = await one({ id: 'WI-1', state: 'needs_human', completion: { summary: 'requires owner decision' } });
     expect(r.ok).toBe(true);
     expect(r.workItem.state).toBe('open');
     expect(r.aliasNote).toMatch(/requested state 'needs_human'.*recorded as 'open'/);
     expect(r.stateWarning).toMatch(/still 'open'/);
+    expect(r.aliased).toBe(true);
+    expect(r.requestedState).toBe('needs_human');
+    expect(r.appliedState).toBe('open');
   });
 
   it('passes structured verification evidence to the terminal state writer', async () => {
     getWorkItem.mockResolvedValue(item);
-    setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
     await one({
       id: 'F-12',
       state: 'passed',
@@ -128,7 +150,7 @@ describe('work_items:complete (keyed-array)', () => {
         addedTests: true,
       },
     });
-    expect(setWorkItemState).toHaveBeenCalledWith(
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
       'F-12',
       'passed',
       expect.objectContaining({
@@ -182,7 +204,7 @@ describe('work_items:complete (keyed-array)', () => {
 
   it('a FAILED state write never loses the completion (EI-24): ok + completion + stateError', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue' });
-    setWorkItemState.mockRejectedValue(
+    setWorkItemStateWithAliasInfo.mockRejectedValue(
       new Error("work_item 'WI-8' (kind=task) cannot take state 'bogus' — valid: open, resolved, closed, done, dropped, todo"),
     );
     const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'work landed; state vocab wrong' } });
@@ -190,6 +212,7 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.completion.summary).toBe('work landed; state vocab wrong');
     expect(r.stateError).toMatch(/valid: open, resolved, closed/);
     expect(r.workItem.id).toBe('WI-8'); // falls back to the pre-transition item
+    expect(r.aliased).toBeUndefined(); // a failed write has nothing to compare — see EI-7712 block below
   });
 
   it('completes MANY via items:[…] — one self-describing result per item; a not-found never fails the rest', async () => {
@@ -212,10 +235,10 @@ describe('work_items:complete (keyed-array)', () => {
     it('flag OFF: a terminal feature completion proceeds unchanged; the gate is never consulted', async () => {
       getFlag.mockResolvedValue(false); // explicit (also the beforeEach default)
       getWorkItem.mockResolvedValue(item); // family:'feature', harness:'papercup'
-      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
       expect(itemTestGate).not.toHaveBeenCalled();
-      expect(setWorkItemState).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
       expect(r.ok).toBe(true);
       expect(r.workItem.state).toBe('passed');
     });
@@ -224,15 +247,15 @@ describe('work_items:complete (keyed-array)', () => {
       getFlag.mockResolvedValue(true);
       itemTestGate.mockResolvedValue({ ok: true });
       getWorkItem.mockResolvedValue(item);
-      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
       expect(itemTestGate).toHaveBeenCalledWith('papercup', 'F-12');
-      expect(setWorkItemState).toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
       expect(r.ok).toBe(true);
       expect(r.workItem.state).toBe('passed');
     });
 
-    it('flag ON + gate FAILS: refuses with {ok:false,id,error}, NO completion, setWorkItemState NOT called', async () => {
+    it('flag ON + gate FAILS: refuses with {ok:false,id,error}, NO completion, setWorkItemStateWithAliasInfo NOT called', async () => {
       getFlag.mockResolvedValue(true);
       itemTestGate.mockResolvedValue({ ok: false, reason: 'test-requiring VAL(s) not yet passing: VAL-3' });
       getWorkItem.mockResolvedValue(item);
@@ -245,7 +268,7 @@ describe('work_items:complete (keyed-array)', () => {
       });
       // No completion record on a refusal ⇒ the emit rule (keys on result.completion) fires nothing.
       expect(out.results[0].completion).toBeUndefined();
-      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
     it('flag ON but record-only (no `state`): the gate is NOT consulted — only terminal transitions gate', async () => {
@@ -253,14 +276,14 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({ id: 'F-12', completion: { summary: 'progress note' } });
       expect(itemTestGate).not.toHaveBeenCalled();
-      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
       expect(r.ok).toBe(true);
     });
 
     it('flag ON but an ISSUE-family item: the gate is NOT consulted (feature-only)', async () => {
       getFlag.mockResolvedValue(true);
       getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue' });
-      setWorkItemState.mockResolvedValue({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' }));
       const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'fixed' } });
       expect(itemTestGate).not.toHaveBeenCalled();
       expect(r.ok).toBe(true);
@@ -276,7 +299,7 @@ describe('work_items:complete (keyed-array)', () => {
     it('warns when a completion leaves a feature non-terminal (no `state`)', async () => {
       getWorkItem.mockResolvedValue(item); // state: 'in_progress'
       const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'done' } });
-      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
       expect(r.completion.status).toBe('done'); // reads as done…
       expect(r.stateWarning).toMatch(/NOT closed/); // …but the item is not closed
       expect(r.stateWarning).toContain('F-12');
@@ -285,7 +308,7 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('does NOT warn when a terminal `state` closed the item', async () => {
       getWorkItem.mockResolvedValue(item);
-      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
       expect(r.workItem.state).toBe('passed');
       expect(r.stateWarning).toBeUndefined();
@@ -294,7 +317,7 @@ describe('work_items:complete (keyed-array)', () => {
     it('does NOT warn when the item was already terminal (re-complete a passed item)', async () => {
       getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it again' } });
-      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
       expect(r.stateWarning).toBeUndefined();
     });
 
@@ -305,14 +328,14 @@ describe('work_items:complete (keyed-array)', () => {
       expect(open.stateWarning).toMatch(/resolved'\|'closed'/);
 
       getWorkItem.mockResolvedValue(issue);
-      setWorkItemState.mockResolvedValue({ ...issue, state: 'resolved' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
       const resolved = await one({ id: 'WI-7', state: 'resolved', completion: { summary: 'fixed in tree' } });
       expect(resolved.stateWarning).toBeUndefined();
     });
 
     it('still warns (item stays claimable) when an explicit `state` write FAILED', async () => {
       getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue', state: 'open' });
-      setWorkItemState.mockRejectedValue(new Error("cannot take state 'bogus'"));
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error("cannot take state 'bogus'"));
       const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'landed; bad vocab' } });
       expect(r.stateError).toBeTruthy();
       expect(r.stateWarning).toMatch(/NOT closed/); // the failed transition left it claimable
@@ -352,7 +375,7 @@ describe('work_items:complete (keyed-array)', () => {
   describe('verificationWarning — settled-but-unverified lint (P-006)', () => {
     beforeEach(() => {
       // A closed item so stateWarning stays silent and these assertions isolate verificationWarning.
-      setWorkItemState.mockResolvedValue({ ...item, state: 'passed' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
     });
 
     it('warns when a completion has NEITHER `tests` nor `deferred`', async () => {
@@ -434,6 +457,63 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped, trust me' } });
       expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
+    });
+  });
+
+  // ── aliased/requestedState/appliedState on every result (EI-7712) ────────────────────────
+  // complete's optional terminal `state` write goes through the SAME shared
+  // setWorkItemStateWithAliasInfo helper as work_items:set_state, so a completion that
+  // silently aliases — or, per the WI-2381 recurrence guard, silently diverges even
+  // without the normalize-layer's onAlias ever firing — must surface it identically.
+  describe('aliased/requestedState/appliedState on every result (EI-7712)', () => {
+    it('a clean (non-aliased) terminal transition reports aliased:false with matching requested/applied state', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(r.aliased).toBe(false);
+      expect(r.requestedState).toBe('passed');
+      expect(r.appliedState).toBe('passed');
+    });
+
+    it('an aliased terminal transition reports aliased:true with DIVERGENT requested/applied state', async () => {
+      const issue = { id: 'WI-2', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...issue, state: 'open' },
+        aliased: true,
+        requestedState: state,
+        appliedState: 'open',
+        aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      }));
+      const r = await one({ id: 'WI-2', state: 'blocked', completion: { summary: 'blocked on X' } });
+      expect(r.aliased).toBe(true);
+      expect(r.requestedState).toBe('blocked');
+      expect(r.appliedState).toBe('open');
+      expect(r.requestedState).not.toBe(r.appliedState);
+    });
+
+    it('a bare completion (no `state` passed) leaves aliased/requestedState/appliedState unset — nothing was compared', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', completion: { summary: 'progress note' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.aliased).toBeUndefined();
+      expect(r.requestedState).toBeUndefined();
+      expect(r.appliedState).toBeUndefined();
+    });
+
+    it('a silent divergence with NO onAlias fire still surfaces as aliased:true — the WI-2381 recurrence guard', async () => {
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-2381', family: 'issue', state: 'open' });
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) => ({
+        workItem: { ...item, id: 'WI-2381', family: 'issue', state: 'open' }, // silently stayed 'open'
+        aliased: true,
+        requestedState: state,
+        appliedState: 'open',
+        aliasNote: `requested state '${state}' was not applied verbatim — recorded as 'open' instead.`,
+      }));
+      const r = await one({ id: 'WI-2381', state: 'blocked', completion: { summary: 'trying to block it' } });
+      expect(r.ok).toBe(true); // the write itself succeeded — exactly why `ok` alone is not enough
+      expect(r.aliased).toBe(true);
+      expect(r.appliedState).not.toBe(r.requestedState);
     });
   });
 });
@@ -587,7 +667,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
   describe('end-to-end through the real tool schema + handler (the wire shapes that 400ed)', () => {
     beforeEach(() => {
       getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'open' });
-      setWorkItemState.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'resolved' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(
+        okState({ ...item, id: 'WI-9', kind: 'bug', family: 'issue', state: 'resolved' }),
+      );
     });
 
     it('completion passed as a bare STRING now records instead of 400ing', async () => {
