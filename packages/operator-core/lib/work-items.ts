@@ -211,14 +211,15 @@ export interface WorkItem {
 }
 
 /** The propose/dispose author of a work-item's rank (local-hive D-008).
- *  pot-rename dual-accept (P1 MIGRATE): `cup`/`mug` are the additive twins of
- *  `bee`/`queen` — accepted ALONGSIDE the old ids (migration 506 widened the
- *  `rank_writer` CHECK to IN ('bee','queen','cup','mug')). Producers still emit
- *  the old ids during MIGRATE; a later CONTRACT phase removes them. */
-export type RankWriter = 'bee' | 'queen' | 'cup' | 'mug';
-export const RANK_WRITERS: readonly RankWriter[] = ['bee', 'queen', 'cup', 'mug'];
+ *  pot-rename CONTRACT (SLICE-2 wave 2a): `cup`/`mug` are the canonical ids —
+ *  the old `bee`/`queen` twins are removed here; the S2 role-contract migration
+ *  backfills stored rows and tightens the `rank_writer` CHECK to match. Until
+ *  that migration applies, a pre-backfill 'queen' row simply fails isRankWriter
+ *  on read (display-only, self-heals at backfill). */
+export type RankWriter = 'cup' | 'mug';
+export const RANK_WRITERS: readonly RankWriter[] = ['cup', 'mug'];
 export function isRankWriter(v: unknown): v is RankWriter {
-  return v === 'bee' || v === 'queen' || v === 'cup' || v === 'mug';
+  return v === 'cup' || v === 'mug';
 }
 
 // ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────
@@ -2650,7 +2651,7 @@ export async function reorderWorkItem(
   target: number,
   opts: { writer?: RankWriter; harness?: string } = {},
 ): Promise<ReorderWorkItemResult | { error: string }> {
-  const writer: RankWriter = opts.writer ?? 'bee';
+  const writer: RankWriter = opts.writer ?? 'cup';
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
   if (!wi.assignee) return { error: `work_item '${id}' is unassigned — claim it before ranking` };
