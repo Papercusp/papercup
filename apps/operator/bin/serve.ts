@@ -45,13 +45,20 @@ import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
+import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, 'embedded-pg.json');
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, 'superuser-token');
 const LOCK_PATH = join(PAPERCUSP_DIR, 'operator.lock');
-const VERSION = process.env.npm_package_version ?? '0.1.0-dev';
+// WI-2644: was `process.env.npm_package_version ?? '0.1.0-dev'` — npm never
+// invokes the bundled sidecar, so this was ALWAYS the '0.1.0-dev' fallback on
+// every packaged desktop build. build-info.ts already resolves the correct
+// version (preferring PAPERCUSP_BUILD_VERSION, baked at compile time in
+// main.rs and forwarded to the sidecar's env — see build-info.ts's docblock);
+// reuse that single resolver instead of a second, divergent version read.
+const VERSION = getBuildInfo().version;
 
 export interface OperatorDiscovery {
   /** Base HTTP origin of the operator API, e.g. http://127.0.0.1:3070 */

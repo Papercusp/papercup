@@ -395,3 +395,43 @@ describe('reserved plan-lane exclusion — issue linked to another active plan i
     expect(await claimOne('drain-member')).toBe('EI-RES-6');
   });
 });
+
+describe('cross-machine-rig exclusion — an item needing a live ≥2-machine rig is NOT self-selected by a single-box caller (WI-2796)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  /** Seed an issue-family task carrying payload.needs_2_machine_rig: true. */
+  async function seedRigGatedIssue(id: string, createdTs = 100) {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, payload)
+      VALUES (${H}, ${id}, 'task', 'open', ${WS}, ${createdTs}, 0,
+              ${db.sql.json({ needs_2_machine_rig: true })})`;
+  }
+
+  it('a rig-gated item is NOT claimed by a default (single-box) caller', async () => {
+    await seedRigGatedIssue('WI-RIG-1');
+    expect(await claimOne('drain-member')).toBeNull();
+  });
+
+  it('a rig-gated item IS claimed when the caller declares rigAvailable:true', async () => {
+    await seedRigGatedIssue('WI-RIG-2');
+    const claimed = (await wi.claimNextWorkItem({ harness: H, assignee: 'rig-fleet', rigAvailable: true }))?.id ?? null;
+    expect(claimed).toBe('WI-RIG-2');
+  });
+
+  it('an ordinary issue (no rig tag, NULL payload) is unaffected by the floor', async () => {
+    await seedIssue('EI-RIG-3', { state: 'open', createdTs: 100 });
+    expect(await claimOne('drain-member')).toBe('EI-RIG-3');
+  });
+
+  it('claim_next MISS diagnosis (diagnoseClaimNextMiss) also excludes a rig-gated item from readyUnclaimed for a single-box caller', async () => {
+    await seedRigGatedIssue('WI-RIG-4');
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'drain-member' });
+    // present in the pool (pendingUnclaimed) but NOT counted ready — matches what the
+    // claim itself would (not) serve, so the miss diagnosis never disagrees with claim_next.
+    expect(diag.pendingUnclaimed).toBeGreaterThan(0);
+    expect(diag.readyUnclaimed).toBe(0);
+  });
+});
