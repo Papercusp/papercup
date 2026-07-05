@@ -321,9 +321,10 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
         value: encWi!.value, epoch: encWi!.epoch, ts: 1001, sourceLogKeyHex: OWNER_LOG_HEX,
       } as OpEnvelope;
 
-      // ── 2. The epoch ADVANCES (a membership/visibility boundary). 0 → 1. ──
+      // ── 2. The epoch ADVANCES (a membership/visibility boundary) — the join the
+      //       member will miss. 1 → 2. ──
       const advanced = await advanceHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql);
-      expect(advanced).toBe(1);
+      expect(advanced).toBe(2);
 
       // ── 3. The MEMBER joins AFTER the advance — owner + joiner are now in the hive
       //       (the operator member view). Seeded as upsertHiveMember writes the row
@@ -381,8 +382,8 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       // ── 3a. NEGATIVE CONTROL (the regression state): content arrives BEFORE the
       //       joiner holds any key → the gate DEFERS it; the joiner PG is empty. A
       //       current-epoch-only / no-backfill regression would leave it here forever. ──
-      expect(await joinerApply(fedPlan), 'plan should defer (no epoch-0 key yet)').toBe(false);
-      expect(await joinerApply(fedWi), 'work_item should defer (no epoch-0 key yet)').toBe(false);
+      expect(await joinerApply(fedPlan), 'plan should defer (no epoch-1 key yet)').toBe(false);
+      expect(await joinerApply(fedWi), 'work_item should defer (no epoch-1 key yet)').toBe(false);
       expect(pending.size()).toBe(2);
       expect(await readPlan(dbJoiner.sql)).toBeUndefined();
       expect(await readWorkItem(dbJoiner.sql)).toBeUndefined();
@@ -395,13 +396,13 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
         { resolveCrypto: async () => crypto, resolveAuthorPubkey: async () => ownerDevice.pubkeyBase64 },
       );
       expect(reconcile.applied, 'reconcile self-heal ran').toBe(true);
-      // 2 epochs (0,1) × 2 live devices = 4 wrapped rows.
-      expect(reconcile.distributed).toBe(4);
+      // 3 epochs (0,1,2) × 2 live devices = 6 wrapped rows.
+      expect(reconcile.distributed).toBe(6);
       const [{ n: keyRowCount }] = await dbOwner.sql<Array<{ n: number }>>`
         SELECT COUNT(*)::int AS n FROM harness_shared.hive_epoch_keys
          WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG}
            AND member_device_pubkey = ${joinerDevice.pubkeyBase64}`;
-      expect(Number(keyRowCount), 'joiner granted both epoch keys (0 and 1)').toBe(2);
+      expect(Number(keyRowCount), 'joiner granted all three epoch keys (0, 1 and 2)').toBe(3);
 
       // ── 5. FEDERATE the wrapped-key rows to the joiner through the REAL hive-epoch-keys
       //       projection — its onEpochKeyApplied hook queues each (hive, epoch) for the drain. ──

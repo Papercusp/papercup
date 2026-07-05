@@ -5,7 +5,7 @@ import { byAuthorizer, whyLine } from './queue-authorizer';
 
 // The grouping helpers now take a bound lexicon (restore-pot-lexicon P-007). Use
 // the real classic/public pack so the asserted copy matches what flag-off ships:
-// t('brain') → "Brain".
+// t('brain') → "Mug" (owner FINAL cast 2026-07-04, restore-pot-lexicon D-006).
 const t = lexiconFor('classic');
 
 /** Minimal AttentionItem for the pure grouping helpers. */

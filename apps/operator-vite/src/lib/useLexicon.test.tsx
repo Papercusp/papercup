@@ -50,7 +50,9 @@ describe('useLexicon', () => {
     expect(screen.getByTestId('pot').textContent).toBe('Pot');
     expect(screen.getByTestId('pots').textContent).toBe('Pots');
     expect(screen.getByTestId('cupboard').textContent).toBe('Cupboard');
-    expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
+    // Owner FINAL cast (2026-07-04, restore-pot-lexicon D-006): classic's
+    // operator label is the Papercup cup-character "Papercup", not "Operator".
+    expect(screen.getByTestId('operator-lower').textContent).toBe('papercup');
   });
 
   it('resolves the bee lexicon when the-hive is on', () => {
@@ -72,7 +74,7 @@ describe('useLexicon', () => {
     // `pot` now differs across packs again (Pot vs Hive, P-001), so it proves the
     // live flip directly; operator → sentinel corroborates.
     expect(screen.getByTestId('pot').textContent).toBe('Pot');
-    expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
+    expect(screen.getByTestId('operator-lower').textContent).toBe('papercup');
     setHive(true); // SSE-style live flip
     expect(screen.getByTestId('pot').textContent).toBe('Hive');
     expect(screen.getByTestId('operator-lower').textContent).toBe('sentinel');
