@@ -98,6 +98,15 @@ diffing the function doesn't assume they did:
   principle as this doc's core claim (a caller must never widen past a floor state), applied one
   layer up from `claimFloorsWhereSql` itself.
 
+Three more exclusions now sit ANDed alongside `claimFloorsWhereSql` at both claim entry points
+(`work-items.ts`, ~L2050 and ~L2157) — same "not readiness, a separate floor" caveat applies:
+`reservedPlanLaneExclusionSql` (WI-2118, keeps a plan-reserved lane out of the general claim pool),
+`crossMachineRigExclusionSql` (WI-2796, excludes items pinned to an unavailable cross-machine rig),
+and `claimHoldExclusionSql` (WI-2797, `payload._claimHold:true` — a leader's ad-hoc "don't re-serve
+this" hold on a specific item, `COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM
+'true'`). None of the three touch `work_item_blocked` / oracle readiness either — an item can be
+fully "ready" and still correctly excluded here for an orthogonal reason.
+
 ## Gotchas
 
 - The sidecar key is `(workspace_id, harness_slug, feature_id)` — the feature's **real** workspace, not
