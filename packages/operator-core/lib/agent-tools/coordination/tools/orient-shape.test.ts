@@ -42,6 +42,14 @@ function fixture(n = 20) {
     },
     memory: { query: 'q', hits: Array.from({ length: 5 }, (_, i) => ({ id: i, memory: 'x'.repeat(900), score: 0.5 })) },
     planEvents: { total: 40, recent: Array.from({ length: 10 }, (_, i) => ({ kind: 'e', i })) },
+    // Standing facts: mostly noisy workspace-scope, with the load-bearing owner +
+    // harness facts buried in the middle (they must survive the count cap).
+    facts: [
+      ...Array.from({ length: 10 }, (_, i) => ({ scope: 'workspace', ref: null, body: `ws ${i} ${'w'.repeat(400)}`, src: null })),
+      { scope: 'owner', ref: 'su-abc', body: `OWNER-WALL ${'o'.repeat(400)}`, src: 'WI-1' },
+      { scope: 'harness', ref: 'papercusp', body: `HARNESS-FACT ${'h'.repeat(400)}`, src: 'WI-2' },
+      ...Array.from({ length: 8 }, (_, i) => ({ scope: 'workspace', ref: null, body: `ws b${i}`, src: null })),
+    ],
     intentDeclared: true,
   };
 }
@@ -85,6 +93,21 @@ describe('shapeOrient trimmed', () => {
     expect(out.self).toBe('su-abc');
     expect(out.intentDeclared).toBe(true);
     expect(out.payloadTier).toBe('trimmed');
+  });
+
+  it('caps standing facts with a pointer, keeping owner + harness scope first (WI-2859)', () => {
+    const facts = out.facts as Array<{ scope: string; body: string }>;
+    expect(facts).toHaveLength(8);
+    // The owner-wall + harness facts were buried at input positions 10/11 but must
+    // survive the count cap (they outrank noisy workspace-scope facts).
+    const scopes = facts.map((f) => f.scope);
+    expect(scopes).toContain('owner');
+    expect(scopes).toContain('harness');
+    expect(facts[0].scope).toBe('owner'); // owner ranks first
+    // bodies capped
+    for (const f of facts) expect(f.body.length).toBeLessThanOrEqual(200);
+    // no silent cap
+    expect(out.factsTruncated).toMatchObject({ total: 20, shown: 8, more: 'facts:list' });
   });
 
   it('shrinks the payload by an order of magnitude on the incident-shaped fixture', () => {
