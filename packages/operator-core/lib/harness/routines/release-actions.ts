@@ -395,7 +395,9 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
  * gitPipelineSnapshot().gate. Fail-safe — the routine tick never depends on it.
  */
-async function trackGateStall(
+// Exported for the EI-7472 regression test (capture the gate_health write and
+// assert the watchdog-owned dedup flag survives a red tick / clears on green).
+export async function trackGateStall(
   ctx: SystemActionCtx,
   status: string,
   candidate?: string,
@@ -421,7 +423,7 @@ async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string } | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean } | null }>;
   const gh = rows[0]?.gh ?? {};
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
@@ -452,7 +454,12 @@ async function trackGateStall(
         `[green-checkpoint] release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,
       );
     }
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null };
+    // EI-7472: the final metadata write below REPLACES the whole `gate_health`
+    // key (jsonb `||` is a shallow top-level merge). `watchdogAlerted` is owned by
+    // the separate green-stall-watchdog sweep — carry it through every `next` here
+    // or this whole-object replace silently drops it. On recovery (green) clear it,
+    // matching the watchdog's own recovery-clear (green-stall-watchdog.ts).
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -531,7 +538,12 @@ async function trackGateStall(
     }
     // Seed/carry the pin so the NEXT tick can detect movement (first observation
     // seeds it without resetting; an unchanged pin carries through).
-    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted, lastFrom: fromPin ?? gh.lastFrom ?? null };
+    // EI-7472: PRESERVE the watchdog-owned dedup flag across red ticks. Without
+    // this, the whole-object replace below drops `watchdogAlerted` back to absent
+    // every hourly red fire, so the green-stall-watchdog re-fires its STALLED
+    // severe-event ~hourly for the life of a red streak (it is designed one-shot
+    // until recovery). This writer does not own the field — carry it through.
+    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: gh.watchdogAlerted ?? false };
   }
   await sql.unsafe(
     `UPDATE harness_shared.routines
