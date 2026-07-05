@@ -12,8 +12,16 @@
  * Degrade-safe by spawn class / DBOS state (D-003 / D-007). `durableSpawnFire`
  * returns `false` — so the caller keeps its existing fire-and-forget — when:
  *   • DBOS is OFF (`PAPERCUSP_DBOS_ORCHESTRATOR=0`), or
- *   • it cannot start a durable workflow here (e.g. it was called from inside
- *     another DBOS step, where starting a child workflow is disallowed).
+ *   • DBOS is feature-flagged on but not actually LAUNCHED on this process
+ *     (`!dbosStarted()` — e.g. a request-only host like :3070 that delegates DBOS
+ *     to the bg-host), or
+ *   • it cannot start a durable workflow here (`DBOS.isInStep()` — e.g. it was
+ *     called from inside another DBOS step/transaction, like git-sync's
+ *     `git-sync:record` checkpoint dispatching the doc-steward), where starting a
+ *     child workflow is disallowed.
+ * The latter two are detected UP FRONT (WI-2605) rather than discovered by
+ * `DBOS.startWorkflow()` throwing — both are expected, routine degrades, not
+ * genuine failures, so they skip the doomed attempt and its log noise.
  * It NEVER throws and NEVER blocks on the agent's lifetime — the durable workflow
  * runs detached, exactly like the fire-and-forget it replaces.
  *
@@ -41,6 +49,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { queueConcurrency } from './queue-concurrency';
 import { dbosOrchestratorActive } from './dbos-flags';
+import { dbosStarted } from './bootstrap';
 import { loopbackFetch } from '../loopback-fetch';
 import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
 import type { Db } from '../fleet/pg-stores';
@@ -581,6 +590,31 @@ export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concu
  */
 export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<boolean> {
   if (!dbosOrchestratorActive()) return false;
+  // WI-2605: two documented-as-expected degrade cases used to fall all the way
+  // through to `DBOS.startWorkflow()` throwing, landing here as a scary
+  // '[durable-spawn] could not enqueue...' console.warn every time — even though
+  // neither is a genuine failure:
+  //
+  //  (a) DBOS is FEATURE-FLAGGED on (`dbosOrchestratorActive()`) but never actually
+  //      LAUNCHED on THIS process — e.g. a request-only host (:3070) that delegates
+  //      DBOS to the bg-host. `DBOS.startWorkflow` there throws 'DBOS.launch() must
+  //      be called before running workflows.' `dbosStarted()` (bootstrap.ts) is the
+  //      real "did .launch() run HERE" predicate — distinct from the feature flag.
+  //  (b) called from inside another DBOS step/transaction (e.g. git-sync's
+  //      `git-sync:record` checkpoint dispatching the doc-steward) — starting a
+  //      CHILD workflow from inside a step is illegal by DBOS's own design (see the
+  //      module docstring); `DBOS.isInStep()` detects this up front.
+  //
+  // Both are silently expected per this function's own contract ("returns false
+  // when it can't durably enqueue here") — skip straight to the fallback instead
+  // of attempting (and logging) a doomed enqueue.
+  if (!dbosStarted()) return false;
+  try {
+    if (DBOS.isInStep()) return false;
+  } catch {
+    // isInStep() itself is best-effort — fall through to the real attempt below,
+    // whose catch already handles any enqueue failure gracefully.
+  }
   const id = `durable-spawn:${input.idempotencyKey}`;
   const timeoutMS = durableSpawnWorkflowTimeoutMs(input);
   try {
@@ -592,8 +626,9 @@ export async function durableSpawnFire(input: DurableSpawnFireInput): Promise<bo
     })(input);
     return true;
   } catch (e) {
-    // Cannot start a durable workflow in this context (called from inside a step,
-    // or DBOS not launched) → caller falls back to fire-and-forget.
+    // A genuinely unexpected enqueue failure (not one of the two anticipated cases
+    // above, which already returned false silently) → caller falls back to
+    // fire-and-forget; this IS worth a loud warning.
     console.warn(
       `[durable-spawn] could not enqueue durable fire (${input.label ?? ''}); falling back to fire-and-forget: ${
         e instanceof Error ? e.message : String(e)

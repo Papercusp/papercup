@@ -439,12 +439,27 @@ async function trackGateStall(
     }
     next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
+    // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
+    // cleared/removed some other way) previously succeeded silently — no error, no log —
+    // so a genuinely-stuck escalation (gate_health.stallAlerted already true, meaning the
+    // P-003 insert below DID fire earlier and a row SHOULD exist to clear) could linger in
+    // harness_escalations forever while gate_health quietly reset to "no active alert".
+    // That divergence is exactly the shape of the recurring "Unresolved escalation in
+    // harness X" watchdog phantoms (EI-7569/EI-7575 this session): the routine metadata
+    // says clear, the escalations table still shows one open. Surface it loudly instead —
+    // only when we EXPECTED a row to clear (gh.stallAlerted), so a routine, everyday
+    // "nothing to clear" reset (no prior escalation) stays silent as before.
     try {
-      await sql.unsafe(
+      const cleared = await sql.unsafe(
         `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $2
           WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
         [ctx.installSlug, Date.now(), GATE_STALL_PHASE],
       );
+      if (gh.stallAlerted && cleared.count === 0) {
+        console.warn(
+          `[green-checkpoint] stall escalation clear MATCHED 0 ROWS for harness_slug='${ctx.installSlug}' phase='${GATE_STALL_PHASE}' despite gate_health.stallAlerted=true (an escalation should have existed) — the durable harness_escalations row may be stuck OPEN even though this routine believes the stall is resolved. Check harness_escalations for a stale row under a different harness_slug value.`,
+        );
+      }
     } catch (e) {
       console.warn(`[green-checkpoint] stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
     }

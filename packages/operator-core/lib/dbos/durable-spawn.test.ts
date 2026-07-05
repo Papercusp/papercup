@@ -29,7 +29,8 @@ const h = vi.hoisted(() => ({
   pgRunOutputRows: { value: [] as Array<{ diagnostic: string | null }> },
   activeQueenRows: { value: [] as Array<{ spawn_id: string; harness_slug: string | null }> },
   sql: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
-  state: { dbosOn: true },
+  isInStep: vi.fn(() => false),
+  state: { dbosOn: true, dbosStarted: true },
   // P-006: deterministic gateway-throttle corroboration (a real probe would reach the live :8788
   // gateway and make these tests flake). false ⇒ a no-turn death classifies infra_loss (legacy);
   // flip to true to exercise the capacity_shed path.
@@ -46,10 +47,12 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
       runStep: (fn: () => unknown) => fn(),
       registerWorkflow: (impl: unknown) => impl,
       startWorkflow: h.startWorkflow,
+      isInStep: h.isInStep,
     },
   };
 });
 vi.mock('./dbos-flags', () => ({ dbosOrchestratorActive: () => h.state.dbosOn }));
+vi.mock('./bootstrap', () => ({ dbosStarted: () => h.state.dbosStarted }));
 vi.mock('../loopback-fetch', () => ({ loopbackFetch: h.loopbackFetch }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: h.recordSpawn, finishSpawn: h.finishSpawn }));
 vi.mock('../fleet/spawn-reclaim', () => ({
@@ -101,6 +104,9 @@ const INPUT = {
 
 beforeEach(() => {
   h.state.dbosOn = true;
+  h.state.dbosStarted = true;
+  h.isInStep.mockReset();
+  h.isInStep.mockReturnValue(false);
   h.startWorkflow.mockReset();
   h.startWorkflow.mockImplementation((_wf, _opts) => (_input) => Promise.resolve());
   h.recordSpawn.mockClear();

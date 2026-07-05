@@ -270,7 +270,7 @@ export default function LearningTab() {
             onClick={() => void setLview('scout')}
           >
             <Radar size={13} aria-hidden />
-            <span>Scout<em>idea radar</em></span>
+            <span>{t('scout')}<em>idea radar</em></span>
           </button>
           <button
             type="button"
@@ -308,7 +308,7 @@ export default function LearningTab() {
               workspace-global views (Benchmark / Scout / Knowledge / Throughput)
               hide the picker since they ignore it. */}
           {hiveAware ? (
-            <Tooltip label={`Scope the ${t('pot', { lower: true })}-aware views (Improvements, Gym, Learnings) to one ${t('pot', { lower: true })} — the tenancy unit. Benchmark, Scout, Knowledge and Throughput are workspace-wide and ignore this.`}>
+            <Tooltip label={`Scope the ${t('pot', { lower: true })}-aware views (Improvements, Gym, Learnings) to one ${t('pot', { lower: true })} — the tenancy unit. Benchmark, ${t('scout')}, Knowledge and Throughput are workspace-wide and ignore this.`}>
               <label className="pc-learning__hivepick">
                 <Brain size={12} aria-hidden />
                 <span className="pc-learning__hivepicklabel">{t('pot', { lower: true })}</span>
@@ -346,7 +346,8 @@ export default function LearningTab() {
               <span className="pc-learning__hownum" aria-hidden>{i + 1}</span>
               <span className="pc-learning__howbody">
                 <strong>{s.title}</strong>
-                <em>{s.desc}</em>
+                {/* route the cast word in step copy (only the scout step names it) */}
+                <em>{s.desc.replace(/Scout/g, t('scout'))}</em>
               </span>
             </li>
           ))}
@@ -370,7 +371,7 @@ export default function LearningTab() {
       )}
 
       <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it's all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}'s editable memory lives in Learnings.
+        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it's all working, and {t('scout')} hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}'s editable memory lives in Learnings.
       </p>
 
       <LearningStyles />
@@ -1243,6 +1244,7 @@ function GradePanel({
   onSave: (grade: number, feedback: string | null) => void;
   onClose: () => void;
 }) {
+  const t = useLexicon();
   const [grade, setGrade] = useState<number | null>(current?.grade ?? null);
   const [draft, setDraft] = useState(current?.feedback ?? '');
   return (
@@ -1262,7 +1264,7 @@ function GradePanel({
         rows={2}
         maxLength={2000}
         aria-label="Grading note"
-        placeholder="Why? Scout quotes recent grading notes to the next cycle’s ideators."
+        placeholder={`Why? ${t('scout')} quotes recent grading notes to the next cycle’s ideators.`}
         onChange={(e) => setDraft(e.target.value)}
       />
       <div className="pc-learning__gradepanelactions">
@@ -1536,10 +1538,10 @@ function ScoutView() {
 
   return (
     <section className="pc-learning__section">
-      <div className="pc-learning__flow" aria-label="Scout tick health">
+      <div className="pc-learning__flow" aria-label={`${t('scout')} tick health`}>
         <span
           className="pc-learning__flowchip"
-          title={tick ? `The newest scout tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ''}` : 'Scout records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.'}
+          title={tick ? `The newest ${t('scout')} tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ''}` : `${t('scout')} records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.`}
         >
           <Radar size={11} aria-hidden />
           last tick <strong>{tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'none yet'}</strong>
@@ -1547,8 +1549,8 @@ function ScoutView() {
         </span>
       </div>
 
-      <div className="pc-learning__scoreboard" aria-label="Scout summary">
-        <Stat label="routed ideas" value={snap ? snap.totalRouted : '—'} hint="Ideas Scout has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts." />
+      <div className="pc-learning__scoreboard" aria-label={`${t('scout')} summary`}>
+        <Stat label="routed ideas" value={snap ? snap.totalRouted : '—'} hint={`Ideas ${t('scout')} has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts.`} />
         {rails.map((r) => (
           <Stat key={r.rail} label={RAIL_META[r.rail]?.label ?? r.rail} value={r.count} tone="auto" hint={RAIL_META[r.rail]?.desc} />
         ))}
@@ -1558,7 +1560,7 @@ function ScoutView() {
         <div className="pc-learning__flow" aria-label="Lens sampling weights">
           <span
             className="pc-learning__flowchip"
-            title="Scout picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess)."
+            title={`${t('scout')} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
           >
             <Sparkles size={11} aria-hidden />
             lens weights
@@ -1584,7 +1586,7 @@ function ScoutView() {
         <button
           type="button"
           className="pc-learning__refresh"
-          aria-label="Reload the scout feed"
+          aria-label={`Reload the ${t('scout', { lower: true })} feed`}
           disabled={sync.fetching}
           onClick={() => sync.invalidate()}
         >
@@ -1593,14 +1595,14 @@ function ScoutView() {
       </div>
 
       {sync.loading && !snap ? (
-        <p className="pc-learning__empty">Loading the scout ledger…</p>
+        <p className="pc-learning__empty">Loading the {t('scout', { lower: true })} ledger…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">Scout feed unavailable: {sync.error.message}</p>
+        <p className="pc-learning__empty">{t('scout')} feed unavailable: {sync.error.message}</p>
       ) : recent.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Radar size={20} aria-hidden />
-          <strong>Scout has not routed ideas yet</strong>
-          <span>Scout sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, an improvement work-item, or an instance candidate, and it appears here.</span>
+          <strong>{t('scout')} has not routed ideas yet</strong>
+          <span>{t('scout')} sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, an improvement work-item, or an instance candidate, and it appears here.</span>
         </div>
       ) : (
         <>

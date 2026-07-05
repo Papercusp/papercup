@@ -82,7 +82,9 @@ const itemSpec = z.object({
 
 type CompleteItem = z.infer<typeof itemSpec>;
 
-function completionEvidenceFromRecord(rec: CompletionRecord): CompletionVerificationEvidence | undefined {
+function completionEvidenceFromRecord(
+  rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
+): CompletionVerificationEvidence | undefined {
   const nested = rec.verification ?? {};
   const filesChanged = rec.filesChanged ?? nested.filesChanged;
   const testsRun = rec.testsRun ?? nested.testsRun ?? rec.tests;
