@@ -6,11 +6,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { InvalidInputError } from '@papercusp/tooldef';
 import {
   assertFact,
   renderFactsFold,
   resolveFactScopeRef,
   resolveFederationWorkspace,
+  retractFact,
   validateFactScope,
   type AgentFact,
 } from './store';
@@ -85,6 +87,56 @@ describe('validateFactScope (D-001 scoping)', () => {
 
   it('rejects unknown scopes', () => {
     expect(validateFactScope('galaxy', 'x')).toMatch(/unknown scope/);
+  });
+});
+
+describe('EI-7463 — a caller-side scope/ref validation failure throws InvalidInputError, not a plain Error', () => {
+  // The dispatcher (dispatch-stack.ts) codes InvalidInputError as `invalid_input`
+  // (400) and any other thrown Error as `handler_error` (500) — so a facts:assert
+  // arg mistake (omitted scope_ref for a non-workspace scope) must NOT surface as
+  // a plain Error, or it inflates the tool's structural error-rate telemetry
+  // (the false "tool is broken" signal this ticket fixes).
+  const failSql = (() => {
+    throw new Error('SQL SHOULD NOT BE REACHED — validation must refuse before any write');
+  }) as unknown as Sql;
+
+  it('assertFact: a missing scope_ref for scope "harness" throws InvalidInputError', async () => {
+    await expect(
+      assertFact({ scope: 'harness', key: 'k', body: 'b', createdBy: 'su-test' }, failSql),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('assertFact: a missing scope_ref for scope "owner" throws InvalidInputError', async () => {
+    await expect(
+      assertFact({ scope: 'owner', key: 'k', body: 'b', createdBy: 'su-test' }, failSql),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('assertFact: an empty key (post-trim) throws InvalidInputError', async () => {
+    await expect(
+      assertFact({ scope: 'workspace', key: '   ', body: 'b', createdBy: 'su-test' }, failSql),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('assertFact: an empty body (post-clamp) throws InvalidInputError', async () => {
+    await expect(
+      assertFact({ scope: 'workspace', key: 'k', body: '   ', createdBy: 'su-test' }, failSql),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('retractFact: a missing scope_ref for scope "role" throws InvalidInputError', async () => {
+    await expect(
+      retractFact({ scope: 'role', key: 'k' }, failSql),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('a genuinely valid assert is unaffected — still reaches SQL (the stub throw proves it)', async () => {
+    await expect(
+      assertFact(
+        { scope: 'harness', scopeRef: 'papercusp', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'papercusp-workspace' },
+        failSql,
+      ),
+    ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
   });
 });
 

@@ -23,6 +23,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../workspace-registry';
 
 export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'] as const;
@@ -152,12 +153,18 @@ export function clampFactBody(raw: string): string {
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
  *  the per-scope cap by evicting the oldest-updated live facts past the cap. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AgentFact> {
+  // EI-7463: these are CALLER-input mistakes (a bad scope/ref pairing, an
+  // empty key/body after trim), not server faults — throw InvalidInputError
+  // so the dispatcher codes them `invalid_input` (400) instead of the default
+  // `handler_error` (500). A `handler_error` inflates facts:assert's telemetry
+  // error-rate as a false "tool is broken" signal (the same EI-334 class the
+  // schema-validation path already avoids via InvalidInputError).
   const err = validateFactScope(input.scope, input.scopeRef);
-  if (err) throw new Error(`facts:assert — ${err}`);
+  if (err) throw new InvalidInputError(`facts:assert — ${err}`);
   const key = input.key.trim();
-  if (!key) throw new Error('facts:assert — key required (stable slug)');
+  if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const body = clampFactBody(input.body);
-  if (!body) throw new Error('facts:assert — body required');
+  if (!body) throw new InvalidInputError('facts:assert — body required');
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
   // F1-4 / WI-1564: a SHAREABLE fact MUST land in a real federating partition.
@@ -224,7 +231,7 @@ export async function retractFact(
   inject?: Sql,
 ): Promise<boolean> {
   const err = validateFactScope(args.scope, args.scopeRef);
-  if (err) throw new Error(`facts:retract — ${err}`);
+  if (err) throw new InvalidInputError(`facts:retract — ${err}`);
   const sql = sqlOf(inject);
   const ws = args.workspaceId ?? activeWorkspaceId();
   const ref = args.scope === 'workspace' ? '' : (args.scopeRef ?? '').trim();

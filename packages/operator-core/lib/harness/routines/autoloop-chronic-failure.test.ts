@@ -5,6 +5,7 @@ import {
   staleWindowMs,
   isStaleWatermark,
   isLoopArmOwnerLoop,
+  isLoopArmOwnerRole,
   type AutoloopStateRow,
 } from './autoloop-chronic-failure';
 
@@ -225,6 +226,44 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
   });
 
+  it('EI-7220 root shape: an ORPHANED loop:arm row (routine GC\'d → owner-id null, recently fired) is NOT escalated by its ROLE NAME', () => {
+    // EI-7220 (loop-su-c2b2ece8-…@*, red 7 consecutive fires): the dead su session's
+    // loop:arm routine was reaped while its stale-red autoloop_state row lingered. With the
+    // routine row gone, the LEFT JOIN yields routine_target_owner_id = NULL (and
+    // routine_active = NULL), so BOTH the owner-id marker AND the routine_active guard fail
+    // OPEN — and it fired recently enough that the staleness guard doesn't catch it either.
+    // Pre-fix it escalated as if a witness-less fixed system role. The role-NAME marker
+    // (`loop-su-…` begins with `loop-`) is join-independent and suppresses it regardless.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-su-c2b2ece8-d18f-4246-9ce2-d5bc0fdb4050',
+        consecutive_errors: 7,
+        last_status: 'loop-stuck-backstop',
+        routine_active: null, // routine GC'd — no matching routines row
+        routine_target_owner_id: null, // JOIN yielded null — the fragile owner-id marker fails open
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(), // fired 1min ago — not stale
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
+  it('EI-7220: an orphaned loop-role-* row (role-owner, routine GC\'d) is also suppressed by its role name', () => {
+    // The role marker is prefix-agnostic on the owner (su-/role-/bare-uuid): every loop:arm
+    // role is `loop-${ownerId}`, so `loop-role-<uuid>` begins with `loop-` too.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-role-da950389-8866-4f33-bfd9-74db3e832f6c',
+        consecutive_errors: 12,
+        routine_active: null,
+        routine_target_owner_id: null,
+        last_fired_at: new Date(NOW - 60 * 1000).toISOString(),
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it("EI-6727 real shape: a LIVE (routine active, recently fired) loop:arm owner loop is NOT escalated — pre-pause window", () => {
     // EI-6727 (loop-su-dad90f05…) and 27 siblings: a dead su session's loop:arm loop climbs
     // past the chronic threshold (6) and the sweep escalates it in the WINDOW before the
@@ -414,5 +453,36 @@ describe('isLoopArmOwnerLoop (EI-6727)', () => {
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: null })).toBe(false);
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: undefined })).toBe(false);
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: '' })).toBe(false);
+  });
+  it('EI-7220: null owner-id BUT a `loop-`-prefixed role → still a loop:arm owner loop (true)', () => {
+    // The orphaned-routine shape: the JOIN yielded no owner-id, but the role name proves it.
+    expect(
+      isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'loop-su-c2b2ece8-d18f-4246-9ce2-d5bc0fdb4050' }),
+    ).toBe(true);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: '', role: 'loop-role-da950389' })).toBe(true);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'loop-28dbf719-6c0e' })).toBe(true);
+  });
+  it('EI-7220: null owner-id AND a non-`loop-` (fixed system) role → fail-open (false)', () => {
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'gym-cycle' })).toBe(false);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null, role: 'overwatch' })).toBe(false);
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: null })).toBe(false); // role absent
+  });
+});
+
+describe('isLoopArmOwnerRole (EI-7220)', () => {
+  it('a `loop-`-prefixed role (loop-su-*, loop-role-*, loop-<uuid>) → true (join-independent marker)', () => {
+    expect(isLoopArmOwnerRole('loop-su-c2b2ece8-d18f-4246-9ce2-d5bc0fdb4050')).toBe(true);
+    expect(isLoopArmOwnerRole('loop-role-da950389-8866-4f33-bfd9-74db3e832f6c')).toBe(true);
+    expect(isLoopArmOwnerRole('loop-28dbf719-6c0e-4f42-a0d2-56d6be156634')).toBe(true);
+  });
+  it('a fixed system role (director/gym-cycle/overwatch/scout-cycle) → false (no `loop-` prefix)', () => {
+    expect(isLoopArmOwnerRole('director')).toBe(false);
+    expect(isLoopArmOwnerRole('gym-cycle')).toBe(false);
+    expect(isLoopArmOwnerRole('overwatch')).toBe(false);
+    expect(isLoopArmOwnerRole('scout-cycle')).toBe(false);
+  });
+  it('null / undefined / non-string → false', () => {
+    expect(isLoopArmOwnerRole(null)).toBe(false);
+    expect(isLoopArmOwnerRole(undefined)).toBe(false);
   });
 });

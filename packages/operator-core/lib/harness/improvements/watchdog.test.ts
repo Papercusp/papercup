@@ -517,6 +517,24 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals).toEqual([]);
   });
 
+  it('EI-7220: DROPS an ORPHANED loop:arm row (routine GC\'d → owner-id null) by its ROLE NAME', () => {
+    // Mirror of the chronic-failure sweep fix: when the routine row is reaped the JOIN yields
+    // routine_target_owner_id = null, so the owner-id marker fails open. The `loop-`-prefixed
+    // role is the join-independent belt that still suppresses the leaked "stuck in error-backoff"
+    // signal (the fire-circuit-open sibling of EI-7220's chronic-failure flood).
+    const signals = circuitOpenSignalsFromRows([
+      {
+        harness_slug: '*',
+        role: 'loop-su-c2b2ece8-d18f-4246-9ce2-d5bc0fdb4050',
+        consecutive_errors: 7,
+        last_status: 'loop-stuck-backstop',
+        routine_active: null,
+        routine_target_owner_id: null,
+      },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
   it('fire-circuit-open: STILL fires for a fixed system role (no matching routine → routine_active null, no owner)', () => {
     const signals = circuitOpenSignalsFromRows([
       { harness_slug: 'gymloopharness', role: 'gym-cycle', consecutive_errors: 9, last_status: 'error', routine_active: null, routine_target_owner_id: null },
@@ -528,8 +546,14 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
   it('isResolvedFirePath: suppresses auto-paused OR loop:arm owner; fail-open otherwise', () => {
     expect(isResolvedFirePath({ routine_active: false })).toBe(true);
     expect(isResolvedFirePath({ routine_target_owner_id: 'su-abc' })).toBe(true);
+    // EI-7220: a `loop-`-prefixed role is a loop:arm owner loop even with a null owner-id
+    // (orphaned routine — the JOIN failed open).
+    expect(isResolvedFirePath({ routine_active: null, routine_target_owner_id: null, role: 'loop-su-c2b2ece8' })).toBe(
+      true,
+    );
     // fail-open: unknown routine state (no join match) and a live fixed system role are NOT suppressed
     expect(isResolvedFirePath({ routine_active: null, routine_target_owner_id: null })).toBe(false);
+    expect(isResolvedFirePath({ routine_active: null, routine_target_owner_id: null, role: 'gym-cycle' })).toBe(false);
     expect(isResolvedFirePath({ routine_active: true, routine_target_owner_id: '' })).toBe(false);
     expect(isResolvedFirePath({})).toBe(false);
   });
