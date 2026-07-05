@@ -90,6 +90,19 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // operator runs NO hive: pin the home slug EMPTY (resolveHiveHomeSlug
     // treats blank as unset → the hive-home validation is a no-op).
     PAPERCUSP_HIVE_HOME_SLUG: '',
+    // WI-2604 root cause (1): bg-host's dev-api service sets PAPERCUSP_MCP_PROXY_BASE
+    // (mcp-host-availability-resilience P-005, e.g. http://127.0.0.1:9071 fronting the
+    // LIVE :3070 operator) and that leaks through the `...process.env` spread. Both
+    // `resolveSpawnOperatorBase` (orchestrator spawn-mcp.ts, signs the per-spawn URL)
+    // and `resolveAgentMcpBaseUrl` (mcp-base-url.ts, worker chunk-loop spawns) check
+    // this env var BEFORE the spawning host's own PAPERCUSP_HONO_PORT — so every gym
+    // eval agent's `.mcp.json` pointed at the proxy → the LIVE :3070 operator instead
+    // of this dedicated gym-operator's own port. The live operator then verified the
+    // signature against ITS OWN spawn-signing-key (from the live DB), while the gym
+    // process signed with the GYM DB's preminted key → HMAC mismatch → invalid_signature
+    // on every gym eval spawn. Blank it so eval agents always hand-shake THIS hermetic
+    // instance (matching PAPERCUSP_HIVE_HOME_SLUG's seal above).
+    PAPERCUSP_MCP_PROXY_BASE: '',
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

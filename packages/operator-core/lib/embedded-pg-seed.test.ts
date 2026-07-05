@@ -28,6 +28,7 @@ import {
   initdbLocale,
   initdbLocaleIsPortable,
   localeIsPortable,
+  localeIsUniversal,
   confLcNonPortable,
   normalizeConfLc,
 } from '@papercusp/embedded-postgres-server';
@@ -206,27 +207,33 @@ describe('postgresql.conf lc_* portability (WI-2749 conf-level guard)', () => {
     expect(RUNTIME_LC_PARAMS).not.toContain('lc_ctype');
   });
 
-  it('confLcNonPortable flags exactly the broken lc_messages the seed shipped', () => {
-    expect(confLcNonPortable(BROKEN_CONF)).toEqual(["lc_messages='en_US.utf8'"]);
+  it('confLcNonPortable flags EVERY non-universal lc_* — the WSL host locale AND the glibc-only C.UTF-8', () => {
+    // C.UTF-8 was the OLD normalizer target — valid on WSL, FATAL on macOS. All
+    // four params in BROKEN_CONF must flag now (en_US.utf8 ×1 + C.UTF-8 ×3).
+    expect(confLcNonPortable(BROKEN_CONF)).toEqual([
+      "lc_messages='en_US.utf8'",
+      "lc_monetary='C.UTF-8'",
+      "lc_numeric='C.UTF-8'",
+      "lc_time='C.UTF-8'",
+    ]);
   });
 
-  it('confLcNonPortable returns [] for an all-portable conf', () => {
-    const ok = BROKEN_CONF.replace("'en_US.utf8'", "'C.UTF-8'");
+  it('confLcNonPortable returns [] for an all-universal conf', () => {
+    const ok = BROKEN_CONF.replace(/'(en_US\.utf8|C\.UTF-8)'/g, "'C'");
     expect(confLcNonPortable(ok)).toEqual([]);
   });
 
-  it('normalizeConfLc rewrites the bad lc_messages, preserves the comment + other lines', () => {
+  it("normalizeConfLc rewrites every bad lc_* to 'C', preserves comments + formatting", () => {
     const { text, changed } = normalizeConfLc(BROKEN_CONF);
     expect(changed).toBe(true);
-    expect(text).toContain("lc_messages = 'C.UTF-8'\t\t# locale for system error message");
-    // Untouched portable lines stay byte-identical.
-    expect(text).toContain("lc_monetary = 'C.UTF-8'\t\t\t# locale for monetary formatting");
-    // And the result is now clean.
+    expect(text).toContain("lc_messages = 'C'\t\t# locale for system error message");
+    expect(text).toContain("lc_monetary = 'C'\t\t\t# locale for monetary formatting");
+    // And the result is now clean — bootable on glibc AND macOS.
     expect(confLcNonPortable(text)).toEqual([]);
   });
 
-  it('normalizeConfLc is idempotent + a no-op on an already-portable conf', () => {
-    const clean = BROKEN_CONF.replace("'en_US.utf8'", "'C.UTF-8'");
+  it('normalizeConfLc is idempotent + a no-op on an already-universal conf', () => {
+    const clean = BROKEN_CONF.replace(/'(en_US\.utf8|C\.UTF-8)'/g, "'C'");
     const first = normalizeConfLc(clean);
     expect(first.changed).toBe(false);
     expect(first.text).toBe(clean);
