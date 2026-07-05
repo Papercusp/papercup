@@ -47,6 +47,7 @@ import {
   stopBackgroundJanitor,
 } from '../workspace-listener';
 import { acquireWithContentionRetry } from '../contention-retry';
+import { configureLocks, locksHost, type LocksHost } from '@papercusp/locks';
 
 const SUITE_PREFIX = `vitest-su-locks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const LOAD_STRESS_TIMEOUT_MS =
@@ -58,7 +59,35 @@ function nextWs(): string {
   return `${SUITE_PREFIX}-${++suiteIdx}`;
 }
 
+// WI-2900: under the green-checkpoint gate the FULL suite runs in parallel on a box that is ALSO
+// running the live fleet, so PG stays sustained-saturated for the whole run. At the baked 5s
+// lock_timeout an inWorkspaceTxn advisory-lock acquire / commit intermittently exceeds it and raises
+// PG 55P03 → WorkspaceContendedError, red-pinning the gate on a pure LOAD flake (this file passes
+// standalone AND in the checkpoint clone in isolation; the "cascade" test failed the 2026-07-05 12:23
+// gate run exactly this way). Widen THIS file's per-workspace txn window under the gate ONLY
+// (GREEN_CHECKPOINT=1 — set by the checkpoint runner, NEVER in production or normal dev), so an
+// uncontended unique-workspace lock has room to complete under saturation, while staying WELL under the
+// gate's 180s per-test timeout (VITEST_UNIT_TIMEOUT_MS) so a genuine deadlock still surfaces as 55P03
+// rather than a test hang. Restored in afterAll and scoped to this file (vitest isolates test files) so
+// the deliberate-5s su-locks-contention integration test is unaffected.
+const GATE_TXN_TIMEOUT_MS = 30_000;
+let priorLocksHost: LocksHost | null = null;
+
 beforeAll(async () => {
+  if (process.env.GREEN_CHECKPOINT === '1') {
+    try {
+      priorLocksHost = locksHost(); // the operator adapter, self-wired at import time
+      configureLocks({
+        ...priorLocksHost,
+        getTxnTimeouts: () => ({
+          lockTimeoutMs: GATE_TXN_TIMEOUT_MS,
+          statementTimeoutMs: GATE_TXN_TIMEOUT_MS,
+        }),
+      });
+    } catch {
+      /* no host wired yet (shouldn't happen — the operator locks adapter self-wires on import); skip */
+    }
+  }
   await ensureBootstrap();
 });
 
@@ -73,6 +102,11 @@ afterAll(async () => {
   }
   stopBackgroundJanitor(); // defensive — the timer never auto-starts under VITEST
   await _resetForTests();
+  // Restore the pre-widening locks host (WI-2900) — belt-and-suspenders against a non-isolated pool.
+  if (priorLocksHost) {
+    configureLocks(priorLocksHost);
+    priorLocksHost = null;
+  }
 });
 
 describe('path validation', () => {
