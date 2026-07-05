@@ -215,6 +215,10 @@ export interface LoopRebaseResult {
      *  value is LEAST(cron-next, this), so it may be sooner. */
     nextFireAt: number;
     via: RebaseVia;
+    /** WI-2714: true when this 'stuck-backstop' re-arm fired via the EARLY quick-retry leg
+     *  (before the classic dwell window elapsed) rather than the classic dwell-gated path.
+     *  Absent/false for every other via and for a classic stuck-backstop re-arm. */
+    quickRetry?: boolean;
   }>;
   /** Loops auto-paused this pass because their owner is permanently unreachable (WI-1399) —
    *  NOT re-armed; `active=false` was set instead. Diagnostics / tests. */
@@ -419,6 +423,7 @@ export async function reconcileLoopRoutines(
       // Resolve the re-arm time + provenance.
       let completedAt: number;
       let via: RebaseVia;
+      let quickRetry = false;
       const signal = completionSignal(row, lastFiredMs, nowMs);
       if (signal) {
         completedAt = signal.completedAt;
