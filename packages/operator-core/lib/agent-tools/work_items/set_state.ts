@@ -46,11 +46,11 @@ export default defineTool({
   description:
     'Set the lifecycle state of one OR many work-items. feature-family: a feature status (todo|in_progress|passed|failing|deprecated…). issue-family: open|resolved|closed ONLY — the family has no blocked/needs-human/in_progress state, so those (and wip/todo/done/dropped) ALIAS onto open/resolved/closed instead of erroring; a per-item `aliasNote` in the result names the alias when one fired, so it never reads as a silent no-op. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision? }]. Returns { ok, results:[{ ok, id, workItem?, aliasNote? | error }], counts } — correlate by id; a not-found item never fails the rest.',
   guidance: {
-    when: 'You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…]. To durably PARK an issue-family item (needs a human / blocked on something external), state:\'blocked\' aliases to \'open\' (it stays claimable) — record the reason via a comment/checkpoint, not the state alone.',
+    when: 'You moved one or more work-items along the lifecycle (started, resolved, etc.). Flip a whole wave at once via { ids:[…], state } or items:[…]. To durably PARK an issue-family item (needs a human / blocked on something external), state:\'blocked\' aliases to \'open\' (it stays claimable) — use work_items:release { claimHold:true } to park it out of self-select, plus a comment for the reason.',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
-      'work_items:release (drop a claim without changing state)',
+      'work_items:release (drop a claim without changing state; claimHold:true parks an issue-family item out of claim_next self-select — WI-2797)',
       'work_items:set_priority (steer backlog order, not lifecycle state)',
     ],
   },
