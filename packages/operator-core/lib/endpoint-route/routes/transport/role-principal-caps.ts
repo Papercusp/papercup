@@ -70,7 +70,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'search:read',
     'curation:read', // the live blackboard it heralds: curation:feed / state-of-hive / change-feed
     'plans:read', // plans:attention — what needs the user's eye
-    'operator:converse', // the Herald brain (role='sentinel' persona)
+    'operator:converse', // the Herald brain (role='papercup' persona)
     'operator:read', // voice:status / voice:transcript
     'operator:write', // voice:join / voice:leave / voice:channels / voice:agent
     // code-run-self-state-adoption-2026-07-03 P-003: her coord:orient bootstrap dispatches

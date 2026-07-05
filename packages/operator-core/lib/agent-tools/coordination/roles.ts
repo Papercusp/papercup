@@ -18,14 +18,14 @@ export const COORD_ROLES = [
   // coordinates via coord:* (declare-intent, send, await-inbox) and maintains its
   // ordered work-list via work_items:* — both gated on this list — so it MUST be a
   // coord role. Same gate the pipeline worker passes, minus the chunk coupling.
-  'bee',
+  'cup',
   // The QUEEN — the hive's placement decider (operator specialized; local-hive
   // D-001/P-030). Her whole loop is coord/fleet/work_items: survey
   // (coord:presence/inbox, work_items:list) → place (cup:spawn — note
   // fleet/spawn.ts filters OUT bee+sentinel but keeps queen; placement is hers)
   // → warm-inject (coord:send {wake}) → drain (fleet:drain). EI-286 follow-up:
   // the role existed only in the blueprint, so every gate here filtered her out.
-  'queen',
+  'mug',
   // The SENTINEL — the fleet watcher (unify-launch-mechanics-2026-06-09 D-004).
   // Its core surface IS coord: it READS the substrate (coord:presence/inbox/feed)
   // + the fleet (fleet:assignments/tree — both COORD_ROLES-gated, surfacing stuck/
@@ -34,7 +34,7 @@ export const COORD_ROLES = [
   // it cannot use (work_items:write etc.) stay capped out — only coord:write
   // resolves. Excluded from cup:spawn (placement is the Queen's, not the
   // watcher's — see fleet/spawn.ts, same carve-out as bee).
-  'sentinel',
+  'papercup',
   // The OVERWATCH — the autonomous system-health supervisor (overwatch-role-2026-06-15
   // C-2 / B-01). Like the sentinel, its core surface IS coord: it READS the substrate
   // (coord:presence/inbox/feed, improvements:digest, topics:feed) + the fleet
@@ -45,7 +45,7 @@ export const COORD_ROLES = [
   // COORD_ROLES write tools it cannot use stay capped out. Excluded from cup:spawn
   // (placement is the Queen's — the overwatch NUDGES her to re-place, never re-places
   // itself; D-001 — same carve-out as bee/sentinel).
-  'overwatch',
+  'kettle',
   // The DOC-STEWARD — the automated doc-freshness fixer (docs-corpus-audit P-008;
   // the `doc-steward` launch blueprint). Its prompt calls `work_items:get` (to read
   // WHY the anchored code changed) and `coord:escalate` (when it can't faithfully fix

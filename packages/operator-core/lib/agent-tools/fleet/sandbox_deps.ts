@@ -26,7 +26,7 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee', 'sentinel'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'papercup'],
   args: z.object({}),
   async handler() {
     const report = checkFleetSandboxHostDeps();

@@ -36,7 +36,7 @@ export default defineTool({
   },
   capability: 'fleet:recolor',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     fleet: z.string().min(1).describe('The fleet slug (from fleet:list).'),
     scheme: z

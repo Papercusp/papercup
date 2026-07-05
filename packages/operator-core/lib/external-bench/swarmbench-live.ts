@@ -41,7 +41,7 @@ export function scenarioId(s: SwarmScenario): string {
 }
 
 /** The swarm-control mode = the arm. */
-export type SwarmMode = 'random' | 'openai' | 'queen';
+export type SwarmMode = 'random' | 'openai' | 'mug';
 
 /** Normalized result of one scenario run (what `swarmbench_run.py` emits). */
 export interface SwarmSimResult {

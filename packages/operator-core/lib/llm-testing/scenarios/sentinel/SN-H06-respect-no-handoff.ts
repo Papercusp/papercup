@@ -18,7 +18,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H06_RESPECT_NO_HANDOFF: Scenario = {
   id: 'sn-H06-respect-no-handoff',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks a directly-answerable live-state question and explicitly says NOT to involve the Queen ("just tell me what agents are running — don\'t bother the Queen with it"). Success: the Sentinel answers directly (calling a read tool for live state) and does NOT emit <handoff_to_queen> — it respects the user\'s explicit instruction not to escalate. The judge penalizes any handoff here and rewards a crisp, tool-grounded direct answer.',
   persona: VOICE_USER,

@@ -40,7 +40,7 @@ export const AGENT_CARD_TIMEOUT_MS = 10 * 60_000; // 10 minutes
 /** The escalation ladder rung a question is routed to (queen-autonomous-execution
  *  Phase 5). Only `owner-queue` is reachable until autonomy-policy arms the AUTO
  *  rungs (B-17); the gate seam returns the others once a classifier is injected. */
-export type QuestionRung = 'bee-self' | 'peer-vote' | 'queen' | 'owner-queue';
+export type QuestionRung = 'bee-self' | 'peer-vote' | 'mug' | 'owner-queue';
 
 /** Stable machine category for an agent's mid-run decision card. The
  *  autonomy-policy taxonomy's human-facing label is "escalations & agent-questions";

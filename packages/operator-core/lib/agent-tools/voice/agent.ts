@@ -27,7 +27,7 @@ export default defineTool({
   requirePrincipal: false,
   // Sentinel-as-Herald: the sentinel is the voice-first Herald, so it drives the
   // voice channel like the operator does (paired with its operator:write cap).
-  agentRoles: ['operator', 'architect', 'sentinel'],
+  agentRoles: ['operator', 'architect', 'papercup'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('enable') }),

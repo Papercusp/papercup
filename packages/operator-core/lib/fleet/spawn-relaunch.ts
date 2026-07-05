@@ -59,7 +59,7 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
   // Resolve under the spawn's workspace so the queen-brief / agent-config / tier
   // reads (which read the workspace ALS) target the right hive.
   return runWithWorkspace(spawn.workspaceId, async () => {
-    if (spawn.childRole === 'queen') {
+    if (spawn.childRole === 'mug') {
       const { fireLaunchBlueprint } = await import('../blueprint/launch-blueprint');
       const { spawn: info } = await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, {
         installSlug: spawn.harnessSlug,
@@ -86,7 +86,7 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
       const res = await spawnAgentInHarness({
         workspaceId: spawn.workspaceId,
         harness: spawn.harnessSlug,
-        role: 'bee',
+        role: 'cup',
         spawnId,
         featureId: spawn.workItemId,
         itemId: spawn.workItemId,
@@ -94,7 +94,7 @@ export async function relaunchReclaimedSpawn(spawn: RelaunchableSpawn): Promise<
         brief: spawn.brief,
         modelSpec: spawn.modelSpec,
         parentSpawnId: spawn.parentSpawnId,
-        parentRole: spawn.parentRole ?? 'queen',
+        parentRole: spawn.parentRole ?? 'mug',
         turnTrigger: 'coord-wake',
         // Idempotency: a re-run of the boot reconcile (it is safe to re-run) must
         // not place a SECOND bee on the same item — key the placement on the dead

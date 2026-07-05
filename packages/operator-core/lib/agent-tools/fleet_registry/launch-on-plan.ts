@@ -396,7 +396,7 @@ export default defineTool({
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     name: z
       .string()

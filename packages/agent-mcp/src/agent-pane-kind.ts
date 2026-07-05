@@ -41,7 +41,7 @@
  * mode (D-005) can still flip an `auto` agent to manual at runtime.
  */
 
-export const AGENT_PANE_KINDS = ['queen', 'overwatch', 'bee', 'sentinel', 'planner', 'su'] as const;
+export const AGENT_PANE_KINDS = ['mug', 'kettle', 'cup', 'papercup', 'planner', 'su'] as const;
 export type AgentPaneKind = (typeof AGENT_PANE_KINDS)[number];
 
 export const DRIVE_MODES = ['auto', 'responsive'] as const;
@@ -89,20 +89,20 @@ export function classifyAgentPane(input: {
   // pot-rename dual-accept (P1 MIGRATE): `mug` is the additive twin of the `queen`
   // role INPUT — it classifies to the SAME `queen` pane-kind. (RETURN value/glyph unchanged.)
   if (input.launch === 'brain' || role === 'brain' || role === 'queen' || role === 'mug') {
-    return { kind: 'queen', driveMode: 'auto' };
+    return { kind: 'mug', driveMode: 'auto' };
   }
   // The overwatch is the Queen's sibling supervisor — cadence-woken (auto), but its OWN
   // pane kind so the roster/dock separates it from the Queen (overwatch-role-2026-06-15 B-01).
   // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of the `overwatch`
   // role INPUT — it classifies to the SAME `overwatch` pane-kind. (RETURN value/glyph unchanged.)
   if (role === 'overwatch' || role === 'kettle') {
-    return { kind: 'overwatch', driveMode: 'auto' };
+    return { kind: 'kettle', driveMode: 'auto' };
   }
   if (input.launch === 'planner' || role === 'planner') {
     return { kind: 'planner', driveMode: 'responsive' };
   }
   if (role === 'operator' || role === 'oracle') {
-    return { kind: 'sentinel', driveMode: 'responsive' };
+    return { kind: 'papercup', driveMode: 'responsive' };
   }
   // The owner's interactive engineer sessions: an explicit su role, or a
   // role-less presence whose coord id carries the psu `su-` prefix (nursery
@@ -110,5 +110,5 @@ export function classifyAgentPane(input: {
   if (role === 'su' || (!role && (input.ownerId ?? '').startsWith('su-'))) {
     return { kind: 'su', driveMode: 'responsive' };
   }
-  return { kind: 'bee', driveMode: 'auto' };
+  return { kind: 'cup', driveMode: 'auto' };
 }

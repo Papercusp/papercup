@@ -277,7 +277,7 @@ const DECIDER_CALL_SHAPE = {
 export const QUEEN_Q03_RANKED_QUEUE_DECIDER: Scenario = {
   id: 'queen-Q03-ranked-queue-decider',
   version: 1,
-  target: 'queen',
+  target: 'mug',
   transport: 'in-process',
   description:
     "The Hive operator relays the Queen her wake brief: the work-item frontier is empty; the improvement queue has 3 items awaiting her triage. Success: she reads the ranked digest and DECIDES each item herself via improvements:triage triage-one (place/gate/gym/reject + reason) — checking the noisy bettor's calibration record (su-abc12, claimed 0.9 on EI-410) before trusting the claim, and routing the graduation ratification report EI-411 'gate' to the owner (P-046 — never her call).",

@@ -87,7 +87,7 @@ export async function runSentinelScan(context: string): Promise<string | null> {
     progress: () => {},
     emit: () => {},
     workspaceId: activeWorkspaceId(),
-    role: 'sentinel' as UnifiedToolContext['role'],
+    role: 'papercup' as UnifiedToolContext['role'],
     runId: globalThis.crypto.randomUUID(),
     spawnId: globalThis.crypto.randomUUID(),
     transport: 'in_process',
@@ -98,7 +98,7 @@ export async function runSentinelScan(context: string): Promise<string | null> {
   for await (const ev of dispatchProjectedToolStream(
     tool,
     'papercup:converse',
-    { messages, trigger: 'sentinel_scan', modality: 'voice', conversationId, role: 'sentinel' },
+    { messages, trigger: 'sentinel_scan', modality: 'voice', conversationId, role: 'papercup' },
     ctxBase,
     {},
   )) {

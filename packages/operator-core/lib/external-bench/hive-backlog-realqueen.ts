@@ -979,14 +979,14 @@ export function buildRealQueenCoordEvents(
   for (const r of rows) {
     const ts = new Date(r.placed_at).getTime();
     const taskId = featureToInstance.get(r.work_item_id) ?? r.work_item_id;
-    const agent = r.bee_spawn_id ?? 'queen';
+    const agent = r.bee_spawn_id ?? 'mug';
     events.push({ ts, kind: 'placement', agent, taskId, detail: `placed (${r.status})` });
     if ((r.fail_count ?? 0) > 0 || r.last_disposition === 'recover') {
       // The watchdog surfaced a stuck/dead bee and the Queen re-placed — re-work the FIFO arm can't do.
-      events.push({ ts, kind: 'rework', agent: 'queen', taskId, detail: `re-placed after ${r.fail_count} fail(s)` });
+      events.push({ ts, kind: 'rework', agent: 'mug', taskId, detail: `re-placed after ${r.fail_count} fail(s)` });
     }
     if (r.status === 'stranded' || r.status === 'cursed') {
-      events.push({ ts, kind: 'stranded_item', agent: 'queen', taskId, detail: `placement ${r.status}` });
+      events.push({ ts, kind: 'stranded_item', agent: 'mug', taskId, detail: `placement ${r.status}` });
     }
     if (r.status === 'completed') {
       events.push({ ts, kind: 'complete', agent, taskId });

@@ -217,7 +217,7 @@ function untilMin(ms: number | null, now: number): string {
 // ── collectors ───────────────────────────────────────────────────────────────
 
 async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
-  return panelSafe<QueenHealth>('queen', async () => {
+  return panelSafe<QueenHealth>('mug', async () => {
     const { ws, now, hiveSlug, started } = ctx;
     if (!hiveSlug) {
       const data: QueenHealth = {
@@ -314,7 +314,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
         SELECT count(*)::int AS n
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ctx.ws}
-           AND child_role IN ('bee', 'queen', 'overwatch', 'scout')
+           AND child_role IN ('cup', 'mug', 'kettle', 'scout')
            AND status = 'failed'
            AND started_at >= ${new Date(ctx.now - WINDOW_MS)}
            AND (
@@ -1172,7 +1172,7 @@ async function collectToolEfficiency(ctx: HealthCtx): Promise<HealthPanel<ToolEf
 }
 
 async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPanelHealth>> {
-  return panelSafe<OverwatchPanelHealth>('overwatch', async () => {
+  return panelSafe<OverwatchPanelHealth>('kettle', async () => {
     const { ws, now, hiveSlug } = ctx;
     // Reuse B-08's read surface (D-006 — never a second aggregation): the persisted
     // started bit + cadence (B-07) + the wake liveness (B-09) + the activation flag.

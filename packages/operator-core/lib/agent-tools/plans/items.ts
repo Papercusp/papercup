@@ -131,7 +131,7 @@ export default defineTool({
   capability: "plans:read",
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): reads plan items to detect stalled work.
-  agentRoles: [...SU_ROLES, "overwatch"],
+  agentRoles: [...SU_ROLES, "kettle"],
   modality: ["text"],
   args: argsSchema,
   // context-trimming-tiers P-021: trimmed/standard sessions get flattened,

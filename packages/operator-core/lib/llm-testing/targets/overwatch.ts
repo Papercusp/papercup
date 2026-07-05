@@ -91,7 +91,7 @@ export const OVERWATCH_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       'Send a coordination message to an agent — the overwatch NUDGE. Tell the Queen/a bee what to do (e.g. re-open a stranded item, re-place a churned one); you do not do it yourself. wake:"required" re-invokes a sleeping target.',
     input: obj(
       {
-        to: { type: 'array', items: { type: 'string' }, description: 'Recipient ownerIds / role handles (e.g. ["queen"]).' },
+        to: { type: 'array', items: { type: 'string' }, description: 'Recipient ownerIds / role handles (e.g. ["mug"]).' },
         summary: { type: 'string', description: 'One-line subject.' },
         body: { type: 'string', description: 'The nudge — what you observed + what they should do about it.' },
         wake: { type: 'string', description: 'optimistic | required — required re-invokes a sleeping recipient.' },
@@ -213,7 +213,7 @@ export const OVERWATCH_BEHAVIORS = ['nudge-not-replace', 'observe-not-idea', 'es
 /** The `overwatch` target — the su in-process loop with the overwatch persona + catalog. */
 export function makeOverwatchTarget(): SuTarget {
   return new SuTarget({
-    id: 'overwatch',
+    id: 'kettle',
     behaviors: OVERWATCH_BEHAVIORS,
     catalog: buildCatalog(OVERWATCH_CATALOG),
     loadSystemPrompt: loadOverwatchPrompt,

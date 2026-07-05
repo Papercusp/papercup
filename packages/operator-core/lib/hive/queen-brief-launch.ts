@@ -140,7 +140,7 @@ async function gatherInbox(workspaceId: string, installSlug: string, limit = 10)
     // they had — often NULL (a coord:send with no harness scope). A slug-keyed
     // drain stranded those rows forever (18 undelivered nudges, 06-25→07-02).
     const slotRows = await drainSlotMessages(sql, {
-      slot: { kind: 'role', ref: 'queen' },
+      slot: { kind: 'role', ref: 'mug' },
       anyHarnessSlug: true,
       toOwner: queenOwner,
       nowMs: Date.now(),
@@ -323,7 +323,7 @@ export async function computeQueenWakeBrief(
           await m.foldFacts(
             [
               { scope: 'workspace' },
-              { scope: 'role', scopeRef: 'queen' },
+              { scope: 'role', scopeRef: 'mug' },
               { scope: 'harness', scopeRef: installSlug },
             ],
             { workspaceId },

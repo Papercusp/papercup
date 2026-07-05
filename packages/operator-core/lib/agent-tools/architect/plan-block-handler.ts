@@ -308,7 +308,7 @@ export default defineTool({
   // promote:plan block as plans:new + set-now + add-item×N + add-decision×N in one call.
   replaces: ['plans:new', 'plans:set-now', 'plans:add-item', 'plans:add-decision'],
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'operator', 'bee'],
+  agentRoles: [...SU_ROLES, 'operator', 'cup'],
   args: z.object({
     blockContent: z
       .string()

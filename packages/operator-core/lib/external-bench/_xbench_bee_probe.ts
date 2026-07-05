@@ -39,7 +39,7 @@ async function main() {
       'You are placed on a single-task benchmark harness. This member holds EXACTLY ONE feature work-item. Claim it (work_items:claim_next for this harness) and IMPLEMENT it as real code edits to a working diff. Do not exit taskless.',
   };
   console.log('[probe] spawning bee directly with FEATURE_ID=' + enrolled.workItemId);
-  const res = await spawnInvokeOnce(enrolled.clonePath, 'bee', [`FEATURE_ID=${enrolled.workItemId}`], extraEnv, {
+  const res = await spawnInvokeOnce(enrolled.clonePath, 'cup', [`FEATURE_ID=${enrolled.workItemId}`], extraEnv, {
     timeoutMs: Number(process.env.XBENCH_BEE_TIMEOUT_MS ?? 8 * 60 * 1000),
   });
   console.log('\n===== BEE INVOKE RESULT =====');

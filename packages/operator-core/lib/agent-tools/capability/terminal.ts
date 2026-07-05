@@ -143,7 +143,7 @@ export default defineTool({
   },
   capability: 'capability:terminal',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     command: z
       .string()

@@ -16,7 +16,7 @@ import { formatLength220, noMarkdownInSay } from '../../asserts/operator-format'
 export const SN_D03_EXISTING_DELEGATION_STATUS: Scenario = {
   id: 'sn-D03-existing-delegation-status',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel for the status of analysis it already has in flight: "how\'s that migration-options analysis going?" Success: the Sentinel treats this as a STATUS follow-up and answers directly from the existing deep-delegation work-item context (or says it is still in flight / not back yet). The judge must NOT reward emitting <delegate_deep> again, handing it to the Queen, or pretending the work is done when it is still open.',
   persona: VOICE_USER,

@@ -17,7 +17,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald reads voice status too.
-  agentRoles: ['operator', 'architect', 'sentinel'],
+  agentRoles: ['operator', 'architect', 'papercup'],
   rolesQuota: { architect: { perRun: 100 }, operator: { perRun: 400 } },
   args: z.object({}),
   async handler() {

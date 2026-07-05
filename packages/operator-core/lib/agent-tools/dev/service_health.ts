@@ -36,7 +36,7 @@ export default defineTool({
     "operator",
     "documenter",
     "curator",
-    "bee",
+    "cup",
   ],
   args: z.object({}),
   async handler() {

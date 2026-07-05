@@ -207,9 +207,9 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   // is not silently rejected here.
   if (
     !target ||
-    (target.role !== 'queen' &&
+    (target.role !== 'mug' &&
       target.role !== 'mug' &&
-      target.role !== 'overwatch' &&
+      target.role !== 'kettle' &&
       target.role !== 'kettle')
   )
     return input.body;
@@ -226,7 +226,7 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
         import('../fleet/model-tiers'),
       ]);
       const cfg = await readAgentConfig().catch(() => null);
-      spawnModel = resolveRoleOwnModelSpec('queen', effectiveTierConfig(cfg, steering));
+      spawnModel = resolveRoleOwnModelSpec('mug', effectiveTierConfig(cfg, steering));
     }
     return typeof spawnModel === 'string' && spawnModel.trim()
       ? { ...input.body, spawnModel: spawnModel.trim() }

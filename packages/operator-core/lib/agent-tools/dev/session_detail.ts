@@ -24,7 +24,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     spawnId: z.string().min(1),
   }),

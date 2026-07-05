@@ -74,7 +74,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === 'string') : undefined;
   const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
   const decidedReason = typeof p.decidedReason === 'string' && p.decidedReason.trim() ? p.decidedReason : undefined;
-  const sourceRole = typeof p.sourceRole === 'string' ? (p.sourceRole as 'Queen' | 'bee' | 'system' | 'Scout' | 'human') : undefined;
+  const sourceRole = typeof p.sourceRole === 'string' ? (p.sourceRole as 'Queen' | 'cup' | 'system' | 'Scout' | 'human') : undefined;
   // Structured-observation v2 view (rubric-driven-observations-2026-06-20 P-001 /
   // D-003) — surfaced from payload.observation so Scout's corpus-digest (P-006)
   // reads rubric ratings + source-hive without re-parsing the raw payload.

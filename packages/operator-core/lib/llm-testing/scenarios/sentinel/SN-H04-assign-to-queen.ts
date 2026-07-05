@@ -19,7 +19,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H04_ASSIGN_TO_QUEEN: Scenario = {
   id: 'sn-H04-assign-to-queen',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user directly tells the Sentinel to put a concrete, substantial piece of work on the Queen (e.g. "have the Queen plan and ship the new export feature"). Success: the Sentinel emits <handoff_to_queen> carrying a faithful brief of the ask (which the server files as a high-priority user-requested work_item and nudges the Queen), and confirms in voice that it has been handed off — it must NOT attempt the work, plan it in detail itself, or cup:spawn a worker. The judge rewards a clean acknowledgement + handoff and penalizes the Sentinel doing the Queen\'s job.',
   persona: VOICE_USER,

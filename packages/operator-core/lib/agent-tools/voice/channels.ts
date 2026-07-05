@@ -18,7 +18,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald manages its voice channels.
-  agentRoles: ['operator', 'architect', 'sentinel'],
+  agentRoles: ['operator', 'architect', 'papercup'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('list') }),

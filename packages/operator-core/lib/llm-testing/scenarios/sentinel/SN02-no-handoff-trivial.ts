@@ -37,7 +37,7 @@ function noHandoff(run: RunSummary): Violation[] {
 export const SN02_NO_HANDOFF_TRIVIAL: Scenario = {
   id: 'sn-S02-no-handoff-trivial',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel a quick, directly-answerable question (e.g. "what is the fleet up to right now?" / "how many agents are running?"). Success: the Sentinel answers in voice (consulting live status as needed) and does NOT emit <handoff_to_queen> — a handoff files a high-priority work-item and nudges the Queen, so it must be reserved for substantial multi-step work, not trivia. The judge should reward a crisp spoken answer and penalize escalating a simple question to the Queen.',
   persona: VOICE_USER,

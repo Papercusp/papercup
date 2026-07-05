@@ -210,7 +210,7 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
   const ceiling = ownerBeeCeiling ?? systemCeiling;
   const [running, runningBees] = await Promise.all([
     countRunning(workspaceId).catch(() => 0),
-    countRunningByRole(workspaceId, 'bee').catch(() => 0),
+    countRunningByRole(workspaceId, 'cup').catch(() => 0),
   ]);
   const globalHeadroom = Math.max(0, systemCeiling - running);
   const beeHeadroom = ownerBeeCeiling == null ? globalHeadroom : Math.max(0, ownerBeeCeiling - runningBees);
@@ -668,7 +668,7 @@ export async function spawnAgentInHarness(
     return fail(
       'spawn rejected: role="worker" requires a chunk id — that\'s the coding-FACTORY pipeline ' +
         '(scoper→worker, push-based). For a coding-hive worker that self-pulls its work via a ' +
-        'claim-spec (scheduler:get_next), spawn role="bee" instead.',
+        'claim-spec (scheduler:get_next), spawn role="cup" instead.',
     );
   }
 
@@ -703,7 +703,7 @@ export async function spawnAgentInHarness(
           'orchestrator spine (NEXT_SCOPER/NEXT_ARCHITECT/… all carry FEATURE_ID), so spawning one with no ' +
           'pushed-feature context (no featureId, no FEATURE_ID= extra, no chunkId) has nothing to do. ' +
           'If you meant a coding-HIVE worker that self-pulls its work via a claim-spec ' +
-          '(scheduler:set_claim_spec + scheduler:get_next), that is role="bee", NOT a factory role. ' +
+          '(scheduler:set_claim_spec + scheduler:get_next), that is role="cup", NOT a factory role. ' +
           'To genuinely run the factory pipeline, push the FEATURE_ID (pass featureId / a FEATURE_ID= extra).',
       );
     }
@@ -718,7 +718,7 @@ export async function spawnAgentInHarness(
   // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
   if ((role === 'overwatch' || role === 'kettle') && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
     return fail(
-      'spawn rejected: role="overwatch" is gated behind the papercusp-overwatch flag ' +
+      'spawn rejected: role="kettle" is gated behind the papercusp-overwatch flag ' +
         '(default OFF until B-12 proves it live on staging) — enable it in /admin/features to spawn.',
     );
   }
@@ -880,7 +880,7 @@ export async function spawnAgentInHarness(
       // Always enforce the global safety cap against every spawned role. The owner
       // max-bees knob is a bee budget, so it is enforced as a second, bee-only cap.
       cap: spawnConcurrencyCeiling(),
-      roleCap: ownerBeeCeiling == null ? null : { role: 'bee', cap: ownerBeeCeiling },
+      roleCap: ownerBeeCeiling == null ? null : { role: 'cup', cap: ownerBeeCeiling },
       record: (tx) =>
         recordSpawn(tx, {
           spawnId,

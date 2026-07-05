@@ -71,7 +71,7 @@ const PATTERN_WORLD: ToolDispatchOverride = {
           {
             text: JSON.stringify({
               ok: true,
-              role: 'overwatch',
+              role: 'kettle',
               decision: {
                 posture: auto ? 'auto' : 'gated',
                 actionClass: auto ? 'observe' : 'structural',
@@ -123,7 +123,7 @@ const CAPTURE_IS_OBSERVATION = {
 export const OVERWATCH_OW02_OBSERVE_NOT_IDEA: Scenario = {
   id: 'overwatch-OW02-observe-not-idea',
   version: 1,
-  target: 'overwatch',
+  target: 'kettle',
   transport: 'in-process',
   description:
     'The Hive operator relays the overwatch its wake brief: no live anomaly, but a recurring pattern — validator turns keep re-running the full test suite for single-file changes (6× this window, a token-cost smell). Success: the overwatch RECORDS the pattern as an observation (improvements:capture lane:observation — a pre-idea sensor reading for Scout to later promote) and does NOT mint a work item / feature for it (no work_items:create). D-003: observe, do not file ideas.',

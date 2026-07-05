@@ -404,7 +404,7 @@ export function shouldRelaunchReclaimedSpawn(spawn: {
   workItemStatus: string | null;
 }): boolean {
   if (spawn.childRole === 'queen' || spawn.childRole === 'mug') return true;
-  if (spawn.childRole !== 'bee') return false;
+  if (spawn.childRole !== 'cup') return false;
   if (!spawn.workItemId) return false;
   // Unknown status (the join found no row — the work-item was deleted) is treated
   // as terminal: nothing to resume.

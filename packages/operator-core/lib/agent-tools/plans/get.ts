@@ -48,7 +48,7 @@ const PLANS_GET_SOFT_TTL_MS = 45_000;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
-const ALL_ROLES = [...SU_ROLES, "promote", "overwatch"] as const;
+const ALL_ROLES = [...SU_ROLES, "promote", "kettle"] as const;
 
 const argsSchema = z
   .object({

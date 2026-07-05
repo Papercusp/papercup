@@ -246,7 +246,7 @@ export async function computeBeeWakeDossier(input: ComputeBeeWakeDossierInput): 
         await m.foldFacts(
           [
             { scope: 'workspace' },
-            { scope: 'role', scopeRef: 'bee' },
+            { scope: 'role', scopeRef: 'cup' },
             { scope: 'harness', scopeRef: harness },
             { scope: 'work_item', scopeRef: workItemId },
           ],

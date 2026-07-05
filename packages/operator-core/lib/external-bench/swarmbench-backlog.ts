@@ -24,7 +24,7 @@ export const SWARMBENCH_HIVE_ARM: FleetArmId = 'hive-realqueen';
 
 /** Map a fleet arm → the swarm-control mode the python runner uses. */
 export function swarmModeForFleetArm(arm: FleetArmId): SwarmMode {
-  if (arm === SWARMBENCH_HIVE_ARM || arm === 'hive') return 'queen';
+  if (arm === SWARMBENCH_HIVE_ARM || arm === 'hive') return 'mug';
   if (arm === 'random') return 'random';
   return 'openai'; // su-independent (the native decentralized arm)
 }

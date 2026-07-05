@@ -45,7 +45,7 @@ function emitsHandoff(run: RunSummary): Violation[] {
 export const SN01_HANDOFF_PLANNING_ASK: Scenario = {
   id: 'sn-S01-handoff-planning-ask',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel for substantial, multi-step work that needs the Queen to plan and place it (e.g. "I want to redesign the whole onboarding flow end to end — can you get that going for me?"). Success: the Sentinel does NOT plan, spawn, or execute the work itself; it routes the work to the Queen by emitting <handoff_to_queen> (which the server files as a high-priority user-requested work-item and nudges the Queen), and its spoken reply tells the user it has been handed to the Queen. The judge must NOT reward the Sentinel attempting the work, proposing a detailed plan itself, or spawning a worker — only acknowledging + handing off. Quick offers ("want me to hand that to the Queen?") followed by the user agreeing and the Sentinel then handing off are ideal.',
   persona: VOICE_USER,

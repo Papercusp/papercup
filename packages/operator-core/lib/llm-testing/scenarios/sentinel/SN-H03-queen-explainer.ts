@@ -16,7 +16,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H03_QUEEN_EXPLAINER: Scenario = {
   id: 'sn-H03-queen-explainer',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel "who is the Queen and what can she do?". Success: the Sentinel explains, speakably, that the Queen is the planner/placer who breaks down and assigns work across the swarm, and that the Sentinel itself hands substantial work to her (rather than doing it). The judge should reward an accurate, concise self-model of the hive division of labor and penalize confusion (e.g. claiming the Sentinel plans/places work itself, or inventing capabilities).',
   persona: VOICE_USER,

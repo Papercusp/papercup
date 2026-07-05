@@ -18,7 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): reads recent activity to sense drift.
-const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;

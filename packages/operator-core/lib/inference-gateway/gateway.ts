@@ -462,7 +462,7 @@ export function effectivePriorityLabel(headers: Record<string, unknown>): string
   const owner = (headers[OWNER_HEADER] as string | undefined)?.trim().toLowerCase();
   if (!owner) return undefined;
   if (owner.startsWith('su-')) return 'su';
-  if (owner.startsWith('s-')) return 'bee';
+  if (owner.startsWith('s-')) return 'cup';
   return undefined;
 }
 

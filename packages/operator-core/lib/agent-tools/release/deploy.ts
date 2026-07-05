@@ -92,7 +92,7 @@ export default defineTool({
   requirePrincipal: false,
   // Broad invoke allowlist (status is the read every role reaches for); the WRITE ops self-gate
   // inside the handler (trigger needs confirm; force needs operator-config-write role).
-  agentRoles: [...SU_ROLES, 'bee', 'release-fixer', 'release-manager'],
+  agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('status') }),

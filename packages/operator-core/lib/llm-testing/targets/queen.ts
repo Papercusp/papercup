@@ -242,7 +242,7 @@ export const QUEEN_BEHAVIORS = ['grade-routed-scout-ideas', 'triage-routed-draft
 /** The `queen` target — the su in-process loop with the Queen's prompt + catalog. */
 export function makeQueenTarget(): SuTarget {
   return new SuTarget({
-    id: 'queen',
+    id: 'mug',
     behaviors: QUEEN_BEHAVIORS,
     catalog: buildCatalog(QUEEN_CATALOG),
     loadSystemPrompt: loadQueenPrompt,

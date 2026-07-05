@@ -24,7 +24,7 @@ export default defineTool({
     'Resolve one OR many Papercusp feature flags to booleans for this host — pass `key` for one or `keys` for several. Returns { ok, results:[{ ok, key, enabled | error }], counts } — correlate each result by its key, not by position.',
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z
     .object({
       key: FlagKeySchema.optional().describe('a single flag key (n=1 shorthand for keys:[key])'),

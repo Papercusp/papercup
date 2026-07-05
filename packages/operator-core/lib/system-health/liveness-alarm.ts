@@ -190,7 +190,7 @@ export function evaluateLivenessAlarm(
 
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
   //    is never silently missed). Sharper-keyed panels above are skipped.
-  const coveredKeys = new Set(['workFeed', 'queen', 'tokens']);
+  const coveredKeys = new Set(['workFeed', 'mug', 'tokens']);
   for (const panel of Object.values(health.panels)) {
     if (panel.status !== 'crit' || coveredKeys.has(panel.key)) continue;
     // EI-2146 #3: suppress the no-bees-while-idle FALSE POSITIVE. A fleet with

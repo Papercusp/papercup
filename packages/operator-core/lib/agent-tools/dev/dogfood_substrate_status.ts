@@ -29,7 +29,7 @@ export default defineTool({
     chaining: `Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({}),
   async handler() {
     const { sql } = getOrgPg();

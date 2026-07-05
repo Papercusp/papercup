@@ -28,7 +28,7 @@ export default defineTool({
       'To create/edit/delete a prompt — that is the dashboard settings UI (POST /api/agent-mcp/saved-prompts). This tool is read-only.',
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'bee'],
+  agentRoles: ['operator', 'cup'],
   args: z.object({
     harness_slug: z
       .string()

@@ -37,7 +37,7 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   // + overwatch (read-only, like plans:get-item) so the supervisor can ground on template instances.
-  agentRoles: [...SU_ROLES, 'overwatch'],
+  agentRoles: [...SU_ROLES, 'kettle'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

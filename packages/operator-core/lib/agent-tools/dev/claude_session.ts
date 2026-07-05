@@ -41,7 +41,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     op: z.enum(['list', 'search', 'read']).optional().describe('Defaults: read if filePath/sessionId given, else search if query given, else list.'),
     query: z.string().min(1).optional().describe('Content to search for (op=search). Case-insensitive substring.'),

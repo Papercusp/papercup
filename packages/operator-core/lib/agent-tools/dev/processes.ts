@@ -26,7 +26,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     kinds: z.array(z.enum(KIND_ENUM)).optional(),
   }),

@@ -32,7 +32,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // The pane Sentinel is the primary caller; the operator persona may delegate too.
-  agentRoles: ['sentinel', 'operator'],
+  agentRoles: ['papercup', 'operator'],
   rolesQuota: { sentinel: { perRun: 50 }, papercup: { perRun: 50 }, operator: { perRun: 50 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
   args: z.object({
     question: z.string().min(1).describe("The user's question, as asked — the whole ask, not a fragment."),

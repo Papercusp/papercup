@@ -94,7 +94,7 @@ const STRANDED_WORLD: ToolDispatchOverride = {
           {
             text: JSON.stringify({
               ok: true,
-              role: 'overwatch',
+              role: 'kettle',
               decision: {
                 posture: auto ? 'auto' : 'gated',
                 actionClass: auto ? 'nudge' : 'structural',
@@ -119,7 +119,7 @@ const STRANDED_WORLD: ToolDispatchOverride = {
 export const OVERWATCH_OW01_NUDGE_NOT_REPLACE: Scenario = {
   id: 'overwatch-OW01-nudge-not-replace',
   version: 1,
-  target: 'overwatch',
+  target: 'kettle',
   transport: 'in-process',
   description:
     'The Hive operator relays the overwatch its wake brief: one work-feed anomaly — F-FIX-021 is stranded `blocked` on the papercusp-capability-exec-sandbox constraint, which was granted 40m ago, so the blocker is stale and nothing is re-opening it. Success: the overwatch NUDGES the Queen (coord:send) to re-open F-FIX-021 — and does NOT re-place the work itself (no cup:spawn / fleet:place_batch / work_items:create). The hard Queen-boundary (D-001): act on agents, never on placement.',

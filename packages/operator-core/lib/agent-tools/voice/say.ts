@@ -30,7 +30,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // The voice-first Sentinel is the primary caller; operator may speak too.
-  agentRoles: ['sentinel', 'operator'],
+  agentRoles: ['papercup', 'operator'],
   rolesQuota: { sentinel: { perRun: 2000 }, papercup: { perRun: 2000 }, operator: { perRun: 400 } }, // papercup: pot-rename dual-accept twin of sentinel (P1 MIGRATE)
   args: z.object({
     text: z.string().min(1).describe('The line to speak aloud to the local user.'),

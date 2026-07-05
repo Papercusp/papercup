@@ -28,7 +28,7 @@ export default defineTool({
   description:
     'Spawn one background agent into a harness and return its spawn_id immediately. This is for autonomous-loop workers, not visible desktop terminals; use fleet:launch-on-plan for a desktop fleet on a plan. The run is tracked durably in the nursery, visible in fleet:tree, and stoppable with fleet:cancel. role="worker" requires chunk.',
   guidance: {
-    when: 'Use to place a background autonomous worker on new work: a bee, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="bee" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
+    when: 'Use to place a background autonomous worker on new work: a bee, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
     notWhen: 'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
@@ -51,7 +51,7 @@ export default defineTool({
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
     role: z.string().min(1).max(64)
       .describe(
-        'Child agent role. The generic operator-world worker is "bee" — the default for placing a ranked task + brief (NO chunk needed). ' +
+        'Child agent role. The generic operator-world worker is "cup" — the default for placing a ranked task + brief (NO chunk needed). ' +
         "Coding-pipeline roles (scoper, architect, worker, validator, reviewer, debugger, documenter, curator) apply only inside a kind:'harness' coding harness; " +
         'role="worker" additionally REQUIRES a chunk (spawn a scoper first to chunk the feature). ' +
         'Other spawnable specialists: sentinel, security-reviewer, infra-reviewer, ui-qa, crosscheck, auditor, planner, release-manager. ' +

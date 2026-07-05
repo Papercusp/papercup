@@ -21,7 +21,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     limit: z.number().int().positive().max(500).optional(),

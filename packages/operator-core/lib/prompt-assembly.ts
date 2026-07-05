@@ -148,7 +148,7 @@ export const PROMPT_ROLES = [
   // Its persona set (sentinel.persona[.{engineer,novice}-mode].md / .converse.md /
   // .shell.md / .tools.md) ships under apps/operator/prompts/, so the assembler
   // must be able to build prompts for it (loadRole{Persona,Converse,ModePersona}).
-  'sentinel',
+  'papercup',
 ] as const satisfies readonly import('@papercusp/agent-mcp').BuiltinAgentRole[];
 
 export type Role = (typeof PROMPT_ROLES)[number];

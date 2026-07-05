@@ -45,7 +45,7 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    role: z.string().min(1).max(80).describe('The role to grant capabilities to (e.g. "planner", "bee").'),
+    role: z.string().min(1).max(80).describe('The role to grant capabilities to (e.g. "planner", "cup").'),
     capabilities: z.array(z.string().min(1).max(120)).min(1).describe('Capability strings to add, e.g. ["plans:write"].'),
     dryRun: z.boolean().optional(),
   }),

@@ -42,7 +42,7 @@ export default defineTool({
     'IPC transport verification — echoes the message back as a small typed event stream.',
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   timeoutSec: 30,
   idleTimeoutSec: 5,
   args: ArgsSchema,

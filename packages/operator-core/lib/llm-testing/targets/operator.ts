@@ -50,7 +50,7 @@ export interface OperatorTargetOpts {
    * exercisable. `<handoff_to_queen>` is honored ONLY for role==='sentinel'
    * (converse.ts ~L512), so the operator target can never trigger it.
    */
-  role?: 'operator' | 'sentinel';
+  role?: 'operator' | 'papercup';
 }
 
 export class OperatorTarget implements ChatTarget {
@@ -62,7 +62,7 @@ export class OperatorTarget implements ChatTarget {
     this.opts = opts;
     // The id is the target key + telemetry tag — derive it from the role so a
     // role='sentinel' instance registers/tags as 'sentinel', not 'operator'.
-    this.id = opts.role === 'sentinel' ? 'sentinel' : 'operator';
+    this.id = opts.role === 'papercup' ? 'papercup' : 'operator';
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
@@ -97,7 +97,7 @@ interface SessionState {
   baseUrl: string;
   harnessSlug?: string;
   /** Persona role to stamp in the converse body (default operator). */
-  role?: 'operator' | 'sentinel';
+  role?: 'operator' | 'papercup';
   transport: 'in-process' | 'http-sse';
   hasOverride: boolean;
   /**

@@ -44,7 +44,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
           harness: input.harness ?? undefined,
           workspaceId: input.workspaceId,
           topics: [input.label],
-          createdBy: 'sentinel',
+          createdBy: 'papercup',
           urgent: input.urgent,
         });
         return { id: wi.id };
@@ -82,7 +82,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       // with no MCP ctx, so build the operator identity directly.
       const identity = {
         ownerId: OPERATOR_COORD_OWNER,
-        ownerLabel: 'sentinel',
+        ownerLabel: 'papercup',
         source: 'principal' as const,
         workspaceId: null,
         userId: null,
@@ -119,7 +119,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
         ]);
       const identity = {
         ownerId: OPERATOR_COORD_OWNER,
-        ownerLabel: 'sentinel',
+        ownerLabel: 'papercup',
         source: 'principal' as const,
         workspaceId: null,
         userId: null,

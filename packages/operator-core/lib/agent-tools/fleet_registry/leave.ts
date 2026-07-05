@@ -25,7 +25,7 @@ export default defineTool({
   },
   capability: 'fleet:leave',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({}),
   async handler(_args, ctx) {
     const { ownerId, workspaceId } = resolveFleetCaller(ctx);

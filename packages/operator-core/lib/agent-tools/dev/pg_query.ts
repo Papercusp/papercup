@@ -39,7 +39,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee', 'queen', 'scoper', 'reviewer', 'validator', 'worker'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
   args: z.object({
     sql: z
       .string()

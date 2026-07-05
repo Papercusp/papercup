@@ -249,7 +249,7 @@ export default defineTool({
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor grounds nudges against
   // active plans / stalled items / aging escalations (read-only — plans:read cap).
-  agentRoles: [...SU_ROLES, "overwatch"],
+  agentRoles: [...SU_ROLES, "kettle"],
   modality: ["text"],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-protocol-2026-06-22, P-015 — Lane F rollout,

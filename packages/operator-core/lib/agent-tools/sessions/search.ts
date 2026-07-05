@@ -24,7 +24,7 @@ import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef, type WindowTurn,
 } from './_shared';
 
-const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
 export default defineTool({
   name: 'sessions:search',

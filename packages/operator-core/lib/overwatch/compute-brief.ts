@@ -62,11 +62,11 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     out.push({
       kind: 'queen-dark',
       severity: 'critical',
-      subject: 'queen',
+      subject: 'mug',
       detail: 'Queen liveness has gone dark — no fresh heartbeat (who-watches-the-watcher, D-004).',
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: 'Queen — you have gone dark. Waking you: re-derive your survey and resume placement. If this wake misses (woken:0), escalate — a Queen that will not wake is structural.',
       },
     });
@@ -74,11 +74,11 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     out.push({
       kind: 'queen-stalled',
       severity: 'critical',
-      subject: 'queen',
+      subject: 'mug',
       detail: `Queen last woke ${queen.lastWakeAt ?? 'unknown'} and is past her cadence` + `${queen.workingTracked > 0 ? ` with ${queen.workingTracked} placement(s) in flight` : ''}.`,
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: 'Queen — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
       },
     });
@@ -102,7 +102,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
     out.push({
       kind: 'queen-placement-stalled',
       severity: 'warning',
-      subject: 'queen',
+      subject: 'mug',
       detail: `Queen is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` + `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
       suggestedAction: {
         type: 'escalate',
@@ -210,7 +210,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: `${workFeed.frontier} placeable frontier item(s) ready (unblocked todo) but unplaced, with the routines alive.`,
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: `Queen — ${workFeed.frontier} frontier item(s) are ready to place; place them.`,
       },
     });
@@ -224,7 +224,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: `${workFeed.blockedStranded} item(s) blocked on an already-resolved constraint.`,
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: `Queen — ${workFeed.blockedStranded} item(s) are stranded blocked-on-a-resolved-constraint; re-open them so they re-enter the frontier.`,
       },
     });
@@ -243,7 +243,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: `${parts.join(' · ')} (running ${bees.running}).`,
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: `Queen — bees: ${parts.join(', ')}; re-place the abandoned unit(s) and check the churning bee(s) for a wedged loop.`,
       },
     });
@@ -273,7 +273,7 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       detail: `${plans.agingEscalations} escalation(s) aging past the attention threshold.`,
       suggestedAction: {
         type: 'nudge',
-        target: 'queen',
+        target: 'mug',
         message: `Queen — ${plans.agingEscalations} escalation(s) are aging; triage them before they age further.`,
       },
     });

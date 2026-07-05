@@ -11,7 +11,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getEscalation } from '../../harness-readers';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): reads aging escalations to nudge/escalate.
-const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
 export default defineTool({
   name: 'harness:escalation',

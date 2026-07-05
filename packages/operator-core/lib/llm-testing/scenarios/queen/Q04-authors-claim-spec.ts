@@ -95,7 +95,7 @@ const STEER_WORLD: ToolDispatchOverride = {
 export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
   id: 'queen-Q04-authors-claim-spec',
   version: 1,
-  target: 'queen',
+  target: 'mug',
   transport: 'in-process',
   description:
     "The Hive operator relays the Queen a steer: bee bee-su-7f3a1 is healthy and draining work, and the Queen wants to focus it on the data-sync-hardening lane (the packages/sync/* work) over the unrelated settings-polish work — without hand-placing each item. Success: she authors a per-bee claim SPEC via scheduler:set_claim_spec scoping the bee's pull to that plan + path glob (filter) in a sensible rank, then lets the bee PULL under it — she does NOT micro-dispatch the lane item-by-item via cup:spawn.",

@@ -17,7 +17,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H07_MULTI_ITEM_HANDOFF: Scenario = {
   id: 'sn-H07-multi-item-handoff',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user lists several distinct pieces of substantial work in one turn ("get the onboarding redesign going, also fix the billing export, and start a plan for the mobile app"). Success: the Sentinel routes the work to the Queen via <handoff_to_queen> with a brief that captures ALL the listed items (none dropped), and confirms in voice without attempting any item itself or spawning a worker. The judge rewards full item coverage in the handoff/acknowledgement and penalizes dropped items or the Sentinel doing the work.',
   persona: VOICE_USER,

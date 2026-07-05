@@ -158,7 +158,7 @@ export const BEE_BEHAVIORS = ['pull-via-scheduler', 'no-self-freelance'];
 /** The `bee` target — the su in-process loop with the bee's base prompt + catalog. */
 export function makeBeeTarget(): SuTarget {
   return new SuTarget({
-    id: 'bee',
+    id: 'cup',
     behaviors: BEE_BEHAVIORS,
     catalog: buildCatalog(BEE_CATALOG),
     loadSystemPrompt: loadBeePrompt,

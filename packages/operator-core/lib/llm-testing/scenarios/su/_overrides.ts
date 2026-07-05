@@ -458,7 +458,7 @@ export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
               ok: true,
               me: { assignments: [{ id: 'WI-512', title: 'Gateway pool retry', state: 'wip' }], lane: ['P-003'], load: 1 },
               claimable: [{ id: 'WI-540', title: 'Audit log NUL bytes' }, { id: 'WI-541', title: 'Palette poll → push' }],
-              inbox: { summary: { total: 1, unread: 1 }, recent: [{ from: 'queen', text: 'prioritize the gateway retry' }] },
+              inbox: { summary: { total: 1, unread: 1 }, recent: [{ from: 'mug', text: 'prioritize the gateway retry' }] },
               planEvents: { total: 2, recent: [{ kind: 'item_status_changed', plan: 'gateway-pool', item: 'P-002' }] },
               memory: { query: a.intent ?? '', hits: [{ id: 'mem-1', memory: 'gateway retries must route through the account pool (EI-456)' }] },
               intentDeclared: !!a.intent,
@@ -522,7 +522,7 @@ export const COORD_INBOX_RESULT: ToolDispatchOverride = {
               summary: { total: 2, unread: 1 },
               entries: [
                 { id: 'm-1', from: 'su-9140a', kind: 'message', text: 'rebased your branch, re-pull' },
-                { id: 'm-2', from: 'queen', kind: 'notify', text: 'gateway retry landed' },
+                { id: 'm-2', from: 'mug', kind: 'notify', text: 'gateway retry landed' },
               ],
             }),
           },

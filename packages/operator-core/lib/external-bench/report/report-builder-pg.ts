@@ -97,7 +97,7 @@ function toSpawnTree(detail: RunDetail | null | undefined): BenchReportSpawnNode
   if (!detail?.perTask?.length) return undefined;
   const nodes = detail.perTask
     .filter((t) => t.beeId)
-    .map((t) => ({ spawnId: t.beeId as string, parentSpawnId: null, role: 'bee', taskId: t.instanceId, status: t.stopReason, costUsd: t.costUsd }));
+    .map((t) => ({ spawnId: t.beeId as string, parentSpawnId: null, role: 'cup', taskId: t.instanceId, status: t.stopReason, costUsd: t.costUsd }));
   return nodes.length ? nodes : undefined;
 }
 

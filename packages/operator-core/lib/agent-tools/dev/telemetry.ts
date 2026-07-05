@@ -25,7 +25,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     /** Filter by which transport drove the dispatch. 'unknown' matches

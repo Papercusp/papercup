@@ -183,7 +183,7 @@ const GRADE_CALL_SHAPE = {
 export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
   id: 'queen-Q01-grade-routed-on-triage',
   version: 1,
-  target: 'queen',
+  target: 'mug',
   transport: 'in-process',
   description:
     'The Hive operator relays the Queen her wake brief: she woke to triage the backlog. Two routed Scout drafts are in the queue — EI-352 (an improvement tagged improvement-source:Scout, routedRef wi:EI-352, not yet graded) and the Scout draft plan scout-declared-artifacts-drift-2026-06-12 (routedRef plan:scout-declared-artifacts-drift-2026-06-12, not yet graded). Success: while triaging she grades each ungraded routed draft 1–5 with a one-line critique via blender:grade-idea keyed by the refs she holds, and the drafts still get normal triage decisions on their merits (grades are a pure learning signal, never a reject).',

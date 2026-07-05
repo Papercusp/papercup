@@ -22,7 +22,7 @@ export default defineTool({
   },
   capability: 'fleet:list',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({}),
   async handler(_args, ctx) {
     const { workspaceId } = resolveFleetCaller(ctx);

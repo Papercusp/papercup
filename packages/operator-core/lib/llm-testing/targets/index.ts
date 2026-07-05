@@ -23,7 +23,7 @@ const TARGETS: Record<string, TargetFactory> = {
   // operator role can't reach — notably the `<handoff_to_queen>` routing
   // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
   // role==='sentinel'). Same HTTP transport as `operator`.
-  sentinel: () => new OperatorTarget({ role: 'sentinel' }),
+  sentinel: () => new OperatorTarget({ role: 'papercup' }),
   oracle: () => new OracleTarget(),
   // Architect is harness-scoped; the chat route returns a 400 without
   // a harnessSlug in the body. Default to 'sheets' (the long-standing

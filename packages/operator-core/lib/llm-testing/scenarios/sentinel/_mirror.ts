@@ -27,6 +27,6 @@ export function mirrorForSentinel(base: Scenario): Scenario {
   return {
     ...base,
     id: `sn-${base.id.slice('op-'.length)}`,
-    target: 'sentinel',
+    target: 'papercup',
   };
 }

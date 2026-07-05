@@ -52,7 +52,7 @@ export default defineTool({
   // (additionalProperties:false at the wire — tool-input-schema-rejection contract)
   // instead of a `.passthrough()` that opened the schema to unknown keys.
   args: ArgsSchema.extend({
-    role: z.string().optional().default('sentinel'),
+    role: z.string().optional().default('papercup'),
   }),
   events: {
     delta: z.object({ text: z.string() }),
@@ -60,7 +60,7 @@ export default defineTool({
   },
   handler: async (input, ctx) => {
     const merged = { ...(input as Record<string, unknown>) };
-    if (merged.role == null || merged.role === '') merged.role = 'sentinel';
+    if (merged.role == null || merged.role === '') merged.role = 'papercup';
     return sharedHandler(merged, ctx);
   },
 });

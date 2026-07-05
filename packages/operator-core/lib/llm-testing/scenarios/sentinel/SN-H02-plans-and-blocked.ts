@@ -16,7 +16,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H02_PLANS_AND_BLOCKED: Scenario = {
   id: 'sn-H02-plans-and-blocked',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel "what plans are in progress, and is anything blocked?". Success: the Sentinel calls a plans/work-items read tool and gives a grounded, speakable summary of real in-progress plans and any blocked / needs-human items — not invented ones. Penalize a blind answer (no tool call) or fabricated plan names; reward an accurate, concise, voice-friendly summary that flags blockers.',
   persona: VOICE_USER,

@@ -218,7 +218,7 @@ export function collectAndDistillFromBee(args: {
   const raw: RawTrace = {
     diff: '',
     roleTranscripts: traceText
-      ? [{ role: assistantText ? 'bee' : 'bee(output_tail)', runId: args.spawn.runId ?? args.spawnId, text: traceText }]
+      ? [{ role: assistantText ? 'cup' : 'bee(output_tail)', runId: args.spawn.runId ?? args.spawnId, text: traceText }]
       : [],
     terminalState: status,
     signals: rawSignals,

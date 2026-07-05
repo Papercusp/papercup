@@ -18,7 +18,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 export const SN_H01_FLEET_STATUS: Scenario = {
   id: 'sn-H01-fleet-status',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel "what is the fleet/swarm doing right now?". Success: the Sentinel calls a roster/fleet read tool (does NOT answer from memory) and gives a grounded, speakable summary of which agents are live and what they are working on — naming real entities from the workspace, not invented ones. The judge must penalize a confident answer with no tool call (hallucination risk) and reward a crisp, accurate, voice-friendly summary.',
   persona: VOICE_USER,

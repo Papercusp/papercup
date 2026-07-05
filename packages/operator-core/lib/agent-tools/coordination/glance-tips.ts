@@ -30,7 +30,7 @@
  *     session (inheriting its gates/audit) — no slash layer, no typing.
  */
 
-export const GLANCE_AUDIENCES = ['user', 'queen', 'su', 'bee'] as const;
+export const GLANCE_AUDIENCES = ['user', 'mug', 'su', 'cup'] as const;
 export type GlanceAudience = (typeof GLANCE_AUDIENCES)[number];
 
 export interface GlanceTipContext {
@@ -77,7 +77,7 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     // The founding case (2026-06-11): the queen's autonomous loop silently
     // queued behind a manual wake gate and nothing surfaced it.
     id: 'wake-mode-manual',
-    audiences: ['user', 'su', 'queen'],
+    audiences: ['user', 'su', 'mug'],
     when: (c) => c.wakeDefault === 'manual',
     render: (c) => ({
       text:
@@ -92,7 +92,7 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     // Wakes staged while the default is auto = leftovers from a manual period
     // (or per-agent overrides) — they never fire on their own.
     id: 'staged-wakes-under-auto',
-    audiences: ['user', 'su', 'queen'],
+    audiences: ['user', 'su', 'mug'],
     when: (c) => c.wakeDefault === 'auto' && c.stagedTotal > 0,
     render: (c) => ({
       text: `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:`,
@@ -102,7 +102,7 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
   },
   {
     id: 'governor-paused',
-    audiences: ['user', 'su', 'queen', 'bee'],
+    audiences: ['user', 'su', 'mug', 'cup'],
     when: (c) => c.governorPausedKeys.length > 0,
     render: (c) => ({
       text: `Rate governor paused (${c.governorPausedKeys.join(', ')}) — agent turns queue until reset`,

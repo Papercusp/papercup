@@ -26,7 +26,7 @@ export default defineTool({
   requirePrincipal: false,
   // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads
   // recent notifications/toasts to spot "why did the app just error?" drift.
-  agentRoles: [...SU_ROLES, 'overwatch'],
+  agentRoles: [...SU_ROLES, 'kettle'],
   args: z.object({
     level: z.enum(['default', 'info', 'success', 'warning', 'error', 'loading', 'all']).optional(),
     limit: z.number().int().positive().max(500).optional(),

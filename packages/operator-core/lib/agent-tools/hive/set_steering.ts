@@ -86,7 +86,7 @@ export default defineTool({
       .record(z.string(), z.string().max(60))
       .nullable()
       .optional()
-      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"bee":"opus:xhigh"} pins every bee.'),
+      .describe('SESSION override of the per-role tier ceilings (role→tier-name). null / {} clears it. e.g. {"cup":"opus:xhigh"} pins every bee.'),
     cadenceFloorSec: z
       .number()
       .nonnegative()
@@ -123,7 +123,7 @@ export default defineTool({
       .record(z.string(), z.string().max(120))
       .nullable()
       .optional()
-      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the cup:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
+      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the cup:spawn tier path — keys "papercup" (dock TUI) and "kettle" (invoke loop). null / {} clears. e.g. {"papercup":"opus:high","kettle":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
     federatedPriming: z
       .object({
         foreignElites: z.number().int().nonnegative().optional(),

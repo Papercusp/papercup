@@ -24,7 +24,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   // Sentinel-as-Herald: the voice-first Herald reads spoken transcripts.
-  agentRoles: ['operator', 'architect', 'sentinel'],
+  agentRoles: ['operator', 'architect', 'papercup'],
   rolesQuota: { architect: { perRun: 200 }, operator: { perRun: 600 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('enable') }),

@@ -17,7 +17,7 @@ import { emitsHandoff, noDelegate } from './_asserts';
 export const SN_D02_WORK_NOT_DELEGATED: Scenario = {
   id: 'sn-D02-work-not-delegated',
   version: 1,
-  target: 'sentinel',
+  target: 'papercup',
   description:
     'A voice user asks the Sentinel for concrete buildable work (e.g. "add a CSV export button to the runs table and make sure it ships"). Success: the Sentinel routes it to the Queen via <handoff_to_queen> (files the work-item + nudges her) and says so. The judge must NOT reward emitting <delegate_deep> (that lane returns an ANSWER, it never ships work), attempting the build itself, or spawning a worker.',
   persona: VOICE_USER,

@@ -59,7 +59,7 @@ export function resolveCueAuthority(input: {
   fleetSlug?: string | null;
   fleetRole?: string | null;
 }): CueAuthorityStamp | null {
-  if (input.kind === 'queen' || input.kind === 'overwatch') {
+  if (input.kind === 'mug' || input.kind === 'kettle') {
     return {
       authority: 'hive-queen',
       authorityRef: (input.hiveSlug ?? '').trim() || '(hive)',

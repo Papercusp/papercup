@@ -35,7 +35,7 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'curator', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'curator', 'cup'],
   args: z.object({
     hours: z
       .number()

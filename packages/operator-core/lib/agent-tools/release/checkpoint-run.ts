@@ -54,7 +54,7 @@ export default defineTool({
   // ops — the full red-fix cohort — and there is NO in-handler operator-config-write gate (EI-7426:
   // the copy from checkpoint-config, which DOES mutate config, wrongly rejected the pipeline roles
   // the persona tells to fire it, recurring as a structural tool-error).
-  agentRoles: [...SU_ROLES, 'bee', 'release-fixer', 'release-manager'],
+  agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 5 } },
   args: z.object({
     force: z

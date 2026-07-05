@@ -114,7 +114,7 @@ export function deriveAgentRole(identity: AgentIdentity): string | null {
       return 'su';
     case 'fleet-spawn':
     case 'signed-spawn':
-      return 'bee';
+      return 'cup';
     case 'principal':
       return 'principal';
     default:

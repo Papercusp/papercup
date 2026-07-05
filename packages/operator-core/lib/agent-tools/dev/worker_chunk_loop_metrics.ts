@@ -48,7 +48,7 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'overwatch', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'kettle', 'cup'],
   args: z.object({
     windowHours: z
       .number()

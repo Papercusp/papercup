@@ -25,7 +25,7 @@ const SCOPE_CHOICES = [
 ] as const;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
-const ALL_ROLES = [...SU_ROLES, 'sentinel', 'overwatch'] as const;
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
 export default defineTool({
   name: 'search:fulltext',

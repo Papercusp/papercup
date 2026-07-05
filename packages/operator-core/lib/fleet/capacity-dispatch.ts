@@ -211,7 +211,7 @@ export async function queenCapacityHeadroom(
     if (!gwOn) return noClamp('inference gateway off → no capacity oracle, no clamp (fail-safe)');
     const { fetchGatewayHeadroom } = await import('../inference-gateway/observability');
     const gw = await fetchGatewayHeadroom({ timeoutMs: opts.timeoutMs ?? 1200 });
-    const beeTier = tierOf('bee', DEFAULT_GATEWAY_PRIORITY_MAP);
+    const beeTier = tierOf('cup', DEFAULT_GATEWAY_PRIORITY_MAP);
     const beeRow = gw.priorityTiers?.tiers.find((t) => t.tier === beeTier) ?? null;
     const dispatchBudget = beeRow && beeRow.cap != null ? Math.max(0, beeRow.cap - beeRow.inFlight - beeRow.queued) : null;
     signal = {
@@ -290,7 +290,7 @@ export function buildCapacityReport(
 ): CapacityReport {
   const config = opts.config ?? resolveCapacityConfig();
   const tierMap = opts.tierMap ?? DEFAULT_GATEWAY_PRIORITY_MAP;
-  const beeTier = tierOf('bee', tierMap);
+  const beeTier = tierOf('cup', tierMap);
 
   const signal: CapacitySignal = {
     reachable: hr.reachable,

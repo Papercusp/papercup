@@ -30,7 +30,7 @@ export default defineTool({
   },
   capability: 'fleet:create',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'bee'],
+  agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     name: z
       .string()

@@ -75,7 +75,7 @@ export default defineTool({
     role: z
       .string()
       .optional()
-      .describe('The deciding role. Defaults to the caller\'s role (ctx.role). "overwatch" applies the overwatch envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Queen 13-category gate.'),
+      .describe('The deciding role. Defaults to the caller\'s role (ctx.role). "kettle" applies the overwatch envelope (B-06): nudge/observe/escalate auto, structural escalate-only. Any other value uses the Queen 13-category gate.'),
   }),
   async handler(args, ctx) {
     const { activeWorkspaceId } = await import('../../workspace-registry');

@@ -48,10 +48,10 @@ import type { GateBypass } from '@papercusp/tooldef';
  */
 export const TESTING_FULL_ACCESS_ROLES: ReadonlySet<string> = new Set([
   'operator',
-  'queen',
-  'bee',
-  'overwatch',
-  'sentinel',
+  'mug',
+  'cup',
+  'kettle',
+  'papercup',
   'scout',
   // pot-rename dual-accept (P1 MIGRATE): additive twins of the old role-ids above.
   'mug', // twin of `queen`

@@ -277,7 +277,7 @@ export interface QualityCaptureRequest {
   kind: 'bug' | 'change' | 'feature';
   body: string;
   subTopic?: string;
-  sourceRole?: 'Queen' | 'bee' | 'system' | 'human';
+  sourceRole?: 'Queen' | 'cup' | 'system' | 'human';
 }
 
 /** The injected improvements-capture port. */

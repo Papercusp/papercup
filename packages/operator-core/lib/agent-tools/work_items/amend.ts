@@ -59,7 +59,7 @@ export default defineTool({
     // — rides the existing queen-guard.evaluateQueenTurnGate seam when multi-Queen
     // single-writer is enforced; within one hive there is one steerer, so role suffices.)
     const role = (ctx as { role?: string }).role ?? '';
-    const authoritative = role !== 'bee';
+    const authoritative = role !== 'cup';
     const claimedByOther = !!wi.assignee && wi.assignee !== ident.ownerId;
 
     const rec = buildAmendment(

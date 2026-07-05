@@ -29,7 +29,7 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
+  agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     hours: z.number().int().positive().max(168).optional(),

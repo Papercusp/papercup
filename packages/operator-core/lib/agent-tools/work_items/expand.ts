@@ -97,7 +97,7 @@ export default defineTool({
 
     // Propose/dispose: a bee PROPOSES, every steerer (queen / operator / su) DISPOSES.
     const role = (ctx as { role?: string }).role ?? '';
-    const authoritative = role !== 'bee';
+    const authoritative = role !== 'cup';
 
     const plan = planExpansion({
       parentId: args.id,

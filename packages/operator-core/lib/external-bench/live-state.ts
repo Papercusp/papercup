@@ -62,7 +62,7 @@ export interface BenchRunLiveState {
   taskProgress: { todo: number; in_progress: number; collected: number; graded: number; error: number; total: number };
 }
 
-const QUEEN_ROLE = 'queen';
+const QUEEN_ROLE = 'mug';
 const DEAD_STATUSES = new Set(['done', 'completed', 'failed', 'error', 'cancelled', 'canceled', 'evicted', 'exited', 'dead', 'killed']);
 const WORKING_STATUSES = new Set(['running', 'working', 'active', 'spawning', 'in_progress', 'placed', 'started']);
 const EVICTED_STATUSES = new Set(['evicted', 'cancelled', 'canceled']);
