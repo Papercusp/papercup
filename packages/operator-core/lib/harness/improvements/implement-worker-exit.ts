@@ -104,6 +104,8 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   // CHARGED as a real attempt AND tagged plain 'worker-exit-backedge', and the orphaned-dispatch
   // watchdog read it as "the lane is broken" and filed a false major EI (EI-7591): the SAME
   // self-amplifying noise loop the EI-6876/EI-6890 additions closed for the transient-5xx shapes.
+  /usage credits/i, // "Usage credits required …" + "turn on usage credits at claude.ai/settings/usage"
+  /credits?\s+required/i, // the billing-exhaustion phrasing even if "usage" is absent in a variant
 ];
 
 /**
