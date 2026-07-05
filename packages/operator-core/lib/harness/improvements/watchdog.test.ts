@@ -1817,6 +1817,61 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     )).toBe('reclaimed');
   });
 
+  // EI-7520: EVERY no-turn diagnostic (invoke-outcome.ts `agentProducedTurn`) embeds a
+  // literal `timedOut=<bool>` token. The generic `timed?\s*out` alternative matched the
+  // camelCase substring `timedOut`, so a `timedOut=false` gateway-stall / infra_loss death
+  // (NOT a timeout) was mis-bucketed as 'timeout' — inflating the class and conflating it
+  // with real wall-clock timeouts. `=true` is a genuine kill → timeout; `=false` is not.
+  it('does NOT bucket a `timedOut=false` infra_loss as timeout (EI-7520 false-positive)', () => {
+    // The real shape recorded by agentProducedTurn for a mid-turn gateway stall: the
+    // detail carries `timedOut=false` but the death is not a timeout at all.
+    const infraLossFalse =
+      'infra_loss: papercusp/doc-steward returned HTTP 200 but the agent produced no turn ' +
+      '(ok=false, exitCode=1, timedOut=false, outLen=257; rawStdoutTail="PG bootstrap: connected; ' +
+      'orchestrator running with ctx.pg active; prompt-budget role=doc-steward feature=- total=52758")';
+    expect(classifySpawnError(infraLossFalse)).not.toBe('timeout');
+    expect(classifySpawnError(infraLossFalse)).toBe('other');
+    // A `timedOut=true` IS a genuine wall-clock kill → timeout (the diagnostic token is a
+    // positive signal here, so the fix must keep classifying it).
+    const infraLossTrue =
+      'infra_loss: quartermaster-hive/release-fixer returned HTTP 200 but the agent produced no turn ' +
+      '(ok=false, exitCode=143, timedOut=true, outLen=0; rawStdoutTail="invoke-once: received termination signal")';
+    expect(classifySpawnError(infraLossTrue)).toBe('timeout');
+    // Genuine timeout PHRASES still classify as timeout (the fix must not regress them).
+    expect(classifySpawnError('spawn timed out after 280s')).toBe('timeout');
+    expect(classifySpawnError('agent invoke timeout exceeded (900s)')).toBe('timeout');
+  });
+
+  // EI-7520: a storm of `timedOut=false` infra_loss deaths must NOT masquerade as a
+  // 'timeout' dominant class — the whole point of keying by cause is to keep a
+  // gateway-stall storm distinguishable from a real wall-clock-timeout storm.
+  it('does not let `timedOut=false` infra_loss inflate the timeout class (EI-7520)', () => {
+    const infraLoss = (i: number) => ({
+      error_message:
+        'infra_loss: papercusp/doc-steward returned HTTP 200 but the agent produced no turn ' +
+        `(ok=false, exitCode=1, timedOut=false, outLen=257; rawStdoutTail="run ${i}")`,
+      started_at: '2026-07-05T08:00:00.000Z',
+    });
+    const realTimeout = (i: number) => ({
+      error_message:
+        'infra_loss: quartermaster-hive/release-fixer returned HTTP 200 but the agent produced no turn ' +
+        `(ok=false, exitCode=143, timedOut=true, outLen=0; rawStdoutTail="termination signal ${i}")`,
+      started_at: '2026-07-05T07:00:00.000Z',
+    });
+    // 8 gateway-stall (timedOut=false) + 5 genuine timeouts (timedOut=true).
+    const rows = [
+      ...Array.from({ length: 8 }, (_, i) => infraLoss(i)),
+      ...Array.from({ length: 5 }, (_, i) => realTimeout(i)),
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    // Only the 5 genuine `timedOut=true` deaths are 'timeout'; the 8 `=false` ones are 'other'.
+    expect(out[0].body).toContain('timeout: 5');
+    expect(out[0].body).toContain('other: 8');
+    // Dominant is 'other' (the gateway-stall storm), NOT a phantom 'timeout: 13'.
+    expect(out[0].key).toBe('failed-spawns:other');
+  });
+
   it('EXCLUDES fleet infra-reclaim rows from the failed-spawn signal (EI-6018)', () => {
     const reclaim = (i: number) => ({
       error_message:

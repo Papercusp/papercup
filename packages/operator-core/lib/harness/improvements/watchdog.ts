@@ -1232,7 +1232,18 @@ export function classifySpawnError(message: string | null | undefined): SpawnErr
   // backpressure — NOT a spawn failure. Checked FIRST so its message never falls through to a real
   // failure class (and so failedSpawnSignalsFromRows can exclude it — EI-5485).
   if (/fleet ceiling|spawn-slot:freed|max(?:Bees|SimultaneousAgents)|already running \(fleet/i.test(m)) return 'backpressure';
-  if (/timed?\s*out|timeout/i.test(m)) return 'timeout';
+  // EI-7520: EVERY no-turn diagnostic (invoke-outcome.ts `agentProducedTurn`) embeds a
+  // literal `timedOut=<bool>` token. The generic `timed?\s*out` alternative below matches
+  // the camelCase substring `timedOut`, so a `timedOut=false` death — a mid-turn gateway
+  // stall / infra_loss, NOT a timeout — was mis-bucketed as 'timeout' (34/79 of the class
+  // in a sampled 24h window), inflating it and CONFLATING it with real wall-clock timeouts
+  // (the exact class-mixing that keying-by-cause exists to avoid — see the header comment).
+  // A `timedOut=true` IS a genuine wall-clock kill → timeout; a `timedOut=false` must
+  // classify by its real cause. So treat `=true` as a positive signal, and take the
+  // diagnostic token out of the word-match so it can never false-positive on `=false`.
+  if (/\btimed\s*out\s*=\s*true\b/i.test(m)) return 'timeout';
+  const mNoTimedOutDiag = m.replace(/\btimed\s*out\s*=\s*(?:true|false)\b/gi, ' ');
+  if (/timed?\s*out|timeout/i.test(mNoTimedOutDiag)) return 'timeout';
   if (/econnrefused|econnreset|enotfound|socket|network|fetch failed/i.test(m)) return 'network';
   if (/auth|credential|api.?key|401|403|unauthorized|forbidden/i.test(m)) return 'auth';
   if (/enoent|no such file|file not found/i.test(m)) return 'missing-file';
