@@ -22,13 +22,14 @@
  *   - It fetches the whole tutorial in ONE call (GET /api/desktop/tutorial-script).
  *   - It prints each section's `## Brief` VERBATIM (with a friendly reveal).
  *   - Each section ends with an ARROW-KEY menu (Continue / More details / Search /
- *     Ask a question / Jump to a chapter / Finish) — like the Claude TUI. No LLM.
+ *     Ask a question / Jump to a chapter / Finish) — like the Claude TUI.
  *   - It can SEARCH the whole tutorial (type-to-filter) and jump to any section.
  *   - It checkpoints progress, narrates the finale GUI tour, and graduates — all
  *     deterministically.
- *   - The AGENT is invoked ONLY when the user asks a free-form QUESTION: a single
- *     one-shot call to the CLI they installed (`claude -p` / `codex exec` / …),
- *     grounded in the current section, then control returns to the script.
+ *   - An LLM is invoked ONLY when the user asks a free-form QUESTION, and even
+ *     then NOT here: the runner POSTs to the operator's /api/desktop/docs-qa,
+ *     which retrieves real /internal/docs snippets and answers on the operator's
+ *     CONFIGURED backend (WI-2844). No CLI is spawned by this script.
  *
  * Rendering uses chalk (truecolor, auto-degrades to plain when the terminal has no
  * color / isn't a TTY) plus hand-rolled gradient/typewriter/progress touches and an
@@ -234,63 +235,9 @@ export function renderProgressBar(current, total, width = 12) {
   return `${'▓'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))} ${Math.round(frac * 100)}%`;
 }
 
-/**
- * Build the one-shot Q&A command for the installed agent CLI. `bin` is the resolved
- * absolute path (from the endpoint's agentBinaries) or null → fall back to the bare
- * command name (works when PATH is set, e.g. a real terminal). Pure.
- */
-export function buildQaCommand(agent, bin, prompt) {
-  const exe = bin || agent || 'claude';
-  if (agent === 'codex') return { command: exe, args: ['exec', prompt] };
-  // claude (default) + omp both accept a one-shot print flag; if omp differs the
-  // graceful fallback in answerQuestion covers it.
-  return { command: exe, args: ['-p', prompt] };
-}
-
-/**
- * Build the grounded Q&A prompt for a section. Pure. (B2-#2)
- *
- * Papercusp ships thorough, actively-maintained docs, so the prompt does two
- * things: (1) ATTACHES the current section's own grounding + its linked doc
- * pages, and (2) instructs the agent to answer with our STANDARD doc tooling
- * (docs:search / docs:get) — explicitly NOT forcing the current section, because
- * the user's question may be open-ended or about a completely different area.
- */
-export function buildQaPrompt(section, question) {
-  const grounding = section
-    ? [`Section the user is currently reading: ${section.title}`, section.details || section.brief || '']
-        .filter(Boolean)
-        .join('\n')
-    : '(no specific section context)';
-  const docs =
-    section?.docSlugs?.length
-      ? section.docSlugs.map((d) => `- /internal/docs/${d}`).join('\n')
-      : '(no docs are specifically linked to this section)';
-  return (
-    'You are the Papercusp onboarding tutor answering ONE question a user asked during ' +
-    'the guided tutorial.\n\n' +
-    `${grounding}\n\n` +
-    'Documentation grounding this section:\n' +
-    `${docs}\n\n` +
-    'Papercusp has thorough, well-maintained documentation. Answer using your standard ' +
-    'doc tooling: search with `docs:search` and read pages with `docs:get` (fall back to ' +
-    'fetching `/internal/docs/<slug>` if those tools are unavailable). The question MAY be ' +
-    'about this section OR about something else entirely — do NOT assume it is about this ' +
-    'section: if it is open-ended or off-topic, search the docs for the right page instead ' +
-    'of forcing an answer out of the section above.\n\n' +
-    'Answer concisely (3–6 sentences), plainly, no preamble; cite pages by their ' +
-    '`/internal/docs/<slug>` path.\n\n' +
-    `User question: ${question}`
-  );
-}
-
-/** Human labels for the Q&A backend picker (B2-#3). */
-export const AGENT_LABELS = { claude: 'Claude (claude)', codex: 'Codex (codex)', omp: 'OMP (omp)' };
-
-/** Installed Q&A backends — those with a resolved binary path — in preference order. Pure. */
-export function installedQaBackends(agentBinaries) {
-  return ['claude', 'codex', 'omp'].filter((a) => agentBinaries?.[a]);
-}
+// Q&A prompt-building + backend selection now live SERVER-SIDE in the operator's
+// /api/desktop/docs-qa endpoint (WI-2844) — the runner no longer probes for a
+// user-installed CLI or builds the prompt. See answerQuestion below.
 
 /** First section index of a chapter number (or -1). Pure. */
 export function firstIndexOfChapter(sections, chapter) {
@@ -498,92 +445,114 @@ function runSpec(spec) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Q&A — the ONE place an LLM is invoked, and only for a free-form question.
+// Q&A — answered SERVER-SIDE by the operator's docs-qa endpoint. WI-2844: the
+// old path shelled out to a user-installed claude/codex/omp CLI (absent in a
+// clean build; no docs tools even when present). Now the operator retrieves
+// real /internal/docs snippets and answers on its CONFIGURED backend — the
+// runner just POSTs the question and streams the answer. No LLM spawned here.
 // ───────────────────────────────────────────────────────────────────────────
-async function answerQuestion(agent, bin, section, question) {
-  const { command, args } = buildQaCommand(agent, bin, buildQaPrompt(section, question));
-  let spinner = null;
-  if (animOn()) {
-    try {
-      const ora = (await import('ora')).default;
-      spinner = ora({ text: accent('Asking the agent…'), color: 'cyan' }).start();
-    } catch {
-      spinner = null;
-    }
-  }
-  if (!spinner) say(dim('Asking the agent…'));
-  const answer = await new Promise((resolve) => {
-    let out = '';
-    let done = false;
-    const finish = (v) => {
-      if (!done) {
-        done = true;
-        resolve(v);
+
+/**
+ * Minimal SSE frame reader over a fetch() Response body. Invokes
+ * onEvent(eventName, dataObject) per `event:`/`data:` frame. Pure transport;
+ * exported for tests. (Node global fetch → undici ReadableStream.)
+ */
+export async function consumeSse(body, onEvent) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let event = 'message';
+      let dataStr = '';
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
       }
-    };
-    let child;
-    try {
-      child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch {
-      return finish(null);
+      if (!dataStr) continue;
+      let data;
+      try { data = JSON.parse(dataStr); } catch { data = { raw: dataStr }; }
+      onEvent(event, data);
     }
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        /* ignore */
-      }
-      finish(out.trim() || null);
-    }, 90_000);
-    child.stdout.on('data', (d) => {
-      out += d.toString();
-    });
-    child.on('error', () => {
-      clearTimeout(timer);
-      finish(null);
-    });
-    child.on('exit', () => {
-      clearTimeout(timer);
-      finish(out.trim() || null);
-    });
-  });
-  if (spinner) {
-    if (answer) spinner.succeed(accent('Answer'));
-    else spinner.stop();
-  }
-  if (answer) {
-    say(answer);
-  } else {
-    // Graceful fallback — the tutorial NEVER stalls on a failed Q&A.
-    const docs = section?.docSlugs?.length
-      ? ` For the fuller answer, see ${section.docSlugs.map((d) => `/internal/docs/${d}`).join(' or ')}.`
-      : '';
-    say(
-      `I couldn't reach the agent for a live answer just now.${docs} ` +
-        dim('Pick “More details”, or Continue.'),
-    );
   }
 }
 
 /**
- * Resolve which backend answers a question (B2-#3). Caches the choice for the
- * session (passed back in via `cached`) so we don't re-prompt on every question.
- * Returns null when NO backend is installed → caller routes to setup (B2-#3b).
+ * Ask the docs a question. POSTs to /api/desktop/docs-qa and streams the
+ * grounded answer. Returns 'needs_backend' (caller routes to Setup), 'answered',
+ * or 'fallback'. The tutorial NEVER stalls on a failed Q&A.
  */
-async function resolveQaBackend(script, prompts, cached) {
-  if (cached) return cached;
-  const installed = installedQaBackends(script.agentBinaries ?? {});
-  if (installed.length === 0) return null;
-  if (installed.length === 1) {
-    return { agent: installed[0], bin: script.agentBinaries[installed[0]] };
+async function answerQuestion(base, section, question) {
+  let spinner = null;
+  if (animOn()) {
+    try {
+      const ora = (await import('ora')).default;
+      spinner = ora({ text: accent('Searching the docs…'), color: 'cyan' }).start();
+    } catch {
+      spinner = null;
+    }
   }
-  // More than one installed → let the user choose which answers (B2-#3).
-  const { select } = prompts;
-  const agent = await select({
-    message: 'Which agent should answer your question?',
-    choices: installed.map((a) => ({ value: a, name: AGENT_LABELS[a] ?? a })),
-  });
-  return { agent, bin: script.agentBinaries?.[agent] ?? null };
+  if (!spinner) say(dim('Searching the docs…'));
+
+  let answer = '';
+  let needsBackend = false;
+  let backendMessage = '';
+  let errored = false;
+  const citations = [];
+  try {
+    const r = await fetch(`${base}/api/desktop/docs-qa`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        sectionTitle: section?.title,
+        docSlugs: section?.docSlugs ?? [],
+      }),
+    });
+    if (!r.ok || !r.body) {
+      errored = true;
+    } else {
+      await consumeSse(r.body, (event, data) => {
+        if (event === 'delta' && typeof data.text === 'string') answer += data.text;
+        else if (event === 'citation' && data.slug) citations.push(data);
+        else if (event === 'needs_backend') { needsBackend = true; backendMessage = data.message || ''; }
+        else if (event === 'error') errored = true;
+      });
+    }
+  } catch {
+    errored = true;
+  }
+  if (spinner) {
+    if (answer && !errored) spinner.succeed(accent('Answer'));
+    else spinner.stop();
+  }
+
+  if (needsBackend) {
+    if (backendMessage) say(dim(backendMessage));
+    return 'needs_backend';
+  }
+  if (answer.trim() && !errored) {
+    say(answer.trim());
+    if (citations.length) {
+      say(dim(`Sources: ${citations.map((c) => `/internal/docs/${c.slug}`).join(' · ')}`));
+    }
+    return 'answered';
+  }
+  // Graceful fallback — the tutorial NEVER stalls on a failed Q&A.
+  const docs = section?.docSlugs?.length
+    ? ` For the fuller answer, see ${section.docSlugs.map((d) => `/internal/docs/${d}`).join(' or ')}.`
+    : '';
+  say(
+    `I couldn't get a live answer just now.${docs} ` +
+      dim('Pick “More details”, or Continue.'),
+  );
+  return 'fallback';
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -931,14 +900,9 @@ async function tutorialSectionAction(shell, s) {
   if (action === 'question') {
     const q = typedQuestion ?? (await prompts.input({ message: '💬 Your question:' }))?.trim();
     if (q) {
-      const backend = await resolveQaBackend(script, prompts, shell.qaBackend);
-      if (!backend) {
-        // B2-#3b: no agent backend installed → REAL auto-route to the Setup tab.
-        say(dim('No agent backend is installed yet — taking you to Setup to install one.'));
-        return { switchTo: 'setup' };
-      }
-      shell.qaBackend = backend; // cache the session's choice (B2-#3)
-      await answerQuestion(backend.agent, backend.bin, s, q);
+      const result = await answerQuestion(base, s, q);
+      // B2-#3b: no agent backend configured → REAL auto-route to the Setup tab.
+      if (result === 'needs_backend') return { switchTo: 'setup' };
     }
     return {};
   }
@@ -1081,15 +1045,8 @@ async function main() {
     say('No tutorial content is installed on this build. ' + dim('Nothing to run.'));
     return 0;
   }
-  // The Q&A backend is chosen lazily when the user actually asks a question
-  // (resolveQaBackend — B2-#3), not once at startup. Seed the session cache from
-  // an explicit --agent (the concierge's chosen framework) so first-run users are
-  // not re-prompted; re-entry (`papercusp tutorial`, no --agent) resolves at
-  // ask-time: pick when >1 installed, route to setup when none (B2-#3b).
-  let qaBackend =
-    args.agent && script.agentBinaries?.[args.agent]
-      ? { agent: args.agent, bin: script.agentBinaries[args.agent] }
-      : null;
+  // Q&A is answered server-side (POST /api/desktop/docs-qa) on the operator's
+  // configured backend — no per-session CLI backend to choose here (WI-2844).
 
   // ── Unified Tutorial | Setup shell (#4) ──
   // Shared, MUTABLE state so a Tab-switch preserves tutorial position + progress
@@ -1102,7 +1059,6 @@ async function main() {
     script,
     sections,
     setupComplete: false,
-    qaBackend,
     activeTab: defaultTab(args),
     tut: {
       idx: resumeIndex(sections, script.progress),
