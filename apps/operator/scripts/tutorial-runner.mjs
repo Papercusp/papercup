@@ -1038,6 +1038,15 @@ async function runShell(shell) {
     if (result?.exit) return 0;
     if (result?.switchTo) {
       shell.activeTab = result.switchTo;
+      // Make a tab-switch VISIBLE. When returning to the Tutorial tab, force the
+      // current section's chapter header + brief to re-print, so the hop back
+      // isn't a silent bare menu (owner 2026-07-05: "Tab only seemed to work
+      // once" — Tutorial→Setup was obvious, but the hop back re-showed just the
+      // menu with no context, reading as "nothing happened").
+      if (result.switchTo === 'tutorial') {
+        shell.tut.lastChapter = null;
+        shell.tut.shownIdx = -1;
+      }
       continue;
     }
     return 0;
