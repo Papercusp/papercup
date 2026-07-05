@@ -1,0 +1,132 @@
+/**
+ * The inference-gateway process MAIN, as an exported function (P-006,
+ * cross-platform-hardening-and-agent-ergonomics-2026-07-05).
+ *
+ * Extracted VERBATIM from bin.ts so the same gateway process can be entered two ways:
+ *   1. DEV / systemd:  `npx tsx bin.ts` (the `papercup-inference-gateway` --user unit) —
+ *      bin.ts is now a thin wrapper that calls this.
+ *   2. PACKAGED desktop: the bundled serve.mjs re-execs ITSELF with
+ *      `PAPERCUSP_GATEWAY_SIDECAR_MODE=1` and serve.ts diverts here — the same re-exec
+ *      divert pattern as the substrate + spawner sidecars (a bundle has no tsx and no
+ *      .ts on disk, so `npx tsx bin.ts` cannot work there).
+ *
+ * No top-level side effects: safe to import from the serve.mjs bundle entry.
+ *
+ * Env (unchanged from bin.ts):
+ *   PAPERCUSP_GATEWAY_PORT         localhost port to listen on (default 8788)
+ *   PAPERCUSP_GATEWAY_CONCURRENCY  max forwarded requests at once (default 24)
+ *   PAPERCUSP_WORKSPACE            workspace id for account-pool resolution (default: active)
+ *   PAPERCUSP_ACCOUNT_ID           pin a specific pool account (else sole-account / local fallback)
+ *   ANTHROPIC_BASE_URL_UPSTREAM    override the upstream (default https://api.anthropic.com)
+ *   PAPERCUSP_GATEWAY_HARD_STOP_MS hard drain ceiling before force-exit (default 12000, < TimeoutStopSec)
+ *   PAPERCUSP_GATEWAY_LOG          durable lifecycle log path (default ~/.papercusp/gateway.log)
+ */
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { startGatewayService, DEFAULT_GATEWAY_PORT } from './launch';
+
+/** Hard ceiling on the SIGTERM drain before we force-exit — DEFENSE-IN-DEPTH behind gateway.close()'s
+ *  own GRACEFUL_SHUTDOWN_MS (~5s) grace. MUST stay below the supervisor's stop budget (systemd
+ *  TimeoutStopSec=30s / gateway-sidecar-spawn's SIGKILL fallback) so WE exit first, rather than the
+ *  supervisor escalating to SIGKILL (which orphans the tsx children + drops every in-flight
+ *  bee/queen spawn — the EI-2421 crash-loop mechanism). Env-tunable. Read lazily (inside the
+ *  function) so importing this module has no env-dependent state. */
+function hardStopMs(): number {
+  return Number(process.env.PAPERCUSP_GATEWAY_HARD_STOP_MS) || 12_000;
+}
+/** Durable, journald-INDEPENDENT lifecycle log. journald's stdout-socket capture
+ *  (/run/systemd/journal/stdout) was observed wedged host-wide (2026-06-22, EI-2421), making the
+ *  gateway's up/shutdown lines invisible — which is why a restart's timing + reason couldn't be seen.
+ *  Mirror them to a file (synchronous append, immediately readable) so they survive regardless of
+ *  journald. Env-tunable. */
+function logFilePath(): string {
+  return process.env.PAPERCUSP_GATEWAY_LOG || join(homedir(), '.papercusp', 'gateway.log');
+}
+
+let logDirEnsured = false;
+/** Durable lifecycle log line (console + append-file). Exported so bin.ts's fatal catch reuses it. */
+export function gatewayLogLine(m: string): void {
+  const line = `[inference-gateway ${new Date().toISOString()}] ${m}`;
+  console.log(line);
+  try {
+    if (!logDirEnsured) {
+      mkdirSync(dirname(logFilePath()), { recursive: true });
+      logDirEnsured = true;
+    }
+    appendFileSync(logFilePath(), line + '\n');
+  } catch {
+    /* durable log unavailable (perm/disk) — console.log remains the fallback; never let logging crash boot/shutdown */
+  }
+}
+
+/**
+ * Run the gateway process main: start the service, install crash-proofing + signal-drain
+ * handlers, and serve until SIGTERM/SIGINT. Resolves after a successful start (the HTTP
+ * server keeps the process alive); REJECTS on a startup failure — the caller decides the
+ * fatal policy (both entries exit(1) so the supervisor restarts us, fail-closed).
+ */
+export async function runGatewaySidecarMain(): Promise<void> {
+  const HARD_STOP_MS = hardStopMs();
+  const svc = await startGatewayService({
+    port: Number(process.env.PAPERCUSP_GATEWAY_PORT) || DEFAULT_GATEWAY_PORT,
+    workspace: process.env.PAPERCUSP_WORKSPACE || undefined,
+    concurrency: Number(process.env.PAPERCUSP_GATEWAY_CONCURRENCY) || undefined,
+    upstreamBase: process.env.ANTHROPIC_BASE_URL_UPSTREAM || undefined,
+    // Local inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): the ONLY
+    // production entrypoint that opts in to the DB-backed registry (launch.ts defaults to empty/no-PG
+    // for every other caller, incl. all tests). The registry starts empty — inert until a backend is
+    // registered (gateway:local_backend_register) — so this is safe to wire unconditionally.
+    resolveLocalBackends: (ws) => import('./local-backend-store').then(({ listLocalBackends }) => listLocalBackends({ workspaceId: ws })),
+  });
+  gatewayLogLine(`up on 127.0.0.1:${svc.port} → account '${svc.account.accountId}' (${svc.account.source})`);
+
+  // CRASH-PROOFING (backend-reliability-100pct-2026-07-03 W2) — process-level BACKSTOP.
+  // A single request's unhandled stream 'error' (e.g. an AbortSignal.timeout firing on a
+  // piped upstream body) is thrown by Node as an uncaughtException → the WHOLE shared
+  // multi-tenant gateway dies (status=1/FAILURE → supervisor restart), dropping EVERY in-flight
+  // bee/queen request. Observed ≥2× on 2026-07-02 (21:49, 22:10: "Unhandled 'error' event …
+  // TimeoutError"). The per-pipe '.on(error)' handlers at the stream sites are the primary fix;
+  // THIS is defense-in-depth for any unforeseen source: log durably and KEEP SERVING. For a
+  // shared proxy, surviving one poisoned request is strictly better than a mass outage.
+  // Registered AFTER a successful boot so genuine STARTUP failures still propagate to
+  // the caller's catch → exit(1) → clean supervisor restart (we don't want to swallow those).
+  process.on('uncaughtException', (err, origin) => {
+    gatewayLogLine(`uncaughtException (${origin}) — logged, NOT exiting (crash-proofing W2): ${(err as Error)?.stack || String(err)}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    gatewayLogLine(`unhandledRejection — logged, NOT exiting (crash-proofing W2): ${reason instanceof Error ? reason.stack : String(reason)}`);
+  });
+
+  let stopping = false;
+  const shutdown = async (sig: string) => {
+    if (stopping) return;
+    stopping = true;
+    const t0 = Date.now();
+    gatewayLogLine(`${sig} → draining + stopping (hard ceiling ${HARD_STOP_MS}ms)`);
+    // DEFENSE-IN-DEPTH: race the (already-bounded) drain against a hard ceiling so a wedged close()
+    // can never let the supervisor's stop budget expire → SIGKILL → orphan leak. We exit no matter what.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hardStop = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), HARD_STOP_MS);
+      timer.unref?.();
+    });
+    const drain = svc
+      .stop()
+      .then(() => 'drained' as const)
+      .catch((e) => {
+        gatewayLogLine(`stop() error (continuing to exit): ${(e as Error).message}`);
+        return 'drained' as const;
+      });
+    const outcome = await Promise.race([drain, hardStop]);
+    if (timer) clearTimeout(timer);
+    if (outcome === 'timeout') {
+      gatewayLogLine(`drain exceeded ${HARD_STOP_MS}ms — FORCE-exiting before the supervisor SIGKILLs (close() grace wedged? investigate)`);
+    } else {
+      gatewayLogLine(`drained cleanly in ${Date.now() - t0}ms → exit`);
+    }
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+}

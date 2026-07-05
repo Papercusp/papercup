@@ -347,12 +347,15 @@ test('detectAnomalies — invalid selected-model spawn failures → critical inv
   assert.match(a.suggestedAction.message ?? '', /model overrides and tier menu/);
 });
 
-test('detectAnomalies — aging escalations → escalation-aging NUDGE queen', () => {
+test('detectAnomalies — aging escalations → escalation-aging ESCALATE owner', () => {
   const b = base();
   b.plans = { active: 5, stalledItems: 0, agingEscalations: 3 };
   const a = only(detectAnomalies(b), 'escalation-aging');
   assert.equal(a.severity, 'warning');
-  assert.equal(a.suggestedAction.type, 'nudge');
+  assert.equal(a.suggestedAction.type, 'escalate');
+  assert.equal(a.suggestedAction.target, 'owner');
+  assert.match(a.suggestedAction.message ?? '', /Planning Needs you queue/);
+  assert.match(a.suggestedAction.message ?? '', /Queen cannot clear owner-decision backlog/);
 });
 
 test('detectAnomalies — observation lane flat while bees run → observation-dark OBSERVE; quiet when no bees run', () => {
@@ -530,7 +533,7 @@ function fakeHealth(
       overwatchAlive: p.overwatchAlive === undefined ? null : p.overwatchAlive,
     },
     panels: {
-      queen: hp('mug', pick(p.queen, queenData())),
+      queen: hp('queen', pick(p.queen, queenData())),
       bees: hp('bees', pick(p.bees, beesData())),
       workItems: naPanel('workItems'),
       workFeed: hp('workFeed', pick(p.workFeed, workFeedData())),
@@ -544,7 +547,7 @@ function fakeHealth(
       improvements: naPanel('improvements'),
       infra: naPanel('infra'),
       suFleet: naPanel('suFleet'),
-      overwatch: naPanel('kettle'),
+      overwatch: naPanel('overwatch'),
       scout: naPanel('scout'),
       toolEfficiency: naPanel('toolEfficiency'),
     },

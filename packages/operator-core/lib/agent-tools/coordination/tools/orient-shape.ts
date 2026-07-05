@@ -15,8 +15,8 @@
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400 },
+  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200 },
+  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400 },
 } as const;
 
 type TierName = keyof typeof CAPS;
@@ -60,6 +60,18 @@ function projectInboxEntry(e: unknown, summaryCap: number): unknown {
     ...(r.from ? { from: r.from } : {}),
     summary: cap(r.summary ?? r.body, summaryCap),
   };
+}
+
+/** Project noisy coord/feed-ish entries. Plan-event `before`/`after` fields can
+ * carry whole plan lines or `## Now` bodies; keep identity/routing fields intact
+ * and cap the prose fields so a small number of events cannot dominate orient. */
+function projectEventEntry(e: unknown, textCap: number): unknown {
+  if (!e || typeof e !== 'object') return e;
+  const out: Record<string, unknown> = { ...(e as Record<string, unknown>) };
+  for (const key of ['summary', 'detail', 'before', 'after', 'text', 'body']) {
+    if (key in out) out[key] = cap(out[key], textCap);
+  }
+  return out;
 }
 
 /** `me` arrives as fleet:assignments' inner result — commonly an opaque TOON
@@ -131,13 +143,23 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   }
 
   const events = d.planEvents as { total?: number; recent?: unknown[] } | null | undefined;
-  if (events && typeof events === 'object' && Array.isArray(events.recent) && events.recent.length > c.events) {
-    out.planEvents = { total: events.total, recent: events.recent.slice(-c.events), recentTruncated: { shown: c.events, more: 'coord:plan-events' } };
+  if (events && typeof events === 'object' && Array.isArray(events.recent)) {
+    const total = events.recent.length;
+    out.planEvents = {
+      total: events.total,
+      recent: events.recent.slice(-c.events).map((e) => projectEventEntry(e, c.eventText)),
+      ...(total > c.events ? { recentTruncated: { shown: c.events, more: 'coord:plan-events' } } : {}),
+    };
   }
 
   const catchUp = d.fleetCatchUp as { fleet?: unknown; total?: number; recent?: unknown[] } | null | undefined;
-  if (catchUp && typeof catchUp === 'object' && Array.isArray(catchUp.recent) && catchUp.recent.length > c.catchUp) {
-    out.fleetCatchUp = { ...catchUp, recent: catchUp.recent.slice(-c.catchUp), recentTruncated: { shown: c.catchUp, more: 'coord:catch-up' } };
+  if (catchUp && typeof catchUp === 'object' && Array.isArray(catchUp.recent)) {
+    const total = catchUp.recent.length;
+    out.fleetCatchUp = {
+      ...catchUp,
+      recent: catchUp.recent.slice(-c.catchUp).map((e) => projectEventEntry(e, c.eventText)),
+      ...(total > c.catchUp ? { recentTruncated: { shown: c.catchUp, more: 'coord:catch-up' } } : {}),
+    };
   }
 
   return out;

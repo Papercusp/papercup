@@ -8,9 +8,12 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   synthesizeCoordinationScorecard,
   overwatchScorecardEndCheck,
+  backstopWatchdogKey,
+  readFloorRepeatCount,
   COORDINATION_CRITERIA,
   COORDINATION_RUBRIC_REF,
   type OverwatchScorecardEndCheckDeps,
+  type OpenBackstopFloor,
 } from './scorecard-backstop';
 import type { SystemHealth } from '../system-health/types';
 
@@ -127,9 +130,9 @@ describe('synthesizeCoordinationScorecard', () => {
 
 function deps(over: Partial<OverwatchScorecardEndCheckDeps> = {}): {
   d: OverwatchScorecardEndCheckDeps;
-  captured: { capture: unknown[]; fires: unknown[] };
+  captured: { capture: unknown[]; fires: unknown[]; bumps: unknown[] };
 } {
-  const captured = { capture: [] as unknown[], fires: [] as unknown[] };
+  const captured = { capture: [] as unknown[], fires: [] as unknown[], bumps: [] as unknown[] };
   const d: OverwatchScorecardEndCheckDeps = {
     enabled: async () => true,
     started: async () => true,
@@ -145,6 +148,12 @@ function deps(over: Partial<OverwatchScorecardEndCheckDeps> = {}): {
     },
     // hermetic: default to no adoption grade (floor → 'unknown') so the end-check never touches PG.
     toolUtilizationGrade: async () => undefined,
+    // WI-3064: hermetic default — no standing open floor, so tests exercise the
+    // fresh-file path unless a test explicitly overrides this to simulate coalescing.
+    findOpenBackstopFloor: async () => null,
+    bumpFloorRepeat: async (id: string, priorCount: number, firstFiredAt: string | null) => {
+      captured.bumps.push({ id, priorCount, firstFiredAt });
+    },
     ...over,
   };
   return { d, captured };
@@ -247,5 +256,55 @@ describe('overwatchScorecardEndCheck', () => {
     });
     expect((await overwatchScorecardEndCheck(opts, d)).outcome).toBe('error');
     warn.mockRestore();
+  });
+
+  // ── WI-3064: turn-end floor coalescing (mirrors WI-2977's pulse-floor dedup) ──────
+
+  it('a fresh file stamps a stable watchdogKey (scorecard-backstop:<hive>) on the item', async () => {
+    const { d, captured } = deps();
+    await overwatchScorecardEndCheck(opts, d);
+    expect(captured.capture).toHaveLength(1);
+    const input = captured.capture[0] as { payloadExtra: { watchdogKey: string } };
+    expect(input.payloadExtra.watchdogKey).toBe(backstopWatchdogKey('papercusp'));
+  });
+
+  it('a standing OPEN floor for this hive → coalesces (bumps repeat), files NO new item', async () => {
+    const existing: OpenBackstopFloor = { id: 'EI-9001', payload: { floorRepeat: { count: 2, firstFiredAt: '2026-07-05T10:00:00.000Z', lastFiredAt: '2026-07-05T11:00:00.000Z' } } };
+    const { d, captured } = deps({ findOpenBackstopFloor: async () => existing });
+    const res = await overwatchScorecardEndCheck(opts, d);
+    expect(res.outcome).toBe('synthesized'); // still "handled the gap", just without a new item
+    expect(captured.capture).toHaveLength(0); // NO duplicate filed
+    expect(captured.bumps).toHaveLength(1);
+    expect(captured.bumps[0]).toEqual({ id: 'EI-9001', priorCount: 2, firstFiredAt: '2026-07-05T10:00:00.000Z' });
+    expect(captured.fires).toHaveLength(1); // still recorded as a fire (countable signal)
+  });
+
+  it('no standing floor (first fire for this outage) → files fresh + records a fire, no bump', async () => {
+    const { d, captured } = deps();
+    await overwatchScorecardEndCheck(opts, d);
+    expect(captured.capture).toHaveLength(1);
+    expect(captured.bumps).toHaveLength(0);
+    expect(captured.fires).toHaveLength(1);
+  });
+
+  it('findOpenBackstopFloor throwing degrades to filing fresh (fail-soft lookup), never throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { d, captured } = deps({
+      findOpenBackstopFloor: async () => {
+        throw new Error('lookup failed');
+      },
+    });
+    const res = await overwatchScorecardEndCheck(opts, d);
+    expect(res.outcome).toBe('synthesized');
+    expect(captured.capture).toHaveLength(1); // fell through to filing fresh, not an error
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('readFloorRepeatCount: absent/malformed payload → 0; well-formed → the count', () => {
+    expect(readFloorRepeatCount(null)).toBe(0);
+    expect(readFloorRepeatCount({})).toBe(0);
+    expect(readFloorRepeatCount({ floorRepeat: 'nope' })).toBe(0);
+    expect(readFloorRepeatCount({ floorRepeat: { count: 3 } })).toBe(3);
   });
 });

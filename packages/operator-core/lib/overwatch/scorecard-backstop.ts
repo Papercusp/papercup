@@ -40,6 +40,7 @@ import { getOverwatchControlState } from './snapshot';
 import { checkScorecardFreshness } from '../scorecard-freshness';
 import { computeSystemHealth } from '../system-health/compute';
 import { captureImprovement } from '../harness/improvements/capture-core';
+import { findIssuesByWatchdogKeys, mergeIssuePayload } from '../issues-engineer';
 import type { SystemHealth } from '../system-health/types';
 import {
   readCodeRunAdoption,
@@ -47,6 +48,62 @@ import {
   gradeToolUtilization,
   type RunQuery,
 } from '../code-run-adoption';
+
+/**
+ * Stable cross-turn dedup key for this hive's turn-end synthesized floor (WI-3064 —
+ * the sibling gap to WI-2977's `pulseWatchdogKey`: the scheduled-pulse floor path
+ * already coalesces repeat fires onto one standing open item by watchdogKey, but
+ * this turn-end backstop never stamped one, so every turn the agent skipped its own
+ * card minted a BRAND NEW `kind:change` observation item — an open floor pollutes
+ * the drain backlog with unbounded duplicates instead of one bumped counter.
+ */
+export function backstopWatchdogKey(sourceHive: string): string {
+  return `scorecard-backstop:${sourceHive}`;
+}
+
+/** The `payload.floorRepeat` stamp coalesced turn-end floors bump instead of re-filing
+ *  (mirrors scorecard-emission-pulse.ts's `PulseRepeatStamp` convention). */
+export interface FloorRepeatStamp {
+  /** Total floor fires coalesced onto this item, INCLUDING the one that created it. */
+  count: number;
+  firstFiredAt: string;
+  lastFiredAt: string;
+}
+
+/** Pure: defensively parse `payload.floorRepeat` (absent/malformed → never fired before). */
+export function readFloorRepeatCount(payload: unknown): number {
+  if (payload == null || typeof payload !== 'object') return 0;
+  const raw = (payload as Record<string, unknown>).floorRepeat;
+  if (raw == null || typeof raw !== 'object') return 0;
+  const n = (raw as Record<string, unknown>).count;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** The minimal shape the coalescing lookup needs off a matched issue. */
+export interface OpenBackstopFloor {
+  id: string;
+  payload: unknown;
+}
+
+/** Default lookup: the newest OPEN issue carrying this hive's backstop watchdogKey
+ *  (the same indexed `findIssuesByWatchdogKeys` feed the pulse + improvement watchdog use). */
+async function defaultFindOpenBackstopFloor(watchdogKey: string): Promise<OpenBackstopFloor | null> {
+  const matches = await findIssuesByWatchdogKeys([watchdogKey]);
+  const open = matches.find((i) => i.state === 'open');
+  return open ? { id: open.id, payload: open.payload } : null;
+}
+
+/** Default bump: stamp `payload.floorRepeat` (replace-whole-object) — never touches
+ *  title/state/severity, so the coalesced item still reads as an ordinary open item. */
+async function defaultBumpFloorRepeat(id: string, priorCount: number, firstFiredAt: string | null): Promise<void> {
+  const now = new Date().toISOString();
+  const stamp: FloorRepeatStamp = {
+    count: priorCount + 1,
+    firstFiredAt: firstFiredAt ?? now,
+    lastFiredAt: now,
+  };
+  await mergeIssuePayload(id, { floorRepeat: stamp });
+}
 
 /** The rubric the Overwatch scorecards against (Owner requirement #1). */
 export const COORDINATION_RUBRIC_REF = 'hive-coordination-health';
@@ -276,6 +333,11 @@ export interface OverwatchScorecardEndCheckDeps {
   recordFire?: (workspaceId: string, installSlug: string, reason: string) => Promise<void>;
   /** Data-derived `tool-utilization` grade (code:run adoption). undefined ⇒ floor uses 'unknown'. */
   toolUtilizationGrade?: () => Promise<ScorecardRating | undefined>;
+  /** WI-3064: find the standing OPEN turn-end floor for this hive (by watchdogKey), if any.
+   *  Default queries the real indexed watchdogKey feed. */
+  findOpenBackstopFloor?: (watchdogKey: string) => Promise<OpenBackstopFloor | null>;
+  /** WI-3064: bump the coalesced-onto issue's repeat stamp instead of filing anew. */
+  bumpFloorRepeat?: (id: string, priorCount: number, firstFiredAt: string | null) => Promise<void>;
 }
 
 /**
@@ -297,6 +359,8 @@ export async function overwatchScorecardEndCheck(
   const capture = deps.capture ?? captureImprovement;
   const recordFire = deps.recordFire ?? recordScorecardFire;
   const toolUtilizationGrade = deps.toolUtilizationGrade ?? defaultToolUtilizationGrade;
+  const findOpenBackstopFloor = deps.findOpenBackstopFloor ?? defaultFindOpenBackstopFloor;
+  const bumpFloorRepeat = deps.bumpFloorRepeat ?? defaultBumpFloorRepeat;
   try {
     if (!(await enabled())) return { outcome: 'skipped', reason: 'overwatch flag off' };
     if (!(await started(workspaceId, installSlug))) return { outcome: 'skipped', reason: 'overwatch not started' };
@@ -314,6 +378,27 @@ export async function overwatchScorecardEndCheck(
       return { outcome: 'skipped', reason: 'agent emitted a complete scorecard since last wake' };
     }
 
+    // WI-3064: before filing a NEW item, check whether the standing turn-end floor for
+    // this hive (by its stable watchdogKey) is still open — if so every turn the agent
+    // keeps skipping its own card is the SAME ongoing gap, so bump its repeat counter
+    // instead of piling on another open `kind:change` duplicate (mirrors the coalescing
+    // scorecard-emission-pulse.ts already does for the scheduled-pulse floor, WI-2977).
+    const watchdogKey = backstopWatchdogKey(sourceHive);
+    const existingOpen = await findOpenBackstopFloor(watchdogKey).catch((e) => {
+      console.warn(`[overwatch-scorecard-backstop] findOpenBackstopFloor failed (${watchdogKey}) — filing fresh: ${e instanceof Error ? e.message : e}`);
+      return null;
+    });
+    if (existingOpen) {
+      const priorCount = readFloorRepeatCount(existingOpen.payload);
+      const priorStamp = (existingOpen.payload as Record<string, unknown> | null)?.floorRepeat as
+        | { firstFiredAt?: string }
+        | undefined;
+      await bumpFloorRepeat(existingOpen.id, priorCount, priorStamp?.firstFiredAt ?? null);
+      const reason = `agent emitted ${f.status === 'partial-only' ? 'only a PARTIAL' : 'NO'} scorecard since last wake — coalesced onto standing open floor ${existingOpen.id} (repeat ${priorCount + 1})`;
+      await recordFire(workspaceId, installSlug, reason);
+      return { outcome: 'synthesized', reason: `agent scorecard ${f.status}; coalesced onto ${existingOpen.id}` };
+    }
+
     // The turn ended with no complete agent scorecard — synthesize the floor. Ground
     // tool-utilization in real code:run adoption data (best-effort; undefined ⇒ 'unknown').
     const health = await computeHealth(workspaceId);
@@ -328,6 +413,7 @@ export async function overwatchScorecardEndCheck(
       scope: `harness:${sourceHive}`,
       createdBy: 'system:overwatch-scorecard-backstop',
       payloadExtra: {
+        watchdogKey,
         observation: {
           kind: 'reinforce',
           scope: 'papercusp',

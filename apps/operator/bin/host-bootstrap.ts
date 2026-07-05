@@ -842,6 +842,43 @@ export function runBootstrap(): void {
     })();
   }
 
+  // Inference-gateway sidecar supervision (cross-platform-hardening P-006).
+  // On Linux dev boxes the gateway runs under a `papercup-inference-gateway`
+  // systemd --user unit (Restart=always) — but macOS/Windows desktops have no
+  // systemd, so a packaged app had NO gateway and NO supervisor there. This
+  // block makes the bg-host the cross-platform supervisor: port-probe-first
+  // (ADOPTS an externally-managed gateway — e.g. the systemd unit — instead of
+  // double-spawning), spawn + respawn-with-backoff otherwise
+  // (gateway-sidecar-spawn.ts, same machinery as the substrate/spawner
+  // sidecars). Default ON where backgroundWorkers run; kill-switch
+  // PAPERCUSP_GATEWAY_SUPERVISE=0. Deliberately env-gated, NOT getFlag():
+  // flags resolve false when PostHog is unreachable at boot (the L935
+  // stall-waker lesson) and the gateway must come up unconditionally.
+  // Fully guarded — a supervision failure can never wedge boot.
+  if (
+    backgroundWorkers &&
+    !utilityHost &&
+    process.env.PAPERCUSP_GATEWAY_SUPERVISE !== '0'
+  ) {
+    void (async () => {
+      try {
+        const { ensureGatewaySidecar, registerGatewaySidecarShutdownHooks } =
+          await import('@papercusp/operator-core/lib/inference-gateway/gateway-sidecar-spawn');
+        const t0 = Date.now();
+        const outcome = await ensureGatewaySidecar();
+        registerGatewaySidecarShutdownHooks();
+        console.log(
+          `[gateway-sidecar] supervision up in ${Date.now() - t0}ms — ${outcome}`,
+        );
+      } catch (err) {
+        console.warn(
+          '[gateway-sidecar] supervision failed (non-fatal; agents fall back to direct/default credential paths):',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
+
   // [harness-state P-003a] Registry coverage + peer-log drift guard (fail-loud,
   // non-fatal). Asserts every live harness_shared table is intentionally
   // classified by the two-axis registry (lib/harness-state/table-registry.ts)

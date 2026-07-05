@@ -47,7 +47,7 @@ function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
  *  - `work-feed-stuck` — a dead routine escalates (structural); placeable-but-stuck
  *    or stranded-on-a-resolved-constraint nudges the Queen.
  *  - `bees-churning` — churn / dead claims nudge the Queen to re-place.
- *  - `escalation-aging` — aging escalations nudge the Queen to triage.
+ *  - `escalation-aging` — aging human-attention escalations surface to the owner.
  *  - `observation-dark` — a flat lane while the fleet runs is observed.
  */
 export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
@@ -272,9 +272,9 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       subject: 'escalations',
       detail: `${plans.agingEscalations} escalation(s) aging past the attention threshold.`,
       suggestedAction: {
-        type: 'nudge',
-        target: 'mug',
-        message: `Queen — ${plans.agingEscalations} escalation(s) are aging; triage them before they age further.`,
+        type: 'escalate',
+        target: 'owner',
+        message: `${plans.agingEscalations} human-attention escalation(s) have aged past the attention threshold. Review the Planning Needs you queue and resolve, answer, or dismiss stale items; the Queen cannot clear owner-decision backlog by being nudged.`,
       },
     });
   }

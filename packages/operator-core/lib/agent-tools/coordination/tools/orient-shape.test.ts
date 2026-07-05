@@ -41,7 +41,21 @@ function fixture(n = 20) {
       recent: Array.from({ length: 10 }, (_, i) => ({ ts: `t${i}`, kind: 'message', from: 'su-x', summary: 'm'.repeat(400), body: 'b'.repeat(800) })),
     },
     memory: { query: 'q', hits: Array.from({ length: 5 }, (_, i) => ({ id: i, memory: 'x'.repeat(900), score: 0.5 })) },
-    planEvents: { total: 40, recent: Array.from({ length: 10 }, (_, i) => ({ kind: 'e', i })) },
+    planEvents: {
+      total: 40,
+      recent: Array.from({ length: 10 }, (_, i) => ({
+        kind: 'plan_event',
+        event: 'now_updated',
+        plan_slug: 'token-plan',
+        detail: `P-${String(i).padStart(3, '0')}`,
+        after: `full plan now body ${i} ${'a'.repeat(900)}`,
+      })),
+    },
+    fleetCatchUp: {
+      fleet: 'fleet-a',
+      total: 10,
+      recent: Array.from({ length: 10 }, (_, i) => ({ kind: 'message', from: 'su-x', body: `fleet message ${i} ${'f'.repeat(900)}` })),
+    },
     // Standing facts: mostly noisy workspace-scope, with the load-bearing owner +
     // harness facts buried in the middle (they must survive the count cap).
     facts: [
@@ -89,10 +103,29 @@ describe('shapeOrient trimmed', () => {
     const memory = out.memory as { hits: Array<{ memory: string }>; hitsTruncated?: unknown };
     expect(memory.hits).toHaveLength(3);
     expect(memory.hits[0].memory.length).toBeLessThanOrEqual(220);
-    expect((out.planEvents as { recent: unknown[] }).recent).toHaveLength(5);
+    const events = out.planEvents as { recent: Array<{ after: string; plan_slug: string }>; recentTruncated?: unknown };
+    expect(events.recent).toHaveLength(5);
+    expect(events.recent[0].plan_slug).toBe('token-plan');
+    expect(events.recent[0].after.length).toBeLessThanOrEqual(220);
+    expect(events.recentTruncated).toBeDefined();
+    const catchUp = out.fleetCatchUp as { recent: Array<{ body: string }>; recentTruncated?: unknown };
+    expect(catchUp.recent).toHaveLength(5);
+    expect(catchUp.recent[0].body.length).toBeLessThanOrEqual(220);
+    expect(catchUp.recentTruncated).toBeDefined();
     expect(out.self).toBe('su-abc');
     expect(out.intentDeclared).toBe(true);
     expect(out.payloadTier).toBe('trimmed');
+  });
+
+  it('caps long plan-event prose even when the event count is not truncated', () => {
+    const out = shapeOrient(
+      { planEvents: { total: 1, recent: [{ event: 'item_added', after: 'x'.repeat(900), detail: 'y'.repeat(900) }] } },
+      'trimmed',
+    ) as { planEvents: { recent: Array<{ after: string; detail: string }>; recentTruncated?: unknown } };
+    expect(out.planEvents.recent).toHaveLength(1);
+    expect(out.planEvents.recent[0].after.length).toBeLessThanOrEqual(220);
+    expect(out.planEvents.recent[0].detail.length).toBeLessThanOrEqual(220);
+    expect(out.planEvents.recentTruncated).toBeUndefined();
   });
 
   it('caps standing facts with a pointer, keeping owner + harness scope first (WI-2859)', () => {

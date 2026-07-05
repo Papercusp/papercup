@@ -45,6 +45,7 @@ import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
+import { runGatewaySidecarMain, gatewayLogLine } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
@@ -437,6 +438,23 @@ async function main(): Promise<void> {
   // sidecar — serve.mjs is re-execed with PAPERCUSP_SPAWNER_SIDECAR_MODE=1.
   if (process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') {
     runSpawnerSidecarServer();
+    return;
+  }
+  // PACKAGED inference-gateway sidecar (cross-platform-hardening P-006): same
+  // re-exec divert — gateway-sidecar-spawn.ts re-execs THIS bundled serve.mjs
+  // with PAPERCUSP_GATEWAY_SIDECAR_MODE=1 (a bundle has no tsx / no bin.ts on
+  // disk). Mirror bin.ts's fatal policy: a startup failure exits 1 so the
+  // supervisor's respawn loop restarts us, fail-closed. The gateway's HTTP
+  // server keeps the process alive after a successful start.
+  if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1') {
+    runGatewaySidecarMain().catch((e) => {
+      try {
+        gatewayLogLine(`fatal: ${(e as Error)?.stack || String(e)}`);
+      } catch {
+        console.error('[inference-gateway] fatal:', e);
+      }
+      process.exit(1);
+    });
     return;
   }
   const args = new Set(process.argv.slice(2));
