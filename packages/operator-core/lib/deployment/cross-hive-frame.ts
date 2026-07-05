@@ -124,7 +124,7 @@ async function main(): Promise<void> {
   } else {
     // A: send one ask to B and await the answer. The B-05 egress default-deny means
     // A's own config must carry the `out` grant for (B, ask) — the frame's stand-in
-    // for the owner's hive:cross_grant.
+    // for the owner's pot:cross_grant.
     const outboundGrants: CrossHiveGrant[] = [{ peerHivePubkey: cfg.peerPubkey, allowedKinds: ['ask'] }];
     const wiring = wireCrossHiveBoundary({
       workspaceId: 'xhive-e2e', hiveSlug: 'hive-a', hivePubkey: cfg.selfPubkey,

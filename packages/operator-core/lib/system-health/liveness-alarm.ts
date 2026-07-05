@@ -168,7 +168,7 @@ export function evaluateLivenessAlarm(
         summary:
           `hive-coordination-health AGENT emission dark ${Math.round(darkMs / 3_600_000)}h — overwatch is enabled but STOPPED ` +
           `(last wake ${new Date(ow.lastWakeAt).toISOString()}). The scheduled pulse keeps a deterministic floor, but the ` +
-          `agent trend is blind. overwatch:start to resume, or turn the papercusp-overwatch flag OFF to make the pause explicit.`,
+          `agent trend is blind. kettle:start to resume, or turn the papercusp-overwatch flag OFF to make the pause explicit.`,
       });
     }
   }

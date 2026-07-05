@@ -70,7 +70,7 @@ export function tooldefCatalogToCapabilities(defs: readonly ToolDefinitionMeta[]
  * (`requirePrincipal: false` — these NEVER enter the legacy `getCatalog()`),
  * and plugin tools. The palette listing + invoke must read THIS shape — the
  * legacy-catalog read silently dropped every role-gated group (hive:*,
- * flags:*, …), so the Start Hive button got `no tool named "hive:start"`.
+ * flags:*, …), so the Start Hive button got `no tool named "pot:start"`.
  */
 export interface ProjectedToolMeta {
   description: string;

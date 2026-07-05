@@ -970,7 +970,7 @@ describe('dead-holder claim release (reclaim frees taken_by/assignee/plan claims
     expect(await featureClaim('F-103')).toEqual({ taken_by: null, status: 'todo' });
   });
 
-  it('sweepStaleSpawnClaims: absent-row guard — a young claim with NO nursery row is kept (bee:spawn’s claim-then-insert window), an old one is freed', async () => {
+  it('sweepStaleSpawnClaims: absent-row guard — a young claim with NO nursery row is kept (cup:spawn’s claim-then-insert window), an old one is freed', async () => {
     await insertClaimedFeature('F-104', 's-ghost-young', { takenAgoSec: 5 * 60 });
     await insertClaimedFeature('F-105', 's-ghost-old', { takenAgoSec: 2 * 3600 });
     const released = await sweepStaleSpawnClaims(db.sql);

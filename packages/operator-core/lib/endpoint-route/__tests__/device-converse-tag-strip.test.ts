@@ -210,9 +210,9 @@ describe('POST /device/operator/converse — persona role resolution (P-012)', (
   it('loads the sentinel brain when humanFacingRole=sentinel', async () => {
     humanFacingRole = 'sentinel';
     await runConverse('hey');
-    expect(lookupByMcpName).toHaveBeenCalledWith('sentinel:converse');
+    expect(lookupByMcpName).toHaveBeenCalledWith('papercup:converse');
     const [, toolName, args] = dispatchProjectedToolStream.mock.calls[0];
-    expect(toolName).toBe('sentinel:converse');
+    expect(toolName).toBe('papercup:converse');
     expect((args as { role?: string }).role).toBe('sentinel');
   });
 

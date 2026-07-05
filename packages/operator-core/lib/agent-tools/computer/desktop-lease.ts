@@ -5,7 +5,7 @@
  * A hive whose bees should operate a GUI gets ONE leased sandbox desktop. The
  * bee spawn env then points capability:computer at it via `desktopEnvForHive()`
  * (the operator merges that into the child env — the same way the frame path
- * sets `DISPLAY` from `acquireAgentDisplay`). Teardown rides hive:dissolve.
+ * sets `DISPLAY` from `acquireAgentDisplay`). Teardown rides pot:dissolve.
  *
  * In-process state (a desktop is a live child of THIS operator loop — if the loop
  * dies its Xvfb dies with it), mirroring `display-allocator`'s rationale: a
@@ -82,7 +82,7 @@ export function desktopEnvForHive(hiveSlug: string): Record<string, string> {
   };
 }
 
-/** Tear down a hive's desktop (call from hive:dissolve). Idempotent. */
+/** Tear down a hive's desktop (call from pot:dissolve). Idempotent. */
 export async function releaseHiveDesktop(hiveSlug: string): Promise<void> {
   const d = leases.get(hiveSlug);
   if (!d) return;

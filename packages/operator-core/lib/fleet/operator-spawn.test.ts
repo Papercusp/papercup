@@ -710,7 +710,7 @@ describe('spawnAgentInHarness — role + cap validation', () => {
   });
 
   it('accepts the generic `bee` role WITHOUT a chunk (no pipeline guard — local-hive P-011)', async () => {
-    // The flip-to-real-path criterion: bee:spawn { role:'bee' } must pass
+    // The flip-to-real-path criterion: cup:spawn { role:'bee' } must pass
     // admission with no chunkId (unlike `worker`, which is chunk-coupled).
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
     expect(res.ok).toBe(true);

@@ -7,7 +7,7 @@
  *   lookupHiveForRepo (P-005)            → join offer when the repo's Hive exists
  *   cloneGithubRepo (P-008 dogfood-1b)   → the member checkout (+ default branch)
  *   detectFromRepo → detectionToOverride → the member's blueprint, test-verified
- *   createHiveHarness (hive:create)      → the Hive home (eager keypair mint)
+ *   createHiveHarness (pot:create)      → the Hive home (eager keypair mint)
  *   harness:create { hive }              → the member, born INTO the Hive (D-010)
  *   registry github coords (P-002)       → fork-PR context + member_repos derivation
  *   publishCreatedHive (P-007)           → visibility-gated announce + bindings
@@ -243,7 +243,7 @@ export async function defaultCreateMember(args: {
     // The narrow `{ error }` pick swallowed `parseError` / `errors[]` / `missing`,
     // so a live 'blueprint invalid' red reached the smoke output with the failing
     // field unnamed — undiagnosable from the artifact alone. Flatten the detail
-    // fields into the error string so hive:create_from_repo's `message` names them.
+    // fields into the error string so pot:create_from_repo's `message` names them.
     const parsed = JSON.parse(res.content[0].text) as {
       ok?: boolean;
       error?: string;

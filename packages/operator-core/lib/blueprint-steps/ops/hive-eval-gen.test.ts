@@ -1,5 +1,5 @@
 /**
- * Unit coverage for the `hive-eval:gen` CoordOp wrapper (hive-eval-gen.ts).
+ * Unit coverage for the `pot-eval:gen` CoordOp wrapper (hive-eval-gen.ts).
  *
  * The op delegates the orchestration to runHiveEvalGen (mocked here — no PG /
  * git / LLM); what's under test is THIS file's surface: the workspaceId guard,
@@ -28,7 +28,7 @@ afterEach(() => {
 
 describe('hiveEvalGenOp metadata', () => {
   it('declares its name + schemas and is registered on import', () => {
-    expect(hiveEvalGenOp.name).toBe('hive-eval:gen');
+    expect(hiveEvalGenOp.name).toBe('pot-eval:gen');
     expect(hiveEvalGenOp.argsSchema).toBeTruthy();
     expect(hiveEvalGenOp.resultSchema).toBeTruthy();
     expect(registerCoordOp).toHaveBeenCalledWith(hiveEvalGenOp);
@@ -90,6 +90,6 @@ describe('hiveEvalGenOp.run — guard + outcome mapping', () => {
     runHiveEvalGen.mockResolvedValue({ action: 'ran', codeSha: 's', capUsd: 2 });
     const c = ctx();
     await hiveEvalGenOp.run({ budgetUsd: 2 }, c as never);
-    expect(c.log).toHaveBeenCalledWith(expect.stringMatching(/hive-eval:gen action=ran/));
+    expect(c.log).toHaveBeenCalledWith(expect.stringMatching(/pot-eval:gen action=ran/));
   });
 });

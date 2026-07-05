@@ -77,7 +77,7 @@ import './tools/invoke';
 
 import './operator/stats';
 import './operator/converse';
-// Sentinel-as-Herald: the sentinel:converse alias (same brain, Herald persona).
+// Sentinel-as-Herald: the papercup:converse alias (same brain, Herald persona).
 import './operator/sentinel-converse';
 import './architect/chat';
 import './oracle/chat';
@@ -140,15 +140,15 @@ import './hive/pause';
 import './hive/set_steering';
 import './hive/get_steering';
 // overwatch-role-2026-06-15 B-07 — the autonomous system-health supervisor's
-// control surface (start/pause its loop), sibling to hive:start/pause:
+// control surface (start/pause its loop), sibling to pot:start/pause:
 import './overwatch/start';
 import './overwatch/pause';
 // overwatch-role-2026-06-15 B-04 — the overwatch's declare-next-wake verb (its own
-// channel, gated coord:write so it can't touch the Queen's hive:declare-wake):
+// channel, gated coord:write so it can't touch the Queen's pot:declare-wake):
 import './overwatch/declare_wake';
 // overwatch-role-2026-06-15 B-04 — the wake-loop module: registers the
 // `system:overwatch-launch` action + the B-07 wake-bridge waker at boot (so an
-// `overwatch:start` in THIS process finds a wired waker, not the fail-soft no-op).
+// `kettle:start` in THIS process finds a wired waker, not the fail-soft no-op).
 import '../overwatch/loop';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
@@ -798,7 +798,7 @@ import './fleet/tree';
 import './fleet/supervise';
 import './fleet/admit';
 import './fleet/governor';
-// bee:spawn — the operator→bee launch verb over the same durable nursery
+// cup:spawn — the operator→bee launch verb over the same durable nursery
 // (Brief 4, agent-briefs-2026-06-05; renamed from fleet:spawn per WI-1764 #3 so
 // the namespace encodes the substrate: bee:* = the autonomous queen↔bee loop,
 // fleet:* = visible desktop su members). chat <spawn> tags, the operator brain's
@@ -940,7 +940,7 @@ import './harness/create';
 // P-009 (B3) — kind #1 harness creation: deterministically generate an
 // `extends: coding` blueprint from an existing repo, then compose harness:create.
 import './harness/generate_from_repo';
-// WI-1563 — harness:configure: the non-hive counterpart of hive:update's
+// WI-1563 — harness:configure: the non-hive counterpart of pot:update's
 // configOverrides half (set per-instance blueprint-knob overrides on an
 // EXISTING harness that isn't a hive).
 import './harness/configure';

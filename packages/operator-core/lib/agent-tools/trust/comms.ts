@@ -33,7 +33,7 @@ export default defineTool({
       "Auto-RUN of their verified work — trust:add. The hive-wide DEFAULT tier — author comms.defaultTier. A plain tier bump with no backlog to clear — action:'set' suffices; 'grant' only helps when there IS a quarantine backlog to drain.",
     chaining:
       "{action:'requests'} → {action:'grant', githubUserId, tier:'message'} (or {action:'set', tier:'wake'} to bump only) — picked up within ~30s. {action:'gate', granted:true} → DG-5 counts their verdicts next round.",
-    seeAlso: ['trust:add (auto-run grant — separable)', 'trust:list (auto-run list)', 'hive:set-steering (policy authoring)'],
+    seeAlso: ['trust:add (auto-run grant — separable)', 'trust:list (auto-run list)', 'pot:set-steering (policy authoring)'],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

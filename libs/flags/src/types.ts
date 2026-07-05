@@ -137,7 +137,7 @@ export const FLAGS = {
   // remains the per-host deliberate remote-admin opt-out.
   ENDPOINT_AUTH_TIERS: "papercusp-endpoint-auth-tiers",
   // queen-model-tier-selection-2026-06-11 (P-005): when ON, the Queen's
-  // bee:spawn `tier` picks are honored (resolved + clamped to [role floor,
+  // cup:spawn `tier` picks are honored (resolved + clamped to [role floor,
   // role ceiling]). OFF = the kill-switch: a queen-supplied tier is ignored
   // and her spawns run at the role's standing default. Human/operator tier
   // and model args are honored regardless — this gates only the Queen's
@@ -271,27 +271,27 @@ export const FLAGS = {
   // per-call. DEFAULT ON (not in DARK_FLAGS). OFF = the kill-switch if the guard
   // ever false-positives.
   WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
-  // EI-309 (Queen frontier-blind wake wedge): when ON, hive:declare-wake refuses
+  // EI-309 (Queen frontier-blind wake wedge): when ON, pot:declare-wake refuses
   // an event-only/none declaration (no time component) while the home harness has
   // unplaced todo work items — forcing the Queen to place them or arm a time-wake
   // instead of sleeping on phantom self-claim. force:true overrides per-call.
   // OFF = the kill-switch if the guard ever wrongly blocks a declaration.
   HIVE_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
   // learning-packs-2026-06-11 (P-005): seeding a new hive's mem0 store with the
-  // selected learning pack at hive:create, plus the learning_packs:* management
+  // selected learning pack at pot:create, plus the learning_packs:* management
   // verbs and the Learnings UI surfaces. OFF skips seeding + hides pack
   // management; the hive:<slug> memory scope itself stays live (recall of an
   // unseeded pool is harmless).
   LEARNING_PACKS: "papercusp-learning-packs",
   // per-hive-learning-loops-2026-06-14 (P-020, D-003/D-008): provisioning a
-  // per-HIVE learning loop at hive:create — a DARK gym_autoloop_config row
+  // per-HIVE learning loop at pot:create — a DARK gym_autoloop_config row
   // (enabled:false, budget:null) + an INACTIVE scout routine under the hive's
   // own install_slug (NOT @singleton). Both ship inert: the gym tick doubly
   // refuses a disabled+unbudgeted row, and an inactive routine never fires —
   // the owner arms each via the gym/routines UI. Flag-gated + best-effort: a
   // provision failure warns and reports, never fails the create. OFF skips
   // provisioning (a hive still works; it just has no per-hive loop until armed
-  // by hand). The matching hive:dissolve teardown is P-021.
+  // by hand). The matching pot:dissolve teardown is P-021.
   PER_HIVE_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
   // per-hive-git-and-release-gate-2026-06-29 (P-009, D-008): gates seeding the per-hive
   // staging→main green-checkpoint (+ release-trigger when a deploy target is declared) for
@@ -781,7 +781,7 @@ export const FLAGS = {
   // hive-control-surface-2026-06-14: gates the central LOCAL-hive start/stop
   // control — the Hives-tab LocalHivesControl panel + the always-visible header
   // HivesRunningPill ("N running" + click-to-expand per-hive toggles). Reads
-  // hive.controlState; writes via hive:start / hive:pause. DEFAULT ON (alpha
+  // hive.controlState; writes via pot:start / pot:pause. DEFAULT ON (alpha
   // flags-default-on): additive surfacing over the existing gated controls; OFF
   // = the new surfaces render nothing (per-hive start/stop in AdvNowRunning is
   // unchanged either way).
@@ -983,7 +983,7 @@ export const FLAGS = {
   // instead of appending beats to the append-only peer-log — beat-like data immortalized
   // in logs is the 256×10 scaling wall (heartbeats ≈ half the hive's write budget).
   // OFF = today's log-append announce loop (wire-presence.ts), byte-identical. ON = the
-  // announce loop broadcasts device-signed gossip frames; hive:leave publishes a signed
+  // announce loop broadcasts device-signed gossip frames; pot:leave publishes a signed
   // del tombstone frame. CUTOVER flag: every peer must carry the gossip READER before a
   // writer flips (a gossip-only announcer is invisible to a log-only reader), so it ships
   // dark until both dogfood machines updated; owner flips after a 2-machine verify.

@@ -23,7 +23,7 @@
  * SEMANTICS:
  *   - `put` — upsert the device's SharedPresenceRow (TTL/staleness stays the
  *     reader's concern, e.g. PRESENCE_STALE_MS / the lock authority's window).
- *   - `del` — the leave TOMBSTONE (hive:leave semantics preserved from
+ *   - `del` — the leave TOMBSTONE (pot:leave semantics preserved from
  *     presence-announce.buildPresenceTombstoneOp): peers drop the leaver's row
  *     at once instead of waiting out the TTL. Going offline is still transient
  *     (no del on shutdown) — the TTL models that.

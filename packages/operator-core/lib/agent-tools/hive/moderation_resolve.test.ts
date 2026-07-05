@@ -1,5 +1,5 @@
 /**
- * moderation_resolve.test.ts — hive:moderation_resolve HANDLER, bulk keyed-array
+ * moderation_resolve.test.ts — pot:moderation_resolve HANDLER, bulk keyed-array
  * contract (bulk-endpoint-standardization-2026-06-21 P-006). The owner gate
  * (isCanonicalHiveOwner — WI-2000: the canonical-ownership check) + the reports
  * store (setReportStatus) are mocked. Pins the inline n=1 form, the items:[…]
@@ -32,7 +32,7 @@ beforeEach(() => {
   h.setReportStatus.mockImplementation(async (_ws: string, _hive: string, reportId: string, status: string) => ({ reportId, status }));
 });
 
-describe('hive:moderation_resolve handler (bulk keyed-array, P-006)', () => {
+describe('pot:moderation_resolve handler (bulk keyed-array, P-006)', () => {
   it('owner gate fails the WHOLE call when this Swarm does not hold the key', async () => {
     h.isCanonicalHiveOwner.mockResolvedValue(false);
     const b = await env({ hive: 'sheets', reportId: 'r1', status: 'actioned' });

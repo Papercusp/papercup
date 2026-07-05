@@ -131,7 +131,7 @@ export async function cleanupPlans(
  * keyed at Hive-home grain), so a concrete slug must resolve through
  * `hiveHomeSlugForHarness()` or the tool THROWS. The registry read answers
  * nothing for a throwaway slug, so the resolver falls to its `getHiveBySlug`
- * fallback — this row — exactly the shape `hive:create` writes in production.
+ * fallback — this row — exactly the shape `pot:create` writes in production.
  * Synthetic identity: a random 32-byte pubkey (UNIQUE constraint; pgcrypto is a
  * baseline prereq) + a test keychain id nothing dereferences.
  */

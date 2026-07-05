@@ -1233,7 +1233,7 @@ defineTestDomain({
     {
       id: 'placement',
       label: 'Placement & nursery',
-      description: 'bee:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.',
+      description: 'cup:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.',
       globs: [
         'packages/operator-core/lib/fleet/operator-spawn.test.ts',
         'packages/operator-core/lib/fleet/assignments*.test.ts',
@@ -1257,7 +1257,7 @@ defineTestDomain({
     {
       id: 'hive-wake',
       label: 'Pot wake',
-      description: 'The Queen wake routine — hive:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
+      description: 'The Queen wake routine — pot:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
       globs: ['packages/operator-core/lib/hive/**/*.test.ts'],
     },
     {
@@ -1422,7 +1422,7 @@ defineTestDomain({
     {
       id: 'tools',
       label: 'Hive agent tools',
-      description: 'The agent-facing hive lifecycle tools: hive:create / hive:add-member, discovery:hives, and harness create→hive-membership wiring.',
+      description: 'The agent-facing hive lifecycle tools: pot:create / pot:add-member, discovery:hives, and harness create→hive-membership wiring.',
       globs: [
         'packages/operator-core/lib/agent-tools/hive/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/discovery/hives.test.ts',

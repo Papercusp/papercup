@@ -41,7 +41,7 @@ const MAX_TASKS = process.env.XBENCH_MAX_TASKS ? Number(process.env.XBENCH_MAX_T
 
 // TEARDOWN-ON-EXIT (P-033 Fix 4 — close the D-022 orphan-respin gap). Every hive this launcher creates is
 // registered here the instant it exists (the driver's onHiveCreated hook). A SIGTERM/SIGINT (e.g. the
-// Anthropic API rate-limit kill) or any process exit dissolves EVERY registered hive — full hive:dissolve
+// Anthropic API rate-limit kill) or any process exit dissolves EVERY registered hive — full pot:dissolve
 // (Queen wake cleared + every bee subtree cancelled + the gymAutoloop/scoutRoutine learning loops torn
 // down), so no orphan re-spins opus after the launcher dies. The driver ALSO tears down on its normal/catch
 // path; this is the belt for a SIGKILL-class exit that bypasses the driver entirely. Idempotent.
@@ -160,7 +160,7 @@ async function main() {
   // "the bus does NOT cross processes"). There is NO separate per-hive cap (confirmed: no maxBees / wave
   // width / swarm cap in hive/** or fleet/**) — this single number IS the hive's concurrency limit.
   //
-  // THE BUG: the real Queen's `bee:spawn` runs in the LONG-RUNNING :3170 host (startHive →
+  // THE BUG: the real Queen's `cup:spawn` runs in the LONG-RUNNING :3170 host (startHive →
   // fireLaunchBlueprint('hive') → loopback invoke to :3170), NOT in this launcher process. The prior code
   // set the cap only in the LAUNCHER's cache, so :3170's cache stayed at the default 16 — and with 11 bees
   // < 16, admitSpawn admitted them all at once (no contention; the Queen made no sequencing decision). The

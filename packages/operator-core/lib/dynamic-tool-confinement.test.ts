@@ -41,7 +41,7 @@ describe('P-003 adversarial — NO CAPABILITY MINTING / ESCALATION', () => {
     'platform:contribute',
     'secrets:read',
     'processes:kill',
-    'bee:spawn',
+    'cup:spawn',
   ]) {
     it(`a tool declaring "${mint}" is REJECTED at derivation (mints_capability)`, () => {
       const r = deriveDynamicToolEnvelope({ capabilities: ['intel:read', mint] });

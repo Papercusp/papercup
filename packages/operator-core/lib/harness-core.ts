@@ -305,7 +305,7 @@ export async function checkHomeHarnessResolves(
       aliased: false,
       message:
         `operator-home harness "${slug}" does not resolve to any registered project — ` +
-        `fire-paths, the auto-implement dispatcher, and bee:spawn will all 404 ("unknown project"). ` +
+        `fire-paths, the auto-implement dispatcher, and cup:spawn will all 404 ("unknown project"). ` +
         `Register it, fix ${HOME_HARNESS_ENV}, or add a retired-slug alias in operator-home-harness.ts.`,
     };
   }
@@ -324,7 +324,7 @@ export async function checkHomeHarnessResolves(
 
 /**
  * Resolve a harness slug → the workspace_id that carries it, via the AUTHORITATIVE
- * harness registry (`harness_shared.harness_registry` — what hive:create /
+ * harness registry (`harness_shared.harness_registry` — what pot:create /
  * harness:create write and the work-items path reads). This is the de-facto
  * source of truth for the generic/hive world; `harness_shared.projects` is only
  * the org/department blueprint's PROJECTION (business cols owning_dept/vertical/

@@ -1,11 +1,11 @@
 /**
- * sentinel:converse — the Sentinel brain alias.
+ * papercup:converse — the Sentinel brain alias.
  *
  * The sentinel watcher is re-homed onto the always-on, voice-first **Sentinel**:
  * the SAME converse brain as `operator:converse`, only loaded with the sentinel
  * persona set (sentinel.persona[.<mode>-mode].md / .converse.md / .tools.md under
  * apps/operator/prompts/). Rather than fork the ~500-line converse handler, this
- * alias registers a thin tool under the `sentinel:converse` name that delegates
+ * alias registers a thin tool under the `papercup:converse` name that delegates
  * to the operator converse handler with `role` defaulted to 'sentinel'.
  *
  * The route (`/agent-mcp/operator-converse`) resolves `${role}:converse`, so a
@@ -13,7 +13,7 @@
  * 'sentinel' (the wire arg can still override, but the default IS the point).
  *
  * Registered the same way `operator:converse` is — imported by agent-tools/index
- * so its `defineTool` runs at module load and `lookupByMcpName('sentinel:converse')`
+ * so its `defineTool` runs at module load and `lookupByMcpName('papercup:converse')`
  * resolves it. The capability + allowlist gates are the sentinel's
  * (operator:converse cap on the BLUEPRINT_ROLE_CAPS.sentinel grant; the role is
  * already allowlisted on the underlying tool).
@@ -34,7 +34,7 @@ const sharedHandler = (operatorConverse as unknown as {
 }).handler;
 
 export default defineTool({
-  name: 'sentinel:converse',
+  name: 'papercup:converse',
   expose: { ipc: true },
   profile: 'engineer',
   description:

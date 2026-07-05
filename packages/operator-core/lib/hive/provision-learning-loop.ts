@@ -1,6 +1,6 @@
 /**
  * provisionHiveLearningLoop — lay down the hive's learning-loop records at
- * hive:create (per-hive-learning-loops-2026-06-14 P-020; D-003 + D-008).
+ * pot:create (per-hive-learning-loops-2026-06-14 P-020; D-003 + D-008).
  *
  * The Hive (kind:'hive') is the tenant of ONE learning loop (D-008). This
  * provisions its two execution surfaces, both SHIPPED INERT so a fresh hive is
@@ -14,7 +14,7 @@
  *   (b) an INACTIVE scout routine (`scout-cycle`, target system:scout-cycle).
  *       With WORKSPACE_COORDINATION off, it is the legacy per-hive routine.
  *       With WORKSPACE_COORDINATION on, it is keyed to the workspace sentinel so
- *       there is ONE Scout brain per workspace (matching scout:cycle's runtime
+ *       there is ONE Scout brain per workspace (matching blender:cycle's runtime
  *       sentinel) while hives keep their own bee execution / repo / membership.
  *       active:false ⇒ the routines engine never ticks it until armed. Its
  *       cycle budget lives in payload_template.budget.maxCostUsd
@@ -28,7 +28,7 @@
  * workspace-brain scope helper so it follows the shared Queen/Scout/Overwatch
  * re-key. There is NO `?? operatorHomeHarnessSlug()` env default here (P-022
  * retires those env-slug seed scripts for gym/scout). The matching teardown at
- * hive:dissolve (delete the per-hive rows + the governor registrants) is P-021.
+ * pot:dissolve (delete the per-hive rows + the governor registrants) is P-021.
  */
 import type { Sql } from 'postgres';
 import { setAutoloop } from '../gym/control-plane';
@@ -254,14 +254,14 @@ export interface TeardownHiveLearningLoopResult {
 
 /**
  * teardownHiveLearningLoop — the lifecycle inverse of provisionHiveLearningLoop,
- * called from hive:dissolve (per-hive-learning-loops-2026-06-14 P-021; D-003).
+ * called from pot:dissolve (per-hive-learning-loops-2026-06-14 P-021; D-003).
  * Removes EVERYTHING the provision laid down for this hive:
  *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=hiveSlug),
  *   (b) the inactive scout routine (install_slug=hiveSlug, name='scout-cycle'),
  *   (c) the learning-governor registrants `gym:<hive>` + `scout:<hive>`.
  *   (d) the git-sync pipeline routines (system:git-sync/green-checkpoint/release-trigger)
  *       seeded for this install — git-sync-dx-hardening P-007 (they leaked per benchmark
- *       run; both dissolve paths — hive:dissolve + dissolveBenchHive — flow through here).
+ *       run; both dissolve paths — pot:dissolve + dissolveBenchHive — flow through here).
  *
  * Mirrors the provision's `undo` (which removes a+b), extended with the governor
  * registrants the provision NEVER writes (the gym/scout tick mirrors write those

@@ -33,7 +33,7 @@ export default defineTool({
   capability: 'operator:write',
   guidance: {
     when: 'Tune the release pipeline live — e.g. shorten deployBackoffMs to re-deploy a fixed target sooner during an incident, or raise stallReds/stallAgeMs to quiet a noisy stall alert.',
-    notWhen: 'For the placement watchdog use hive:control_policy; for migrations use db:migrate-policy. vitest forks / suite-timeout (green-checkpoint.ts) and the health-probe timing are not covered here (separate consumers — follow-up).',
+    notWhen: 'For the placement watchdog use pot:control_policy; for migrations use db:migrate-policy. vitest forks / suite-timeout (green-checkpoint.ts) and the health-probe timing are not covered here (separate consumers — follow-up).',
     chaining: '/admin/git shows the pipeline; config:list-overrides shows the active override; config:reset-overrides reverts it.',
     seeAlso: [
       'release:checkpoint-run (run the checkpoint suite now under this config)',

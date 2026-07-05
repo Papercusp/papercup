@@ -3,7 +3,7 @@
  * the autonomous cadence PRIMITIVE (resolves b6c3f's invariants-contract Risk A).
  *
  * A `routines` row with `trigger_kind='cron'` + `target_role='system:scout-cycle'`
- * ticks FREQUENTLY (provisioned INACTIVE per-hive at hive:create —
+ * ticks FREQUENTLY (provisioned INACTIVE per-hive at pot:create —
  * lib/hive/provision-learning-loop.ts). On each tick the
  * routines engine runs THIS handler inline (one durable DBOS step), which calls
  * {@link runScoutTick} — and runScoutTick SELF-GATES on {@link shouldRunScoutCycle}
@@ -35,7 +35,7 @@ import {
 
 /**
  * The cadence-gated tick orchestration this action runs is SHARED with the
- * `scout:cycle` deterministic blueprint step via `runScoutCycleTick`
+ * `blender:cycle` deterministic blueprint step via `runScoutCycleTick`
  * (deterministic-blueprints-migration-2026-06-13 P-121 / D-004 — provably
  * behavior-neutral: one self-gated tick, two callers, the SAME production deps).
  * Re-exported here so the action's existing test contract (which imports them from

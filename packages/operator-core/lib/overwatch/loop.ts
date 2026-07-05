@@ -18,13 +18,13 @@
  *      `<system-reminder>` tail block (mirrors the Queen's QUEEN_WAKE_BRIEF).
  *
  *   2. **The waker** (`registerOverwatchWaker`, wake-bridge.ts) — the B-07 ↔ B-04
- *      seam: `overwatch:start` requests an immediate wake / `overwatch:pause`
+ *      seam: `kettle:start` requests an immediate wake / `kettle:pause`
  *      clears the pending one, both through this module's `requestWake`/`clearWake`,
  *      which arm/clear the one-shot `overwatch-wake` routine via
  *      `declareOverwatchTimeWake`/`clearOverwatchTimeWake` (liveness.ts).
  *
  *   3. **declare-next-wake** — NOT here. The overwatch declares its own next wake
- *      at turn-end via the `overwatch:declare-wake` tool (agent-tools/overwatch/
+ *      at turn-end via the `kettle:declare-wake` tool (agent-tools/overwatch/
  *      declare_wake.ts), which calls the SAME `declareOverwatchTimeWake` primitive.
  *      The action deliberately does NOT pre-arm a cadence wake: at a short cadence a
  *      pre-armed wake could fire mid-turn and double-launch the overwatch. So the
@@ -463,7 +463,7 @@ registerSystemAction(OVERWATCH_LAUNCH_ACTION, handleOverwatchLaunch);
 
 /**
  * Wire the real wake-launch into the B-07 control seam (wake-bridge.ts). Until this
- * runs, `overwatch:start`/`overwatch:pause` calls through `requestOverwatchWake`/
+ * runs, `kettle:start`/`kettle:pause` calls through `requestOverwatchWake`/
  * `clearOverwatchWake` are fail-soft no-ops; once registered they arm/clear the
  * one-shot `overwatch-wake` routine the action above fires.
  */

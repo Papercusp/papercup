@@ -41,7 +41,7 @@ const HOST_EXTRAS: HttpToolHostExtras = {
   // Without this the framework's superuser check has no validator and every
   // `?superuser=1` call here was rejected, so an SU shell could reach a
   // built-in tool via MCP but not via its projected HTTP path (e.g. the
-  // bee:spawn admin trigger, Brief 4 of agent-briefs-2026-06-05).
+  // cup:spawn admin trigger, Brief 4 of agent-briefs-2026-06-05).
   validateSuperuser: (req) => {
     const h = new Headers();
     for (const [k, v] of Object.entries(req.headers)) {

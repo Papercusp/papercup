@@ -25,7 +25,7 @@ export const accountsSetSessionOverrideTool = defineTool({
     "Set the owner's session-now account override the fleet honours when picking a pool account to spawn/deploy on (accounts-pool-tab P-004): `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account). Both empty ⇒ no restriction (today's behaviour). Applied as a fail-soft precedence layer BEFORE the headroom/drain selectors; an over-restrictive set falls back to the frame-default credential. `clear:true` wipes both. Returns {ok, override}.",
   guidance: {
     when: 'Steering account selection for the current session — focus the fleet on one account, or route around a flaky/limited one — without removing it from the pool.',
-    notWhen: "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the hive — hive:pause.",
+    notWhen: "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the hive — pot:pause.",
     chaining: 'accounts:set-session-override { excludeAccounts:["acct-b"] } → bees stop spawning on acct-b this session. clear:true resets.',
     seeAlso: [
       'accounts:get-session-override (read the current steering before changing it)',

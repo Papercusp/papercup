@@ -55,7 +55,7 @@ export default defineTool({
       if (reg) {
         const kind = reg.harness_kind ?? 'unknown';
         const surface = kind === 'hive' ? 'hives' : 'non-project harness kinds';
-        const inspect = kind === 'hive' ? 'harness:list or hive:get' : 'harness:list';
+        const inspect = kind === 'hive' ? 'harness:list or pot:get' : 'harness:list';
         return {
           data: null,
           degraded: true,

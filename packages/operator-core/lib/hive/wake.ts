@@ -14,15 +14,15 @@
  *
  *   - **Event wake** — persisted subscriptions (`operator-state key hive_wake`, one
  *     row per workspace) projected into LIVE event-reaction rules
- *     (`registerReactionRule`) that fire the `hive:wake` tool when the subscribed
+ *     (`registerReactionRule`) that fire the `pot:wake` tool when the subscribed
  *     tool-event matches. Re-registered at boot (`registerHiveWakeRules`) since
  *     the rule registry is in-memory.
  *
  *   - **Nothing** — both cleared; the hive sleeps until the user (or a manual
- *     `hive:wake`) wakes it.
+ *     `pot:wake`) wakes it.
  *
  * A **wake floor** (D-002's clamp) stops a confused operator from spinning: a
- * declared time is clamped to ≥ now+floor, and `hive:wake` skips a fire that
+ * declared time is clamped to ≥ now+floor, and `pot:wake` skips a fire that
  * lands within the floor of the previous one (the event-burst debounce).
  */
 import type { Sql } from 'postgres';
@@ -63,14 +63,14 @@ export interface HiveEventSubscription {
   on: string | string[];
   /** Optional declarative condition over the tool event ({args,result,ctx}). */
   when?: DataCondition;
-  /** Why the hive subscribed — surfaced in hive:status + the wake kickoff. */
+  /** Why the hive subscribed — surfaced in pot:status + the wake kickoff. */
   note?: string;
 }
 
 /** The per-workspace hive_wake state row payload. */
 export interface HiveWakeState {
   subscriptions: HiveEventSubscription[];
-  /** ms epoch of the last hive launch fire — the hive:wake floor-debounce input. */
+  /** ms epoch of the last hive launch fire — the pot:wake floor-debounce input. */
   lastWakeAt?: number;
   /** ms epoch of the last declare-wake call (observability). */
   declaredAt?: number;
@@ -137,7 +137,7 @@ export function clampWakeAt(
  * Resolve the EFFECTIVE wake floor for a Hive — MAX(system floor, the owner's
  * `cadence-floor-sec` steering knob), fail-soft to the system floor (P-006, D-005).
  * The single async read the cadence-aware seams (declareHiveTimeWake, urgent-wake,
- * the hive:wake debounce) call once, then thread the number into the pure
+ * the pot:wake debounce) call once, then thread the number into the pure
  * clampWakeAt / withinWakeFloor below.
  */
 export async function effectiveHiveWakeFloorSec(workspaceId: string, installSlug: string): Promise<number> {
@@ -171,7 +171,7 @@ export async function declareHiveTimeWake(
   },
 ): Promise<{ at: Date; clamped: boolean }> {
   // Owner cadence-floor (P-006): the Queen's self-declared wake is clamped up to the
-  // owner's floor. Resolve it here (so every declare-wake path — incl. the hive:declare-wake
+  // owner's floor. Resolve it here (so every declare-wake path — incl. the pot:declare-wake
   // tool — is owner-aware with no call-site change) unless the caller pre-resolved it.
   const floorSec = opts.floorSec ?? (await effectiveHiveWakeFloorSec(opts.workspaceId, opts.installSlug));
   const { at, clamped } = clampWakeAt(opts.at, opts.now, floorSec);
@@ -308,7 +308,7 @@ export async function readHiveWakeState(workspaceId?: string): Promise<HiveWakeS
 /**
  * Project a workspace's persisted subscriptions into LIVE reaction rules.
  * Idempotent: removes every `hive-wake:<ws>#*` rule first, then registers the
- * current set. Each rule fires the `hive:wake` tool (the floor-debounce lives
+ * current set. Each rule fires the `pot:wake` tool (the floor-debounce lives
  * there) with static args carrying the subscription's provenance.
  */
 export function syncHiveWakeRules(workspaceId: string, subs: HiveEventSubscription[]): number {
@@ -321,7 +321,7 @@ export function syncHiveWakeRules(workspaceId: string, subs: HiveEventSubscripti
       id: ruleId(workspaceId, i),
       on: sub.on,
       when: sub.when,
-      fire: 'hive:wake',
+      fire: 'pot:wake',
       args: {
         reason: `subscribed event (${Array.isArray(sub.on) ? sub.on.join(', ') : sub.on})${sub.note ? ` — ${sub.note}` : ''}`,
         source: 'event',
@@ -475,9 +475,9 @@ export async function recordHiveWake(workspaceId?: string): Promise<void> {
   // Per-wake push for the QueenHeartbeat sidebar (data-sync-push-completion P-007):
   // hive.controlState surfaces lastWakeAt + the next-fire countdown + the placements
   // the Queen is driving. This is THE single ledger chokepoint every explicit wake
-  // path funnels through (hive:wake, urgent-wake, the events/await wake-executor, hive
+  // path funnels through (pot:wake, urgent-wake, the events/await wake-executor, hive
   // create), so invalidating here replaces the heartbeat's old 12s self-poll. Fire-and-
-  // forget + non-throwing (mirrors hive:start/pause); name-only/{} matches the
+  // forget + non-throwing (mirrors pot:start/pause); name-only/{} matches the
   // no-arg consumer. (A wake path that bypasses recordHiveWake is still caught by the
   // @papercusp/sync 180s drift-repair tick.)
   void import('../sync-sse')
@@ -492,7 +492,7 @@ export function resolveHiveHomeSlug(explicit?: string | null, ctxSlug?: string |
   // '*' (wildcard / all-harnesses scope) is NOT a concrete hive home — SKIP it at each level so the chain falls
   // through to a real slug (env home) or null, instead of firing the hive launch with installSlug '*', which the
   // invoke route's resolveProject can't find → HTTP 404 "unknown project" (2026-07-01: an operator-scoped
-  // `hive:wake` with no explicit harness inherited ctx.harnessSlug='*' and 404'd instead of resolving/erroring).
+  // `pot:wake` with no explicit harness inherited ctx.harnessSlug='*' and 404'd instead of resolving/erroring).
   const concrete = (s?: string | null): string | undefined => {
     const t = s?.trim();
     return t && t !== '*' ? t : undefined;

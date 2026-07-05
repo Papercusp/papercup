@@ -63,7 +63,7 @@ const SessionUserSchema = z.object({
   has_password: z.boolean(),
 });
 
-/** Exported so the `sentinel:converse` alias (sentinel-converse.ts) reuses the EXACT
+/** Exported so the `papercup:converse` alias (sentinel-converse.ts) reuses the EXACT
  *  same strict arg surface — instead of a `.passthrough()` that drops the projected
  *  inputSchema's additionalProperties:false (the tool-input-schema-rejection guard). */
 export const ArgsSchema = z.object({
@@ -170,7 +170,7 @@ export default defineTool({
   // operator-converse route resolves `${role}:converse` and the prompt builder
   // loads the sentinel persona set). So the sentinel role must be allowlisted
   // here too — paired with its operator:converse capability grant
-  // (BLUEPRINT_ROLE_CAPS.sentinel). The sentinel:converse tool alias registers
+  // (BLUEPRINT_ROLE_CAPS.sentinel). The papercup:converse tool alias registers
   // the same handler under the sentinel name; both resolve this allowlist.
   agentRoles: ['operator', 'sentinel'],
   timeoutSec: 600,
@@ -506,7 +506,7 @@ export default defineTool({
       // buildable work (file-and-nudge to the Queen) and `<delegate_deep>` for
       // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
       // the operator path below ignores both entirely (and the sentinel ignores
-      // spawns — the two can't cross). The Sentinel must NOT bee:spawn.
+      // spawns — the two can't cross). The Sentinel must NOT cup:spawn.
       const isSentinel = input.role === 'sentinel';
       if (isSentinel && parsed.handoffs.length > 0) {
         const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
@@ -553,7 +553,7 @@ export default defineTool({
         }
       }
       // The OPERATOR spawns directly; the SENTINEL never does (its envelope denies
-      // bee:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
+      // cup:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`
       // from the Sentinel persona is a no-op rather than a placement.
       if (!isSentinel && parsed.spawns.length > 0) {
         const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');

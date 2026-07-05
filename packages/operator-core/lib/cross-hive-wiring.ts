@@ -328,7 +328,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
    * event — waking any events:await-ing Queen (durable, survives her restart) and
    * coord-notifying the asking owner when the row names one. Every failure is
    * contained: a ledger/emit error must never poison the transport's inbound loop,
-   * and the ledger row (when written) stays the durable truth a `hive:asks` list
+   * and the ledger row (when written) stays the durable truth a `pot:asks` list
    * recovers from even if the emit is lost.
    */
   const persistAndEmitReply = async (
@@ -380,7 +380,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
         workspaceId: deps.workspaceId,
       });
     } catch (e) {
-      console.warn(`[cross-hive] C-4 emit failed for ${res.correlationId} (row persisted — hive:asks remains the truth): ${e instanceof Error ? e.message : e}`);
+      console.warn(`[cross-hive] C-4 emit failed for ${res.correlationId} (row persisted — pot:asks remains the truth): ${e instanceof Error ? e.message : e}`);
     }
   };
 

@@ -1,5 +1,5 @@
 /**
- * survey-workspace-scope.test.ts (tool) — P-003 Phase B: the hive:survey TOOL
+ * survey-workspace-scope.test.ts (tool) — P-003 Phase B: the pot:survey TOOL
  * gate. OFF (the dark default) ⇒ the single-hive survey shape, BYTE-IDENTICAL to
  * today; ON ⇒ the cross-hive shape (perHive sections + a crossHive ranked
  * priority). The survey math is covered by ../../hive/survey-workspace-scope.ts;
@@ -50,7 +50,7 @@ beforeEach(() => {
   h.surveyWorkspace.mockReset();
 });
 
-describe('hive:survey tool — flag OFF (byte-identical single-hive survey)', () => {
+describe('pot:survey tool — flag OFF (byte-identical single-hive survey)', () => {
   it('OFF → calls surveyHive, returns the single-hive shape, no perHive/crossHive', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(false);
     h.surveyHive.mockResolvedValue({
@@ -86,7 +86,7 @@ describe('hive:survey tool — flag OFF (byte-identical single-hive survey)', ()
   });
 });
 
-describe('hive:survey tool — flag ON (cross-hive dispatch widening)', () => {
+describe('pot:survey tool — flag ON (cross-hive dispatch widening)', () => {
   it('ON → calls surveyWorkspace, returns perHive sections + a crossHive ranked priority', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
     h.surveyWorkspace.mockResolvedValue({

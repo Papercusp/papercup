@@ -1,5 +1,5 @@
 /**
- * `scout:cycle` — the Scout autonomous-ideation cadence as a DETERMINISTIC blueprint
+ * `blender:cycle` — the Scout autonomous-ideation cadence as a DETERMINISTIC blueprint
  * step (deterministic-blueprints-migration-2026-06-13 P-121).
  *
  * Scout proposes → the Queen gates → agents build → the owner gets a report. One
@@ -72,14 +72,14 @@ export function setScoutCycleDeps(deps: ScoutCycleDeps | null): void {
 }
 
 export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>> = {
-  name: 'scout:cycle',
+  name: 'blender:cycle',
   description:
     'Deterministic step: run one cadence-gated, budgeted Scout ideation cycle (idle/friction-gated; ideator → critic → route to plans/gym/improvements) — the autonomous-ideation cadence primitive.',
   argsSchema: args,
   resultSchema: result,
   async run(a, ctx) {
     const workspaceId = ctx.workspaceId;
-    if (!workspaceId) throw new Error('scout:cycle requires ctx.workspaceId');
+    if (!workspaceId) throw new Error('blender:cycle requires ctx.workspaceId');
     const perHiveInstall = ctx.harnessSlug ?? 'op';
     // workspace-scoped-coordination-2026-06-20 P-002 / D-006: when
     // WORKSPACE_COORDINATION is ON, the Scout consolidates to ONE workspace cycle.
@@ -122,7 +122,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
       deps,
     );
     ctx.log?.(
-      `scout:cycle fired=${tick.fired} reason=${tick.reason}` +
+      `blender:cycle fired=${tick.fired} reason=${tick.reason}` +
         (tick.cycleId ? ` cycle=${tick.cycleId}` : '') +
         (tick.routedCount != null ? ` routed=${tick.routedCount}` : ''),
     );

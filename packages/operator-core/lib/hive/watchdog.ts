@@ -3,7 +3,7 @@
  * (start-hive-wake-orchestration-2026-06-09 Phase 3: P-008…P-012, D-002/D-003/D-004).
  *
  * One invariant (D-002): **a time wake is ALWAYS armed while the hive is
- * started.** The Queen sets her own cadence (hive:declare-wake — including
+ * started.** The Queen sets her own cadence (pot:declare-wake — including
  * effectively-continuous); events move the next wake earlier; THIS module
  * guarantees the wake EXISTS when she forgot; Pause (started=false) is the only
  * thing allowed to clear it.
@@ -205,7 +205,7 @@ export async function recordFire(opts: {
 }
 
 /** Recent fallback-fire count — the "watchdog fired N times" health signal
- *  (P-012/D-004) surfaced in hive:status. */
+ *  (P-012/D-004) surfaced in pot:status. */
 export async function recentWatchdogFires(
   workspaceId: string,
   installSlug: string,
@@ -327,7 +327,7 @@ export async function armFallbackHiveWake(opts: {
     const kickoff =
       `Watchdog wake (${source}): ${opts.reason} — your previous turn ended without declaring a wake. ` +
       `You are the Queen/operator in charge; survey the frontier and ALWAYS declare your next wake ` +
-      `(hive:declare-wake) before ending a turn. Frequent watchdog wakes are a prompt bug to fix.`;
+      `(pot:declare-wake) before ending a turn. Frequent watchdog wakes are a prompt bug to fix.`;
 
     // P-013: compose with the wake-mode gate. Global `manual` = the owner wants
     // every wake reviewable — route through wakeRecipients to the pinned brain
@@ -557,8 +557,8 @@ async function alertOwnerPausedOutage(opts: {
     if (!owner) return;
     const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
     const tail = opts.autoResume
-      ? 'Auto-resuming it now. If the pause was intentional, hive:pause again or set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off.'
-      : 'Left paused (auto-resume disabled). hive:start to resume.';
+      ? 'Auto-resuming it now. If the pause was intentional, pot:pause again or set PAPERCUSP_HIVE_PAUSED_AUTO_RESUME=off.'
+      : 'Left paused (auto-resume disabled). pot:start to resume.';
     await wakeRecipients([owner], {
       summary: `⚠️ Hive "${opts.installSlug}" ${opts.reason}. ${tail}`,
       source: 'hive-paused-recovery',

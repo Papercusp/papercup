@@ -2549,7 +2549,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //
   // (overwatch-role-2026-06-15 B-08). The persisted overwatch_started bit + wake
   // cadence (B-07) + live wake liveness (B-09) + the papercusp-overwatch flag
-  // (D-009). `overwatch:start` / `overwatch:pause` invalidate this name (wired in
+  // (D-009). `kettle:start` / `kettle:pause` invalidate this name (wired in
   // B-07), so the header flips the moment the owner starts/pauses the loop.
   'overwatch.controlState': {
     resolve: async () => {
@@ -3922,8 +3922,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // started bit (P-004), the pending time wake, the watchdog health signal, and
   // (queen-heartbeat-2026-06-16, owner-priority) the open placements the Queen is
   // DRIVING — so a parked-but-alive Queen visibly shows she's running + what she
-  // owns (the owner's "I can't tell she's alive" frustration). Live: hive:start /
-  // hive:pause fire `notifySyncInvalidate('hive.controlState', {})`; the heartbeat
+  // owns (the owner's "I can't tell she's alive" frustration). Live: pot:start /
+  // pot:pause fire `notifySyncInvalidate('hive.controlState', {})`; the heartbeat
   // UI also periodically refetches to keep lastWakeAt / the countdown fresh.
   'hive.controlState': {
     resolve: async () => {
@@ -3966,7 +3966,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // hive.controlState), each the decoded OwnerSteering over the owner-steering:*
   // hive_settings keys: { slug, directive, eligiblePlans, eligibleHives, pauseNewWork, pausedUntil }.
   // A single-hive UI reads data[0]; a multi-hive UI keys by slug. Invalidated
-  // explicitly by hive:set-steering (notifySyncInvalidate) AND by the hive_settings
+  // explicitly by pot:set-steering (notifySyncInvalidate) AND by the hive_settings
   // table→query map (covers a federated steering write from a peer Swarm).
   'hive.steering': {
     resolve: async () => {

@@ -289,7 +289,7 @@ export interface VoicePrefs {
    * (sentinel-herald P-011/P-012).
    *   'operator' (default) — the existing operator persona; live voice stays
    *                          byte-for-byte unchanged.
-   *   'sentinel'           — the Sentinel Herald persona (loads `sentinel:converse`).
+   *   'sentinel'           — the Sentinel Herald persona (loads `papercup:converse`).
    *
    * DECOUPLED from the Sentinel sidebar flag (that flag shows the settings
    * tab; this pref switches the live brain). A deliberate, reversible toggle.

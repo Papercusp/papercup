@@ -14,7 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
  * — spoken + written through the one pipeline.
  *
  * THE TOOL SPAWNS, NOT THE SENTINEL: the sentinel role still holds no
- * bee:spawn capability (the SN-H04 no-spawn contract); this is the
+ * cup:spawn capability (the SN-H04 no-spawn contract); this is the
  * accountable, capped indirection. Split of lanes: buildable WORK still goes to
  * the Queen via handoff; THINKING comes here.
  */

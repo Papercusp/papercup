@@ -12,7 +12,7 @@
  *     across arms). The driver NEVER authors clone/grade — it calls the consumer's seam.
  *   - {@link RunAgentInput}/{@link AgentRunOutput} ({@link TopologyRunDeps.runAgent}) — the actual agent
  *     invocation, INJECTED so the driver's orchestration logic is unit-testable with a fake agent + a
- *     fake seam. The live path supplies a runAgent backed by bee:spawn.
+ *     fake seam. The live path supplies a runAgent backed by cup:spawn.
  *
  * Topology shapes the driver runs (all from the one spec):
  *   - distributed / huddle / central (team:per-backlog|per-repo, aggregate:none) → ONE worker per task,
@@ -117,7 +117,7 @@ export interface TopologyRunDeps<H = unknown> {
   /** Independent-attempt ordinal stamped on every row (≥3 distinct per task×arm across runs). */
   seed: number;
   now: () => number;
-  /** The actual agent invocation — INJECTED (fake in tests; bee:spawn-backed live). */
+  /** The actual agent invocation — INJECTED (fake in tests; cup:spawn-backed live). */
   runAgent: (input: RunAgentInput<H>) => Promise<AgentRunOutput>;
   /** Concurrent task-units in flight; default 2 (the benchmark's task-concurrency cap). */
   cap?: number;

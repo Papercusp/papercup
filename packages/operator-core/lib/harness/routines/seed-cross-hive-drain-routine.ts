@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   const active = !process.argv.includes('--inactive');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
-  // Delegate to the shared arm helper (the per-hive twin used by hive:create) so
+  // Delegate to the shared arm helper (the per-hive twin used by pot:create) so
   // the seeded row never drifts from what a freshly-created hive gets.
   const { routineId } = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, hiveSlug: SLUG, active });
   console.log(`[seed-cross-hive-drain] routine ${routineId} seeded (install=${SLUG}, active=${active})`);

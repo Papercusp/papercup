@@ -1,5 +1,5 @@
 /**
- * Unit tests for hive:add-member (EI-1582).
+ * Unit tests for pot:add-member (EI-1582).
  *
  * The producer addHarnessToHive is exhaustively tested in _add-member.test.ts;
  * here we pin the THIN TOOL contract: it resolves the workspace from args/ctx,
@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('hive:add-member (EI-1582)', () => {
+describe('pot:add-member (EI-1582)', () => {
   it('maps {hive, member} → producer args and passes the success result through', async () => {
     addHarnessToHive.mockResolvedValue({
       ok: true,

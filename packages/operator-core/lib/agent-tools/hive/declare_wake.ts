@@ -1,5 +1,5 @@
 /**
- * hive:declare-wake — the Hive operator declares its own next wake before ending
+ * pot:declare-wake — the Hive operator declares its own next wake before ending
  * a turn (autoloop-hive-operator-rebuild-2026-06-05 P0, D-002). REPLACE
  * semantics like coord:declare-intent: each call describes the WHOLE wake —
  * a time (`at` | `inSeconds`), event subscriptions (`events`), both, or
@@ -8,7 +8,7 @@
  * The time wake is durable (a one-shot `hive-wake` routine row fired by the
  * DBOS routinesTick → system:blueprint-run → the hive launch blueprint); event
  * wakes are persisted subscriptions projected into live event-reaction rules
- * that fire `hive:wake`. A wake floor clamps the time (≥ now+floor) so a
+ * that fire `pot:wake`. A wake floor clamps the time (≥ now+floor) so a
  * confused operator can't spin.
  */
 import { z } from 'zod';
@@ -45,21 +45,21 @@ const subscriptionSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe('Optional declarative condition (a @papercusp/rules DataCondition over {args,result,ctx}).'),
-  note: softText(LIMITS.ANNOTATION).optional().describe('Why you subscribed — shown in hive:status. Auto-truncated to 2000 chars if longer.'),
+  note: softText(LIMITS.ANNOTATION).optional().describe('Why you subscribed — shown in pot:status. Auto-truncated to 2000 chars if longer.'),
 });
 
 export default defineTool({
-  name: 'hive:declare-wake',
+  name: 'pot:declare-wake',
   profile: 'engineer',
   description:
-    "Declare the Hive operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire hive:wake when the subscribed tool-event matches.",
+    "Declare the Hive operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
   guidance: {
     when: 'You are the hive/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
-    notWhen: 'To fire the hive right now — that is hive:wake.',
-    chaining: 'hive:status to inspect the current declaration; hive:wake for an immediate manual fire.',
+    notWhen: 'To fire the hive right now — that is pot:wake.',
+    chaining: 'pot:status to inspect the current declaration; pot:wake for an immediate manual fire.',
     seeAlso: [
-      'hive:status (inspect the current wake declaration)',
-      'hive:wake (fire an immediate manual wake instead of scheduling)',
+      'pot:status (inspect the current wake declaration)',
+      'pot:wake (fire an immediate manual wake instead of scheduling)',
     ],
   },
   capability: 'routines:write',
@@ -70,7 +70,7 @@ export default defineTool({
       at: z.string().datetime({ offset: true }).optional().describe('Absolute wake time (ISO 8601).'),
       inSeconds: z.number().positive().max(60 * 60 * 24 * 30).optional().describe('Relative wake time in seconds from now.'),
       events: z.array(subscriptionSchema).max(20).optional().describe('Event-wake subscriptions (replaces the current set; omit to clear).'),
-      mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual hive:wake."),
+      mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual pot:wake."),
       harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
       kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff text the woken operator reads (why this wake exists). Auto-truncated to 2000 chars if longer.'),
       remember: z
@@ -110,10 +110,10 @@ export default defineTool({
     const { sql } = getOrgPg();
 
     // WI-2012 (owner directive 2026-07-03): no started hives ⇒ the queen STAYS paused.
-    // hive:pause clears the pending time wake, but an IN-FLIGHT queen turn used to
+    // pot:pause clears the pending time wake, but an IN-FLIGHT queen turn used to
     // re-arm it right back through this tool — the self-perpetuating wake loop that
     // kept a "paused" queen burning orient/survey churn for hours. When the queen
-    // loop is not started, refuse to arm anything; hive:start is the resume (it sets
+    // loop is not started, refuse to arm anything; pot:start is the resume (it sets
     // started=true BEFORE arming, so this gate can never strand resumption).
     if (!(await getHiveStarted(workspaceId, installSlug))) {
       return {
@@ -124,7 +124,7 @@ export default defineTool({
               ok: false,
               error: 'hive_paused',
               message:
-                'The queen loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; hive:start resumes autonomous wakes.',
+                'The queen loop is PAUSED (hive_started=false) — not arming a wake. End your turn cleanly; pot:start resumes autonomous wakes.',
             }),
           },
         ],

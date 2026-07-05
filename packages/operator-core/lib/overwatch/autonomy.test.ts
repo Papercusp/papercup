@@ -17,7 +17,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       ['improvements:capture', 'observe'],
       ['coord:escalate', 'escalate'],
       // EI-3588: overwatch's own wake-scheduling bookkeeping — never structural
-      ['overwatch:declare-wake', 'lifecycle'],
+      ['kettle:declare-wake', 'lifecycle'],
       // structural — the D-002 escalate-only bucket
       ['routines:write', 'structural'],
       ['flags:set', 'structural'],
@@ -26,7 +26,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       ['autoloop:control', 'structural'],
       ['deploy:harness', 'structural'],
       // D-001: overwatch never re-places / spawns work
-      ['bee:spawn', 'structural'],
+      ['cup:spawn', 'structural'],
       ['work_items:set_priority', 'structural'],
       // unmapped verb ⇒ fail-safe structural
       ['totally:unknown', 'structural'],
@@ -72,8 +72,8 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       expect(d.reasons).toContain('overwatch-auto:escalate');
     });
 
-    it('AUTO-decides its own wake-scheduling bookkeeping (overwatch:declare-wake, EI-3588)', () => {
-      const d = decideOverwatchAutonomy({ action: 'overwatch:declare-wake' });
+    it('AUTO-decides its own wake-scheduling bookkeeping (kettle:declare-wake, EI-3588)', () => {
+      const d = decideOverwatchAutonomy({ action: 'kettle:declare-wake' });
       expect(d.posture).toBe('auto');
       expect(d.actionClass).toBe('lifecycle');
       expect(d.escalateOnly).toBe(false);
@@ -88,7 +88,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
       expect(d.reasons).toEqual(['overwatch-structural-action', 'escalate-only']);
     });
 
-    it.each(['flags:set', 'processes:kill', 'dev:restart', 'bee:spawn', 'deploy:harness'])(
+    it.each(['flags:set', 'processes:kill', 'dev:restart', 'cup:spawn', 'deploy:harness'])(
       'GATES the structural verb %s (escalate-only)',
       (action) => {
         const d = decideOverwatchAutonomy({ action });
@@ -108,7 +108,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
   describe('OVERWATCH_AUTO_VERBS contract (B-11 anchor)', () => {
     it('is exactly the C-2 write surface (nudge/observe/escalate) plus its own lifecycle bookkeeping (EI-3588), sorted', () => {
       expect([...OVERWATCH_AUTO_VERBS]).toEqual(
-        ['coord:escalate', 'coord:send', 'improvements:capture', 'messages:send', 'overwatch:declare-wake'],
+        ['coord:escalate', 'coord:send', 'improvements:capture', 'messages:send', 'kettle:declare-wake'],
       );
     });
 
@@ -117,7 +117,7 @@ describe('overwatch autonomy gate (B-06 / D-002)', () => {
         expect(decideOverwatchAutonomy({ action: v }).posture).toBe('auto');
       }
       // the structural mirror of the capability wall (B-01): non-allowlisted ⇒ gated
-      for (const v of ['flags:set', 'routines:write', 'processes:kill', 'bee:spawn']) {
+      for (const v of ['flags:set', 'routines:write', 'processes:kill', 'cup:spawn']) {
         expect(decideOverwatchAutonomy({ action: v }).posture).toBe('gated');
       }
     });

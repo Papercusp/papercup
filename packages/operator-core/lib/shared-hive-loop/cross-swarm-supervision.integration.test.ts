@@ -14,7 +14,7 @@
  *      production read path: `listFederatedPresence` → `assembleNetworkBoard`
  *      tier 3 (the network:board surface that shipped the "live-agent counts
  *      for peer Swarms" capability — hive-network-surface-2026-06-11; the
- *      original item text said "hive:status", which never grew agent counts).
+ *      original item text said "pot:status", which never grew agent counts).
  *      Staleness honesty: a peer past the staleness window stops counting.
  *   2. MESSAGES a remote bee — a directed coord `messages` row written on A
  *      federates through the mig-147 capture contract → CDC → B's

@@ -64,7 +64,7 @@ const CAN: Array<{ path: string; via: string }> = [
 // future change that flips the enforcement layer (e.g. grants the cap) is caught here.
 //  - capabilityDenied: the bee never holds the cap → blocked regardless of any allowlist.
 //  - roleDenied: the bee HOLDS the cap (work_items/harness/coord) but is filtered out of the
-//    allowlist — the placement/optimization carve-out (bee:spawn, gym:*).
+//    allowlist — the placement/optimization carve-out (cup:spawn, gym:*).
 const CANNOT_CAP: Array<{ path: string }> = [
   { path: '../../../agent-tools/operator/converse.js' }, // operator:converse
   { path: '../../../agent-tools/operator/nudge.js' }, // operator:write

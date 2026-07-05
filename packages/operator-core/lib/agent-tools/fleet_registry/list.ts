@@ -14,7 +14,7 @@ import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 export default defineTool({
   name: 'fleet:list',
   description:
-    'List every persistent fleet in this workspace, each split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees, plus an `available` flag (available = at least one live MEMBER — a desktop driver a plan can be handed to; a bee cannot). Durable fleets with zero live members are listed too. The result also carries `runningBees`: how many background bees are running in the whole workspace — a fleet showing 0 members while runningBees>0 is the tell that bee:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Use this to pick a fleet to join or hand a plan to.',
+    'List every persistent fleet in this workspace, each split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees, plus an `available` flag (available = at least one live MEMBER — a desktop driver a plan can be handed to; a bee cannot). Durable fleets with zero live members are listed too. The result also carries `runningBees`: how many background bees are running in the whole workspace — a fleet showing 0 members while runningBees>0 is the tell that cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Use this to pick a fleet to join or hand a plan to.',
   guidance: {
     when: 'Choosing a fleet — to join (fleet:join), inspect (fleet:status), or hand a plan to (fleet:take-leadership). `available` fleets have a live desktop MEMBER (driver) right now — beeCount is background autonomous-loop workers, not a driver.',
     notWhen: 'For who is IN one fleet and what each is doing, use fleet:status { fleet }.',

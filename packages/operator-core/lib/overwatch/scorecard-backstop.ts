@@ -5,7 +5,7 @@
  * The Overwatch's every-wake `hive-coordination-health` scorecard is Owner
  * requirement #1, but emission is PROMPT-driven: a turn that ends without it
  * (instruction drift, a turn that died mid-flight, a budget-exhausted turn) leaves
- * the monitor SILENT — and, unlike the forgotten `overwatch:declare-wake` (which
+ * the monitor SILENT — and, unlike the forgotten `kettle:declare-wake` (which
  * watchdog.ts already backstops with a fallback SLEEP), NOTHING recovered it. Live
  * evidence (2026-06-21): ~1 complete scorecard in 7.5h while the `overwatch-wake`
  * routine fired every ~30 min — the supervisor was launched reliably but its turns

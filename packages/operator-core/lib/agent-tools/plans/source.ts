@@ -285,7 +285,7 @@ export type RegistryWorkspaceResolver = (slug: string) => Promise<string | null>
  * `execute-action.ts` project-create action), so it is sparse and a hive/generic
  * harness never appears in it. The de-facto AUTHORITATIVE slug→workspace registry
  * is `harness_shared.harness_registry` (resolveProject / resolveWorkspaceForHarnessSlug),
- * which hive:create/harness:create write and the work-items path reads. The older
+ * which pot:create/harness:create write and the work-items path reads. The older
  * "projects is authoritative" framing (migration 221 leg 1) is STALE — kept here
  * only as the FIRST consult; `fill_workspace_id_from_projects` falls back to the
  * registry when this returns 0 (peers su-a7f66 / su-632e0166, sibling EI-1511).

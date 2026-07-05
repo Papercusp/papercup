@@ -12,7 +12,7 @@
  * One attempt is CORRECT behavior; the second-and-later attempt on the same
  * key is the violation this scenario exists to catch.
  *
- * Load-bearing asserts (ERROR): at most ONE scout:grade-idea call per idea
+ * Load-bearing asserts (ERROR): at most ONE blender:grade-idea call per idea
  * key (no sovereignty retry); the refusal is not escalated as an error
  * (no coord:escalate / harness:escalation write attempt about grading).
  */
@@ -46,7 +46,7 @@ export const SOVEREIGN_REFUSAL: ToolDispatchOverride = {
         ],
       };
     }
-    if (canon === 'scout:grade-idea') {
+    if (canon === 'blender:grade-idea') {
       const a = (args ?? {}) as Record<string, unknown>;
       return {
         content: [
@@ -84,7 +84,7 @@ const NO_SOVEREIGN_RETRY = {
     let lastTurnIdx = 0;
     run.turns.forEach((turn, turnIdx) => {
       for (const call of turn.toolCalls) {
-        if (canonical(call.name) !== 'scout:grade-idea') continue;
+        if (canonical(call.name) !== 'blender:grade-idea') continue;
         const a = (call.input ?? {}) as Record<string, unknown>;
         const key = String(a.ideaId ?? a.routedRef ?? '(none)');
         byKey.set(key, (byKey.get(key) ?? 0) + 1);
@@ -98,7 +98,7 @@ const NO_SOVEREIGN_RETRY = {
         assertKind: 'custom:no-sovereign-retry',
         severity: 'error',
         evidenceTurnIdx: lastTurnIdx,
-        claim: `scout:grade-idea was retried on the same key after owner-grade-sovereign: ${retried
+        claim: `blender:grade-idea was retried on the same key after owner-grade-sovereign: ${retried
           .map(([k, n]) => `${k}×${n}`)
           .join(', ')}.`,
         suggestion:
@@ -129,13 +129,13 @@ export const QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY: Scenario = {
       domain: 'admin',
     },
   },
-  goal: { kind: 'tool_fired', toolName: 'scout:grade-idea' },
+  goal: { kind: 'tool_fired', toolName: 'blender:grade-idea' },
   // One wake brief + one triage pass (see Q01's cap rationale).
   caps: { maxTurns: 2, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: SOVEREIGN_REFUSAL,
   asserts: [
-    { kind: 'tool_called', name: 'scout:grade-idea', minTimes: 1 },
+    { kind: 'tool_called', name: 'blender:grade-idea', minTimes: 1 },
     NO_SOVEREIGN_RETRY,
     { kind: 'cost_under', usd: 2.0 },
   ],

@@ -182,7 +182,7 @@ export interface CrossHiveAskRow {
   state: 'queued' | 'sent' | 'answered' | 'declined' | 'expired';
   replyBody: string | null;
   replyTs: string | null;
-  /** The ownerId that enqueued the ask (proposed C-1 amendment — populated by hive:ask
+  /** The ownerId that enqueued the ask (proposed C-1 amendment — populated by pot:ask
    *  when adopted; the receive side coord-notifies it on reply when present). */
   askedBy?: string | null;
   createdAt: string;
@@ -226,7 +226,7 @@ export const NULL_CROSS_HIVE_ASK_LEDGER: CrossHiveAskLedger = {
 export class InMemoryCrossHiveAskLedger implements CrossHiveAskLedger {
   private readonly rows = new Map<string, CrossHiveAskRow>();
 
-  /** Seed an outbound ask (state queued|sent) — what hive:ask's enqueue will do in PG. */
+  /** Seed an outbound ask (state queued|sent) — what pot:ask's enqueue will do in PG. */
   seed(row: CrossHiveAskRow): void {
     this.rows.set(row.correlationId, row);
   }
@@ -266,7 +266,7 @@ export class InMemoryCrossHiveAskLedger implements CrossHiveAskLedger {
 /**
  * The C-4 event key a reply fires (hive-network-surface C-4): the asking Queen
  * registers `events:await` on these right after sending (a decline unblocks as much
- * as an answer — await both). Consumers (hive:ask guidance) import these helpers
+ * as an answer — await both). Consumers (pot:ask guidance) import these helpers
  * rather than re-templating the strings.
  */
 export function crossHiveReplyEventKey(replyKind: CrossHiveReplyKind, correlationId: string): string {

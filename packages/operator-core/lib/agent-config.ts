@@ -80,7 +80,7 @@ export interface AgentConfig {
   /** User-defined model-tier menu, ordered WEAKEST → STRONGEST (the order is
       the strength ranking the floor/ceiling clamp uses). Empty = the
       committed DEFAULT_MODEL_TIERS (quick/standard/deep/max). The queen's
-      bee:spawn `tier` arg resolves against this menu — see
+      cup:spawn `tier` arg resolves against this menu — see
       fleet/model-tiers.ts (queen-model-tier-selection-2026-06-11). */
   tiers?: ModelTier[];
   /** Per-role tier CEILING (role → tier name): the strongest tier the queen

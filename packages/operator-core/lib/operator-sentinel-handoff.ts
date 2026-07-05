@@ -3,7 +3,7 @@
  * (sentinel-herald Phase 4: P-014 / P-015 / P-016).
  *
  * The Sentinel is the Herald: it SUGGESTS and HANDS OFF, it never places work
- * itself. Its capability envelope denies bee:spawn/placement by design (the whole
+ * itself. Its capability envelope denies cup:spawn/placement by design (the whole
  * point of the role), so where the OPERATOR turn dispatches `<spawn>` directly into
  * the nursery, the SENTINEL turn dispatches `<handoff_to_queen>` THROUGH HERE:
  *
@@ -28,7 +28,7 @@
  *      (subscribe→inject); this module records the subscription + seeds the
  *      pending-handoff registry the lifecycle observer drains.
  *
- * The Sentinel NEVER calls bee:spawn — the converse dispatch (converse.ts) only
+ * The Sentinel NEVER calls cup:spawn — the converse dispatch (converse.ts) only
  * reads `<handoff_to_queen>` for role==='sentinel' and only reads `<spawn>` for the
  * operator, so the two paths can't cross.
  *
@@ -50,7 +50,7 @@ export const USER_REQUESTED_LABEL = 'user-requested';
  *  tier resolution / candidate. The Sentinel itself can't place — the handoff
  *  exercises the QUEEN's placement capability, so that's what the user approves a
  *  standing grant for. */
-export const HANDOFF_CAPABILITY = 'bee:spawn';
+export const HANDOFF_CAPABILITY = 'cup:spawn';
 
 export interface SentinelHandoffDeps {
   /** Create the work_item. Returns the minted id (WI-NNN) or null on failure. */

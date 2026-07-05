@@ -1,5 +1,5 @@
 /**
- * hive:dissolve unwinds the hive (hive-tool-namespace-2026-06-08 P-009, D-005/
+ * pot:dissolve unwinds the hive (hive-tool-namespace-2026-06-08 P-009, D-005/
  * D-006). PG-free: the readers/teardown primitives are mocked; asserts the
  * orchestration — clears the Queen wake, cancels every LIVE bee (dead skipped),
  * deregisters the home harness, and only drops the schema (via dropHarnessSchema,
@@ -119,7 +119,7 @@ afterEach(() => {
   }
 });
 
-describe('hive:dissolve', () => {
+describe('pot:dissolve', () => {
   it('clears the wake, cancels live bees (dead skipped), deregisters — no schema drop by default', async () => {
     const tool = (await import('./dissolve')).default as unknown as Tool;
     const res = parse(await tool.handler({ slug: 'h', confirm: true, workspace: 'default' }, ROOT_CTX));

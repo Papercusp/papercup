@@ -4,7 +4,7 @@
  *
  * The dock 🛡 Sentinel launches via the `psu-sentinel` BASH wrapper, which cannot
  * read the canonical session override (owner-steering → hive_settings in PG). So
- * `hive:set-steering` projects `modelOverrides.sentinel` to a tiny file the wrapper
+ * `pot:set-steering` projects `modelOverrides.sentinel` to a tiny file the wrapper
  * reads at launch: `~/.papercusp/sentinel-model` holds the `model[:effort]` spec, or
  * is ABSENT when there's no override (⇒ the wrapper passes no `--model` → the
  * workspace / CLI default). This is the storage-policy "PG-canonical, file projected

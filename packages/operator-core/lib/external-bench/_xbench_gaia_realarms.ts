@@ -25,7 +25,7 @@
  * pin the pipeline roles (the gaia-agent extends single-agent → its decider is a worker/bee-class role) AND
  * bee; for hive-realqueen pin bee + queen. Belt-and-suspenders: pin them all.
  *   AGENT_MODELS='{"director":"opus:xhigh","scoper":"opus:xhigh","architect":"opus:xhigh","worker":"opus:xhigh","validator":"opus:xhigh","reviewer":"opus:xhigh","documenter":"opus:xhigh","bee":"opus:xhigh","queen":"opus:xhigh","gaia-worker":"opus:xhigh"}'
- * CRITICAL: for hive-realqueen the Queen's bee:spawn is serviced by the long-running :3170 host, so the
+ * CRITICAL: for hive-realqueen the Queen's cup:spawn is serviced by the long-running :3170 host, so the
  * opus pin + AGENT_CMD MUST also be on :3170's env (apps/operator/.env.local). VERIFY agent_usage_samples.
  * model = claude-opus-4-8 on the 1-task probe before any big spend.
  *

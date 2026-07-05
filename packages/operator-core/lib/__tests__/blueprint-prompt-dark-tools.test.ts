@@ -196,7 +196,7 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   // described/peer-routed actions in the generic base persona, not the coding-Queen's own
   // declared call set (her deps wire her concrete tools); left undeclared by design.
   'coding/queen/db:next-migration',
-  'coding/queen/hive:survey',
+  'coding/queen/pot:survey',
   'coding/queen/plans:promote',
   'coding/queen/plans:set-plan-status',
   // The Scout-routed draft review section names the rubric-ratify verb in the shared
@@ -213,9 +213,9 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   'coding-factory/documenter/harness_docs:record',
   // base/bee.base.md — tools the bee RECEIVES / a surface it's described against, never calls:
   //   turn:interrupt — "the Queen or operator ISSUED a turn:interrupt" (the bee is the target).
-  //   hive:status    — "invisible to Pause/hive:status" (describing the Queen's visibility surface).
+  //   pot:status    — "invisible to Pause/pot:status" (describing the Queen's visibility surface).
   'bee/bee/turn:interrupt',
-  'bee/bee/hive:status',
+  'bee/bee/pot:status',
   // base/bee.base.md + base/queen.base.md — fleet:leave is NAMED, not called: the bee is
   // "told to drop the work" and the Queen tells a PEER to `fleet:leave` (a routed action).
   // Neither role calls it itself; their concrete fleet-membership tools are in deps.

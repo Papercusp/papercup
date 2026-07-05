@@ -4,14 +4,14 @@
  * and the REAL dispatcher:
  *
  *   plans:start (dispatched) → op_status transition → postInvoke → the armed
- *   default subscription's reaction rule → hive:wake (dispatched) →
+ *   default subscription's reaction rule → pot:wake (dispatched) →
  *   floor-debounce → ONE hive launch (fireLaunchBlueprint, mocked at the
  *   loopback boundary).
  *
  * Asserts the three load-bearing behaviors:
  *   1. a real plans:start transition wakes the Queen exactly once;
  *   2. burst-coalescing — a second start inside the wake floor does NOT launch
- *      again (the floor debounce in hive:wake);
+ *      again (the floor debounce in pot:wake);
  *   3. the idempotent RE-start of an already-started plan never wakes
  *      (transitioned:false → the rule's `when` rejects), while the started
  *      plan stays visible to the Queen's survey (op_status='started' in
@@ -259,7 +259,7 @@ beforeAll(async () => {
 
   // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and the wake
   // surface refuses to arm while started=false. Start the hive the way
-  // hive:start does (setHiveStarted BEFORE arming) so the chain under test
+  // pot:start does (setHiveStarted BEFORE arming) so the chain under test
   // can fire.
   {
     const { setHiveStarted } = await import('./started');
@@ -277,7 +277,7 @@ afterAll(async () => {
 });
 
 describe('the missing link, end to end (P-003)', () => {
-  it('plans:start → event → reaction rule → floor-debounced hive:wake → ONE Queen launch', async () => {
+  it('plans:start → event → reaction rule → floor-debounced pot:wake → ONE Queen launch', async () => {
     await insertPlan('plan-a');
     const out = await dispatch('plans:start', { slug: 'plan-a', harness: 'papercup' });
     expect(out.status).toBe('started');
@@ -308,7 +308,7 @@ describe('the missing link, end to end (P-003)', () => {
     const out = await dispatch('plans:start', { slug: 'plan-b', harness: 'papercup' });
     expect(out.transitioned).toBe(true);
     await settle();
-    expect(launches()).toBe(1); // hive:wake fired but skipped on the floor
+    expect(launches()).toBe(1); // pot:wake fired but skipped on the floor
     // …and plan-b still started (the debounce never blocks the WORK, only the wake).
     const rows = await rootSql`
       SELECT op_status FROM harness_shared.harness_plans WHERE plan_slug = 'plan-b'`;

@@ -30,7 +30,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // lock contention — and its ONLY writes are raising alarms (coord:write →
   // coord:escalate / coord:send / messages). Deliberately WITHOUT work_items /
   // harness / plans / docs / routines write, and without the Queen's placement
-  // surface (bee:spawn/drain, autoloop, processes:kill): the sentinel watches +
+  // surface (cup:spawn/drain, autoloop, processes:kill): the sentinel watches +
   // alerts, the Queen acts. Two-gate reality applies — these caps are paired with
   // adding `sentinel` to the watcher tools' `agentRoles` (COORD_ROLES + the
   // explicit fleet/intel/audit reads below).
@@ -51,7 +51,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // high-priority work_item (work_items:write → work_items:create /
   // set_priority) and NUDGES the Queen (coord:write → coord:send / escalate). It
   // still NEVER places/executes: the ROLE_ENVELOPES.sentinel deny (capability:
-  // fs-write / capability:bash) holds, bee:spawn carves it out, and it gets NO
+  // fs-write / capability:bash) holds, cup:spawn carves it out, and it gets NO
   // work_items:set_state / harness:write / plans:write / routines:write /
   // processes:kill. Suggest + file + nudge + hand-off to the Queen; never place.
   // TWO-GATE: each cap below is paired with `sentinel` in the matching tool's
@@ -86,13 +86,13 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // are coord:write (coord:send nudge / coord:escalate / improvements:capture observation),
   // but its READ surface is broader — the whole running system: the work frontier
   // (work_items:read → work_items:list, fleet:assignments/tree), the Queen + watchdog +
-  // gateway health (harness:read → hive:status, harness:health/escalation), the ledgers +
+  // gateway health (harness:read → pot:status, harness:health/escalation), the ledgers +
   // rate-governor + gym-experiment telemetry (intel:read → decision_ledger,
   // dev:rate_governor_status, change_ledger), the plan state (plans:read), recent app
   // notifications (notifications:read → notifications:recent), activity (activity:read),
   // and search (search:read) to ground its nudges. PLUS messages:write so it can forward a
   // directive to a specific agent (messages:send). DELIBERATELY WITHOUT work_items:write /
-  // harness:write / plans:write / routines:write / bee:spawn / processes:kill: it NUDGES
+  // harness:write / plans:write / routines:write / cup:spawn / processes:kill: it NUDGES
   // the Queen to re-place, it never re-places/edits/restarts (D-001/D-002). The capability
   // ENVELOPE (capability-envelope/policy.ts ROLE_ENVELOPES.overwatch) ALSO denies
   // capability:fs-write + capability:bash — it cannot edit code. TWO-GATE REALITY: these
@@ -119,7 +119,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // survey the blackboard (work_items frontier, curation feed, activity
   // bridge, coord, plans) and create/manage harnesses from blueprints
   // (blueprint:catalog/validate → harness:read; blueprint:extend +
-  // harness:create → harness:write; hive:declare-wake → routines:write).
+  // harness:create → harness:write; pot:declare-wake → routines:write).
   // Declared here AS WELL AS in the provisioned OPERATOR_CAPS (provision.ts)
   // because provision-without-force is a no-op for an existing row — the pot
   // must not depend on a re-provision to function. The two union cleanly.
@@ -159,10 +159,10 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   ],
   // The QUEEN — the hive's placement-specialist decider (local-hive D-001:
   // "the operator specialized"), so her caps mirror the operator's. They cover
-  // her whole placement loop: bee:spawn + work_items:set_priority/reorder
+  // her whole placement loop: cup:spawn + work_items:set_priority/reorder
   // (work_items:write), fleet:drain + coord:send{wake} + events:emit
   // (coord:write), fleet:assignments (work_items:read), survey reads
-  // (curation:read, activity:read), hive:declare-wake (routines:write).
+  // (curation:read, activity:read), pot:declare-wake (routines:write).
   // EI-286 follow-up — third and final missing grant: the blueprint declared
   // the role, but neither AGENT_ROLES/COORD_ROLES (fixed earlier) nor this cap
   // map knew it, so a role=queen launch saw an EMPTY capability-gated catalog.
@@ -237,7 +237,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // P-004 DID that co-edit: `bee` is now in the agentRoles of every tool gated by these caps
   // (the ~60 dev:*/flags:*/locks:*/db:*/harness_docs:*/plans:* tools), and the COORD_ROLES-gated
   // tools (coord:*, issues:*, improvements:capture) already admit bee. CARVE-OUT: three
-  // COORD_ROLES tools that are PLACEMENT/optimization surfaces — bee:spawn, gym:judge,
+  // COORD_ROLES tools that are PLACEMENT/optimization surfaces — cup:spawn, gym:judge,
   // gym:signals — filter bee BACK OUT of their allowlist (D-002, Queen-only; see those files).
   // The boundary is pinned empirically in bee-tool-boundary.test.ts.
   bee: [

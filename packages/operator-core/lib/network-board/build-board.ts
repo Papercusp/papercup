@@ -2,7 +2,7 @@
  * network-board/build-board — compose the C-3 aggregate board from the four
  * data sources (hive-network-surface-2026-06-11, brief B-08, P-006):
  *
- *   tiers 1–2  hive:list           — own hives (home → tier 1, others → tier 2)
+ *   tiers 1–2  pot:list           — own hives (home → tier 1, others → tier 2)
  *   tier 3     federated presence  — shared-Hive peer Swarms (grouped per device)
  *   tier 4     discovery + beacon  — foreign directory hives + our grants/asks
  *
@@ -36,7 +36,7 @@ import type { NetworkAsks, NetworkBoardRow } from './types';
 export interface NetworkBoardInputs {
   /** This Swarm's home-hive slug → its row is tier 1; other own hives are tier 2. */
   homeSlug: string | null;
-  /** Own `kind:'hive'` projects (hive:list). */
+  /** Own `kind:'hive'` projects (pot:list). */
   hives: HiveDescriptor[];
   /** Distinct live agents per hive home-slug (one batched fleet read). */
   liveAgentsBySlug: Map<string, number>;

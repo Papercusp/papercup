@@ -63,7 +63,7 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
   });
 
   it('a LOOP self-wake (source loop:<routineId>) FIRES even in manual mode — staging a self-wake would DEADLOCK the loop', async () => {
-    // Live 2026-06-23: global default was `manual` (hive:pause), so a self-armed loop fired ~10×
+    // Live 2026-06-23: global default was `manual` (pot:pause), so a self-armed loop fired ~10×
     // into a manual session and every wake STAGED → the loop never executed. A loop wake is the
     // agent driving itself: the asleep agent waiting on the wake is the only one who could release
     // a staged one, so it MUST bypass the manual pause/edit gate and fire.

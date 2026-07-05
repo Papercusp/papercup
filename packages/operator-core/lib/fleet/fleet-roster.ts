@@ -261,7 +261,7 @@ export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetR
  * autonomous-loop bees ran — "correct but ignorable"):
  *   • members — VISIBLE desktop su agents (fleet:launch-on-plan / capability:terminal),
  *     the ones a plan is handed to. agent_role != 'bee'.
- *   • bees — BACKGROUND queen↔bee autonomous-loop workers (bee:spawn) that joined
+ *   • bees — BACKGROUND queen↔bee autonomous-loop workers (cup:spawn) that joined
  *     this fleet's presence label. agent_role = 'bee'.
  */
 export interface FleetLiveCounts {
@@ -347,7 +347,7 @@ async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, Fl
  * IO seam: how many BACKGROUND autonomous-loop bees are running in this workspace right
  * now (running/restarting nursery rows, child_role = 'bee'). WI-1764 #4: surfaced on the
  * fleet reads so the origin mismatch SCREAMS — a fleet showing 0 members while N bees run
- * in the workspace is the tell that bee:spawn was used where fleet:launch-on-plan was
+ * in the workspace is the tell that cup:spawn was used where fleet:launch-on-plan was
  * meant. Deliberately WORKSPACE-wide (not per-fleet): it counts EVERY running bee,
  * including ungrouped ones and pre-mig-475 rows carrying no fleet_slug — the
  * belt-and-suspenders total that the per-fleet counts (countRunningFleetBees, WI-1813)

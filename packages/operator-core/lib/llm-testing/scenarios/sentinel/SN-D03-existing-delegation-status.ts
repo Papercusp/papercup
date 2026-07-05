@@ -26,7 +26,7 @@ export const SN_D03_EXISTING_DELEGATION_STATUS: Scenario = {
   asserts: [
     { kind: 'custom', name: 'noDelegate', eval: noDelegate },
     { kind: 'custom', name: 'noHandoff', eval: noHandoff },
-    { kind: 'tool_not_called', name: 'bee:spawn' },
+    { kind: 'tool_not_called', name: 'cup:spawn' },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'cost_under', usd: 1.0 },

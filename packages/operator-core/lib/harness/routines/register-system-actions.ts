@@ -33,7 +33,7 @@
  *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
  *   - `system:scout-cycle` — hive-creative-ideation-2026-06-08 P-008 (the Scout
  *     autonomous-ideation cadence; D-010). Self-gates on idle/friction + budget;
- *     provisioned INACTIVE per-hive at hive:create
+ *     provisioned INACTIVE per-hive at pot:create
  *     (lib/hive/provision-learning-loop.ts), bring-up human-gated.
  *   - `system:session-dir-gc` — the per-session isolation-dir janitor (the EI-155
  *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
@@ -52,7 +52,7 @@
  *     P-031/P-032. The gym's pulse: per tick, run ONE bounded human-gated gym
  *     cycle for the least-recently-run enabled+idle+budgeted autoloop, with
  *     triage-routed gym ideas fed to the proposer. The per-hive autoloop ROWS it
- *     sweeps are provisioned inline at hive:create (provision-learning-loop.ts,
+ *     sweeps are provisioned inline at pot:create (provision-learning-loop.ts,
  *     dark) — the standalone per-hive `seed-gym-routine.ts` env-slug seed was
  *     RETIRED (per-hive-learning-loops-2026-06-14 P-022).
  *   - `system:interactive-usage-ingest` + `system:token-weekly-report` —
@@ -206,7 +206,7 @@ import './improvement-actions';
 import './p2p-perf-actions';
 // (scout's bespoke system:scout-cycle action is RETIRED — P-130; scout runs via the
 //  `scout` blueprint. register-scout-action no longer registers anything; the
-//  scout:cycle op lazy-imports productionScoutRunner from it directly.)
+//  blender:cycle op lazy-imports productionScoutRunner from it directly.)
 import './session-dir-gc-action';
 // `system:telemetry-retention` — daily prune of the unbounded high-volume
 // diagnostic tables (route_invocations/tool_invocations); infra-audit R2 (plan
@@ -257,7 +257,7 @@ import './human-queue-digest-action';
 // shared `run<Loop>` orchestration); the no-retired-style guard (P-132) blocks
 // re-wiring. Scout's `system:scout-cycle` registration is retired in
 // register-scout-action.ts (that module also provides `productionScoutRunner`, the
-// scout:cycle op's dependency, so the file stays).
+// blender:cycle op's dependency, so the file stays).
 // queen-autonomy-policy-2026-06-13 B-16: the auto-revert tripwire + graduation
 // sweep (`system:autonomy-trust-scan`). Self-gates on QUEEN_AUTONOMY_ARMED (P-092);
 // the seed routine ships INACTIVE (go-live activates it).

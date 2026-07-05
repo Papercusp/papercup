@@ -1,5 +1,5 @@
 /**
- * spawn.test.ts — bee:spawn tool surface for the over-ceiling slot-wait (D-004).
+ * spawn.test.ts — cup:spawn tool surface for the over-ceiling slot-wait (D-004).
  *
  * The engine result's `awaitEvent` (set on an over-ceiling rejection) must reach
  * the caller as `await_event` + a next-instruction telling it to `events:await`
@@ -37,7 +37,7 @@ beforeEach(() => {
   h.identity.mockReset().mockReturnValue({ ownerId: 'op-1', ownerLabel: 'Operator', workspaceId: 'default' });
 });
 
-describe('bee:spawn tool — over-ceiling slot-wait projection (D-004)', () => {
+describe('cup:spawn tool — over-ceiling slot-wait projection (D-004)', () => {
   it('surfaces await_event + the events:await retry instruction on an over-ceiling rejection', async () => {
     h.spawnAgentInHarness.mockResolvedValue({
       ok: false,
@@ -76,7 +76,7 @@ describe('bee:spawn tool — over-ceiling slot-wait projection (D-004)', () => {
   });
 });
 
-describe("bee:spawn tool — workspace resolution never records the '*' wildcard (EI-112)", () => {
+describe("cup:spawn tool — workspace resolution never records the '*' wildcard (EI-112)", () => {
   it("an unscoped-SU identity (workspaceId='*') resolves to the active workspace, not '*'", async () => {
     h.spawnAgentInHarness.mockResolvedValue({
       ok: true, spawnId: 's-4-ws', harness: 'papercup', projectDir: '/tmp', error: null,
@@ -98,7 +98,7 @@ describe("bee:spawn tool — workspace resolution never records the '*' wildcard
   });
 });
 
-describe('bee:spawn tool — bee work-item reservation', () => {
+describe('cup:spawn tool — bee work-item reservation', () => {
   it('infers a work item from the brief and claims it to the reserved bee spawn id', async () => {
     h.spawnAgentInHarness.mockImplementation(async (input: any) => ({
       ok: true,
@@ -197,7 +197,7 @@ describe('bee:spawn tool — bee work-item reservation', () => {
   });
 });
 
-describe('bee:spawn tool — fail-loud on unknown args (EI-72)', () => {
+describe('cup:spawn tool — fail-loud on unknown args (EI-72)', () => {
   // EI-72 incident (2026-06-06): the Queen spawned 5 bees passing the NEW `brief`
   // field at a serving host still running pre-brief code. The plain `z.object`
   // strip-default SILENTLY DROPPED the unknown key → bees booted task-less and

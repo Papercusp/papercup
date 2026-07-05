@@ -1,5 +1,5 @@
 /**
- * hive:beacon_consent — owner/Queen management of a Hive's beacon-publish consent
+ * pot:beacon_consent — owner/Queen management of a Hive's beacon-publish consent
  * (hive-network-surface-2026-06-11 P-005 / brief B-07; contract C-2).
  *
  * The agent-surface twin of the desktop consent UX (the creation-form checkbox +
@@ -9,7 +9,7 @@
  * hive_settings (federates to every Swarm of the Hive) and is the gate B-06's
  * publisher (`maybeBuildHiveBeacon`) checks before a beacon rides the re-announce.
  *
- * Sibling of `hive:cross_grant` (the other owner hive_settings policy verb).
+ * Sibling of `pot:cross_grant` (the other owner hive_settings policy verb).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -20,16 +20,16 @@ import { getBeaconPublishConsent, setBeaconPublishConsent } from '../../beacon-c
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
 export default defineTool({
-  name: 'hive:beacon_consent',
+  name: 'pot:beacon_consent',
   profile: 'engineer',
   description:
     "Manage whether THIS Hive publishes a live status beacon (active agents, queue depth, focus, last-completed) onto the directory gossip — the owner-consent gate, default-OFF (D-002). Pass `consent` to set it (true = publish, false = stop); omit `consent` to read the current state. The consent federates to every Swarm of the Hive and gates B-06's beacon publisher. The beacon only rides a PUBLISHED (public/invite) hive's re-announce — enabling it on a private hive has no effect until the hive is published.",
   guidance: {
     when: "Enabling, disabling, or checking this Hive's status-beacon publishing — the same consent the desktop publish-flow asks for, managed from the agent surface. Pass consent:true to opt a published hive into the beacon, consent:false to withdraw it, or omit consent to read the current value.",
     notWhen:
-      "Directory visibility (public/invite/private) — that's discovery:set_hive. Cross-Hive ask/work-request grants — hive:cross_grant. Within-Hive coordination — coord:* / topics.",
+      "Directory visibility (public/invite/private) — that's discovery:set_hive. Cross-Hive ask/work-request grants — pot:cross_grant. Within-Hive coordination — coord:* / topics.",
     chaining:
-      "discovery:set_hive { visibility:'public' } (make the hive discoverable) → hive:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon).",
+      "discovery:set_hive { visibility:'public' } (make the hive discoverable) → pot:beacon_consent { hive, consent:true } (opt the now-public hive into the live beacon).",
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -21,7 +21,7 @@ import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
 /** EI-1715: under fleet-wide PG contention (pg 57014) this read can ride to the
  *  ~55s MCP dispatch cap. A Queen survey turn that calls digest then times out
- *  ABORTS before hive:declare-wake → the 30-min liveness backstop fires → watchdog
+ *  ABORTS before pot:declare-wake → the 30-min liveness backstop fires → watchdog
  *  spin. Bound it well under the cap and return a fast DEGRADED-but-valid result
  *  so the turn continues + arms its wake. Env-tunable. */
 class DigestTimeoutError extends Error {}
@@ -121,7 +121,7 @@ export default defineTool({
     } catch (e) {
       // EI-1715: a contention-slow read returns a fast DEGRADED-but-valid empty
       // digest (buildDigest([]) — pure, no DB) flagged `degraded`, so a Queen
-      // survey turn does NOT abort and still reaches hive:declare-wake. The next
+      // survey turn does NOT abort and still reaches pot:declare-wake. The next
       // survey (post-contention) returns the real backlog.
       if (e instanceof DigestTimeoutError) {
         const digest = buildDigest([], { nowMs: Date.now(), ownerFullAutonomy: false });

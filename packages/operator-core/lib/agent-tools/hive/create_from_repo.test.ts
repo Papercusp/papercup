@@ -1,5 +1,5 @@
 /**
- * create_from_repo.test.ts — the hive:create_from_repo HANDLER guard + delegation (the
+ * create_from_repo.test.ts — the pot:create_from_repo HANDLER guard + delegation (the
  * composition createHiveFromRepo is seam-injected + unit-tested separately). This flow
  * clones a repo + stands up a hive, so the ROOT-ONLY guard (a bee cannot create a hive —
  * hives are peers, never nested) is load-bearing. Also pins the workspace resolution and
@@ -37,7 +37,7 @@ beforeEach(() => {
   createM.mockResolvedValue({ ok: true, created: { hiveSlug: 'y-hive', memberSlug: 'y' } } as never);
 });
 
-describe('hive:create_from_repo handler', () => {
+describe('pot:create_from_repo handler', () => {
   it('refuses a bee (fleet-spawn) — root-only — with no clone/create', async () => {
     ident.mockReturnValue({ source: 'fleet-spawn' } as never);
     const b = body(await call());

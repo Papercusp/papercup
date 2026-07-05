@@ -25,7 +25,7 @@
  * signal, and a step failure would invite engine-level replays (= double
  * cycles = double spend). A replayed tick sees the row at status 'running' and
  * skips it. The per-hive gym autoloop ROWS it sweeps are now provisioned inline
- * at hive:create (lib/hive/provision-learning-loop.ts, dark by default) — the
+ * at pot:create (lib/hive/provision-learning-loop.ts, dark by default) — the
  * standalone `?? operatorHomeHarnessSlug()` seed-gym-routine.ts env-slug script was RETIRED
  * (per-hive-learning-loops-2026-06-14 P-022 / D-003).
  */

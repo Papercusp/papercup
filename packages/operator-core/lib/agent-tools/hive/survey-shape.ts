@@ -1,5 +1,5 @@
 /**
- * hive:survey payload-tier shapers (context-trimming-tiers-2026-07-01 P-024).
+ * pot:survey payload-tier shapers (context-trimming-tiers-2026-07-01 P-024).
  * 7d MCP telemetry: avg 19KB/call — the Queen's every-wake placement read.
  * Rows are already compact (id/title/score/why); the fat is the static
  * `ranker` spec re-sent every wake, the per-row `why` reason lists, and

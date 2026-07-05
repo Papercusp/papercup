@@ -21,7 +21,7 @@ import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 export default defineTool({
   name: 'fleet:status',
   description:
-    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means bee:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.',
+    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.',
   guidance: {
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',

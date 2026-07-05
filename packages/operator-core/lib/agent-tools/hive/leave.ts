@@ -1,10 +1,10 @@
 /**
- * hive:leave — a JOINER cleanly leaves a shared hive
+ * pot:leave — a JOINER cleanly leaves a shared hive
  * (shared-hive-hardening-2026-06-13 P-012). The durable inverse of joining a
  * hive (joinHiveAsView): the thin tool wrapper over `leaveHive` (leave-hive.ts).
  *
- * Distinct from hive:dissolve — that is the OWNER tearing down a LOCAL hive
- * (stops the Queen, cancels bees, deregisters the home harness). hive:leave is a
+ * Distinct from pot:dissolve — that is the OWNER tearing down a LOCAL hive
+ * (stops the Queen, cancels bees, deregisters the home harness). pot:leave is a
  * JOINER walking away from a remote hive they joined: stop federating (leave the
  * swarm topic), delete the member git-sync routines, drop local presence, and
  * deregister the `remote_hive` view + its member clones.
@@ -26,18 +26,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:leave',
+  name: 'pot:leave',
   profile: 'engineer',
   description:
-    "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local hive you own — that is hive:dissolve.",
+    "Leave a shared hive you JOINED (root-only, pass confirm:true): stop federating (leave the swarm topic), delete the member git-sync routines, drop local presence rows, and deregister the remote_hive view + its member clones. Idempotent + best-effort. Clone dirs are kept by default — deleteClones:true also removes them. NOT for a local hive you own — that is pot:dissolve.",
   guidance: {
     when: 'A joiner cleanly leaving a shared hive they joined — stop federating, deregister the joined view + members, kill their git-sync routines. Operator/user only.',
     notWhen:
-      'Tearing down a LOCAL hive you OWN (stop its Queen, cancel its bees) — hive:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
-    chaining: 'hive:list / hive:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind.',
+      'Tearing down a LOCAL hive you OWN (stop its Queen, cancel its bees) — pot:dissolve. Pausing federation without leaving — there is no pause; leave + re-join. From a bee — not allowed.',
+    chaining: 'pot:list / pot:get to find the joined hive (remote_hive) view slug before; re-join via the hive directory join flow if you change your mind.',
     seeAlso: [
-      'hive:list (find the joined hive slug first)',
-      'hive:add-member (the inverse — add a member to a hive)',
+      'pot:list (find the joined hive slug first)',
+      'pot:add-member (the inverse — add a member to a hive)',
     ],
   },
   capability: 'harness:write',
@@ -52,7 +52,7 @@ export default defineTool({
     confirm: z
       .boolean()
       .optional()
-      .describe('Required true — hive:leave tears down federation, routines, presence, and the joined registry entries.'),
+      .describe('Required true — pot:leave tears down federation, routines, presence, and the joined registry entries.'),
     deleteClones: z
       .boolean()
       .optional()
@@ -60,14 +60,14 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    // Root-only (mirrors hive:dissolve) — a bee never leaves a hive.
+    // Root-only (mirrors pot:dissolve) — a bee never leaves a hive.
     const actor = resolveAgentIdentity(ctx);
     if (actor.source === 'fleet-spawn') {
       return text({
         ok: false,
         error: 'hive_leave_root_only',
         message:
-          'hive:leave cannot be called from a bee (a spawned/parented agent). Only the operator/user leaves a hive.',
+          'pot:leave cannot be called from a bee (a spawned/parented agent). Only the operator/user leaves a hive.',
       });
     }
     if (!args.confirm) {
@@ -75,7 +75,7 @@ export default defineTool({
         ok: false,
         error: 'confirm_required',
         message:
-          'hive:leave tears down federation, git-sync routines, presence, and the joined registry entries — pass confirm:true to proceed. Clone dirs are kept unless deleteClones:true.',
+          'pot:leave tears down federation, git-sync routines, presence, and the joined registry entries — pass confirm:true to proceed. Clone dirs are kept unless deleteClones:true.',
       });
     }
 

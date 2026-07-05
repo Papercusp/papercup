@@ -12,7 +12,7 @@
  * (`requirePrincipal: false`, which never enter the legacy catalog), and
  * plugin tools. Reading the legacy catalog silently dropped every role-gated
  * group (hive:*, flags:*, …) from the palette: listed-but-uninvocable was the
- * visible half, and `no tool named "hive:start"` from the run-tool bridge was
+ * visible half, and `no tool named "pot:start"` from the run-tool bridge was
  * the invisible half.
  *
  * Read-only: it never invokes anything. The MCP `tools/list` projection is
@@ -34,7 +34,7 @@ export interface ServerCapability extends Capability {
 
 /** A named projected-registry entry — the enumerable unit of the catalog. */
 export interface NamedProjectedTool {
-  /** The MCP name (the palette invoke name, e.g. `hive:start`). */
+  /** The MCP name (the palette invoke name, e.g. `pot:start`). */
   name: string;
   tool: ProjectedToolMeta;
 }

@@ -309,7 +309,7 @@ export async function broadcastSessions(
   }
 }
 
-/** Broadcast this machine's presence LEAVE tombstone (hive:leave semantics —
+/** Broadcast this machine's presence LEAVE tombstone (pot:leave semantics —
  *  peers drop the row at once; the TTL is the backstop). */
 export async function broadcastPresenceDel(
   topicHex: string,

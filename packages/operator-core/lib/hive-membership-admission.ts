@@ -256,8 +256,8 @@ export async function denyPendingJoin(
  *        - admit   (open / allowlisted)  → trust-admit (upsertHiveMember).
  *        - pending (approval mode)       → a federated pending-join request is
  *          recorded (by the OWNER here, origin='local' → it reaches the joiner and
- *          shows in the owner's hive:membership_pending queue); the peer is NOT
- *          trust-admitted. The owner later decides via hive:membership_decide.
+ *          shows in the owner's pot:membership_pending queue); the peer is NOT
+ *          trust-admitted. The owner later decides via pot:membership_decide.
  *        - refuse  (banned / not-allowlisted) → neither admit nor pending.
  *
  * SECURITY/INVARIANTS: this gates ONLY the membership UPSERT decision. It does NOT

@@ -70,7 +70,7 @@ export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
  * wake — the asleep agent waiting on `coord:inbox-wake:<self>` is the ONLY one who could release
  * it, so STAGING a self-wake DEADLOCKS the loop (fire → stage → nobody releases → never executes).
  * Observed live 2026-06-23: a self-loop fired ~10× into a manual-mode session (global default was
- * `manual` via hive:pause) and every wake staged → the loop did zero work. The manual gate exists
+ * `manual` via pot:pause) and every wake staged → the loop did zero work. The manual gate exists
  * for an OWNER reviewing a SUBORDINATE's wakes; a self-loop has neither, so its wake always fires.
  * (loop:arm is su/interactive-only — never a fleet agent — so this never un-pauses a fleet bee.)
  */
@@ -132,7 +132,7 @@ export async function wakeRecipients(
   }
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
   // the HIVE_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
-  // hive's PAUSE primitive (hive:pause sets the global default to `manual`), so
+  // hive's PAUSE primitive (pot:pause sets the global default to `manual`), so
   // it must hold regardless of a UI flag — a flipped-off flag silently unmaking
   // Pause would fire wakes into a frozen hive. Behavior-neutral otherwise:
   // everything resolves `auto` by default, and auto fires immediately as before.

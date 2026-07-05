@@ -41,7 +41,7 @@
  * so `AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}'` (both the placed bees AND the Queen) +
  * the `opus` CLI alias (claude v2.1.177 silently runs opus-4-7 for `--model claude-opus-4-8`) are
  * required. CRITICAL (D-020): a spawn's `--model`/backend is resolved at spawn-BUILD time from the
- * SPAWNING process's `process.env.AGENT_MODELS`/`AGENT_CMD` — and the Queen's `bee:spawn` is serviced by
+ * SPAWNING process's `process.env.AGENT_MODELS`/`AGENT_CMD` — and the Queen's `cup:spawn` is serviced by
  * the long-running :3170 host (`fireLaunchBlueprint('hive')` → loopback invoke), NOT this launcher. So for
  * the real-Queen arm the opus pin + `AGENT_CMD=claude -p` MUST be on the :3170 host env (apps/operator/
  * .env.local), not just the launcher. VERIFY `agent_usage_samples.model = claude-opus-4-8 role=bee`
@@ -95,7 +95,7 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
  * of exiting taskless). Identical to the scripted driver's directive (fairness: same bee unit).
  *
  * D-020 (the CRITICAL fix). In the real-Queen arm the driver does NOT spawn the bee — the Queen persona
- * does, via `bee:spawn`, with HER situational overlay as the brief. Her overlay is NOT a "claim +
+ * does, via `cup:spawn`, with HER situational overlay as the brief. Her overlay is NOT a "claim +
  * implement this lone bench feature" instruction, so a Queen-placed bee booted with FEATURE_ID set but no
  * directive to claim its (unassigned, `taken_by` NULL) feature → it found no actionable work and did $0 of
  * model work (no usage sample, no diff; the seeded feature later went `cancelled`). The WORKING scripted
@@ -103,7 +103,7 @@ const ESCALATE_FEATURE_STATUSES = new Set(['escalated', 'blocked']);
  * the xbh* haiku run produced 10/11 non-empty diffs, features → `passed`, with the feature left
  * `taken_by` NULL — the bee SELF-claims off the directive). The fix threads this directive to the
  * Queen-placed bee too: the bench launcher exports it as `PAPERCUSP_XBENCH_BEE_DIRECTIVE` on the host that
- * services the Queen's `bee:spawn` (the long-running :3170 operator), and `spawnAgentInHarness`
+ * services the Queen's `cup:spawn` (the long-running :3170 operator), and `spawnAgentInHarness`
  * (operator-spawn.ts) APPENDS it to every placed bee's brief + pins the claude-code backend per-spawn. The
  * Queen's placement / eviction / re-placement / adaptive-wake treatment is entirely unchanged — she still
  * decides WHO/WHEN; the directive only guarantees the bee she places can actually DO the coding work.
@@ -230,7 +230,7 @@ export interface RealQueenBacklogOpts {
    *   - `onTaskCollected` fires per member as `collectAll` finishes it → persist that one task's diff +
    *     row immediately, so a kill during the (serial) collect loop keeps every diff already gathered.
    *   - `onHiveCreated` fires the instant the shared hive home is minted (P-033 Fix 4, teardown-on-exit) →
-   *     the launcher registers the slug so its SIGTERM/SIGINT/exit handler can hive:dissolve it even when a
+   *     the launcher registers the slug so its SIGTERM/SIGINT/exit handler can pot:dissolve it even when a
    *     rate-limit SIGKILL bypasses the driver's normal/catch teardown — closing the D-022 orphan-respin gap.
    */
   onEnrolled?: (enrolled: RealQueenEnrolled) => void | Promise<void>;
@@ -528,11 +528,11 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   if (process.env.PAPERCUSP_FLEET_SANDBOX == null) process.env.PAPERCUSP_FLEET_SANDBOX = '0';
   if (process.env.PAPERCUSP_SPAWN_BACKEND == null) process.env.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
   if (process.env.AGENT_CMD == null && process.env.CLAUDE == null) process.env.AGENT_CMD = 'claude -p';
-  // D-020 fix: the bee self-sufficiency directive. The real Queen places a bench bee via `bee:spawn`, but
+  // D-020 fix: the bee self-sufficiency directive. The real Queen places a bench bee via `cup:spawn`, but
   // her brief is a situational overlay — not the "claim + implement this lone feature" directive — so a
   // placed bee did $0 of work (the feature stayed unassigned → `cancelled`). When set, spawnAgentInHarness
   // APPENDS this to every placed bee's brief + pins the claude backend per-spawn (operator-spawn.ts), the
-  // exact mechanism the WORKING scripted arm uses. CRITICAL: the Queen's `bee:spawn` is serviced by the
+  // exact mechanism the WORKING scripted arm uses. CRITICAL: the Queen's `cup:spawn` is serviced by the
   // long-running :3170 host (fireLaunchBlueprint → loopback invoke), NOT this launcher process — so for the
   // real-Queen arm this var MUST also be on :3170's env (set in apps/operator/.env.local). We set it here so
   // the FIFO arm's IN-PROCESS executeBatch spawns (which run in this launcher) also carry it, and as the
@@ -559,7 +559,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
   ].join(' ');
   if (gaiaMode) {
     // Override unconditionally for GAIA — the default coding directive would mis-instruct the bee. (Set on this
-    // launcher process AND, load-bearing, on the :3170 host env that services the Queen's bee:spawn.)
+    // launcher process AND, load-bearing, on the :3170 host env that services the Queen's cup:spawn.)
     process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = GAIA_BENCH_BEE_DIRECTIVE;
   } else if (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE == null) {
     process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = BENCH_BEE_DIRECTIVE;
@@ -664,7 +664,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
     },
 
     async startRealQueen({ hiveHome, kickoff }) {
-      // The core of hive:start: persist started=true (the watchdog's liveness bit) + wake the Queen agent.
+      // The core of pot:start: persist started=true (the watchdog's liveness bit) + wake the Queen agent.
       // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentHiveWake → fireLaunchBlueprint('hive').
       const ops = await liveOps();
       await ops.startHive({ hiveHome, workspaceId: ws, kickoff });
@@ -673,7 +673,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
     async rewakeQueen({ hiveHome, reason }) {
       // Another urgent wake → another fireLaunchBlueprint('hive') → a fresh Queen session that surveys +
       // places the still-ready frontier. The hive is already started (startRealQueen did setHiveStarted);
-      // this is the re-wake the disabled auto-routine would have delivered. Same call hive:start uses.
+      // this is the re-wake the disabled auto-routine would have delivered. Same call pot:start uses.
       const { requestUrgentHiveWake } = await import('../hive/urgent-wake');
       await requestUrgentHiveWake({ reason, harness: hiveHome, workspaceId: ws });
     },

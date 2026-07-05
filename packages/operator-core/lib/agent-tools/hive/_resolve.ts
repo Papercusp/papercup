@@ -18,9 +18,9 @@
  * stay fixed.
  *
  * This is identity + deployment + wake ONLY — the live aggregate view (bees,
- * frontier depth, harness health) is layered on top by `hive:get`, which joins
+ * frontier depth, harness health) is layered on top by `pot:get`, which joins
  * fleet:assignments / work_items / harness:status. Keeping that out of here
- * keeps `hive:list` cheap (no per-hive fleet fan-out).
+ * keeps `pot:list` cheap (no per-hive fleet fan-out).
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -66,7 +66,7 @@ export interface HiveDescriptor {
    * The Hive's first-class identity: its raw-32 base64 Ed25519 PUBLIC key
    * (shared-hive-federation-2026-06-08 P-002). This is the dial-able id and the
    * federation topic key (P-003, deriveHiveFederationTopic). Minted on
-   * hive:create and lazy-backfilled on first resolve; undefined only when identity
+   * pot:create and lazy-backfilled on first resolve; undefined only when identity
    * backfill failed (e.g. the keychain is unavailable). The secret never leaves
    * the owning Swarm's keychain.
    */
@@ -134,7 +134,7 @@ export function describeHive(
 }
 
 /** Pure: distinct live agents per harness slug, from raw fleet-assignment rows —
- *  the per-hive count `hive:list` shows, extracted so it unit-tests without PG. */
+ *  the per-hive count `pot:list` shows, extracted so it unit-tests without PG. */
 export function liveAgentCountByHarness(
   rows: ReadonlyArray<{ holderAlive: boolean; harnessSlug: string | null; agentId: string | null }>,
 ): Map<string, number> {

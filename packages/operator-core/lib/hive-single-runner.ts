@@ -5,7 +5,7 @@
  *
  * ## The problem this closes
  *
- * Scout (`scout:cycle`) and the gym (`system:gym-cycle`) are CADENCE loops fired
+ * Scout (`blender:cycle`) and the gym (`system:gym-cycle`) are CADENCE loops fired
  * by per-Hive routines. Their single-flight guard is `autoloop.claimFire` — a CAS
  * on `harness_shared.autoloop_state`, scoped by `activeWorkspaceId()`. That is
  * single-flight WITHIN one Postgres only. A SHARED Hive gives each NODE its own

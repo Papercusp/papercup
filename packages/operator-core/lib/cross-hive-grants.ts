@@ -19,7 +19,7 @@
  * with no outbound — `{ in: <legacy>, out: {} }` — so existing admission policy is
  * unchanged until the owner adds an outbound grant.
  *
- * Written by the owner via `hive:cross_grant { direction }`.
+ * Written by the owner via `pot:cross_grant { direction }`.
  */
 import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting } from './hive-settings-store';
@@ -181,7 +181,7 @@ export async function loadOutboundCrossHiveGrants(
   return mapToGrants((await loadDirectedMap(workspaceId, hiveHomeSlug, sql)).out);
 }
 
-/** Load both directions in one read (for `hive:cross_grant list` + the Network board). */
+/** Load both directions in one read (for `pot:cross_grant list` + the Network board). */
 export async function loadDirectedCrossHiveGrants(
   workspaceId: string,
   hiveHomeSlug: string,
@@ -263,8 +263,8 @@ export interface AssertOutboundGrantOpts {
 
 /**
  * Load this Hive's outbound grants and decide whether an outbound request to `toHivePubkey`
- * of `kind` is permitted. The convenience the front-door tools (`hive:ask` /
- * `hive:request_work`) call before composing a send — non-throwing, returns the admission
+ * of `kind` is permitted. The convenience the front-door tools (`pot:ask` /
+ * `pot:request_work`) call before composing a send — non-throwing, returns the admission
  * verdict + a reason to surface. Default-deny: an unknown peer is rejected. P-013:
  * also enforces the grant's expiry / size cap / rolling per-hour rate cap (counted
  * against the C-1 `out` ledger).

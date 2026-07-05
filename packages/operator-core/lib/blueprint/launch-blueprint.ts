@@ -503,7 +503,7 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
   // HEARTBEAT THE LAUNCH ROW (P-011 liveness fix). `loopbackFetch` holds the
   // connection open for the WHOLE worker run — a kind:'hive' Queen wake (or an
   // overwatch loop) runs up to the invoke route's 2700s ceiling, far past
-  // RECLAIM_STALE_MS (300s). Unlike the bee:spawn path (operator-spawn.ts'
+  // RECLAIM_STALE_MS (300s). Unlike the cup:spawn path (operator-spawn.ts'
   // ensureSpawnHeartbeatLoop), this fire-and-forget launch row was recorded but
   // never heartbeated — so the P-011 reclaim sweep (run opportunistically inside
   // every admitSpawn, even DBOS-off) reaped a still-running Queen at ~310s with

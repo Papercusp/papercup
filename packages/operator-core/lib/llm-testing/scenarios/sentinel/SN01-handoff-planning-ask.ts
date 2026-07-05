@@ -54,9 +54,9 @@ export const SN01_HANDOFF_PLANNING_ASK: Scenario = {
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
-    // The Sentinel must NEVER place work itself — its envelope denies bee:spawn,
+    // The Sentinel must NEVER place work itself — its envelope denies cup:spawn,
     // and a stray spawn would mean it tried to do the Queen's job.
-    { kind: 'tool_not_called', name: 'bee:spawn' },
+    { kind: 'tool_not_called', name: 'cup:spawn' },
     { kind: 'cost_under', usd: 1.0 },
   ],
   rubric: OPERATOR_RUBRIC,

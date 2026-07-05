@@ -139,7 +139,7 @@ export function placementConfig(): PlacementConfig {
     recoveryDebounceMs: Number.isFinite(debounce) && debounce >= 0 ? debounce : 5 * 60_000,
     dormancyGraceMs: Number.isFinite(dormancy) && dormancy >= 0 ? dormancy : 10 * 60_000,
     infraBreakerThreshold: Number.isFinite(infra) && infra >= 1 ? infra : 12,
-    // live-configurability-audit P-015: overlay the runtime hive:control_policy override (empty ⇒ env defaults).
+    // live-configurability-audit P-015: overlay the runtime pot:control_policy override (empty ⇒ env defaults).
     ...placementOverride(),
   };
 }
@@ -294,7 +294,7 @@ export type PlacementDecision =
  *   - an infra `recover` does NOT fire a per-item Queen recovery wake, and
  *   - an infra `breaker` curse does NOT open a per-item owner escalation.
  * The placement is still re-placed / recorded `cursed` (the `placements.cursed` health
- * metric + hive:status are the real cursed-state surface); only the per-item NOISE is
+ * metric + pot:status are the real cursed-state surface); only the per-item NOISE is
  * suppressed. Without this, a fleet-wide no-bees window cursed the whole frontier at
  * `fail_count=0, infra_loss_count=12`, flooding the queue with "failed 0×" advisories
  * and waking the Queen every ~5min to do nothing actionable. A genuine item-pathology
@@ -540,7 +540,7 @@ export function evaluateStalePlacementEscalation(obs: StalePlacementEscalationOb
 /** The non-terminal (OPEN) placement statuses the completion GC reconciles. A
  *  placement in one of these is still tracked as in-flight; once its subject unit
  *  reaches terminal / is retired, the durable row must converge to completed /
- *  abandoned so hive:status, summarizeOpenPlacements, and loadCursedWorkItemIds
+ *  abandoned so pot:status, summarizeOpenPlacements, and loadCursedWorkItemIds
  *  stop counting a lane whose work has actually finished. */
 export const OPEN_PLACEMENT_STATES = new Set(['working', 'recovering', 'cursed', 'stranded']);
 
@@ -564,7 +564,7 @@ export interface TerminalPlacementObs {
  *   • an infra-attributed `cursed`/`stranded` row carries NO escalation_msg_id, so the
  *     escalation-only GC (which required escalation_msg_id IS NOT NULL) skipped it.
  * Both left the durable hive_placements accounting DRIFTING after the work completed
- * or the bee died — hive:status reporting cursed/working lanes long since done.
+ * or the bee died — pot:status reporting cursed/working lanes long since done.
  *
  *   OPEN + unit GONE      → resolve-abandoned
  *   OPEN + unit TERMINAL  → resolve-completed
@@ -1073,7 +1073,7 @@ export async function reconcileOneHive(
           // zombie) re-places silently: it does NOT fire a per-item Queen recovery wake (the
           // Queen can't fix bee-boot infra by re-placing THIS item, and a fleet-wide no-bees
           // window would fire one wake PER placement — the ~5min wake storm). The recovering
-          // row is still surfaced in hive:status, so she drives it on her next natural survey.
+          // row is still surfaced in pot:status, so she drives it on her next natural survey.
           if (!decision.infraAttributed) {
             await fireRecoveryWake(workspaceId, queenOwner, unitId, base.harnessSlug, decision.nextFailCount);
           }
@@ -1115,7 +1115,7 @@ export async function reconcileOneHive(
         }
         case 'latched':
           // EI-865 — the breaker has tripped and the unit is still cursed: HALT.
-          // Refresh last_seen_at (the row stays observable in hive:status) but do
+          // Refresh last_seen_at (the row stays observable in pot:status) but do
           // NOT re-fire, NOT re-escalate (escalation_msg_id is preserved), and do
           // NOT bump fail_count — the latch holds it steady at the breaker count.
           await upsertPlacement(sql, {
@@ -1174,7 +1174,7 @@ export async function reconcileOneHive(
 /** P-020 — fire ONE targeted recovery wake to the Queen so she re-places the
  *  stalled unit without waiting for the next idle wake. Best-effort: a woken:0
  *  (Queen has no armed wake) degrades to "she sees the recovering row in
- *  hive:status on her next natural turn"; the liveness watchdog keeps her armed. */
+ *  pot:status on her next natural turn"; the liveness watchdog keeps her armed. */
 async function fireRecoveryWake(
   workspaceId: string,
   queenOwner: string,
@@ -1226,7 +1226,7 @@ async function countNonTerminalDownstream(
  *  surveys + places the now-unblocked next-wave batch. The wave ordering executing
  *  through edge resolution — replacing the hand-rolled pair-emit `:done` events
  *  (queen-wave-dispatch D-006). Best-effort: a woken:0 (no armed wake) degrades to
- *  the Queen seeing the freed lanes in her next natural hive:survey. */
+ *  the Queen seeing the freed lanes in her next natural pot:survey. */
 async function fireUnblockWake(
   workspaceId: string,
   queenOwner: string,
@@ -1375,7 +1375,7 @@ async function reconcileTerminalPlacements(
           : `auto-resolved (placement GC, EI-1524): work-item ${r.work_item_id} no longer exists; the ${r.status} advisory is no longer relevant`,
       );
     }
-    // Converge the placement out of the OPEN set so hive:status +
+    // Converge the placement out of the OPEN set so pot:status +
     // summarizeOpenPlacements + loadCursedWorkItemIds stop counting a lane whose work
     // has finished. queen/bee fields are preserved (COALESCE keeps existing on null).
     await upsertPlacement(sql, {
@@ -1486,7 +1486,7 @@ async function reconcileStrandedWork(
   return out;
 }
 
-/** Open placements needing the Queen's attention — surfaced in hive:status so she
+/** Open placements needing the Queen's attention — surfaced in pot:status so she
  *  acts on recoveries/cursed/stranded each wake (P-020/P-023: completion). */
 export interface OpenPlacementSummary {
   recovering: number;

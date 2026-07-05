@@ -1,5 +1,5 @@
 /**
- * hive:update — edit a hive's config (hive-tool-namespace-2026-06-08 P-006).
+ * pot:update — edit a hive's config (hive-tool-namespace-2026-06-08 P-006).
  *
  * A thin writer over the home harness's registry entry: the deployment target
  * (where its execution plane runs) and per-instance config overrides (the
@@ -21,17 +21,17 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:update',
+  name: 'pot:update',
   profile: 'engineer',
   description:
     "Edit a hive's config: its deployment target (execution plane) and per-instance config overrides (maxCostUsd, parallelWorkers, …). A thin registry writer — no agent-lifecycle effects (never wakes/cancels). Cannot change harness_kind (a hive cannot reclassify). Root-only.",
   guidance: {
     when: "Changing a hive's deployment target or its per-instance config overrides (budget/parallelism knobs).",
     notWhen:
-      'Waking/pausing the Queen — hive:wake / hive:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
-    chaining: 'hive:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
+      'Waking/pausing the Queen — pot:wake / pot:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
+    chaining: 'pot:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
     seeAlso: [
-      'hive:get (see the current config before updating)',
+      'pot:get (see the current config before updating)',
       'deploy:hive (act on a changed deployment target)',
     ],
   },
@@ -53,7 +53,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_update_root_only',
-        message: 'hive:update cannot be called from a bee (a spawned/parented agent). Only the operator/user edits a hive config.',
+        message: 'pot:update cannot be called from a bee (a spawned/parented agent). Only the operator/user edits a hive config.',
       });
     }
     if (args.deployment === undefined && args.configOverrides === undefined) {
@@ -68,7 +68,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_not_found',
-        message: `No kind:'hive' harness '${args.slug}' in this workspace. Use hive:list to see the hives.`,
+        message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the hives.`,
       });
     }
 

@@ -867,7 +867,7 @@ describe('SIDECAR shared-hive SECURITY DROPS — a malicious / unauthorised fram
         'control: a current member’s content must apply BEFORE the ban',
       ).toBe('apply');
 
-      // BAN: remove the member from the roster (the membership cut a hive:ban_member drives).
+      // BAN: remove the member from the roster (the membership cut a pot:ban_member drives).
       await orgDb.adminSql`
         DELETE FROM harness_shared.hive_members
          WHERE workspace_id = ${wsId} AND hive_home_slug = ${hiveHome}

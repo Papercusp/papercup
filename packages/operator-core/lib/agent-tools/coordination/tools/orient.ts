@@ -115,7 +115,7 @@ export interface OrientResult {
    *  owner-directed task (P-002 / D-001). */
   facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null }> | null;
   /** Present iff queen-loop steering facts were withheld from a responsive caller
-   *  (P-002) — transparent, never a silent drop. Pull live state via hive:get-steering. */
+   *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
   /** coord:plan-events delta — newest few + the true total; null on failure;
    *  absent when includePlanEvents:false. */

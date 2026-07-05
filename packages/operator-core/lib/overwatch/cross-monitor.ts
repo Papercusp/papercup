@@ -61,7 +61,7 @@ function isDark(
 }
 
 /** Is overwatch expected to be running right now? Only when its flag is ON
- *  (B-10/D-009) AND its control bit is started (B-07's `overwatch:start`). */
+ *  (B-10/D-009) AND its control bit is started (B-07's `kettle:start`). */
 async function overwatchExpected(
   workspaceId: string,
   installSlug: string,

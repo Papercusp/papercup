@@ -6,7 +6,7 @@
  * `owner-steering:*` keys in the existing `harness_shared.hive_settings` KV (D-001
  * — no migration; Hive-scoped, federates over the Hive peer-log via the capture
  * trigger). This module OWNS the key names + the decoded {@link OwnerSteering}
- * shape (C-1): `hive:set-steering` writes through it, the `hive.steering` sync
+ * shape (C-1): `pot:set-steering` writes through it, the `hive.steering` sync
  * resolver (B-01) + the Queen wake-brief inject (B-02 `gatherOwnerSteering`) + the
  * survey pause-enforcement (B-02 P-003) read through it. Mirrors `beacon-consent.ts`
  * (the sibling hive_settings-backed owner-policy accessor).
@@ -76,7 +76,7 @@ export const OWNER_STEERING_KEYS = {
   decomposition: 'owner-steering:decomposition',
   federatedPriming: 'owner-steering:federated-priming',
   // model-override-sidebar-2026-06-23: SESSION-NOW per-role MODEL overrides for the
-  // FRONT-DOOR agents that launch OUTSIDE the bee:spawn tier path — `sentinel`
+  // FRONT-DOOR agents that launch OUTSIDE the cup:spawn tier path — `sentinel`
   // (the dock psu/Claude TUI) and `overwatch` (the supervisor invoke loop). role →
   // `model[:effort]` spec; absent ⇒ the workspace default (agent-config models.<role>
   // → CLI default). Session-only: lives here in hive_settings (resets with the Hive),
@@ -145,7 +145,7 @@ export interface OwnerSteering {
    *  null ⇒ default (the Queen's own judgement). */
   decomposition?: DecompositionMode | null;
   /** SESSION per-role MODEL overrides (model-override-sidebar-2026-06-23) for the
-   *  front-door agents launched OUTSIDE the bee:spawn tier path — `sentinel` (dock
+   *  front-door agents launched OUTSIDE the cup:spawn tier path — `sentinel` (dock
    *  psu TUI) and `overwatch` (invoke loop). role → `model[:effort]` spec;
    *  absent/empty ⇒ workspace default. null ⇒ no overrides. */
   modelOverrides?: Record<string, string> | null;

@@ -291,7 +291,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
     syncBlockEdges: ({ member, featureId, blockedBy }) => syncFeatureBlockEdges(member, featureId, [...blockedBy]),
 
     async startHive({ hiveHome, workspaceId, kickoff }) {
-      // The core of hive:start: persist started=true (the watchdog's liveness bit) + wake the Queen.
+      // The core of pot:start: persist started=true (the watchdog's liveness bit) + wake the Queen.
       await setHiveStarted(workspaceId, hiveHome, true);
       await requestUrgentHiveWake({ reason: kickoff, harness: hiveHome, workspaceId });
     },
@@ -315,20 +315,20 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
     },
 
     async dissolveHive({ hiveHome, workspaceId }) {
-      // The FULL durable inverse of createHive — now mirrors hive:dissolve's core IN FULL (D-022 /
+      // The FULL durable inverse of createHive — now mirrors pot:dissolve's core IN FULL (D-022 /
       // P-033 spend-safety fix). The old teardown skipped the bee-cancel + learning-loop teardown on
       // the assumption "the drive already paused the hive, so its bees are terminal" — but a
       // rate-limit-killed launcher (or a stuck bee that outlived the pause) left LIVE bees AND the
       // per-hive gymAutoloop/scoutRoutine learning loops behind, which re-spin opus AFTER teardown
       // (the orphan re-spin this benchmark must never produce). We now cancel every live bee subtree,
-      // SIGTERM the local processes, and tear down the learning loops — the same closure hive:dissolve
+      // SIGTERM the local processes, and tear down the learning loops — the same closure pot:dissolve
       // delivers. Best-effort throughout (teardown must not mask the run's outcome).
       await setHiveStarted(workspaceId, hiveHome, false).catch(() => {});
       const sql = sqlClient();
       await clearHiveTimeWake(sql, hiveHome).catch(() => {});
 
       // Cancel every live bee in the hive (+ its subtree): mark cancelled, release claims/locks NOW,
-      // notify, and SIGTERM the running process so it stops making edits. Mirrors hive:dissolve step 2.
+      // notify, and SIGTERM the running process so it stops making edits. Mirrors pot:dissolve step 2.
       const actor: AgentIdentity = {
         ownerId: `hive-eval-dissolve:${hiveHome}`,
         ownerLabel: `hive-eval:dissolve:${hiveHome}`,

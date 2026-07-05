@@ -195,8 +195,8 @@ function isUntouchedCoordslessCreatorSeed(row: RoutineRow, installSlug: string):
 
 /**
  * Best-effort seed of one MEMBER checkout's `system:git-sync` routine — the one
- * composition behind the creator-side producers (hive:create_from_repo,
- * hive:add-member, harness:create { hive }) and B-03's joiner path. NEVER
+ * composition behind the creator-side producers (pot:create_from_repo,
+ * pot:add-member, harness:create { hive }) and B-03's joiner path. NEVER
  * throws and never fails the caller's create: every failure folds into the
  * returned outcome, which the calling tool reports in its result (the same
  * discipline as _create_from_repo's publish step).

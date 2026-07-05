@@ -214,7 +214,7 @@ describe('provisionHiveLearningLoop', () => {
   });
 });
 
-describe('teardownHiveLearningLoop (P-021 — the hive:dissolve inverse)', () => {
+describe('teardownHiveLearningLoop (P-021 — the pot:dissolve inverse)', () => {
   it('deletes the gym row, the scout routine, AND the gym:<hive>/scout:<hive> governor registrants', async () => {
     const { sql, calls } = makeFakeSql();
     const res = await teardownHiveLearningLoop({ sql, workspaceId: 'w1', hiveSlug: 'alpha' });

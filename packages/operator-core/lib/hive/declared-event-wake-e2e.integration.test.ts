@@ -3,10 +3,10 @@
  * P-008: the DECLARED event-wake variant of the autonomous trigger chain, against
  * a real Postgres (testcontainer) and the REAL dispatcher + reaction registry:
  *
- *   hive:declare-wake { events:[{on:'plans:start'}] } (the Pot's own surface)
+ *   pot:declare-wake { events:[{on:'plans:start'}] } (the Pot's own surface)
  *     → persisted subscription (harness_shared.hive_wake) + live reaction rule
  *     → a BURST of 3 matched tool-events
- *     → hive:wake ×3 → floor-debounce collapses to ONE hive launch
+ *     → pot:wake ×3 → floor-debounce collapses to ONE hive launch
  *       (fireLaunchBlueprint, mocked at the loopback boundary).
  *
  * What this covers that start-hive-e2e.integration.test.ts (P-003 of
@@ -110,7 +110,7 @@ async function dispatch(tool: string, args: Record<string, unknown>): Promise<Re
   // envelope (definetool-token-optimization-adoption P-006/D-008), one level
   // OUTSIDE whatever the handler itself returns — plans:start's bulk envelope
   // `{ ok, results:[…], counts }` (bulk-endpoint-standardization-2026-06-21)
-  // and hive:declare-wake's flat `{ ok, mode, eventRules, … }` alike. This test
+  // and pot:declare-wake's flat `{ ok, mode, eventRules, … }` alike. This test
   // used to unwrap only the bulk shape directly off `parsed`; now everything is
   // nested one level deeper under `.data` first. Unwrap `.data` unconditionally
   // (when present), THEN unwrap the bulk envelope if that's what's inside.
@@ -249,7 +249,7 @@ beforeAll(async () => {
   // ("relation harness_shared.decision_ledger does not exist") and
   // vitest-fail-on-console reddens the whole file (EI-496).
   await rootSql.unsafe(readMigration('260-decision-ledger.sql')).simple();
-  // The ONE shared carry-note substrate (472) — hive:declare-wake's { remember }
+  // The ONE shared carry-note substrate (472) — pot:declare-wake's { remember }
   // journal + the wake path read/write it (su-cold-auto-mode-2026-07-03 P-001).
   await rootSql.unsafe(readMigration('472-carry-notes.sql')).simple();
   // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
@@ -268,8 +268,8 @@ beforeAll(async () => {
     )`);
   h.sql = rootSql;
   // WI-2012 (owner directive 2026-07-03): hives are born PAUSED and
-  // hive:declare-wake refuses to arm while started=false. Start the hive the
-  // way hive:start does (setHiveStarted BEFORE arming) so the declared-wake
+  // pot:declare-wake refuses to arm while started=false. Start the hive the
+  // way pot:start does (setHiveStarted BEFORE arming) so the declared-wake
   // chain under test can register rules at all.
   {
     const { setHiveStarted } = await import('./started');
@@ -277,7 +277,7 @@ beforeAll(async () => {
     await setHiveStarted(WS, resolveHiveHomeSlug('papercup', undefined)!, true);
   }
   // Deliberately NOT arming the default subscriptions — every rule in this test
-  // comes from the Pot's own hive:declare-wake call (the declared path).
+  // comes from the Pot's own pot:declare-wake call (the declared path).
 }, 120_000);
 
 afterAll(async () => {
@@ -286,8 +286,8 @@ afterAll(async () => {
 });
 
 describe('the declared event wake, end to end (P-008)', () => {
-  it('hive:declare-wake registers the subscription as a live reaction rule', async () => {
-    const out = await dispatch('hive:declare-wake', {
+  it('pot:declare-wake registers the subscription as a live reaction rule', async () => {
+    const out = await dispatch('pot:declare-wake', {
       harness: 'papercup',
       events: [{ on: 'plans:start', note: 'P-008 burst test' }],
     });
@@ -340,7 +340,7 @@ describe('the declared event wake, end to end (P-008)', () => {
   });
 
   it('REPLACE semantics: re-declaring with no events clears the subscription — no further wakes', async () => {
-    const out = await dispatch('hive:declare-wake', { harness: 'papercup', mode: 'none' });
+    const out = await dispatch('pot:declare-wake', { harness: 'papercup', mode: 'none' });
     expect(out.ok).toBe(true);
     expect(out.eventRules).toBe(0);
     expect(out.mode).toBe('none');

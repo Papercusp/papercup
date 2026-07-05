@@ -1,5 +1,5 @@
 /**
- * hive:start — the global "Start Hive" control
+ * pot:start — the global "Start Hive" control
  * (start-hive-wake-orchestration-2026-06-09 P-005, D-005/D-006).
  *
  * Distinct from PlanRail's per-plan Start (plans:start drives the feature
@@ -28,18 +28,18 @@ import { requestUrgentHiveWake } from '../../hive/urgent-wake';
 import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
-  name: 'hive:start',
+  name: 'pot:start',
   profile: 'engineer',
   description:
-    'START the hive (the global control, distinct from a per-plan Start): persist hive_started=true, re-affirm the Queen\'s default event-wake subscriptions (plan-started / work-item-created / escalation), set the global wake-mode to auto, and wake the Queen now (floor-debounced). The liveness watchdog holds "a wake is always armed" from here until hive:pause.',
+    'START the hive (the global control, distinct from a per-plan Start): persist hive_started=true, re-affirm the Queen\'s default event-wake subscriptions (plan-started / work-item-created / escalation), set the global wake-mode to auto, and wake the Queen now (floor-debounced). The liveness watchdog holds "a wake is always armed" from here until pot:pause.',
   guidance: {
     when: "The user clicks Start Hive / asks to boot the colony, or you are bringing a paused hive back to autonomous operation.",
     notWhen:
-      'To wake the Queen once without changing the started state — hive:wake. To start one plan — plans:start. To create a hive — hive:create.',
-    chaining: 'hive:status to verify (started, subscriptions, next wake); hive:pause to suspend.',
+      'To wake the Queen once without changing the started state — pot:wake. To start one plan — plans:start. To create a hive — pot:create.',
+    chaining: 'pot:status to verify (started, subscriptions, next wake); pot:pause to suspend.',
     seeAlso: [
-      'hive:status (verify started + next wake)',
-      'hive:pause (suspend autonomous operation)',
+      'pot:status (verify started + next wake)',
+      'pot:pause (suspend autonomous operation)',
     ],
   },
   capability: 'harness:write',

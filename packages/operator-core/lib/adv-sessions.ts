@@ -45,7 +45,7 @@ export interface AdvSessionRow {
   sessionId: string | null;
   /** Pane-worthiness hint (pui-reactive-session-panes D-002/D-006): 'workbench'
    *  marks an INTERACTIVE launch the pui should reactively open a pane for;
-   *  null for normal already-spawned sessions + autonomous bee:spawn rows. */
+   *  null for normal already-spawned sessions + autonomous cup:spawn rows. */
   display: string | null;
   /** The exact argv the pui pane runs for a pending workbench launch (a fresh
    *  `psu …`). null for non-deferred rows. */

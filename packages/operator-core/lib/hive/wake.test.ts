@@ -161,7 +161,7 @@ describe('resolveHiveHomeSlug', () => {
 describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {
   const WS = 'ws-hive-test';
 
-  it('registers one hive:wake rule per subscription, scoped to the workspace', () => {
+  it('registers one pot:wake rule per subscription, scoped to the workspace', () => {
     const n = syncHiveWakeRules(WS, [
       { on: 'coord:escalate', note: 'watch escalations' },
       { on: ['work_items:complete', 'work_items:set_state'] },
@@ -169,7 +169,7 @@ describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {
     expect(n).toBe(2);
     const mine = listReactionRules().filter((r) => r.id.startsWith(`hive-wake:${WS}#`));
     expect(mine).toHaveLength(2);
-    expect(mine.every((r) => r.fire === 'hive:wake')).toBe(true);
+    expect(mine.every((r) => r.fire === 'pot:wake')).toBe(true);
     expect(mine.every((r) => r.source === 'hive-wake')).toBe(true);
   });
 

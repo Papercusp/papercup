@@ -301,7 +301,7 @@ export interface PublishPresenceTombstoneOpts {
  * Publish a presence TOMBSTONE (a `del` on this device's presence key) to a
  * booted harness's own log so peers drop the leaver's `shared_presence` row at
  * once rather than aging it out by TTL (shared-hive-hardening EI-469). The
- * caller (hive:leave) MUST invoke this BEFORE closing the harness handle — the
+ * caller (pot:leave) MUST invoke this BEFORE closing the harness handle — the
  * swarm must still be live for the del op to replicate.
  *
  * Best-effort + gated, mirroring the announce wiring: a private/local harness

@@ -235,7 +235,7 @@ function highestTier(capabilities: readonly string[]): CapabilityTier {
 
 /**
  * Coarse functional-domain category: the capability group (the token before the first
- * ':'), e.g. `plans:write` → `plans`, `bee:spawn` → `fleet`. The AUTHORITATIVE
+ * ':'), e.g. `plans:write` → `plans`, `cup:spawn` → `fleet`. The AUTHORITATIVE
  * 13-category taxonomy + capability→category map is queen-autonomy B-04 (P-015 / P-020);
  * this is the best-effort placeholder until that lands.
  */

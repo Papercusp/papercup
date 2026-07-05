@@ -1,5 +1,5 @@
 /**
- * `hive-eval:gen` — the monthly Hive-RUN evaluation benchmark as a deterministic blueprint step
+ * `pot-eval:gen` — the monthly Hive-RUN evaluation benchmark as a deterministic blueprint step
  * (hive-run-evaluation-2026-06-13 HE-07, P-050). The SIBLING of `iq-battery:gen` (D-006/D-011):
  * same hybrid shape (deterministic cadence-decide → governed whole-Hive runs → deterministic score
  * + persist), its OWN slice + tables so Hive-run scores never contaminate the apiary instance trend.
@@ -49,19 +49,19 @@ export function setHiveEvalGenDeps(deps: HiveEvalGenDeps | null): void {
 }
 
 export const hiveEvalGenOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>> = {
-  name: 'hive-eval:gen',
+  name: 'pot-eval:gen',
   description:
     'Deterministic step: per cadence, run ONE owner-budget-capped SCORED Hive-eval generation (whole-Hive runs over the seeded scenario corpus, graded by the HE-06 un-gameable gate) when the code SHA changed — the Hive-orchestration benchmark pulse, beside its own trend.',
   argsSchema: args,
   resultSchema: result,
   async run(a, ctx) {
     const workspaceId = ctx.workspaceId;
-    if (!workspaceId) throw new Error('hive-eval:gen requires ctx.workspaceId');
+    if (!workspaceId) throw new Error('pot-eval:gen requires ctx.workspaceId');
     const installSlug = ctx.harnessSlug ?? 'op';
 
     const outcome = await runHiveEvalGen({ workspaceId, installSlug, payload: a }, _deps ?? {});
     ctx.log?.(
-      `hive-eval:gen action=${outcome.action}` +
+      `pot-eval:gen action=${outcome.action}` +
         ('codeSha' in outcome ? ` sha=${outcome.codeSha}` : '') +
         (outcome.action === 'ran' ? ` cap=$${outcome.capUsd}` : ''),
     );

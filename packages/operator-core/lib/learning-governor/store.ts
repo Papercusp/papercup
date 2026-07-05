@@ -148,7 +148,7 @@ export async function listLearningLoops(
 
 /**
  * Deregister a loop — drop its registration row (the lifecycle inverse of
- * registerLearningLoop). Used by hive:dissolve to remove the per-hive
+ * registerLearningLoop). Used by pot:dissolve to remove the per-hive
  * `gym:<hive>` / `scout:<hive>` registrants so a dissolved hive's loop leaves no
  * stranded governor row. Idempotent (a missing row is a no-op); returns whether
  * a row was deleted. The spend-event ledger is left as the durable audit trail.

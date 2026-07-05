@@ -4,7 +4,7 @@
  * (shared-hive-federation-2026-06-08, D-010 membership-producer gap, the
  * create-time half).
  *
- * `hive:add-member` (hive/_add-member.ts) makes an EXISTING harness a Hive
+ * `pot:add-member` (hive/_add-member.ts) makes an EXISTING harness a Hive
  * member; this is the complementary producer that lets a NEW harness be born
  * directly into a Hive — the case the harnesses-tab "add into hive" creation
  * fork + the cross-machine member E2E (P-011) need, without a create →
@@ -14,7 +14,7 @@
  *
  * No nesting guard is needed here (unlike _add-member's `is_hive_home` check):
  * `harness:create` never sets `harness_kind`, so a harness it creates is never a
- * Hive home (Hive homes come only from `hive:create`, which stamps
+ * Hive home (Hive homes come only from `pot:create`, which stamps
  * `harness_kind:'hive'`). The new harness is therefore always a member-eligible
  * non-hive harness, so making it a member cannot nest a Hive.
  *

@@ -116,7 +116,7 @@ vi.mock('../conversations', () => ({
 }));
 // The wake-MODE gate + staging leg also reach live PG, and their failure mode is
 // NOT a throw: on a dev box with a reachable org PG, a `manual` resolution (e.g.
-// a hive:pause global default, or another suite's wake-mode rows) routes the
+// a pot:pause global default, or another suite's wake-mode rows) routes the
 // wake into stagePendingWake — which WROTE this suite's synthetic owners into
 // the PRODUCTION harness_shared.pending_wakes table (caught live by the
 // coord-invariant-monitor as EI-275, 21 debris rows). Unit tests must never

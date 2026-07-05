@@ -63,13 +63,13 @@ describe('getServerCapabilities', () => {
     expect(all).toContain('worker:only');
   });
 
-  it('lists role-gated tools (the hive:start regression — absent from the legacy catalog)', () => {
-    // hive:start-shaped: role-gated (agentRoles incl. operator), all-optional args.
+  it('lists role-gated tools (the pot:start regression — absent from the legacy catalog)', () => {
+    // pot:start-shaped: role-gated (agentRoles incl. operator), all-optional args.
     const cat: NamedProjectedTool[] = [
-      entry('hive:start', 'harness:write', { agentRoles: ['operator', 'worker', 'bee'] }),
+      entry('pot:start', 'harness:write', { agentRoles: ['operator', 'worker', 'bee'] }),
     ];
     const caps = getServerCapabilities({ principal: superuser, role: 'operator', catalog: cat });
-    expect(caps.map((c) => c.id)).toEqual(['hive:start']);
+    expect(caps.map((c) => c.id)).toEqual(['pot:start']);
   });
 
   it('every returned capability is non-excluded and runs server-side', () => {

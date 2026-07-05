@@ -4,7 +4,7 @@
  *
  *   - `hive-eval-battery` (monthly): one budget-capped SCORED Hive-eval generation per new code
  *     SHA, run through the `hive-eval` deterministic blueprint (fired via `system:blueprint-run`,
- *     which detects program-mode and runs the `hive-eval:gen` step inline). The step self-gates
+ *     which detects program-mode and runs the `pot-eval:gen` step inline). The step self-gates
  *     HARD (lib/hive-eval/cadence-tick.ts): no owner-set payload budgetUsd → REFUSE; an
  *     already-measured SHA → skip.
  *

@@ -41,7 +41,7 @@ const fakeTool = {
 };
 
 const lookupByMcpName = vi.fn((name: string) =>
-  name === 'operator:converse' || name === 'sentinel:converse' ? fakeTool : null,
+  name === 'operator:converse' || name === 'papercup:converse' ? fakeTool : null,
 );
 
 vi.mock('@papercusp/agent-mcp', async () => {
@@ -164,7 +164,7 @@ describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-0
     humanFacingRole = 'sentinel';
     const res = await post({ messages: [], trigger: 'user_message' });
     await collectEvents(res, 200);
-    expect(lookupByMcpName).toHaveBeenCalledWith('sentinel:converse');
+    expect(lookupByMcpName).toHaveBeenCalledWith('papercup:converse');
     expect(lookupByMcpName).not.toHaveBeenCalledWith('operator:converse');
   });
 
@@ -173,7 +173,7 @@ describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-0
     const res = await post({ messages: [], trigger: 'user_message' });
     await collectEvents(res, 200);
     expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
-    expect(lookupByMcpName).not.toHaveBeenCalledWith('sentinel:converse');
+    expect(lookupByMcpName).not.toHaveBeenCalledWith('papercup:converse');
   });
 
   it('an explicit body role WINS over the pref (P-006 precedence)', async () => {
@@ -181,6 +181,6 @@ describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-0
     const res = await post({ messages: [], trigger: 'user_message', role: 'operator' });
     await collectEvents(res, 200);
     expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
-    expect(lookupByMcpName).not.toHaveBeenCalledWith('sentinel:converse');
+    expect(lookupByMcpName).not.toHaveBeenCalledWith('papercup:converse');
   });
 });

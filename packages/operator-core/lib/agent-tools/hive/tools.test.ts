@@ -1,7 +1,7 @@
 /**
  * Handler-level tests for the three Hive self-declared-wake tools
- * (autoloop-hive-operator-rebuild-2026-06-05 P0, D-002): hive:declare-wake,
- * hive:wake, hive:status. The wake CORE fns (clamp/debounce/subscription
+ * (autoloop-hive-operator-rebuild-2026-06-05 P0, D-002): pot:declare-wake,
+ * pot:wake, pot:status. The wake CORE fns (clamp/debounce/subscription
  * projection) are unit-covered in ../../hive/wake.test.ts and round-tripped
  * against real PG in ../../hive/hive-wake-pg.integration.test.ts; THIS file pins
  * the tool-handler ORCHESTRATION the dispatcher runs — slug resolution + the
@@ -69,9 +69,9 @@ vi.mock('../../hive/wake-frontier-guard', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   listUnplacedHiveFrontier: (...a: unknown[]) => listUnplacedHiveFrontier(...(a as [])),
 }));
-// start-hive-wake P-004/P-012: hive:status also reads the started bit + the
+// start-hive-wake P-004/P-012: pot:status also reads the started bit + the
 // watchdog fire signal — both PG-backed, mocked at their module seams here.
-// WI-2012: hive:declare-wake refuses (hive_paused) and hive:wake skips event fires while the
+// WI-2012: pot:declare-wake refuses (hive_paused) and pot:wake skips event fires while the
 // queen loop is not started — so the declaration/wake MECHANICS tests here run against a
 // STARTED hive. The paused-gate behavior has its own dedicated suite (wake-paused-gate.test.ts).
 const getHiveStarted = vi.fn(async () => true);
@@ -83,7 +83,7 @@ vi.mock('../../hive/watchdog', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...(a as [])),
 }));
-// B-06 / P-010: hive:queen_efficiency projects queenWakeEfficiency — mock the aggregator at its seam
+// B-06 / P-010: pot:queen_efficiency projects queenWakeEfficiency — mock the aggregator at its seam
 // (its PG read + aggregation are covered in ../../hive/queen-wake-efficiency.test.ts).
 vi.mock('../../hive/queen-wake-efficiency', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -126,7 +126,7 @@ afterEach(() => {
   }
 });
 
-describe('hive:declare-wake', () => {
+describe('pot:declare-wake', () => {
   const tool = declareWakeTool as unknown as Tool;
 
   it('no resolvable home harness → ok:false no_home_harness, nothing touched', async () => {
@@ -280,7 +280,7 @@ describe('hive:declare-wake', () => {
   });
 });
 
-describe('hive:wake', () => {
+describe('pot:wake', () => {
   const tool = wakeTool as unknown as Tool;
 
   it('no resolvable home harness → ok:false, no launch', async () => {
@@ -331,7 +331,7 @@ describe('hive:wake', () => {
   });
 });
 
-describe('hive:status', () => {
+describe('pot:status', () => {
   const tool = statusTool as unknown as Tool;
 
   it('assembles the time wake, subscriptions, live rule ids, and floor', async () => {
@@ -373,7 +373,7 @@ describe('hive:status', () => {
   });
 });
 
-describe('hive:queen_efficiency (B-06 / P-010 queryable surface)', () => {
+describe('pot:queen_efficiency (B-06 / P-010 queryable surface)', () => {
   const tool = queenEfficiencyTool as unknown as Tool;
   const sample = (over: Record<string, unknown> = {}) => ({
     runId: 'w',

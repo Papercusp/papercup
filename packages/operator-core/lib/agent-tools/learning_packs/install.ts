@@ -23,7 +23,7 @@ export default defineTool({
     when:
       "Adding a pack to an EXISTING hive (a new hive seeds its pack at creation). Call once to get the review; re-call with resolutions (or acceptDefaults: true) to apply.",
     notWhen:
-      'At hive creation (hive:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.',
+      'At hive creation (pot:create seeds automatically). To re-adopt a newer version of an already-installed pack — learning_packs:upgrade.',
     chaining:
       "learning_packs:list { hive } first (what's installed); after install, learning.hive invalidates so the Learnings view refreshes.",
     seeAlso: [

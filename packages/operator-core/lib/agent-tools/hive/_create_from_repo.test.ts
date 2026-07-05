@@ -501,10 +501,10 @@ describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
     const r = await call({
       ok: false,
       error: 'blueprint tool dependencies unmet',
-      missing: { tools: ['bee:spawn'] },
+      missing: { tools: ['cup:spawn'] },
     });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain('bee:spawn');
+    expect(r.error).toContain('cup:spawn');
   });
 
   it('unparseable response still fails closed', async () => {

@@ -1,5 +1,5 @@
 /**
- * hive:create — stand up a new local hive (hive-tool-namespace-2026-06-08 P-004,
+ * pot:create — stand up a new local hive (hive-tool-namespace-2026-06-08 P-004,
  * D-002/D-005).
  *
  * ROOT-ONLY: hives are peers, never nested. The tool refuses a parented/bee
@@ -21,20 +21,20 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:create',
+  name: 'pot:create',
   profile: 'engineer',
   description:
-    "Stand up a NEW local hive (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + hive:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+    "Stand up a NEW local hive (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
   guidance: {
     when: 'Standing up a NEW local hive (its home harness + Queen) in one call. Operator/user only.',
     notWhen:
       'Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
     chaining:
-      'hive:get { slug } to inspect; hive:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down.',
+      'pot:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; pot:dissolve to tear it down.',
     seeAlso: [
-      'hive:create_from_repo (onboard a GitHub repo as a hive instead)',
-      'hive:start (boot the new hive into autonomous operation)',
-      'hive:dissolve (tear it down)',
+      'pot:create_from_repo (onboard a GitHub repo as a hive instead)',
+      'pot:start (boot the new hive into autonomous operation)',
+      'pot:dissolve (tear it down)',
     ],
   },
   capability: 'harness:write',
@@ -57,7 +57,7 @@ export default defineTool({
       .min(0)
       .max(86_400)
       .optional()
-      .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with hive:wake / hive:declare-wake.'),
+      .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the first wake. Auto-truncated to 2000 chars if longer.'),
     blueprintId: z
       .string()
@@ -102,9 +102,9 @@ export default defineTool({
         ok: false,
         error: 'identity_unresolved',
         message:
-          'hive:create could not attribute the caller — the MCP client is missing a session identity ' +
+          'pot:create could not attribute the caller — the MCP client is missing a session identity ' +
           '(uiClientId / Mcp-Session-Id / ?client=). Re-run install-standalone-mcp.sh to mint a ?client= id ' +
-          '(superuser), or connect with a power-user / principal session. hive:create is operator/user-only.',
+          '(superuser), or connect with a power-user / principal session. pot:create is operator/user-only.',
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -113,7 +113,7 @@ export default defineTool({
         ok: false,
         error: 'hive_create_root_only',
         message:
-          'hive:create cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a hive.',
+          'pot:create cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested — spin a kind:harness subharness instead. Only the operator/user creates a hive.',
       });
     }
 

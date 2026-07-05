@@ -243,7 +243,7 @@ export class PgCrossHiveAsks {
     return rows.length ? rowToAsk(rows[0]) : null;
   }
 
-  /** List rows, most-recent-first, filtered. Used by hive:asks + the Network board. */
+  /** List rows, most-recent-first, filtered. Used by pot:asks + the Network board. */
   async list(filter: ListCrossHiveAsksFilter = {}): Promise<CrossHiveAsk[]> {
     const where: string[] = ['workspace_id=$1', 'hive_slug=$2'];
     const params: unknown[] = [this.workspaceId, this.hiveSlug];

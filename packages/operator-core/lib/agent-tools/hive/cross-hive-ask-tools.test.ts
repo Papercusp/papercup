@@ -3,7 +3,7 @@
  * PG-free + swarm-free: the send composition (cross-hive-ask-send) takes injected
  * ports, and the tools resolve their boundary/store through runtime registries
  * (cross-hive-boundary-registry / a fake store) — so a fake boundary + fake store
- * exercise hive:ask / hive:request_work / hive:asks end-to-end.
+ * exercise pot:ask / pot:request_work / pot:asks end-to-end.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -196,7 +196,7 @@ describe('sendCrossHiveAsk (composition)', () => {
  * Tool-level: register a fake boundary in the real registry (so the tool→registry
  * path is exercised) and substitute the store/grant ports via the deps test seam.
  */
-describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
+describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
   let fb: ReturnType<typeof fakeBoundary>;
   let fs: ReturnType<typeof fakeStore>;
 
@@ -212,7 +212,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
     __clearCrossHiveBoundaryRegistry();
   });
 
-  it('hive:ask resolves the registered boundary + store and returns the await key', async () => {
+  it('pot:ask resolves the registered boundary + store and returns the await key', async () => {
     const tool = (await import('./ask')).default as unknown as Tool;
     const res = parse(
       await tool.handler({ hive: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
@@ -223,7 +223,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
     expect(fs.rows[0]).toMatchObject({ kind: 'ask', direction: 'out', state: 'sent' });
   });
 
-  it('hive:request_work sends a work-request envelope', async () => {
+  it('pot:request_work sends a work-request envelope', async () => {
     const tool = (await import('./request_work')).default as unknown as Tool;
     const res = parse(
       await tool.handler({ hive: 'home', peerHivePubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
@@ -233,7 +233,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
     expect(fs.rows[0]).toMatchObject({ kind: 'work-request' });
   });
 
-  it('hive:ask surfaces a clear error when the Hive has no live boundary', async () => {
+  it('pot:ask surfaces a clear error when the Hive has no live boundary', async () => {
     __clearCrossHiveBoundaryRegistry(); // home is now dark
     const tool = (await import('./ask')).default as unknown as Tool;
     const res = parse(
@@ -243,7 +243,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
     expect(res.reason as string).toMatch(/not live/);
   });
 
-  it('hive:asks lists + filters the ledger', async () => {
+  it('pot:asks lists + filters the ledger', async () => {
     const askTool = (await import('./ask')).default as unknown as Tool;
     await askTool.handler({ hive: 'home', peerHivePubkey: 'peer-a', subject: 's1', body: 'b', workspace: 'ws-1' }, ROOT_CTX);
     await askTool.handler({ hive: 'home', peerHivePubkey: 'peer-b', subject: 's2', body: 'b', workspace: 'ws-1' }, ROOT_CTX);

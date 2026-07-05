@@ -3,7 +3,7 @@
  * (queen-brief-cache-assembly-2026-06-13 B-03: P-004 two-part schema, P-005 reuse).
  *
  * The brief is the survey snapshot the Queen would otherwise gather through ~5
- * deterministic tool round-trips every wake (`hive:survey`, `fleet:assignments`,
+ * deterministic tool round-trips every wake (`pot:survey`, `fleet:assignments`,
  * `coord:presence`, `curation:change-feed`, `coord:inbox`). The deterministic
  * watchdog already computes this to decide whether to wake her (D-004), so
  * handing it to her costs nothing extra and saves the round-trips.
@@ -121,7 +121,7 @@ export interface QueenBriefFloor {
    * (re-place NOW), cursed (stop re-placing), stranded (a blocker is stuck),
    * workingTracked (in flight). This is the D-004 "the watchdog already computed
    * it" floor element — surfaced so she clears recoveries each wake without a
-   * separate hive:status round-trip.
+   * separate pot:status round-trip.
    */
   openPlacements?: OpenPlacementSummary;
   /**
@@ -239,7 +239,7 @@ function capRenderedBrief(lines: readonly string[], caps: QueenBriefTextCaps): s
   let text = lines.map((line) => truncateText(line, lineChars, 'line truncated')).join('\n');
   if (text.length <= totalChars) return text;
 
-  const marker = `\n\n…[brief truncated to ${totalChars} chars; drill down with hive:survey / coord:inbox / curation:feed as needed]`;
+  const marker = `\n\n…[brief truncated to ${totalChars} chars; drill down with pot:survey / coord:inbox / curation:feed as needed]`;
   if (marker.length >= totalChars) return marker.slice(0, totalChars);
   text = text.slice(0, totalChars - marker.length).trimEnd();
   return `${text}${marker}`;
@@ -271,7 +271,7 @@ export function renderQueenBrief(input: QueenBriefInput): string {
   out.push('## Your wake brief — precomputed survey snapshot');
   out.push(
     'This is the deterministic floor the watchdog already computed for this wake. ' +
-      'It replaces your every-wake survey reads — do NOT re-run `hive:survey`, ' +
+      'It replaces your every-wake survey reads — do NOT re-run `pot:survey`, ' +
       '`fleet:assignments`, `coord:presence`, `coord:inbox`, or `curation:change-feed` ' +
       'just to gather this; act on it. Drill into detail this digest omits with a tool ' +
       'only when you need it (page deeper in your inbox, a specific bee/plan/thread).',
@@ -351,7 +351,7 @@ export function renderQueenBrief(input: QueenBriefInput): string {
         'working state from this brief and the durable substrate it summarizes. Continuity ' +
         'rides three durable channels, never a carried transcript: (1) THIS precomputed ' +
         'brief (your survey, already done); (2) your carry-note below (what you left your ' +
-        'next self via `hive:declare-wake { remember }`); (3) the steering substrate ' +
+        'next self via `pot:declare-wake { remember }`); (3) the steering substrate ' +
         '(work-item claims / `blocked_by` edges / priorities / the decision ledger). ' +
         'Anchor anything that must survive the next dock-open in one of those, not in the ' +
         'conversation — it will be gone next launch; the artifacts will not.',
@@ -483,7 +483,7 @@ export function renderQueenBrief(input: QueenBriefInput): string {
     'Plans — momentum (ranked)',
     (f.plans ?? []).map((p, i) => renderCandidateLine(p, i)),
     caps.plans,
-    'hive:survey to drill down',
+    'pot:survey to drill down',
   );
 
   // Open placements — the completion mandate (drive to terminal). The watchdog's
@@ -500,15 +500,15 @@ export function renderQueenBrief(input: QueenBriefInput): string {
       out.push(`- ${it.workItemId} [${it.status}]${it.harness ? ` (${it.harness})` : ''}${it.failCount ? ` ×${it.failCount} fails` : ''}`);
     }
     const overflow = op.items.length - caps.placements;
-    if (overflow > 0) out.push(`…+${overflow} more (hive:status to drill down)`);
+    if (overflow > 0) out.push(`…+${overflow} more (pot:status to drill down)`);
     // EI-6104: this is a point-in-time snapshot taken when your brief was
     // assembled — a fast-draining queue can clear these between then and now.
     // An empty Frontier above alongside nonzero counts here is the tell
     // (phantom completion pressure, not real backlog) — reconcile with a fresh
-    // `hive:survey` / `fleet:assignments` read before acting on it as-is.
+    // `pot:survey` / `fleet:assignments` read before acting on it as-is.
     if (f.frontier.length === 0) {
       out.push(
-        '_(snapshot at wake-time — if this conflicts with the empty Frontier above, re-check `hive:survey` before re-placing/escalating)_',
+        '_(snapshot at wake-time — if this conflicts with the empty Frontier above, re-check `pot:survey` before re-placing/escalating)_',
       );
     }
   }

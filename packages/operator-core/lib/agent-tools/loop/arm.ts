@@ -14,7 +14,7 @@
  * cost-cap). End it with loop:end.
  *
  * This is the user-directed counterpart to the autonomous queen/bee/scout loop,
- * which is a SEPARATE system (hive:declare-wake / overwatch:declare-wake) and is
+ * which is a SEPARATE system (pot:declare-wake / kettle:declare-wake) and is
  * out of scope here (plan D-007) — do not use loop:arm from an autonomous-fleet
  * agent.
  */
@@ -59,7 +59,7 @@ export default defineTool({
   guidance: {
     when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      'Not for wall-clock schedules (plans:set-schedule), one-off wakes (events:await), or autonomous queen/bee/scout loops (hive:declare-wake / overwatch:declare-wake). Do not use Claude /loop instead.',
+      'Not for wall-clock schedules (plans:set-schedule), one-off wakes (events:await), or autonomous queen/bee/scout loops (pot:declare-wake / kettle:declare-wake). Do not use Claude /loop instead.',
     chaining:
       'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [

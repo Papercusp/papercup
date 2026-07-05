@@ -24,7 +24,7 @@ export default defineTool({
     notWhen: 'You are a pipeline/worker agent — you cannot approve spawns (the gate denies you). To ASK for a spawn, use new_subagent:request.',
     seeAlso: [
       'new_subagent:request (ASK for a spawn — the counterpart)',
-      'bee:spawn (spawn after approval)',
+      'cup:spawn (spawn after approval)',
     ],
   },
   capability: 'coord:write',

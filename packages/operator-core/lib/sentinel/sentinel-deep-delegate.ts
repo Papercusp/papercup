@@ -26,7 +26,7 @@
  * claimed by the background spawn id in the SAME write; if the launch is refused
  * before the nursery takes over, the claim is released back to `todo`. THE TOOL
  * SPAWNS, NOT THE SENTINEL — the sentinel's own capability envelope still denies
- * bee:spawn (the SN-H04 no-spawn contract); this module is the accountable,
+ * cup:spawn (the SN-H04 no-spawn contract); this module is the accountable,
  * capped indirection.
  *
  * Dependency-injected so the core unit-tests without PG/spawn machinery; the

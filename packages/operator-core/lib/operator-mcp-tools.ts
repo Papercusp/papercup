@@ -124,7 +124,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__memory:forget',
   'mcp__agentmcp__memory:update',
 
-  // Spawn primitive — bee:spawn over the durable nursery
+  // Spawn primitive — cup:spawn over the durable nursery
   // (harness_shared.spawned_agents), Brief 4 of agent-briefs-2026-06-05.
   // Replaces the @papercupai/orchestrator-spawn plugin's orchestrator_*
   // tools, which were dead on this surface (the plugin is not installed,
@@ -132,7 +132,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // every call returned "tool not found"). These are BUILT-IN tools, so
   // they exist on every surface; what's spawned shows up in fleet:tree
   // and is cancellable with fleet:cancel.
-  'mcp__agentmcp__bee:spawn',
+  'mcp__agentmcp__cup:spawn',
   // One-wake BATCH placement (queen-autonomous-execution B-07): affinity-ranked
   // fan of spawn + warm-inject across the fleet in a single call.
   'mcp__agentmcp__fleet:place_batch',
@@ -179,14 +179,14 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
 
   // The Hive's self-declared wake (autoloop-pot-operator-rebuild-2026-06-05 P0).
   // The chat operator schedules/inspects/fires its own background wakes — the
-  // user says "check the fleet in an hour" → hive:declare-wake; "wake up now" →
-  // hive:wake. hive:status is read-only.
-  'mcp__agentmcp__hive:declare-wake',
-  'mcp__agentmcp__hive:wake',
-  'mcp__agentmcp__hive:status',
+  // user says "check the fleet in an hour" → pot:declare-wake; "wake up now" →
+  // pot:wake. pot:status is read-only.
+  'mcp__agentmcp__pot:declare-wake',
+  'mcp__agentmcp__pot:wake',
+  'mcp__agentmcp__pot:status',
   'mcp__agentmcp__loop:soak-report',
   // B-06 / P-010: the Queen's per-wake efficiency read (cache-hit ratio + turns/wake). Read-only.
-  'mcp__agentmcp__hive:queen_efficiency',
+  'mcp__agentmcp__pot:queen_efficiency',
 
   // The Hive's superpower surface (autoloop-pot-operator-rebuild-2026-06-05
   // P-004): discover the blueprint shapes (catalog), inspect/author one
@@ -200,31 +200,31 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // hive-tool-namespace-2026-06-08 — local hive lifecycle. The operator manages
   // its hives: list/get to inspect; create/update/dissolve to manage. create/
   // dissolve/update are root-only (the operator is root; bees are refused). Wake
-  // stays hive:wake / hive:declare-wake; bee placement stays fleet:* (no aliases).
-  'mcp__agentmcp__hive:list',
-  'mcp__agentmcp__hive:get',
-  'mcp__agentmcp__hive:create',
+  // stays pot:wake / pot:declare-wake; bee placement stays fleet:* (no aliases).
+  'mcp__agentmcp__pot:list',
+  'mcp__agentmcp__pot:get',
+  'mcp__agentmcp__pot:create',
   // EI-1582 — wire an existing harness in as a Hive member (sets hive_slug).
-  'mcp__agentmcp__hive:add-member',
-  'mcp__agentmcp__hive:update',
-  'mcp__agentmcp__hive:dissolve',
+  'mcp__agentmcp__pot:add-member',
+  'mcp__agentmcp__pot:update',
+  'mcp__agentmcp__pot:dissolve',
   // shared-hive-hardening-2026-06-13 P-012 — a joiner leaves a shared hive (root-only).
-  'mcp__agentmcp__hive:leave',
+  'mcp__agentmcp__pot:leave',
 
   // cross-hive-boundary-2026-06-08 P-002 — the owner's cross-Hive admission
   // surface. discovery:hives finds a peer Hive's pubkey on the P2P directory;
-  // hive:cross_grant sets/revokes/lists which peer Hives may send which kinds
+  // pot:cross_grant sets/revokes/lists which peer Hives may send which kinds
   // (ask | work-request) INTO this Hive (default-deny allow-list, federates to
   // all of this Hive's Swarms). This is the conversational path for the owner to
   // say "let Hive X send us asks" — the sovereignty boundary between Hives.
   'mcp__agentmcp__discovery:hives',
-  'mcp__agentmcp__hive:cross_grant',
+  'mcp__agentmcp__pot:cross_grant',
 
   // hive-network-surface-2026-06-11 P-005 (B-07) — owner beacon-publish consent.
   // The conversational twin of the desktop consent UX: enable/disable/read
   // whether THIS Hive publishes a live status beacon to the directory
   // (owner-consent, default-OFF). Federates to all of this Hive's Swarms.
-  'mcp__agentmcp__hive:beacon_consent',
+  'mcp__agentmcp__pot:beacon_consent',
 
   // hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board:
   // one row per other-hive context across the capability-tier ladder (this Swarm,
@@ -233,14 +233,14 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__network:board',
 
   // hive-network-surface-2026-06-11 P-003 (B-04) — the INITIATING side of the
-  // cross-Hive boundary: hive:ask / hive:request_work send a signed request to a
+  // cross-Hive boundary: pot:ask / pot:request_work send a signed request to a
   // peer Hive (by pubkey, from discovery:hives) and record it in this Hive's ask
   // ledger; the peer's answer arrives async (events:await the answeredEvent key).
-  // hive:asks reviews the ledger (pending / answered / declined). The owner and
+  // pot:asks reviews the ledger (pending / answered / declined). The owner and
   // Queen share these verbs to ask another Hive that owns a domain.
-  'mcp__agentmcp__hive:ask',
-  'mcp__agentmcp__hive:request_work',
-  'mcp__agentmcp__hive:asks',
+  'mcp__agentmcp__pot:ask',
+  'mcp__agentmcp__pot:request_work',
+  'mcp__agentmcp__pot:asks',
 ];
 
 /**

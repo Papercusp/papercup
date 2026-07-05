@@ -332,7 +332,7 @@ export function resumeCommandFor(handle: {
  * wakes already spawn fresh (`--session-id <new uuid>` via the hive launch
  * blueprint); this routes the ONE remaining resume path (a `coord:send {wake:true}`
  * inbox-wake, or an events:await she registered) through the SAME fresh hive-launch
- * path, with the wake text as the kickoff. Mirrors the `hive:wake` tool's core
+ * path, with the wake text as the kickoff. Mirrors the `pot:wake` tool's core
  * (floor-debounce + record) so a burst of bee-wakes collapses to one fresh launch.
  * Lazy imports keep the await engine free of the blueprint graph (module header).
  * Returns true when the wake is handled (fired OR floor-skipped — a recent fresh

@@ -130,7 +130,7 @@ describe('buildDecisionLedgerRow — governed actions', () => {
   });
 
   it('normalizes a dotted tool name to colon form for the B-04 map (bee.spawn → agent-lifecycle)', () => {
-    const row = buildDecisionLedgerRow(ev({ capabilities: ['bee:spawn'], toolName: 'bee.spawn' }));
+    const row = buildDecisionLedgerRow(ev({ capabilities: ['cup:spawn'], toolName: 'bee.spawn' }));
     expect(row!.category).toBe('agent-lifecycle');
     expect(row!.tier).toBe('medium');
   });

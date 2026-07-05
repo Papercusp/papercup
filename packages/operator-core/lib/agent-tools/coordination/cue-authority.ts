@@ -79,7 +79,7 @@ export function resolveCueAuthority(input: {
 
 /**
  * A hive-wide stamp for an action whose authority is INTRINSIC to the action itself
- * — hive:pause / overwatch:pause ARE hive-level controls that pause the whole hive,
+ * — pot:pause / kettle:pause ARE hive-level controls that pause the whole hive,
  * whoever triggers them, so their cue is hive-queen/hive-wide regardless of the
  * caller's own pane-kind. `hive` is the hive / home slug being paused.
  */

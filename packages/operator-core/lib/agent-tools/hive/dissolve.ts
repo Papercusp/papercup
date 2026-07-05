@@ -1,6 +1,6 @@
 /**
- * hive:dissolve — tear down a local hive (hive-tool-namespace-2026-06-08 P-005,
- * D-002/D-006). The durable inverse of hive:create.
+ * pot:dissolve — tear down a local hive (hive-tool-namespace-2026-06-08 P-005,
+ * D-002/D-006). The durable inverse of pot:create.
  *
  * Steps (idempotent; each tolerant of already-done):
  *   1. clear the per-slug hive time-wake routine → the Queen won't re-wake (an
@@ -11,7 +11,7 @@
  *   3. deregister the home harness from the workspace registry.
  *   3.5. tear down the hive's learning loop — the dark gym autoloop row, the
  *      inactive scout routine, and the gym:<hive>/scout:<hive> governor
- *      registrants provisionHiveLearningLoop laid down at hive:create
+ *      registrants provisionHiveLearningLoop laid down at pot:create
  *      (per-hive-learning-loops-2026-06-14 P-021; D-003). Best-effort: a failure
  *      WARNS but never fails the dissolve. Without it per-hive routines leak past
  *      dissolve.
@@ -45,18 +45,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:dissolve',
+  name: 'pot:dissolve',
   profile: 'engineer',
   description:
     "Tear down a local hive (root-only, destructive — pass confirm:true): clear the Queen's wake so she won't re-wake, cancel every live bee + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_hive.",
   guidance: {
     when: 'Permanently tearing down a local hive — stop the Queen, cancel its bees, deregister it. Operator/user only.',
     notWhen:
-      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — hive:declare-wake { mode:none }. From a bee — not allowed.',
-    chaining: 'hive:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm.',
+      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.',
+    chaining: 'pot:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm.',
     seeAlso: [
-      'hive:pause (freeze instead of permanently tearing down)',
-      'hive:get (inspect the hive before dissolving)',
+      'pot:pause (freeze instead of permanently tearing down)',
+      'pot:get (inspect the hive before dissolving)',
       'deploy:teardown_hive (run first if the hive is deployed to a Swarm)',
     ],
   },
@@ -68,7 +68,7 @@ export default defineTool({
     confirm: z
       .boolean()
       .optional()
-      .describe('Required true — hive:dissolve is destructive (stops the Queen, cancels bees, deregisters the harness).'),
+      .describe('Required true — pot:dissolve is destructive (stops the Queen, cancels bees, deregisters the harness).'),
     dropSchema: z
       .boolean()
       .optional()
@@ -82,7 +82,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_dissolve_root_only',
-        message: 'hive:dissolve cannot be called from a bee (a spawned/parented agent). Only the operator/user dissolves a hive.',
+        message: 'pot:dissolve cannot be called from a bee (a spawned/parented agent). Only the operator/user dissolves a hive.',
       });
     }
     if (!args.confirm) {
@@ -90,7 +90,7 @@ export default defineTool({
         ok: false,
         error: 'confirm_required',
         message:
-          'hive:dissolve is destructive — pass confirm:true to proceed. It clears the Queen wake, cancels all bees, and deregisters the home harness (dropSchema:true also drops its PG schema).',
+          'pot:dissolve is destructive — pass confirm:true to proceed. It clears the Queen wake, cancels all bees, and deregisters the home harness (dropSchema:true also drops its PG schema).',
       });
     }
 
@@ -101,7 +101,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'hive_not_found',
-        message: `No kind:'hive' harness '${args.slug}' in this workspace (already dissolved?). Use hive:list to see the hives.`,
+        message: `No kind:'hive' harness '${args.slug}' in this workspace (already dissolved?). Use pot:list to see the hives.`,
       });
     }
 
@@ -143,7 +143,7 @@ export default defineTool({
         const res = await cancelSubtree(sql, {
           workspaceId,
           rootSpawnId: beeId,
-          reason: 'hive:dissolve',
+          reason: 'pot:dissolve',
           actor,
         });
         const { abortLocalSpawn } = await import('../../fleet/operator-spawn');
@@ -152,7 +152,7 @@ export default defineTool({
           abortLocalSpawn(c.spawnId);
         }
       } catch (e) {
-        console.warn(`[hive:dissolve] cancel bee ${beeId} failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`[pot:dissolve] cancel bee ${beeId} failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     steps.cancelledSpawns = cancelledSpawns;
@@ -170,7 +170,7 @@ export default defineTool({
       steps.membershipRowsDropped = 0;
       steps.membershipError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
       console.warn(
-        `[hive:dissolve] hive_members teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+        `[pot:dissolve] hive_members teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
       );
     }
 
@@ -179,7 +179,7 @@ export default defineTool({
     steps.deregistered = dereg.changed;
 
     // 3.5. Tear down the hive's learning loop (the inverse of provisionHiveLearning-
-    // Loop at hive:create — dark gym autoloop row, inactive scout routine, and the
+    // Loop at pot:create — dark gym autoloop row, inactive scout routine, and the
     // gym:<hive>/scout:<hive> governor registrants). Best-effort: a failure WARNS
     // but never fails the dissolve (P-021 / D-003). Without it per-hive routines
     // leak past dissolve and a stale scout routine could re-arm.
@@ -191,7 +191,7 @@ export default defineTool({
       steps.learningLoopTornDown = false;
       steps.learningLoopError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
       console.warn(
-        `[hive:dissolve] learning-loop teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+        `[pot:dissolve] learning-loop teardown for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
       );
     }
 
@@ -207,7 +207,7 @@ export default defineTool({
       steps.desktopReleased = false;
       steps.desktopError = (e instanceof Error ? e.message : String(e)).slice(0, 200);
       console.warn(
-        `[hive:dissolve] desktop release for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
+        `[pot:dissolve] desktop release for ${hive.slug} failed (dissolve unaffected): ${e instanceof Error ? e.message : e}`,
       );
     }
 

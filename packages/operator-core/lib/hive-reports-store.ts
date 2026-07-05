@@ -156,7 +156,7 @@ export async function listReports(
 
 /**
  * Count reports filed by one reporter in a Hive since `sinceMs` (epoch ms) —
- * WI-567 (report-spam abuse vector): the caller (hive:report) uses this to rate-gate
+ * WI-567 (report-spam abuse vector): the caller (pot:report) uses this to rate-gate
  * a single reporter hammering the queue. Counts across ALL statuses (a spammer
  * dismissed-and-refiled still consumed queue attention).
  */

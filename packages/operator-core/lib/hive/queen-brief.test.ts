@@ -57,7 +57,7 @@ test('renderQueenBrief — two-part: FLOOR digest + CARRY-NOTE both render (P-00
   const out = renderQueenBrief({ floor, carryNote: 'Mid-wave on plan-x: B-03 placed, awaiting B-01. Revisit when wi-101 lands.' });
 
   // FLOOR — the P-007 instruction to NOT re-run the survey reads.
-  assert.match(out, /do NOT re-run `hive:survey`/);
+  assert.match(out, /do NOT re-run `pot:survey`/);
   // coord:inbox IS now folded into the floor (D-020), so the skip-list MUST include
   // it — she has the recent inbox digest in the brief and shouldn't re-fetch it just
   // to see it. The old "triage it yourself" carve-out (D-017) is gone.
@@ -362,7 +362,7 @@ test('renderQueenBrief — placements + empty frontier renders a reconcile-befor
     },
   });
   assert.match(out, /snapshot at wake-time/);
-  assert.match(out, /hive:survey/);
+  assert.match(out, /pot:survey/);
 });
 
 test('renderQueenBrief — placements + non-empty frontier omits the reconcile caveat', () => {

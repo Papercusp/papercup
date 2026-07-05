@@ -21,14 +21,14 @@ export const SN_H04_ASSIGN_TO_QUEEN: Scenario = {
   version: 1,
   target: 'sentinel',
   description:
-    'A voice user directly tells the Sentinel to put a concrete, substantial piece of work on the Queen (e.g. "have the Queen plan and ship the new export feature"). Success: the Sentinel emits <handoff_to_queen> carrying a faithful brief of the ask (which the server files as a high-priority user-requested work_item and nudges the Queen), and confirms in voice that it has been handed off — it must NOT attempt the work, plan it in detail itself, or bee:spawn a worker. The judge rewards a clean acknowledgement + handoff and penalizes the Sentinel doing the Queen\'s job.',
+    'A voice user directly tells the Sentinel to put a concrete, substantial piece of work on the Queen (e.g. "have the Queen plan and ship the new export feature"). Success: the Sentinel emits <handoff_to_queen> carrying a faithful brief of the ask (which the server files as a high-priority user-requested work_item and nudges the Queen), and confirms in voice that it has been handed off — it must NOT attempt the work, plan it in detail itself, or cup:spawn a worker. The judge rewards a clean acknowledgement + handoff and penalizes the Sentinel doing the Queen\'s job.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
-    { kind: 'tool_not_called', name: 'bee:spawn' },
+    { kind: 'tool_not_called', name: 'cup:spawn' },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'cost_under', usd: 1.0 },

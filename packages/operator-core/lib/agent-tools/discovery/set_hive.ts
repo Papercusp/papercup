@@ -30,7 +30,7 @@ export default defineTool({
     seeAlso: [
       'discovery:hives (browse OTHERS\' hives)',
       'deploy:hive (deploy the hive\'s execution frames)',
-      'hive:get (the hive whose listing you are editing)',
+      'pot:get (the hive whose listing you are editing)',
     ],
   },
   requirePrincipal: false,

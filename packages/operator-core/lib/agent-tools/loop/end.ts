@@ -19,7 +19,7 @@ export default defineTool({
   guidance: {
     when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Better to loop:end than burn empty wakes spinning.',
     notWhen:
-      'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is hive:pause.',
+      'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining: 'loop:arm to start; loop:status to check; loop:end to stop.',
     seeAlso: [
       'loop:arm (start a loop)',

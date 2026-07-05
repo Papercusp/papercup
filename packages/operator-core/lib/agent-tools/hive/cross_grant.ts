@@ -1,5 +1,5 @@
 /**
- * hive:cross_grant — owner management of cross-Hive capability grants
+ * pot:cross_grant — owner management of cross-Hive capability grants
  * (cross-hive-boundary-2026-06-08 P-002; hive-network-surface-2026-06-11 P-004 B-05).
  * Grant / revoke / list which peer-Hive pubkeys may exchange which kinds
  * (ask | work-request) with this Hive, DIRECTED:
@@ -25,20 +25,20 @@ import {
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
 export default defineTool({
-  name: 'hive:cross_grant',
+  name: 'pot:cross_grant',
   profile: 'engineer',
   description:
     "Owner-managed cross-Hive grants: grant/revoke/list which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive. DIRECTED: 'in' admits a peer's traffic INTO this Hive; 'out' lets THIS Hive send to a peer (required before the Queen can ask another Hive). Default-deny both ways; grants are quota-capped (maxPerHour/maxBodyBytes, defaults 60/hr + 64KiB), optionally expiring (expiresInHours), and federate to all of this Hive's Swarms.",
   guidance: {
-    when: "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Queen's first hive:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
+    when: "Setting this Hive's cross-Hive policy — grant 'in' (admission) or 'out' (egress; owner-gated before the Queen's first pot:ask to a new peer), list, or revoke. maxPerHour/maxBodyBytes/expiresInHours tune quota/expiry.",
     notWhen:
       'Within-Hive coordination (coord:*/topics) or Swarm work placement (work_items:co_locate) — this is only the sovereignty boundary between Hives.',
     chaining:
-      'discovery:hives (peer pubkey) → hive:cross_grant {action:"grant", direction, peerHivePubkey, kinds}; "out" before hive:ask / hive:request_work.',
+      'discovery:hives (peer pubkey) → pot:cross_grant {action:"grant", direction, peerHivePubkey, kinds}; "out" before pot:ask / pot:request_work.',
     seeAlso: [
       'discovery:hives (find the peer Hive pubkey to grant to)',
-      'hive:ask (use an "out" grant to ask a peer)',
-      'hive:request_work (use an "out" grant to request work)',
+      'pot:ask (use an "out" grant to ask a peer)',
+      'pot:request_work (use an "out" grant to request work)',
     ],
   },
   capability: 'work_items:write',

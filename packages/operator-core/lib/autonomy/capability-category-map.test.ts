@@ -20,8 +20,8 @@ describe('capability→category map: the anti-collapse proof (D-002)', () => {
     ['deploy:harness', 'release-deploy'],
     ['accounts:scale_out', 'spend-budget'],
     ['accounts:register', 'credentials-auth'],
-    ['hive:create', 'agent-lifecycle'],
-    ['scout:grade-idea', 'ideation-intake'],
+    ['pot:create', 'agent-lifecycle'],
+    ['blender:grade-idea', 'ideation-intake'],
     ['learning_packs:publish', 'knowledge-curation'],
   ];
 
@@ -38,11 +38,11 @@ describe('capability→category map: the anti-collapse proof (D-002)', () => {
 describe('capability→category map: specific-over-group overrides', () => {
   it.each([
     // hive: group default is agent-lifecycle, but these verbs override
-    ['hive:cross_grant', 'credentials-auth'],
-    ['hive:declare-wake', 'system-control'],
-    ['hive:ask', 'escalations'],
-    ['hive:request_work', 'escalations'],
-    ['hive:start', 'agent-lifecycle'],
+    ['pot:cross_grant', 'credentials-auth'],
+    ['pot:declare-wake', 'system-control'],
+    ['pot:ask', 'escalations'],
+    ['pot:request_work', 'escalations'],
+    ['pot:start', 'agent-lifecycle'],
     // accounts: splits credentials vs spend
     ['accounts:remove', 'credentials-auth'],
     // conversations: group default is escalations, promote overrides
@@ -88,7 +88,7 @@ describe('capability→category map: protected actions land in protected categor
     'routines:write',
     'backup:restore',
     'processes:kill',
-    'hive:cross_grant',
+    'pot:cross_grant',
   ])('%s resolves to a protected category', (action) => {
     const cat = categoryForAction(action);
     expect(cat).not.toBeNull();
@@ -104,7 +104,7 @@ describe('capability→category map: shape', () => {
     expect(isAutonomyCategory(r!.category)).toBe(true);
   });
   it('every resolved category is one of the 13 canonical ids', () => {
-    for (const a of ['bee:spawn', 'plans:promote', 'memory:forget', 'gym:judge', 'work_items:set_priority']) {
+    for (const a of ['cup:spawn', 'plans:promote', 'memory:forget', 'gym:judge', 'work_items:set_priority']) {
       const cat = categoryForAction(a);
       expect(cat).not.toBeNull();
       expect(isAutonomyCategory(cat!)).toBe(true);

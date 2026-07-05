@@ -19,7 +19,7 @@
  *
  * ── What the lifecycle sibling PROVES (the gaps are CLOSED) ──
  *   `lifecycle-membership-teardown.integration.test.ts` (the sibling) proves that
- *   `leaveHive` (G27) and the `removeAllHiveMembers` leg `hive:dissolve` invokes
+ *   `leaveHive` (G27) and the `removeAllHiveMembers` leg `pot:dissolve` invokes
  *   (G24) now DELETE the hive_members row(s) and capture the `del` op proven here —
  *   so the federated teardown is actually TRIGGERED by both lifecycle ops. The
  *   transport (this test) + the lifecycle triggers (the sibling) close G24 + G27.

@@ -140,7 +140,7 @@ export interface PublishResult {
  * Publish a fresh hive repo to a GitHub remote — the DEFAULT behavior when git
  * credentials are present (private repo), else a no-op local-only result. NEVER throws:
  * a failure returns mode:'local-only' with a reason, so the create flow proceeds with a
- * valid local repo. Reused by hive:create and the standalone "publish to GitHub" action.
+ * valid local repo. Reused by pot:create and the standalone "publish to GitHub" action.
  */
 export async function publishHiveRepo(
   opts: {

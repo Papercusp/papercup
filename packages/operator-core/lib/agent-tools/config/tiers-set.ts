@@ -39,7 +39,7 @@ export default defineTool({
     tiers: z
       .array(
         z.object({
-          name: z.string().min(1).max(60).describe('Tier name (short, lowercase — the bee:spawn `tier` key).'),
+          name: z.string().min(1).max(60).describe('Tier name (short, lowercase — the cup:spawn `tier` key).'),
           spec: z.string().min(1).max(120).describe('Model spec `<modelId>[:<effort>]`, e.g. "sonnet", "opus:xhigh", "opus[1m]:high".'),
           backend: z.enum(AGENT_BACKENDS).optional().describe('Backend override for this tier; absent = inherit the host backend.'),
           when: z.string().max(300).optional().describe('One-line guidance: when the queen should pick this tier.'),

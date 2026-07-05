@@ -1,6 +1,6 @@
 /**
  * `runScoutCycleTick` — the SHARED Scout autonomous-tick orchestration, the single
- * source of truth both the `system:scout-cycle` routine action AND the `scout:cycle`
+ * source of truth both the `system:scout-cycle` routine action AND the `blender:cycle`
  * deterministic blueprint step (deterministic-blueprints-migration-2026-06-13 P-121 /
  * D-004) run. Extracting it is what makes the migration provably behavior-neutral:
  * the blueprint path and the routine path build the SAME tick deps, run the SAME

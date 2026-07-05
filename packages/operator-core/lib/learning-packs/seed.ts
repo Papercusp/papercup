@@ -15,7 +15,7 @@
  * upgrade — conservative beats wrongly-seeded). Repo-less hives pass
  * undefined ⇒ `any`-tagged items only.
  *
- * Used by hive:create (best-effort, undo-stacked) and the
+ * Used by pot:create (best-effort, undo-stacked) and the
  * learning_packs:install verb (P-009, which adds the conflict review —
  * creation-time seeding into an EMPTY pool needs none).
  */

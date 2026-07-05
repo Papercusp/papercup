@@ -1,9 +1,9 @@
 /**
  * armHiveCrossHiveDrainRoutine — arm a hive's OWN periodic cross-Hive
- * outbox-drain routine at hive:create, the per-hive twin of the operator-home
+ * outbox-drain routine at pot:create, the per-hive twin of the operator-home
  * seed (seed-cross-hive-drain-routine.ts, which now delegates here).
  *
- * WHY (the bug this closes): hive:create provisioned the per-hive learning loop
+ * WHY (the bug this closes): pot:create provisioned the per-hive learning loop
  * (gym + scout) but NEVER armed the cross-hive-outbox-drain. A hive still
  * accumulates a `harness_shared.substrate_outbox` — every federated-table write
  * enqueues a row — and with no drain routine under the hive's OWN install_slug
@@ -15,9 +15,9 @@
  * one registry read), so seeding the routine ACTIVE is safe and it goes live the
  * moment the hive publishes a boundary. Mirrors the seed script's row EXACTLY so
  * the two can't drift; keyed on the hive's OWN install_slug. Returns an `undo`
- * that joins hive:create's rollback stack (same contract as
+ * that joins pot:create's rollback stack (same contract as
  * provisionHiveLearningLoop); the matching teardown lives in
- * teardownHiveLearningLoop (hive:dissolve).
+ * teardownHiveLearningLoop (pot:dissolve).
  */
 import type { Sql } from 'postgres';
 
@@ -44,7 +44,7 @@ export interface ArmHiveCrossHiveDrainInput {
 
 export interface ArmHiveCrossHiveDrainResult {
   routineId: string;
-  /** Removes the routine — joins hive:create's undo stack (best-effort, never throws). */
+  /** Removes the routine — joins pot:create's undo stack (best-effort, never throws). */
   undo: () => Promise<void>;
 }
 

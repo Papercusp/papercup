@@ -1,5 +1,5 @@
 /**
- * wake-frontier-guard — the STRUCTURAL guard behind hive:declare-wake (EI-309).
+ * wake-frontier-guard — the STRUCTURAL guard behind pot:declare-wake (EI-309).
  *
  * The Queen wedged a live autonomous loop by declaring an event-only ("subscribe
  * to work_items:create, place when created") wake while WI-116/WI-117 ALREADY

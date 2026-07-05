@@ -11,7 +11,7 @@
  *    the lens-weight learners, which all read through this default);
  *  - readRoutedIdeas({ origin:'su-ideate' }) reads them back (the SU-priming path);
  *    { origin:'all' } reads both;
- *  - a su-ideate row is gradeable (the scout:grade-idea seam is origin-blind) and reads
+ *  - a su-ideate row is gradeable (the blender:grade-idea seam is origin-blind) and reads
  *    back with the grade — so an SU-originated idea earns a grade slot + priming.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';

@@ -158,7 +158,7 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       kind: 'friction',
       scope: 'papercusp',
       confidence: 'high',
-      refs: ['tool:hive:survey', 'WI-1'],
+      refs: ['tool:pot:survey', 'WI-1'],
       sourceHive: 'papercusp',
       targetHive: 'shared-hive-test',
       rubricRef: 'hive-coordination-health',
@@ -170,7 +170,7 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.targetHive).toBe('shared-hive-test');
     expect(out?.rubricRef).toBe('hive-coordination-health');
     expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1' });
-    expect(out?.refs).toEqual(['tool:hive:survey', 'WI-1']);
+    expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });
 
   it('ignores unknown keys so B10 learnings/observationKind can ride alongside', () => {

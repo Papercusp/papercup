@@ -2,7 +2,7 @@
  * Unit tests for resolveAgentIdentity — the coordination identity primitive (L1).
  *
  * THE UMBILICAL (voice-gap fix): the `fleet-spawn` branch is the load-bearing case
- * here. A bee:spawn bee connects over a SIGNED MCP URL — NOT superuser, NOT
+ * here. A cup:spawn bee connects over a SIGNED MCP URL — NOT superuser, NOT
  * power-user, NO bearer principal — carrying its operator-assigned `s-…` spawnId as
  * the `client=` param (→ ctx.uiClientId). Before that branch existed the resolver
  * threw "cannot be attributed" and every coord:send / plans:set-status /
@@ -13,9 +13,9 @@
 import { describe, expect, it } from 'vitest';
 import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID } from './identity';
 
-describe('resolveAgentIdentity — bee:spawn child (THE UMBILICAL)', () => {
+describe('resolveAgentIdentity — cup:spawn child (THE UMBILICAL)', () => {
   it('attributes a role-gated signed spawn ctx to its `s-…` client id (was: threw → MUTE bee)', () => {
-    // The shape the MCP handler builds for a bee:spawn bee: a VERIFIED signed
+    // The shape the MCP handler builds for a cup:spawn bee: a VERIFIED signed
     // spawn ctx (sigVerifiedSpawn = the HMAC checked, covering the client=
     // param), no superuser/power-user/principal, `client=s-…` → uiClientId.
     const id = resolveAgentIdentity({
@@ -102,7 +102,7 @@ describe('resolveAgentIdentity — verified signed spawn without client= (invoke
     ).toThrow(/cannot be attributed/);
   });
 
-  it('a client=-carrying bee:spawn child still wins over the harness attribution', () => {
+  it('a client=-carrying cup:spawn child still wins over the harness attribution', () => {
     const id = resolveAgentIdentity({
       uiClientId: 's-1780000000000-deadbeef',
       sigVerifiedSpawn: true,

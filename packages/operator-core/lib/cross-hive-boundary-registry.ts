@@ -6,7 +6,7 @@
  * A Hive's boundary is wired ONCE at operator boot (`wireCrossHiveBoundary`,
  * B-01) — that single instance owns the only `papercusp/cross-hive` Protomux
  * channel on the shared swarm and the only inbound subscription. The front-door
- * SEND tools (`hive:ask` / `hive:request_work`, B-04) must reuse THAT instance's
+ * SEND tools (`pot:ask` / `pot:request_work`, B-04) must reuse THAT instance's
  * `send()`; constructing a second transport for the same Hive would re-open the
  * same protocol on the shared connection and double-process inbound replies.
  *

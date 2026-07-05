@@ -1,5 +1,5 @@
 /**
- * hive:queen_efficiency — the per-wake Queen efficiency read surface
+ * pot:queen_efficiency — the per-wake Queen efficiency read surface
  * (queen-brief-cache-assembly-2026-06-13 B-06 / P-010: "expose it queryable").
  *
  * Read-only projection of `queenWakeEfficiency()` over `agent_usage_samples`
@@ -17,14 +17,14 @@ import { resolveHiveHomeSlug } from '../../hive/wake';
 import { queenWakeEfficiency } from '../../hive/queen-wake-efficiency';
 
 export default defineTool({
-  name: 'hive:queen_efficiency',
+  name: 'pot:queen_efficiency',
   profile: 'engineer',
   description:
     "The Queen's per-wake prompt efficiency: cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination), token + cost totals, and cachedWakes (the 'cache is real' signal, P-003). Scoped to a hive home, or workspace-wide when no harness is given. Read-only.",
   guidance: {
     when: "To inspect the LIVE Queen's per-wake efficiency — is the frozen-prefix cache paying off (cacheHitRatio / cachedWakes) and is the precomputed brief cutting round-trips (avgTurns)? The B-06 measurement read.",
     notWhen: 'For a SCENARIO run’s efficiency score — that is the hive-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Queen read.',
-    chaining: 'hive:status for wake/placement state; hive:survey for the frontier.',
+    chaining: 'pot:status for wake/placement state; pot:survey for the frontier.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

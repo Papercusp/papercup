@@ -48,7 +48,7 @@ export interface CreateHiveOpts {
   existingPath?: string;
   deployment?: DeploymentConfig;
   /** Wake the Queen `wakeInSeconds` from now (0 = immediately). Omit ⇒ create
-   *  idle (no wake declared; wake later via hive:wake / hive:declare-wake). */
+   *  idle (no wake declared; wake later via pot:wake / pot:declare-wake). */
   wakeInSeconds?: number;
   kickoff?: string;
   /**
@@ -147,7 +147,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   // also check ITS `.papercusp/blueprints` as a local resolver tier — the same
   // local -> installed -> built-in composition harness:create already applies
   // for its `path` arg (see agent-tools/harness/create.ts). Before this fix
-  // hive:create passed localDirs:[] unconditionally, so a hive-scoped blueprint
+  // pot:create passed localDirs:[] unconditionally, so a hive-scoped blueprint
   // authored in an existing repo's `.papercusp/blueprints/<id>/` (a custom
   // `extends` parent, e.g. an ops/scout variant) could never resolve without a
   // manual copy into the global `~/.papercusp/blueprints` installed tier.
@@ -173,7 +173,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       ok: false,
       error: 'not_a_hive_blueprint',
       message:
-        `Blueprint "${blueprintId}" is kind:'${validation.blueprint.kind}', not a hive — hive:create needs a ` +
+        `Blueprint "${blueprintId}" is kind:'${validation.blueprint.kind}', not a hive — pot:create needs a ` +
         `kind:'hive' blueprint. Available hive blueprints: ${choices.length ? choices.join(', ') : '(none found)'}.`,
     };
   }
@@ -201,7 +201,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       error: 'hive_requires_repo',
       message:
         `Coding hive "${opts.slug}" (blueprint "${blueprintId}", output.kind=repo-commit) must be backed by a ` +
-        `git repo. Either link/clone an existing repo (existingPath / hive:create_from_repo) or use a blueprint ` +
+        `git repo. Either link/clone an existing repo (existingPath / pot:create_from_repo) or use a blueprint ` +
         `with knobs.requiresRepo:true so a fresh repo is initialized. A repo-less coding hive is not allowed.`,
     };
   }
@@ -316,7 +316,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       });
     } catch (e) {
       console.warn(
-        `[hive:create] hive identity mint failed (${opts.slug}); resolveHive will lazy-backfill it: ${e instanceof Error ? e.message : e}`,
+        `[pot:create] hive identity mint failed (${opts.slug}); resolveHive will lazy-backfill it: ${e instanceof Error ? e.message : e}`,
       );
     }
 
@@ -337,27 +337,27 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       const { materializeBlueprintTriggers } = await import('../../blueprint/materialize-triggers');
       await materializeBlueprintTriggers(opts.slug, validation.blueprint);
     } catch (e) {
-      console.warn(`[hive:create] materialize triggers failed (${opts.slug}): ${e instanceof Error ? e.message : e}`);
+      console.warn(`[pot:create] materialize triggers failed (${opts.slug}): ${e instanceof Error ? e.message : e}`);
     }
 
     // 6. Arm the Queen's DEFAULT event-wake subscriptions (start-hive-wake
     //    P-002 / D-001): plan-started / work-item-created / escalation-raised.
     //    REPLACE — a fresh hive has no tuned policy to preserve. Best-effort:
-    //    hive:start re-affirms (ENSURE) so a transient failure here self-heals.
+    //    pot:start re-affirms (ENSURE) so a transient failure here self-heals.
     try {
       const { armDefaultHiveWakeSubscriptions, blueprintWakeSubscriptions } = await import(
         '../../hive/wake-defaults'
       );
       // P-013: a hive blueprint may declare its own `wake.subscriptions`; absent
       // (today's coding hive + generic-hive) → the universal three defaults apply.
-      // REPLACE here is the behavior-determining arm; hive:start's ENSURE preserves it.
+      // REPLACE here is the behavior-determining arm; pot:start's ENSURE preserves it.
       await armDefaultHiveWakeSubscriptions(ws, {
         mode: 'replace',
         subscriptions: blueprintWakeSubscriptions(validation.blueprint.wake),
       });
     } catch (e) {
       console.warn(
-        `[hive:create] default wake-subscription arm failed (${opts.slug}): ${e instanceof Error ? e.message : e}`,
+        `[pot:create] default wake-subscription arm failed (${opts.slug}): ${e instanceof Error ? e.message : e}`,
       );
     }
 
@@ -384,7 +384,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           const loaded = await loadLearningPack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };
-            console.warn(`[hive:create] learning pack '${packId}' not found; seeding skipped (${opts.slug})`);
+            console.warn(`[pot:create] learning pack '${packId}' not found; seeding skipped (${opts.slug})`);
           } else {
             const res = await seedPackIntoHive({
               workspaceId: ws,
@@ -404,7 +404,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[hive:create] learning-pack seed failed (${opts.slug}): ${msg}`);
+        console.warn(`[pot:create] learning-pack seed failed (${opts.slug}): ${msg}`);
         seededLearnings = { packId: opts.learningPack ?? 'papercusp-default', error: msg.slice(0, 200) };
       }
     }
@@ -418,7 +418,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     //     UI. Same contract as the learning-pack seed above: flag-gated +
     //     best-effort (a failure warns and reports, NEVER fails the create), and a
     //     LATER step failure rolls the rows back (the undo joins the stack). The
-    //     matching teardown at hive:dissolve is P-021.
+    //     matching teardown at pot:dissolve is P-021.
     let provisionedLoop: ProvisionedLoopSummary | undefined;
     if (opts.provisionLearningLoop !== false) {
       try {
@@ -440,7 +440,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[hive:create] per-hive learning-loop provision failed (${opts.slug}): ${msg}`);
+        console.warn(`[pot:create] per-hive learning-loop provision failed (${opts.slug}): ${msg}`);
         provisionedLoop = { error: msg.slice(0, 200) };
       }
     }
@@ -451,7 +451,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     //     because only the operator-home install was ever seeded). The drain action
     //     self-gates to a no-op when the hive has no published peers, so seeding it
     //     ACTIVE is safe. Best-effort + undo, like the learning-loop above; the
-    //     matching teardown is in teardownHiveLearningLoop (hive:dissolve).
+    //     matching teardown is in teardownHiveLearningLoop (pot:dissolve).
     try {
       const { armHiveCrossHiveDrainRoutine } = await import('../../harness/routines/arm-hive-cross-hive-drain');
       const { sql } = getOrgPg();
@@ -459,7 +459,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       undo.push(armed.undo);
     } catch (e) {
       console.warn(
-        `[hive:create] arm cross-hive-outbox-drain failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+        `[pot:create] arm cross-hive-outbox-drain failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
 
@@ -537,13 +537,13 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           // mints epoch-0 at create (members=1 proven live).
           if (!/hive_members_hive_fkey|foreign key|violates/i.test(msg)) {
              
-            console.warn(`[hive:create] owner self-row upsert failed (${opts.slug}): ${msg}`);
+            console.warn(`[pot:create] owner self-row upsert failed (${opts.slug}): ${msg}`);
           }
         }
       }
     } catch (e) {
       console.warn(
-        `[hive:create] queen-home-pubkey record failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+        `[pot:create] queen-home-pubkey record failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
       );
     }
 
@@ -592,7 +592,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
               // the outcome is fine, since a persistent version of this same fault
               // degrades to the local-only branch below with no visible remote at all.
               console.warn(
-                `[hive:create] ${opts.slug}: gh repo create's push leg failed on the first attempt and ` +
+                `[pot:create] ${opts.slug}: gh repo create's push leg failed on the first attempt and ` +
                   `recovered on retry (remote=${publish.remote}) — if this repeats, check gh's git_protocol ` +
                   `vs this box's ssh identity (EI-7163's root cause).`,
               );
@@ -606,7 +606,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
             // generic warn below) with the orphaned remote so a human/agent can manually
             // `git push` it or clean it up.
             console.error(
-              `[hive:create] ${opts.slug}: gh created a remote repo (${publish.remote ?? 'origin'}) but BOTH ` +
+              `[pot:create] ${opts.slug}: gh created a remote repo (${publish.remote ?? 'origin'}) but BOTH ` +
                 `push attempts failed — the remote is configured locally but UNPUSHED (not orphan-cleaned; ` +
                 `a manual \`git -C ${path} push -u origin ${committed.branch}\` or repo deletion may be needed). ` +
                 `reason=${publish.reason}`,
@@ -622,7 +622,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         };
       } catch (e) {
         console.warn(
-          `[hive:create] fresh-repo finalize failed (${opts.slug}); the hive keeps its local repo: ${e instanceof Error ? e.message : String(e)}`,
+          `[pot:create] fresh-repo finalize failed (${opts.slug}); the hive keeps its local repo: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
@@ -651,7 +651,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           });
         } catch (e) {
           console.warn(
-            `[hive:create] git-sync seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+            `[pot:create] git-sync seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
         try {
@@ -661,7 +661,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
           if (seeded.seeded) undo.push(seeded.undo);
         } catch (e) {
           console.warn(
-            `[hive:create] release-routine seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
+            `[pot:create] release-routine seed failed (${opts.slug}): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
       }

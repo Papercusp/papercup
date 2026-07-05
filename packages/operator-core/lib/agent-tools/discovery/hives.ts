@@ -24,7 +24,7 @@ export interface DiscoveredHiveRow {
   visibility: 'public' | 'invite';
   /**
    * The Hive's Ed25519 identity pubkey (raw-32-byte base64) — the cross-Hive DIAL
-   * ADDRESS. Pass it to `hive:cross_grant { peerHivePubkey }` to admit this Hive.
+   * ADDRESS. Pass it to `pot:cross_grant { peerHivePubkey }` to admit this Hive.
    * Empty string when the announce carried no identity (not cross-Hive-addressable).
    */
   hivePubkey: string;
@@ -56,8 +56,8 @@ export default defineTool({
       'To list the workspace-local deployed hive frames (hiveControlFrames) use the harness/hive surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic.',
     seeAlso: [
       'discovery:set_hive (edit your own hive\'s public listing)',
-      'hive:ask (ask a peer Hive you discovered)',
-      'hive:cross_grant (grant a discovered peer cross-hive access)',
+      'pot:ask (ask a peer Hive you discovered)',
+      'pot:cross_grant (grant a discovered peer cross-hive access)',
     ],
   },
   requirePrincipal: false,

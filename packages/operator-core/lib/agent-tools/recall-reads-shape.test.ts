@@ -1,7 +1,7 @@
 /**
  * recall-reads-shape.test.ts — payload-tier behavior for the recall/survey
  * reads (context-trimming-tiers-2026-07-01 P-024):
- *   - hive:survey — pure `shape` projection ({data}-converted).
+ *   - pot:survey — pure `shape` projection ({data}-converted).
  *   - memory:search — in-handler ctx-tier adaptation (byte-stable TUI
  *     contract → hand-rolled JSON kept; shapeMemoryHit is the unit).
  *

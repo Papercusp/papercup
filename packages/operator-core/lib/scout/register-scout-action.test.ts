@@ -13,9 +13,9 @@ afterEach(() => {
 });
 
 describe('register-scout-action (Scout production runner provider)', () => {
-  it('exports productionScoutRunner — the scout:cycle blueprint op’s production cycle deps (P-130)', () => {
+  it('exports productionScoutRunner — the blender:cycle blueprint op’s production cycle deps (P-130)', () => {
     // Scout runs as the `scout` BLUEPRINT now: the seed fires system:blueprint-run
-    // {blueprintId:'scout'} → the scout:cycle deterministic step → runScoutCycleTick,
+    // {blueprintId:'scout'} → the blender:cycle deterministic step → runScoutCycleTick,
     // which calls productionScoutRunner. The bespoke system:scout-cycle action is RETIRED,
     // so this module no longer self-registers — it stays as the production-runner home.
     expect(productionScoutRunner).toBeTypeOf('function');

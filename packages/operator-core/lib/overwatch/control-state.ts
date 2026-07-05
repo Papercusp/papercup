@@ -6,7 +6,7 @@
  * the hive's `hive_started` bit (hive/started.ts), THIS is the load-bearing
  * control signal the overwatch loop (B-04) and its liveness watchdog (B-09) gate
  * on: a wake is armed WHILE STARTED, nothing fires while paused. The control
- * tools `overwatch:start` / `overwatch:pause` (B-07) are its only writers — the
+ * tools `kettle:start` / `kettle:pause` (B-07) are its only writers — the
  * loop/watchdog are pure readers (exactly the hive split, where the watchdog
  * re-arms a wake purely from `hive_started`).
  *

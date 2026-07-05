@@ -7,7 +7,7 @@
  * immediately. This composes the hive's EXISTING wake substrate (no second pump):
  *
  *   - **Outside the wake floor** → fire the hive launch NOW (the same
- *     `fireLaunchBlueprint` + `recordHiveWake` path `hive:wake` takes), with an
+ *     `fireLaunchBlueprint` + `recordHiveWake` path `pot:wake` takes), with an
  *     urgent kickoff naming the item.
  *   - **Inside the floor** (a wake fired < floor ago) → **coalesce**: ensure the
  *     hive's one-shot time-wake fires at the floor boundary, ONLY-ADVANCE (an

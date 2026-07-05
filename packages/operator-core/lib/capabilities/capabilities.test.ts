@@ -28,7 +28,7 @@ describe('schemaRequiresArgs', () => {
     expect(schemaRequiresArgs({ type: 'object', properties: { id: { type: 'string' } }, required: ['id'] })).toBe(true);
   });
   it('JSON Schema flavour: required-with-default does not require an arg (Zod 4 output-mode artifact)', () => {
-    // hive:pause-shaped: z.boolean().default(false) → required:['drainBees'] + default on the prop.
+    // pot:pause-shaped: z.boolean().default(false) → required:['drainBees'] + default on the prop.
     expect(
       schemaRequiresArgs({
         type: 'object',
@@ -141,9 +141,9 @@ describe('toolDefinitionToCapability', () => {
 describe('projectedToolToCapability', () => {
   const lowTier = () => 'low' as const;
 
-  it('maps a hive:start-shaped role-gated tool to an invocable capability', () => {
+  it('maps a pot:start-shaped role-gated tool to an invocable capability', () => {
     const cap = projectedToolToCapability(
-      'hive:start',
+      'pot:start',
       {
         description: 'START the hive.',
         inputSchema: { type: 'object', properties: { harness: { type: 'string' } } }, // all optional
@@ -153,7 +153,7 @@ describe('projectedToolToCapability', () => {
       },
       lowTier,
     );
-    expect(cap.id).toBe('hive:start');
+    expect(cap.id).toBe('pot:start');
     expect(cap.requiresArgs).toBe(false);
     expect(cap.gating.agentRoles).toContain('operator');
     expect(cap.gating.auth?.capabilities).toEqual(['harness:write']);

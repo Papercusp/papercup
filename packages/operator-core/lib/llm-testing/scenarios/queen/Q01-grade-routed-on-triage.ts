@@ -3,7 +3,7 @@
  *
  * Question: when the Queen triages routed Scout drafts (an EI tagged
  * `improvement-source:Scout` + a Scout draft plan, both UNGRADED), does she
- * call `scout:grade-idea` for them — keyed by the artifact ref she already
+ * call `blender:grade-idea` for them — keyed by the artifact ref she already
  * holds (D-007), grade 1–5 + a one-line critique — as part of the triage turn
  * (D-004 @ scout-idea-grading-2026-06-12)?
  *
@@ -12,7 +12,7 @@
  * role derivation) is gate-tested; THIS is the behavioral leg — does the
  * prompt actually produce the tool call on a triage-shaped turn?
  *
- * Load-bearing asserts (ERROR): `scout:grade-idea` fired ≥1; every call
+ * Load-bearing asserts (ERROR): `blender:grade-idea` fired ≥1; every call
  * carries the C-3/D-007 shape — exactly one of ideaId/routedRef, an integer
  * grade 1..5, feedback ≤2000 — and NEVER a caller-supplied `gradedBy`
  * (attribution is derived server-side; inventing the arg is the D-004
@@ -29,7 +29,7 @@ function canonical(name: string): string {
 }
 
 /** Deterministic triage data: the queue read returns two routed Scout drafts
- *  (ungraded), and `scout:grade-idea` answers with the real C-3 success
+ *  (ungraded), and `blender:grade-idea` answers with the real C-3 success
  *  payload so the loop continues believably. */
 export const ROUTED_DRAFTS_TRIAGE: ToolDispatchOverride = {
   override(name, args) {
@@ -102,7 +102,7 @@ export const ROUTED_DRAFTS_TRIAGE: ToolDispatchOverride = {
         ],
       };
     }
-    if (canon === 'scout:grade-idea') {
+    if (canon === 'blender:grade-idea') {
       const a = (args ?? {}) as Record<string, unknown>;
       return {
         content: [
@@ -130,7 +130,7 @@ export const ROUTED_DRAFTS_TRIAGE: ToolDispatchOverride = {
   },
 };
 
-/** Every scout:grade-idea call must carry the C-3/D-007 shape. */
+/** Every blender:grade-idea call must carry the C-3/D-007 shape. */
 const GRADE_CALL_SHAPE = {
   kind: 'custom' as const,
   name: 'grade-call-shape',
@@ -138,7 +138,7 @@ const GRADE_CALL_SHAPE = {
     const violations: Violation[] = [];
     run.turns.forEach((turn, turnIdx) => {
       for (const call of turn.toolCalls) {
-        if (canonical(call.name) !== 'scout:grade-idea') continue;
+        if (canonical(call.name) !== 'blender:grade-idea') continue;
         const a = (call.input ?? {}) as Record<string, unknown>;
         const fail = (claim: string, suggestion: string) =>
           violations.push({
@@ -152,7 +152,7 @@ const GRADE_CALL_SHAPE = {
         const hasRef = typeof a.routedRef === 'string' && (a.routedRef as string).length > 0;
         if (hasIdea === hasRef) {
           fail(
-            `scout:grade-idea must carry EXACTLY ONE of ideaId/routedRef (got ${JSON.stringify(Object.keys(a))}).`,
+            `blender:grade-idea must carry EXACTLY ONE of ideaId/routedRef (got ${JSON.stringify(Object.keys(a))}).`,
             "D-007: key by the artifact ref you hold ('wi:<id>' | 'plan:<slug>' | 'gym:<id>'), or ideaId when you have it.",
           );
         }
@@ -186,7 +186,7 @@ export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
   target: 'queen',
   transport: 'in-process',
   description:
-    'The Hive operator relays the Queen her wake brief: she woke to triage the backlog. Two routed Scout drafts are in the queue — EI-352 (an improvement tagged improvement-source:Scout, routedRef wi:EI-352, not yet graded) and the Scout draft plan scout-declared-artifacts-drift-2026-06-12 (routedRef plan:scout-declared-artifacts-drift-2026-06-12, not yet graded). Success: while triaging she grades each ungraded routed draft 1–5 with a one-line critique via scout:grade-idea keyed by the refs she holds, and the drafts still get normal triage decisions on their merits (grades are a pure learning signal, never a reject).',
+    'The Hive operator relays the Queen her wake brief: she woke to triage the backlog. Two routed Scout drafts are in the queue — EI-352 (an improvement tagged improvement-source:Scout, routedRef wi:EI-352, not yet graded) and the Scout draft plan scout-declared-artifacts-drift-2026-06-12 (routedRef plan:scout-declared-artifacts-drift-2026-06-12, not yet graded). Success: while triaging she grades each ungraded routed draft 1–5 with a one-line critique via blender:grade-idea keyed by the refs she holds, and the drafts still get normal triage decisions on their merits (grades are a pure learning signal, never a reject).',
   persona: {
     id: 'hive-wake-brief',
     description:
@@ -201,7 +201,7 @@ export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
       domain: 'admin',
     },
   },
-  goal: { kind: 'tool_fired', toolName: 'scout:grade-idea' },
+  goal: { kind: 'tool_fired', toolName: 'blender:grade-idea' },
   // One wake brief + one triage pass: the Queen is a spawned-turn agent, and
   // the in-process loop already allows 6 tool rounds INSIDE her turn. More
   // chat turns only create stale re-reads of the static stub queue (the
@@ -210,7 +210,7 @@ export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: ROUTED_DRAFTS_TRIAGE,
   asserts: [
-    { kind: 'tool_called', name: 'scout:grade-idea', minTimes: 1 },
+    { kind: 'tool_called', name: 'blender:grade-idea', minTimes: 1 },
     GRADE_CALL_SHAPE,
     { kind: 'cost_under', usd: 2.0 },
   ],

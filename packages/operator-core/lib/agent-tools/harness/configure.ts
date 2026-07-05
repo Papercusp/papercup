@@ -5,16 +5,16 @@
  * merges into the harness's assembled config / `HARNESS_CONFIG_JSON`
  * env-transport).
  *
- * A thin registry writer, mirroring `hive:update`'s configOverrides half
- * exactly (same merge semantics, same root-only guard) — but `hive:update` is
+ * A thin registry writer, mirroring `pot:update`'s configOverrides half
+ * exactly (same merge semantics, same root-only guard) — but `pot:update` is
  * scoped to `harness_kind === 'hive'` projects only (D-006: a hive cannot
  * reclassify, and its tool never touches ordinary harnesses). Every OTHER
  * harness (coding / research / migration / generic-hive / …) had NO agent-tool
  * path to write `configOverrides` at all — only the one-time
  * `migrateConfigJsonToInstance` lift from a legacy `config.json`, or a direct
  * DB edit. This tool closes that gap for the non-hive case. Root-only (a
- * config change is an operator op, same rationale as hive:update); rejects a
- * hive slug (use `hive:update` there instead) so the two tools stay disjoint
+ * config change is an operator op, same rationale as pot:update); rejects a
+ * hive slug (use `pot:update` there instead) so the two tools stay disjoint
  * rather than overlapping.
  */
 import { z } from 'zod';
@@ -34,14 +34,14 @@ export default defineTool({
   name: 'harness:configure',
   profile: 'engineer',
   description:
-    "Set per-instance config overrides (maxCostUsd, parallelWorkers, …) on an EXISTING non-hive harness — merges into the registry's configOverrides, the same knob residue hive:update writes for hives. Root-only. Rejects a hive slug (use hive:update there).",
+    "Set per-instance config overrides (maxCostUsd, parallelWorkers, …) on an EXISTING non-hive harness — merges into the registry's configOverrides, the same knob residue pot:update writes for hives. Root-only. Rejects a hive slug (use pot:update there).",
   guidance: {
     when: 'Changing a non-hive harness\'s per-instance blueprint-knob overrides (budget/parallelism/etc) after it already exists.',
     notWhen:
-      "Scaffolding a NEW harness — harness:create (which takes its own initial configOverrides). A hive's config — hive:update. Its typed instance fields (phase/dept) aren't touched here — those ride the same registry entry but via their own setters.",
+      "Scaffolding a NEW harness — harness:create (which takes its own initial configOverrides). A hive's config — pot:update. Its typed instance fields (phase/dept) aren't touched here — those ride the same registry entry but via their own setters.",
     chaining: 'harness:overview or harness:health to see current state; harness:create for a brand-new harness.',
     seeAlso: [
-      'hive:update (the equivalent tool, scoped to hive harnesses)',
+      'pot:update (the equivalent tool, scoped to hive harnesses)',
       'harness:create (scaffold a new harness, with initial configOverrides)',
       'harness:overview (see current state)',
     ],
@@ -84,7 +84,7 @@ export default defineTool({
       return text({
         ok: false,
         error: 'is_a_hive',
-        message: `'${args.slug}' is a hive harness — use hive:update to change its configOverrides instead.`,
+        message: `'${args.slug}' is a hive harness — use pot:update to change its configOverrides instead.`,
       });
     }
 

@@ -130,7 +130,7 @@ export async function checkScorecardFreshness(
 export interface OverwatchEmissionContext {
   /** the papercusp-overwatch flag is on */
   flagEnabled: boolean;
-  /** the overwatch:start bit is set */
+  /** the kettle:start bit is set */
   started: boolean;
   /** the wake loop fired within its stale window (liveness.alive) */
   loopAlive: boolean;
@@ -195,14 +195,14 @@ export function interpretOverwatchEmission(
     return {
       verdict: 'overwatch-not-started',
       actionable: false,
-      note: 'Overwatch is enabled but NOT started (pre-armed) — no emission is expected until overwatch:start. Ignore.',
+      note: 'Overwatch is enabled but NOT started (pre-armed) — no emission is expected until kettle:start. Ignore.',
     };
   }
   if (ctx.loopStale || !ctx.loopAlive) {
     return {
       verdict: 'loop-dead',
       actionable: true,
-      note: `Overwatch is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (overwatch:start / overwatch:declare-wake) and investigate the overwatch liveness watchdog.`,
+      note: `Overwatch is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (kettle:start / kettle:declare-wake) and investigate the overwatch liveness watchdog.`,
     };
   }
   // The wake loop IS firing, yet no COMPLETE scorecard landed — the AGENT is skipping /

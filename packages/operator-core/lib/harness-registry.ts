@@ -74,7 +74,7 @@ export interface ProjectEntry {
   joined_via_link?: boolean;
   // ── Upstream GitHub coordinates (hive-from-github-url-2026-06-11 P-002) ──
   // Written at registration time by the projects-route githubUrl path and
-  // hive:create_from_repo. Consumed by the hive directory announce derivation
+  // pot:create_from_repo. Consumed by the hive directory announce derivation
   // (member_repos) and the fork-PR repo-context fallback (orchestrator-runner
   // resolveRepoContext). Absent ⇒ repo origin unknown (registered from a local
   // path) — consumers fall back to .papercusp/shared.json / git remote parsing.

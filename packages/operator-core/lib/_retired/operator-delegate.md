@@ -8,7 +8,7 @@ agents after the operator role split into newer Sentinel/Queen/work-item flows.
 
 What replaced it:
 
-- Human-facing conversation: `operator:converse` / `sentinel:converse`.
+- Human-facing conversation: `operator:converse` / `papercup:converse`.
 - Durable agent work: `work_items:*`, `coord:*`, and harness placement flows.
 - Historical delegate sessions: `delegates.list`, `delegates.get`, and
   `delegates.search` may still read old records, but they do not start work.

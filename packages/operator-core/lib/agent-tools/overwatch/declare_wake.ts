@@ -1,5 +1,5 @@
 /**
- * overwatch:declare-wake — the overwatch declares its OWN next wake before ending a
+ * kettle:declare-wake — the overwatch declares its OWN next wake before ending a
  * turn (overwatch-role-2026-06-15 B-04, the declare-next-wake half of C-3).
  *
  * The overwatch is a fresh-per-wake autonomous loop (overwatch.md): each turn it
@@ -7,7 +7,7 @@
  * next — SHORT (60–180s) while a drift is unresolved, LONGER (10–30 min) when the
  * system is calm. This is its declared-wake scheduler.
  *
- * It is deliberately a SEPARATE verb from the Queen's `hive:declare-wake` (which
+ * It is deliberately a SEPARATE verb from the Queen's `pot:declare-wake` (which
  * writes the `hive-wake` channel) so the two wake channels never collide — and so
  * the overwatch CANNOT touch the Queen's schedule. The Queen's verb is gated on
  * `routines:write` (which the overwatch role does NOT hold, by design — D-001/B-01);
@@ -16,7 +16,7 @@
  * NOT also unlock the Queen's. Both call the SAME underlying `declareOverwatchTimeWake`
  * primitive (liveness.ts) the B-09 watchdog re-arms through.
  *
- * REPLACE semantics like hive:declare-wake / coord:declare-intent: each call sets
+ * REPLACE semantics like pot:declare-wake / coord:declare-intent: each call sets
  * the WHOLE next wake — a time (`at` | `inSeconds`), the configured cadence default
  * (no time given), or `mode:'none'` (sleep until the owner or an immediate wake).
  * A wake floor clamps the time (≥ now+floor) so a confused overwatch can't spin.
@@ -36,14 +36,14 @@ import { getOverwatchCadenceSec } from "../../overwatch/control-state";
 import { softText, clampText, LIMITS } from "../limits";
 
 export default defineTool({
-  name: "overwatch:declare-wake",
+  name: "kettle:declare-wake",
   profile: "engineer",
   description:
-    "Declare the overwatch's next wake (REPLACE semantics): a time (`at` ISO / `inSeconds`), the configured cadence (no time given), or nothing (`mode:'none'` — sleep until the owner). Clamped to a wake floor. The overwatch's OWN channel — distinct from the Queen's hive:declare-wake; ALWAYS call this before ending a turn.",
+    "Declare the overwatch's next wake (REPLACE semantics): a time (`at` ISO / `inSeconds`), the configured cadence (no time given), or nothing (`mode:'none'` — sleep until the owner). Clamped to a wake floor. The overwatch's OWN channel — distinct from the Queen's pot:declare-wake; ALWAYS call this before ending a turn.",
   guidance: {
     when: "You are the overwatch ending a turn — ALWAYS declare your next wake. Use a SHORT inSeconds (60–180) while a drift is unresolved (verify the nudge landed), a LONGER one (600–1800) when the system is calm. Omit the time to use the configured cadence.",
     notWhen:
-      "To schedule the Queen / colony — that is hive:declare-wake (a different channel you cannot and must not touch). To wake right now — the owner's overwatch:start does that.",
+      "To schedule the Queen / colony — that is pot:declare-wake (a different channel you cannot and must not touch). To wake right now — the owner's kettle:start does that.",
     chaining:
       "Follows your nudges/observations for the turn; this is the last loop step before your end-of-turn verb.",
   },

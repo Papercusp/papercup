@@ -4,7 +4,7 @@
  *
  * Per cadence: decide (owner-budget gate → SHA identity → generation-dedupe), then
  * run ONE budget-capped gen-0 battery — solver/judge bees spawned via
- * `spawnAgentInHarness → bee:spawn → spawnInvokeOnce` (the governed chokepoint,
+ * `spawnAgentInHarness → cup:spawn → spawnInvokeOnce` (the governed chokepoint,
  * so D-005 holds), then persist beside gen-0 in the beekeeper_* tables. This op
  * WRAPS the shared `runIqBatteryGen` orchestration (the SAME cadence-tick + gen-0
  * runner the bespoke routine ran) — behavior-neutral (D-004). The bee spawn stays

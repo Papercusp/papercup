@@ -248,7 +248,7 @@ export async function clearPendingWakes(ownerId: string): Promise<number> {
  * Drop wakes for owners with NO presence heartbeat within `liveGraceMin`, and only
  * those rows older than the same grace (so a just-staged wake for an agent
  * momentarily between heartbeat writes is never reaped). A LIVE paused agent
- * (hive:pause → wake-mode manual, but the session is alive) keeps heartbeating, so
+ * (pot:pause → wake-mode manual, but the session is alive) keeps heartbeating, so
  * its review queue is untouched — exactly the rows a human still intends to review.
  *
  * Returns the number of rows swept. Best-effort: the caller (the hourly monitor)

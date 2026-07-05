@@ -184,7 +184,7 @@ describe('listStartedWorkspaceLoops — de-duped Queen-liveness loop (P-003)', (
 // per-hive start-stop 2026-06-30). The bug: getHiveStarted is sentinel-first, so
 // under WORKSPACE_COORDINATION every registered hive read the SAME workspace
 // sentinel → the pill showed "N hives running" though all were dormant, and
-// hive:pause wrote the shared sentinel (harness discarded) so "Stop hive X"
+// pot:pause wrote the shared sentinel (harness discarded) so "Stop hive X"
 // stopped the whole workspace. getHivePlacementStarted / setHivePlacementStarted
 // are the RAW per-(ws,install) row: they IGNORE the sentinel collapse entirely
 // (no flag read), so each hive reports its own honest state and hive.controlState
@@ -223,8 +223,8 @@ describe('getHivePlacementStarted / setHivePlacementStarted — raw per-hive bit
   });
 });
 
-describe('anyHivePlacementStarted — the sentinel-idle gate for hive:pause (WI-1324)', () => {
-  // hive:pause idles the workspace Queen LOOP (sentinel off) ONLY when NO OTHER
+describe('anyHivePlacementStarted — the sentinel-idle gate for pot:pause (WI-1324)', () => {
+  // pot:pause idles the workspace Queen LOOP (sentinel off) ONLY when NO OTHER
   // hive remains started (excludeSlug = the just-stopped hive), so the single loop
   // keeps running for the other started hives.
   it('true when another hive remains started → keep the workspace loop running', async () => {

@@ -1,5 +1,5 @@
 /**
- * hive:create handler — the P-007b identity guard (watchdog-and-exposed-systems-
+ * pot:create handler — the P-007b identity guard (watchdog-and-exposed-systems-
  * improvement-2026-06-18). An MCP client with no resolvable session identity made
  * resolveAgentIdentity THROW an opaque "missing uiClientId" that surfaced as a raw
  * tool error; the tool now CATCHES it and returns a structured `identity_unresolved`
@@ -30,7 +30,7 @@ const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown>
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.clearAllMocks());
 
-describe('hive:create identity guard (P-007b)', () => {
+describe('pot:create identity guard (P-007b)', () => {
   it('returns a structured identity_unresolved error (not an opaque throw) for a ctx with no identity', async () => {
     const res = parse(await tool.handler({ slug: 'test-hive' }, {} as never));
     expect(res.ok).toBe(false);

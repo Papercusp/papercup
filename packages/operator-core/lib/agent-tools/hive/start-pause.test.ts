@@ -1,5 +1,5 @@
 /**
- * Unit tests for hive:start / hive:pause
+ * Unit tests for pot:start / pot:pause
  * (start-hive-wake-orchestration-2026-06-09 P-005 / P-013, D-005/D-006).
  *
  * Pin the control contract: what Start arms (started bit, ENSURE-mode default
@@ -78,7 +78,7 @@ beforeEach(() => {
   anyHivePlacementStarted.mockResolvedValue(false);
 });
 
-describe('hive:start (P-005 / D-006)', () => {
+describe('pot:start (P-005 / D-006)', () => {
   it('refuses without a resolvable home harness', async () => {
     const out = await call(hiveStart as never, {});
     expect(out.ok).toBe(false);
@@ -100,7 +100,7 @@ describe('hive:start (P-005 / D-006)', () => {
   });
 });
 
-describe('hive:pause (P-005 / D-005 / P-013)', () => {
+describe('pot:pause (P-005 / D-005 / P-013)', () => {
   it('flips started=false FIRST, then wake-mode manual, then clears the time wake', async () => {
     const out = await call(hivePause as never, { harness: 'my-hive' });
     expect(out.ok).toBe(true);

@@ -1,5 +1,5 @@
 /**
- * hive:membership_decide — OWNER approves or denies a pending-join request
+ * pot:membership_decide — OWNER approves or denies a pending-join request
  * (Brief EN-3 / P-MEMBER, the owner approve/deny surface — decide half).
  *
  * Approve → trust-admit the joiner (upsertHiveMember with the request's captured
@@ -27,24 +27,24 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 const Decision = z.object({
-  githubUserId: z.number().int().positive().describe("The pending joiner's numeric GitHub user id (from hive:membership_pending)."),
+  githubUserId: z.number().int().positive().describe("The pending joiner's numeric GitHub user id (from pot:membership_pending)."),
   decision: z.enum(['approve', 'deny']).describe('approve = trust-admit; deny = reject (never admitted).'),
   reason: softText(LIMITS.ANNOTATION).optional().describe('Optional note (e.g. a deny reason), federated back to the joiner. Auto-truncated to 2000 chars if longer.'),
 });
 
 export default defineTool({
-  name: 'hive:membership_decide',
+  name: 'pot:membership_decide',
   profile: 'engineer',
   description:
     "OWNER decision on one OR many pending-join requests for a Hive: approve (trust-admit the joiner + their captured devices) or deny (never admitted). Pass a single `{ githubUserId, decision, reason? }` for one or `items:[{ githubUserId, decision, reason? }]` for several. Requires this Swarm to hold the Hive key (the owning Swarm). Returns { ok, results:[{ ok, githubUserId, … | error }], counts } — correlate by githubUserId, not position; one failure never fails the rest.",
   guidance: {
-    when: 'Joiner(s) are pending under approval-mode membership (see hive:membership_pending) and you (the owner) want to admit or reject them. Clearing a queue? Pass them all via `items:[{ githubUserId, decision }]`.',
+    when: 'Joiner(s) are pending under approval-mode membership (see pot:membership_pending) and you (the owner) want to admit or reject them. Clearing a queue? Pass them all via `items:[{ githubUserId, decision }]`.',
     notWhen:
-      'Banning an already-admitted member for abuse — use hive:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is hive policy.',
-    chaining: 'hive:membership_pending (review the queue) → hive:membership_decide (per joiner, or all at once via items[]). Bulk: correlate by githubUserId, not position; one failure never fails the rest.',
+      'Banning an already-admitted member for abuse — use pot:ban_member (revoke + re-key teeth). Setting the membership mode itself — that is hive policy.',
+    chaining: 'pot:membership_pending (review the queue) → pot:membership_decide (per joiner, or all at once via items[]). Bulk: correlate by githubUserId, not position; one failure never fails the rest.',
     seeAlso: [
-      'hive:membership_pending (review the queue first)',
-      'hive:ban_member (remove an already-admitted member)',
+      'pot:membership_pending (review the queue first)',
+      'pot:ban_member (remove an already-admitted member)',
     ],
   },
   capability: 'harness:write',

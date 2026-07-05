@@ -11,7 +11,7 @@
  * ../hive/placement-watchdog.resolveQueenOwner}): the Queen is an interactive
  * brain that re-spawns per wake, so her coord owner is the NEWEST `hive ·
  * <slug>/queen` adv_session's `coord_owner_id` — dynamic. Scout has NO per-session
- * identity: it IS the cron-fired `scout:cycle` op (register-scout-action.ts), with
+ * identity: it IS the cron-fired `blender:cycle` op (register-scout-action.ts), with
  * no live session and no `adv_sessions` row. So its addressable identity must be a
  * deterministic ROLE id derived from the hive slug — `scout:<hive>` — which both
  * the Queen's send and the cycle's `readInbox` resolve to the same string with no

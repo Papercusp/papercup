@@ -38,7 +38,7 @@ export default defineTool({
     when: 'You (the Queen) want to reclaim bee slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each bee a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
       'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the Hive Queen ≠ drain your fleet-leader peers).',
-    chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → bee:spawn fresh.',
+    chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → cup:spawn fresh.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

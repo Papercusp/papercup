@@ -17,7 +17,7 @@
  *     octokit PR host (open-fork-pr's core). A user's loop NEVER direct-pushes to
  *     canonical Papercusp (D-007).
  *
- * ROOT-ONLY (mirrors platform:enable / hive:dissolve) + reason-audited. The
+ * ROOT-ONLY (mirrors platform:enable / pot:dissolve) + reason-audited. The
  * composition lives in `../../hive/contribute-upstream` (seam-injected,
  * unit-tested); this is the guard + arg surface.
  *
@@ -118,7 +118,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
-    // Root-only enforcement (mirrors platform:enable / hive:dissolve): an outward
+    // Root-only enforcement (mirrors platform:enable / pot:dissolve): an outward
     // contribution is an owner/operator action, never delegated to a bee.
     const actor = resolveAgentIdentity(ctx);
     if (actor.source === 'fleet-spawn') {

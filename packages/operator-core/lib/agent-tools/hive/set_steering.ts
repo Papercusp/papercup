@@ -1,5 +1,5 @@
 /**
- * hive:set-steering — the owner's steering write surface for the Queen
+ * pot:set-steering — the owner's steering write surface for the Queen
  * (queen-steering-panel-2026-06-15, brief B-01; CONTRACT C-1).
  *
  * Writes the `owner-steering:*` hive_settings (via owner-steering.ts) — a focus
@@ -10,8 +10,8 @@
  * immediately rather than at the next cadence tick. The 👑 Queen tab (B-04) writes
  * through this; the Queen wake-brief (B-02) reads the same keys via getOwnerSteering.
  *
- * Sibling of `hive:pause` (the other harness:write Hive-control verb). Read twin:
- * `hive:get-steering`.
+ * Sibling of `pot:pause` (the other harness:write Hive-control verb). Read twin:
+ * `pot:get-steering`.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -25,19 +25,19 @@ import { LIMITS } from '../limits';
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
 export default defineTool({
-  name: 'hive:set-steering',
+  name: 'pot:set-steering',
   profile: 'engineer',
   description:
     'Set the owner steering the Queen reads on every wake (the 👑 Queen tab writes through this): a focus `directive`, `eligiblePlans` / `eligibleHives` (what she may pick up + the placement scope NOW — eligibility ≠ lifecycle status), `pauseNewWork`/`pausedUntil`, the P-006 THROTTLE knobs (`cadenceFloorSec`, `maxBees`, `idleActivities`, `autoScaleOut`, `modelTiers`/`tierCeilings`, `decomposition`), and the federated Scout priming override `federatedPriming` (`foreignElites` / `crowded` / `empty`). Writes the owner-steering:* hive_settings, refreshes the panel, AND wakes the Queen so the change takes effect immediately. `clear:true` wipes all steering; omitted fields are unchanged (null/[] clears one field). See each arg description for detail.',
   guidance: {
     when: 'Steering the Queen from the owner surface — focus her on specific plans, give a directive, or pause new work (incident / cost / review). The 👑 Queen tab is the UI for this.',
     notWhen:
-      'Freezing the WHOLE hive (all autonomous wakes) — hive:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE bee — fleet:drain / fleet:cancel.',
+      'Freezing the WHOLE hive (all autonomous wakes) — pot:pause. Per-plan lifecycle (draft/ready/shipped) — plans:*. Stopping ONE bee — fleet:drain / fleet:cancel.',
     chaining:
-      'hive:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Queen wakes + honours it next placement. hive:set-steering { pauseNewWork:true } → she drives existing work to terminal then idles. hive:get-steering reads the current state; clear:true resets.',
+      'pot:set-steering { eligiblePlans:[...], directive:"only these plans" } → the Queen wakes + honours it next placement. pot:set-steering { pauseNewWork:true } → she drives existing work to terminal then idles. pot:get-steering reads the current state; clear:true resets.',
     seeAlso: [
-      'hive:get-steering (read the current steering before changing it)',
-      'hive:pause (freeze the whole hive instead of steering the Queen)',
+      'pot:get-steering (read the current steering before changing it)',
+      'pot:pause (freeze the whole hive instead of steering the Queen)',
     ],
   },
   capability: 'harness:write',
@@ -123,7 +123,7 @@ export default defineTool({
       .record(z.string(), z.string().max(120))
       .nullable()
       .optional()
-      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the bee:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
+      .describe('SESSION per-role MODEL override (role→`model[:effort]`) for the FRONT-DOOR agents launched outside the cup:spawn tier path — keys "sentinel" (dock TUI) and "overwatch" (invoke loop). null / {} clears. e.g. {"sentinel":"opus:high","overwatch":"sonnet"}. (model-override-sidebar-2026-06-23.)'),
     federatedPriming: z
       .object({
         foreignElites: z.number().int().nonnegative().optional(),

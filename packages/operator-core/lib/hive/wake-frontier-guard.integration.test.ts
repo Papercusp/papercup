@@ -1,6 +1,6 @@
 /**
  * wake-frontier-guard.integration.test.ts — the EI-309 frontier query against
- * REAL Postgres. `listUnplacedHiveFrontier` is what the hive:declare-wake guard
+ * REAL Postgres. `listUnplacedHiveFrontier` is what the pot:declare-wake guard
  * reads to decide whether a no-time-component wake would strand work; this drives
  * it end-to-end so the status/assignee/kind/harness filters are exercised.
  */

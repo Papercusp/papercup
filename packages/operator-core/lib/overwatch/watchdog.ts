@@ -64,7 +64,7 @@ export async function overwatchEnabled(): Promise<boolean> {
 
 /**
  * The set of overwatches the backstop guards: those B-07's control bit marks
- * STARTED (`overwatch:start`), but ONLY while the overwatch flag is on
+ * STARTED (`kettle:start`), but ONLY while the overwatch flag is on
  * (B-10/D-009 — defence-in-depth: the start tool is itself flag-gated, so this
  * is belt-and-braces).
  *
@@ -122,7 +122,7 @@ async function recordOverwatchFire(opts: {
 }
 
 /** Recent overwatch fallback-fire count — the "overwatch watchdog fired N times"
- *  health signal (surfaced in the overwatch pane / hive:status). Filters the
+ *  health signal (surfaced in the overwatch pane / pot:status). Filters the
  *  shared table to `overwatch-*` sources so it never counts the hive's. */
 export async function recentOverwatchWatchdogFires(
   workspaceId: string,

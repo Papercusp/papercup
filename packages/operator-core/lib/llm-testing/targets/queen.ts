@@ -8,7 +8,7 @@
  * responsibility (D-004 — grade ungraded routed Scout drafts 1–5 while
  * triaging, keyed by routedRef per D-007) is a prompt-level behavior, so the
  * deterministic gates (tools-md-sync, prompt-assembly, the C-2/C-3 suites)
- * cannot observe whether she actually CALLS `scout:grade-idea` during a
+ * cannot observe whether she actually CALLS `blender:grade-idea` during a
  * triage turn. This target reuses the `su` in-process Anthropic tool loop
  * (prompt-from-SOURCE + stubbed executor — see ./su for the full rationale)
  * with the Queen's blueprint prompt and a curated slice of her blueprint
@@ -18,7 +18,7 @@
  *   - Names + load-bearing args are real; the slice covers the verbs a triage
  *     turn plausibly reaches for, so grading must be CHOSEN among genuine
  *     alternatives, not forced by an empty menu.
- *   - `scout:grade-idea`'s schema mirrors C-3 + D-007 exactly — ideaId XOR
+ *   - `blender:grade-idea`'s schema mirrors C-3 + D-007 exactly — ideaId XOR
  *     routedRef, int grade 1..5, optional feedback ≤2000. `gradedBy` is
  *     deliberately ABSENT (derived server-side from the caller role, never an
  *     arg) — Q01 asserts the model does not invent it.
@@ -102,7 +102,7 @@ const obj = (
  */
 export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
-    name: 'scout:grade-idea',
+    name: 'blender:grade-idea',
     description:
       "Grade a routed Scout idea 1–5 with optional feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef — exactly one.",
     input: obj(
@@ -180,7 +180,7 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ harness: { type: 'string' } }),
   },
   {
-    name: 'bee:spawn',
+    name: 'cup:spawn',
     description: 'Spawn a bee on a work item with a situational brief (placement decision).',
     input: obj({ work_item: { type: 'string' }, brief: { type: 'string' } }, ['work_item']),
   },
@@ -226,7 +226,7 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ harness: { type: 'string' } }),
   },
   {
-    name: 'hive:declare-wake',
+    name: 'pot:declare-wake',
     description: 'Declare your next wake (time or event) before ending the turn.',
     input: obj({ in_sec: { type: 'integer' }, on_event: { type: 'string' }, note: { type: 'string' } }),
   },

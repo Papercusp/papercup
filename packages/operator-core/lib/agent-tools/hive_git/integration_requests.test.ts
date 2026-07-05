@@ -1,5 +1,5 @@
 /**
- * hive_git:integration_requests handler unit tests (WI-1555) — PG-free, mocks the
+ * pot_git:integration_requests handler unit tests (WI-1555) — PG-free, mocks the
  * store module + workspace-registry (mirrors trust/add.test.ts's pattern).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,7 +53,7 @@ async function tool() {
   };
 }
 
-describe('hive_git:integration_requests', () => {
+describe('pot_git:integration_requests', () => {
   it("action:'list' returns the queue + resolves workspace from the principal", async () => {
     const t = await tool();
     const b = body(await t.handler({ action: 'list' }, ctxWith({ workspaceId: 'ws-1' })));

@@ -15,7 +15,7 @@
  *   - `getOverwatchControlState()` → the persisted Start/Pause bit + cadence
  *     (B-07 control-state.ts) + the live wake liveness (B-09 liveness.ts) + the
  *     `papercusp-overwatch` activation flag (D-009). This is what the pane's header
- *     renders and what `overwatch:start` / `overwatch:pause` invalidate
+ *     renders and what `kettle:start` / `kettle:pause` invalidate
  *     (`overwatch.controlState`, already wired in B-07).
  *
  * This is the DB-touching read surface — the SPA never imports it; it imports

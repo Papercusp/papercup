@@ -281,7 +281,7 @@ export async function updateHiveMeta(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
-/** Delete a Hive identity row (create-rollback + hive:dissolve). Idempotent. */
+/** Delete a Hive identity row (create-rollback + pot:dissolve). Idempotent. */
 export async function deleteHive(
   workspaceId: string,
   homeSlug: string,

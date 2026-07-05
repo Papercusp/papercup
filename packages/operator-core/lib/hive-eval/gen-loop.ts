@@ -1,6 +1,6 @@
 /**
  * `runHiveEvalGen` — the SHARED Hive-evaluation cadence orchestration (build the live cadence deps
- * → `runHiveEvalCadenceTick`), the single source of truth the `hive-eval:gen` deterministic
+ * → `runHiveEvalCadenceTick`), the single source of truth the `pot-eval:gen` deterministic
  * blueprint step runs (HE-07, P-050). The SIBLING of `runIqBatteryGen` (iq-battery/gen-loop.ts) —
  * same gated-tick discipline, its own slice + tables (D-006/D-011).
  *

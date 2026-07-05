@@ -35,7 +35,7 @@ export default defineTool({
       // convention for a harness-scoped call (docs:*, plans:*, work_items:list,
       // harness:overview's own `harness` param) is `harness` — a caller guessing
       // the dominant name got a bare zod validation error. Accept both; `slug`
-      // stays primary (matches the sibling harness:status/hive:get bulk-id
+      // stays primary (matches the sibling harness:status/pot:get bulk-id
       // convention this tool was built to mirror).
       harness: z.string().min(1).optional().describe('Harness slug — alias for `slug`.'),
       phase: z.string().optional(),

@@ -139,7 +139,7 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
  *
  * `overrideSpec` is the PER-SPAWN escalation channel
  * (queen-model-tier-selection-2026-06-11 P-001): an explicit spec for THIS one
- * child — bee:spawn's `model`/`tier` arg, threaded via
+ * child — cup:spawn's `model`/`tier` arg, threaded via
  * extraEnv.PAPERCUSP_SPAWN_MODEL — that outranks both the env map and the
  * committed default. Tier-derived overrides are already floor-clamped by
  * resolveTierSpec before they reach here.
@@ -265,7 +265,7 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // whichever resolveAgentCmd reads gets the per-role command.
   // PAPERCUSP_SPAWN_MODEL (in extraEnv) is the per-spawn escalation: an explicit
   // spec for THIS child that outranks the env map + committed default — set by
-  // spawnAgentInHarness from bee:spawn's model/tier arg (P-001). It also rides
+  // spawnAgentInHarness from cup:spawn's model/tier arg (P-001). It also rides
   // the child's env, where invoke.ts resolveModel consults it first (covers the
   // config.aiBackend agentCmd-swap path this command-level append can't reach).
   // PAPERCUSP_SPAWN_BACKEND (per-tier backend) swaps the base command to that

@@ -59,7 +59,7 @@ export function availableBlueprintIds(): Set<string> {
 
 /**
  * The available blueprint ids whose declared `kind` is 'hive' — the installable hive
- * templates a `hive:create` picker offers + the set `hive:create` validates its
+ * templates a `pot:create` picker offers + the set `pot:create` validates its
  * `blueprintId` against (hive-blueprint-generalization P-019). Reads each
  * blueprint.yaml's own `kind` header (default 'harness'); a hive blueprint declares
  * `kind: hive` (e.g. `hive`, `generic-hive`). Cheap raw-YAML read — no extends

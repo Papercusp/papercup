@@ -24,9 +24,9 @@ export default defineTool({
   guidance: {
     when: 'You want a single cross-hive situational view — what every other hive context (own, federated peer, foreign) is and what we can see of it.',
     notWhen:
-      'Just the workspace-local hives — hive:list. Just the joinable P2P directory — discovery:hives. Per-bee placement detail — fleet:assignments. One hive in depth — hive:get.',
+      'Just the workspace-local hives — pot:list. Just the joinable P2P directory — discovery:hives. Per-bee placement detail — fleet:assignments. One hive in depth — pot:get.',
     chaining:
-      'discovery:hives → hive:cross_grant to admit a tier-4 peer; hive:get { slug } to drill into an own hive.',
+      'discovery:hives → pot:cross_grant to admit a tier-4 peer; pot:get { slug } to drill into an own hive.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

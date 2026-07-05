@@ -24,7 +24,7 @@ export default defineTool({
     'Read the model-tier menu (stored, else the committed defaults) with each tier’s effective soft compaction limit — explicit per-tier value, else the model-derived default floor((window − margin) / 1.2). Also returns the per-role tier ceilings.',
   capability: 'operator:read',
   guidance: {
-    when: 'You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a bee:spawn tier.',
+    when: 'You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a cup:spawn tier.',
     notWhen:
       'To change YOUR OWN session’s limit — config:set-compaction-limit. To edit the menu — config:tiers-set.',
     seeAlso: ['config:tiers-set (edit the menu)', 'config:set-compaction-limit (your own session’s limit)'],

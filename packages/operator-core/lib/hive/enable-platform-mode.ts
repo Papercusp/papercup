@@ -11,9 +11,9 @@
  *      Class-C layer-3 loops can materialize. This is the master switch — it must
  *      flip FIRST so step 3's materialization sees platform mode ON.
  *   2. STAND UP Papercusp's own repo as a self-managed SHARED Hive (kind:'hive',
- *      D-008) via the EXISTING `hive:create_from_repo` machinery — FETCH-ON-ENABLE
+ *      D-008) via the EXISTING `pot:create_from_repo` machinery — FETCH-ON-ENABLE
  *      from the public repo (D-007a: clone on toggle, do NOT bundle source). Because
- *      hive:create_from_repo → createHiveHarness already runs the per-hive
+ *      pot:create_from_repo → createHiveHarness already runs the per-hive
  *      learning-loop provisioning (P-020 step 6c), the self-hive inherits its OWN
  *      gym + scout loop for free — this function does NOT re-provision it.
  *   3. ARM the layer-3 platform-improvement loops: materialize the Class-C
@@ -70,7 +70,7 @@ export interface EnablePlatformModeInput {
   shallow?: boolean;
   /**
    * Run the canonical repo's test command at create. Default FALSE — the same
-   * hardening default hive:create_from_repo uses for a pasted URL (D-001): never
+   * hardening default pot:create_from_repo uses for a pasted URL (D-001): never
    * auto-execute repo code on enable. The owner verifies later if they wish.
    */
   runTests?: boolean;

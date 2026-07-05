@@ -7,7 +7,7 @@
  * (driveMode auto: queen/overwatch/bee). They must NOT be DELIVERED as binding to
  * a responsive session (su/sentinel/planner): a fleet leader / SU engineer that
  * reads "the hive is paused" as a self-command self-drains its fleet (the
- * 2026-07-02 churn). Steering stays PULLABLE on demand via hive:get-steering — it
+ * 2026-07-02 churn). Steering stays PULLABLE on demand via pot:get-steering — it
  * is only stripped from the PUSHED orientation of a responsive caller (visibility
  * != bindingness; D-001).
  *
@@ -66,4 +66,4 @@ export function withholdQueenLoopControl<T>(
  *  from a responsive caller — never a silent drop (mirrors coord:send's scoped
  *  report). */
 export const QUEEN_LOOP_WITHHELD_REASON =
-  "queen-loop steering (pauseNewWork/maxBees/hive-pause) was withheld from an owner-directed (responsive) session — it governs the queen-bee loop, not your task. Pull live fleet state on demand via hive:get-steering; a fleet is paused only by an explicit fleet:* / owner action.";
+  "queen-loop steering (pauseNewWork/maxBees/hive-pause) was withheld from an owner-directed (responsive) session — it governs the queen-bee loop, not your task. Pull live fleet state on demand via pot:get-steering; a fleet is paused only by an explicit fleet:* / owner action.";

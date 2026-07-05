@@ -1,6 +1,6 @@
 /**
- * leave.test.ts — the hive:leave HANDLER guards + delegation (the teardown
- * composition leaveHive is covered separately). hive:leave tears down what a join
+ * leave.test.ts — the pot:leave HANDLER guards + delegation (the teardown
+ * composition leaveHive is covered separately). pot:leave tears down what a join
  * built — federation, git-sync routines, presence, the joined registry entries — so
  * its two guards are load-bearing:
  *   • ROOT-ONLY — a bee (source 'fleet-spawn') must be refused;
@@ -40,7 +40,7 @@ beforeEach(() => {
   leaveM.mockResolvedValue({ ok: true, left: true } as never);
 });
 
-describe('hive:leave guards', () => {
+describe('pot:leave guards', () => {
   it('refuses a bee (fleet-spawn) — root-only — with no teardown', async () => {
     ident.mockReturnValue({ source: 'fleet-spawn' } as never);
     const b = body(await call({ confirm: true }));
@@ -55,7 +55,7 @@ describe('hive:leave guards', () => {
   });
 });
 
-describe('hive:leave success path', () => {
+describe('pot:leave success path', () => {
   it('delegates to leaveHive with the resolved workspace + slug and returns its result', async () => {
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({ ok: true, left: true });

@@ -133,8 +133,8 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
   // old 12s self-poll. recordSpawnPg is the single spawned_agents INSERT chokepoint, so
   // pushing here on a QUEEN spawn (rare — once per wake cycle, NOT per heartbeat: status
   // updates go through finishSpawnPg/heartbeat paths) covers every queen-spawn path
-  // (wake-brain, hive:wake, urgent-wake, create) uniformly. Fire-and-forget + non-throwing
-  // (mirrors hive:start/pause + recordHiveWake); name-only/{} matches the no-arg consumer;
+  // (wake-brain, pot:wake, urgent-wake, create) uniformly. Fire-and-forget + non-throwing
+  // (mirrors pot:start/pause + recordHiveWake); name-only/{} matches the no-arg consumer;
   // the 90s source-dedupe caps the rate. A rolled-back caller txn is harmless — the
   // resolver just re-reads the unchanged max.
   if (input.childRole === 'queen') {

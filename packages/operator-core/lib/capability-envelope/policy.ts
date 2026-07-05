@@ -41,7 +41,7 @@ export const FLEET_ENVELOPE_ROLES: ReadonlySet<string> = new Set(
  * D-005 "never-auto protected set" at the capability layer. Kept deliberately MINIMAL for
  * B-06 to the universally-never-auto verbs (raw secret reads, process kills) so observe
  * mode is near-zero-false-positive; the per-role protected nuance (e.g. the Queen MAY
- * bee:spawn but a bee may not) is B-18 tuning via `ROLE_ENVELOPES`.
+ * cup:spawn but a bee may not) is B-18 tuning via `ROLE_ENVELOPES`.
  */
 export const PROTECTED_CAPABILITY_GLOBS: readonly string[] = [
   'secrets:*',
@@ -90,7 +90,7 @@ export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   // overwatch deny, refuse the write+exec capabilities at the envelope layer — the
   // explicit belt on top of the cap-grant omission (BLUEPRINT_ROLE_CAPS.sentinel
   // carries no capability:fs-write / capability:bash, and no work_items:set_state /
-  // harness:write / plans:write / routines:write; bee:spawn carves it out). Even
+  // harness:write / plans:write / routines:write; cup:spawn carves it out). Even
   // a tool that asks for fs-write/bash is refused for the sentinel.
   sentinel: {
     denyCapabilities: ['capability:fs-write', 'capability:bash'],

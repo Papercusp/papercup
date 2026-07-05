@@ -4,12 +4,12 @@
  *
  * The one-call enable flow. Flips the `PLATFORM_IMPROVEMENT_LOOPS` knob on for this
  * install, stands Papercusp's OWN public repo up as a self-managed SHARED Hive
- * (kind:'hive') via the existing hive:create_from_repo machinery (fetch-on-enable,
+ * (kind:'hive') via the existing pot:create_from_repo machinery (fetch-on-enable,
  * D-007a), and arms the layer-3 platform-improvement loops against it (seeded DARK —
  * the owner arms each via the gym/routines UI). The self-hive inherits its own
  * per-hive gym+scout loop for free (P-020).
  *
- * ROOT-ONLY (mirrors hive:create / hive:dissolve) + reason-audited. The composition
+ * ROOT-ONLY (mirrors pot:create / pot:dissolve) + reason-audited. The composition
  * lives in `../../hive/enable-platform-mode` (seam-injected, unit-tested); this is the
  * guard + arg surface. Standing up the self-hive does NOT relax any confinement guard
  * (P-073) — the platform loop's blast radius stays THIS install; upstream is
@@ -38,13 +38,13 @@ export default defineTool({
   guidance: {
     when: 'The user explicitly opts into platform mode / "Papercusp inside Papercusp" / wants this install to improve Papercusp-the-platform itself (layer 3). One call stands up the self-hive + arms the loops.',
     notWhen:
-      'Onboarding an ARBITRARY repo as a hive — hive:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).',
+      'Onboarding an ARBITRARY repo as a hive — pot:create_from_repo. Just flipping a flag without standing up the self-hive — flags:set. Contributing an improvement UPSTREAM (open a PR / publish a learning-pack) — platform:contribute (the separate, gated path).',
     chaining:
       'platform:enable → improvements:learning_loops to see the armed (dark) layer-3 loops → arm the watchdog via the routines admin → platform:contribute to send an improvement upstream.',
     seeAlso: [
       'platform:contribute (send an improvement upstream)',
       'improvements:learning_loops (see the armed layer-3 loops)',
-      'hive:create_from_repo (onboard an arbitrary repo instead)',
+      'pot:create_from_repo (onboard an arbitrary repo instead)',
     ],
   },
   capability: 'harness:write',
@@ -76,7 +76,7 @@ export default defineTool({
     runTests: z
       .boolean()
       .optional()
-      .describe('Run the repo test command at create (default false — never auto-execute repo code on enable; the same hardening default hive:create_from_repo uses).'),
+      .describe('Run the repo test command at create (default false — never auto-execute repo code on enable; the same hardening default pot:create_from_repo uses).'),
     reason: z
       .string()
       .min(8, 'Provide a short reason (>=8 chars) for the audit log.')
@@ -84,7 +84,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
-    // Root-only enforcement (mirrors hive:create / hive:dissolve): the self-hive is
+    // Root-only enforcement (mirrors pot:create / pot:dissolve): the self-hive is
     // a root peer, never nested; enabling platform mode is an owner-level opt-in.
     const actor = resolveAgentIdentity(ctx);
     if (actor.source === 'fleet-spawn') {

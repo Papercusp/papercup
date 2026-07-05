@@ -44,7 +44,7 @@ describe('operatorResolveExtends', () => {
   });
 });
 
-describe('availableHiveBlueprintIds (P-019 — the hive:create picker set)', () => {
+describe('availableHiveBlueprintIds (P-019 — the pot:create picker set)', () => {
   it('lists the built-in kind:hive blueprints and excludes kind:harness ones', () => {
     // Reads the REAL built-in blueprints dir (the install tier is mocked-empty).
     const hives = availableHiveBlueprintIds();

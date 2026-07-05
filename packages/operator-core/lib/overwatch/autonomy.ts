@@ -59,7 +59,7 @@ const NUDGE_VERBS: ReadonlySet<string> = new Set(['coord:send', 'messages:send']
 const OBSERVE_VERBS: ReadonlySet<string> = new Set(['improvements:capture']);
 const ESCALATE_VERBS: ReadonlySet<string> = new Set(['coord:escalate']);
 /**
- * EI-3588: `overwatch:declare-wake` schedules overwatch's OWN next wake (REPLACE
+ * EI-3588: `kettle:declare-wake` schedules overwatch's OWN next wake (REPLACE
  * semantics — see agent-tools/overwatch/declare_wake.ts) before it ends a turn.
  * It never mutates agents, work placement, or shared infra (D-001's concern) — it
  * is pure self-scheduling bookkeeping the role brief mandates EVERY turn. Before
@@ -69,7 +69,7 @@ const ESCALATE_VERBS: ReadonlySet<string> = new Set(['coord:escalate']);
  * nudge/observe/escalate, which are genuinely different in kind) keeps the
  * classification honest.
  */
-const LIFECYCLE_VERBS: ReadonlySet<string> = new Set(['overwatch:declare-wake']);
+const LIFECYCLE_VERBS: ReadonlySet<string> = new Set(['kettle:declare-wake']);
 
 /**
  * The verbs overwatch may AUTO-execute (its full write-to-the-world surface,

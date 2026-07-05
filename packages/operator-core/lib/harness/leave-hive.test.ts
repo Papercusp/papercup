@@ -159,11 +159,11 @@ describe('leaveHive (P-012)', () => {
     expect(res.members[0].cloneDeleted).toBeUndefined();
   });
 
-  it('refuses a local-owned harness (not a joined hive) and points to hive:dissolve', async () => {
+  it('refuses a local-owned harness (not a joined hive) and points to pot:dissolve', async () => {
     const { deps, calls } = fakes([{ slug: 'my-local', path: '/local' }]);
     const res = await leaveHive({ workspaceId: 'ws', slug: 'my-local' }, deps);
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/hive:dissolve/);
+    expect(res.error).toMatch(/pot:dissolve/);
     // nothing torn down
     expect(calls.closed).toEqual([]);
     expect(calls.registry.map((p) => p.slug)).toEqual(['my-local']);

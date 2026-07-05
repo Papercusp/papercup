@@ -1,5 +1,5 @@
 /**
- * hive:control_policy — read/set the placement-watchdog thresholds (live-configurability-audit P-015).
+ * pot:control_policy — read/set the placement-watchdog thresholds (live-configurability-audit P-015).
  *
  * Retires the PAPERCUSP_HIVE_PLACEMENT_* env gates: breakerThreshold (failed placements before the
  * cursed-item breaker trips), recoveryDebounceMs (min gap between recovery wakes for one stalled unit),
@@ -7,7 +7,7 @@
  * breaker). Overlaid by placementConfig() over its env defaults (sync-cached). set is audited +
  * one-call-revertible. Absent ⇒ env/baked default ⇒ byte-identical.
  *
- * (D-005: placement AFFINITY weights live in hive:set-steering, not here.)
+ * (D-005: placement AFFINITY weights live in pot:set-steering, not here.)
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -27,17 +27,17 @@ function json(obj: unknown) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default defineTool({
-  name: 'hive:control_policy',
+  name: 'pot:control_policy',
   profile: 'engineer',
   description:
     'Read or set the hive placement-watchdog thresholds: breakerThreshold (failed placements → cursed-item breaker), recoveryDebounceMs (min gap between recovery wakes for one stalled unit), dormancyGraceMs (post-dormancy recovery-sweep grace), infraBreakerThreshold (bounded infra-loss breaker). Replaces the PAPERCUSP_HIVE_PLACEMENT_* env gates; set is audited + one-call-revertible.',
   capability: 'operator:write',
   guidance: {
     when: 'Tune the placement watchdog live — e.g. raise breakerThreshold to give a flapping unit more recovery attempts before cursing it, or shorten recoveryDebounceMs to re-place stalled work faster during an incident.',
-    notWhen: 'For placement AFFINITY weights use hive:set-steering (D-005). For stale-claim reclaim use work_items:reclaim_config; for session reaping use coord:session_reaper_config.',
+    notWhen: 'For placement AFFINITY weights use pot:set-steering (D-005). For stale-claim reclaim use work_items:reclaim_config; for session reaping use coord:session_reaper_config.',
     chaining: 'config:list-overrides shows the active override; config:reset-overrides reverts it.',
     seeAlso: [
-      'hive:set-steering (placement AFFINITY weights, not watchdog tuning)',
+      'pot:set-steering (placement AFFINITY weights, not watchdog tuning)',
       'work_items:reclaim_config (stale-claim reclaim tuning)',
       'config:list-overrides (the active override this wrote)',
     ],
@@ -67,7 +67,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('hive:control_policy set requires operator, architect, or queen role');
+      throw new Error('pot:control_policy set requires operator, architect, or queen role');
     }
     const patch: HiveControlPolicy = {};
     if (args.breakerThreshold !== undefined) patch.breakerThreshold = args.breakerThreshold;
@@ -80,7 +80,7 @@ export default defineTool({
 
     const outcome = await runControlMutation<HiveControlPolicy>(
       {
-        action: 'hive:control_policy',
+        action: 'pot:control_policy',
         subject: 'placement-watchdog',
         actor: `role:${ctx.role}`,
         capturePrev: () => readHiveControlPolicy(),

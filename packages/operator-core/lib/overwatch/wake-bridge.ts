@@ -1,7 +1,7 @@
 /**
  * wake-bridge.ts — the B-07 ↔ B-04 wake seam (overwatch-role-2026-06-15).
  *
- * B-07 (`overwatch:start` / `overwatch:pause`) owns the control STATE
+ * B-07 (`kettle:start` / `kettle:pause`) owns the control STATE
  * (control-state.ts) but NOT the wake-launch — that is B-04 (C-3: the invoke path
  * that spawns role=overwatch with its computed brief injected, plus the
  * declare-next-wake). To let the control tools request an immediate wake (on

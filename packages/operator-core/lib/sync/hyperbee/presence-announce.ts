@@ -134,7 +134,7 @@ export function buildPresenceAnnounceOp(
 /**
  * Build the presence TOMBSTONE op — a `del` on this device's presence key
  * (shared-hive-hardening-2026-06-13 EI-469). Published when a peer LEAVES a hive
- * (hive:leave) so OTHER peers delete the leaver's `shared_presence` row at once
+ * (pot:leave) so OTHER peers delete the leaver's `shared_presence` row at once
  * (the projection's ts-guarded deleteFromPg) instead of waiting out the ~90s
  * staleness TTL — which also drops one stale vote from the per-Hive lock-authority
  * election.

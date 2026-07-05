@@ -1,5 +1,5 @@
 /**
- * scout:ideation-feedback — the SU IDEATE-pass read of "your own past graded proposals".
+ * blender:ideation-feedback — the SU IDEATE-pass read of "your own past graded proposals".
  *
  * su-loop-capability-parity-2026-07-03 P-005 (D-009): SU sessions ORIGINATE feature ideas
  * (improvements:capture kind:'feature'), which now earn `origin='su-ideate'` rows on the routed
@@ -14,18 +14,18 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { gatherGraderFeedbackPriming } from '../../scout/ideator-feedback-priming';
 
 export default defineTool({
-  name: 'scout:ideation-feedback',
+  name: 'blender:ideation-feedback',
   description:
     "Your IDEATE-pass read of your OWN past graded proposals: the owner/Queen grades + critiques on features you filed (improvements:capture kind:'feature'), formatted as a grader-feedback priming block (newest-first; owner grades outrank Queen volume grades). Read-only; su-ideate origin only — never touches Scout's lens-weight learning.",
   capability: 'curation:read',
   guidance: {
     when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded, so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-hive + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',
     notWhen:
-      "Grading an idea — that is scout:grade-idea. Reading Scout's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
+      "Grading an idea — that is blender:grade-idea. Reading Scout's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
     chaining:
-      'curation:state-of-hive + rubrics:list + scorecards:freshness + scout:ideation-feedback → your IDEATE pass, grounded.',
+      'curation:state-of-hive + rubrics:list + scorecards:freshness + blender:ideation-feedback → your IDEATE pass, grounded.',
     seeAlso: [
-      'scout:grade-idea (record a grade on a routed idea)',
+      'blender:grade-idea (record a grade on a routed idea)',
       'improvements:capture (file a kind:"feature" — it becomes a su-ideate ledger row)',
     ],
   },

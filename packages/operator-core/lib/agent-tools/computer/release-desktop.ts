@@ -1,7 +1,7 @@
 /**
  * computer:release_desktop — tear down a hive's sandbox desktop (kill the in-process
  * Xvfb + apps, free the display) without dissolving the hive. The inverse of
- * computer:provision_desktop. hive:dissolve also releases automatically (step 3.6); this
+ * computer:provision_desktop. pot:dissolve also releases automatically (step 3.6); this
  * is the standalone teardown for a demo / when a hive no longer needs GUI work.
  */
 import { z } from 'zod';
@@ -17,15 +17,15 @@ export default defineTool({
   name: 'computer:release_desktop',
   profile: 'engineer',
   description:
-    "Tear down a hive's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the hive. Idempotent — a no-op if the hive holds no desktop. (hive:dissolve releases automatically.)",
+    "Tear down a hive's sandbox desktop (kill its Xvfb + apps, free the display) without dissolving the hive. Idempotent — a no-op if the hive holds no desktop. (pot:dissolve releases automatically.)",
   guidance: {
     when: 'A hive is done with GUI work but stays alive — reclaim the Xvfb/display. Also good demo hygiene after computer:provision_desktop.',
-    notWhen: 'Tearing down the whole hive — hive:dissolve already releases the desktop. There is nothing to release if the hive never provisioned one.',
+    notWhen: 'Tearing down the whole hive — pot:dissolve already releases the desktop. There is nothing to release if the hive never provisioned one.',
     chaining: 'computer:list_desktops to see what is leased → computer:release_desktop { hive }.',
     seeAlso: [
       'computer:list_desktops (see what is leased first)',
       'computer:provision_desktop (stand one back up)',
-      'hive:dissolve (tears down the whole hive incl desktop)',
+      'pot:dissolve (tears down the whole hive incl desktop)',
     ],
   },
   capability: 'harness:write',

@@ -18,7 +18,7 @@ const entry = (tool: string, description: string): ToolDiscoveryEntry =>
 
 const corpus: ToolDiscoveryEntry[] = [
   entry('flags:set', 'feature flag set'),
-  entry('bee:spawn', 'place a worker bee'),
+  entry('cup:spawn', 'place a worker bee'),
   entry('coord:orient', 'orientation bootstrap read'),
   entry('coord:glance', 'quick peer status'),
 ];
@@ -26,14 +26,14 @@ const corpus: ToolDiscoveryEntry[] = [
 // Deterministic embedding space: one orthogonal axis per concept.
 const VEC: Record<string, number[]> = {
   'flags:set': [1, 0, 0, 0],
-  'bee:spawn': [0, 1, 0, 0],
+  'cup:spawn': [0, 1, 0, 0],
   'coord:orient': [0, 0, 1, 0],
   'coord:glance': [0, 0, 0, 1],
 };
 const embeddings = new Map<string, number[]>(Object.entries(VEC));
 // Query embedder: map known intents to the matching axis.
 const QVEC: Record<string, number[]> = {
-  'deploy a bot': [0, 1, 0, 0], // → bee:spawn (no lexical overlap)
+  'deploy a bot': [0, 1, 0, 0], // → cup:spawn (no lexical overlap)
   'coord:glance': [0, 0, 1, 0], // semantically nearest coord:orient, but exact-name is glance
   faint: [0.3, 0, 0, 0.05], // weak similarity to flags:set
 };
@@ -58,12 +58,12 @@ describe('findTools', () => {
   });
 
   it('semantic leg BROADENS recall — finds a tool with no lexical overlap', async () => {
-    // "deploy a bot" shares no tokens with "place a worker bee"/"bee:spawn".
+    // "deploy a bot" shares no tokens with "place a worker bee"/"cup:spawn".
     const lexicalOnly = await findTools(corpus, 'deploy a bot');
-    expect(lexicalOnly.find((h) => h.tool === 'bee:spawn')).toBeUndefined();
+    expect(lexicalOnly.find((h) => h.tool === 'cup:spawn')).toBeUndefined();
 
     const hybrid = await findTools(corpus, 'deploy a bot', { embedder: mockEmbedder, embeddings });
-    const spawn = hybrid.find((h) => h.tool === 'bee:spawn');
+    const spawn = hybrid.find((h) => h.tool === 'cup:spawn');
     expect(spawn).toBeDefined();
     expect(spawn!.via).toBe('semantic');
   });

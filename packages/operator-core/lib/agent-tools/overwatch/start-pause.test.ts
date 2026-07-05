@@ -1,5 +1,5 @@
 /**
- * Unit tests for overwatch:start / overwatch:pause (overwatch-role-2026-06-15 B-07).
+ * Unit tests for kettle:start / kettle:pause (overwatch-role-2026-06-15 B-07).
  *
  * Pin the control contract: what Start arms (started bit, cadence, a live wake
  * ONLY when the papercusp-overwatch flag is ON — else a loud warning + no wake)
@@ -75,7 +75,7 @@ beforeEach(() => {
   getFlag.mockResolvedValue(true);
 });
 
-describe('overwatch:start', () => {
+describe('kettle:start', () => {
   it('refuses without a resolvable home harness', async () => {
     const out = await call(overwatchStart as never, {});
     expect(out.ok).toBe(false);
@@ -120,7 +120,7 @@ describe('overwatch:start', () => {
   });
 });
 
-describe('overwatch:pause', () => {
+describe('kettle:pause', () => {
   it('flips started=false FIRST, then clears the pending wake', async () => {
     const out = await call(overwatchPause as never, { harness: 'my-hive' });
     expect(out.ok).toBe(true);

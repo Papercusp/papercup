@@ -1641,7 +1641,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // home (member→hive_slug via a fresh registry read, the WI-280 fix), self-gates to
           // the OWNER box, then routes the decision through ownerAdmitOrPend: open/allowlisted
           // → upsertHiveMember (+ idempotent epoch [0..current] re-grant); approval → record a
-          // federated pending-join (NO trust-admit until hive:membership_decide approves);
+          // federated pending-join (NO trust-admit until pot:membership_decide approves);
           // banned/not-allowlisted → refuse. Open-mode is BYTE-EQUIVALENT to the prior
           // unconditional upsert. Core admission / revocation / read-cut+epoch / per-op
           // enforcement are untouched (their own seams). Fire-and-forget: drainAdmissionQueue

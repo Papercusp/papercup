@@ -274,7 +274,7 @@ describe('runAutonomyGraduationLeg', () => {
       { category: 'inbox-triage', findingClass: 'inbox:tier' },
       { category: 'escalations', findingClass: 'escalations:resolve' },
       { category: 'work-prioritization', findingClass: 'work_items:set_priority' },
-      { category: 'ideation-intake', findingClass: 'scout:grade-idea' },
+      { category: 'ideation-intake', findingClass: 'blender:grade-idea' },
       { category: 'review-merge', findingClass: 'review:approve' },
     ];
     const evidence: TripwireRow[] = [];

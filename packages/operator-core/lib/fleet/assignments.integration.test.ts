@@ -48,7 +48,7 @@ async function truncateAll(): Promise<void> {
   await admin`DELETE FROM harness_shared.spawned_agents WHERE spawn_id LIKE 'fa-test-%'`;
 }
 
-/** A nursery row (EI-311 alias-liveness leg) — bee:spawn's three identity
+/** A nursery row (EI-311 alias-liveness leg) — cup:spawn's three identity
  *  aliases: spawn_id == session_owner (s-…), plus the per-invocation run_id. */
 async function seedSpawn(
   spawnId: string,

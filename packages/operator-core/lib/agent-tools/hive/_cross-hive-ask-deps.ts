@@ -42,12 +42,12 @@ export function __setCrossHiveAskTestDeps(
   testOverride = o;
 }
 
-/** The live store — backs `hive:asks`. */
+/** The live store — backs `pot:asks`. */
 export function productionCrossHiveAsksStore(): CrossHiveAsksStore {
   return testOverride?.store ?? pgCrossHiveAsksStore;
 }
 
-/** The live send deps — backs `hive:ask` / `hive:request_work`. */
+/** The live send deps — backs `pot:ask` / `pot:request_work`. */
 export function productionSendCrossHiveAskDeps(): SendCrossHiveAskDeps {
   return {
     resolveBoundary: getCrossHiveBoundary,

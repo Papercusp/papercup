@@ -32,7 +32,7 @@ interface ConverseRequestBody {
   isAutoFire?: boolean;
   /** Which persona the brain assumes — the Sentinel-as-Herald re-home seam.
    *  Defaults to 'operator' (backward-compatible). 'sentinel' resolves the
-   *  `sentinel:converse` tool alias (same handler, loads the Herald persona). */
+   *  `papercup:converse` tool alias (same handler, loads the Herald persona). */
   role?: string;
 }
 
@@ -75,7 +75,7 @@ export default defineTool({
 
     // Sentinel-as-Herald re-home seam: resolve `${role}:converse`. Default
     // 'operator' is byte-identical to before; 'sentinel' resolves the
-    // sentinel:converse alias (same handler, Herald persona). An unknown role
+    // papercup:converse alias (same handler, Herald persona). An unknown role
     // falls back to operator:converse so a stray value can't 500 a live turn.
     //
     // P-012 (text parity): an EXPLICIT body.role wins (P-006). When the caller

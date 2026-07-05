@@ -15,8 +15,8 @@
  *     deploy:harness        → release-deploy   (PROTECTED)
  *     accounts:scale_out    → spend-budget     (PROTECTED)
  *     accounts:register     → credentials-auth (PROTECTED)
- *     hive:create           → agent-lifecycle
- *     scout:grade-idea      → ideation-intake  (low-risk)
+ *     pot:create           → agent-lifecycle
+ *     blender:grade-idea      → ideation-intake  (low-risk)
  *     learning_packs:publish→ knowledge-curation
  * Keying on `capability` would collapse a low-risk grade and a PROTECTED deploy
  * to the same category — exactly the confident-but-catastrophic ≡ shaky-but-
@@ -48,7 +48,7 @@ import type { AutonomyCategory } from './categories';
 
 /** The event matched against the category rules: the tool name + its capability. */
 interface ActionEvent {
-  /** The MCP tool name, `group:verb` (e.g. `deploy:harness`, `bee:spawn`). */
+  /** The MCP tool name, `group:verb` (e.g. `deploy:harness`, `cup:spawn`). */
   action: string;
   /** The tool's coarse RBAC capability string — last-resort fallback only. */
   capability?: string;
@@ -60,7 +60,7 @@ const TRIGGER = 'action';
 /**
  * Tool-name → category rules, in PRIORITY order (first match wins). Specific
  * overrides precede their group's generic prefix so a verb that belongs to a
- * different category than its group default (e.g. `hive:cross_grant`, which is a
+ * different category than its group default (e.g. `pot:cross_grant`, which is a
  * credentials grant, not agent-lifecycle) classifies correctly. The four
  * PROTECTED categories never depend on ordering for safety (an unmatched action
  * is never-auto by the fail-safe anyway) — order is for correctness, not safety.
@@ -78,7 +78,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── credentials & auth (PROTECTED) — specific overrides BEFORE accounts:/hive: groups ──
   { id: 'cat:accounts-cred', on: TRIGGER, when: { action: { matches: '^accounts:(register|remove)' } }, fire: 'credentials-auth', meta: { reason: 'registers/removes a credential-bearing account' } },
   { id: 'cat:operator-credentials', on: TRIGGER, when: { action: { matches: '^operator:credentials' } }, fire: 'credentials-auth', meta: { reason: 'credential status / management' } },
-  { id: 'cat:hive-cross-grant', on: TRIGGER, when: { action: { matches: '^hive:cross_grant' } }, fire: 'credentials-auth', meta: { reason: 'grants cross-hive authorization' } },
+  { id: 'cat:hive-cross-grant', on: TRIGGER, when: { action: { matches: '^pot:cross_grant' } }, fire: 'credentials-auth', meta: { reason: 'grants cross-hive authorization' } },
   { id: 'cat:substrate-revoke', on: TRIGGER, when: { action: { matches: '^substrate:revoke' } }, fire: 'credentials-auth', meta: { reason: 'revokes a substrate contributor/device' } },
   { id: 'cat:trust', on: TRIGGER, when: { action: { matches: '^trust:(add|remove)' } }, fire: 'credentials-auth', meta: { reason: 'grants/revokes owner trust — auto-run authorization for a verified GitHub author' } },
 
@@ -91,12 +91,12 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   { id: 'cat:processes', on: TRIGGER, when: { action: { matches: '^processes:' } }, fire: 'system-control', meta: { reason: 'process control (kill, etc.)' } },
   { id: 'cat:dev-restart', on: TRIGGER, when: { action: { matches: '^dev:restart' } }, fire: 'system-control', meta: { reason: 'restarts a dev service' } },
   { id: 'cat:wake-mode', on: TRIGGER, when: { action: { matches: '^coord:wake-mode' } }, fire: 'system-control', meta: { reason: 'changes fleet wake mode' } },
-  { id: 'cat:hive-declare-wake', on: TRIGGER, when: { action: { matches: '^hive:declare-wake' } }, fire: 'system-control', meta: { reason: 'declares a wake routine' } },
+  { id: 'cat:hive-declare-wake', on: TRIGGER, when: { action: { matches: '^pot:declare-wake' } }, fire: 'system-control', meta: { reason: 'declares a wake routine' } },
 
   // ── agent-lifecycle — hive: overrides (cross_grant/declare-wake/ask*) handled above/below ──
   { id: 'cat:hive-ask', on: TRIGGER, when: { action: { matches: '^hive:(ask|request_work|asks)' } }, fire: 'escalations', meta: { reason: 'asks another hive (a cross-hive question)' } },
   { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
-  // bee:spawn (WI-1764 #3 renamed fleet:spawn → bee:spawn) places a background
+  // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) places a background
   // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
   { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^bee:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
   { id: 'cat:hive', on: TRIGGER, when: { action: { matches: '^hive:' } }, fire: 'agent-lifecycle', meta: { reason: 'hive (swarm of agents) lifecycle' } },

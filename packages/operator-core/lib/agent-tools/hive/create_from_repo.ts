@@ -1,12 +1,12 @@
 /**
- * hive:create_from_repo — create a Hive FROM a GitHub URL
+ * pot:create_from_repo — create a Hive FROM a GitHub URL
  * (hive-from-github-url-2026-06-11 P-006; the headline Entry-2-at-Hive-level
  * flow). Paste a URL → repo→Hive lookup (join offer when one exists) → clone →
  * test-verified blueprint detection → Hive home + member harness → auto-publish.
  * Visibility is DERIVED from the repo: public repo → discoverable directory
  * listing; private repo → 'invite' (hidden, secret-gated), surfaced as "Private".
  *
- * ROOT-ONLY like hive:create — hives are peers, never nested.
+ * ROOT-ONLY like pot:create — hives are peers, never nested.
  * The composition lives in `_create_from_repo.ts` (seam-injected, unit-tested);
  * this is the guard + arg surface. The HTTP face for the CreateHarnessPicker is
  * POST /harness/hives/from-repo (routes/harness/projects.ts).
@@ -23,19 +23,19 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:create_from_repo',
+  name: 'pot:create_from_repo',
   profile: 'engineer',
   description:
     'Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish. Visibility is derived from the repo: public repo → discoverable directory listing; private repo → Private (invite-only, hidden, secret-gated). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
   guidance: {
     when: 'Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
     notWhen:
-      'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — hive:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).',
+      'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — pot:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).',
     chaining:
-      'hive:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} hive:get / discovery:set_hive to edit the listing.',
+      'pot:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} pot:get / discovery:set_hive to edit the listing.',
     seeAlso: [
-      'hive:create (stand up a hive without a repo)',
-      'hive:get (inspect / edit the created hive)',
+      'pot:create (stand up a hive without a repo)',
+      'pot:get (inspect / edit the created hive)',
       'discovery:set_hive (edit the public listing)',
     ],
   },
@@ -69,14 +69,14 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
-    // Root-only enforcement (mirrors hive:create D-002): hives are peers, never nested.
+    // Root-only enforcement (mirrors pot:create D-002): hives are peers, never nested.
     const actor = resolveAgentIdentity(ctx);
     if (actor.source === 'fleet-spawn') {
       return text({
         ok: false,
         error: 'hive_create_root_only',
         message:
-          'hive:create_from_repo cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested.',
+          'pot:create_from_repo cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested.',
       });
     }
 

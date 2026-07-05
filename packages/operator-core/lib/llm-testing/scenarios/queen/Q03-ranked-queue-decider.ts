@@ -209,7 +209,7 @@ export const RANKED_QUEUE_TRIAGE: ToolDispatchOverride = {
     if (canon === 'work_items:list') {
       return { content: [{ text: JSON.stringify({ items: [] }) }] };
     }
-    if (canon === 'hive:declare-wake') {
+    if (canon === 'pot:declare-wake') {
       return { content: [{ text: JSON.stringify({ ok: true }) }] };
     }
     return PASS_THROUGH;

@@ -2,7 +2,7 @@
  * leave-hive — the durable inverse of `joinHiveAsView` (join-hive.ts), for a
  * JOINER leaving a shared hive (shared-hive-hardening-2026-06-13 P-012).
  *
- * Before this there was NO joiner-side leave path: `hive:dissolve` is the OWNER
+ * Before this there was NO joiner-side leave path: `pot:dissolve` is the OWNER
  * teardown of a LOCAL hive (clears the Queen wake, cancels bees, deregisters the
  * home harness) and does nothing about a joiner's federation / clones / routines /
  * presence. A joiner who wanted out had to hand-edit the registry, kill routines
@@ -25,7 +25,7 @@
  *      (plan D-003) — presence has no published del-op today.
  *   4. DEREGISTER — one atomic registry mutate removes the `remote_hive` view +
  *      every member entry. Clone dirs on disk are KEPT by default (re-joinable,
- *      data-safe — mirrors hive:dissolve's default-keep schema); `deleteClones`
+ *      data-safe — mirrors pot:dissolve's default-keep schema); `deleteClones`
  *      also removes them.
  *
  * Idempotent + best-effort: every leg tolerates already-done (close no-ops when
@@ -221,7 +221,7 @@ export async function leaveHive(
 
   if (!viewSlug) {
     // Nothing here matches a joined hive. Distinguish "already left" (truly
-    // nothing) from "wrong target" (a local-owned harness — use hive:dissolve).
+    // nothing) from "wrong target" (a local-owned harness — use pot:dissolve).
     const localOwned = projects.find((p) => p.slug === opts.slug);
     if (localOwned) {
       return {
@@ -229,7 +229,7 @@ export async function leaveHive(
         members: [],
         error:
           `'${opts.slug}' is not a joined hive (no remote_hive view / member). ` +
-          'If it is a LOCAL hive you own, use hive:dissolve instead.',
+          'If it is a LOCAL hive you own, use pot:dissolve instead.',
       };
     }
     return { ok: true, alreadyLeft: true, members: [], viewRemoved: false };

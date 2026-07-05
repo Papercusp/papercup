@@ -48,7 +48,7 @@ export const SN_D01_DELEGATE_HARD_THINKING: Scenario = {
     // A thinking question must NOT be routed to the Queen…
     { kind: 'custom', name: 'noHandoff', eval: noHandoff },
     // …and the Sentinel never spawns anything itself (SN-H04 contract).
-    { kind: 'tool_not_called', name: 'bee:spawn' },
+    { kind: 'tool_not_called', name: 'cup:spawn' },
     { kind: 'cost_under', usd: 1.0 },
   ],
   rubric: OPERATOR_RUBRIC,

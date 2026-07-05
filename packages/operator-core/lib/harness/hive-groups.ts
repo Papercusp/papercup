@@ -34,7 +34,7 @@ export const HIVE_KIND = 'hive';
 
 /**
  * A repo-LESS Hive home: a `harness_kind:'hive'` coordination home whose repo
- * lives in a SEPARATE member harness (created via hive:create / hive:create_from_repo).
+ * lives in a SEPARATE member harness (created via pot:create / pot:create_from_repo).
  * These are backend coordination homes, NOT work targets — hide them from harness /
  * work-target selectors (the psu picker, the GUI harness selector). A SELF-hive
  * (`self_repo`, e.g. the papercusp dogfood repo) IS its own checkout and stays

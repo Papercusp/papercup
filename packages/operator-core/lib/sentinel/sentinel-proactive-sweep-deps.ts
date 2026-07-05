@@ -22,7 +22,7 @@
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { dispatchProjectedToolStream, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import '../agent-tools/index'; // register sentinel:converse so lookupByMcpName resolves
+import '../agent-tools/index'; // register papercup:converse so lookupByMcpName resolves
 import { activeWorkspaceId } from '../workspace-registry';
 import { loadVoicePrefs } from '../voice-prefs';
 import { isPaused } from '../device-operator-actions';
@@ -47,7 +47,7 @@ const SWEEP_PCM_RATE = 16000;
 
 /**
  * Gather + render the FLEET-STATUS (P-020). Reuses gatherSentinelContext (the same
- * ready-made digests the sentinel:converse persona reads) so the proactive surface
+ * ready-made digests the papercup:converse persona reads) so the proactive surface
  * is FLEET-status — curation:feed + Overwatch anomalies + change-feed — NOT the old
  * operator workspace-suggestions flow. `salient` is the voice-OFF importance gate:
  * true iff a CRITICAL anomaly or an URGENT signal is present.
@@ -73,8 +73,8 @@ export async function gatherFleetStatus(workspaceId: string, hiveSlug: string): 
  * the voice host's `askOperator` uses (dispatchProjectedToolStream).
  */
 export async function runSentinelScan(context: string): Promise<string | null> {
-  const tool = lookupByMcpName('sentinel:converse');
-  if (!tool) throw new Error('sentinel:converse tool not registered');
+  const tool = lookupByMcpName('papercup:converse');
+  if (!tool) throw new Error('papercup:converse tool not registered');
 
   const conversationId = (await getOrCreateActiveConversation().catch(() => null))?.id ?? undefined;
   // The FLEET-STATUS is the Sentinel's situational context; the trigger tells the
@@ -97,7 +97,7 @@ export async function runSentinelScan(context: string): Promise<string | null> {
   let assembled = '';
   for await (const ev of dispatchProjectedToolStream(
     tool,
-    'sentinel:converse',
+    'papercup:converse',
     { messages, trigger: 'sentinel_scan', modality: 'voice', conversationId, role: 'sentinel' },
     ctxBase,
     {},

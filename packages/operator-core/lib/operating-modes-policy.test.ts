@@ -24,7 +24,7 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
   it('files rubric-graded observations with evidence + grades Scout-routed ideas', () => {
     expect(full).toContain('rubricRef');
     expect(full).toMatch(/EVIDENCE/);
-    expect(full).toContain('scout:grade-idea');
+    expect(full).toContain('blender:grade-idea');
   });
 
   it('varies the ideation lens across passes (cheap lens diversity)', () => {
@@ -45,7 +45,7 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
     const fleet = renderModesPolicy('fleet');
     expect(fleet).not.toContain('IDEATE');
     expect(fleet).not.toContain('curation:state-of-hive');
-    expect(fleet).not.toContain('scout:grade-idea');
+    expect(fleet).not.toContain('blender:grade-idea');
   });
 });
 

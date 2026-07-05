@@ -5,10 +5,10 @@
  *
  * RETIRED the bespoke `system:scout-cycle` action (deterministic-blueprints-migration
  * -2026-06-13 P-130): scout now runs as the `scout` BLUEPRINT — its seed fires
- * `system:blueprint-run {blueprintId:'scout'}` → the `scout:cycle` deterministic step
+ * `system:blueprint-run {blueprintId:'scout'}` → the `blender:cycle` deterministic step
  * → `runScoutCycleTick` (which calls `productionScoutRunner` below). This module no
  * longer registers a system action; it stays as the home of `productionScoutRunner`
- * (the scout:cycle op's production cycle deps) + noopArchive/setScoutArchiveBuilder.
+ * (the blender:cycle op's production cycle deps) + noopArchive/setScoutArchiveBuilder.
  * Injected deps:
  *
  *   - llmCall — the real stateless LLM client (lib/llm-testing/llm-client; it satisfies
@@ -24,7 +24,7 @@
  *
  * No side-effect registration: the scout blueprint's deterministic step
  * (`blueprint-steps/ops/scout-cycle.ts`) imports `productionScoutRunner` directly.
- * The per-hive scout routine is provisioned INACTIVE at hive:create
+ * The per-hive scout routine is provisioned INACTIVE at pot:create
  * (lib/hive/provision-learning-loop.ts) — bring-up human-gated (D-002).
  */
 
@@ -293,4 +293,4 @@ function isFlushable(a: ArchivePort): a is ScoutArchivePort {
 }
 
 // No self-registration: `system:scout-cycle` is RETIRED (P-130). Scout runs via the
-// `scout` blueprint; the scout:cycle op imports `productionScoutRunner` above.
+// `scout` blueprint; the blender:cycle op imports `productionScoutRunner` above.

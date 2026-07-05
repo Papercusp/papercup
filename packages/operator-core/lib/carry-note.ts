@@ -6,7 +6,7 @@
  * Converges the THREE per-role carry mechanisms that already do this job into a
  * single durable PG store (`harness_shared.carry_notes`, mig 472) and one
  * structured shape:
- *   - the Queen carry-journal  (hive:declare-wake { remember } → setHiveCarryNote)
+ *   - the Queen carry-journal  (pot:declare-wake { remember } → setHiveCarryNote)
  *   - the bee checkpoint        (work_items:checkpoint → setWorkItemCheckpoint)
  *   - the su loop carry-note     (the SU AUTO loop's cold-wake anchor, P-002)
  *

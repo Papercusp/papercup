@@ -195,7 +195,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     const t = twoHives(); // no askLedger injected — the wiring's PG default
     const pgStore = new PgCrossHiveAsks(WS, 'hive-a');
 
-    // What hive:ask's enqueue does: queued row → sent after the wire delivery.
+    // What pot:ask's enqueue does: queued row → sent after the wire delivery.
     const ask = await pgStore.insert({ peerPubkey: t.B.pubkey, kind: 'ask', correlationId: 'ask-3', subject: 'real ledger?', body: '…' });
     await pgStore.markSent(ask.id);
 

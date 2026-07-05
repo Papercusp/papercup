@@ -37,7 +37,7 @@ const propMaxLength = (tool: { args: unknown }, prop: string): unknown => {
 };
 
 describe('brief-carrying fields are normalized to LIMITS.BRIEF', () => {
-  it('bee:spawn { brief } is a softText — no hard maxLength (clamped handler-side to LIMITS.BRIEF)', async () => {
+  it('cup:spawn { brief } is a softText — no hard maxLength (clamped handler-side to LIMITS.BRIEF)', async () => {
     const tool = (await import('./bee/spawn')).default as unknown as { args: unknown };
     // softText never advertises a maxLength (JSON-Schema-representable); the
     // cap is enforced by clampText(args.brief, LIMITS.BRIEF) in the handler.
@@ -62,7 +62,7 @@ describe('brief-carrying fields are normalized to LIMITS.BRIEF', () => {
     expect(js.properties?.children?.items?.properties?.brief?.maxLength).toBe(LIMITS.BRIEF);
   });
 
-  it('hive:set-steering { directive } (surfaced in the Queen wake brief) hard-caps at LIMITS.BRIEF (was hardcoded 4000)', async () => {
+  it('pot:set-steering { directive } (surfaced in the Queen wake brief) hard-caps at LIMITS.BRIEF (was hardcoded 4000)', async () => {
     const tool = (await import('./hive/set_steering')).default as unknown as { args: unknown };
     expect(propMaxLength(tool, 'directive')).toBe(LIMITS.BRIEF);
   });

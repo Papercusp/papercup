@@ -38,7 +38,7 @@ const ev = (tool: string, data: unknown, ok = true): ToolInvocationEvent => ({
 });
 
 const hiveWakeMatches = (e: ToolInvocationEvent) =>
-  matchReactions(e).filter((a) => a.fire === 'hive:wake');
+  matchReactions(e).filter((a) => a.fire === 'pot:wake');
 
 beforeEach(() => {
   stateStore.clear();

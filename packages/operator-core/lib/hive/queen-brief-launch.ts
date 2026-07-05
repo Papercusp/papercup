@@ -6,7 +6,7 @@
  * the hive launch blueprint → `invoke(role='queen')`. This is the seam the
  * launcher calls (when it resolves role='queen') to precompute her brief so she
  * opens already-briefed and skips the ~5 deterministic survey round-trips
- * (`hive:survey` + her carry-note here; the watchdog enriches the floor with
+ * (`pot:survey` + her carry-note here; the watchdog enriches the floor with
  * bee-load / inbox / change-feed / escalations in B-05 / P-008, D-004).
  *
  * FAIL-SOFT: any error returns null so the launch still fires — the Queen then

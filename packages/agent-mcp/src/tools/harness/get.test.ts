@@ -96,7 +96,7 @@ describe('harness:get', () => {
     const reason = res.degradedReasons?.[0] ?? '';
     expect(reason).toContain("harness_kind='hive'");
     expect(reason).toContain('EXISTS');
-    expect(reason).toContain('hive:get'); // points at the right inspect tool for a hive
+    expect(reason).toContain('pot:get'); // points at the right inspect tool for a hive
     expect(reason).toContain('Do NOT read this as "no such harness"');
   });
 
@@ -107,7 +107,7 @@ describe('harness:get', () => {
     const reason = res.degradedReasons?.[0] ?? '';
     expect(reason).toContain("harness_kind='department'");
     expect(reason).toContain('non-project harness kinds');
-    expect(reason).not.toContain('hive:get'); // hive-specific hint not shown for a non-hive
+    expect(reason).not.toContain('pot:get'); // hive-specific hint not shown for a non-hive
   });
 
   it('summary projects {slug, name, status, updated_ts} and skips the counts query', async () => {

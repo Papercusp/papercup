@@ -54,7 +54,7 @@ typecheck-clean + tested (the read SQL by `live-ops.integration.test.ts`, the re
   is a denominator or a failure-pair, so `0` never inflates a score — the **outcome gate + the
   un-gameable floor** are fully sourced from ground-truth + baseline + timings).
 - The exact **commit convention** the bees use (the `commitBacksWorkItem` token match) and the
-  precise **hive:start** incantation — confirmed at the first run.
+  precise **pot:start** incantation — confirmed at the first run.
 
 Arm it: `tsx lib/hive-eval/seed-hive-eval-routine.ts --active --budget=<usd>` (migrations 264/268
 boot-apply on the next operator restart).

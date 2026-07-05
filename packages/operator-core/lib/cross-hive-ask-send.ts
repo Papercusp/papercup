@@ -1,6 +1,6 @@
 /**
- * cross-hive-ask-send — the front-door SEND composition behind `hive:ask` and
- * `hive:request_work` (hive-network-surface-2026-06-11 P-003, brief B-04).
+ * cross-hive-ask-send — the front-door SEND composition behind `pot:ask` and
+ * `pot:request_work` (hive-network-surface-2026-06-11 P-003, brief B-04).
  *
  * One initiating-side pipeline, shared by both tools (they differ only by
  * `kind`): outbound-grant check → resolve THIS Hive's live boundary → record the

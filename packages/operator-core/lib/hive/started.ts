@@ -7,7 +7,7 @@
  * said *when* the Queen next wakes, never *whether the hive is supposed to be
  * alive at all*. The watchdog (./watchdog.ts) keys its entire liveness
  * invariant off this bit (D-002: a time wake is always armed WHILE STARTED),
- * and hive:start / hive:pause are its only writers.
+ * and pot:start / pot:pause are its only writers.
  *
  * Stored in the `operator_settings` KV (PG, per storage policy — same home as
  * the wake-mode default, agent-tools/coordination/wake-mode.ts), one row per
@@ -110,7 +110,7 @@ export async function setHivePlacementStarted(
 /**
  * Whether ANY hive in the workspace still has its per-hive placement bit set,
  * EXCLUDING the workspace sentinel row (installSlug === workspaceId) and an
- * optional just-stopped slug. hive:pause uses this to decide whether stopping
+ * optional just-stopped slug. pot:pause uses this to decide whether stopping
  * THIS hive also idles the workspace Queen LOOP (sentinel off) — the one loop
  * stays up while any other hive remains started.
  */

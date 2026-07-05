@@ -136,7 +136,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       // summary text (escalationDedupIdentity), so every reworded restatement
       // reads as a NEW subject and never dedupes against the still-open request
       // for the SAME underlying approval. Observed live: 34 open escalations for
-      // capability=bee:spawn/fleet:spawn harness=workspace, all differently
+      // capability=cup:spawn/fleet:spawn harness=workspace, all differently
       // worded, none ever resolved — pure backlog-drift noise. Pin BOTH dedup
       // fields to the stable (capability, harness) identity so a re-proposal
       // bumps the EXISTING escalation's repeatCount (openEscalation's built-in

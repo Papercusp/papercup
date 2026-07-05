@@ -374,7 +374,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
     expect(out.find((r) => r.workItemId === 'F-DORMANT')?.decision).toBe('recover');
     expect(mocks.openEscalation).not.toHaveBeenCalled(); // no curse → no escalation
     // EI-3216 — a dormancy loss is item-independent INFRA: it re-places silently (the recovering
-    // row is surfaced in hive:status) but does NOT fire a per-item Queen recovery wake. A host
+    // row is surfaced in pot:status) but does NOT fire a per-item Queen recovery wake. A host
     // restart fires this for EVERY placement in lockstep, so a wake-per-item was a 32-wake storm.
     expect(mocks.wakeRecipients).not.toHaveBeenCalled();
   });
@@ -632,7 +632,7 @@ describe('hive_placements completion sweep (real PG, migration 263)', () => {
 
     const out = await reconcileOneHive(sql, WS, HIVE, CFG, NOW);
 
-    // Durable row leaves the OPEN set (hive:status / summarizeOpenPlacements stop counting it).
+    // Durable row leaves the OPEN set (pot:status / summarizeOpenPlacements stop counting it).
     expect((await readPlacement('F-DRIFT-WORKING'))?.status).toBe('completed');
     expect(out.find((r) => r.workItemId === 'F-DRIFT-WORKING')?.decision).toBe('completed');
     // A working row carries no advisory, so nothing is resolved (only the status converges).

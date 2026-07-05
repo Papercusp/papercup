@@ -40,21 +40,21 @@ describe('autonomy:decide tool', () => {
   });
 
   it('resolves a concrete principal workspace; falls back to active for "*" / no principal', async () => {
-    await callTool({ action: 'scout:grade-idea' }, { principal: { workspaceId: 'ws-prin' } });
+    await callTool({ action: 'blender:grade-idea' }, { principal: { workspaceId: 'ws-prin' } });
     expect(mockDeps).toHaveBeenCalledWith(expect.anything(), 'ws-prin');
 
     mockDeps.mockClear();
-    await callTool({ action: 'scout:grade-idea' }, { principal: { workspaceId: '*' } });
+    await callTool({ action: 'blender:grade-idea' }, { principal: { workspaceId: '*' } });
     expect(mockDeps).toHaveBeenCalledWith(expect.anything(), 'ws-active');
 
     mockDeps.mockClear();
-    await callTool({ action: 'scout:grade-idea' }, {});
+    await callTool({ action: 'blender:grade-idea' }, {});
     expect(mockDeps).toHaveBeenCalledWith(expect.anything(), 'ws-active');
   });
 
   it('passes ONLY the action when optional axes are omitted (no undefined keys)', async () => {
-    await callTool({ action: 'scout:grade-idea' });
-    expect(mockResolve).toHaveBeenCalledWith({ action: 'scout:grade-idea' }, { sentinel: 'deps' });
+    await callTool({ action: 'blender:grade-idea' });
+    expect(mockResolve).toHaveBeenCalledWith({ action: 'blender:grade-idea' }, { sentinel: 'deps' });
     // the action object carries no capability/riskTier/authority/reversibility keys
     expect(Object.keys(mockResolve.mock.calls[0][0])).toEqual(['action']);
   });

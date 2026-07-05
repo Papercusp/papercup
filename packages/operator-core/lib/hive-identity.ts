@@ -7,7 +7,7 @@
  *     the OS keychain; the owning Swarm only).
  *   - hive-store.ts — persist + read the PUBLIC identity row in PG.
  *
- * `ensureHiveIdentity` is the single entry point both `hive:create` (fresh) and
+ * `ensureHiveIdentity` is the single entry point both `pot:create` (fresh) and
  * `resolveHive` (lazy-backfill of a pre-existing hive) call: it mints-or-loads the
  * keypair and get-or-creates the hives row, returning the Hive's public identity.
  */
@@ -201,7 +201,7 @@ export async function isCanonicalHiveOwner(
   return false;
 }
 
-/** Hex-rendered federation topic for a Hive pubkey — surfaced in hive:get + logs.
+/** Hex-rendered federation topic for a Hive pubkey — surfaced in pot:get + logs.
  *  The actual swarm-join call-site swap is the Phase-1 boundary (P-004). */
 export function hiveFederationTopicHex(pubkeyBase64: string): string {
   return deriveHiveFederationTopic(pubkeyBase64).toString('hex');

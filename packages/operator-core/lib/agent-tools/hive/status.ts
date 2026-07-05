@@ -1,5 +1,5 @@
 /**
- * hive:status — inspect the Hive's current wake declaration
+ * pot:status — inspect the Hive's current wake declaration
  * (autoloop-hive-operator-rebuild-2026-06-05 P0). Read-only: the one-shot time
  * wake (routine row), the persisted event subscriptions + their live rule ids,
  * the last fire, and the floor.
@@ -22,17 +22,17 @@ import { summarizeOpenPlacements } from '../../hive/placement-watchdog';
 import { readHiveSoakReport } from '../../hive/soak-report';
 
 export default defineTool({
-  name: 'hive:status',
+  name: 'pot:status',
   profile: 'engineer',
   description:
     "The Hive operator's current state: started/paused (the Start-Hive bit), the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, the floor, and the watchdog health signal (fallback fires in 24h). Read-only.",
   guidance: {
-    when: 'To see when/whether the operator will wake next, or to verify a hive:declare-wake landed.',
-    chaining: 'hive:declare-wake to change the declaration; hive:wake to fire now.',
+    when: 'To see when/whether the operator will wake next, or to verify a pot:declare-wake landed.',
+    chaining: 'pot:declare-wake to change the declaration; pot:wake to fire now.',
     seeAlso: [
-      'hive:declare-wake (change the wake declaration)',
-      'hive:wake (fire the Queen now)',
-      'hive:get (full hive detail — bees, load, queued work)',
+      'pot:declare-wake (change the wake declaration)',
+      'pot:wake (fire the Queen now)',
+      'pot:get (full hive detail — bees, load, queued work)',
     ],
   },
   capability: 'harness:read',
@@ -44,8 +44,8 @@ export default defineTool({
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     // EI-1802: resolve the home harness from the explicit arg, THEN the ctx
-    // harness (a scoped session), then the env default — matching hive:wake /
-    // hive:get_steering. The old `undefined` ignored a scoped session's harness
+    // harness (a scoped session), then the env default — matching pot:wake /
+    // pot:get_steering. The old `undefined` ignored a scoped session's harness
     // and fell through to the degraded `started:false` default below, which a
     // Queen could not distinguish from a genuinely-paused hive.
     const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
@@ -63,7 +63,7 @@ export default defineTool({
     // signal (frequent fallback fires = a Queen prompt bug to fix, D-004).
     // EI-1802: with no resolved home harness the Start/Pause bit is UNKNOWN, not
     // false. Returning false here was indistinguishable from a genuinely-paused
-    // hive, so a Queen could misread dormancy (wrongly self-run hive:start, or
+    // hive, so a Queen could misread dormancy (wrongly self-run pot:start, or
     // conclude dormancy and escalate). null = unknown; the harness_unresolved
     // flag below is the signal callers should branch on.
     const started = installSlug ? await getHiveStarted(workspaceId, installSlug) : null;

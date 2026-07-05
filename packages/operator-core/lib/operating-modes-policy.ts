@@ -6,8 +6,8 @@
  *   - IDEATE — the ambition posture: "invent net-new features" vs. "patch what you hit".
  *
  * Both are INTERACTIVE-su concepts (the engineer/power psu the owner talks to, and the hive
- * su override) — NOT fleet-role ones: bees / queen / scout recur via `hive:declare-wake` /
- * `overwatch:declare-wake`, never an owner-issued "AUTO mode" / "ideate mode" grant or
+ * su override) — NOT fleet-role ones: bees / queen / scout recur via `pot:declare-wake` /
+ * `kettle:declare-wake`, never an owner-issued "AUTO mode" / "ideate mode" grant or
  * `loop:arm`. So unlike `renderReuseFirstNudge` / `renderWaitLoopNote` (which ride the
  * spawned-bee + operator-launched bases via `assembleRolePrompt`), this clause is spliced
  * ONLY into the su playbook (`renderSuPlaybook` + `writeSplicedPlaybook`) at
@@ -221,13 +221,13 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   ideators mine; your OWN observations already feed it, so this is you reading your corpus back
   synthesized, not a cold start; (ii) **\`rubrics:list\` / \`rubrics:search\`** + **\`scorecards:freshness\`**
   for what the system already knows how to MEASURE and where a signal has gone stale (a stale
-  scorecard is itself an idea prompt); (iii) your own past graded proposals — \`scout:ideation-feedback\`,
+  scorecard is itself an idea prompt); (iii) your own past graded proposals — \`blender:ideation-feedback\`,
   the grader-feedback priming on features you filed — so a pass builds on what landed and what the
   grader flagged, not a blank page. Then, AS
   you work: file **RUBRIC-GRADED** observations — \`improvements:capture { rubricRef, ratings }\`,
   each rating carrying concrete EVIDENCE, never a bare score — whenever a ratified rubric covers
   what you just measured; and when you review or triage a Scout-routed idea, **GRADE it** via
-  \`scout:grade-idea\` (an su grades as \`owner\` — the tool already admits you). **Vary your
+  \`blender:grade-idea\` (an su grades as \`owner\` — the tool already admits you). **Vary your
   ideation lens across passes** — risk-first one pass, user-value-first the next, cost/leverage the
   next — the cheap prompt-level version of Scout's lens diversity, so successive passes don't keep
   converging on the same corner.

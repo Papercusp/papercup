@@ -22,7 +22,7 @@
  *      wrapped epoch-0 key row, UNWRAPS it with its device key, and DECRYPTS the content
  *      into its own Postgres (origin='remote').
  *   2. BAN — the owner advances the epoch 0→1 EXCLUDING B (real `advanceEpochOnHiveBoundary`
- *      with `cutOffPubkeys:[B]`, the boundary the `hive:ban_member` / revoke path drives):
+ *      with `cutOffPubkeys:[B]`, the boundary the `pot:ban_member` / revoke path drives):
  *      the epoch-1 key is wrapped to the REMAINING device (owner) ONLY — never to B.
  *   3. EPOCH 1 — the owner authors POST-boundary content encrypted under epoch 1. B still
  *      REPLICATES the ciphertext (it stays swarm-connected) AND federates the owner-only

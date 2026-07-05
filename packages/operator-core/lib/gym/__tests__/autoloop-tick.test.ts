@@ -339,7 +339,7 @@ describe('runGymAutoloopTick — routed-ideas context (P-032)', () => {
 // ---------------------------------------------------------------------------
 // Per-HIVE execution (per-hive-learning-loops-2026-06-14 P-030). The gym tick is
 // keyed purely on harnessSlug, so a per-hive gym_autoloop_config row (laid down
-// dark at hive:create by provisionHiveLearningLoop, then armed by the owner) is
+// dark at pot:create by provisionHiveLearningLoop, then armed by the owner) is
 // just another row in the workspace sweep. These pin the two per-hive invariants:
 //   - the workspace sweep picks up EVERY armed per-hive row (LRU across hives), and
 //   - the fire-gate / circuit state is PER-HARNESS, so one failing hive's backoff

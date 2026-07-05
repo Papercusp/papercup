@@ -19,8 +19,8 @@
  * asserts: presence GONE (existing behavior) AND hive_members GONE (the fix) AND a
  * `del` op captured for the leaver (the federation handoff).
  *
- * ── G24: hive:dissolve now tears down all of a hive's hive_members rows ──
- * `hive:dissolve` (the owner-side teardown of a LOCAL hive) gained a membership-
+ * ── G24: pot:dissolve now tears down all of a hive's hive_members rows ──
+ * `pot:dissolve` (the owner-side teardown of a LOCAL hive) gained a membership-
  * teardown leg that calls `removeAllHiveMembers(workspaceId, hiveHomeSlug)` BEFORE
  * deregister. Each per-row DELETE fires the mig-189 capture trigger → a federated
  * `del` tombstone. We exercise the exact fn dissolve invokes (the full tool needs
@@ -206,7 +206,7 @@ describe('G27 — leaveHive drops the leaver presence AND the persistent hive_me
   });
 });
 
-describe('G24 — hive:dissolve tears down ALL of a hive\'s hive_members rows (+ del ops)', () => {
+describe('G24 — pot:dissolve tears down ALL of a hive\'s hive_members rows (+ del ops)', () => {
   it('removeAllHiveMembers (the leg dissolve invokes) deletes every member row and federates a del per member', async () => {
     const UID_A = 71;
     const UID_B = 72;

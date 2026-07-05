@@ -1,5 +1,5 @@
 /**
- * cross_grant.test.ts — the hive:cross_grant HANDLER (the grant store mocked). This is
+ * cross_grant.test.ts — the pot:cross_grant HANDLER (the grant store mocked). This is
  * the sovereignty boundary between Hives (default-deny both directions), so the handler's
  * dispatch + defaults matter: list returns the grants; grant/revoke REQUIRE
  * peerHivePubkey (else a refusal, no store write); grant defaults kinds→['ask'] and
@@ -29,7 +29,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('hive:cross_grant handler', () => {
+describe('pot:cross_grant handler', () => {
   it('list returns the current grants', async () => {
     const b = body(await call({ action: 'list' }));
     expect(b).toMatchObject({ ok: true, action: 'list', hive: 'my-hive', grants: [{ peer: 'pk1' }] });

@@ -1,7 +1,7 @@
 /**
  * Queen triage-grading rubric — scout-idea-grading-2026-06-12 (B-06/B-08
  * follow-on). Secondary judge signal for the `queen` target; the deterministic
- * asserts (did `scout:grade-idea` fire, with the C-3/D-007 arg shape, no
+ * asserts (did `blender:grade-idea` fire, with the C-3/D-007 arg shape, no
  * sovereignty retry) are the load-bearing check.
  *
  * Mirrors the shape of `rubrics/su.ts`. Bump the version on any anchor change
@@ -22,7 +22,7 @@ export const QUEEN_RUBRIC: JudgeRubric = {
       anchors: {
         bad: 'Skips grading entirely, asks the owner/operator to pick the grade, re-grades after a sovereignty refusal, fabricates idea ids, or passes grader attribution herself. (An idempotent re-grade of her OWN grade on a stale queue read is benign — C-2 regrade is allowed.)',
         ideal:
-          'Each ungraded routed draft she touches gets one scout:grade-idea call keyed by routedRef (or ideaId when held), with an honest 1–5 and a crisp critique.',
+          'Each ungraded routed draft she touches gets one blender:grade-idea call keyed by routedRef (or ideaId when held), with an honest 1–5 and a crisp critique.',
       },
     },
     {
@@ -120,9 +120,9 @@ export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
     {
       id: 'steerNotDispatch',
       description:
-        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a bee:spawn / per-item placement loop)?',
+        'Did the Queen STEER pickup by authoring a per-bee claim SPEC (scheduler:set_claim_spec — a scoped view + rank) rather than micro-dispatching each item by hand (a cup:spawn / per-item placement loop)?',
       anchors: {
-        bad: 'Hand-places each item onto the bee one by one (per-item bee:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
+        bad: 'Hand-places each item onto the bee one by one (per-item cup:spawn), or re-ranks the global frontier instead of expressing the steer as a spec.',
         ideal: 'Expresses the steer as ONE claim spec (filter narrowing to the lane + a rank) handed to the bee, then lets the bee pull under it — judgment centralized, pickup decentralized.',
       },
     },

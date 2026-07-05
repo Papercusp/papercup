@@ -148,7 +148,7 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('routines:write')).toBe(false);
     });
 
-    test('sentinel CANNOT place/execute: carved OUT of bee:spawn + DENIED fs-write/bash at the envelope', async () => {
+    test('sentinel CANNOT place/execute: carved OUT of cup:spawn + DENIED fs-write/bash at the envelope', async () => {
       const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
       expect(spawn.agentRoles).not.toContain('sentinel');
       // ...but the Queen (operator) still spawns it.
@@ -219,7 +219,7 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('routines:write')).toBe(false);
     });
 
-    test('overwatch is carved OUT of placement/optimization (bee:spawn + gym:judge — D-001/D-002)', async () => {
+    test('overwatch is carved OUT of placement/optimization (cup:spawn + gym:judge — D-001/D-002)', async () => {
       const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
       expect(spawn.agentRoles).not.toContain('overwatch'); // placement is the Queen's; it NUDGES her
       const { default: judge } = await import('../../../agent-tools/gym/judge.js');
@@ -271,7 +271,7 @@ describe('loadRoleCapabilities', () => {
       'coord:read',
       'coord:write',
       'plans:read',
-      'routines:write', // hive:declare-wake
+      'routines:write', // pot:declare-wake
     ]) {
       expect(caps.has(c), `missing ${c}`).toBe(true);
     }

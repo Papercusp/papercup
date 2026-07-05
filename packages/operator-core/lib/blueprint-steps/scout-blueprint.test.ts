@@ -1,7 +1,7 @@
 /**
  * P-121 (deterministic-blueprints-migration-2026-06-13) — Scout's autonomous-ideation
  * cadence as a DETERMINISTIC blueprint. Proves the built-in loads + validates as a
- * gateless deterministic pipeline, `scout:cycle` is a registered known op, and a full
+ * gateless deterministic pipeline, `blender:cycle` is a registered known op, and a full
  * `runProgramCore` run drives the self-gated tick to a clean `done`.
  *
  * Scout is NOT flag+governor-gated (D-009) — its gate is STRUCTURAL (cadence → fire-gate
@@ -40,12 +40,12 @@ test('the scout blueprint loads + validates as a gateless deterministic pipeline
   const { blueprint, validation } = loadBuiltinBlueprint('scout');
   assert.equal(validation.ok, true, `validation errors: ${JSON.stringify(validation.errors)}`);
   assert.equal(blueprint.spine.steps?.length, 1);
-  assert.equal(blueprint.spine.steps?.[0]?.op, 'scout:cycle');
+  assert.equal(blueprint.spine.steps?.[0]?.op, 'blender:cycle');
   assert.ok(!blueprint.spine.gate || blueprint.spine.gate.length === 0);
 });
 
-test('scout:cycle is a registered known op', () => {
-  assert.ok(coordOpNames().has('scout:cycle'));
+test('blender:cycle is a registered known op', () => {
+  assert.ok(coordOpNames().has('blender:cycle'));
 });
 
 test('running the blueprint program drives the self-gated tick to a clean done (cadence withhold)', async () => {

@@ -1,5 +1,5 @@
 /**
- * hive:get — the full state of one hive (hive-tool-namespace-2026-06-08 P-003,
+ * pot:get — the full state of one hive (hive-tool-namespace-2026-06-08 P-003,
  * D-001).
  *
  * The unified hive view: `resolveHive` (home harness + deployment + wake) joined
@@ -17,19 +17,19 @@ import { resolveHive } from './_resolve';
 import { hiveFederationTopicHex } from '../../hive-identity';
 
 export default defineTool({
-  name: 'hive:get',
+  name: 'pot:get',
   profile: 'engineer',
   description:
     'The full state of one hive: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live bees with {doing, queued, load}, and its todo-work frontier depth. Composes resolveHive + fleet:assignments + work_items — the one call for "how is hive X doing".',
   guidance: {
     when: 'You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.',
-    notWhen: 'A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
+    notWhen: 'A list of all hives — pot:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
-      'hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down.',
+      'pot:list to find the slug; pot:wake to fire the Queen now; pot:declare-wake to change the cadence; pot:dissolve to tear it down.',
     seeAlso: [
-      'hive:list (all hives at a glance)',
+      'pot:list (all hives at a glance)',
       'fleet:assignments (the raw per-agent fleet view)',
-      'hive:status (next-wake schedule detail)',
+      'pot:status (next-wake schedule detail)',
     ],
   },
   capability: 'harness:read',
@@ -51,7 +51,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'hive_not_found',
-              message: `No kind:'hive' harness '${args.slug}' in this workspace. Use hive:list to see the hives.`,
+              message: `No kind:'hive' harness '${args.slug}' in this workspace. Use pot:list to see the hives.`,
             }),
           },
         ],

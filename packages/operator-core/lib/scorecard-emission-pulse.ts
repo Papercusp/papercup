@@ -4,7 +4,7 @@
  *
  * overwatch/scorecard-backstop.ts guarantees a `hive-coordination-health`
  * scorecard per overwatch TURN — but it is a turn-END seam: it only fires when an
- * overwatch launch finishes. When the supervisor is STOPPED (overwatch:pause) or
+ * overwatch launch finishes. When the supervisor is STOPPED (kettle:pause) or
  * its wake loop dies, no turns end → no agent cards AND no floors, and the
  * freshness interpreter reads 'overwatch-not-started' as benign ("Ignore") — so
  * rubric emission died SILENTLY when overwatch stopped on 2026-07-02 and nothing

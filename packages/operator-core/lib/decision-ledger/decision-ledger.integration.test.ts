@@ -70,7 +70,7 @@ beforeAll(async () => {
   await db.adminSql`
     INSERT INTO harness_shared.decision_ledger
       (workspace_id, harness_slug, layer, action, category, tier, posture, outcome)
-    VALUES (${WS}, 'papercup', 'action', 'bee:spawn', 'agent-lifecycle', 'medium', 'auto', 'ok')`;
+    VALUES (${WS}, 'papercup', 'action', 'cup:spawn', 'agent-lifecycle', 'medium', 'auto', 'ok')`;
 }, 180_000);
 
 afterAll(async () => {
@@ -108,7 +108,7 @@ describe('decision ledger — disposition round-trip (migrations 260 + 265)', ()
     expect(await readDecisionLedger(WS, { layer: 'disposition' })).toHaveLength(2);
     const action = await readDecisionLedger(WS, { layer: 'action' });
     expect(action).toHaveLength(1);
-    expect(action[0]!.action).toBe('bee:spawn');
+    expect(action[0]!.action).toBe('cup:spawn');
     expect(action[0]!.disposition).toBeNull();
   });
 
@@ -162,7 +162,7 @@ describe('decision ledger — tripwire undo seam (B-16, migration 269)', () => {
         RETURNING id`;
       return Number(r!.id);
     };
-    armedLedgerId = await insLedger('bee:spawn');
+    armedLedgerId = await insLedger('cup:spawn');
     revertedLedgerId = await insLedger('work_items:set_priority');
     bareLedgerId = await insLedger('flags:set');
 

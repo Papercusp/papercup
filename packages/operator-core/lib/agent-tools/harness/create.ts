@@ -109,7 +109,7 @@ export default defineTool({
         .min(1)
         .regex(/^[a-z0-9][a-z0-9-]*$/, 'hive must be a harness slug')
         .optional()
-        .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of hive:add-member (which adds an EXISTING harness).'),
+        .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of pot:add-member (which adds an EXISTING harness).'),
     })
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
       message: 'pass `path`, or both `parentDir` and `folderName`',
@@ -133,7 +133,7 @@ export default defineTool({
     // stamp on the new registry entry below. Fail-fast before any dir/schema side
     // effect, like the deployment + dependency gates. No nesting guard needed —
     // harness:create never sets harness_kind, so the new harness is never a Hive
-    // home (Hive homes come only from hive:create), so it cannot nest a Hive.
+    // home (Hive homes come only from pot:create), so it cannot nest a Hive.
     let hiveMembership: string | undefined;
     if (args.hive != null) {
       const membership = resolveCreateHiveMembership(reg, args.hive);

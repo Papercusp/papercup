@@ -1,8 +1,8 @@
 /**
- * hive:get-steering — read the owner's steering controls for the Queen
+ * pot:get-steering — read the owner's steering controls for the Queen
  * (queen-steering-panel-2026-06-15, brief B-01; CONTRACT C-1).
  *
- * The agent-surface READ twin of `hive:set-steering`: returns the decoded
+ * The agent-surface READ twin of `pot:set-steering`: returns the decoded
  * {@link OwnerSteering} (directive, eligible plans, pause state) the Queen reads on
  * every wake. The 👑 Queen tab reads via the `hive.steering` sync resolver; this is
  * the equivalent for an agent / a quick check.
@@ -17,16 +17,16 @@ import { getOwnerSteering } from '../../owner-steering';
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
 export default defineTool({
-  name: 'hive:get-steering',
+  name: 'pot:get-steering',
   profile: 'engineer',
   description:
-    'Read the current owner steering for the Hive — the focus `directive`, `eligiblePlans` (plans the Queen may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Queen reads on every wake. An un-steered Hive returns the default (no directive, no plan restriction, not paused). The READ twin of hive:set-steering.',
+    'Read the current owner steering for the Hive — the focus `directive`, `eligiblePlans` (plans the Queen may pick up now), and pause state (`pauseNewWork` / `pausedUntil`) the Queen reads on every wake. An un-steered Hive returns the default (no directive, no plan restriction, not paused). The READ twin of pot:set-steering.',
   guidance: {
-    when: 'Checking what the Queen is currently steered toward — before changing it, or to confirm a hive:set-steering write landed.',
-    notWhen: 'Changing steering — hive:set-steering. Reading the whole hive status — hive:status.',
+    when: 'Checking what the Queen is currently steered toward — before changing it, or to confirm a pot:set-steering write landed.',
+    notWhen: 'Changing steering — pot:set-steering. Reading the whole hive status — pot:status.',
     seeAlso: [
-      'hive:set-steering (change the steering directive)',
-      'hive:status (the whole hive status, not just steering)',
+      'pot:set-steering (change the steering directive)',
+      'pot:status (the whole hive status, not just steering)',
     ],
   },
   capability: 'harness:read',

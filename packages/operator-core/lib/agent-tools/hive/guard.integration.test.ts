@@ -1,6 +1,6 @@
 /**
  * hive lifecycle tools are ROOT-ONLY (hive-tool-namespace-2026-06-08 P-010,
- * D-002). hive:create / hive:dissolve / hive:update must refuse a parented bee
+ * D-002). pot:create / pot:dissolve / pot:update must refuse a parented bee
  * (a fleet-spawn caller — uiClientId, no principal/superuser) up front, before
  * any side effect. The assertNotNestedHive guard in fireLaunchBlueprint is the
  * runtime backstop; this asserts the tool-level refusal (hives are peers, never
@@ -20,21 +20,21 @@ const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown>
 type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
 
 describe('hive lifecycle tools refuse a bee / fleet-spawn caller (root-only)', () => {
-  it('hive:create refuses', async () => {
+  it('pot:create refuses', async () => {
     const tool = (await import('./create')).default as unknown as Tool;
     const res = parse(await tool.handler({ slug: 'x' }, BEE_CTX));
     expect(res.ok).toBe(false);
     expect(res.error).toBe('hive_create_root_only');
   });
 
-  it('hive:dissolve refuses (before the confirm gate)', async () => {
+  it('pot:dissolve refuses (before the confirm gate)', async () => {
     const tool = (await import('./dissolve')).default as unknown as Tool;
     const res = parse(await tool.handler({ slug: 'x', confirm: true }, BEE_CTX));
     expect(res.ok).toBe(false);
     expect(res.error).toBe('hive_dissolve_root_only');
   });
 
-  it('hive:update refuses', async () => {
+  it('pot:update refuses', async () => {
     const tool = (await import('./update')).default as unknown as Tool;
     const res = parse(await tool.handler({ slug: 'x', configOverrides: { a: 1 } }, BEE_CTX));
     expect(res.ok).toBe(false);

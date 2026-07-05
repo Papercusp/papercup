@@ -106,7 +106,7 @@ export function isHiveDrained(
 //
 // The IO `makeLiveHivePorts` wires the PURE helpers above over these injected operations. Real
 // defaults bind git/fs (clone), `createHiveHarness` + the member-register + schema scaffold (boot),
-// the HFC insert + block-edge sync (seed), `hive:start` + `surveyHive` + the placement-in-flight
+// the HFC insert + block-edge sync (seed), `pot:start` + `surveyHive` + the placement-in-flight
 // query (drive), the spawn/work-item/cost reads (collect), and the schema-drop + clone-rm
 // (teardown). Injected so the orchestration is unit-testable; bound for the owner-armed live run.
 // (makeLiveHivePorts lands next — Phase 1 IO assembly + Phase 2 drive/collect — over this seam.)
@@ -122,7 +122,7 @@ export interface LiveRunStats {
  * The live IO operations `makeLiveHivePorts` orchestrates. Every side effect is one method, so the
  * boot→seed→drive→collect→teardown ORDERING + the drained-polling loop are unit-testable with fakes
  * (no git/PG/LLM); the real binding (`liveHiveOps`, next) wires git/fs + createHiveHarness + the
- * member-register + the HFC/edge writes + hive:start + surveyHive + the placement/spawn reads +
+ * member-register + the HFC/edge writes + pot:start + surveyHive + the placement/spawn reads +
  * teardown. The full live run is reached only by an owner-armed run (P-051).
  */
 export interface LiveHiveOps {

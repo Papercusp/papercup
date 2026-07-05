@@ -207,7 +207,7 @@ export {
   type ReplayExtractorOpts,
 } from './live-capture';
 
-// HE-07 — the cadence orchestration (P-050; the `hive-eval:gen` blueprint op wraps this).
+// HE-07 — the cadence orchestration (P-050; the `pot-eval:gen` blueprint op wraps this).
 export { runHiveEvalGen, type HiveEvalGenDeps } from './gen-loop';
 export {
   runHiveEvalCadenceTick,

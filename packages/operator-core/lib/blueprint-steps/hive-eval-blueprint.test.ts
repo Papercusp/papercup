@@ -1,7 +1,7 @@
 /**
  * hive-eval as a DETERMINISTIC blueprint (hive-run-evaluation-2026-06-13 HE-07, P-050) — the
  * SIBLING of the iq-battery blueprint. Proves the built-in loads + validates as a gateless
- * deterministic pipeline, `hive-eval:gen` is a registered known op, and the owner-budget gate
+ * deterministic pipeline, `pot-eval:gen` is a registered known op, and the owner-budget gate
  * carries through (NOT a flag/governor loop): a full `runProgramCore` run REFUSES with no budget,
  * RUNS the (faked) generation with one, and SKIPS when the generation already exists.
  */
@@ -28,12 +28,12 @@ test('the hive-eval blueprint loads + validates as a gateless deterministic pipe
   const { blueprint, validation } = loadBuiltinBlueprint('hive-eval');
   assert.equal(validation.ok, true, `validation errors: ${JSON.stringify(validation.errors)}`);
   assert.equal(blueprint.spine.steps?.length, 1);
-  assert.equal(blueprint.spine.steps?.[0]?.op, 'hive-eval:gen');
+  assert.equal(blueprint.spine.steps?.[0]?.op, 'pot-eval:gen');
   assert.ok(!blueprint.spine.gate || blueprint.spine.gate.length === 0);
 });
 
-test('hive-eval:gen is a registered known op', () => {
-  assert.ok(coordOpNames().has('hive-eval:gen'));
+test('pot-eval:gen is a registered known op', () => {
+  assert.ok(coordOpNames().has('pot-eval:gen'));
 });
 
 test('no budgetUsd → the step REFUSES (unattended-spend guard), pipeline still done', async () => {

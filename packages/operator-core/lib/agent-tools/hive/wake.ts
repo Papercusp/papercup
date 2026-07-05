@@ -1,7 +1,7 @@
 /**
- * hive:wake — fire the Hive operator NOW (autoloop-hive-operator-rebuild-2026-06-05
+ * pot:wake — fire the Hive operator NOW (autoloop-hive-operator-rebuild-2026-06-05
  * P0, D-002). The manual/user override and the event-wake target: event-reaction
- * rules registered by hive:declare-wake fire THIS tool, so the floor debounce
+ * rules registered by pot:declare-wake fire THIS tool, so the floor debounce
  * lives here — a burst of subscribed events collapses to one wake, and a wake
  * within the floor of the previous one is skipped (`force` overrides).
  */
@@ -40,17 +40,17 @@ async function hasRecentOpenQueenWake(workspaceId: string, installSlug: string, 
 }
 
 export default defineTool({
-  name: 'hive:wake',
+  name: 'pot:wake',
   profile: 'engineer',
   description:
     'Fire the Hive operator immediately (launches the hive blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
   guidance: {
     when: 'The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).',
-    notWhen: 'To schedule a future wake — that is hive:declare-wake.',
-    chaining: 'hive:status to see the last/next wake; hive:declare-wake to schedule.',
+    notWhen: 'To schedule a future wake — that is pot:declare-wake.',
+    chaining: 'pot:status to see the last/next wake; pot:declare-wake to schedule.',
     seeAlso: [
-      'hive:status (see the last / next wake)',
-      'hive:declare-wake (schedule a recurring wake instead of firing now)',
+      'pot:status (see the last / next wake)',
+      'pot:declare-wake (schedule a recurring wake instead of firing now)',
     ],
   },
   capability: 'routines:write',
@@ -81,10 +81,10 @@ export default defineTool({
     }
 
     // WI-2012 (owner directive 2026-07-03): event-wake subscriptions PERSIST across
-    // hive:pause, so a reaction rule can fire long after the owner stopped the hive —
+    // pot:pause, so a reaction rule can fire long after the owner stopped the hive —
     // an autonomous wake on a not-started queen loop is exactly the churn the pause
     // exists to stop. Skip event-sourced wakes while paused; explicit user/manual
-    // wakes still fire (deliberate human intent — hive:start is the full resume).
+    // wakes still fire (deliberate human intent — pot:start is the full resume).
     if (args.source === 'event' && !(await getHiveStarted(workspaceId, installSlug))) {
       return {
         content: [

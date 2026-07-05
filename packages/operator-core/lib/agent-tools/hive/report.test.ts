@@ -1,5 +1,5 @@
 /**
- * report.test.ts — hive:report HANDLER for member-filed moderation reports
+ * report.test.ts — pot:report HANDLER for member-filed moderation reports
  * (Brief EN-3 / P-MOD). Gates on owner-enabled reporting; files content or
  * member reports; federates to the owner's moderation queue.
  *
@@ -48,7 +48,7 @@ beforeEach(() => {
   }));
 });
 
-describe('hive:report handler (member-filed moderation reports)', () => {
+describe('pot:report handler (member-filed moderation reports)', () => {
   it('reporting disabled → no-op (not_enabled)', async () => {
     h.getHivePolicy.mockResolvedValue({ policy: { moderation: { reportable: false } } });
     const b = await env({ hive: 'sheets', targetKind: 'content', targetRef: 'F-1' });

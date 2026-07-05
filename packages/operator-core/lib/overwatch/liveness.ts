@@ -12,7 +12,7 @@
  *     — the one-shot `overwatch-wake` routine row. This is the SHARED SEAM: B-09's
  *     watchdog (./watchdog.ts) re-arms through `declareOverwatchTimeWake`, and
  *     B-04's loop reuses the SAME primitive for its declare-next-wake (mirroring
- *     how `armFallbackHiveWake` and `hive:declare-wake` both call
+ *     how `armFallbackHiveWake` and `pot:declare-wake` both call
  *     `declareHiveTimeWake`). Routine NAME + TARGET ACTION are the contract.
  *   - `overwatchLivenessCheck` — the one-row "is overwatch alive?" read the
  *     watchdog (re-wake when stalled) + the cross-monitor (the Queen's

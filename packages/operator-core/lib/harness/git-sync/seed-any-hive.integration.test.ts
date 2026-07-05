@@ -20,7 +20,7 @@
  *     probe and stays fully default.
  *
  * Scenario map (brief B-07):
- *   1. Create → row   — hive:create_from_repo composition (clone faked to a real
+ *   1. Create → row   — pot:create_from_repo composition (clone faked to a real
  *      on-disk fixture repo, as _create_from_repo.test.ts does) ⇒ member row,
  *      never the home. Plus the production double-seed ordering
  *      (harness:create{hive} seeds coord-less FIRST): step 7.25's coords-rich
@@ -247,10 +247,10 @@ afterAll(async () => {
 }, 60_000);
 
 // ════════════════════════════════════════════════════════════════════════════
-// Scenario 1 — Create → row (hive:create_from_repo composition)
+// Scenario 1 — Create → row (pot:create_from_repo composition)
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('S1: hive:create_from_repo seeds the MEMBER routine, never the home', () => {
+describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', () => {
   const REPO = `shop${RUN}`;
   const URL = `https://github.com/acme/${REPO}`;
   const MEMBER = REPO; // base slug = repo name
@@ -897,7 +897,7 @@ describe('S5: re-running add-member / the spine never clobbers a human-edited ro
   const MEMBER = `shop${RUN}`; // S1's member (row exists from scenario 1)
   const HOME = `${MEMBER}-hive`;
 
-  it('hive:add-member over an existing (human-edited) row heals nothing and changes nothing', async () => {
+  it('pot:add-member over an existing (human-edited) row heals nothing and changes nothing', async () => {
     // The human turns the routine off and retunes it.
     const edited = { cron: '0 1 * * * *', push: false, push_submodules: false, edited_by: 'human' };
     await db.adminSql`

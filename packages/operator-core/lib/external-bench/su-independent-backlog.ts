@@ -635,7 +635,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
 
     async placeFifoBatch({ hiveSlug, memberSlug, workspaceId }) {
       // The su-independent arm needs ONE fresh dedicated spawn per task. It places via
-      // **fleet:place_batch** (the palette-eligible placement tool — bee:spawn is NOT runnable
+      // **fleet:place_batch** (the palette-eligible placement tool — cup:spawn is NOT runnable
       // through the run-tool palette: 403 not_palette_eligible) but FORCES a fresh spawn — never a
       // warm-inject onto an existing fleet bee — with `min_inject_affinity: 100` (the max; no bee
       // clears it, so every task fresh-spawns). The run-tool response wraps the tool payload in

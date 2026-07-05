@@ -26,7 +26,7 @@ export const SN_H07_MULTI_ITEM_HANDOFF: Scenario = {
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
-    { kind: 'tool_not_called', name: 'bee:spawn' },
+    { kind: 'tool_not_called', name: 'cup:spawn' },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'custom', name: 'oneQuestionMarkPerTurn', eval: oneQuestionMarkPerTurn },

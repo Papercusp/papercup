@@ -1,10 +1,10 @@
 /**
- * hive:membership_pending — list a Hive's approval-mode pending-join requests
+ * pot:membership_pending — list a Hive's approval-mode pending-join requests
  * (Brief EN-3 / P-MEMBER, the owner approve/deny surface — read half).
  *
  * Under `membership: 'approval'`, a joiner's request lands in hive_pending_joins and
  * federates to the owner. This is the owner's queue view. Read-only; the decide half
- * is hive:membership_decide.
+ * is pot:membership_decide.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -17,18 +17,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:membership_pending',
+  name: 'pot:membership_pending',
   profile: 'engineer',
   description:
-    "List a Hive's pending-join requests (the approval-mode admission queue). Under membership:'approval' a joiner stays pending until the owner approves; this is the owner's review queue. Read-only — decide with hive:membership_decide.",
+    "List a Hive's pending-join requests (the approval-mode admission queue). Under membership:'approval' a joiner stays pending until the owner approves; this is the owner's review queue. Read-only — decide with pot:membership_decide.",
   guidance: {
-    when: "The Hive's membership policy is 'approval' and you (the owner) want to see who's waiting to join. Pair with hive:membership_decide to approve/deny.",
+    when: "The Hive's membership policy is 'approval' and you (the owner) want to see who's waiting to join. Pair with pot:membership_decide to approve/deny.",
     notWhen:
-      'For the trust roster (already-admitted members) use hive:get / harness:membership. Setting the membership MODE is hive policy (the policy authoring surface), not this.',
-    chaining: 'hive:membership_pending (review) → hive:membership_decide (approve/deny each).',
+      'For the trust roster (already-admitted members) use pot:get / harness:membership. Setting the membership MODE is hive policy (the policy authoring surface), not this.',
+    chaining: 'pot:membership_pending (review) → pot:membership_decide (approve/deny each).',
     seeAlso: [
-      'hive:membership_decide (approve/deny each pending join)',
-      'hive:add-member (add a member directly without a pending request)',
+      'pot:membership_decide (approve/deny each pending join)',
+      'pot:add-member (add a member directly without a pending request)',
     ],
   },
   capability: 'harness:write',

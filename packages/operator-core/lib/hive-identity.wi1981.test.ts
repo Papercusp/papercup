@@ -3,7 +3,7 @@
  *
  * The live incident (tower↔VM, 2026-07-03): a joiner box held a `remote_hive`
  * registry VIEW for slug `papercusp` but no hives identity row; a read-path
- * call (hive:list/hive:get → resolveHivePubkey → ensureHiveIdentity lazy
+ * call (pot:list/pot:get → resolveHivePubkey → ensureHiveIdentity lazy
  * backfill) MINTED a second conflicting hive author identity → wrong epoch
  * secrets → poison origin=local wraps → permanent mutual epoch_decrypt_fail.
  * These tests pin: view-with-pubkey HEALS (remote: row, no mint);

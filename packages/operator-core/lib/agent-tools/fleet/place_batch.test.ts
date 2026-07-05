@@ -239,7 +239,7 @@ describe('executeBatch — placement execution', () => {
 
 describe('fleet:place_batch args — FAIL-LOUD on unknown keys (EI-72)', () => {
   // The batch placement path fans out spawns + warm-injects with a `brief`, the
-  // same hazard as bee:spawn: a field newer than a stale host's schema gets
+  // same hazard as cup:spawn: a field newer than a stale host's schema gets
   // silently stripped, scattering task-less placements. `.strict()` makes the
   // projection validator reject an unrecognized key with invalid_args.
   const args = (placeBatchTool as any).args;

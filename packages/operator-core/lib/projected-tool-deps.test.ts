@@ -279,8 +279,8 @@ describe('isPaletteUiPollRead -- exclude palette UI poll-reads from telemetry (E
     expect(palette('coord:wake-mode', { mode: 'auto' })).toBe(false);
   });
 
-  it('RECORDS a non-board palette action (e.g. hive:start) — only the board polls are dropped', () => {
-    expect(palette('hive:start', { harness: 'papercup' })).toBe(false);
+  it('RECORDS a non-board palette action (e.g. pot:start) — only the board polls are dropped', () => {
+    expect(palette('pot:start', { harness: 'papercup' })).toBe(false);
     expect(palette('coord:send', { to: ['*'], summary: 'hi' })).toBe(false);
   });
 

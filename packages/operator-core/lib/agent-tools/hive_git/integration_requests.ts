@@ -1,5 +1,5 @@
 /**
- * hive_git:integration_requests — the owner surface for the multi-owner
+ * pot_git:integration_requests — the owner surface for the multi-owner
  * integration-requests queue (WI-1555, cross-machine-coord-parity-and-trust-
  * 2026-07-01 / P-035; D-010/D-011).
  *
@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
-  name: 'hive_git:integration_requests',
+  name: 'pot_git:integration_requests',
   profile: 'engineer',
   // Writes/reads via the admin handle (listIntegrationRequests/ratifyIntegrationRequest
   // default to getOrgPg().sql when no tx is passed), scoping itself by the resolved
@@ -35,10 +35,10 @@ export default defineTool({
     when:
       "A member's below-steer-tier head is stuck in the integration-requests queue (visible via {action:'list'}) and you've reviewed its content and want it merged on the next integrator pass — {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha}. Check {action:'list', state:'pending'} first to see what's actually queued before ratifying.",
     notWhen:
-      "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (hive:set-steering / the hive policy) instead of a one-off per-SHA ratify.",
+      "Granting a member's comms REACH into your agents (trust:comms) or auto-run of their verified work (trust:add) — those are separate trust axes. Raising the member's comms tier to 'steer' permanently (pot:set-steering / the hive policy) instead of a one-off per-SHA ratify.",
     chaining:
       "{action:'list', state:'pending'} → review the head → {action:'ratify', hiveSlug, repoKey, devicePubkey, headSha} → the next integrator pass (git-sync tick) merges it.",
-    seeAlso: ['trust:comms (comms-reach tiers — separable)', 'hive:set-steering (policy authoring)'],
+    seeAlso: ['trust:comms (comms-reach tiers — separable)', 'pot:set-steering (policy authoring)'],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],

@@ -1,5 +1,5 @@
 /**
- * hive:beacon_consent handler tests (hive-network-surface-2026-06-11 P-005 / B-07).
+ * pot:beacon_consent handler tests (hive-network-surface-2026-06-11 P-005 / B-07).
  * The PG-backed consent accessor (beacon-consent.ts) is round-tripped against real
  * PG in ../../beacon-consent.integration.test.ts; THIS file pins the tool-handler
  * orchestration the dispatcher runs — get vs set routing, the workspace default,
@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-describe('hive:beacon_consent', () => {
+describe('pot:beacon_consent', () => {
   it('omitting consent READS the current value (no write)', async () => {
     getBeaconPublishConsent.mockResolvedValueOnce(true);
     const res = parse(await tool.handler({ hive: 'acme-hive' }, ctx()));

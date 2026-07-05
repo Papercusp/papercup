@@ -3,12 +3,12 @@
  *
  * Invariant: when no hive is started (getHiveStarted=false), the queen CANNOT
  * be re-armed or autonomously woken:
- *   - hive:declare-wake REFUSES (hive_paused) — kills the self-perpetuating
- *     re-arm where an in-flight queen turn re-declared the timer hive:pause
+ *   - pot:declare-wake REFUSES (hive_paused) — kills the self-perpetuating
+ *     re-arm where an in-flight queen turn re-declared the timer pot:pause
  *     had just cleared.
- *   - hive:wake SKIPS source:'event' fires (subscriptions persist across
+ *   - pot:wake SKIPS source:'event' fires (subscriptions persist across
  *     pause) — but user/manual wakes still fire (explicit human intent).
- * hive:start sets started=true BEFORE arming, so the gates never strand resume.
+ * pot:start sets started=true BEFORE arming, so the gates never strand resume.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -80,7 +80,7 @@ beforeEach(() => {
   fireLaunchBlueprint.mockResolvedValue({ role: 'queen' });
 });
 
-describe('hive:declare-wake paused gate (WI-2012)', () => {
+describe('pot:declare-wake paused gate (WI-2012)', () => {
   it('REFUSES to arm anything while the queen loop is not started', async () => {
     getHiveStarted.mockResolvedValue(false);
     const out = await call(declareWake as never, { harness: 'my-hive', inSeconds: 300 });
@@ -99,7 +99,7 @@ describe('hive:declare-wake paused gate (WI-2012)', () => {
   });
 });
 
-describe('hive:wake paused gate (WI-2012)', () => {
+describe('pot:wake paused gate (WI-2012)', () => {
   it("SKIPS an event-sourced wake while the queen loop is not started (subscriptions outlive pause)", async () => {
     getHiveStarted.mockResolvedValue(false);
     const out = await call(hiveWake as never, { harness: 'my-hive', source: 'event' });

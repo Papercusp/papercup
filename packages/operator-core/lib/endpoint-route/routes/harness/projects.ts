@@ -417,7 +417,7 @@ const create = defineTool({
  * P-010 (harnesses-tab-hive-model) — "new hive from blueprint": stand up a new
  * Hive home (a `kind:'hive'` harness running the pot/Queen blueprint). The thin
  * HTTP face over the canonical `createHiveHarness` primitive (hive-tool-namespace
- * `hive:create`) so the CreateHarnessPicker's new-hive mode reaches it without an
+ * `pot:create`) so the CreateHarnessPicker's new-hive mode reaches it without an
  * MCP round-trip — reuses the team's transactional provision (no duplication).
  */
 const createHive = defineTool({
@@ -476,7 +476,7 @@ const createHive = defineTool({
 /**
  * hive-from-github-url-2026-06-11 P-006 — "create a Hive from a GitHub URL":
  * the HTTP face the CreateHarnessPicker's GitHub-URL entry drives. Thin over
- * the canonical `createHiveFromRepo` composition (hive:create_from_repo) —
+ * the canonical `createHiveFromRepo` composition (pot:create_from_repo) —
  * lookup (join offer) → clone → blueprint detection → home + member →
  * auto-publish (visibility derived from repo privacy, never sent by the client).
  * Long timeout: clone + the test-verify run.

@@ -369,7 +369,7 @@ describe('assembleRolePrompt — wait-loop note (owner directive 2026-06-23)', (
     expect(out.text).toContain('## Waiting on something? Arm a self-wake LOOP');
     expect(out.text).toContain('NEVER-FIRING event');
     expect(out.text).toContain('loop:arm');
-    expect(out.text).toContain('hive:declare-wake');
+    expect(out.text).toContain('pot:declare-wake');
     expect(out.sections.some((s) => s.name === 'wait-loop-note')).toBe(true);
   });
 });

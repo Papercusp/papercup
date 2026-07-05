@@ -10,9 +10,9 @@
  *   - `work_items:create`  — new demand entered a queue
  *   - `coord:escalate`     — an escalation was raised
  *
- * Armed at hive:create (REPLACE — nothing to preserve) and re-affirmed on
- * hive:start (ENSURE — union; the Queen's own runtime tuning via
- * hive:declare-wake is hers to keep, per D-001's "re-tunable at runtime").
+ * Armed at pot:create (REPLACE — nothing to preserve) and re-affirmed on
+ * pot:start (ENSURE — union; the Queen's own runtime tuning via
+ * pot:declare-wake is hers to keep, per D-001's "re-tunable at runtime").
  * Start-minimal per OQ-5: exactly these three; the Queen adds more herself.
  */
 import {
@@ -77,11 +77,11 @@ const onKeys = (on: string | string[]): string[] => (Array.isArray(on) ? on : [o
 /**
  * Arm the default subscriptions for a workspace.
  *
- * - `'replace'` — the set becomes exactly the defaults (hive:create: the state
+ * - `'replace'` — the set becomes exactly the defaults (pot:create: the state
  *   is empty; nothing to preserve).
  * - `'ensure'` — union: every existing subscription is kept verbatim (the
  *   Queen's declared policy), and only defaults whose trigger tool is not
- *   already covered are added. hive:start uses this so Pause→Start never
+ *   already covered are added. pot:start uses this so Pause→Start never
  *   clobbers her tuning. Always re-persists + re-projects the live rules, so
  *   Start also repairs a registry that lost its in-memory rules.
  */

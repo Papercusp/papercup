@@ -42,7 +42,7 @@ describe('blueprintRegistrySets — the operator→validator registry bridge (P-
       'negative-space:scan',
       'regret:mine',
       'iq-battery:gen',
-      'scout:cycle',
+      'blender:cycle',
     ]) {
       expect(knownOps?.has(op), `expected registered op "${op}"`).toBe(true);
     }

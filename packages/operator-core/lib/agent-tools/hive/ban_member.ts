@@ -1,5 +1,5 @@
 /**
- * hive:ban_member — OWNER bans a member for repeat abuse (Brief EN-3 / P-MOD, the
+ * pot:ban_member — OWNER bans a member for repeat abuse (Brief EN-3 / P-MOD, the
  * teeth). Two composed legs:
  *   1. append the github id to the owner-SIGNED moderation.bannedGithubIds (federates
  *      the ban; the membership admission gate then DENIES re-join — ban persistence,
@@ -22,18 +22,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:ban_member',
+  name: 'pot:ban_member',
   profile: 'engineer',
   description:
     "OWNER bans a member for repeat abuse: records the ban in the owner-signed policy (denies re-join, keyed on the stable github id) AND revokes their devices (write-block now; a READ cut-off at the next C-001 re-key epoch). Pass unban:true to lift. Requires holding the Hive key. revoke:false bans (policy-only) without revoking.",
   guidance: {
-    when: 'A member is a confirmed repeat abuser (see hive:moderation_queue) and you (the owner) want them removed AND unable to re-join.',
-    notWhen: 'Hiding one piece of content — that is hive:takedown. Revoking your OWN device — substrate:revoke_self_device.',
-    chaining: 'hive:moderation_queue → hive:ban_member → hive:moderation_resolve (mark actioned). The read cut-off completes when the C-001 re-key op-path lands.',
+    when: 'A member is a confirmed repeat abuser (see pot:moderation_queue) and you (the owner) want them removed AND unable to re-join.',
+    notWhen: 'Hiding one piece of content — that is pot:takedown. Revoking your OWN device — substrate:revoke_self_device.',
+    chaining: 'pot:moderation_queue → pot:ban_member → pot:moderation_resolve (mark actioned). The read cut-off completes when the C-001 re-key op-path lands.',
     seeAlso: [
-      'hive:moderation_queue (the reports that justify a ban)',
-      'hive:moderation_resolve (mark the report actioned after banning)',
-      'hive:add-member (re-admit a member later)',
+      'pot:moderation_queue (the reports that justify a ban)',
+      'pot:moderation_resolve (mark the report actioned after banning)',
+      'pot:add-member (re-admit a member later)',
     ],
   },
   capability: 'intel:write',

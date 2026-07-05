@@ -1,5 +1,5 @@
 /**
- * hive:pause — the global "Pause Hive" control
+ * pot:pause — the global "Pause Hive" control
  * (start-hive-wake-orchestration-2026-06-09 P-005, D-005/D-006).
  *
  * Pause reuses the wake-mode gate; it does not invent a new freeze (D-005):
@@ -25,20 +25,20 @@ import { setHiveStarted, setHivePlacementStarted, anyHivePlacementStarted } from
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 
 export default defineTool({
-  name: 'hive:pause',
+  name: 'pot:pause',
   profile: 'engineer',
   description:
-    'PAUSE the hive: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Queen\'s pending time wake. Optionally drain live bees gracefully. Resume with hive:start.',
+    'PAUSE the hive: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Queen\'s pending time wake. Optionally drain live bees gracefully. Resume with pot:start.',
   guidance: {
     when: 'The user clicks Pause Hive / asks to freeze autonomous operation, or you need the colony quiet (incident, review, cost control).',
     notWhen:
       'To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.',
     chaining:
-      'hive:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → hive:start to resume.',
+      'pot:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → pot:start to resume.',
     seeAlso: [
-      'hive:start (resume autonomous operation)',
+      'pot:start (resume autonomous operation)',
       'coord:wake-queue (review staged wakes while paused)',
-      'hive:dissolve (tear down permanently instead of pausing)',
+      'pot:dissolve (tear down permanently instead of pausing)',
     ],
   },
   capability: 'harness:write',

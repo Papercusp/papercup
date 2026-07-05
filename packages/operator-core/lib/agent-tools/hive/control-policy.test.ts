@@ -1,5 +1,5 @@
 /**
- * control-policy.test.ts — the hive:control_policy TOOL (live-configurability-audit P-015).
+ * control-policy.test.ts — the pot:control_policy TOOL (live-configurability-audit P-015).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/hive/control-policy.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +33,7 @@ beforeEach(() => {
   writeM.mockImplementation(async (patch) => ({ ...patch }) as never);
 });
 
-describe('hive:control_policy', () => {
+describe('pot:control_policy', () => {
   it('get returns effective (defaults when unset) + overrides', async () => {
     const b = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(b).toMatchObject({ effective: { breakerThreshold: 3, infraBreakerThreshold: 12 }, overrides: {} });

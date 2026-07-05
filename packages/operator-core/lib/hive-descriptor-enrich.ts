@@ -5,7 +5,7 @@
  * Before this, hivePubkey / memberRepos / memberLinks were derived only at
  * PUBLISH time (set_hive, boot, from-repo create) and frozen into the
  * registered descriptor — a member added through any other producer
- * (hive:add-member, harness:create { hive }) stayed invisible to the 5-min
+ * (pot:add-member, harness:create { hive }) stayed invisible to the 5-min
  * reannounce until the next boot. This module is the announce-BUILD-time
  * enricher the directory calls via its injected `enrichDescriptor` seam, so
  * EVERY announce (timer, fresh-pair snapshot, explicit) reflects the registry

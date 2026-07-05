@@ -1,7 +1,7 @@
 /**
- * hive:moderation_queue — the OWNER's moderation queue: list reports filed by members
- * (Brief EN-3 / P-MOD). Read-only; resolve with hive:moderation_resolve, act with
- * hive:takedown / hive:ban_member.
+ * pot:moderation_queue — the OWNER's moderation queue: list reports filed by members
+ * (Brief EN-3 / P-MOD). Read-only; resolve with pot:moderation_resolve, act with
+ * pot:takedown / pot:ban_member.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -14,18 +14,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:moderation_queue',
+  name: 'pot:moderation_queue',
   profile: 'engineer',
   description:
-    "The owner's moderation queue — list member-filed reports for a Hive (default the open ones). Read-only. Act on a report with hive:moderation_resolve (action/dismiss), hive:takedown (hide content), or hive:ban_member.",
+    "The owner's moderation queue — list member-filed reports for a Hive (default the open ones). Read-only. Act on a report with pot:moderation_resolve (action/dismiss), pot:takedown (hide content), or pot:ban_member.",
   guidance: {
-    when: 'You (the owner) want to review reports members filed via hive:report.',
-    notWhen: 'Filing a report (that is hive:report, member-side).',
-    chaining: 'hive:moderation_queue → hive:takedown / hive:ban_member / hive:moderation_resolve.',
+    when: 'You (the owner) want to review reports members filed via pot:report.',
+    notWhen: 'Filing a report (that is pot:report, member-side).',
+    chaining: 'pot:moderation_queue → pot:takedown / pot:ban_member / pot:moderation_resolve.',
     seeAlso: [
-      'hive:takedown (hide reported content)',
-      'hive:ban_member (ban the reported member)',
-      'hive:moderation_resolve (mark a report actioned)',
+      'pot:takedown (hide reported content)',
+      'pot:ban_member (ban the reported member)',
+      'pot:moderation_resolve (mark a report actioned)',
     ],
   },
   capability: 'harness:write',

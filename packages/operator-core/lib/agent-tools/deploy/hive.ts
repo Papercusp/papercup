@@ -42,7 +42,7 @@ export default defineTool({
     seeAlso: [
       'deploy:teardown_hive (tear down the deployed hive when done)',
       'deploy:status (check deployment state)',
-      'hive:get (the hive being deployed)',
+      'pot:get (the hive being deployed)',
     ],
   },
   capability: 'harness:write',
@@ -69,7 +69,7 @@ export const deployTeardownHiveTool = defineTool({
     when: 'Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model.',
     seeAlso: [
       'deploy:hive (re-deploy the hive)',
-      'hive:dissolve (permanently tear down the hive itself, not just its deployment)',
+      'pot:dissolve (permanently tear down the hive itself, not just its deployment)',
       'deploy:status (confirm what is deployed)',
     ],
   },

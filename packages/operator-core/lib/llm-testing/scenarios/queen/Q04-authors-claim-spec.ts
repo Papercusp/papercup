@@ -5,7 +5,7 @@
  * scope), does she STEER PICKUP by authoring a per-bee claim SPEC via `scheduler:set_claim_spec`
  * (a scoped view + rank the bee then PULLS under) — the "centralize JUDGMENT, decentralize
  * PICKUP" model her prompt mandates — rather than micro-dispatching each item by hand
- * (a per-item `bee:spawn` placement loop)?
+ * (a per-item `cup:spawn` placement loop)?
  *
  * This is the QUEEN half of the P-003 adoption check (the bee half is bee/B01-pull-via-get-next).
  * The deterministic gates prove the WIRING (scheduler:set_claim_spec is in the coding blueprint
@@ -15,7 +15,7 @@
  * Load-bearing asserts (ERROR):
  *   - she calls `scheduler:set_claim_spec` for the bee, with a real spec object (a view/filter
  *     AND/OR a rank) — not an empty/garbage arg;
- *   - she does NOT fall back to per-item micro-dispatch (a `bee:spawn` loop) to "place" the
+ *   - she does NOT fall back to per-item micro-dispatch (a `cup:spawn` loop) to "place" the
  *     lane she should be expressing as a spec.
  */
 
@@ -87,7 +87,7 @@ const STEER_WORLD: ToolDispatchOverride = {
     if (canon === 'scheduler:running') {
       return { content: [{ text: JSON.stringify({ runs: [{ bee: 'bee-su-7f3a1', item: 'WI-204', spec: 'sync-lane@2' }] }) }] };
     }
-    if (canon === 'hive:declare-wake') return { content: [{ text: JSON.stringify({ ok: true }) }] };
+    if (canon === 'pot:declare-wake') return { content: [{ text: JSON.stringify({ ok: true }) }] };
     return PASS_THROUGH;
   },
 };
@@ -98,7 +98,7 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
   target: 'queen',
   transport: 'in-process',
   description:
-    "The Hive operator relays the Queen a steer: bee bee-su-7f3a1 is healthy and draining work, and the Queen wants to focus it on the data-sync-hardening lane (the packages/sync/* work) over the unrelated settings-polish work — without hand-placing each item. Success: she authors a per-bee claim SPEC via scheduler:set_claim_spec scoping the bee's pull to that plan + path glob (filter) in a sensible rank, then lets the bee PULL under it — she does NOT micro-dispatch the lane item-by-item via bee:spawn.",
+    "The Hive operator relays the Queen a steer: bee bee-su-7f3a1 is healthy and draining work, and the Queen wants to focus it on the data-sync-hardening lane (the packages/sync/* work) over the unrelated settings-polish work — without hand-placing each item. Success: she authors a per-bee claim SPEC via scheduler:set_claim_spec scoping the bee's pull to that plan + path glob (filter) in a sensible rank, then lets the bee PULL under it — she does NOT micro-dispatch the lane item-by-item via cup:spawn.",
   persona: {
     id: 'hive-steer-brief',
     description:
@@ -137,10 +137,10 @@ export const QUEEN_Q04_AUTHORS_CLAIM_SPEC: Scenario = {
       },
     ),
     // She must NOT fall back to per-item micro-dispatch — the exact anti-pattern the spec replaces.
-    assertToolNotCalled(['bee:spawn'], {
+    assertToolNotCalled(['cup:spawn'], {
       name: 'no-per-item-micro-dispatch',
       claim:
-        'The Queen micro-dispatched via bee:spawn instead of steering through a claim spec — the per-item placement loop the scheduler model (D-002: centralize JUDGMENT, decentralize PICKUP) is meant to replace.',
+        'The Queen micro-dispatched via cup:spawn instead of steering through a claim spec — the per-item placement loop the scheduler model (D-002: centralize JUDGMENT, decentralize PICKUP) is meant to replace.',
       suggestion:
         'Do NOT hand-place each lane item. Express the steer ONCE as a per-bee claim spec (scheduler:set_claim_spec); the bee pulls the scoped, ranked items itself via scheduler:get_next.',
     }),

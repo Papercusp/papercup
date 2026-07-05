@@ -192,17 +192,17 @@ describe('toToolResult envelope', () => {
 describe('tool registration (C-3 surface)', () => {
   it('is reachable through the unified projection registry (the admin route/tool proxy dispatch path)', async () => {
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
-    const projected = lookupByMcpName('scout:grade-idea');
-    expect(projected, 'scout:grade-idea registered').toBeTruthy();
+    const projected = lookupByMcpName('blender:grade-idea');
+    expect(projected, 'blender:grade-idea registered').toBeTruthy();
   });
 
-  it('registers as scout:grade-idea with the SU+Queen allowlist and derived-attribution args', () => {
+  it('registers as blender:grade-idea with the SU+Queen allowlist and derived-attribution args', () => {
     const tool = gradeIdeaTool as unknown as {
       name: string;
       agentRoles?: string[];
       guidance?: { when?: string };
     };
-    expect(tool.name).toBe('scout:grade-idea');
+    expect(tool.name).toBe('blender:grade-idea');
     expect(tool.agentRoles).toContain('queen');
     expect(tool.agentRoles).toContain('operator');
     // gradedBy is derived, never an arg (C-3)

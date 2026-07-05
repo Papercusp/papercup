@@ -68,7 +68,7 @@ export async function invokeServerCapability(opts: {
   // The projected registry is the lookup of record — it carries EVERY tool
   // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
   // role-gated tools, which is how the Start Hive button got
-  // `no tool named "hive:start"` for a tool MCP dispatched fine.
+  // `no tool named "pot:start"` for a tool MCP dispatched fine.
   const projected = lookupByMcpName(opts.name);
   if (!projected) {
     return { ok: false, status: 404, code: 'unknown_tool', message: `no tool named "${opts.name}"` };

@@ -36,7 +36,7 @@
  *     via `startDurableSpawns` AFTER the action's step, at the workflow layer where
  *     `startWorkflow` is legal — escaping the from-a-step limitation for the
  *     implement lane without making the fire fire-and-forget.
- *   • `bee:spawn` (operator-spawn) keeps the durable nursery row + the P-011
+ *   • `cup:spawn` (operator-spawn) keeps the durable nursery row + the P-011
  *     reclaim sweeper (fail-loud + free the ceiling on a dead host) — chosen to
  *     preserve `fleet:cancel`'s in-process abort and because a one-shot
  *     operator-initiated spawn should not silently re-run on a host restart.

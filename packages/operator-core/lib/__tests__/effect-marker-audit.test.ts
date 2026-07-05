@@ -40,11 +40,11 @@ const NON_SUFFIX_MUTATORS = [
 ];
 
 // (2) Representative write-suffix mutators across families — the brief's named candidates
-// (bee:spawn, hive:wake, deploy:*, plans:* writes, …) plus a broad sweep, pinned so a
+// (cup:spawn, pot:wake, deploy:*, plans:* writes, …) plus a broad sweep, pinned so a
 // future capability rename can't silently flip them back to 'read'.
 const SUFFIX_MUTATORS = [
-  'bee:spawn', 'fleet:cancel', 'fleet:place_batch', 'fleet:drain',
-  'hive:wake', 'hive:declare-wake', 'hive:create', 'hive:dissolve', 'hive:set-steering',
+  'cup:spawn', 'fleet:cancel', 'fleet:place_batch', 'fleet:drain',
+  'pot:wake', 'pot:declare-wake', 'pot:create', 'pot:dissolve', 'pot:set-steering',
   'deploy:harness', 'deploy:hive',
   'accounts:register', 'instance:boot', 'experiment:run', 'harness:create',
   'plans:new', 'plans:set-now', 'plans:set-status', 'plans:promote', 'plans:launch', 'plans:set-content',

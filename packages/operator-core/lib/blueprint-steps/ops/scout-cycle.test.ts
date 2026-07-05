@@ -1,5 +1,5 @@
 /**
- * Unit coverage for the `scout:cycle` CoordOp wrapper (scout-cycle.ts). The cycle
+ * Unit coverage for the `blender:cycle` CoordOp wrapper (scout-cycle.ts). The cycle
  * runner (runScoutCycleTick, scout/register-scout-action.test.ts) is tested
  * separately and mocked here; injecting non-null deps via setScoutCycleDeps also
  * keeps the op off its lazy production-deps import (no llm/cycle graph). Under test
@@ -40,7 +40,7 @@ afterEach(() => {
 
 describe('scoutCycleOp metadata', () => {
   it('declares its name + schemas and is registered on import', () => {
-    expect(scoutCycleOp.name).toBe('scout:cycle');
+    expect(scoutCycleOp.name).toBe('blender:cycle');
     expect(scoutCycleOp.argsSchema.safeParse({}).success).toBe(true);
     expect(registerCoordOp).toHaveBeenCalledWith(scoutCycleOp);
   });
@@ -96,6 +96,6 @@ describe('scoutCycleOp.run', () => {
     runScoutCycleTick.mockResolvedValue({ fired: true, reason: 'idle', cycleId: 'c', routedCount: 1 });
     const c = ctx();
     await scoutCycleOp.run({}, c as never);
-    expect(c.log).toHaveBeenCalledWith(expect.stringMatching(/scout:cycle fired=true reason=idle/));
+    expect(c.log).toHaveBeenCalledWith(expect.stringMatching(/blender:cycle fired=true reason=idle/));
   });
 });

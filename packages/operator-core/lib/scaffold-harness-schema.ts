@@ -18,7 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 /**
  * The per-harness PG schema name for a slug: lowercase, hyphens→underscores.
  * Matches harnessSchemaName in libs/papercusp/libs/db/src/shared-schema.ts.
- * Exported so deprovision paths (hive:dissolve, create rollback) target the SAME
+ * Exported so deprovision paths (pot:dissolve, create rollback) target the SAME
  * schema scaffoldHarnessSchema created — a raw `harness_<slug>` for a hyphenated
  * slug is both the wrong name AND a `DROP SCHEMA` syntax error.
  */
@@ -164,7 +164,7 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
 /**
  * Drop a harness's per-harness schema — the inverse of scaffoldHarnessSchema.
  * Targets the SAME sanitized name (harnessSchemaName), so it is correct for
- * hyphenated slugs. Used by hive:dissolve + the hive:create rollback.
+ * hyphenated slugs. Used by pot:dissolve + the pot:create rollback.
  */
 export async function dropHarnessSchema(slug: string): Promise<void> {
   const { sql } = getOrgPg();

@@ -1,5 +1,5 @@
 /**
- * hive:takedown — OWNER hides (or restores) reported content in a Hive
+ * pot:takedown — OWNER hides (or restores) reported content in a Hive
  * (Brief EN-3 / P-MOD). The content ref is appended to the owner-SIGNED policy's
  * moderation.takedownList (re-signed + federated); honest peers then HIDE it. Because
  * the takedown rides the signed, monotonically-versioned policy, a removed/old policy
@@ -19,18 +19,18 @@ const text = (payload: Record<string, unknown>) => ({
 });
 
 export default defineTool({
-  name: 'hive:takedown',
+  name: 'pot:takedown',
   profile: 'engineer',
   description:
     "OWNER takedown: hide a piece of content across the Hive by adding its ref to the owner-signed moderation.takedownList (re-signed + federated; honest peers honor it as a tombstone, no resurrection). Pass restore:true to un-hide. Requires holding the Hive key.",
   guidance: {
-    when: 'A member reported content (hive:moderation_queue) that you (the owner) want hidden on every honest peer.',
-    notWhen: 'Banning the AUTHOR for repeat abuse — that is hive:ban_member (revoke + re-key teeth). Takedown hides content; ban removes a member.',
-    chaining: 'hive:moderation_queue → hive:takedown (hide) → hive:moderation_resolve (mark actioned).',
+    when: 'A member reported content (pot:moderation_queue) that you (the owner) want hidden on every honest peer.',
+    notWhen: 'Banning the AUTHOR for repeat abuse — that is pot:ban_member (revoke + re-key teeth). Takedown hides content; ban removes a member.',
+    chaining: 'pot:moderation_queue → pot:takedown (hide) → pot:moderation_resolve (mark actioned).',
     seeAlso: [
-      'hive:moderation_queue (the report that triggered the takedown)',
-      'hive:moderation_resolve (mark actioned after hiding)',
-      'hive:ban_member (ban the author too)',
+      'pot:moderation_queue (the report that triggered the takedown)',
+      'pot:moderation_resolve (mark actioned after hiding)',
+      'pot:ban_member (ban the author too)',
     ],
   },
   capability: 'harness:write',

@@ -60,7 +60,7 @@ describe('resolveCueAuthority (P-003 — authority derived from the sender role)
   });
 });
 
-describe('hiveWideCueAuthority (intrinsic hive-level actions — hive:pause / overwatch:pause)', () => {
+describe('hiveWideCueAuthority (intrinsic hive-level actions — pot:pause / kettle:pause)', () => {
   it('always stamps hive-queen / hive-wide regardless of who triggered it', () => {
     expect(hiveWideCueAuthority('papercusp')).toEqual({
       authority: 'hive-queen',

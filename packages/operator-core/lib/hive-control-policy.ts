@@ -11,7 +11,7 @@
  * The cache is refreshed on boot + on every write (same-process immediate). Cross-process freshness is
  * boot-bounded — fine for these operational thresholds. Registers a runtime-config override concern.
  *
- * NOTE (D-005): placement AFFINITY weights are homed in hive:set-steering, NOT here — this carries only
+ * NOTE (D-005): placement AFFINITY weights are homed in pot:set-steering, NOT here — this carries only
  * the watchdog/liveness/health thresholds. (Work-distribution + system-health alarm thresholds can be
  * added to this same row incrementally — JSONB, no further migration.)
  */
@@ -73,7 +73,7 @@ export async function resetHiveControlPolicy(): Promise<void> {
 registerOverrideConcern({
   name: 'hive-control-policy',
   description: 'hive placement-watchdog thresholds (breaker / recovery-debounce / dormancy-grace / infra-breaker)',
-  auditAction: 'hive:control_policy',
+  auditAction: 'pot:control_policy',
   diff: async () => {
     const c = await readHiveControlPolicy();
     const entries: OverrideEntry[] = [];

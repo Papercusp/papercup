@@ -9,7 +9,7 @@
  *     mitigation) + ONE cross-hive ranked backlog (merged + re-ranked through the
  *     ONE placement registry), every candidate carrying its `hive` tag (P-001
  *     source/target-hive routing).
- *   - hive:survey tool: ON ⇒ the cross-hive shape (perHive + crossHive); OFF (the
+ *   - pot:survey tool: ON ⇒ the cross-hive shape (perHive + crossHive); OFF (the
  *     dark default) ⇒ the single-hive survey, BYTE-IDENTICAL to today.
  *   - fleet:place_batch routeByHive: tally a batch's target hives by the
  *     harness→hive tag (routing VISIBILITY; the per-task harness already routes).

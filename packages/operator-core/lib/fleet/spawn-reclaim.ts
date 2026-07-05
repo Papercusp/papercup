@@ -295,7 +295,7 @@ export async function releaseClaimsOfDeadSpawns(sql: Db, spawnIds: string[]): Pr
  * Backstop for the HISTORIC class: claims whose `s-…` holder's nursery row is
  * already terminal (settled by an earlier sweep that predates the dead-holder
  * release above) — or absent entirely AND the claim is old (the absent-row guard
- * keeps a just-reserved claim in bee:spawn's claim-then-insert window safe).
+ * keeps a just-reserved claim in cup:spawn's claim-then-insert window safe).
  * Runs every periodic sweep; each matched claim is a re-placement the Queen was
  * being refused.
  */

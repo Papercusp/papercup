@@ -1,5 +1,5 @@
 /**
- * scout:grade-idea — record an owner/Queen grade (1–5 + optional critique) on a
+ * blender:grade-idea — record an owner/Queen grade (1–5 + optional critique) on a
  * routed Scout idea (scout-idea-grading-2026-06-12 B-03 / P-003, contract C-3).
  *
  * The thin tool projection over the C-2 write seam ({@link gradeRoutedIdea}).
@@ -217,7 +217,7 @@ export function toToolResult(out: GradeIdeaOutcome): {
 }
 
 export default defineTool({
-  name: 'scout:grade-idea',
+  name: 'blender:grade-idea',
   description:
     "Grade a routed Scout idea 1–5 with optional feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
   capability: 'harness:write',

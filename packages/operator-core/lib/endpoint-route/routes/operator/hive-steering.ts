@@ -1,11 +1,11 @@
 /**
  * GET /api/operator/hive-steering — the HTTP bridge for the oddsmith engine's
- * `hive:get-steering` (DOWN) leg (oddsmith P-020).
+ * `pot:get-steering` (DOWN) leg (oddsmith P-020).
  *
  * The oddsmith trading engine reads owner/hive policy DOWN once per tick to learn
  * the kill-switch + its trading knobs (capital ceiling / watchlist / strategy
  * enable). It GETs here; this route returns {@link getOwnerSteering} — the SAME
- * internal accessor `hive:get-steering` uses — as the raw JSON the engine consumes.
+ * internal accessor `pot:get-steering` uses — as the raw JSON the engine consumes.
  *
  * CONTRACT (mirrors the oddsmith bridge — `operator-bridge-wiring.ts` `getSteering`
  * + `engine/src/loop.ts` `RawHiveSteering` / `defaultMapSteering`): the engine reads

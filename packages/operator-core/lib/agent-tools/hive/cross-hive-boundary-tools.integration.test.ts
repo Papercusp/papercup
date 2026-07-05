@@ -9,12 +9,12 @@
  * stack:
  *   · `cross-hive-grants.integration.test.ts` exercises the grant STORE + admission
  *     FUNCTIONS (setCrossHiveGrant / assertOutboundGrant) directly — not through a tool.
- *   · `cross-hive-ask-tools.test.ts` exercises the `hive:ask` / `hive:request_work` TOOLS,
+ *   · `cross-hive-ask-tools.test.ts` exercises the `pot:ask` / `pot:request_work` TOOLS,
  *     but SHORT-CIRCUITS the grant gate with an always-allow `checkOutboundGrant` fake —
  *     so the real grant store gating the tools is never proven.
  *
- * This file closes that seam: it drives the ACTUAL `hive:cross_grant`, `hive:ask`,
- * `hive:request_work`, and `hive:asks` tool handlers, with the REAL grants store + REAL
+ * This file closes that seam: it drives the ACTUAL `pot:cross_grant`, `pot:ask`,
+ * `pot:request_work`, and `pot:asks` tool handlers, with the REAL grants store + REAL
  * C-1 ask ledger on a fresh migrated Postgres (`getOrgPg` mocked to the fixture's admin
  * client — the blessed pattern from `harness-prompt-overrides.integration.test.ts`). The
  * ONLY substituted seam is the swarm transport boundary — registered as a fake in the
@@ -23,13 +23,13 @@
  *
  * Proves the owner's directed cross-Hive grant actually mediates the boundary, end-to-end,
  * through the tools:
- *   1. default-deny: an UN-granted `hive:ask` is rejected (no send, no ledger row);
- *   2. owner grants `out` ask via `hive:cross_grant` → the SAME `hive:ask` is admitted,
+ *   1. default-deny: an UN-granted `pot:ask` is rejected (no send, no ledger row);
+ *   2. owner grants `out` ask via `pot:cross_grant` → the SAME `pot:ask` is admitted,
  *      delivered, and the peer's answer lands `answered` in the C-1 ledger (admitted+answered);
- *   3. `hive:cross_grant` revoke → the ask is rejected again;
- *   4. `hive:request_work` crosses ONLY with an outbound `work-request` grant (an `ask`-only
+ *   3. `pot:cross_grant` revoke → the ask is rejected again;
+ *   4. `pot:request_work` crosses ONLY with an outbound `work-request` grant (an `ask`-only
  *      grant denies it; granting `work-request` admits it);
- *   5. the P-013 grant quota (size cap) gates an oversize `hive:ask` body through the tool.
+ *   5. the P-013 grant quota (size cap) gates an oversize `pot:ask` body through the tool.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/hive/cross-hive-boundary-tools.integration.test.ts
  */
@@ -141,7 +141,7 @@ afterEach(() => {
 });
 
 describe('cross-Hive boundary, mediated through the real tools (grant → ask/answer + request_work)', () => {
-  it('default-deny: an UN-granted hive:ask is rejected — no send, no ledger row', async () => {
+  it('default-deny: an UN-granted pot:ask is rejected — no send, no ledger row', async () => {
     const res = await ask();
     expect(res.ok).toBe(false);
     expect(String(res.reason)).toMatch(/no outbound grant/i);
@@ -152,12 +152,12 @@ describe('cross-Hive boundary, mediated through the real tools (grant → ask/an
     expect(all.count).toBe(0);
   });
 
-  it('owner grants `out` ask via hive:cross_grant → hive:ask is admitted, delivered, and answered (C-1)', async () => {
+  it('owner grants `out` ask via pot:cross_grant → pot:ask is admitted, delivered, and answered (C-1)', async () => {
     // STEP 1 — the owner directs an OUTBOUND ask grant to the peer through the tool.
     const g = await grant({ action: 'grant', direction: 'out', peerHivePubkey: PEER, kinds: ['ask'] });
     expect(g.ok).toBe(true);
 
-    // STEP 2 — the SAME hive:ask now passes the real outbound gate, delivers, records `sent`.
+    // STEP 2 — the SAME pot:ask now passes the real outbound gate, delivers, records `sent`.
     const res = await ask({ subject: 'review auth schema', body: 'please advise' });
     expect(res.ok).toBe(true);
     expect(res.state).toBe('sent');
@@ -196,7 +196,7 @@ describe('cross-Hive boundary, mediated through the real tools (grant → ask/an
     });
   });
 
-  it('hive:cross_grant revoke → the once-admitted hive:ask is rejected again', async () => {
+  it('pot:cross_grant revoke → the once-admitted pot:ask is rejected again', async () => {
     // Grant, prove admission, then revoke through the tool.
     await grant({ action: 'grant', direction: 'out', peerHivePubkey: PEER, kinds: ['ask'] });
     expect((await ask()).ok).toBe(true);
@@ -212,7 +212,7 @@ describe('cross-Hive boundary, mediated through the real tools (grant → ask/an
     expect(boundary.sends).toHaveLength(1);
   });
 
-  it('hive:request_work crosses ONLY with an outbound work-request grant', async () => {
+  it('pot:request_work crosses ONLY with an outbound work-request grant', async () => {
     // An `ask`-only outbound grant does NOT authorize a work-request.
     await grant({ action: 'grant', direction: 'out', peerHivePubkey: PEER, kinds: ['ask'] });
     const denied = await requestWork();
@@ -230,7 +230,7 @@ describe('cross-Hive boundary, mediated through the real tools (grant → ask/an
     expect(sent.count).toBe(1);
   });
 
-  it('the P-013 grant quota (size cap) gates an oversize hive:ask body through the tool', async () => {
+  it('the P-013 grant quota (size cap) gates an oversize pot:ask body through the tool', async () => {
     // Grant outbound `ask` with a tiny body-size cap (the tool persists maxBodyBytes on the grant).
     await grant({ action: 'grant', direction: 'out', peerHivePubkey: PEER, kinds: ['ask'], maxBodyBytes: 5 });
 

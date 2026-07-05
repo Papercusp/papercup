@@ -34,7 +34,7 @@ describe('presence tombstone federation (EI-469)', () => {
     expect((await devicePubkeysFor(dbB.sql)).has(idA.devicePubkey)).toBe(true);
 
     // Peer A publishes a presence TOMBSTONE on its own log — exactly what
-    // hive:leave does via publishPresenceTombstoneForHarness (buildPresenceTombstoneOp,
+    // pot:leave does via publishPresenceTombstoneForHarness (buildPresenceTombstoneOp,
     // appended while the swarm is still live). ts well past the announce so the
     // projection's ts-guard lets the delete win.
     await peerA.handle.append({

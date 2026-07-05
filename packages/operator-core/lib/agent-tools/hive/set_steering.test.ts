@@ -1,5 +1,5 @@
 /**
- * hive:set-steering + hive:get-steering handler tests
+ * pot:set-steering + pot:get-steering handler tests
  * (queen-steering-panel-2026-06-15 B-01 / C-1).
  *
  * The owner-steering store is round-tripped against PG via owner-steering's own
@@ -44,7 +44,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-describe('hive:set-steering', () => {
+describe('pot:set-steering', () => {
   it('writes the provided fields, refreshes the panel, and WAKES the Queen', async () => {
     const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null };
     setOwnerSteering.mockResolvedValueOnce(next);
@@ -114,7 +114,7 @@ describe('hive:set-steering', () => {
   });
 });
 
-describe('hive:get-steering', () => {
+describe('pot:get-steering', () => {
   it('reads the current steering for the hive', async () => {
     const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], eligibleHives: ['hive-a'], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null };
     getOwnerSteering.mockResolvedValueOnce(cur);

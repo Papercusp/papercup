@@ -64,7 +64,7 @@ test('computeQueenWakeBrief — renders the survey floor + carry-journal (B-03/B
   const out = await computeQueenWakeBrief('ws-1', 'papercup', { wokeBy: 'timer' });
   assert.ok(out, 'a brief should be produced');
   assert.match(out!, /Your wake brief/);
-  assert.match(out!, /do NOT re-run `hive:survey`/); // P-007 reinforcement
+  assert.match(out!, /do NOT re-run `pot:survey`/); // P-007 reinforcement
   assert.match(out!, /Woke by:.*timer/);
   assert.match(out!, /### Your carry-journal/);
   assert.match(out!, /revisit the staging deploy/);

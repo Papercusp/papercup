@@ -11,7 +11,7 @@
  *
  * Idempotent: a hive that already holds a lease gets the SAME desktop back (the `apps`
  * are launched only on the first provision). Tear down with computer:release_desktop, or
- * automatically on hive:dissolve.
+ * automatically on pot:dissolve.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -26,7 +26,7 @@ export default defineTool({
   name: 'computer:provision_desktop',
   profile: 'engineer',
   description:
-    'Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a hive so its bees can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or hive:dissolve.',
+    'Provision a sandboxed GUI desktop (isolated Xvfb + openbox, never host :0) for a hive so its bees can operate it via capability:computer. Optionally launches GUI apps on it. Idempotent (returns the existing desktop; apps launch only on first provision). Tear down with computer:release_desktop or pot:dissolve.',
   guidance: {
     when: 'Equipping a hive for visual/GUI work — before a bee in that hive uses capability:computer. Pass `apps` to pre-launch the programs the bee will operate (e.g. a browser, a spreadsheet).',
     notWhen:
@@ -41,7 +41,7 @@ export default defineTool({
   },
   capability: 'harness:write',
   requirePrincipal: false,
-  // Placement/infra authority — same allowlist as bee:spawn (operator + Queen + the SU
+  // Placement/infra authority — same allowlist as cup:spawn (operator + Queen + the SU
   // roles, NOT a worker-bee: a bee does not equip its own hive; the operator/Queen does).
   agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
   args: z

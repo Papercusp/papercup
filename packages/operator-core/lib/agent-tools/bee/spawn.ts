@@ -1,5 +1,5 @@
 /**
- * bee:spawn — launch one agent into a registered harness, tracked in the
+ * cup:spawn — launch one agent into a registered harness, tracked in the
  * durable nursery (Brief 4, agent-briefs-2026-06-05).
  *
  * The human-testable operator→spawn path: the operator chat brain calls this
@@ -23,14 +23,14 @@ function inferSingleWorkItemId(text: string | null | undefined): string | null {
 }
 
 export default defineTool({
-  name: 'bee:spawn',
+  name: 'cup:spawn',
   profile: 'engineer',
   description:
     'Spawn one background agent into a harness and return its spawn_id immediately. This is for autonomous-loop workers, not visible desktop terminals; use fleet:launch-on-plan for a desktop fleet on a plan. The run is tracked durably in the nursery, visible in fleet:tree, and stoppable with fleet:cancel. role="worker" requires chunk.',
   guidance: {
     when: 'Use to place a background autonomous worker on new work: a bee, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="bee" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
     notWhen: 'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
-    chaining: 'bee:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
+    chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -156,7 +156,7 @@ export default defineTool({
                   harness: args.harness ?? null,
                   project_dir: null,
                   error: `spawn rejected: work item ${workItemId} could not be claimed for the new bee`,
-                  next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry bee:spawn.',
+                  next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry cup:spawn.',
                 }),
               },
             ],
@@ -230,7 +230,7 @@ export default defineTool({
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',
       idempotencyKey: args.idempotency_key ?? null,
-      // Coordination-token attribution (B-TOK-4): a bee:spawn'd agent's turn runs
+      // Coordination-token attribution (B-TOK-4): a cup:spawn'd agent's turn runs
       // because it was placed by a coordinating agent (the Queen / operator) — a
       // coordination trigger. Stamps turn_trigger on the run's usage sample.
       turnTrigger: 'coord-wake',
@@ -263,7 +263,7 @@ export default defineTool({
             next: res.ok
               ? 'fleet:tree { spawn_id } to watch; fleet:cancel { spawn_id } to abort.'
               : res.awaitEvent
-                ? `over ceiling — events:await { event: "${res.awaitEvent}" }, end your turn, retry this bee:spawn on wake.`
+                ? `over ceiling — events:await { event: "${res.awaitEvent}" }, end your turn, retry this cup:spawn on wake.`
                 : 'fix the input and retry — the failed attempt is recorded in the nursery.',
           }),
         },

@@ -1,7 +1,7 @@
 /**
- * hive:report — any admitted MEMBER files a moderation report against content or
+ * pot:report — any admitted MEMBER files a moderation report against content or
  * another member (Brief EN-3 / P-MOD, the report endpoint). The report federates to
- * the owner's moderation queue (hive:moderation_queue).
+ * the owner's moderation queue (pot:moderation_queue).
  *
  * Gated on the owner having ENABLED reporting (policy.moderation.reportable === true) —
  * absent ⇒ reporting off ⇒ today's behavior, unchanged (the brief's default).
@@ -29,19 +29,19 @@ const REPORT_RATE_LIMIT_MAX = 20;
 const REPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
 
 export default defineTool({
-  name: 'hive:report',
+  name: 'pot:report',
   profile: 'engineer',
   description:
     "File a moderation report against content or a member in a Hive. The report federates to the owner's moderation queue. Requires the owner to have enabled reporting (moderation.reportable in the Hive policy); otherwise reporting is off and this no-ops.",
   guidance: {
     when: 'You are a member of a Hive with reporting enabled and want to flag abusive content or a member to the owner.',
     notWhen:
-      'You ARE the owner taking action — use hive:takedown (hide content) / hive:ban_member (ban a member). Reporting is the member→owner signal, not the owner action.',
-    chaining: 'hive:report (member flags) → owner reviews hive:moderation_queue → hive:moderation_resolve / hive:takedown / hive:ban_member.',
+      'You ARE the owner taking action — use pot:takedown (hide content) / pot:ban_member (ban a member). Reporting is the member→owner signal, not the owner action.',
+    chaining: 'pot:report (member flags) → owner reviews pot:moderation_queue → pot:moderation_resolve / pot:takedown / pot:ban_member.',
     seeAlso: [
-      'hive:moderation_queue (where the owner reviews your flag)',
-      'hive:takedown (owner action: hide the content)',
-      'hive:ban_member (owner action: ban the member)',
+      'pot:moderation_queue (where the owner reviews your flag)',
+      'pot:takedown (owner action: hide the content)',
+      'pot:ban_member (owner action: ban the member)',
     ],
   },
   capability: 'harness:write',

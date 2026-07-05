@@ -186,7 +186,7 @@ async function reconcileWorkspace(
         continue;
       }
       _wired.set(k, entry);
-      // The send tools (hive:ask / hive:request_work, B-04) resolve the live
+      // The send tools (pot:ask / pot:request_work, B-04) resolve the live
       // boundary through the shared registry — never a second transport.
       registerCrossHiveBoundary(workspaceId, meta.hiveId, entry.wiring);
       out.wired.push(meta.hiveId);
@@ -296,8 +296,8 @@ async function wireOneHive(
   };
 }
 
-// NOTE: the live-boundary RESOLVE point for send-side callers (hive:ask /
-// hive:request_work) is cross-hive-boundary-registry.ts (`getCrossHiveBoundary`)
+// NOTE: the live-boundary RESOLVE point for send-side callers (pot:ask /
+// pot:request_work) is cross-hive-boundary-registry.ts (`getCrossHiveBoundary`)
 // — this module is the only WRITER of that registry (register on wire,
 // unregister on close).
 

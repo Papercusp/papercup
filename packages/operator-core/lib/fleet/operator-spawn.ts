@@ -3,7 +3,7 @@
  * (Brief 4, agent-briefs-2026-06-05; findings folded into
  * autoloop-pot-operator-rebuild-2026-06-05).
  *
- * The one spawn path the operator (chat `<spawn>` tag, the `bee:spawn` tool, and
+ * The one spawn path the operator (chat `<spawn>` tag, the `cup:spawn` tool, and
  * any future admin trigger) goes through:
  *
  *   resolveProject(harness) → recordSpawn (harness_shared.spawned_agents)
@@ -398,7 +398,7 @@ export interface OperatorSpawnInput {
   tier?: string | null;
   modelSpec?: string | null;
   /**
-   * Per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the bee:spawn
+   * Per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the cup:spawn
    * `account` arg, mirroring the interactive psu path (resolveAccountPin). One of:
    *   • '<pool-id>'               → HARD pin this spawn to that account via the inference gateway.
    *   • 'auto' / 'gateway'        → gateway auto-route (it selects an available account + fails over).
@@ -599,7 +599,7 @@ async function recordFailedAttempt(
  * race-claim lanes off coord presence — a claim-race stampede. The queen-wave
  * compiler now substitutes `{item}` up front (`buildWaveFeatures`), but
  * `spawnAgentInHarness` is the ONE chokepoint every launch path funnels through
- * (chat `<spawn>`, `bee:spawn`, `place_batch`), so a fail-loud backstop here
+ * (chat `<spawn>`, `cup:spawn`, `place_batch`), so a fail-loud backstop here
  * refuses ANY un-substituted brief regardless of caller — option (a) of the
  * issue ("refuse to launch when the prompt still matches the placeholder").
  *
@@ -712,7 +712,7 @@ export async function spawnAgentInHarness(
   // papercusp-overwatch (default OFF) until B-12's live staging proof. The role is
   // statically REGISTERED (so the BuiltinAgentRole union + ROLE_ENVELOPES stay stable)
   // but not ACTIVATABLE while the flag is off — refuse to spawn it here, at the central
-  // role-admission chokepoint that bee:spawn + every agent-driven launch funnel
+  // role-admission chokepoint that cup:spawn + every agent-driven launch funnel
   // through (B-04 additionally gates the autonomous wake-loop routine; B-08 the UI
   // pane). Role-scoped so a flag-read fault never touches other roles; getFlag fails
   // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
@@ -727,7 +727,7 @@ export async function spawnAgentInHarness(
   // template placeholder. A literal `{item}` / `brief-NN` means an upstream
   // substitution step was skipped — the 2026-06-10 dispatch-pack stampede, where
   // surplus bees raced to claim lanes off coord presence. This central chokepoint
-  // backstops every launch path (bee:spawn, chat `<spawn>`, place_batch), so the
+  // backstops every launch path (cup:spawn, chat `<spawn>`, place_batch), so the
   // guard fails loud + durable (recordFailedAttempt) rather than spawn a mis-briefed
   // bee. The queen-wave compiler substitutes templates up front; this catches any
   // caller that bypassed it.
@@ -1012,7 +1012,7 @@ export async function spawnAgentInHarness(
       await recordProactiveDisposition({
         workspaceId: input.workspaceId,
         harnessSlug: slug,
-        decisionInput: { action: 'bee:spawn', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
+        decisionInput: { action: 'cup:spawn', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
         why: `model tier ${spawnModelTier ?? 'default'} for ${role}`,
         links,
         metadata: { modelTier: spawnModelTier ?? null, modelSpec: spawnModelSpec ?? null, role },
@@ -1078,12 +1078,12 @@ export async function spawnAgentInHarness(
 
   // ── external-bench bee SELF-SUFFICIENCY (impartial-benchmark D-020 fix) ──────────────────────────────
   // In the real-Queen benchmark arm (hive-backlog-realqueen.ts) the Queen persona PLACES a bee via
-  // `bee:spawn`, but her brief is a situational OVERLAY — not the "claim + implement this lone bench
+  // `cup:spawn`, but her brief is a situational OVERLAY — not the "claim + implement this lone bench
   // feature" directive. So a Queen-placed bench bee booted with FEATURE_ID set but no instruction to claim
   // its (unassigned, taken_by NULL) feature → it found no actionable work and exited $0, no diff, no usage
   // (the seeded feature later went `cancelled`). The WORKING scripted arm (hive-backlog-live.ts) avoids this
   // by spawning every bee with the BENCH_BEE_DIRECTIVE brief (proven: 10/11 non-empty diffs on the xbh* run,
-  // feature → `passed`). Two further hazards on this path: (a) the Queen's `bee:spawn` only pins
+  // feature → `passed`). Two further hazards on this path: (a) the Queen's `cup:spawn` only pins
   // PAPERCUSP_SPAWN_BACKEND in extraEnv when a TIER resolves a backend (none here), so the bee command is
   // built from whatever process.env.AGENT_CMD the SPAWNING process holds — and the Queen's spawns run in the
   // long-running :3170 host, whose env can differ from the launcher; an unset AGENT_CMD falls through to
@@ -1158,7 +1158,7 @@ export async function spawnAgentInHarness(
   // P-050/P-060: thread the Queen brief through the invocation so the invoke-once
   // prompt path (invoke.ts → buildPrompt's `## Queen brief` section) injects it into
   // the bee's prompt. The brief rides in extraEnv as QUEEN_BRIEF; the child reads
-  // process.env.QUEEN_BRIEF. (NOTE: the bee:spawn child does NOT use
+  // process.env.QUEEN_BRIEF. (NOTE: the cup:spawn child does NOT use
   // assembleRolePrompt — it goes through invoke-once → buildPrompt; an earlier
   // comment naming assembleRolePrompt was the mis-wiring the plan flagged.)
   if (input.brief) {

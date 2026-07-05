@@ -1571,7 +1571,7 @@ const handler = createMcpHandler(
               // above cover the harness-keyed reads; this closes the surfaces that
               // read by a `hive` arg or a cross-hive `scope` selector.
               // (a) A `hive` arg naming a DIFFERENT hive is an explicit sibling-hive
-              //     read on any tool (coord:presence, hive:get/status, coord:wake, …)
+              //     read on any tool (coord:presence, pot:get/status, coord:wake, …)
               //     → reject (a hive slug means the same thing on every tool).
               // (b) coord:presence is the one read surface with a hive|workspace|all
               //     scope selector; its DEFAULT already resolves to the caller's OWN

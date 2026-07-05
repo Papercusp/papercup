@@ -1,5 +1,5 @@
 /**
- * harness:configure (WI-1563) — the non-hive counterpart of hive:update's
+ * harness:configure (WI-1563) — the non-hive counterpart of pot:update's
  * configOverrides half.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,7 +60,7 @@ describe('harness:configure', () => {
     expect(savedReg.projects[0].configOverrides).toEqual({ maxCostUsd: 5, parallelWorkers: 3 });
   });
 
-  it('rejects a hive slug — use hive:update instead', async () => {
+  it('rejects a hive slug — use pot:update instead', async () => {
     const projects = [{ slug: 'my-hive', harness_kind: 'hive' }];
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects })),
@@ -80,7 +80,7 @@ describe('harness:configure', () => {
     expect(payload).toEqual({
       ok: false,
       error: 'is_a_hive',
-      message: "'my-hive' is a hive harness — use hive:update to change its configOverrides instead.",
+      message: "'my-hive' is a hive harness — use pot:update to change its configOverrides instead.",
     });
   });
 

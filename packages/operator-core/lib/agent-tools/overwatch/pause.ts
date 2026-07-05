@@ -1,7 +1,7 @@
 /**
- * overwatch:pause — the "Pause Overwatch" control (overwatch-role-2026-06-15 B-07).
+ * kettle:pause — the "Pause Overwatch" control (overwatch-role-2026-06-15 B-07).
  *
- * The sibling of hive:pause, for the autonomous system-health supervisor. PAUSE =
+ * The sibling of pot:pause, for the autonomous system-health supervisor. PAUSE =
  *   1. persist `overwatch_started = false` FIRST (disarms every loop/watchdog seam
  *      — else Pause would be undone by its own safety net, the hive's P-013
  *      ordering lesson),
@@ -9,7 +9,7 @@
  *      (fail-soft until B-04 is wired),
  *   3. optionally send the live overwatch session a graceful stop cue (drain).
  *
- * Resume with overwatch:start. Pausing does not kill a running overwatch turn; it
+ * Resume with kettle:start. Pausing does not kill a running overwatch turn; it
  * finishes, and with the started bit false nothing re-arms.
  */
 import { z } from 'zod';
@@ -25,18 +25,18 @@ import { setOverwatchStarted } from '../../overwatch/control-state';
 import { clearOverwatchWake } from '../../overwatch/wake-bridge';
 
 export default defineTool({
-  name: 'overwatch:pause',
+  name: 'kettle:pause',
   profile: 'engineer',
   description:
-    'PAUSE the overwatch (the autonomous system-health supervisor): persist overwatch_started=false (disarms the loop + liveness watchdog), clear its pending wake, and optionally send the live overwatch session a graceful stop cue. Resume with overwatch:start.',
+    'PAUSE the overwatch (the autonomous system-health supervisor): persist overwatch_started=false (disarms the loop + liveness watchdog), clear its pending wake, and optionally send the live overwatch session a graceful stop cue. Resume with kettle:start.',
   guidance: {
     when: 'The user clicks Pause Overwatch / asks to freeze the system-health supervisor (incident, review, cost control), or the overwatch is misbehaving and must be quieted.',
     notWhen:
-      'To pause the Queen / colony — hive:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running overwatch turn; it finishes and nothing re-arms.',
-    chaining: 'overwatch:pause { drain:true } for the harder stop → overwatch:start to resume.',
+      'To pause the Queen / colony — pot:pause (distinct loop). To pause one plan — plans:pause. Pausing does not kill a running overwatch turn; it finishes and nothing re-arms.',
+    chaining: 'kettle:pause { drain:true } for the harder stop → kettle:start to resume.',
     seeAlso: [
-      'overwatch:start (resume the overwatch)',
-      'hive:pause (pause the Queen / colony — distinct loop)',
+      'kettle:start (resume the overwatch)',
+      'pot:pause (pause the Queen / colony — distinct loop)',
       'plans:pause (pause one plan)',
     ],
   },

@@ -1,12 +1,12 @@
 /**
- * Unit tests for overwatch:declare-wake (overwatch-role-2026-06-15 B-04 — the
+ * Unit tests for kettle:declare-wake (overwatch-role-2026-06-15 B-04 — the
  * overwatch's own declare-next-wake, the persona's turn-end loop step).
  *
  * Pin the contract: REPLACE semantics over the overwatch's OWN wake channel — a
  * time (`at`/`inSeconds`), the configured cadence default (no time given), or
  * `mode:'none'` (clear); a refused declaration without a resolvable home harness;
  * and the at⊕inSeconds / none-vs-time refinements. (That it is gated on coord:write
- * — so it can't reach the Queen's routines:write hive:declare-wake — is pinned by
+ * — so it can't reach the Queen's routines:write pot:declare-wake — is pinned by
  * the role-cap surface tests; here we pin the handler behaviour.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -49,7 +49,7 @@ beforeEach(() => {
   getOverwatchCadenceSec.mockResolvedValue(600);
 });
 
-describe('overwatch:declare-wake', () => {
+describe('kettle:declare-wake', () => {
   it('refuses without a resolvable home harness', async () => {
     const out = await call(overwatchDeclareWake as never, {});
     expect(out.ok).toBe(false);

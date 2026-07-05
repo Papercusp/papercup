@@ -1,5 +1,5 @@
 /**
- * membership_decide.test.ts — hive:membership_decide HANDLER, bulk keyed-array
+ * membership_decide.test.ts — pot:membership_decide HANDLER, bulk keyed-array
  * contract (bulk-endpoint-standardization-2026-06-21 P-006). The owner gate
  * (isCanonicalHiveOwner — WI-2000: the canonical-ownership check, not merely
  * "holds ANY key"), the local-identity resolve, and the admission store
@@ -46,7 +46,7 @@ beforeEach(() => {
   h.deny.mockImplementation(async ({ githubUserId }: { githubUserId: number }) => ({ ok: true, status: 'denied', pending: { githubUserId } }));
 });
 
-describe('hive:membership_decide handler (bulk keyed-array, P-006)', () => {
+describe('pot:membership_decide handler (bulk keyed-array, P-006)', () => {
   it('owner gate fails the WHOLE call when this Swarm does not hold the key', async () => {
     h.isCanonicalHiveOwner.mockResolvedValue(false);
     const b = await env({ hive: 'sheets', githubUserId: 42, decision: 'approve' });

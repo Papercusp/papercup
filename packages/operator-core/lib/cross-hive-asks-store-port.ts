@@ -3,7 +3,7 @@
  * tools depend on (hive-network-surface-2026-06-11 P-003, brief B-04), plus the
  * production adapter over brief B-02's `PgCrossHiveAsks`.
  *
- * The send composition + `hive:asks` take the store as an injected port so they
+ * The send composition + `pot:asks` take the store as an injected port so they
  * unit-test without PG (a fake store) and bind to the live PG store
  * (`pgCrossHiveAsksStore`) in production. The port re-uses B-02's row / input /
  * filter types verbatim — no parallel shapes to drift.
@@ -34,7 +34,7 @@ export interface CrossHiveAsksStore {
     correlationId: string,
     sql?: Sql,
   ): Promise<void>;
-  /** List rows (most-recent-first) for `hive:asks`. */
+  /** List rows (most-recent-first) for `pot:asks`. */
   list(
     workspaceId: string,
     hiveSlug: string,
