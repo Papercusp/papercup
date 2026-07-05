@@ -315,7 +315,8 @@ function isCodexLaunchModelSpec(spec: unknown): boolean {
 
 function withDefaultLaunchTimeout(input: FireLaunchInput, role: string): FireLaunchInput {
   if (typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0) return input;
-  return role === 'queen' ? { ...input, timeoutMs: QUEEN_INVOKE_TIMEOUT_MS } : input;
+  // pot-rename dual-accept: `mug` is the additive twin of `queen` (same brain role).
+  return role === 'queen' || role === 'mug' ? { ...input, timeoutMs: QUEEN_INVOKE_TIMEOUT_MS } : input;
 }
 
 /**
@@ -455,7 +456,7 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
         /* best-effort — the heartbeat loop below still covers liveness if this misses */
       });
     };
-    if (role === 'queen') {
+    if (role === 'queen' || role === 'mug') {
       const admission = await sql.begin(async (tx): Promise<
         | { admitted: true }
         | { admitted: false; activeSpawnId: string; activeHarnessSlug: string | null }
@@ -496,7 +497,7 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
     console.warn(
       `[launch-blueprint] fallback spawn record failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`,
     );
-    if (role === 'queen') return { spawnId: null, runId: null, durable: false };
+    if (role === 'queen' || role === 'mug') return { spawnId: null, runId: null, durable: false };
     pg = null;
   }
 
@@ -651,7 +652,7 @@ export async function fireLaunchBlueprint(
   // (never substitutes) and the model-tiers floor-clamp never downgrades below the pin. Honors a caller-set
   // bodyExtra.spawnModel + PAPERCUSP_XBENCH_MODEL (default opus:xhigh) as the one knob.
   if (
-    target.role === 'queen' &&
+    (target.role === 'queen' || target.role === 'mug') &&
     fireInput.bodyExtra?.spawnModel == null &&
     (process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE ?? '').trim() &&
     /^xbq/.test(input.installSlug)

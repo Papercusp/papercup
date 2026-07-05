@@ -716,7 +716,7 @@ export async function spawnAgentInHarness(
   // through (B-04 additionally gates the autonomous wake-loop routine; B-08 the UI
   // pane). Role-scoped so a flag-read fault never touches other roles; getFlag fails
   // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
-  if (role === 'overwatch' && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
+  if ((role === 'overwatch' || role === 'kettle') && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
     return fail(
       'spawn rejected: role="overwatch" is gated behind the papercusp-overwatch flag ' +
         '(default OFF until B-12 proves it live on staging) — enable it in /admin/features to spawn.',

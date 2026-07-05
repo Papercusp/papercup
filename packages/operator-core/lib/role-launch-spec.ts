@@ -170,7 +170,7 @@ export async function buildRoleLaunchSpec(
   // stale the moment the user renames a tier. Best-effort (falls back to the
   // committed default menu inside the helper).
   let extras = input.extras;
-  if (input.role === 'queen' || input.role === 'operator') {
+  if (input.role === 'queen' || input.role === 'mug' || input.role === 'operator') {
     const { tierMenuRuntimeLines } = await import('./fleet/model-tiers');
     extras = [...(input.extras ?? []), ...(await tierMenuRuntimeLines())];
   }

@@ -26,14 +26,23 @@
  * Flags (all optional except where noted):
  *   --out <dir>            seed output dir (default: papercusp-desktop/src-tauri/seed)
  *   --repo <dir>           source checkout (default: the workspace repo root)
- *   --store-dir <dir>      hive corestore dir (default: <root>/.papercusp/<hive>/hyperbee)
+ *   --store-dir <dir>      hive corestore dir (default: the LIVE per-workspace store
+ *                          ~/.papercusp-workspaces/<workspace-id>/.papercusp/<hive>/hyperbee when
+ *                          --workspace-id is given, else <root>/.papercusp/<hive>/hyperbee).
+ *                          MUST already exist — a missing dir is refused, never created.
  *   --hive <slug>          hive home slug (default: papercusp)
  *   --origin <url>         origin the restored clone re-points at (default: the GitHub repo)
  *   --rev <rev>            git bundle rev selector (default: HEAD — current branch only, self-contained &
  *                          offline-cloneable; pass --all to seed every ref).
  *   --depth <n>            currently only `1`: cut an offline-cloneable one-commit snapshot of --rev instead
  *                          of full reachable history. Normal first-boot fetch back-fills history from origin.
- *   --shallow              alias for --depth 1 (the release default used by build scripts).
+ *                          The RELEASE default is FULL history (owner decision 2026-07-05, option A: "a full
+ *                          git bundle along with a snapshot of the shared pot") — depth 1 is the opt-in
+ *                          small-installer escape hatch (PAPERCUSP_SEED_DEPTH=1 in the build scripts).
+ *   --shallow              alias for --depth 1.
+ *   --allow-mint-epoch-key BOOTSTRAP ONLY: skip the load-don't-mint guard and let deriveEpochKey mint a
+ *                          fresh epoch key when this box's keychain has no hive identity. Never for the
+ *                          canonical hive — a minted key is unwrappable by every admitted member (WI-1981).
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
  *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
@@ -46,6 +55,7 @@
 
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import Corestore from 'corestore';
 import {
@@ -58,6 +68,8 @@ import {
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
 import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-serving';
+import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
+import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_HIVE = 'papercusp';
@@ -126,6 +138,50 @@ export async function pickGitEncryption(inp: PickGitEncryptionInput): Promise<Gi
   return undefined;
 }
 
+/**
+ * Load-don't-mint guard (WI-2903 / WI-1981). `deriveEpochKey` is get-or-CREATE:
+ * on a box whose keychain does NOT already hold the hive identity, an epoch seal
+ * silently MINTS a fresh divergent key that no admitted member can unwrap — the
+ * seed ships "sealed" but every joiner falls back to a cold clone. This box
+ * (2026-06) already grew one such divergent identity that way.
+ *
+ * So before an epoch seal we REQUIRE the hive private key to already be loadable
+ * (tri-state via loadHiveKeyStatus — a keychain read error fails CLOSED, it is
+ * not "no key"). `allowMint` (--allow-mint-epoch-key) is the deliberate escape
+ * hatch for bootstrapping a brand-new hive's first seed.
+ */
+export async function assertEpochSealIdentityPresent(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly allowMint: boolean;
+  /** Injected for tests; defaults to the real keychain read. */
+  readonly loadStatus?: (workspaceId: string, slug: string) => Promise<HiveKeyStatus>;
+  readonly warn?: (msg: string) => void;
+}): Promise<void> {
+  const warn = inp.warn ?? ((m: string) => console.warn(m));
+  const status = await (inp.loadStatus ?? loadHiveKeyStatus)(inp.workspaceId, inp.hive);
+  if (status.kind === 'ok') {
+    warn(`[cut-seed] hive identity present (pubkey ${status.pubkeyBase64.slice(0, 8)}…) — epoch seal will use the live key.`);
+    return;
+  }
+  if (inp.allowMint) {
+    warn(
+      `[cut-seed] ⚠ --allow-mint-epoch-key: hive identity ${status.kind === 'error' ? `unreadable (${status.reason})` : 'absent'} — ` +
+        'deriveEpochKey WILL mint a fresh key. Only correct when bootstrapping a brand-new hive.',
+    );
+    return;
+  }
+  const why =
+    status.kind === 'error'
+      ? `the keychain read FAILED (${status.reason}) — a key may exist but could not be loaded`
+      : 'this box holds NO private key for the hive';
+  throw new Error(
+    `[cut-seed] REFUSING epoch seal for hive '${inp.hive}' (workspace '${inp.workspaceId}'): ${why}. ` +
+      'deriveEpochKey is get-or-CREATE, so proceeding would mint a DIVERGENT epoch key no admitted member can unwrap ' +
+      '(WI-1981). Run the cut on the owner box with the live keychain, or pass --allow-mint-epoch-key to bootstrap a new hive.',
+  );
+}
+
 function resolveWorkspaceRoot(): string {
   // Mirrors role-codex-home.ts. From apps/operator/lib/release → up to the repo root.
   const here = dirname(fileURLToPath(import.meta.url));
@@ -186,7 +242,6 @@ async function main(): Promise<void> {
   // seed is a small offline-cloneable tree snapshot; omit depth for full history.
   const rev = str(args, 'rev') ?? 'HEAD';
   const depth = parseGitDepth(args);
-  const storeDir = str(args, 'store-dir') ?? join(root, '.papercusp', hive, 'hyperbee');
   const wantGit = args['no-git'] !== true;
   const wantCorestore = args['no-corestore'] !== true;
   const asJson = args['json'] === true;
@@ -214,8 +269,17 @@ async function main(): Promise<void> {
   // --- git half ---
   let git: GitCutSpec | null = null;
   if (wantGit) {
+    const keyHex = str(args, 'encrypt-key-hex') ?? process.env.PAPERCUSP_SEED_KEY_HEX;
+    // Load-don't-mint guard BEFORE touching deriveEpochKey (get-or-CREATE).
+    if (!keyHex && workspaceId) {
+      await assertEpochSealIdentityPresent({
+        workspaceId,
+        hive,
+        allowMint: args['allow-mint-epoch-key'] === true,
+      });
+    }
     const encryption = await pickGitEncryption({
-      keyHex: str(args, 'encrypt-key-hex') ?? process.env.PAPERCUSP_SEED_KEY_HEX,
+      keyHex,
       workspaceId,
       epochProvided: str(args, 'epoch') !== undefined,
       hive,
@@ -228,9 +292,23 @@ async function main(): Promise<void> {
   }
 
   // --- corestore (federated hive state) half ---
+  // Store-dir default: the LIVE per-workspace store (~/.papercusp-workspaces/<id>/
+  // .papercusp/<hive>/hyperbee) when --workspace-id names one, else the repo-local
+  // layout. The repo-relative guess was the WI-2903 trap: on a multi-workspace box
+  // it points at empty dev scratch, and `new Corestore()` HAPPILY CREATES an empty
+  // store there — a silently-empty seed. Hence the existsSync refusal below.
+  const storeDir =
+    str(args, 'store-dir') ??
+    (workspaceId ? papercuspPathForWorkspace(workspaceId, hive, 'hyperbee') : join(root, '.papercusp', hive, 'hyperbee'));
   let corestore: CorestoreCutSpec | null = null;
   let store: Corestore | undefined;
   if (wantCorestore) {
+    if (!existsSync(storeDir)) {
+      throw new Error(
+        `[cut-seed] corestore dir not found: ${storeDir} — refusing to cut (opening it would CREATE an empty store ` +
+          'and ship a silently-empty seed). Pass --store-dir <live hive store> or --no-corestore.',
+      );
+    }
     store = new Corestore(storeDir);
     await store.ready();
     const own = await enumerateOwnStoreCoreKeys(store);

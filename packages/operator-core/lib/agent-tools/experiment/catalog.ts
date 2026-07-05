@@ -33,7 +33,7 @@ export default defineTool({
   // Mirror gym:signals — the Queen-side self-improvement surface; the worker-bee +
   // sentinel are excluded so [...COORD_ROLES] doesn't leak it. Overwatch excluded too
   // (overwatch-role-2026-06-15): not an experiment surface, and it carries harness:read.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z.object({
     kind: z
       .enum(['component', 'whole-instance', 'whole-hive', 'replay', 'drill'])

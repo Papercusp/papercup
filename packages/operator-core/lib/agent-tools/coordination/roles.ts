@@ -53,4 +53,17 @@ export const COORD_ROLES = [
   // `role_not_allowed` for a doc-steward-scoped URL, forcing a scripts/mcp-call.mjs
   // fallback (EI-6643). Same registered-late class as bee/sentinel/overwatch above.
   'doc-steward',
+  // pot-rename dual-accept (P2): the additive TWINS of the four coord roles above
+  // — cup↔bee, mug↔queen, papercup↔sentinel, kettle↔overwatch — accepted ALONGSIDE
+  // the old ids so a renamed agent passes the coord gate. (scout was never a coord
+  // role, so blender is intentionally absent.) ⚠ AUTH INVARIANT: the read-mostly
+  // twins (cup/papercup/kettle) MUST be excluded from the Queen-only write tools
+  // wherever bee/sentinel/overwatch are — the `COORD_ROLES.filter(r => r !== 'bee'
+  // && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup'
+  // && r !== 'kettle')` sites move in LOCKSTEP with this list. `mug` (the queen
+  // twin) is deliberately NOT excluded — it keeps the Queen's placement access.
+  'cup',
+  'mug',
+  'papercup',
+  'kettle',
 ] as const;

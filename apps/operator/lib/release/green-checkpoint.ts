@@ -20,7 +20,7 @@
  * without running the (heavy) suite; realCheckpointDeps wires the real ones.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, readFileSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
@@ -209,6 +209,21 @@ export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
  *  (and frees its lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 58 * 60_000;
 
+export function snapshotCheckpointProcessGroup(pid: number): string | null {
+  try {
+    const r = spawnSync(
+      'ps',
+      ['-o', 'pid=,ppid=,pgid=,stat=,etime=,pcpu=,pmem=,command=', '-g', String(pid)],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 },
+    );
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    if (r.error || !out) return null;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /** WI-1319 root fix (c) — the watchdog described above, ACTUALLY ARMED. (The
  *  constant above shipped 2026-07-02 with the full design in its comment, but
  *  nothing ever called `setTimeout` — this closes that gap.) Call once, right
@@ -227,18 +242,28 @@ export function armSelfWatchdog(
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     pid?: number;
     log?: (msg: string) => void;
+    snapshotProcessGroup?: (pid: number) => string | null;
   } = {},
 ): { cancel: () => void } {
   const ms = opts.ms ?? SELF_WATCHDOG_MS;
   const pid = opts.pid ?? process.pid;
   const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
   const log = opts.log ?? ((m: string) => console.error(m));
+  const snapshotProcessGroup = opts.snapshotProcessGroup ?? snapshotCheckpointProcessGroup;
   const timer = setTimeout(() => {
     log(
       `[green-checkpoint] self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
         `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
         `releasing the run-lock and killing this process's OWN group (pid ${pid}) so no orphan can outlive it`,
     );
+    try {
+      const snapshot = snapshotProcessGroup(pid);
+      if (snapshot) {
+        log(`[green-checkpoint] self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`);
+      }
+    } catch {
+      /* diagnostic-only */
+    }
     try {
       lock.release();
     } catch {

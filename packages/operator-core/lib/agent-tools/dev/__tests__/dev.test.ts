@@ -33,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('../../../dev-data');
   vi.doUnmock('../../../omp-sessions');
+  vi.doUnmock('../../../why-chain');
 });
 
 // ── dev:activity ────────────────────────────────────────────────────
@@ -88,6 +89,28 @@ describe('dev:build_status', () => {
     vi.doMock('../../../dev-data', () => ({ buildStatus: vi.fn(async () => data) }));
     const { default: tool } = await import('../build_status');
     const result = await tool.handler({}, MAKE_CTX());
+    expect(parsePayload(result as never)).toEqual(data);
+  });
+});
+
+// ── dev:why ─────────────────────────────────────────────────────────
+
+describe('dev:why', () => {
+  it('returns the computed causal chain scoped from args/context', async () => {
+    const data = {
+      generatedAtMs: 123,
+      stages: [{ stage: 'gate', status: 'blocked', reason: 'gate stalled' }],
+      rootCause: { stage: 'gate', status: 'blocked', reason: 'gate stalled' },
+      summary: 'ROOT CAUSE: gate — gate stalled',
+      recentFailingFiles: ['packages/operator-core/lib/x.test.ts'],
+    };
+    const computeWhyChain = vi.fn(async () => data);
+    vi.doMock('../../../why-chain', () => ({ computeWhyChain }));
+
+    const { default: tool } = await import('../why');
+    const result = await tool.handler({ workspace: 'ws-1' }, MAKE_CTX({ harnessSlug: 'papercusp' }));
+
+    expect(computeWhyChain).toHaveBeenCalledWith({ workspaceId: 'ws-1', harnessSlug: 'papercusp' });
     expect(parsePayload(result as never)).toEqual(data);
   });
 });

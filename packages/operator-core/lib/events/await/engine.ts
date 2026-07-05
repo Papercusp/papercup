@@ -53,7 +53,9 @@ import {
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
-const log = (msg: string) => console.warn(`[await-event] ${msg}`);
+function log(msg: string): void {
+  console.warn(`[await-event] ${msg}`);
+}
 
 /**
  * su-cold-auto-mode-2026-07-03 P-007: the master availability gate the wake-executor cold-fork

@@ -202,14 +202,23 @@ async function refreshControlPlaneSpawnModel(input: DurableSpawnFireInput): Prom
   if (typeof existing === 'string' && existing.trim()) return input.body;
 
   const target = parseInvokeTarget(input);
-  if (!target || (target.role !== 'queen' && target.role !== 'mug' && target.role !== 'overwatch'))
+  // pot-rename dual-accept (P1 MIGRATE): `kettle` is the additive twin of `overwatch`
+  // (mug is queen's twin, already present) — accept it alongside so a renamed launch
+  // is not silently rejected here.
+  if (
+    !target ||
+    (target.role !== 'queen' &&
+      target.role !== 'mug' &&
+      target.role !== 'overwatch' &&
+      target.role !== 'kettle')
+  )
     return input.body;
 
   try {
     const { getOwnerSteering } = await import('../owner-steering');
     const steering = await getOwnerSteering(target.workspaceId, target.harnessSlug);
     let spawnModel: string | null | undefined = null;
-    if (target.role === 'overwatch') {
+    if (target.role === 'overwatch' || target.role === 'kettle') {
       spawnModel = steering.modelOverrides?.overwatch;
     } else {
       const [{ readAgentConfig }, { effectiveTierConfig, resolveRoleOwnModelSpec }] = await Promise.all([

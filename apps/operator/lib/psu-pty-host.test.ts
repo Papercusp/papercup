@@ -240,9 +240,12 @@ describe('compactCommandForAgent (WI-1804 post-compaction auto-continuation)', (
     expect(compactCommandForAgent('claude', '   ')).toBe('/compact');
     expect(compactCommandForAgent('claude', undefined)).toBe('/compact');
   });
-  it('codex has no compaction → null (the host injects nothing)', () => {
-    expect(compactCommandForAgent('codex', 'keep X')).toBeNull();
-    expect(compactCommandForAgent(' CODEX ', 'keep X')).toBeNull();
+  it('codex → a BARE /compact (native command exists but takes no focus argument)', () => {
+    // Until 2026-07-05 codex mapped to null, silently no-op'ing the watchdog
+    // force-compact rung + session:request-compaction for codex sessions.
+    expect(compactCommandForAgent('codex', 'keep X')).toBe('/compact');
+    expect(compactCommandForAgent(' CODEX ', 'keep X')).toBe('/compact');
+    expect(compactCommandForAgent('codex', undefined)).toBe('/compact');
   });
 });
 

@@ -234,6 +234,31 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
   });
 
+  it('logs a process-group snapshot before killing a wedged checkpoint run (WI-2957)', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const log = vi.fn();
+    const snapshotProcessGroup = vi.fn(() => ' 999 1 999 Sl 58:00 0.0 1.2 vitest run');
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log, snapshotProcessGroup });
+    vi.advanceTimersByTime(1000);
+    expect(snapshotProcessGroup).toHaveBeenCalledWith(999);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('self-watchdog process-group snapshot'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('vitest run'));
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  it('snapshot failure is diagnostic-only and still kills the process group', () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const snapshotProcessGroup = vi.fn(() => {
+      throw new Error('ps failed');
+    });
+    armSelfWatchdog({ release }, { ms: 1000, kill, pid: 999, log: () => {}, snapshotProcessGroup });
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
   it('cancel() prevents the watchdog from ever firing (the normal-exit path)', () => {
     const release = vi.fn();
     const kill = vi.fn();

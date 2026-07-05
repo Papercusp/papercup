@@ -603,11 +603,15 @@ export function clearSettleMs(env = process.env) {
 
 /** The compaction command for a backend (post-compaction auto-continuation, WI-1804).
  *  Claude Code / OMP expose `/compact [focus]` — summarize-and-continue, the WARM sibling
- *  of /clear's cold reset (transcript is summarized, not dropped). Codex has no compaction
- *  → null (the caller injects nothing at all). Pure — exported for tests. */
+ *  of /clear's cold reset (transcript is summarized, not dropped). Codex ALSO has a native
+ *  `/compact` (verified against the installed 0.142.5 binary: compact.rs + the TUI command
+ *  table) but it takes NO focus argument — its summarizer isn't steerable — so the focus
+ *  hint is dropped. Until 2026-07-05 codex mapped to null, which silently no-op'd the
+ *  watchdog force-compact rung AND session:request-compaction for every codex session
+ *  (the tool still reported "queued"). Pure — exported for tests. */
 export function compactCommandForAgent(agent, focus) {
   const normalized = String(agent || '').trim().toLowerCase();
-  if (normalized === 'codex') return null;
+  if (normalized === 'codex') return '/compact';
   const f = String(focus ?? '').trim();
   return f ? `/compact ${f}` : '/compact';
 }
@@ -986,7 +990,20 @@ export function hostThroughPty(o) {
         // still-compacting TUI) — the agent's loop / next natural turn still resumes it.
         if (msg.mode === 'compact') {
           const compactCmd = compactCommandForAgent(env.PAPERCUSP_AGENT, msg.focus);
-          if (!compactCmd) return; // backend has no compaction (codex) — inject nothing
+          if (!compactCmd) {
+            // No compaction command for this backend — every KNOWN backend (claude/omp/
+            // codex) has one, so this only guards a future backend. Surface the drop
+            // rather than silently returning (the pre-2026-07-05 codex behavior:
+            // request-compaction reported "queued" while nothing ever ran).
+            try {
+              process.stderr.write(
+                `psu-pty-host: mode:compact DROPPED for ${ownerId} — backend '${env.PAPERCUSP_AGENT}' has no compaction command\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+            return;
+          }
           const submit = async (text) => {
             for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
               if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));

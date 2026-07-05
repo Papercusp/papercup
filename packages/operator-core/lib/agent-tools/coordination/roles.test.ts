@@ -43,6 +43,32 @@ describe('COORD_ROLES', () => {
     }
   });
 
+  test('the pot-rename dual-accept twins are coord roles (cup/mug/papercup/kettle accepted alongside the old ids)', () => {
+    for (const role of ['cup', 'mug', 'papercup', 'kettle']) {
+      expect(COORD_ROLES, `missing twin ${role}`).toContain(role);
+    }
+    // scout was never a coord role, so its twin `blender` is intentionally absent.
+    expect(COORD_ROLES).not.toContain('blender');
+  });
+
+  test('AUTH INVARIANT (pot-rename P2): COORD_ROLES + the read-mostly exclusion admit mug but exclude cup/papercup/kettle', () => {
+    // Every Queen-only write tool (fleet/place_batch, gym/*, experiment/*,
+    // computer/*-desktop, bee/spawn) filters COORD_ROLES with THIS exact predicate.
+    // The member-flip (adding the twins to COORD_ROLES) and this literal must move in
+    // lockstep — otherwise a renamed read-mostly agent silently gains placement/gym
+    // access (a tsc-invisible privilege escalation). Predicate-level so it stays a
+    // fast unit test (the tool files carry the literal verbatim; grep keeps them in sync).
+    const readMostlyExcluded = (r: string) =>
+      r !== 'bee' && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle';
+    const admitted = COORD_ROLES.filter(readMostlyExcluded);
+    for (const excluded of ['bee', 'sentinel', 'overwatch', 'cup', 'papercup', 'kettle']) {
+      expect(admitted, `${excluded} must be excluded from Queen-only tools`).not.toContain(excluded);
+    }
+    // placement/judgement is the Queen's — she and her twin keep access.
+    expect(admitted).toContain('queen');
+    expect(admitted).toContain('mug');
+  });
+
   test('the COORD_ROLES-gated idea/work-item tools actually admit bee (the consumer half)', async () => {
     // Capability alone is not enough; the tool's agentRoles allowlist must include
     // the caller's role (mirrors the scanner output-contract test in

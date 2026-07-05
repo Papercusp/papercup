@@ -45,7 +45,7 @@ export default defineTool({
   // does not PLACE agents — placement is the Queen's, the sentinel raises alarms
   // (unify-launch-mechanics D-004). Same carve-out as bee. Overwatch excluded too
   // (overwatch-role-2026-06-15 D-001): it NUDGES the Queen to re-place, never places.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z.object({
     harness: z.string().min(1).max(80).optional()
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
@@ -109,7 +109,7 @@ export default defineTool({
     // queen-supplied tier is dropped — her spawns run at the role's standing
     // default. Human/operator tier picks are honored regardless.
     let tier = args.tier ?? null;
-    if (tier && ctx.role === 'queen') {
+    if (tier && (ctx.role === 'queen' || ctx.role === 'mug')) {
       const [{ FLAGS }, { getFlag }] = await Promise.all([
         import('@papercusp/flags'),
         import('@papercusp/flags/server'),
@@ -124,10 +124,10 @@ export default defineTool({
     const ownerId = actor.ownerId ?? '';
     const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
     const brief = clampText(args.brief, LIMITS.BRIEF) ?? null;
-    const workItemId = args.feature ?? (args.role === 'bee' ? inferSingleWorkItemId(brief) : null);
+    const workItemId = args.feature ?? (args.role === 'bee' || args.role === 'cup' ? inferSingleWorkItemId(brief) : null);
     let reservedSpawnId: string | null = null;
     let reservedWorkItemId: string | null = null;
-    if (args.role === 'bee' && workItemId) {
+    if ((args.role === 'bee' || args.role === 'cup') && workItemId) {
       const { claimWorkItem } = await import('../../work-items');
       reservedSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const claim = await claimWorkItem(workItemId, reservedSpawnId, { harness: args.harness ?? undefined });
@@ -222,7 +222,7 @@ export default defineTool({
       // The queen's model lever is tier NAMES only (propose/dispose split) —
       // a raw model spec from role=queen is ignored in favor of her tier.
       tier,
-      modelSpec: ctx.role === 'queen' ? null : args.model ?? null,
+      modelSpec: ctx.role === 'queen' || ctx.role === 'mug' ? null : args.model ?? null,
       // account-routing-3-options: explicit per-spawn routing (pool-id pin / auto / default). Honored
       // for any caller role — the Queen places, but routing is operational, not a model lever.
       accountOverride: args.account ?? null,

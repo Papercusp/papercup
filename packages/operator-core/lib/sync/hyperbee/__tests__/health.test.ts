@@ -204,4 +204,62 @@ describe('assessHarnessSubstrateHealth', () => {
     });
     expect(r.verdict).toBe('degraded');
   });
+
+  // WI-899 (A): sidecarLive:false is a confirmed-dead-sidecar signal — the
+  // strongest override, forcing 'unhealthy' regardless of every other input
+  // (the boot-time handle proxy still reads "present" even after the sidecar
+  // that actually owns replication has died).
+  describe('sidecarLive (WI-899 A)', () => {
+    it('sidecarLive:false forces unhealthy even with an otherwise-healthy handle', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        sidecarLive: false,
+      });
+      expect(r.verdict).toBe('unhealthy');
+      expect(r.reasons.join(' ')).toMatch(/sidecar is DOWN/);
+    });
+
+    it('sidecarLive:false overrides a healthy claim rate (worst-wins)', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        claimStats: { total: 100, won: 100, lost: 0, error: 0 },
+        sidecarLive: false,
+      });
+      expect(r.verdict).toBe('unhealthy');
+    });
+
+    it('sidecarLive:true is a no-op (does not itself force healthy or override other verdicts)', () => {
+      const healthy = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        sidecarLive: true,
+      });
+      expect(healthy.verdict).toBe('healthy');
+
+      const stillUnhealthy = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        claimStats: { total: 100, won: 0, lost: 0, error: 100 },
+        sidecarLive: true,
+      });
+      expect(stillUnhealthy.verdict).toBe('unhealthy');
+    });
+
+    it('sidecarLive:null/undefined is a no-op (sidecar mode off / not measured)', () => {
+      const withNull = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        sidecarLive: null,
+      });
+      expect(withNull.verdict).toBe('healthy');
+
+      const withUndefined = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+      });
+      expect(withUndefined.verdict).toBe('healthy');
+    });
+  });
 });

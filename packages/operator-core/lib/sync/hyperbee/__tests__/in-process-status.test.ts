@@ -113,4 +113,57 @@ describe('getInProcessSubstrateStatus', () => {
     const r = getInProcessSubstrateStatus();
     expect(r.substrateActive).toBe(true);
   });
+
+  // WI-899 (A): resolveSidecarLive is the seam that lets a dead SUBSTRATE_SIDECAR
+  // override the boot-time handle proxy (which stays "present" even after the
+  // sidecar process that owns replication has died).
+  describe('resolveSidecarLive (WI-899 A)', () => {
+    it('resolveSidecarLive() => false forces every booted harness unhealthy', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
+      const r = getInProcessSubstrateStatus({
+        resolveSidecarLive: () => false,
+      });
+      expect(r.harnesses.every((h) => h.verdict === 'unhealthy')).toBe(true);
+      expect(r.summary.worstVerdict).toBe('unhealthy');
+    });
+
+    it('resolveSidecarLive() => true does not itself force a healthy verdict', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      const r = getInProcessSubstrateStatus({
+        resolveSidecarLive: () => true,
+        resolveClaimStats: () => ({ total: 100, won: 0, lost: 0, error: 100 }),
+      });
+      expect(r.harnesses[0]?.verdict).toBe('unhealthy');
+    });
+
+    it('resolveSidecarLive() => null is a no-op (sidecar mode off)', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      const r = getInProcessSubstrateStatus({
+        resolveSidecarLive: () => null,
+      });
+      expect(r.harnesses[0]?.verdict).toBe('healthy');
+    });
+
+    it('default (no resolveSidecarLive passed) resolves null and has no effect', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      const r = getInProcessSubstrateStatus();
+      expect(r.harnesses[0]?.verdict).toBe('healthy');
+    });
+
+    it('resolveSidecarLive is resolved ONCE per call, not per-harness', () => {
+      _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
+      _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
+      _setHandleForTests('ws-1', 'c', fakeHandle('ws-1', 'c'));
+      let calls = 0;
+      const r = getInProcessSubstrateStatus({
+        resolveSidecarLive: () => {
+          calls += 1;
+          return null;
+        },
+      });
+      expect(r.harnesses).toHaveLength(3);
+      expect(calls).toBe(1);
+    });
+  });
 });

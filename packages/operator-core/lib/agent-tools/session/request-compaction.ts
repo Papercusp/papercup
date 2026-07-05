@@ -10,9 +10,11 @@
  * `# Compact Instructions` (CLAUDE.md) carry the standing what-to-preserve
  * guidance; `focus` names this unit of work.
  *
- * Claude-only in practice: only psu-hosted TUIs expose the inject socket. The
- * operator converse-brain compacts programmatically; OMP self-compacts natively;
- * Codex has no compaction. No live host ⇒ a clear error, never a silent no-op.
+ * Works for every psu-hosted TUI (claude / omp / codex — the host maps the backend
+ * to its compact command; codex's native /compact takes no focus, so the hint is
+ * dropped there). OMP + codex ALSO self-compact natively (omp compaction.enabled
+ * defaults true; codex model_auto_compact_token_limit). The operator converse-brain
+ * compacts programmatically. No live host ⇒ a clear error, never a silent no-op.
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
