@@ -181,6 +181,9 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
     const boot = (await host.methods['substrate:bootHarness']({
       workspaceId: WS,
       harnessSlug: SLUG,
+      // WI-2105: bootHarness now REFUSES to derive a store from cwd — a real
+      // workspaceRoot is mandatory (split-brain stray-store guard).
+      workspaceRoot: '/tmp/sidecar-rekey-wiring-test',
     })) as { storeId: string };
     expect(wireCalls).toBe(1); // boot attempted wiring — and it failed (no drain running)
     expect(errSpy).toHaveBeenCalledWith(
@@ -240,6 +243,9 @@ describe('substrate-sidecar-host — EI-521: handleRekey wires the REAL outbox d
     const boot = (await host.methods['substrate:bootHarness']({
       workspaceId: WS,
       harnessSlug: SLUG,
+      // WI-2105: bootHarness now REFUSES to derive a store from cwd — a real
+      // workspaceRoot is mandatory (split-brain stray-store guard).
+      workspaceRoot: '/tmp/sidecar-rekey-wiring-test',
     })) as { storeId: string };
     expect(wireCalls).toBe(1); // boot wired the drain
 

@@ -398,10 +398,14 @@ export async function drainOutboxOnce(
     // WHICH own-log key this row was appended into, so the orphan-tail recurrence
     // guard can later detect a row drained onto a PRIOR-era log that no longer
     // matches the live process's log (the WI-2105 non-persistent-keypair class).
+    // Optional-chained: a handle without an ownLog (a capability-seam/test handle,
+    // or a pre-log boot state) must not crash the drain — NULL is an explicitly
+    // supported value here (mig 495: 'NULL = undrained or drained pre-migration'),
+    // and the recurrence guard treats NULL as unknowable, never as stranded.
     await pg`
       UPDATE harness_shared.substrate_outbox
          SET drained_at = ${now},
-             drained_log_key = ${handle.ownLog.keyHex}
+             drained_log_key = ${handle.ownLog?.keyHex ?? null}
        WHERE id = ${r.id}`;
     drained += 1;
   }
