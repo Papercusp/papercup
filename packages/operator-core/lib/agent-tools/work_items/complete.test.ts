@@ -378,6 +378,49 @@ describe('work_items:complete (keyed-array)', () => {
       });
       expect(r.verificationWarning).toBeUndefined();
     });
+
+    // EI-7316: `tests` is only ONE of several schema-blessed ways to record verification
+    // evidence (testsRun / testResult / verifiedHow, each also under a nested `verification.*`
+    // alias) — completionEvidenceFromRecord already treats them as equally valid for the
+    // completionEvidence written on a terminal state transition. The lint used to check ONLY
+    // the bare `tests` field, so a caller who verified via a sibling field got a FALSE warning.
+    it('does NOT warn when only `testsRun` is populated (not the bare `tests` field)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 's', testsRun: 'npx vitest run foo.test.ts' },
+      });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when only `testResult` is populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', testResult: '9/9 green' } });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when only `verifiedHow` is populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', verifiedHow: 'manual' } });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when only the nested `verification.testsRun` alias is populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 's', verification: { testsRun: 'live-drove-ui' } },
+      });
+      expect(r.verificationWarning).toBeUndefined();
+    });
+
+    it('STILL warns when none of tests/testsRun/testResult/verifiedHow/deferred are populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped, trust me' } });
+      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
+    });
   });
 });
 
