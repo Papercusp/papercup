@@ -92,7 +92,11 @@ export default defineTool({
         role = 'operator';
       }
     }
-    const converseToolName = `${role}:converse`;
+    // The sentinel persona brain is registered under the `papercup:converse`
+    // alias (sentinel-converse.ts), NOT `sentinel:converse`; every other role
+    // resolves `${role}:converse`. The `role` forwarded to the handler stays
+    // 'sentinel' so the sentinel persona set loads.
+    const converseToolName = role === 'sentinel' ? 'papercup:converse' : `${role}:converse`;
     const operatorConverseTool =
       lookupByMcpName(converseToolName) ?? lookupByMcpName('operator:converse');
     if (!operatorConverseTool) {

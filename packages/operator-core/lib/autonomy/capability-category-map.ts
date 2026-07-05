@@ -98,7 +98,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
   // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) places a background
   // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
-  { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^bee:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
+  { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^cup:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
   { id: 'cat:hive', on: TRIGGER, when: { action: { matches: '^pot:' } }, fire: 'agent-lifecycle', meta: { reason: 'hive (swarm of agents) lifecycle' } },
   { id: 'cat:new-subagent-approve', on: TRIGGER, when: { action: { matches: '^new_subagent:approve' } }, fire: 'agent-lifecycle', meta: { reason: 'approves a new subagent spawn' } },
   { id: 'cat:new-subagent-request', on: TRIGGER, when: { action: { matches: '^new_subagent:request' } }, fire: 'escalations', meta: { reason: 'requests approval for a new subagent (an ask)' } },
@@ -124,7 +124,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
 
   // ── ideation & intake — conversations:promote override BEFORE conversations: group ──
   { id: 'cat:conversations-promote', on: TRIGGER, when: { action: { matches: '^conversations:promote' } }, fire: 'ideation-intake', meta: { reason: 'promotes a conversation to tracked work' } },
-  { id: 'cat:scout', on: TRIGGER, when: { action: { matches: '^scout:' } }, fire: 'ideation-intake', meta: { reason: 'grades a Scout idea' } },
+  { id: 'cat:scout', on: TRIGGER, when: { action: { matches: '^blender:' } }, fire: 'ideation-intake', meta: { reason: 'grades a Scout idea' } },
   { id: 'cat:improvements', on: TRIGGER, when: { action: { matches: '^improvements:' } }, fire: 'ideation-intake', meta: { reason: 'triage / promote an improvement' } },
   { id: 'cat:issues', on: TRIGGER, when: { action: { matches: '^issues:' } }, fire: 'ideation-intake', meta: { reason: 'triage / promote an issue' } },
 
