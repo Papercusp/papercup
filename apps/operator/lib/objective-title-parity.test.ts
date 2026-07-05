@@ -1,13 +1,14 @@
 /**
- * objective-title-parity.test.ts — WI-1963 title parity (owner ask 2026-07-03, request #3).
+ * objective-title-parity.test.ts — WI-1963 title parity (owner ask 2026-07-03, request #3),
+ * extended for the SINGLE-SOURCE display pipe (tui-status-parity-single-source-2026-07-05).
  *
  * Codex and OMP have no bottom status pane (that's a Claude-Code-only TUI feature), but they
- * own their title bar. `posttooluse-objective-title.sh` now renders the SAME `term_title` the
- * Claude statusline (`statusline-fleet.sh`) writes: fleets (👑/👤 + colour squares), loop chip,
- * model·effort, id, objective. The two scripts each embed their own copy of that assembly (the
- * hooks are self-contained — installed by individual `cp`, no shared module), so THIS suite is
- * the drift guard: for the same glance + SID + equivalent model, the two titles must be equal.
- * A change to one term_title that isn't mirrored in the other fails CI here.
+ * own their title bar. Since 2026-07-05 the title is rendered ONCE server-side
+ * (status-display.ts → coord:glance `display.title`) and every hook pipes it VERBATIM —
+ * parity by construction; the first describe below proves the pipe. The embedded `term_title`
+ * copies in the two scripts survive ONLY as the fallback for a pre-display operator, and the
+ * legacy describes remain the drift guard for that fallback: for the same display-less glance
+ * + SID + equivalent model, the two titles must be equal.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -46,13 +47,18 @@ function claudeTitle(glance: unknown, stdin: string): string {
   }
 }
 
-/** The title the CODEX/OMP hook writes (as an OSC-0 escape to its tty; we point that at a temp
- *  file and strip the ESC]0;…BEL wrapper), given a glance fixture + a launch model spec env. */
-function codexTitle(glance: unknown, modelSpec: string): string {
+/** Run the CODEX hook against a glance fixture: returns the TITLE it wrote (OSC-0 escape to its
+ *  tty, unwrapped) AND its stdout (the tip-notice additionalContext JSON channel). The notice
+ *  cursor is pointed at a per-call temp cache dir unless the caller pins one (dedup tests). */
+function codexRun(
+  glance: unknown,
+  modelSpec: string,
+  extraEnv: Record<string, string> = {},
+): { title: string; stdout: string } {
   const fixture = join(dir, `${Math.random().toString(36).slice(2)}.cx.json`);
   const ttyFile = join(dir, `${Math.random().toString(36).slice(2)}.cx.tty`);
   writeFileSync(fixture, JSON.stringify(glance));
-  execFileSync('bash', [OBJ_TITLE], {
+  const stdout = execFileSync('bash', [OBJ_TITLE], {
     encoding: 'utf8',
     input: '{}',
     env: {
@@ -61,18 +67,26 @@ function codexTitle(glance: unknown, modelSpec: string): string {
       PAPERCUSP_OBJECTIVE_TTY: ttyFile,
       PAPERCUSP_OBJECTIVE_SYNC: '1',
       PAPERCUSP_SID: SID,
+      // Keep test cursor writes OUT of the real ~/.papercusp/locks-cache.
+      PAPERCUSP_LOCKS_CACHE_DIR: join(dir, `cache-${Math.random().toString(36).slice(2)}`),
       ...(modelSpec ? { PAPERCUSP_MODEL: modelSpec } : {}),
+      ...extraEnv,
     },
   });
   let raw = '';
   try {
     raw = readFileSync(ttyFile, 'utf8');
   } catch {
-    return '';
+    return { title: '', stdout };
   }
   // Strip the OSC-0 wrapper: ESC ] 0 ; <title> BEL.
   const m = raw.match(/\x1b\]0;([\s\S]*?)\x07/);
-  return m ? m[1] : '';
+  return { title: m ? m[1] : '', stdout };
+}
+
+/** The title the CODEX/OMP hook writes, given a glance fixture + a launch model spec env. */
+function codexTitle(glance: unknown, modelSpec: string): string {
+  return codexRun(glance, modelSpec).title;
 }
 
 const base = {

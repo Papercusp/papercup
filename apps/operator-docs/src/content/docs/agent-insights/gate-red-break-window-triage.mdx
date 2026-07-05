@@ -20,6 +20,11 @@ recurring classes with mechanical fixes. This is the recipe.
    minimal.
 4. Verify the file green locally, let git-sync sweep it, and only then re-fire the verdict.
 
+> Note: the green-checkpoint's "quiet-cut" judges the newest commit **≥240s old** (not the
+> tip) by default — so a fix landed in the last few minutes may not be in the candidate
+> the next verdict judges; wait out the quiet-cut window (or fire a fresh
+> `release:checkpoint-run` once your fix is past it) before reading a red as still-unfixed.
+
 ## Class 1 — fixture-completeness drift (the D-014 trap)
 
 Engine starts reading/writing a NEW column/table; test fixtures carry a stale subset.
