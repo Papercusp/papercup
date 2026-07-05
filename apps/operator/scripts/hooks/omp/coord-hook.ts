@@ -1555,6 +1555,74 @@ export function noteToolCallRepeat(key: string): number {
   return _repeatRun.count;
 }
 
+/** Annotation "noise" fields an omp tool call may carry that DON'T change what the call DOES —
+ *  chiefly `i`, omp's free-text intent annotation. A weak model stuck retrying a failing call often
+ *  tweaks ONLY this prose ("read the plan" → "read the plan with harness papercusp") while leaving
+ *  the actual (wrong) args unchanged, which defeats an exact-match loop detector. Stripped before
+ *  keying so those retries collapse to one key. */
+const REPEAT_NOISE_FIELDS = new Set(['i', 'intent', 'reason', 'note', 'why', 'thought', 'comment']);
+
+/** Loop-detection key that IGNORES the noise annotation fields (REPEAT_NOISE_FIELDS), so a model
+ *  tweaking only its prose `i` between otherwise-identical calls still keys the same. Pure. */
+export function sessionRepeatKey(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): string {
+  let clean: Record<string, unknown> | undefined = input;
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    clean = {};
+    for (const k of Object.keys(input)) {
+      if (!REPEAT_NOISE_FIELDS.has(k.toLowerCase())) clean[k] = input[k];
+    }
+  }
+  return toolCallLoopKey(toolName, clean);
+}
+
+/** SESSION-cumulative consecutive-repeat breaker (ornith iter25, 2026-07-04 / WI-2382 — failure
+ *  mode #9). The turn-scoped identical breaker (noteToolCallRepeat, reset every turn_start) is BLIND
+ *  to the common omp doom-loop where each tool call is its own TURN: iter25's leader called
+ *  `plans:get` 58× across 58 turns, every call failing `harness_required` (it wrote "harness" into
+ *  the prose `i` field instead of passing the `harness:` arg), and the turn-scoped counter reset to 1
+ *  every time so it never tripped. This run is NOT turn-reset — it tracks the CURRENT run of
+ *  consecutive identical (noise-stripped) calls across turns, and only a genuinely DIFFERENT call
+ *  resets it, so a varied workflow never accumulates but a stuck retry-loop does. The hook cannot see
+ *  tool RESULTS (ToolResultEvent carries no error status), so it detects the LOOP, not the error; the
+ *  redirect points the model at reading the error + fixing its args. */
+export const SESSION_REPEAT_LIMIT = 8;
+let _sessionRepeatRun: { key: string; count: number } | undefined;
+
+/** Count the current call against the session-cumulative consecutive-repeat run; returns the new run
+ *  length (1 = a different call than last time, which resets the run). */
+export function noteSessionRepeat(key: string): number {
+  if (_sessionRepeatRun && _sessionRepeatRun.key === key) {
+    _sessionRepeatRun.count += 1;
+  } else {
+    _sessionRepeatRun = { key, count: 1 };
+  }
+  return _sessionRepeatRun.count;
+}
+
+/** Reset the consecutive-repeat run. Deliberately NOT wired to turn_start (surviving turn boundaries
+ *  is the whole point) — a test seam, and a place to clear it on session lifecycle if ever needed. */
+export function resetSessionRepeatRun(): void {
+  _sessionRepeatRun = undefined;
+}
+
+/** The redirect once the same (noise-stripped) call has repeated SESSION_REPEAT_LIMIT times in a row.
+ *  It cannot name the specific error (the hook can't see results), so it points the model at the last
+ *  error + the most common fix (a missing REQUIRED arg belongs as a top-level arg, not in prose).
+ *  Pure. */
+export function sessionRepeatReason(toolName: string, count: number): string {
+  return (
+    `repeat-breaker: you have called \`${toolName}\` ${count} times in a row with the same ` +
+    'arguments and it is NOT working — repeating it will keep failing the same way. STOP and CHANGE ' +
+    'something now. READ the last error/result carefully: it almost always names the exact fix — a ' +
+    'missing REQUIRED argument (e.g. `harness:"papercusp"`) must be passed as a TOP-LEVEL arg, NOT ' +
+    'described in the prose `i` field. Fix the arguments and try ONCE more, or take a different ' +
+    'action / report the blocker via coord:send. Do not repeat the identical call again.'
+  );
+}
+
 /** Per-turn shell-call budget for agent sessions (ornith-reliability-2026-07-03 /
  *  EI-7092 wandering-search half). A weak model (ornith IQ3_M) can grind dozens of
  *  DIFFERENT `bash` greps/finds in a single turn without converging — and drift
@@ -2494,6 +2562,18 @@ export async function onToolCall(
     const runLen = noteToolCallRepeat(toolCallLoopKey(event.toolName, event.input));
     if (runLen >= IDENTICAL_CALL_LOOP_LIMIT) {
       return { block: true, reason: loopBreakReason(event.toolName, runLen) };
+    }
+    // Session-cumulative consecutive-repeat breaker (ornith iter25 / WI-2382 — failure mode #9): the
+    // turn-scoped breaker above is BLIND to a cross-turn loop (each omp tool call is its own turn, so
+    // resetToolCallLoopState zeros it every turn_start). Track the run of identical (noise-stripped)
+    // calls that SURVIVES turn boundaries; past SESSION_REPEAT_LIMIT the same call is clearly stuck
+    // (iter25: plans:get 58× on harness_required, the model tweaking only its prose `i`). Block with a
+    // read-the-error / fix-your-args redirect and feed the shared reflexive backstop so a pure
+    // error-loop self-terminates. A genuinely different call resets the run, so varied work is safe.
+    const repeatRun = noteSessionRepeat(sessionRepeatKey(event.toolName, event.input));
+    if (repeatRun >= SESSION_REPEAT_LIMIT) {
+      noteReflexiveBlock('repeat');
+      return { block: true, reason: sessionRepeatReason(event.toolName, repeatRun) };
     }
     // Per-turn shell budget (EI-7092 wandering-search half): once an agent session
     // has spent its shell budget this turn, block further `bash`/`shell` calls with a

@@ -32,6 +32,11 @@ import {
   noteToolCallRepeat,
   resetToolCallLoopState,
   loopBreakReason,
+  sessionRepeatKey,
+  SESSION_REPEAT_LIMIT,
+  noteSessionRepeat,
+  resetSessionRepeatRun,
+  sessionRepeatReason,
   SHELL_CALLS_PER_TURN_LIMIT,
   isShellTool,
   noteShellCall,
@@ -313,6 +318,122 @@ describe('noteToolCallRepeat + resetToolCallLoopState (consecutive-run counter)'
     noteToolCallRepeat(k);
     resetToolCallLoopState();
     expect(noteToolCallRepeat(k)).toBe(1);
+  });
+});
+
+describe('sessionRepeatKey + noteSessionRepeat (session-cumulative repeat breaker #9)', () => {
+  beforeEach(() => resetSessionRepeatRun());
+  it('ignores the noise `i`/intent field so prose-only tweaks key the same', () => {
+    const a = sessionRepeatKey('plans:get', { i: 'read the plan', slug: 's', mode: 'full' });
+    const b = sessionRepeatKey('plans:get', { i: 'read the plan WITH harness papercusp', slug: 's', mode: 'full' });
+    expect(a).toBe(b); // only `i` differs → same key
+  });
+  it('still distinguishes calls that differ in a REAL arg', () => {
+    const a = sessionRepeatKey('plans:get', { slug: 's', mode: 'full' });
+    const b = sessionRepeatKey('plans:get', { slug: 's', mode: 'full', harness: 'papercusp' });
+    expect(a).not.toBe(b); // adding the harness arg is a genuinely different call
+  });
+  it('counts consecutive same-key calls and resets on a genuinely different call', () => {
+    const k1 = sessionRepeatKey('plans:get', { slug: 's', mode: 'full' });
+    expect(noteSessionRepeat(k1)).toBe(1);
+    expect(noteSessionRepeat(k1)).toBe(2);
+    const k2 = sessionRepeatKey('read', { path: 'a.ts' });
+    expect(noteSessionRepeat(k2)).toBe(1); // different call → run resets
+    expect(noteSessionRepeat(k1)).toBe(1); // back to k1 is a fresh run
+  });
+  it('the reason tells the model to read the error + pass the missing arg as a TOP-LEVEL arg', () => {
+    const r = sessionRepeatReason('plans:get', SESSION_REPEAT_LIMIT);
+    expect(r).toContain('repeat-breaker');
+    expect(r).toContain('harness');
+    expect(r).toContain('TOP-LEVEL');
+  });
+});
+
+describe('onToolCall session-repeat breaker (agent sessions only, SURVIVES turn boundaries — mode #9)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetSessionRepeatRun();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    resetToolCallLoopState();
+    resetReflexiveBlockBudget();
+    resetSessionRepeatRun();
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  // The iter25 shape: plans:get with a VARYING prose `i`, identical real args, EACH its own turn
+  // (resetToolCallLoopState between calls simulates turn_start). The turn-scoped breaker resets every
+  // turn; only the session-cumulative breaker catches this.
+  const plansGet = (i: number) =>
+    onToolCall({
+      type: 'tool_call',
+      toolName: 'mcp__papercusp_su_plans_get',
+      toolCallId: `pg${i}`,
+      input: { i: `read the plan attempt ${i}`, slug: 'ornith-comprehension-test-2026-07-04', mode: 'full' },
+    });
+
+  it('blocks the cross-turn plans:get loop that the turn-scoped breaker misses (harness_required 58×)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let n = 0; n < SESSION_REPEAT_LIMIT - 1; n++) {
+      resetToolCallLoopState(); // a fresh turn each call → the turn-scoped breaker never accumulates
+      expect((await plansGet(n)).block).toBeUndefined();
+    }
+    resetToolCallLoopState();
+    const over = await plansGet(SESSION_REPEAT_LIMIT);
+    expect(over.block).toBe(true);
+    expect(over.reason).toContain('repeat-breaker');
+  });
+
+  it('a genuinely different call between repeats RESETS the run (varied work never trips)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    for (let n = 0; n < SESSION_REPEAT_LIMIT - 1; n++) {
+      resetToolCallLoopState();
+      expect((await plansGet(n)).block).toBeUndefined();
+    }
+    // A different tool call resets the session-repeat run…
+    resetToolCallLoopState();
+    await onToolCall({ type: 'tool_call', toolName: 'read', toolCallId: 'r', input: { file_path: '/x' } });
+    // …so the next plans:get starts a fresh run and is NOT blocked.
+    resetToolCallLoopState();
+    expect((await plansGet(100)).block).toBeUndefined();
+  });
+
+  it('never fires for the owner’s own sessions (marker unset — D-003)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    for (let n = 0; n < SESSION_REPEAT_LIMIT + 4; n++) {
+      resetToolCallLoopState();
+      expect((await plansGet(n)).block).toBeUndefined();
+    }
+  });
+
+  it('feeds the SHARED reflexive backstop — a pure repeat-loop HALTS (naming repeat)', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const halts: string[] = [];
+    const prevHalt = setHaltForTest((reason) => halts.push(reason));
+    try {
+      // Warm-up to the limit (allowed), then the blocked calls feed the shared backstop.
+      for (let n = 0; n < SESSION_REPEAT_LIMIT - 1; n++) {
+        resetToolCallLoopState();
+        await plansGet(n);
+      }
+      for (let n = 0; n < REFLEXIVE_BLOCK_KILL_AFTER - 1; n++) {
+        resetToolCallLoopState();
+        expect((await plansGet(1000 + n)).block).toBe(true);
+      }
+      expect(halts).toHaveLength(0);
+      resetToolCallLoopState();
+      expect((await plansGet(2000)).block).toBe(true);
+      expect(halts).toHaveLength(1);
+      expect(halts[0]).toContain('repeat');
+    } finally {
+      setHaltForTest(prevHalt);
+    }
   });
 });
 
