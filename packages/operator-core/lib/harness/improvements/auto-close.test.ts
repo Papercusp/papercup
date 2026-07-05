@@ -34,6 +34,18 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
     expect(d.reason).toMatch(/evidence cleared/);
   });
 
+  it('EI-7317: CLOSES an abandoned assignment (assignee set, no live in-flight dispatch) — the EI-3901 pattern', () => {
+    // The dispatch resolved (or the routine it was chasing was deactivated) but the
+    // issue's `assignee` column was never cleared. Before the fix this stayed open+
+    // assigned forever and kept getting re-dispatched even though the signal itself had
+    // verifiably cleared. A bare assignee must not block retirement — only a LIVE
+    // in-flight dispatch does.
+    const d = decideAutoClose({ ...baseCandidate, assignee: 'su-abandoned' }, baseCtx);
+    expect(d.close).toBe(true);
+    expect(d.reason).toMatch(/evidence cleared/);
+    expect(d.reason).toMatch(/abandoned assignment/);
+  });
+
   it('refuses each guard with a distinct reason', () => {
     expect(decideAutoClose({ ...baseCandidate, state: 'resolved' }, baseCtx)).toMatchObject({ close: false, reason: 'not-open' });
     expect(decideAutoClose({ ...baseCandidate, watchdogKey: '' }, baseCtx)).toMatchObject({ close: false, reason: 'no-watchdog-key' });
@@ -102,14 +114,17 @@ describe('processAutoClose — flag gate + orchestration', () => {
     expect(touched).toBe(false); // gate short-circuits before any read
   });
 
-  it('with the flag ON, closes ONLY the eligible candidate (skips assigned / in-flight / still-firing / too-new / ineligible)', async () => {
+  it('with the flag ON, closes the eligible candidate AND an abandoned assignment (EI-7317), skipping in-flight / still-firing / too-new / ineligible', async () => {
     process.env[FLAG_ENV] = '1';
     const closed: string[] = [];
     const issues = [
       mkIssue({ id: 'EI-close', watchdogKey: 'red-test:gone.test.ts' }), // → closes
       mkIssue({ id: 'EI-firing', watchdogKey: 'repeated-tool-error:hot:structural' }), // still firing
-      mkIssue({ id: 'EI-assigned', watchdogKey: 'red-test:owned.test.ts', assignee: 'su-z' }), // assigned
-      mkIssue({ id: 'EI-inflight', watchdogKey: 'stalled-feature:papercup' }), // in-flight dispatch
+      // EI-7317: assigned but the dispatch already resolved (not in inFlightDispatchIds
+      // below) — an abandoned assignment, not active work → closes too.
+      mkIssue({ id: 'EI-abandoned-assigned', watchdogKey: 'red-test:owned.test.ts', assignee: 'su-z' }),
+      // Genuinely active work: assigned AND a live in-flight dispatch row → stays blocked.
+      mkIssue({ id: 'EI-inflight', watchdogKey: 'stalled-feature:papercup', assignee: 'su-active' }),
       mkIssue({ id: 'EI-new', watchdogKey: 'red-test:fresh.test.ts', createdAt: new Date(NOW - 5 * 60_000).toISOString() }), // too new
       mkIssue({ id: 'EI-ineligible', watchdogKey: 'service-down:operator' }), // ineligible source
       mkIssue({ id: 'EI-nokey' }), // no watchdogKey → pre-filtered out
@@ -122,8 +137,8 @@ describe('processAutoClose — flag gate + orchestration', () => {
       nowMs: () => NOW,
     };
     const out = await processAutoClose('ws', {}, deps);
-    expect(closed).toEqual(['EI-close']);
-    expect(out.map((o) => o.issueId)).toEqual(['EI-close']);
+    expect(closed.sort()).toEqual(['EI-abandoned-assigned', 'EI-close'].sort());
+    expect(out.map((o) => o.issueId).sort()).toEqual(['EI-abandoned-assigned', 'EI-close'].sort());
   });
 
   it('does nothing when tick history is insufficient (fresh watchdog)', async () => {

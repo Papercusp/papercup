@@ -17,19 +17,21 @@ import { Aside } from '@astrojs/starlight/components';
 
 Papercusp currently has two visual identity layers:
 
-- **The Swarm** is the DEFAULT active skin — `FLAGS.THE_HIVE` (`papercusp-the-hive`) is
-  not in `DARK_FLAGS`, so per the flag-default inversion
-  (`enforce-system-on-generic-work-2026-06-29` P-011, `libs/flags/src/types.ts`) it
-  resolves to **ON** on a fresh install unless explicitly flipped off via
-  `/admin/features`. It changes presentation assets, theme tokens, favicon, and
-  labeled nouns only; it does not rename code identifiers, database rows, or tools.
-- **Classic Papercusp** is the original product identity, still fully maintained and
-  reachable by flipping `papercusp-the-hive` off — but it is no longer the
-  out-of-the-box default (that flipped 2026-06-09, ratified by the flag-default
-  inversion landing 2026-06-29).
+- **Classic / Pot** is the DEFAULT public skin — the original product identity, and
+  the one every fresh install ships. `FLAGS.THE_HIVE` (`papercusp-the-hive`) is
+  **parked (default-OFF)** in `libs/flags/src/types.ts` per
+  `restore-pot-lexicon-public-release-2026-07-04`, so with the flag off the lexicon
+  resolves to the **classic / Pot** pack out of the box. This is the public-release
+  lexicon: **Pot** project, **Papercup** operator, **Mug** brain, **Kettle**
+  overwatch, **Blender** scout, **Cup** contributor.
+- **The Swarm (`the-hive`)** is a fully-built, still-maintained skin kept for
+  **internal / testing** use, reachable by flipping `papercusp-the-hive` **on** (via
+  the testing-gated BrandSwitcher, or `/admin/features`). It changes presentation
+  assets, theme tokens, favicon, and labeled nouns only; it does not rename code
+  identifiers, database rows, or tools.
 
-<Aside type="note" title="Product name decision">
-The flag-on product-facing name is **The Swarm**. The implementation pack id remains `the-hive` for reversibility and because the user creates or joins a **Hive**; inside a Hive, many **Swarms** can run.
+<Aside type="note" title="Public default vs. the bee skin">
+The public-release default is the **classic / Pot** lexicon (the cup theme). The **The Swarm** (`the-hive`) pack — Hive / Sentinel / Queen / Overwatch / Scout / Bee — is preserved but flag-gated for internal and testing use (`restore-pot-lexicon-public-release-2026-07-04`). The implementation pack id remains `the-hive` for reversibility; when the flag is on, the user creates or joins a **Hive**, and inside a Hive many **Swarms** can run.
 </Aside>
 
 ## Classic Identity
@@ -79,23 +81,39 @@ The flag-on `document.title`/wordmark renders `The Swarm`. EI-230 weighed this a
 
 ## Lexicon
 
-The flag-on nouns are presentation-only:
+Both packs are presentation-only — they relabel nouns, not code identifiers, tables, or
+tools. The **classic / Pot** column is the public-release default (flag OFF); the
+**the-hive / Swarm** column is the flag-on internal/testing skin. Source of truth:
+`libs/generic/lexicon/src/packs.ts`.
 
-| Classic concept | Flag-on term |
-|---|---|
-| Project / deployable group | Hive |
-| Live set of working agents | Colony |
-| Brain / high-judgment orchestrator | Queen |
-| Always-on operator | Sentinel |
-| AI agent | Bee |
-| Human member | Keeper |
-| Unit of work | Cell |
-| Shared store | Comb |
-| Machine / deployment instance | Swarm |
-| Agent signal / handoff (optional flavor) | Waggle |
-| Collaboration substrate | Hive Mind |
+| Concept (term key) | Classic / Pot (default, flag OFF) | the-hive / Swarm (flag ON) |
+|---|---|---|
+| Project / deployable group (`pot`) | Pot | Hive |
+| Live set of working agents (`fleet`) | Fleet | Colony |
+| Brain / high-judgment orchestrator (`brain`) | Mug | Queen |
+| Always-on operator (`operator`) | Papercup | Sentinel |
+| Health / overwatch monitor (`overwatch`) | Kettle | Overwatch |
+| Idea-radar scout (`scout`) | Blender | Scout |
+| AI agent / worker (`contributor`) | Cup | Bee |
+| Human member (`human`) | Human | Keeper |
+| Unit of work (`chunk`) | Chunk | Cell |
+| Shared store (`cupboard`) | Cupboard | Comb |
+| Machine / deployment instance (`node`) | Node | Swarm |
+| Collaboration substrate (`substrate`) | Coordination | Hive Mind |
+| Agent signal / handoff (`signal`) | Signal | Waggle |
 
-The live agent collective is the **Colony** (term key `fleet`); **Swarm** (term key `node`) is the deployment-to-instance unit — a deployment of a Hive to a single machine. Owner revision D-007 (plan P-009) reassigned `Swarm` from the live-agent row to the deployment row and folded the earlier `Frame` machine/region term into `Swarm`. `Sentinel` was renamed from `Sentinel Bee` by owner directive 2026-06-09 (hive-agent-tabs P-003). The shaping icon file is still named `icons/sentinel-bee.svg`, but the lexicon term is `Sentinel`. This is consistent with the note above that, inside a Hive, many Swarms can run.
+The agent-role marks map to cup glyphs in the classic pack (matching `apps/tui`
+`agent_pane_kind.rs`, fixed regardless of pack): **Mug** 🍵 (brain/queen), **Kettle** 🫖
+(overwatch), **Papercup** 🥤 (operator/sentinel), **Cup** ☕ (contributor/bee). Nav icons in
+the GUI use lucide `Coffee` / `Thermometer` / `CupSoda` respectively.
+
+Under the flag-on **the-hive** pack: the live agent collective is the **Colony** (term key
+`fleet`); **Swarm** (term key `node`) is the deployment-to-instance unit — a deployment of a
+Hive to a single machine. Owner revision D-007 (plan P-009) reassigned `Swarm` from the
+live-agent row to the deployment row and folded the earlier `Frame` machine/region term into
+`Swarm`. `Sentinel` was renamed from `Sentinel Bee` by owner directive 2026-06-09
+(hive-agent-tabs P-003); the shaping icon file is still named `icons/sentinel-bee.svg`, but
+the flag-on lexicon term is `Sentinel`.
 
 ## Color Tokens
 

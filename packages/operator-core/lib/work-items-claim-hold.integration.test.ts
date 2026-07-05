@@ -84,7 +84,9 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.harness_features_consolidated, harness_shared.work_item_deps`;
+  // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —
+  // TRUNCATE only works on real tables, and truncating work_items already clears the view.
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
     [FLAGS.SCHEDULER_MAINTAINED_READY]: false,

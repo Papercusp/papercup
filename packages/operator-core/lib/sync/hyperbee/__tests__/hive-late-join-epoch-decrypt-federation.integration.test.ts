@@ -269,7 +269,13 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
 
       await seedHive(dbOwner.sql); // the hives row hive_settings/hive_members attach to
 
-      // ── 1. OWNER authors a plan + work_item, ENCRYPTED under the current epoch (0). ──
+      // ── 1. OWNER authors a plan + work_item, ENCRYPTED under the current epoch.
+      //       WI-2102: epoch 0 is the PRE-re-key BASELINE — content federates PLAINTEXT
+      //       there (encryptOp returns null, no epoch stamp) so a never-rekeyed hive can't
+      //       deadlock its outbox on a nonexistent epoch-0 key. So the owner FIRST advances
+      //       the hive to epoch 1 (encryption live), then encrypts the pre-join content
+      //       under that non-baseline epoch — exactly the ciphertext a late joiner must
+      //       later backfill the epoch-1 key for and decrypt. ──
       const ownerResolveKey = buildEpochKeyResolver({
         crypto,
         provider: { keyForEpoch: async () => { throw new Error('owner never unwraps'); } },
@@ -282,6 +288,9 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
         getCurrentEpoch: () => getHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql),
       });
       expect(await getHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql)).toBe(0); // baseline
+      // Leave the plaintext baseline (WI-2102) so the pre-join content is genuinely encrypted.
+      const authorEpoch = await advanceHiveEpoch(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql);
+      expect(authorEpoch).toBe(1);
 
       const planLocal: LocalWriteOp = {
         type: 'put', table: 'plans-by-slug', hbKey: PLAN_SLUG, value: planValue(),
@@ -296,7 +305,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       const encWi = await ownerEncrypt.encryptOp(wiLocal);
       expect(encPlan, 'plan op is selected for encryption').not.toBeNull();
       expect(encWi).not.toBeNull();
-      expect(encPlan!.epoch).toBe(0);
+      expect(encPlan!.epoch).toBe(1);
       // Genuinely ciphertext — the federated bytes do NOT carry the plaintext.
       expect(JSON.stringify(encPlan!.value)).not.toContain('Secret pre-join plan body');
 
