@@ -56,7 +56,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1),
-    kind: z.enum(['feature', 'research-task', 'chunk']).optional(),
+    kind: z.enum(['feature', 'chunk']).optional(),
     assignee: z.string().max(120).optional().describe('default: you'),
     // WI-1912: clamped to the claimable allowlist — same wall as scheduler:get_next; a
     // free-string `states` let a caller widen past the resolver-owned blocked/cursed floors.

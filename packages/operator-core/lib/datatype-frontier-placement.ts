@@ -31,7 +31,7 @@ export const HIVE_PLACEMENT_TAG = 'hive-placement';
  * the opt-in tag gate (the visibility filter has no such gate).
  */
 export function frontierPlacementKindClause(sql: postgres.Sql, workspaceId: string) {
-  return sql`(item_kind IN ('feature', 'research-task', 'chunk')
+  return sql`(item_kind IN ('feature', 'chunk')
        OR item_kind IN (
          SELECT work_item_kind FROM harness_shared.datatype_registry
           WHERE workspace_id = ${workspaceId} AND tier = 'generic-kind' AND status = 'active'

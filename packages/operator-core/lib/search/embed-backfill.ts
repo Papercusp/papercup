@@ -176,6 +176,20 @@ const TARGETS: BackfillTarget[] = [
     bodySql: `COALESCE(verb, '') || ' ' || COALESCE(args, '')`,
     keyCols: ['harness_slug', 'line_hash'],
   },
+  // session-search-scope-2026-07-05: the episodic transcript index. Embed
+  // SELECTIVELY — only turns >= 80 chars (short acks are noise for semantic
+  // recall; they stay BM25-searchable via text_tsv), truncated to 2k chars for
+  // the embed call. The CASE returns '' for skipped rows, which the
+  // `length(bodySql) > 0` guard in backfillTable excludes from the sweep
+  // entirely, so skipped turns are never re-scanned. Volume is governed by the
+  // shared embed-admission bench lane — a big backlog fills progressively
+  // across 5-min ticks, never in one burst.
+  {
+    table: 'harness_shared.session_turns',
+    embedCol: 'text_embedding',
+    bodySql: `CASE WHEN length(text) >= 80 THEN left(text, 2000) ELSE '' END`,
+    keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
+  },
 ];
 
 async function backfillTable(

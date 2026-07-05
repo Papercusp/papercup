@@ -1362,6 +1362,16 @@ export const FLAGS = {
   // doc retrieval. OFF ⇒ the ask mode is hidden and the endpoint 404s (keyword
   // search still works); a clean instant kill-switch. (WI-2844.)
   DOCS_QA: "papercusp-docs-qa",
+  // session-search-scope-2026-07-05: the episodic verbatim transcript index —
+  // session_turns ingest (claude/omp/codex JSONL tailers + agent_chat sync,
+  // search/session-ingest.ts), the session_turn/coord_message SearchSources,
+  // and the fused sessions:search tool with session:'self' compaction
+  // recovery. DEFAULT ON (alpha flags-default-on; NOT in DARK_FLAGS —
+  // additive index + read tools, no behavior change to existing surfaces).
+  // OFF ⇒ the ingest tick no-ops and sessions:search returns
+  // feature_disabled; existing search:* scopes are unaffected. The instant
+  // kill-switch if ingest volume ever misbehaves on a small host.
+  SESSION_SEARCH: "papercusp-session-search",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

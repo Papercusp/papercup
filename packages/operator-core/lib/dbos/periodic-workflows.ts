@@ -549,6 +549,56 @@ const recipeHygieneWorkflow = DBOS.registerWorkflow(recipeHygieneTick, {
 });
 DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });
 
+// Every 2min (offset :30s — off the :00 minute-tick stampede): session-transcript
+// ingest (session-search-scope-2026-07-05 P-003). Tails claude/omp/codex JSONL +
+// agent_chats_consolidated transcripts into harness_shared.session_turns — the
+// episodic verbatim index behind search:* scope 'session_turn' + sessions:search.
+// BOUNDED per tick (file/turn/byte caps inside runSessionIngestOnce) and
+// flag-gated (SESSION_SEARCH, default ON). Never throws (the embedBackfill
+// lesson: a thrown step marks the workflow permanently dead → silent stop
+// forever). Shed under loop pressure. Freshness note: a 2-min lag is fine —
+// the read-time self live-tail (ingestFileNow) covers the last-seconds window
+// for compaction recovery (compaction-context-loss D-002).
+async function sessionIngestTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('session-ingest')) return;
+    try {
+      const { runSessionIngestOnce } = await import('../search/session-ingest');
+      const r = await runSessionIngestOnce();
+      if (!r.skipped && (r.turnsInserted > 0 || r.errors > 0)) {
+        console.log(
+          `[session-ingest] +${r.turnsInserted} turn(s) from ${r.filesIngested} file(s) ` +
+            `+ ${r.chatsIngested} chat turn(s) (${r.filesScanned} scanned, ${r.errors} error(s), ${r.durationMs}ms)`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[session-ingest] sweep skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'session-ingest' });
+}
+const sessionIngestWorkflow = DBOS.registerWorkflow(sessionIngestTick, {
+  name: 'sessionIngest', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(sessionIngestWorkflow, { name: 'sessionIngest', crontab: '30 */2 * * * *' });
+
+// Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
+// the index stays bounded (~45d window); the JSONL files remain the archive.
+async function sessionTurnsPruneTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
+      const r = await pruneSessionTurnsOnce();
+      if (r.deleted > 0) console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s)`);
+    } catch (err) {
+      console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'session-turns-prune' });
+}
+const sessionTurnsPruneWorkflow = DBOS.registerWorkflow(sessionTurnsPruneTick, {
+  name: 'sessionTurnsPrune', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(sessionTurnsPruneWorkflow, { name: 'sessionTurnsPrune', crontab: '0 20 5 * * *' });
+
 // Hourly at :12 (off the daily 03:00-05:00 GC/prune cluster + no collision with any
 // other slot above): the coord_presence RETENTION reaper (presence-coord-unification-
 // 2026-07-01 P-004, WI-1347). Evicts coord_presence rows that are BOTH (a) `ended`
