@@ -8,7 +8,7 @@
  * Recipes are GLOBAL — a reusable capability like a tool DEFINITION, not scoped to
  * a workspace or hive (data-scoping-audit-2026-06-22 P-001, reversing the earlier
  * hive-scoping D-005: a good recipe should help every hive). `code_recipe_runs`
- * KEEPS workspace_id + hive_slug — that is USAGE (which hive ran it), the mirror of
+ * KEEPS workspace_id + pot_slug — that is USAGE (which hive ran it), the mirror of
  * tool_invocations being scoped while tool definitions are global.
  *
  * Transport-agnostic: every function takes the `sql` handle so the same code serves
@@ -175,7 +175,7 @@ export async function upsertRecipe(
  * success_count +1 when success, last_run_at = now(). The side-table is the
  * source of truth for the Phase-3 distinct-agent + frequency signals; the
  * counters are a cheap-read denormalization (migration 349 header). The RUN row
- * carries workspace_id + hive_slug (usage); the recipe itself is global.
+ * carries workspace_id + pot_slug (usage); the recipe itself is global.
  */
 export async function recordRecipeRun(
   sql: postgres.Sql,
@@ -185,7 +185,7 @@ export async function recordRecipeRun(
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.code_recipe_runs
-        (recipe_id, workspace_id, hive_slug, agent_owner, agent_role, success, reused)
+        (recipe_id, workspace_id, pot_slug, agent_owner, agent_role, success, reused)
       VALUES (
         ${input.recipeId}, ${input.workspaceId}, ${input.hiveSlug},
         ${input.agentOwner ?? null}, ${input.agentRole ?? null},

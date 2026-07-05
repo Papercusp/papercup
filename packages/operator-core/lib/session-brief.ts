@@ -75,7 +75,7 @@ export async function writeSessionBrief(
     await sql`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, owner_label, source, intent,
-         current_plan_slug, current_files, harness_slug, hive_slug,
+         current_plan_slug, current_files, harness_slug, pot_slug,
          native_session_id, first_seen_at, updated_at)
       VALUES (
         ${identity.ownerId},
@@ -100,7 +100,7 @@ export async function writeSessionBrief(
         -- populate-once-then-keep: a write that omits harness/hive/session never WIPES
         -- a previously-resolved value (mirrors coord_presence D-004).
         harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.session_briefs.harness_slug),
-        hive_slug         = COALESCE(EXCLUDED.hive_slug, harness_shared.session_briefs.hive_slug),
+        pot_slug         = COALESCE(EXCLUDED.pot_slug, harness_shared.session_briefs.pot_slug),
         native_session_id = COALESCE(EXCLUDED.native_session_id, harness_shared.session_briefs.native_session_id),
         updated_at        = now()
     `;
@@ -119,7 +119,7 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     currentPlanSlug: (r.current_plan_slug as string | null) ?? null,
     currentFiles: Array.isArray(r.current_files) ? (r.current_files as string[]) : [],
     harnessSlug: (r.harness_slug as string | null) ?? null,
-    hiveSlug: (r.hive_slug as string | null) ?? null,
+    hiveSlug: (r.pot_slug as string | null) ?? null,
     nativeSessionId: (r.native_session_id as string | null) ?? null,
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),

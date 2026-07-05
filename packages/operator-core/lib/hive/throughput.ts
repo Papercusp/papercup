@@ -304,7 +304,7 @@ export async function recordHiveThroughputTick(opts: {
            AND started_at > ${windowStart}`.catch(() => [] as SpawnRow[]),
       sql<Array<{ tick_at: string | Date }>>`
         SELECT tick_at FROM harness_shared.hive_throughput_ticks
-         WHERE workspace_id = ${ws} AND hive_slug = ${opts.hiveSlug}
+         WHERE workspace_id = ${ws} AND pot_slug = ${opts.hiveSlug}
          ORDER BY tick_at DESC LIMIT 1`.catch(() => [] as Array<{ tick_at: string | Date }>),
       // WI-267: the hive's REAL placeable-frontier depth (member-scoped; feature-kind,
       // todo, unassigned, not-cursed) — NOT the workspace-wide demand.todoItems — so the
@@ -335,7 +335,7 @@ export async function recordHiveThroughputTick(opts: {
 
     await sql`
       INSERT INTO harness_shared.hive_throughput_ticks
-        (workspace_id, hive_slug, frontier_depth, placements, bees_busy, bees_cap,
+        (workspace_id, pot_slug, frontier_depth, placements, bees_busy, bees_cap,
          stuck_count, completed, mttc_ms, question_rungs, detail)
       VALUES
         (${ws}, ${opts.hiveSlug}, ${metrics.frontierDepth}, ${metrics.placements},
@@ -395,7 +395,7 @@ export interface HiveThroughputTickRow extends HiveThroughputMetrics {
 
 /** The raw migration-261 row shape (snake_case, postgres-typed). */
 export interface RawThroughputTickRow {
-  hive_slug: string;
+  pot_slug: string;
   tick_at: string | Date;
   frontier_depth: number | null;
   placements: number | null;
@@ -421,7 +421,7 @@ export function normalizeThroughputRow(r: RawThroughputTickRow): HiveThroughputT
   const detailUtil = asJsonObject(r.detail)?.utilization;
   const rungs = asJsonObject(r.question_rungs);
   return {
-    hiveSlug: String(r.hive_slug ?? ''),
+    hiveSlug: String(r.pot_slug ?? ''),
     tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : new Date(r.tick_at).toISOString(),
     frontierDepth: Number(r.frontier_depth ?? 0),
     beesBusy,

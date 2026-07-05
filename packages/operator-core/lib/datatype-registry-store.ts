@@ -92,7 +92,7 @@ export interface UpsertDatatypeInput {
 type DbRow = {
   id: string;
   workspace_id: string;
-  hive_slug: string | null;
+  pot_slug: string | null;
   title: string;
   description: string;
   tier: string;
@@ -131,7 +131,7 @@ function mapRow(r: DbRow): DatatypeRow {
   return {
     id: r.id,
     workspaceId: r.workspace_id,
-    hiveSlug: r.hive_slug,
+    hiveSlug: r.pot_slug,
     title: r.title,
     description: r.description,
     tier: (isDatatypeTier(r.tier) ? r.tier : 'generic-kind'),
@@ -152,7 +152,7 @@ function mapRow(r: DbRow): DatatypeRow {
 
 /** SELECT-list shared by every read (the raw VECTOR is never serialized back — only its presence). */
 const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  id, workspace_id, hive_slug, title, description, tier, work_item_kind,
+  id, workspace_id, pot_slug, title, description, tier, work_item_kind,
   payload_schema, authoritative_writer, self_improvement, status, published, review_status, tags,
   (embedding IS NOT NULL) AS has_embedding, created_by, created_at, updated_at
 `;
@@ -171,7 +171,7 @@ export async function upsertDatatype(
     input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.datatype_registry
-      (id, workspace_id, hive_slug, title, description, tier, work_item_kind,
+      (id, workspace_id, pot_slug, title, description, tier, work_item_kind,
        payload_schema, authoritative_writer, self_improvement, published, tags,
        embedding, created_by, updated_at)
     VALUES (
@@ -184,7 +184,7 @@ export async function upsertDatatype(
       ${embeddingLiteral}::vector, ${input.createdBy ?? null}, now()
     )
     ON CONFLICT (workspace_id, id) DO UPDATE SET
-      hive_slug            = EXCLUDED.hive_slug,
+      pot_slug            = EXCLUDED.pot_slug,
       title                = EXCLUDED.title,
       description          = EXCLUDED.description,
       tier                 = EXCLUDED.tier,

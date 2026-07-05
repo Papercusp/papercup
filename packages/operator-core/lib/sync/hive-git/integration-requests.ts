@@ -67,7 +67,7 @@ export interface QueueIntegrationRequestInput extends IntegrationRequestScope {
  * already-ratified head does NOT downgrade it) + evict the author's oldest
  * rows past the cap, pending first.
  *
- * WI-1552 fix (2): the eviction subquery is scoped to THIS (hive_slug,
+ * WI-1552 fix (2): the eviction subquery is scoped to THIS (pot_slug,
  * repo_key) queue, matching the declared one-queue-per-(ws,hive,repo) scope
  * (see {@link IntegrationRequestScope}) — an author's cap is enforced
  * per-queue, not globally across every repo they publish to. Without this,
@@ -83,13 +83,13 @@ export async function queueIntegrationRequest(
   const cap = Math.max(1, input.cap ?? DEFAULT_INTEGRATION_REQUESTS_PER_AUTHOR_CAP);
   await sql`
     INSERT INTO harness_shared.hive_integration_requests
-      (workspace_id, hive_slug, repo_key, device_pubkey, head_sha,
+      (workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
        author_github_user_id, reason, state, created_ts)
     VALUES
       (${input.workspaceId}, ${input.hiveSlug}, ${input.repoKey}, ${input.devicePubkey},
        ${input.headSha}, ${input.authorGithubUserId ?? null},
        ${input.reason ?? 'below-steer-tier'}, 'pending', ${now})
-    ON CONFLICT (workspace_id, hive_slug, repo_key, device_pubkey, head_sha) DO NOTHING
+    ON CONFLICT (workspace_id, pot_slug, repo_key, device_pubkey, head_sha) DO NOTHING
   `;
   // Bound: keep the author's newest `cap` rows IN THIS (hive,repo) QUEUE,
   // preferring to keep RATIFIED ones (an author's junk flood must not evict
@@ -97,17 +97,17 @@ export async function queueIntegrationRequest(
   await sql`
     DELETE FROM harness_shared.hive_integration_requests d
     USING (
-      SELECT workspace_id, hive_slug, repo_key, device_pubkey, head_sha
+      SELECT workspace_id, pot_slug, repo_key, device_pubkey, head_sha
       FROM harness_shared.hive_integration_requests
       WHERE workspace_id = ${input.workspaceId}
-        AND hive_slug = ${input.hiveSlug}
+        AND pot_slug = ${input.hiveSlug}
         AND repo_key = ${input.repoKey}
         AND device_pubkey = ${input.devicePubkey}
       ORDER BY (state = 'ratified') DESC, created_ts DESC, head_sha
       OFFSET ${cap}
     ) evict
     WHERE d.workspace_id = evict.workspace_id
-      AND d.hive_slug = evict.hive_slug
+      AND d.pot_slug = evict.pot_slug
       AND d.repo_key = evict.repo_key
       AND d.device_pubkey = evict.device_pubkey
       AND d.head_sha = evict.head_sha
@@ -141,7 +141,7 @@ export async function listIntegrationRequests(
   const rows = await sql<
     Array<{
       workspace_id: string;
-      hive_slug: string;
+      pot_slug: string;
       repo_key: string;
       device_pubkey: string;
       head_sha: string;
@@ -152,11 +152,11 @@ export async function listIntegrationRequests(
       ratified_ts: string | number | null;
     }>
   >`
-    SELECT workspace_id, hive_slug, repo_key, device_pubkey, head_sha,
+    SELECT workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
            author_github_user_id, reason, state, created_ts, ratified_ts
     FROM harness_shared.hive_integration_requests
     WHERE workspace_id = ${opts.workspaceId}
-      ${opts.hiveSlug !== undefined ? sql`AND hive_slug = ${opts.hiveSlug}` : sql``}
+      ${opts.hiveSlug !== undefined ? sql`AND pot_slug = ${opts.hiveSlug}` : sql``}
       ${opts.repoKey !== undefined ? sql`AND repo_key = ${opts.repoKey}` : sql``}
       ${opts.devicePubkey !== undefined ? sql`AND device_pubkey = ${opts.devicePubkey}` : sql``}
       ${opts.state !== undefined ? sql`AND state = ${opts.state}` : sql``}
@@ -165,7 +165,7 @@ export async function listIntegrationRequests(
   `;
   return rows.map((r) => ({
     workspaceId: r.workspace_id,
-    hiveSlug: r.hive_slug,
+    hiveSlug: r.pot_slug,
     repoKey: r.repo_key,
     devicePubkey: r.device_pubkey,
     headSha: r.head_sha,
@@ -192,7 +192,7 @@ export async function ratifyIntegrationRequest(
     UPDATE harness_shared.hive_integration_requests
     SET state = 'ratified', ratified_ts = COALESCE(ratified_ts, ${now})
     WHERE workspace_id = ${key.workspaceId}
-      AND hive_slug = ${key.hiveSlug}
+      AND pot_slug = ${key.hiveSlug}
       AND repo_key = ${key.repoKey}
       AND device_pubkey = ${key.devicePubkey}
       AND head_sha = ${key.headSha}
@@ -227,7 +227,7 @@ export async function listRatifiedStates(
     SELECT device_pubkey, head_sha
     FROM harness_shared.hive_integration_requests
     WHERE workspace_id = ${scope.workspaceId}
-      AND hive_slug = ${scope.hiveSlug}
+      AND pot_slug = ${scope.hiveSlug}
       AND repo_key = ${scope.repoKey}
       AND state = 'ratified'
       AND (device_pubkey, head_sha) IN (
