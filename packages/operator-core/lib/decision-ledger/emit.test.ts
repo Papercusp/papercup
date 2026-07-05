@@ -129,8 +129,10 @@ describe('buildDecisionLedgerRow — governed actions', () => {
     expect(row!.why).toBe('protected');
   });
 
-  it('normalizes a dotted tool name to colon form for the B-04 map (bee.spawn → agent-lifecycle)', () => {
-    const row = buildDecisionLedgerRow(ev({ capabilities: ['cup:spawn'], toolName: 'bee.spawn' }));
+  it('normalizes a dotted tool name to colon form for the B-04 map (cup.spawn → agent-lifecycle)', () => {
+    // P-016 rename: bee:spawn → cup:spawn — the map keys `^cup:`; the dotted
+    // IPC form must still normalize to the colon name and hit it.
+    const row = buildDecisionLedgerRow(ev({ capabilities: ['cup:spawn'], toolName: 'cup.spawn' }));
     expect(row!.category).toBe('agent-lifecycle');
     expect(row!.tier).toBe('medium');
   });
