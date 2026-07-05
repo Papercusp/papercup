@@ -51,6 +51,7 @@ import {
   schedulerIssuesClaimableEnabled,
   claimNextIssueWorkItem,
   featureRowToWorkItem,
+  familyOf,
   FEATURE_COLS,
   ISSUE_FAMILY_KINDS,
   type FeatureRowDb,
@@ -282,21 +283,45 @@ function globToLike(glob: string): string {
 function widenPastKind(filter: FilterNode | undefined): FilterNode | undefined {
   if (!filter) return undefined;
   if (isLeaf(filter)) {
-    return filter.field === 'kind' ? undefined : filter;
+    if (filter.field !== 'kind') return filter;
+    // Only a kind leaf that admits a FEATURE-family kind is widenable (EI-7481): an issue-only
+    // constraint (e.g. kind='bug') has no feature-family sibling to widen to — dropping it here
+    // would let a bug-only member claim a feature/research-task/chunk. Leave it in place so this
+    // tier is a no-op and the kind-preserving tier-3 issue fallback handles the lane.
+    return kindLeafWidensToFeatureFamily(filter) ? undefined : filter;
   }
   if ('all' in filter) {
     let changed = false;
     const kept = filter.all.filter((node) => {
-      const isKindLeaf = isLeaf(node) && node.field === 'kind';
-      if (isKindLeaf) changed = true;
-      return !isKindLeaf;
+      // Same family guard for a kind leaf nested in a top-level `all`: only drop a
+      // feature-family-admitting kind leaf; keep an issue-only one so the `all` stays lane-safe.
+      const isWidenableKindLeaf = isLeaf(node) && node.field === 'kind' && kindLeafWidensToFeatureFamily(node);
+      if (isWidenableKindLeaf) changed = true;
+      return !isWidenableKindLeaf;
     });
-    if (!changed) return filter; // no top-level kind leaf inside this `all` — nothing to widen
+    if (!changed) return filter; // no widenable feature-family kind leaf inside this `all`
     if (kept.length === 0) return undefined;
     return kept.length === 1 ? kept[0] : { all: kept };
   }
   // `any` / `not` — leave unrewritten (see doc comment above).
   return filter;
+}
+
+/**
+ * EI-7481: true iff a `kind` leaf admits at least one FEATURE-family kind — the only case
+ * tier 2's "widen to the rest of the feature family" is meaningful. An issue-only kind
+ * constraint (`kind='bug'`, `kind in ['bug','change']`, `kind='task'`) must NOT be widened
+ * into the feature family; its lane is issues (the kind-preserving tier-3 fallback). `!=`
+ * excludes one kind but still admits the rest of the feature family, so it stays widenable.
+ */
+function kindLeafWidensToFeatureFamily(leaf: FilterLeaf): boolean {
+  const values = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
+  if (leaf.op === '=' || leaf.op === 'in') {
+    return values.some((v) => familyOf(v) === 'feature');
+  }
+  // `!=` / glob / contains — a negative or fuzzy kind match still leaves feature-family kinds
+  // in scope, so widening to the feature family remains the intended fallback.
+  return true;
 }
 
 const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_KINDS);
