@@ -1,6 +1,6 @@
 ---
 title: "Proposal — shared desktop build kit (@papercusp/tauri-release-kit)"
-description: Abstracting the Linux/Mac/Windows Tauri build+release pipeline into a shared library usable by both papercusp and oddsmith. Design, seam contract, migration.
+description: Abstracting the Linux/Mac/Windows Tauri build+release pipeline into a shared library usable by both papercusp and myapp. Design, seam contract, migration.
 sidebar:
   order: 8
 plans:
@@ -14,10 +14,10 @@ documents:
 :::note[Status: shipped — live as a shared submodule in both repos]
 `@papercusp/tauri-release-kit` is a standalone private repo
 (`Papercusp/tauri-release-kit`) vendored as a submodule by **both** papercup
-(`libs/generic/tauri-release-kit`) and oddsmith (`libs/tauri-release-kit`). 61
+(`libs/generic/tauri-release-kit`) and myapp (`libs/tauri-release-kit`). 61
 vitest tests, in BORROWABLE.md, wired into `test:affected`. papercusp drives it
 via `papercusp-desktop/bin/release.ts` + `release.config.ts` (alongside the
-existing `bin/release-local.sh`); oddsmith — which had **no** release pipeline —
+existing `bin/release-local.sh`); myapp — which had **no** release pipeline —
 now drives it via `apps/desktop/bin/release.ts` + `release.config.ts`. A real
 Linux build (P-010) proved the kit end-to-end and surfaced + fixed two real bugs
 (cargo target-dir resolution for the `~/.cargo-target` redirect; files-only +
@@ -32,7 +32,7 @@ dmg audit) before retiring `release-local.sh` into a thin wrapper.
 
 Can the cross-platform (Linux / macOS / Windows) desktop build + release
 pipeline be abstracted into a generalized shared library that **both papercusp
-and oddsmith** use?
+and myapp** use?
 
 **Short answer: yes — the release *orchestration* generalizes cleanly; the
 *sidecar build* does not and must stay a per-app injected seam.** That split is
@@ -73,7 +73,7 @@ and they generalize very differently:
 - **The sidecar build is wildly app-specific.** Papercusp's
   `build-desktop-sidecar.sh` is **~1,070 lines** bundling the operator UI +
   harness + orchestrator + MCP server + node-pty + embedded-postgres + pgvector
-  + external binaries (omp, gh, MinGit, node) + a WSL rootfs tarball. Oddsmith's
+  + external binaries (omp, gh, MinGit, node) + a WSL rootfs tarball. MyApp's
   `apps/desktop/scripts/build-sidecar.mjs` is **~42 lines** of esbuild over one
   `serve.ts`. There is nothing to share here — it must be an **injected step**.
 
@@ -96,29 +96,29 @@ a config object.
 
 ## Where it would live, and how it's consumed
 
-Oddsmith already consumes the shared `@papercusp/*` libs (`@papercusp/sse`,
+MyApp already consumes the shared `@papercusp/*` libs (`@papercusp/sse`,
 `@papercusp/sync`, `@papercusp/ui-primitives`, `@papercusp/embedded-pg-discovery`,
 …) via workspace `*` deps — and **those `*` deps resolve to git submodules**:
-oddsmith's `workspaces` maps `@papercusp/sync` → its local `libs/sync`, which is a
+myapp's `workspaces` maps `@papercusp/sync` → its local `libs/sync`, which is a
 submodule of the shared `Papercusp/sync` repo (the same repo papercup vendors at
 `libs/generic/sync`). So the kit should follow that **same shared-submodule
 pattern**:
 
 > **`@papercusp/tauri-release-kit`** — a standalone repo (like `Papercusp/sync`)
 > vendored as a submodule by **both** papercup (`libs/generic/tauri-release-kit`)
-> and oddsmith (`libs/tauri-release-kit`), exposing (a) a typed
+> and myapp (`libs/tauri-release-kit`), exposing (a) a typed
 > `TauriReleaseConfig` + programmatic API and (b) a thin `bin/` CLI. Each app adds
 > a small `release.config.ts` + a `bin/release` wrapper.
 
 > **Build it in-tree first, extract to a shared repo second.** Per CLAUDE.md a
 > domain-free lib *starts* as `libs/generic/<name>` — which is exactly where it
 > lives now (feature-complete, 56 tests green). Promoting it to a standalone repo
-> + submodule (so oddsmith can vendor it) is the bridge step, and it's
+> + submodule (so myapp can vendor it) is the bridge step, and it's
 > **owner-gated** (it creates a GitHub repo + rewrites two `.gitmodules`).
 
-A git-submodule of the whole desktop tree was considered and rejected: oddsmith
+A git-submodule of the whole desktop tree was considered and rejected: myapp
 deliberately does not submodule papercusp, and the desktop *shells* legitimately
-differ (oddsmith builds its own SPA + a tiny sidecar; papercusp serves
+differ (myapp builds its own SPA + a tiny sidecar; papercusp serves
 operator-vite + the heavy sidecar). Sharing the **kit** (logic), not the
 **shell** (the Tauri app), is the right grain.
 
@@ -145,7 +145,7 @@ export interface TauriReleaseConfig {
 }
 ```
 
-`buildSidecar` is the firewall: papercusp wires in its 1,070-line bash; oddsmith
+`buildSidecar` is the firewall: papercusp wires in its 1,070-line bash; myapp
 wires in its esbuild. The kit never knows the difference.
 
 ## Migration order
@@ -166,25 +166,25 @@ wires in its esbuild. The kit never knows the difference.
 2. **Extract the kit** behind the seam; **papercusp adopts it first** — its
    `bin/release-local.sh` becomes a thin wrapper over the kit. Prove byte-identical
    (or intentionally-improved) artifacts.
-3. **Oddsmith adopts second** — add `release.config.ts` + `buildSidecar` (its
-   esbuild) + a `bin/release`, giving oddsmith the Linux/Mac/Windows release flow
+3. **MyApp adopts second** — add `release.config.ts` + `buildSidecar` (its
+   esbuild) + a `bin/release`, giving myapp the Linux/Mac/Windows release flow
    it currently lacks entirely.
 
-## Oddsmith adoption (ready once the kit is a shared submodule)
+## MyApp adoption (ready once the kit is a shared submodule)
 
-The kit is already proven app-agnostic — an oddsmith-shaped config runs through
-`runRelease` unchanged (`libs/generic/tauri-release-kit/src/oddsmith-shape.test.ts`).
-Once the kit is vendored into oddsmith as `libs/tauri-release-kit`, oddsmith adds
+The kit is already proven app-agnostic — a second-app-shaped config runs through
+`runRelease` unchanged (proven by the kit's app-shape test).
+Once the kit is vendored into myapp as `libs/tauri-release-kit`, myapp adds
 two files (and nothing in the kit changes):
 
 ```ts
-// apps/desktop/bin/release.config.ts (oddsmith)
-export function makeOddsmithConfig({ version, channel }): TauriReleaseConfig {
+// apps/desktop/bin/release.config.ts (myapp)
+export function makeMyAppConfig({ version, channel }): TauriReleaseConfig {
   return {
-    appName: 'Oddsmith',
-    appId: 'com.oddsmith.desktop',
+    appName: 'MyApp',
+    appId: 'com.myapp.desktop',
     root: DESKTOP_ROOT,
-    repo: { owner: 'aviynw', name: 'oddsmith' },
+    repo: { owner: 'my-org', name: 'myapp' },
     version, channel,
     versionFiles: [
       { path: 'package.json', kind: 'json' },
@@ -192,20 +192,20 @@ export function makeOddsmithConfig({ version, channel }): TauriReleaseConfig {
       { path: 'src-tauri/Cargo.toml', kind: 'cargo-toml' },
     ],
     targets: ['linux-x86_64'],            // its tauri.conf ships deb+appimage
-    signing: { keyPath: '~/.oddsmith/signing/oddsmith.key' },
+    signing: { keyPath: '~/.myapp/signing/myapp.key' },
     buildSidecar: async ({ root, ports }) => {       // the seam: ~42-line esbuild
       await ports.exec.run('npm', ['run', 'build:spa'], { cwd: root });
       await ports.exec.run('node', ['scripts/build-sidecar.mjs'], { cwd: root });
     },
     latestJsonUrl: ({ tag, name }) =>
-      `https://github.com/aviynw/oddsmith/releases/download/${tag}/${name}`,
+      `https://github.com/my-org/myapp/releases/download/${tag}/${name}`,
   };
 }
 ```
 
 `apps/desktop/bin/release.ts` is the *same* thin CLI as papercusp's. Every
-difference is config — appId, repo, bundle targets, and the sidecar seam (oddsmith's
-esbuild vs papercusp's 1,070-line bash). This hands oddsmith the version-bump +
+difference is config — appId, repo, bundle targets, and the sidecar seam (myapp's
+esbuild vs papercusp's 1,070-line bash). This hands myapp the version-bump +
 `latest.json` + gh-release + auto-updater flow it has **none** of today.
 
 ## Risks & timing

@@ -58,6 +58,7 @@ import { renderReuseFirstNudge } from './reuse-first-policy';
 import { renderWorkRecordNote } from './work-record-policy';
 import { renderPlanDisciplineNote } from './plan-discipline-policy';
 import { renderObservationCaptureNote } from './observation-capture-policy';
+import { renderWriteThroughNote } from './memory-flush-policy';
 import { renderTurnEndObservation } from './turn-end-observation-policy';
 import { renderFinishTheRolloutNote } from './finish-the-rollout-policy';
 import { renderAgentActivityTruthNote } from './agent-activity-truth-policy';
@@ -633,6 +634,20 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (observationCaptureNote) {
     parts.push(observationCaptureNote);
     sections.push({ name: 'observation-capture-note', chars: observationCaptureNote.length });
+  }
+
+  // Write-through note (compaction-context-loss-2026-07-05 P-004) — the SHARED base every
+  // operator-launched role inherits, mirroring the spawned-bee base (buildPromptParts). Flush a
+  // durable conclusion the MOMENT it forms (facts:assert for a standing conclusion,
+  // work_items:checkpoint / loop:checkpoint for in-flight state) — not when the context fills; the
+  // ~75% gauge nudge + compaction are the BACKSTOP, never the trigger (D-001: the carry system's
+  // weakness is behavioral at the WRITE end). Sourced from the one WRITE_THROUGH_NOTE constant
+  // (orchestrator) so this base + the spawned-bee base + the su playbooks + compaction-strategy.md
+  // can't desync.
+  const writeThroughNote = renderWriteThroughNote();
+  if (writeThroughNote) {
+    parts.push(writeThroughNote);
+    sections.push({ name: 'write-through-note', chars: writeThroughNote.length });
   }
 
   // Turn-end observation pass (owner ask 2026-06-23) — the DELIBERATE end-of-turn reflection step

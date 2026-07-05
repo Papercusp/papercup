@@ -472,6 +472,15 @@ describe('assembleRolePrompt — plan-discipline + observation-capture (enforce-
     expect(out.sections.some((s) => s.name === 'observation-capture-note')).toBe(true);
   });
 
+  it('injects the write-through memory discipline into the SHARED base every role inherits (compaction P-004)', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Write-through memory — flush a conclusion WHEN IT FORMS');
+    expect(out.text).toContain('are the BACKSTOP for');
+    expect(out.sections.some((s) => s.name === 'write-through-note')).toBe(true);
+  });
+
   it('injects the sharpened flag-on dangerous-set rule into the SHARED base every role inherits (P-010)', async () => {
     mockTools.length = 0;
     const { assembleRolePrompt } = await import('./prompt-assembly');
