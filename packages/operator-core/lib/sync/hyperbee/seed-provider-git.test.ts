@@ -7,7 +7,7 @@
  * submodule round-trip.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -166,8 +166,14 @@ describe('git seed provider', () => {
 
     const provider = createGitSeedProvider();
     const staging = tmpDir('gseed-uninit-stage-');
-    // Must NOT throw; the uninitialized submodule is simply not seeded.
+    // Must NOT throw; the uninitialized submodule is simply not seeded. The
+    // provider DOES emit a console.warn for the skip (intentional, operator-
+    // visible signal) — expect it explicitly so it doesn't trip the global
+    // fail-on-console guard.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { entry, payload } = await provider.cut({ sourceRepoDir: src, stagingDir: staging, originUrl: 'u' });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("skipping submodule 'libs/retired'"));
+    warnSpy.mockRestore();
     expect(existsSync(join(staging, 'super.bundle'))).toBe(true);
     expect((entry.meta as { submodulePaths: string[] }).submodulePaths).toEqual([]);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
