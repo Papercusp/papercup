@@ -568,6 +568,15 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
 describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', () => {
   const seeded = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000 }];
 
+  // The genuinely-blind session this detector targets is a REAL launched session: it has an
+  // adv_sessions row, so resolveSessionRef resolves to a non-null ref (agent 'claude'/unknown) —
+  // only its transcript/estimate won't resolve. Default the mock to that so the 'blind' tests
+  // model reality. WI-2917 made a NULL ref mean "synthetic principal, not a session" (exempt), so
+  // without this default the blind tests would silently exercise the synthetic-exempt path instead.
+  beforeEach(() => {
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 's-blind' });
+  });
+
   it('escalates a session whose estimate never resolves — only after the grace sweeps, once (deduped)', async () => {
     estimateMock.mockResolvedValue(null); // context estimate never resolves ⇒ dark telemetry
     // Sweeps 1-2 are within the grace window (a normal boot reads null briefly) ⇒ no escalation.
@@ -643,5 +652,23 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(openEscalationMock).not.toHaveBeenCalled();
 
     resolveSessionRefMock.mockResolvedValue(null); // reset default for any later tests
+  });
+
+  it('does NOT flag a SYNTHETIC principal (mcp-call / UI-client) — a null adv_sessions ref means it is not a launched session, not a blind one (WI-2917)', async () => {
+    // A synthetic coord_presence principal — an MCP-call principal (`mcp-call-<pid>`) or a bare-UUID
+    // UI client — carries a live heartbeat, so the seed pass hands it a compaction_limit. But it is
+    // NOT a launched agent session: it has no adv_sessions row, so resolveSessionRef returns null and
+    // there is no transcript to compact. Its null estimate is meaningless, not blindness, and must
+    // never raise a dark-telemetry alarm (the ~2/3h mcp-call false positives observed 2026-07-05).
+    const synthSeeded = [
+      { owner_id: 'mcp-call-2666139', owner_label: 'su · mcp-call', compaction_limit: 300_000 },
+    ];
+    estimateMock.mockResolvedValue(null);
+    resolveSessionRefMock.mockResolvedValue(null); // no adv_sessions row ⇒ not a real session
+    openEscalationMock.mockClear();
+    let last;
+    for (let i = 0; i < 5; i++) last = await checkCompactionCompliance(fakeSql({ seeded: synthSeeded }));
+    expect(last!.bootConfigAlerts).toEqual([]); // never flagged despite 5 consecutive null sweeps
+    expect(openEscalationMock).not.toHaveBeenCalled();
   });
 });

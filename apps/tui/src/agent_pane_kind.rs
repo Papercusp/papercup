@@ -301,7 +301,7 @@ mod tests {
             Some(AgentPaneKind::Overwatch)
         );
         // Unglyphed (colony driver / user panes) → None.
-        assert_eq!(AgentPaneKind::from_glyph_prefix("colony"), None);
+        assert_eq!(AgentPaneKind::from_glyph_prefix("cups"), None);
         assert_eq!(AgentPaneKind::from_glyph_prefix("claude · ab12"), None);
         // Round-trip with the P-010 prefixer.
         let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee));

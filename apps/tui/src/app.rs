@@ -6719,7 +6719,7 @@ mod tests {
         let mut a = App::new();
         a.hive_agent_tabs = true;
         a.dock_agent_panes = true;
-        // sentinel(1) · bee(2) · queen(3) · planner(4) · bee(5) + unglyphed colony(6).
+        // sentinel(1) · bee(2) · queen(3) · planner(4) · bee(5) + unglyphed cups(6).
         let topo = pui_companion_proto::Topology {
             tabs: vec![],
             panes: vec![
@@ -6728,11 +6728,11 @@ mod tests {
                 topo_pane(3, "🍵 mug"),
                 topo_pane(4, "📋 planner · my-plan"),
                 topo_pane(5, "☕ codex · F-9"),
-                topo_pane(6, "colony"),
+                topo_pane(6, "cups"),
             ],
         };
         // Grouped target: sentinel · queen · bees (roster order) · planner; the
-        // unglyphed colony pane never participates.
+        // unglyphed cups pane never participates.
         assert_eq!(a.dock_regroup_ids(&topo), Some(vec![1, 3, 2, 5, 4]));
         // Already-grouped → None (no churn).
         let grouped = pui_companion_proto::Topology {
