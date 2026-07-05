@@ -152,7 +152,7 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
   });
 
-  it('writes a macOS "Papercusp Tutorial.app" wrapper on darwin once the dispatcher resolves (WI-2197)', async () => {
+  it('writes a macOS "Papercusp Tutorial & Setup.app" wrapper on darwin once the dispatcher resolves (WI-2197)', async () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     try {
@@ -167,13 +167,24 @@ describe('installPapercuspFiles', () => {
           .catch(() => false),
       ).toBe(false);
 
+      const legacyAppPath = path.join(tmpHome, 'Applications', 'Papercusp Tutorial.app');
+      await fs.mkdir(legacyAppPath, { recursive: true });
+      await fs.writeFile(path.join(legacyAppPath, 'legacy-marker'), 'old wrapper\n');
+
       await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
       result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
       expect(result.papercuspCliWritten).toBe(true);
       expect(result.macTutorialAppWritten).toBe(true);
-      expect(result.macTutorialAppPath).toBe(path.join(tmpHome, 'Applications', 'Papercusp Tutorial.app'));
+      expect(result.macTutorialAppPath).toBe(path.join(tmpHome, 'Applications', 'Papercusp Tutorial & Setup.app'));
+      expect(
+        await fs
+          .access(legacyAppPath)
+          .then(() => true)
+          .catch(() => false),
+      ).toBe(false);
 
       const plist = await fs.readFile(path.join(result.macTutorialAppPath, 'Contents', 'Info.plist'), 'utf8');
+      expect(plist).toContain('<key>CFBundleName</key><string>Papercusp Tutorial &amp; Setup</string>');
       expect(plist).toContain('<key>CFBundleExecutable</key><string>papercusp-tutorial</string>');
 
       const execPath = path.join(result.macTutorialAppPath, 'Contents', 'MacOS', 'papercusp-tutorial');

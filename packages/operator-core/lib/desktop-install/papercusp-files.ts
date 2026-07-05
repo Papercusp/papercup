@@ -52,7 +52,7 @@ export interface InstallPaths {
   /** ~/.papercusp/bin/papercusp — `papercusp <setup|tutorial>` dispatcher (onboard = alias of setup) →
    *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
   papercuspCliPath: string;
-  /** ~/Applications/Papercusp Tutorial.app — macOS-only clickable launcher that opens a
+  /** ~/Applications/Papercusp Tutorial & Setup.app — macOS-only clickable launcher that opens a
    *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
    *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
   macTutorialAppPath: string;
@@ -80,7 +80,7 @@ export interface InstallResult extends InstallPaths {
   ptoolShimWritten: boolean;
   /** True when the `papercusp` dispatcher shim was written (P-014). */
   papercuspCliWritten: boolean;
-  /** True when the macOS "Papercusp Tutorial.app" wrapper was written (darwin only, WI-2197). */
+  /** True when the macOS "Papercusp Tutorial & Setup.app" wrapper was written (darwin only, WI-2197). */
   macTutorialAppWritten: boolean;
   /** Resolved psu launcher the shim points at. Empty when not found. */
   psuLauncherSource: string;
@@ -536,7 +536,7 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
 
 /**
  * Write a minimal, self-contained macOS `.app` bundle at
- * `~/Applications/Papercusp Tutorial.app` that double-clicks (Finder/Launchpad/
+ * `~/Applications/Papercusp Tutorial & Setup.app` that double-clicks (Finder/Launchpad/
  * Spotlight) into a fresh Terminal (or iTerm, if installed) window running
  * `papercusp tutorial` (windows-macos-tutorial-shortcut-parity-2026-07-04,
  * WI-2197). Parity with the Linux .deb's third `.desktop` icon
@@ -566,7 +566,7 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
     '<plist version="1.0">\n' +
     '<dict>\n' +
-    '  <key>CFBundleName</key><string>Papercusp Tutorial</string>\n' +
+    '  <key>CFBundleName</key><string>Papercusp Tutorial &amp; Setup</string>\n' +
     '  <key>CFBundleDisplayName</key><string>Papercusp Tutorial &amp; Setup</string>\n' +
     '  <key>CFBundleIdentifier</key><string>com.papercusp.tutorial</string>\n' +
     '  <key>CFBundleVersion</key><string>1</string>\n' +
@@ -713,7 +713,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     psuPath: path.join(binDir, 'psu'),
     ptoolPath: path.join(binDir, 'ptool'),
     papercuspCliPath: path.join(binDir, 'papercusp'),
-    macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial.app'),
+    macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial & Setup.app'),
   };
 }
 
@@ -797,8 +797,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // and only once the dispatcher it invokes actually landed — a DMG install has
   // no postinstall-script hook, so this is provisioned here at first boot,
   // mirroring the Linux .deb's third `.desktop` icon.
-  const macTutorialAppWritten =
-    process.platform === 'darwin' && papercuspCliWritten ? await writeMacTutorialApp(paths.macTutorialAppPath) : false;
+  let macTutorialAppWritten = false;
+  if (process.platform === 'darwin' && papercuspCliWritten) {
+    macTutorialAppWritten = await writeMacTutorialApp(paths.macTutorialAppPath);
+    if (macTutorialAppWritten) {
+      await fs.rm(path.join(home, 'Applications', 'Papercusp Tutorial.app'), { recursive: true, force: true });
+    }
+  }
 
   return {
     ...paths,
