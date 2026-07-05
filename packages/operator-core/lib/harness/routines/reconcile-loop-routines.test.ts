@@ -556,3 +556,167 @@ describe('reconcileLoopRoutines — circuit-open fast path (EI-7006)', () => {
     expect(guard).toHaveBeenCalledWith(expect.objectContaining({ circuitOpen: true, stuckFireCount: 40 }));
   });
 });
+
+describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escalate, not escalate-only)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  function parkedRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rt-parked',
+      target_owner_id: 'su-parked',
+      interval_sec: 60, // quickRetryParkMs = max(10min, 3×60s=3min) = 10min; stuckParkMs = max(30min,4×60s) = 30min
+      parked: true,
+      install_slug: 'papercusp',
+      name: 'loop-su-parked',
+      routine_workspace_id: 'ws-papercusp',
+      last_fired_at: pgString(T0),
+      lifecycle_completed_at: null,
+      presence_last_active_at: null,
+      ...overrides,
+    };
+  }
+
+  it('a quiet-parked, REACHABLE loop retries EARLY (10min, well before the classic 30min dwell) when under the attempt cap', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 })); // first attempt
+    const guard = vi.fn(async () => ({ breach: true, reason: 'should-not-be-called-this-early' }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10 * 60_000, // exactly the quick-retry floor, WELL under the 30min classic dwell
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.terminated).toEqual([]);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-parked', via: 'stuck-backstop', quickRetry: true });
+    // The terminal guard must NEVER be consulted this early — quick-retry only ever attempts
+    // another wake, never a pause (the dwell + reachability veto for TERMINATION is untouched).
+    expect(guard).not.toHaveBeenCalled();
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-parked', expect.stringContaining('stuck-backstop'), 'error');
+  });
+
+  it('does NOT quick-retry before the quick-retry floor — a loop parked only 5min is left untouched', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 }));
+    const sql = fakeSql([parkedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 5 * 60_000, // under BOTH the quick-retry floor (10min) and the classic dwell
+      recordFire,
+      readFireState,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('quick-retry is BOUNDED — once consecutiveErrors reaches the attempt cap (3), it stops firing early and falls back to needing the classic dwell', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    // 3 prior quick-retry attempts already recorded — at the cap, so quick-retry is no longer eligible.
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 3 }));
+    const sql = fakeSql([parkedRow()], updates);
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10 * 60_000, // past the quick-retry floor, but still WELL under the classic 30min dwell
+      recordFire,
+      readFireState,
+    });
+
+    expect(res.rearmed).toBe(0); // exhausted quick-retry, not yet at the classic dwell → left untouched
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('once past the classic dwell, behaves exactly as the pre-existing stuck-backstop path (quickRetry NOT flagged)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 }));
+    const guard = vi.fn(async () => ({ breach: false }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000, // past the classic 30min dwell
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-parked', via: 'stuck-backstop' });
+    expect(res.loops[0].quickRetry).toBeUndefined();
+    expect(guard).toHaveBeenCalled(); // classic path DOES consult the terminal guard
+  });
+
+  it('a CIRCUIT-OPEN loop is never quick-retried early — routed to the terminal-guard fast path instead (no fight with the circuit backoff)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql([parkedRow()], updates);
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 12 })); // ≥8 → circuit OPEN
+    const guard = vi.fn(async () => ({ breach: false }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10 * 60_000, // past the quick-retry floor
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    // circuitOpen routes to the (declined) terminal-guard fast path, same as EI-7006 — never the
+    // quick-retry leg (quick-retry explicitly excludes circuitOpen so it never fights the backoff).
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ circuitOpen: true }));
+    expect(res.rearmed).toBe(0); // guard declined AND not stuck-park-elapsed yet → left untouched
+  });
+
+  it('a HEALTHY (active-since-fire) loop is never quick-retried — the pre-filter protects it exactly as before', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 }));
+    const sql = fakeSql([parkedRow({ presence_last_active_at: pgString(T0 + 9 * 60_000) })], updates); // active at +9min
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10 * 60_000, // past the quick-retry floor, but presence shows genuine post-fire activity
+      recordFire,
+      readFireState,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS<=0 disables the quick-retry leg entirely (fail-soft to today\'s behavior)', async () => {
+    const prev = process.env.PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS;
+    process.env.PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS = '0';
+    try {
+      const updates: unknown[][] = [];
+      const recordFire = vi.fn(async () => {});
+      const readFireState = vi.fn(async () => ({ lastFiredAt: null, consecutiveErrors: 0 }));
+      const sql = fakeSql([parkedRow()], updates);
+      const res = await reconcileLoopRoutines({
+        sql,
+        nowMs: T0 + 10 * 60_000, // past the quick-retry floor — would have retried if enabled
+        recordFire,
+        readFireState,
+      });
+      expect(res.rearmed).toBe(0);
+      expect(recordFire).not.toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS;
+      else process.env.PAPERCUSP_LOOP_QUICK_RETRY_MAX_ATTEMPTS = prev;
+    }
+  });
+});
