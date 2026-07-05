@@ -412,4 +412,41 @@ describe('event-loop yield every ~1k ops (EI-81 / audit P-021)', () => {
     );
     expect(ticks).toBeGreaterThanOrEqual(3);
   });
+
+  // WI-2344: the op-count trigger alone assumes ops are cheap. On a from-0
+  // replay against a loaded/slow PG (or wide snapshot-op expansion), a SLOW
+  // op can keep the pass under the 1000-op threshold for well over the
+  // MERGE_YIELD_MAX_MS budget — these pin the wall-clock trigger that fires
+  // regardless of op count.
+  it('mergeAdmittedLogsIncremental also yields on wall-clock time, well under 1000 ops', async () => {
+    const author = 'f6'.repeat(32);
+    // 12 ops × ~30ms/apply ≈ 360ms — comfortably past MERGE_YIELD_MAX_MS
+    // (250ms) while nowhere near the 1000-op counter threshold.
+    const log = memLog(author, corpusOps(33, 12, author, 1_700_000_000_000));
+    const cursor = createMergeCursor();
+    const slowApply = async (): Promise<boolean> => {
+      await new Promise((r) => setTimeout(r, 30));
+      return true;
+    };
+    const ticks = await macrotasksDuring(() =>
+      mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: slowApply,
+        getTimeoutMs: 0,
+      }),
+    );
+    expect(ticks).toBeGreaterThanOrEqual(1); // 0 without the time-based trigger (12 ops << 1000)
+  });
+
+  it('mergeAdmittedLogs also yields on wall-clock time, well under 1000 ops', async () => {
+    const author = 'a7'.repeat(32);
+    const log = memLog(author, corpusOps(34, 12, author, 1_700_000_000_000));
+    const slowApply = async (): Promise<boolean> => {
+      await new Promise((r) => setTimeout(r, 30));
+      return true;
+    };
+    const ticks = await macrotasksDuring(() =>
+      mergeAdmittedLogs([log], { applyImpl: slowApply, maxOpsPerAuthor: 0, getTimeoutMs: 0 }),
+    );
+    expect(ticks).toBeGreaterThanOrEqual(1);
+  });
 });

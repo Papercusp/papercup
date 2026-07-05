@@ -19,7 +19,7 @@ import { Popover } from '@/app/harness/Popover';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
-import { ThinkingDot } from '@/app/harness/AgentThinkingPopover';
+import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 
 /** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
  *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend

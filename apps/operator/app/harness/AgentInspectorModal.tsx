@@ -10,15 +10,16 @@ import {
   ThinkingDot,
   fmtEntryTime,
   type Turn,
-} from './AgentThinkingPopover';
+} from './AgentThinkingStream';
 
 /**
  * AgentInspectorModal — the pinned, full-height view of a run's live thinking
  * stream. Opened by clicking a running agent's row in the AgentsRoster
  * (operator-vite's AgentsRunningPill → onInspect), the LIVE surface for this
- * — NOT a hover popover (EI-5917: the `AgentThinkingPopover` default-exported
- * hover component this file imports FROM has no JSX caller anywhere in the
- * tree; only its shared hook/renderer exports below are reused here).
+ * — NOT a hover popover (EI-5917/WI-2346: AgentThinkingStream.tsx used to also
+ * export a default `AgentThinkingPopover` hover component with no JSX caller
+ * anywhere in the tree; it was deleted and only its shared hook/renderer
+ * exports below survive, reused here).
  *
  * It does NOT dismiss on mouse-leave, so the whole transcript can be read +
  * scrolled. It reuses the shared stream hook + Entry renderer, but presents

@@ -1,38 +1,30 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 
 /**
- * Hover popover anchored to a Now-running agent pill that shows the
- * agent's live "thinking" stream (text deltas, tool uses, tool results,
- * status events, terminal result).
+ * Shared live "thinking" stream primitives for a Now-running agent — the
+ * timeline hook + entry types + renderer reused by AgentInspectorModal.tsx
+ * (the pinned, click-to-open live view opened from operator-vite's
+ * AgentsRunningPill/AgentsRoster).
  *
- * Lifecycle:
- *   - Mount: opens an EventSource on /api/harness/<slug>/agents/<runId>/stream.
+ * Lifecycle (useAgentThinkingStream):
+ *   - Mount: opens an EventSource on /api/harness/<slug>/agents/<runId>/stream
+ *     (or an explicit `streamUrl`).
  *   - Receives 'backfill' (array) once at start, then 'event' deltas as
  *     the agent writes more lines, then 'done' when the run terminates.
  *   - Unmount: aborts the EventSource. Server side closes the watcher.
  *
- * Interaction:
- *   - The popover catches its own mouseenter/mouseleave so the cursor
- *     can transit from the pill into the popover without a flicker close.
- *     Mouse leaving the popover triggers onClose.
- *
- * ⚠ ORPHANED (EI-5917, 2026-07): the default-exported `AgentThinkingPopover`
- * component below has ZERO JSX callers anywhere in the tree — the "pill
- * controls the open state via parent component" it once described
- * (HarnessDashboard, a since-removed apps/operator surface) no longer exists.
- * The LIVE surface is AgentInspectorModal.tsx (a click-to-open, non-dismissing
- * modal), opened from operator-vite's AgentsRunningPill/AgentsRoster. Only
- * this file's NAMED exports are reused today — TimelineEntry, waitingMessage,
- * useAgentThinkingStream, ThinkingDot, Turn, groupEntriesIntoTurns, Entry,
- * fmtEntryTime, STALL_AFTER_MS. Before touching the popover component itself
- * (below), confirm you actually want the hover surface revived rather than
- * fixing AgentInspectorModal — the next real fix here should either wire this
- * back in as a genuine hover-preview, or delete it and keep only the shared
- * exports (EI-5917 has the full analysis).
+ * HISTORY (WI-2346, 2026-07): this file used to also export a default
+ * `AgentThinkingPopover` hover-popover component. It went ORPHANED (EI-5917,
+ * 2026-07) — the "pill controls the open state via parent component" pattern
+ * it was built for (HarnessDashboard, a since-removed apps/operator surface)
+ * no longer exists, and operator-vite's AgentsRunningPill grew its own
+ * hover-preview (a plan/work-item DetailStrip, not a live thinking stream).
+ * With zero JSX callers and no surviving use case to wire it back into, the
+ * component was deleted; only the shared exports below (already reused by
+ * AgentInspectorModal) remain.
  */
 
 export interface TimelineEntry {
@@ -47,24 +39,6 @@ export interface TimelineEntry {
   durationMs?: number;
   /** ISO timestamp of the source record — rendered as the per-entry header time. */
   ts?: string;
-}
-
-interface Props {
-  slug: string;
-  phase: string;
-  runId: string;
-  role: string;
-  /** Pill's bounding rect at hover time. Used to anchor the popover. */
-  anchorRect: DOMRect;
-  /** Called when cursor enters the popover (parent cancels its close timer). */
-  onMouseEnter: () => void;
-  /** Called when cursor leaves the popover (parent re-schedules close). */
-  onMouseLeave: () => void;
-  /** Open the full AgentInspector modal (existing loadAgent flow). */
-  onOpenInspector: () => void;
-  /** Run start (epoch-ms). Drives the elapsed counter + stall detection while
-   *  the timeline is still empty. Optional — when absent, no elapsed is shown. */
-  startedAtMs?: number;
 }
 
 /** How long a run may produce ZERO output before the card flags it as likely
@@ -104,13 +78,9 @@ export function waitingMessage(
   };
 }
 
-const POPOVER_WIDTH = 520;
-const POPOVER_MAX_HEIGHT = 360;
-const VIEWPORT_PAD = 12;
-
 /**
- * Subscribe to a run's live thinking stream. Shared by the hover popover AND the
- * pinned inspector modal (AgentInspectorModal) so both render the same timeline
+ * Subscribe to a run's live thinking stream. Shared by every surface that
+ * renders a run's timeline (currently AgentInspectorModal) so they all render
  * from one code path. Opens an EventSource on mount, replays `backfill` once,
  * appends `event` deltas, and flips to done/error on the terminal events.
  */
@@ -163,185 +133,6 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   return { events, status, thinking };
 }
 
-export default function AgentThinkingPopover({
-  slug,
-  phase,
-  runId,
-  role,
-  anchorRect,
-  onMouseEnter,
-  onMouseLeave,
-  onOpenInspector,
-  startedAtMs,
-}: Props) {
-  const { events, status, thinking } = useAgentThinkingStream(slug, phase, runId);
-  const [now, setNow] = useState(() => Date.now());
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Position: above pill by default; flip below if it would clip the
-  // viewport top. Horizontal: align left edge to pill; clamp inside
-  // viewport horizontally so the popover never overflows.
-  const [pos, setPos] = useState<{ left: number; top: number; placement: 'above' | 'below' }>(() => {
-    const top = anchorRect.top - POPOVER_MAX_HEIGHT - 8;
-    const left = Math.min(
-      Math.max(VIEWPORT_PAD, anchorRect.left),
-      (typeof window !== 'undefined' ? window.innerWidth : 1024) - POPOVER_WIDTH - VIEWPORT_PAD,
-    );
-    return top > VIEWPORT_PAD
-      ? { left, top, placement: 'above' }
-      : { left, top: anchorRect.bottom + 8, placement: 'below' };
-  });
-
-  // Re-measure if the viewport scrolls under us (cheap; no resize observer needed).
-  useLayoutEffect(() => {
-    const onScroll = () => onMouseLeave();
-    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
-    return () => window.removeEventListener('scroll', onScroll, { capture: true });
-  }, [onMouseLeave]);
-
-  // Tick a 1s clock ONLY while still waiting on the first output (empty timeline,
-  // not terminal) so the elapsed counter + the stall escalation update live —
-  // no timer runs once output arrives or the run ends.
-  useEffect(() => {
-    if (events.length > 0 || status === 'done') return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [events.length, status]);
-
-  // Auto-scroll to bottom on new events. We don't auto-scroll if the
-  // user has manually scrolled up — preserve their scroll position.
-  const userScrolledRef = useRef(false);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (!userScrolledRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [events]);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onUserScroll = () => {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-      userScrolledRef.current = !nearBottom;
-    };
-    el.addEventListener('scroll', onUserScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onUserScroll);
-  }, []);
-
-  const elapsedMs = startedAtMs != null ? Math.max(0, now - startedAtMs) : null;
-  const waiting = waitingMessage(status, elapsedMs);
-  // A live run sitting on zero output past the stall threshold reads as
-  // "stalled?" in the header instead of a reassuring green "live".
-  const stalledNow = events.length === 0 && status === 'live' && waiting.stalled;
-  const statusLabel = stalledNow ? 'stalled?'
-    : status === 'connecting' ? 'connecting…'
-    : status === 'live' ? 'live'
-    : status === 'done' ? 'done'
-    : 'disconnected';
-  const statusColor = stalledNow ? '#d97757'
-    : status === 'live' ? '#6aa84f'
-    : status === 'done' ? '#9a9a9a'
-    : status === 'error' ? '#d97757'
-    : '#9a9a9a';
-
-  return createPortal(
-    <div
-      role="tooltip"
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      style={{
-        position: 'fixed',
-        left: pos.left,
-        top: pos.top,
-        width: POPOVER_WIDTH,
-        maxHeight: POPOVER_MAX_HEIGHT,
-        zIndex: 2147483640,
-        background: 'var(--bg-1)',
-        border: '1px solid var(--border)',
-        borderRadius: 6,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        fontSize: 12,
-        color: 'var(--fg)',
-      }}
-    >
-      <div style={{
-        padding: '6px 10px',
-        borderBottom: '1px solid var(--border)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        fontSize: 11,
-        background: 'var(--bg-2)',
-      }}>
-        <span style={{ color: 'var(--fg-mute)' }}>
-          <strong style={{ color: 'var(--fg)' }}>{role}</strong>
-          {' · '}<code style={{ fontSize: 10 }}>{runId.slice(0, 24)}</code>
-        </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {thinking ? <ThinkingDot size={6} /> : (
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%', background: statusColor,
-              boxShadow: status === 'live' ? `0 0 6px ${statusColor}` : 'none',
-            }} />
-          )}
-          <span style={{ color: thinking ? '#6aa84f' : statusColor }}>{thinking ? 'thinking…' : statusLabel}</span>
-        </span>
-      </div>
-      <div
-        ref={scrollRef}
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: 8,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-          fontSize: 11.5,
-          lineHeight: 1.45,
-        }}
-      >
-        {events.length === 0 ? (
-          <div style={{ color: waiting.stalled ? '#d97757' : 'var(--fg-mute)', fontStyle: 'italic', padding: 4 }}>
-            {waiting.text}
-          </div>
-        ) : (
-          events.map((e, i) => <Entry key={i} entry={e} />)
-        )}
-      </div>
-      <div style={{
-        padding: '5px 10px',
-        borderTop: '1px solid var(--border)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        background: 'var(--bg-2)',
-        fontSize: 10.5,
-        color: 'var(--fg-mute)',
-      }}>
-        <span>{events.length} event{events.length === 1 ? '' : 's'}</span>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onOpenInspector(); }}
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--border)',
-            color: 'var(--fg)',
-            padding: '2px 8px',
-            borderRadius: 3,
-            fontSize: 10.5,
-            cursor: 'pointer',
-          }}
-        >
-          Open full inspector →
-        </button>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
 /** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when
  *  absent/unparseable. Pure — exported for tests. */
 export function fmtEntryTime(ts?: string): string | null {
@@ -369,8 +160,7 @@ function EntryTime({ ts }: { ts?: string }) {
 }
 
 /** A pulsing dot — the "actively thinking" indicator, shared by the thinking pane
- *  header, the hover popover, and the agents roster. Self-contained (ships its own
- *  keyframe). */
+ *  header and the agents roster. Self-contained (ships its own keyframe). */
 export function ThinkingDot({ size = 7, color = '#6aa84f', title = 'thinking' }: { size?: number; color?: string; title?: string }) {
   return (
     <span
