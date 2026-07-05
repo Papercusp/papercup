@@ -148,6 +148,37 @@ describe('git seed provider', () => {
     ).rejects.toThrow();
   });
 
+  it('skips a submodule declared in .gitmodules but NOT checked out (no spawn ENOENT)', async () => {
+    // Repro of the real cut failure: .gitmodules can declare a submodule whose
+    // working tree was never initialized (e.g. the RETIRED libs/zero-harness).
+    // A naive cut spawns `git bundle` in a cwd that doesn't exist → `spawn git
+    // ENOENT`, aborting the ENTIRE cut. The provider must skip it and still cut.
+    const src = tmpDir('gseed-uninit-');
+    await initRepo(src);
+    writeFileSync(join(src, 'top.txt'), 'top');
+    // Declare a submodule with NO checked-out working tree (no <path>/.git).
+    writeFileSync(
+      join(src, '.gitmodules'),
+      '[submodule "libs/retired"]\n\tpath = libs/retired\n\turl = https://example/retired\n',
+    );
+    await g(src, ['add', '.']);
+    await g(src, ['commit', '-qm', 'top + a declared-but-uninitialized submodule']);
+
+    const provider = createGitSeedProvider();
+    const staging = tmpDir('gseed-uninit-stage-');
+    // Must NOT throw; the uninitialized submodule is simply not seeded.
+    const { entry, payload } = await provider.cut({ sourceRepoDir: src, stagingDir: staging, originUrl: 'u' });
+    expect(existsSync(join(staging, 'super.bundle'))).toBe(true);
+    expect((entry.meta as { submodulePaths: string[] }).submodulePaths).toEqual([]);
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    // And it still restores (super clones; no submodule to wire — a fresh member
+    // cold-clones the retired path if it ever needs it).
+    const target = join(tmpDir('gseed-uninit-tgt-'), 'checkout');
+    await provider.restore(entry, payload, { targetRepoDir: target });
+    expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top');
+  });
+
   it('verify fails closed on a mismatched hash', async () => {
     const provider = createGitSeedProvider();
     const src = tmpDir('gseed-src3-');

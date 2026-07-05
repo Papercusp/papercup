@@ -200,20 +200,42 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   );
   -- WI-2118 reserved-plan-lane floor (reservedPlanLaneExclusionSql): the issue-claim path AND
   -- diagnoseClaimNextMiss reference these two tables to exclude items reserved by another active
-  -- plan lane. Minimal columns the floor reads; empty by default ⇒ the EXISTS subqueries match
-  -- nothing, so a test that seeds neither is byte-identical to the pre-floor behavior (mirrors the
-  -- datatype_registry precedent above). A test that DOES apply the full migration 122/141 tables
-  -- keeps them (CREATE TABLE IF NOT EXISTS is a no-op when the richer table already exists).
+  -- plan lane. Empty by default ⇒ the EXISTS subqueries match nothing, so a test that seeds
+  -- neither is byte-identical to the pre-floor behavior (mirrors the datatype_registry precedent
+  -- above).
+  --
+  -- ⚠ plan_item_claims MUST be the FULL migration-141 shape, not a column subset: several tests
+  -- (e.g. plan-item-convert.integration) apply this fixture FIRST and readMigration('141-…') AFTER
+  -- — a stunted stub here makes 141's CREATE TABLE IF NOT EXISTS silently no-op and its
+  -- CREATE INDEX (workspace_id, owner) then fails with 'column "workspace_id" does not exist'
+  -- (the exact D-014 fixture-subset trap this file exists to end; broke the green gate 2026-07-05).
+  -- Same doctrine for harness_plans: carry the real multi-tenant key columns (with test-friendly
+  -- DEFAULTs) so a richer real-DDL application in either order composes instead of colliding.
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
-    plan_slug text PRIMARY KEY,
-    status text
+    workspace_id text NOT NULL DEFAULT 'default',
+    harness_slug text NOT NULL DEFAULT 'papercup',
+    plan_slug text NOT NULL,
+    status text,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
+  -- Mirrors libs/papercusp/libs/db/sql/141-plan-item-claims.sql column-for-column (checks/COMMENT/
+  -- GRANTs intentionally omitted — superset-only, no-enforcement fixture stance).
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
+    workspace_id text NOT NULL DEFAULT 'default',
+    harness_slug text NOT NULL DEFAULT 'papercup',
     plan_slug text NOT NULL,
     item_id text NOT NULL,
+    claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
     owner text NOT NULL,
+    owner_label text,
+    owner_name text,
+    intent text DEFAULT '' NOT NULL,
+    liveness_mode text DEFAULT 'availability' NOT NULL,
+    ttl_sec integer DEFAULT 1200 NOT NULL,
+    acquired_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     expires_ts timestamptz NOT NULL,
-    PRIMARY KEY (plan_slug, item_id)
+    last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
   );`;
 
 /**
