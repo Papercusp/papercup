@@ -643,6 +643,32 @@ export async function getPlanRow(
   }
 }
 
+/**
+ * Does this plan slug exist ANYWHERE in the workspace's plans store, in ANY
+ * harness? Unlike getPlanRow (which requires a resolved single harness),
+ * this is a slug-only existence check — for callers that have a declared
+ * plan slug but no reliable harness to scope it to (e.g. a presence row,
+ * which does not carry harnessSlug). EI-7402: the claim-discipline watch
+ * uses this to distinguish "declared a real, store-backed plan but hasn't
+ * claimed a lane yet" (nudge with the plans:set-status remedy) from
+ * "declared a file-only plan the store never ingested" (that remedy can
+ * never succeed against it — nudging it every wake is pure noise).
+ */
+export async function planSlugExistsInWorkspace(
+  workspaceId: string,
+  slug: string,
+): Promise<boolean> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return false;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ one: number }[]>`
+      SELECT 1 AS one FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
+       LIMIT 1
+    `;
+  });
+  return rows.length > 0;
+}
+
 /** All plan rows for a harness (PG), live + optionally archived. The archived
  *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
 export async function listPlanRows(

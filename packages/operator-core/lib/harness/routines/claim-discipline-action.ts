@@ -27,6 +27,7 @@ import { STALE_MS } from '../../liveness';
 import { listPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
 
 export const CLAIM_WATCH_OWNER = 'claim-discipline-watch';
 const WATCH_IDENTITY: AgentIdentity = {
@@ -151,9 +152,34 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
       .flatMap((e) => e.to),
   );
 
+  // EI-7402: a declared plan slug that the plans:* store never ingested (authored
+  // only as repo markdown, no harness_plans row in ANY harness) makes the
+  // plans:set-status remedy below undischargeable — the agent would be nudged
+  // every wake for a fix that can never succeed. Filter those out before sending;
+  // an agent already working such a plan via work_items claims has nothing to fix
+  // here. Cache per (workspaceId, plan) since many agents can share a declared plan.
+  const workspaceByAgent = new Map(presenceRows.map((p) => [p.ownerId, p.workspaceId]));
+  const existsCache = new Map<string, boolean>();
+  const storeExists = async (workspaceId: string, plan: string): Promise<boolean> => {
+    const key = `${workspaceId}::${plan}`;
+    const cached = existsCache.get(key);
+    if (cached !== undefined) return cached;
+    const exists = await planSlugExistsInWorkspace(workspaceId, plan).catch(() => true); // fail-open: don't suppress a real nudge on a transient PG hiccup
+    existsCache.set(key, exists);
+    return exists;
+  };
+
   const targets = selectNudgeTargets(declaredAgents, claimedPlansByAgent, recentlyNudged);
+  let skippedStoreAbsent = 0;
+  let nudged = 0;
   for (const t of targets) {
     const plan = t.declaredPlanSlug!;
+    const workspaceId = workspaceByAgent.get(t.agentId) ?? 'default';
+    if (!(await storeExists(workspaceId, plan))) {
+      skippedStoreAbsent += 1;
+      continue;
+    }
+    nudged += 1;
     await sendMessage(WATCH_IDENTITY, {
       to: [t.agentId],
       summary: nudgeSummary(plan),
@@ -164,7 +190,8 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
     );
   }
   console.log(
-    `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${targets.length} nudged` +
+    `[claim-discipline-watch] ${declaredAgents.length} agent(s) declared → ${nudged} nudged` +
+      (skippedStoreAbsent ? `, ${skippedStoreAbsent} skipped (declared plan not in store — undischargeable remedy)` : '') +
       (recentlyNudged.size ? `, ${recentlyNudged.size} in throttle window` : ''),
   );
 });

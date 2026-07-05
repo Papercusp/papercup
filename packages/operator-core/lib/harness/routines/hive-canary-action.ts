@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
+import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 
 /** Terminal-enough statuses: the loop carried the canary to a verdict. */
 const CANARY_TERMINAL = new Set(['passed', 'deprecated', 'failed']);
