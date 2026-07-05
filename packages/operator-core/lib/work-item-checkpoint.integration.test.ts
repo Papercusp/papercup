@@ -41,18 +41,38 @@ const CARRY_NOTES_DDL = `
     journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
     PRIMARY KEY (workspace_id, scope))`;
+const WORK_ITEMS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.work_items (
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    feature_id text NOT NULL,
+    last_progress_at timestamptz,
+    PRIMARY KEY (workspace_id, harness_slug, feature_id))`;
+const ENGINEER_ISSUES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
+    workspace_id text NOT NULL DEFAULT 'default',
+    issue_id text NOT NULL,
+    state text NOT NULL DEFAULT 'open',
+    assignee text,
+    assigned_at timestamptz,
+    updated_at timestamptz,
+    PRIMARY KEY (workspace_id, issue_id))`;
 
 let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('work-item-checkpoint');
   h.sql = db.sql;
   await db.sql.unsafe(CARRY_NOTES_DDL);
+  await db.sql.unsafe(WORK_ITEMS_DDL);
+  await db.sql.unsafe(ENGINEER_ISSUES_DDL);
 }, 60_000);
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.carry_notes`;
+  await db.sql`DELETE FROM harness_shared.work_items`;
+  await db.sql`DELETE FROM harness_shared.engineer_issues`;
 });
 
 async function rowCount(): Promise<number> {
@@ -115,6 +135,31 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     // so any later reader (a re-woken bee OR a successor after eviction) gets it.
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-HANDOFF' }, 'predecessor left this');
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-HANDOFF' })).toBe('predecessor left this');
+  });
+
+  it('checkpoint progress refreshes issue-family assigned_at, the current issue progress anchor', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, state, assignee, assigned_at, updated_at)
+      VALUES
+        ('default', 'WI-ISSUE-PROGRESS', 'open', 'su-holder', now() - interval '30 minutes', now() - interval '30 minutes')`;
+
+    const [before] = await db.sql<{ assigned_at: Date; updated_at: Date }[]>`
+      SELECT assigned_at, updated_at
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = 'WI-ISSUE-PROGRESS'`;
+
+    expect(await setWorkItemCheckpoint(
+      { harness: HARNESS, workItemId: 'WI-ISSUE-PROGRESS' },
+      'still working; refreshed progress anchor',
+    )).toBe('still working; refreshed progress anchor');
+
+    const [after] = await db.sql<{ assigned_at: Date; updated_at: Date }[]>`
+      SELECT assigned_at, updated_at
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = 'WI-ISSUE-PROGRESS'`;
+    expect(after.assigned_at.getTime()).toBeGreaterThan(before.assigned_at.getTime());
+    expect(after.updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
   });
 
   it('checkpoints are independent per work-item and per harness', async () => {
