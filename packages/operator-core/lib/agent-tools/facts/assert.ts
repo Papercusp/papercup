@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+import { resolveScopeRefAlias } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:assert',

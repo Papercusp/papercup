@@ -99,14 +99,14 @@ describe('generic `work` default pack (shipped content)', () => {
   });
 });
 
-describe('blueprint → default-pack wiring (resolved via the hive-create path)', () => {
+describe('blueprint → default-pack wiring (resolved via the pot-create path)', () => {
   const resolver = operatorResolveExtends({ localDirs: [] });
 
-  it('the coding hive (`coding`) defaults to the generic `coding` pack', () => {
+  it('the coding pot (`coding`) defaults to the generic `coding` pack', () => {
     const v = resolveAndValidate({ id: 'probe-hive', extends: 'coding' }, resolver);
     expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
     expect(v.blueprint!.learning?.pack).toBe('coding');
-    expect(v.blueprint!.kind).toBe('hive');
+    expect(v.blueprint!.kind).toBe('pot');
   });
 
   it('the work hive (`generic-hive`) overrides to the generic `work` pack, keeping its scout loop', () => {
