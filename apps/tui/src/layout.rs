@@ -1072,19 +1072,14 @@ mod tests {
         // Order: brain precedes her side column; the queen split precedes the
         // cups stack; the dock-driver is inside that cups stack.
         let queen_at = on.find("name=\"🍵 mug\"").expect("queen container");
-        let stack_at = on
-            .find("name=\"cups\" stacked=true")
-            .expect("cups stack");
+        let stack_at = on.find("name=\"cups\" stacked=true").expect("cups stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");
         assert!(
             work_at < stack_at,
             "the queen split precedes the cups stack"
         );
-        assert!(
-            stack_at < driver_at,
-            "the driver is inside the cups stack"
-        );
+        assert!(stack_at < driver_at, "the driver is inside the cups stack");
     }
 
     #[test]

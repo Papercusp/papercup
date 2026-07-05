@@ -34,6 +34,7 @@ import {
   addDirArgs,
   forkUnsupportedMessage,
   forkBootstrapBody,
+  trackedForkEnvelopeEnv,
   freshSuBootstrapBody,
   psuLaunchArgvRecord,
   effectiveAutoMode,
@@ -1106,6 +1107,29 @@ describe('psu-launcher arg parsing', () => {
     const env = buildResumeEnv(session, { brain: true, accountEnv: { env: { PAPERCUSP_ACCOUNT_ID: 'avi' }, notice: null } });
     expect(env.PAPERCUSP_AGENT_SESSION).toBe('1');
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('avi');
+  });
+
+  it('trackedForkEnvelopeEnv: a TRACKED --fork ALWAYS carries the agent-session marker (WI-3071 regression)', () => {
+    // bootstrap-su (server-side) never sets PAPERCUSP_AGENT_SESSION — launchTrackedFork
+    // used to spread its envelopeEnv verbatim, so a forked su session ran UNMARKED and
+    // invisible to the destructive shared-tree git guard (pretooluse-bash-resource-gate.sh
+    // gates git stash/reset --hard/clean -f/checkout . on exactly this var) and the
+    // native-scheduler lockout. `git stash` executed unblocked on the shared staging tree
+    // from a forked session on 2026-07-05 as a direct result.
+    const bootstrapEnvelopeEnv = {
+      CLAUDE_CONFIG_DIR: '/home/x/.papercusp/su-claude-homes/session-9',
+      PAPERCUSP_SID: 'su-forked',
+      PAPERCUSP_WORKSPACE: 'ws1',
+    };
+    expect(trackedForkEnvelopeEnv(bootstrapEnvelopeEnv)).toEqual({
+      ...bootstrapEnvelopeEnv,
+      PAPERCUSP_AGENT_SESSION: '1',
+    });
+    // Never trust the server envelope's own claim — the marker is asserted
+    // client-side even if bootstrap-su starts sending something under the key.
+    expect(trackedForkEnvelopeEnv({ ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '0' })).toMatchObject({
+      PAPERCUSP_AGENT_SESSION: '1',
+    });
   });
 
   it('GATEWAY_ACCOUNT_HEADER stays in LOCKSTEP with the server ACCOUNT_HEADER (gateway.ts)', () => {

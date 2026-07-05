@@ -6758,7 +6758,10 @@ mod tests {
         a.dock_agent_panes = true;
         let mis = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![topo_pane(2, "☕ claude · F-12"), topo_pane(1, "🥤 papercup")],
+            panes: vec![
+                topo_pane(2, "☕ claude · F-12"),
+                topo_pane(1, "🥤 papercup"),
+            ],
         };
         // First mis-ordered snapshot → the stack repair fires.
         match a.update(Event::Topology(mis.clone())) {
@@ -6770,7 +6773,10 @@ mod tests {
         // A grouped snapshot re-arms the guard.
         let grouped = pui_companion_proto::Topology {
             tabs: vec![],
-            panes: vec![topo_pane(1, "🥤 papercup"), topo_pane(2, "☕ claude · F-12")],
+            panes: vec![
+                topo_pane(1, "🥤 papercup"),
+                topo_pane(2, "☕ claude · F-12"),
+            ],
         };
         assert_eq!(a.update(Event::Topology(grouped)), Action::Render);
         assert!(a.last_regroup.is_none());

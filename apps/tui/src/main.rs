@@ -3307,8 +3307,10 @@ fn spawn_sync(
     network_focus: Option<String>,
     pinned: Option<app::Tab>,
 ) {
-    // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
-    let (sig_tx, sig_rx) = mpsc::unbounded_channel::<()>();
+    // Internal signal channel: invalidation_loop -> refetch_loop. Keep the
+    // plans-heavy reads scoped so unrelated high-volume invalidations do not
+    // re-pull plans:list on every frame.
+    let (sig_tx, sig_rx) = mpsc::unbounded_channel::<RefetchSignal>();
     tokio::spawn(refetch_loop(
         tx.clone(),
         active_harness,
@@ -3324,6 +3326,44 @@ fn spawn_sync(
     // task on the /api/activity/stream SSE → Event::ActivityLive.
     tokio::spawn(activity_loop(tx.clone()));
     tokio::spawn(invalidation_loop(tx, sig_tx));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefetchSignal {
+    IncludePlanReads,
+    SkipPlanReads,
+}
+
+impl RefetchSignal {
+    fn include_plan_reads(self) -> bool {
+        matches!(self, RefetchSignal::IncludePlanReads)
+    }
+}
+
+fn sync_payload_fetches_plans(data: &str) -> bool {
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(data) else {
+        return true;
+    };
+    let Some(name) = payload.get("name").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    sync_name_fetches_plans(name)
+}
+
+fn sync_name_fetches_plans(name: &str) -> bool {
+    name.starts_with("plans.")
+        || name.starts_with("planItems.")
+        || name == "harness_shared.harness_plans.changed"
+        || name == "harness_shared.plan_revisions.changed"
+        || name == "harness_shared.plan_runs.changed"
+}
+
+fn refetch_signal_for_frame_data(data: &str) -> RefetchSignal {
+    if sync_payload_fetches_plans(data) {
+        RefetchSignal::IncludePlanReads
+    } else {
+        RefetchSignal::SkipPlanReads
+    }
 }
 
 /// Subscribe to `/api/activity/stream` (the worker-integration bridge) and
@@ -3476,7 +3516,7 @@ async fn refetch_loop(
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
     pinned: Option<app::Tab>,
-    mut sig_rx: UnboundedReceiver<()>,
+    mut sig_rx: UnboundedReceiver<RefetchSignal>,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
@@ -3487,7 +3527,16 @@ async fn refetch_loop(
     };
 
     // Initial load.
-    refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
+    refetch_all(
+        &client,
+        &tx,
+        &active_harness,
+        &active_doc,
+        &active_plan,
+        pinned,
+        true,
+    )
+    .await;
     if let Some(key) = &network_focus {
         // hive-pane: re-pull the drill-in dossier (beacon history + ask
         // log, P-014 item 2) on the same push-driven cadence — the
@@ -3524,20 +3573,41 @@ async fn refetch_loop(
     loop {
         tokio::select! {
             sig = sig_rx.recv() => {
-                if sig.is_none() {
+                let Some(first_sig) = sig else {
                     break; // invalidation loop gone → nothing left to drive us.
-                }
+                };
                 // Debounce a burst of invalidations into one refetch.
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                while sig_rx.try_recv().is_ok() {}
-                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
+                let mut include_plan_reads = first_sig.include_plan_reads();
+                while let Ok(next_sig) = sig_rx.try_recv() {
+                    include_plan_reads |= next_sig.include_plan_reads();
+                }
+                refetch_all(
+                    &client,
+                    &tx,
+                    &active_harness,
+                    &active_doc,
+                    &active_plan,
+                    pinned,
+                    include_plan_reads,
+                )
+                .await;
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
         }
             }
             _ = safety.tick() => {
-                refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan, pinned).await;
+                refetch_all(
+                    &client,
+                    &tx,
+                    &active_harness,
+                    &active_doc,
+                    &active_plan,
+                    pinned,
+                    true,
+                )
+                .await;
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
@@ -3552,10 +3622,10 @@ async fn refetch_loop(
 
 /// Subscribe to `/api/zero-harness/sse` via the active transport (IPC or HTTP —
 /// `client.subscribe_sse` yields a uniform `SseFrame` stream either way). On each
-/// `invalidate`/`update` frame, ping `sig_tx` so the refetch loop reloads; an
+/// `invalidate`/`update` frame, ping `sig_tx` with the affected view scope; an
 /// `attention.notify` payload also becomes an `Event::Notify` (P8). The stream is
 /// long-lived; if it ends we resubscribe.
-async fn invalidation_loop(tx: UnboundedSender<Event>, sig_tx: UnboundedSender<()>) {
+async fn invalidation_loop(tx: UnboundedSender<Event>, sig_tx: UnboundedSender<RefetchSignal>) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
@@ -3592,7 +3662,10 @@ async fn invalidation_loop(tx: UnboundedSender<Event>, sig_tx: UnboundedSender<(
                     }
                 }
             }
-            if sig_tx.send(()).is_err() {
+            if sig_tx
+                .send(refetch_signal_for_frame_data(&fr.data))
+                .is_err()
+            {
                 return; // refetch loop gone.
             }
         }
@@ -3755,7 +3828,9 @@ fn pane_fetches_attention(pinned: Option<app::Tab>) -> bool {
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
 /// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
 /// scopes the fat plans/attention reads to panes that actually render them
-/// (see `pane_fetches_plans` / `pane_fetches_attention`).
+/// (see `pane_fetches_plans` / `pane_fetches_attention`). `include_plan_reads`
+/// is false for non-plan SSE invalidations; the 60s safety tick still includes
+/// them, so a missed/unknown plan signal self-heals without a tight poll.
 async fn refetch_all(
     client: &OperatorClient,
     tx: &UnboundedSender<Event>,
@@ -3763,8 +3838,9 @@ async fn refetch_all(
     active_doc: &Arc<Mutex<Option<String>>>,
     active_plan: &Arc<Mutex<Option<(String, String)>>>,
     pinned: Option<app::Tab>,
+    include_plan_reads: bool,
 ) {
-    if pane_fetches_plans(pinned) {
+    if include_plan_reads && pane_fetches_plans(pinned) {
         match client.plans_typed().await {
             Ok(p) => {
                 let _ = tx.send(Event::Plans(p));
@@ -3800,7 +3876,7 @@ async fn refetch_all(
     if let Ok(rows) = client.network_board().await {
         let _ = tx.send(Event::NetworkBoard(rows));
     }
-    if pane_fetches_attention(pinned) {
+    if include_plan_reads && pane_fetches_attention(pinned) {
         match client.attention_typed().await {
             Ok(i) => {
                 let _ = tx.send(Event::Inbox(i));
@@ -3910,13 +3986,15 @@ async fn refetch_all(
     // endpoint, so only the plan the user has focused (published by the reducer while
     // the Plans tab is active) is fetched; None off-tab → skip the request entirely.
     let sel_plan = active_plan.lock().ok().and_then(|g| g.clone());
-    if let Some((h, p)) = sel_plan {
-        match client.plan_item_states(&h, &p).await {
-            Ok(s) => {
-                let _ = tx.send(Event::PlanItemStates(s));
-            }
-            Err(e) => {
-                let _ = tx.send(Event::Error(format!("plan-item-states: {e}")));
+    if include_plan_reads {
+        if let Some((h, p)) = sel_plan {
+            match client.plan_item_states(&h, &p).await {
+                Ok(s) => {
+                    let _ = tx.send(Event::PlanItemStates(s));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("plan-item-states: {e}")));
+                }
             }
         }
     }
@@ -3982,7 +4060,12 @@ mod tests {
         assert!(pane_fetches_plans(None));
         assert!(pane_fetches_attention(None));
         // Plans consumers keep the plans list.
-        for t in [app::Tab::Plans, app::Tab::Fleet, app::Tab::PlansBoard, app::Tab::Inbox] {
+        for t in [
+            app::Tab::Plans,
+            app::Tab::Fleet,
+            app::Tab::PlansBoard,
+            app::Tab::Inbox,
+        ] {
             assert!(pane_fetches_plans(Some(t)), "{t:?} renders plans");
         }
         // The current dock panes that never read app.plans skip it.
@@ -4005,6 +4088,50 @@ mod tests {
                 "{t:?} never renders the attention inbox"
             );
         }
+    }
+
+    #[test]
+    fn sync_refetch_signal_filters_plan_heavy_reads() {
+        for name in [
+            "plans.list",
+            "plans.attention",
+            "plans.get",
+            "planItems.byPlan",
+            "harness_shared.harness_plans.changed",
+            "harness_shared.plan_revisions.changed",
+            "harness_shared.plan_runs.changed",
+        ] {
+            assert!(sync_name_fetches_plans(name), "{name} should refresh plans");
+            assert_eq!(
+                refetch_signal_for_frame_data(&format!(r#"{{"name":"{name}"}}"#)),
+                RefetchSignal::IncludePlanReads
+            );
+        }
+
+        for name in [
+            "activity.recent",
+            "coord.inbox",
+            "network.board",
+            "attention.notify",
+            "harness_shared.tool_invocations.changed",
+        ] {
+            assert!(!sync_name_fetches_plans(name), "{name} should skip plans");
+            assert_eq!(
+                refetch_signal_for_frame_data(&format!(r#"{{"name":"{name}"}}"#)),
+                RefetchSignal::SkipPlanReads
+            );
+        }
+
+        // Preserve old behavior for malformed or future payloads: include plans
+        // rather than risking a stale Create/Plans pane.
+        assert_eq!(
+            refetch_signal_for_frame_data("not json"),
+            RefetchSignal::IncludePlanReads
+        );
+        assert_eq!(
+            refetch_signal_for_frame_data(r#"{"args":{"x":1}}"#),
+            RefetchSignal::IncludePlanReads
+        );
     }
 
     fn coord_msg(

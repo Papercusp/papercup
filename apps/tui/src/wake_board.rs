@@ -310,7 +310,7 @@ mod tests {
         app.wake_filter = crate::app::WakeFilter::Queen;
         let s = render(&app);
         assert!(s.contains("Staged wakes · 🍵"), "{s}"); // 🍵 = Mug (queen scope)
-        // …and an owner-pinned pane shows the (truncated) id.
+                                                         // …and an owner-pinned pane shows the (truncated) id.
         let mut app = App::new();
         app.tab = crate::app::Tab::Wake;
         app.wake_board.loading = false;

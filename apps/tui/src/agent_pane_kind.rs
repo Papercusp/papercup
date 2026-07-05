@@ -279,7 +279,10 @@ mod tests {
             glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)),
             "☕ worker · ab12"
         );
-        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "🍵 Q");
+        assert_eq!(
+            glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)),
+            "🍵 Q"
+        );
         // unknown/missing kind → unchanged
         assert_eq!(glyph_prefixed_title("x", None), "x");
     }
@@ -360,7 +363,10 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         // The old wire words must NOT leak into the display legend.
         for wire in ["queen", "bee", "sentinel", "overwatch"] {
-            assert!(!text.contains(wire), "legend leaked wire word {wire:?}: {text}");
+            assert!(
+                !text.contains(wire),
+                "legend leaked wire word {wire:?}: {text}"
+            );
         }
         // Every kind appears as "<glyph> <lexicon-label>", in ALL_KINDS order.
         let mut last = 0usize;

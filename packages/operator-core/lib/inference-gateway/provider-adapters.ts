@@ -115,7 +115,7 @@ export function providerForGatewayRequest(
   // account when one is present instead of globally stealing the path.
   if (path.startsWith('/v1/models')) {
     const pinnedAccount = headerValue(headers, ACCOUNT_HEADER);
-    if (pinnedAccount && (adapters.codex.pool?.select(pinnedAccount) || isExtraCodexAccount?.(pinnedAccount))) {
+    if (pinnedAccount && (adapters.codex.pool?.select?.(pinnedAccount) || isExtraCodexAccount?.(pinnedAccount))) {
       return adapters.codex;
     }
   }

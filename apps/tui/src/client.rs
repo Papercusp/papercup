@@ -369,7 +369,8 @@ impl OperatorClient {
         // the summary fields anyway. `/api/admin/plans/:verb` forwards unknown
         // query params straight through (bodyFromSearchParams), so this needs no
         // server-side change.
-        self.get_json("/api/admin/plans/list?payloadTier=standard").await
+        self.get_json("/api/admin/plans/list?payloadTier=standard")
+            .await
     }
 
     /// Bring an agent's external terminal window to the foreground via the
