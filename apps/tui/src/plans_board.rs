@@ -551,6 +551,8 @@ mod tests {
             archived: false,
             next_action: Some(format!("do the next thing for {slug}")),
             item_counts: counts,
+            open: None,
+            done: None,
             priority,
         }
     }

@@ -99,6 +99,16 @@ export interface ProcSample {
   cpuPercent: number;
   /** Approx seconds since the process appeared (proc-dir mtime, as dev:processes). */
   ageSeconds: number;
+  /** For a zombie (state 'Z'): true when its PARENT is a browser/webview (any of
+   *  BROWSER_RE — Chromium / Edge / WebKit / Tauri, whether live-desktop OR
+   *  test-desktop). A browser CONSTANTLY spawns + reaps renderer/utility children,
+   *  so a handful of defunct children at any instant is NORMAL churn, not a
+   *  reap-worthy leak — counting them false-alarms on the user's own live browser
+   *  (the P-006 "the user's real desktop is untouchable" invariant, extended to its
+   *  process churn). Left undefined for non-zombies and when the parent cmdline
+   *  cannot be read (fail-safe: an unknown parent still counts, preserving the
+   *  generic "a non-browser parent is not reaping" signal). */
+  parentIsBrowser?: boolean;
 }
 
 export interface ReaperPolicy {
@@ -146,6 +156,11 @@ export function findReapCandidates(samples: ProcSample[], policy: ReaperPolicy =
   const out: ReapCandidate[] = [];
   for (const s of samples) {
     if (s.state === 'Z') {
+      // A defunct child of a live/test browser is normal renderer churn, not a
+      // reap-worthy leak — never count it (mirrors classifyDesktop's live-desktop
+      // fail-safe, applied to the zombie's PARENT). An unknown parent still counts,
+      // preserving the generic "a non-browser parent is not reaping" signal.
+      if (s.parentIsBrowser) continue;
       out.push({ pid: s.pid, reason: 'zombie', cpuPercent: 0, ageSeconds: s.ageSeconds, cmdline: s.cmdline.slice(0, 160) });
       continue;
     }
@@ -239,14 +254,17 @@ async function defaultSample(): Promise<ProcSample[]> {
     state: string;
     ticks0: number;
     ageSeconds: number;
+    parentIsBrowser?: boolean;
   }
   const now = Date.now();
   const pre: Pre[] = [];
   for (const pid of pids) {
     if (!/^\d+$/.test(pid)) continue;
+    let rawStat = '';
     let stat: { state: string; ticks: number } | null = null;
     try {
-      stat = parseStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      rawStat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      stat = parseStat(rawStat);
     } catch {
       continue;
     }
@@ -260,6 +278,21 @@ async function defaultSample(): Promise<ProcSample[]> {
     const isZombie = stat.state === 'Z';
     const isBrowser = classifyDesktop(cmdline) !== 'not-desktop';
     if (!isZombie && !isBrowser) continue;
+    // For a zombie, classify its PARENT: a defunct child of a browser/webview is
+    // normal renderer churn (not a leak). Read the parent's cmdline via ppid.
+    // Fail-safe: any read failure leaves parentIsBrowser undefined → still counts.
+    let parentIsBrowser: boolean | undefined;
+    if (isZombie) {
+      const ppid = parsePpid(rawStat);
+      if (ppid != null && ppid > 1) {
+        try {
+          const pcmd = readFileSync(`/proc/${ppid}/cmdline`).toString('utf8').replace(/\0/g, ' ').trim();
+          parentIsBrowser = classifyDesktop(pcmd) !== 'not-desktop';
+        } catch {
+          /* parent gone / unreadable — leave undefined (fail toward counting) */
+        }
+      }
+    }
     let ageSeconds = 0;
     try {
       const m = statSync(`/proc/${pid}`).mtimeMs;
@@ -267,7 +300,7 @@ async function defaultSample(): Promise<ProcSample[]> {
     } catch {
       /* no stat */
     }
-    pre.push({ pid: Number(pid), cmdline: cmdline.slice(0, 240), state: stat.state, ticks0: stat.ticks, ageSeconds });
+    pre.push({ pid: Number(pid), cmdline: cmdline.slice(0, 240), state: stat.state, ticks0: stat.ticks, ageSeconds, parentIsBrowser });
   }
 
   // Pass 2: CPU sample only the non-zombie candidates.
@@ -290,7 +323,7 @@ async function defaultSample(): Promise<ProcSample[]> {
         /* process exited between samples — treat as 0, it's gone */
       }
     }
-    out.push({ pid: p.pid, cmdline: p.cmdline, state: p.state, cpuPercent, ageSeconds: p.ageSeconds });
+    out.push({ pid: p.pid, cmdline: p.cmdline, state: p.state, cpuPercent, ageSeconds: p.ageSeconds, parentIsBrowser: p.parentIsBrowser });
   }
   return out;
 }

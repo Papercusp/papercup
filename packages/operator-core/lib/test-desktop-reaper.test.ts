@@ -84,9 +84,27 @@ describe('findReapCandidates', () => {
     ).toEqual([]);
   });
 
-  it('flags zombie/defunct processes by state regardless of cmdline', () => {
+  it('flags a zombie whose parent is unknown/non-browser (the generic not-reaping signal)', () => {
+    // parentIsBrowser undefined (couldn't read parent) → fail toward counting.
     const c = findReapCandidates([sample({ pid: 42, state: 'Z', cmdline: '' })]);
     expect(c).toEqual([{ pid: 42, reason: 'zombie', cpuPercent: 0, ageSeconds: 600, cmdline: '' }]);
+    // parentIsBrowser=false (a non-browser parent genuinely not reaping) → counted.
+    expect(findReapCandidates([sample({ pid: 43, state: 'Z', cmdline: '', parentIsBrowser: false })])).toHaveLength(1);
+  });
+
+  it('does NOT count a defunct child of a browser/webview — normal renderer churn, not a leak (P-006)', () => {
+    // The dominant real-world false alarm: the user's live Edge/Chrome/WebKit browser
+    // constantly spawns + reaps renderer/utility children; a handful of defunct ones
+    // at any instant is normal churn, not a reap-worthy leak. Applies to a live-desktop
+    // browser AND a test-desktop browser (its runaway CPU is the separate signal).
+    const zombies = Array.from({ length: 30 }, (_, i) =>
+      sample({ pid: 100 + i, state: 'Z', cmdline: '', parentIsBrowser: true }),
+    );
+    expect(findReapCandidates(zombies)).toEqual([]);
+    // A real non-browser leak still surfaces even when mixed with browser churn.
+    const mixed = [...zombies, sample({ pid: 999, state: 'Z', cmdline: '', parentIsBrowser: false })];
+    const c = findReapCandidates(mixed);
+    expect(c).toEqual([{ pid: 999, reason: 'zombie', cpuPercent: 0, ageSeconds: 600, cmdline: '' }]);
   });
 
   it('ignores a non-browser process pegging CPU', () => {

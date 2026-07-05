@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { selectNudgeTargets, selectDeclaredPresence, nudgeSummary, nudgeBody, NUDGE_PREFIX } from './claim-discipline-action';
+import {
+  selectNudgeTargets,
+  selectDeclaredPresence,
+  nudgeSummary,
+  nudgeBody,
+  NUDGE_PREFIX,
+  filterStoreBackedTargets,
+  storeExistsKey,
+} from './claim-discipline-action';
 import type { PresenceRecord } from '@papercusp/coordination/presence';
 
 function declaredPresence(over: {
@@ -107,6 +115,51 @@ describe('selectNudgeTargets', () => {
     const claimed = new Map([['a', new Set(['plan-x'])]]);
     const targets = selectNudgeTargets(declared, claimed, new Set());
     expect(targets).toEqual([]);
+  });
+});
+
+describe('filterStoreBackedTargets — EI-7402', () => {
+  it('drops a target whose declared plan is AFFIRMED absent from the store', () => {
+    const targets = [declaredPresence({ agentId: 'a', declaredPlanSlug: 'file-only-plan' })];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const existsByKey = new Map([[storeExistsKey('ws1', 'file-only-plan'), false]]);
+    const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, workspaceByAgent, existsByKey);
+    expect(keep).toEqual([]);
+    expect(skippedStoreAbsent).toBe(1);
+  });
+
+  it('keeps a target whose declared plan IS backed by a store row', () => {
+    const targets = [declaredPresence({ agentId: 'a', declaredPlanSlug: 'real-plan' })];
+    const workspaceByAgent = new Map([['a', 'ws1']]);
+    const existsByKey = new Map([[storeExistsKey('ws1', 'real-plan'), true]]);
+    const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, workspaceByAgent, existsByKey);
+    expect(keep.map((t) => t.agentId)).toEqual(['a']);
+    expect(skippedStoreAbsent).toBe(0);
+  });
+
+  it('fails OPEN (keeps) when the existence lookup is missing from the map', () => {
+    const targets = [declaredPresence({ agentId: 'a', declaredPlanSlug: 'unresolved-plan' })];
+    const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, new Map(), new Map());
+    expect(keep.map((t) => t.agentId)).toEqual(['a']);
+    expect(skippedStoreAbsent).toBe(0);
+  });
+
+  it('scopes existence by workspace — the same plan slug in a different workspace is independent', () => {
+    const targets = [
+      declaredPresence({ agentId: 'a', declaredPlanSlug: 'shared-slug' }),
+      declaredPresence({ agentId: 'b', declaredPlanSlug: 'shared-slug' }),
+    ];
+    const workspaceByAgent = new Map([
+      ['a', 'ws1'],
+      ['b', 'ws2'],
+    ]);
+    const existsByKey = new Map([
+      [storeExistsKey('ws1', 'shared-slug'), true],
+      [storeExistsKey('ws2', 'shared-slug'), false],
+    ]);
+    const { keep, skippedStoreAbsent } = filterStoreBackedTargets(targets, workspaceByAgent, existsByKey);
+    expect(keep.map((t) => t.agentId)).toEqual(['a']);
+    expect(skippedStoreAbsent).toBe(1);
   });
 });
 

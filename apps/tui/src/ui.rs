@@ -3341,6 +3341,8 @@ mod tests {
             archived: false,
             next_action: Some("do the thing".into()),
             item_counts: Default::default(),
+            open: None,
+            done: None,
             priority: None,
         }
     }

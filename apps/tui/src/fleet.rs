@@ -1570,6 +1570,8 @@ mod tests {
                 done: 2,
                 ..Default::default()
             },
+            open: None,
+            done: None,
             priority: Some(5),
         };
         let mut p2 = p1.clone();
@@ -1676,6 +1678,8 @@ mod tests {
                 done: 1,
                 ..Default::default()
             },
+            open: None,
+            done: None,
             priority: None,
         };
         app.set_plans(vec![mk("plan-mine"), mk("plan-other")]);

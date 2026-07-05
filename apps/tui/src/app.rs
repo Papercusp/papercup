@@ -7281,6 +7281,8 @@ mod tests {
             archived: false,
             next_action: None,
             item_counts: Default::default(),
+            open: None,
+            done: None,
             priority: None,
         }
     }

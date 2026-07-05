@@ -17,6 +17,16 @@ interface Entry {
   workspaces: string[];
 }
 
+interface PollSuspect {
+  tool_name: string;
+  call_count: number;
+  calls_per_hour: number;
+  callers: number;
+  calls_per_caller_per_hour: number;
+  total_bytes: number;
+  reason: string;
+}
+
 import type { RerunContext } from '../page';
 
 interface Props {
@@ -46,6 +56,7 @@ export function nextTransportParam(current: string | null, t: string): string {
 
 export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [pollSuspects, setPollSuspects] = useState<PollSuspect[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoursParam, setHoursParam] = useQueryState(
@@ -82,6 +93,7 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
         const parsed = JSON.parse(d.content[0].text);
         if (cancelled) return;
         setEntries(parsed.entries ?? []);
+        setPollSuspects(parsed.poll_suspects ?? []);
         setLoading(false);
       })
       .catch((e) => {
@@ -140,6 +152,24 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
       </header>
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
+      {!loading && !error && pollSuspects.length > 0 && (
+        <div
+          data-testid="poll-suspects-banner"
+          className="pc-dev-api-err"
+          style={{ padding: '8px 10px', marginBottom: 8, border: '1px solid currentColor', borderRadius: 4 }}
+        >
+          <strong>{pollSuspects.length} poll-suspect tool{pollSuspects.length === 1 ? '' : 's'}</strong> — polling-shaped
+          call rate (EI-7029: expect an SSE/event subscription or a cached read instead)
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {pollSuspects.map((s) => (
+              <li key={s.tool_name}>
+                <span className="pc-dev-slug">{s.tool_name}</span> — {s.calls_per_hour}/hr, {s.callers} caller
+                {s.callers === 1 ? '' : 's'} (~{s.calls_per_caller_per_hour}/hr each)
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {!loading && !error && (
         <div style={{ height: Math.min(640, 32 + entries.length * 28 + 4) }}>
           <RichGrid<Entry>

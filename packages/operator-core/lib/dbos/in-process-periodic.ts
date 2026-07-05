@@ -670,6 +670,26 @@ const scorecardEmissionPulseCheck: PeriodicCheck = {
   },
 };
 
+// Every 1h: poll-suspect scan (EI-7428 — the ANNOUNCE half of the EI-7029 read-time
+// detector). flagPollSuspects only fires when someone happens to call dev:telemetry;
+// this proactively runs the same detector cross-workspace and toasts (notifications:recent
+// + the /dev Telemetry tab banner) any NEW poll-shaped tool (dedup: 24h per tool_name, see
+// poll-suspect-alarm.ts). LIGHT (one rollup query over a 3h window) → not shed.
+const pollSuspectScanCheck: PeriodicCheck = {
+  name: 'poll-suspect-scan',
+  intervalMs: 3600_000,
+  tick: async () => {
+    const { runPollSuspectScanOnce } = await import('../poll-suspect-alarm');
+    const { alerted } = await runPollSuspectScanOnce();
+    if (alerted.length > 0) {
+      console.warn(
+        `[poll-suspect-scan] alerted ${alerted.length} new poll-shaped tool(s): ` +
+          alerted.map((s) => `${s.tool_name} (${s.calls_per_hour}/hr, ${s.callers} caller(s))`).join(', '),
+      );
+    }
+  },
+};
+
 /** The converted ex-DBOS-workflow set. */
 export function buildDefaultChecks(): PeriodicCheck[] {
   return [
@@ -686,6 +706,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     hiveEpochKeyReconcileCheck,
     sharedPresenceReaperCheck,
     scorecardEmissionPulseCheck,
+    pollSuspectScanCheck,
   ];
 }
 

@@ -90,6 +90,35 @@ export interface PulseResult {
    *  failed (recorded, never thrown). */
   outcome: 'filed' | 'skipped' | 'error';
   reason: string;
+  /** WI-2977: set when this pulse coalesced onto a pre-existing OPEN pulse-floor
+   *  issue (bumped its repeat counter) instead of filing a new one. */
+  coalescedInto?: string;
+}
+
+/** The minimal shape the coalescing lookup needs off a matched issue. */
+export interface OpenPulseFloor {
+  id: string;
+  payload: unknown;
+}
+
+/** Default lookup: the newest OPEN issue carrying this pulse's watchdogKey (the
+ *  same indexed `findIssuesByWatchdogKeys` feed the improvement watchdog uses). */
+async function defaultFindOpenPulseFloor(watchdogKey: string): Promise<OpenPulseFloor | null> {
+  const matches = await findIssuesByWatchdogKeys([watchdogKey]);
+  const open = matches.find((i) => i.state === 'open');
+  return open ? { id: open.id, payload: open.payload } : null;
+}
+
+/** Default bump: stamp `payload.pulseRepeat` (replace-whole-object, mirrors
+ *  known-open-aging's stamp convention) — never touches title/state/severity. */
+async function defaultBumpPulseRepeat(id: string, priorCount: number, firstFiredAt: string | null): Promise<void> {
+  const now = new Date().toISOString();
+  const stamp: PulseRepeatStamp = {
+    count: priorCount + 1,
+    firstFiredAt: firstFiredAt ?? now,
+    lastFiredAt: now,
+  };
+  await mergeIssuePayload(id, { pulseRepeat: stamp });
 }
 
 /** Record a "the data layer ran on the pulse floor" fire — countable in the shared
@@ -117,6 +146,11 @@ export interface ScorecardEmissionPulseDeps {
   capture?: typeof captureImprovement;
   recordFire?: (workspaceId: string, installSlug: string, reason: string) => Promise<void>;
   toolUtilizationGrade?: () => Promise<ScorecardRating | undefined>;
+  /** WI-2977: find the standing OPEN pulse-floor issue for this hive (by watchdogKey),
+   *  if one exists. Default queries the real indexed watchdogKey feed. */
+  findOpenPulseFloor?: (watchdogKey: string) => Promise<OpenPulseFloor | null>;
+  /** WI-2977: bump the coalesced-onto issue's repeat stamp instead of filing anew. */
+  bumpPulseRepeat?: (id: string, priorCount: number, firstFiredAt: string | null) => Promise<void>;
 }
 
 /**
@@ -137,6 +171,8 @@ export async function runScorecardEmissionPulse(
   const capture = deps.capture ?? captureImprovement;
   const recordFire = deps.recordFire ?? recordPulseFire;
   const toolUtilizationGrade = deps.toolUtilizationGrade ?? defaultToolUtilizationGrade;
+  const findOpenPulseFloor = deps.findOpenPulseFloor ?? defaultFindOpenPulseFloor;
+  const bumpPulseRepeat = deps.bumpPulseRepeat ?? defaultBumpPulseRepeat;
   try {
     if (!(await enabled())) return { outcome: 'skipped', reason: 'papercusp-overwatch flag off' };
 
@@ -156,6 +192,28 @@ export async function runScorecardEmissionPulse(
       return { outcome: 'skipped', reason: `scorecard already in-window (${f.count}, newest ${f.lastEmittedAt})` };
     }
 
+    // WI-2977: the freshness window (1h) only stops floors from stacking WITHIN an
+    // outage's first hour — a multi-day stopped-supervisor outage still re-files a
+    // brand-new open EI every tick once the previous floor ages out of that window.
+    // Before filing, check whether the STANDING pulse-floor for this hive (by its
+    // stable watchdogKey) is still open — if so this is the SAME outage continuing,
+    // so bump its repeat counter instead of piling on another open dup.
+    const watchdogKey = pulseWatchdogKey(sourceHive);
+    const existingOpen = await findOpenPulseFloor(watchdogKey).catch((e) => {
+      console.warn(`[scorecard-emission-pulse] findOpenPulseFloor failed (${watchdogKey}) — filing fresh: ${e instanceof Error ? e.message : e}`);
+      return null;
+    });
+    if (existingOpen) {
+      const priorCount = readPulseRepeatCount(existingOpen.payload);
+      const priorStamp = (existingOpen.payload as Record<string, unknown> | null)?.pulseRepeat as
+        | { firstFiredAt?: string }
+        | undefined;
+      await bumpPulseRepeat(existingOpen.id, priorCount, priorStamp?.firstFiredAt ?? null);
+      const reason = `no scorecard in ${Math.round(PULSE_WINDOW_MS / 60_000)}m — coalesced onto standing open pulse floor ${existingOpen.id} (repeat ${priorCount + 1})`;
+      await recordFire(workspaceId, sourceHive, reason);
+      return { outcome: 'filed', reason, coalescedInto: existingOpen.id };
+    }
+
     const health = await computeHealth(workspaceId);
     const toolUtil = await toolUtilizationGrade();
     const ratings = synthesizeCoordinationScorecard(health, toolUtil);
@@ -168,6 +226,7 @@ export async function runScorecardEmissionPulse(
       scope: `harness:${sourceHive}`,
       createdBy: 'system:scorecard-emission-pulse',
       payloadExtra: {
+        watchdogKey,
         observation: {
           kind: 'reinforce',
           scope: 'papercusp',

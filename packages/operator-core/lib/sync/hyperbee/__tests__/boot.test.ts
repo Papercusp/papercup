@@ -1448,8 +1448,15 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
 
     await handle.revoke(P.devicePubkey);
 
+    // revoke() returns as soon as the peer is fully refused (revoked/admitted/
+    // pubkeyToLogKey updated); the session close itself is fire-and-forget (a
+    // live-replicator teardown can take a few seconds — see the comment at the
+    // revoke() call site), so poll for it rather than asserting synchronously.
     expect(handle.admitted.has(peerOwn.keyHex)).toBe(false);
-    expect(core.sessions?.length).toBe(sessionsBefore - 1);
+    await vi.waitFor(
+      () => { expect(core.sessions?.length).toBe(sessionsBefore - 1); },
+      { timeout: 10_000, interval: 50 },
+    );
   });
 
   it('revoking an unknown pubkey is a no-op (idempotent) but still blocks a future announce', async () => {
