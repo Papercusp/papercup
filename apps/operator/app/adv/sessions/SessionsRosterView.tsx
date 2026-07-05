@@ -45,6 +45,9 @@ export interface RosterEntry {
   revoked: boolean;
   /** OS process alive? null = unknown. Non-stale + false = zombie (P-008). */
   pidAlive: boolean | null;
+  /** Official standing modes (agent_modes ids, e.g. ['auto','ideate']) — EI-7626.
+   *  Optional: absent on payloads from an operator predating the field. */
+  modes?: string[];
   hasLaunchRecord: boolean;
   advSessionId: number | null;
   currentPlanSlug: string | null;
@@ -280,6 +283,15 @@ function RosterRow({
         {e.feature ? (
           <span className="pc-roster__chip pc-roster__chip--feature">{e.feature}</span>
         ) : null}
+        {(e.modes ?? []).map((m) => (
+          <span
+            key={m}
+            className="pc-roster__chip pc-roster__chip--mode"
+            title="official standing mode (mode:set / agent_modes)"
+          >
+            {m}
+          </span>
+        ))}
         <span className="pc-roster__label" title={e.ownerId}>
           {e.label || e.ownerId.slice(0, 14)}
         </span>

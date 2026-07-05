@@ -322,6 +322,39 @@ export async function runningSpawnLivenessByOwner(
   return out;
 }
 
+/**
+ * Batched official-modes read for the roster (EI-7626): agent_modes is
+ * workspace-keyed, so group owners by their presence row's workspaceId and
+ * merge the per-workspace batch reads. Best-effort — a modes-read failure
+ * yields an empty map and the roster renders without mode chips.
+ */
+async function agentModesByOwner(
+  presence: Array<{ ownerId: string; workspaceId: string }>,
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  try {
+    const { getModesForOwners } = await import('./modes/store');
+    const byWs = new Map<string, string[]>();
+    for (const p of presence) {
+      if (!p.workspaceId) continue;
+      const arr = byWs.get(p.workspaceId) ?? [];
+      arr.push(p.ownerId);
+      byWs.set(p.workspaceId, arr);
+    }
+    await Promise.all(
+      [...byWs.entries()].map(async ([ws, owners]) => {
+        const m = await getModesForOwners(ws, owners);
+        for (const [owner, rows] of m) {
+          if (rows.length) out.set(owner, rows.map((r) => r.mode));
+        }
+      }),
+    );
+  } catch {
+    /* best-effort — presence-only roster */
+  }
+  return out;
+}
+
 const LIVENESS_RANK: Record<Liveness, number> = { live: 3, idle: 2, stale: 1, pending: 0 };
 
 /**
@@ -511,6 +544,7 @@ export function pendingLaunchesToRosterEntries(
       liveness: 'pending' as Liveness,
       stale: false,
       loopArmed: false,
+      modes: [],
       machineLabel: null,
       isLocal: true,
       workspaceId: r.workspaceId,

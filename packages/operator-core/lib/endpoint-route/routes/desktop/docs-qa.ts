@@ -200,7 +200,32 @@ const docsQa = defineTool({
         const promptText = composeDocsQaPrompt(question, { sectionTitle, currentPath, blocks });
         const backend = await surfaceBackend('oracle');
         const model = await surfaceModel('oracle');
+
+        // NEVER hang the caller. The tutorial/palette showed "Searching the
+        // docs…" FOREVER when the backend stalled between the citations and the
+        // first token (rate-limited / wedged / gateway saturated) — the SSE
+        // heartbeats keep the socket open, so with no client-side deadline the
+        // spinner spins indefinitely (owner-reported 2026-07-05). Abort the turn
+        // on a HARD deadline AND a shorter FIRST-TOKEN deadline so a stalled
+        // backend degrades to an `error` the caller falls back on, instead of an
+        // infinite spinner. Chains off req.signal so a client disconnect still
+        // tears the spawn down.
+        const ac = new AbortController();
+        const onReqAbort = () => ac.abort();
+        req.signal?.addEventListener('abort', onReqAbort);
+        const HARD_MS = 90_000;
+        const FIRST_TOKEN_MS = 35_000;
         let sawDelta = false;
+        const hardTimer = setTimeout(() => ac.abort(), HARD_MS);
+        let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+          if (!sawDelta) ac.abort();
+        }, FIRST_TOKEN_MS);
+        const clearFirstToken = () => {
+          if (firstTokenTimer) {
+            clearTimeout(firstTokenTimer);
+            firstTokenTimer = null;
+          }
+        };
         try {
           for await (const ev of runAgentChat({
             promptText,
@@ -208,21 +233,38 @@ const docsQa = defineTool({
             ...(backend ? { backend } : {}),
             allowedTools: [],
             permissionMode: 'bypassPermissions',
-            signal: req.signal,
+            signal: ac.signal,
           })) {
             if (ev.type === 'delta') {
-              sawDelta = true;
+              if (!sawDelta) {
+                sawDelta = true;
+                clearFirstToken();
+              }
               sink.event('delta', { text: ev.text });
             } else if (ev.type === 'error') {
               sink.event('error', { message: ev.message });
             }
           }
         } catch (err) {
-          sink.event('error', { message: err instanceof Error ? err.message : String(err) });
+          // A client disconnect (req.signal) also lands here via ac — only
+          // surface an error if the client is still listening.
+          if (!req.signal?.aborted) {
+            sink.event('error', {
+              message: ac.signal.aborted
+                ? "The docs assistant timed out. It may be rate-limited — try again, or check that you're signed in under Setup."
+                : err instanceof Error
+                  ? err.message
+                  : String(err),
+            });
+          }
+        } finally {
+          clearTimeout(hardTimer);
+          clearFirstToken();
+          req.signal?.removeEventListener('abort', onReqAbort);
         }
-        if (!sawDelta) {
-          // Backend produced nothing (auth expired, rate-limited, crashed) —
-          // give the caller a graceful, non-empty signal to fall back on.
+        if (!sawDelta && !req.signal?.aborted && !ac.signal.aborted) {
+          // Backend produced nothing (auth expired, crashed) — give the caller a
+          // graceful, non-empty signal to fall back on.
           sink.event('error', {
             message: 'The agent did not return an answer. It may be rate-limited or need re-authentication in Setup.',
           });

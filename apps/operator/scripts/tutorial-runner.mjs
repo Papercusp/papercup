@@ -319,6 +319,16 @@ const shellScreen = createPrompt((config, done) => {
   return `${config.header}\n\n${menu}`;
 });
 
+/**
+ * "Press any key" gate — reuses the same @inquirer/core keypress infra as
+ * shellScreen so it works in the interactive TTY. Resolves on the first key.
+ * Used for the no-agent-installed → Setup handoff (owner spec 2026-07-05).
+ */
+const pressAnyKeyPrompt = createPrompt((config, done) => {
+  useKeypress(() => done(true));
+  return config.message ?? '';
+});
+
 /** Linear RGB gradient across a string (violet → cyan by default). Pure-ish (uses chalk). */
 function gradient(text, from = [139, 92, 246], to = [34, 211, 238]) {
   const chars = [...text];
@@ -502,9 +512,14 @@ async function answerQuestion(base, section, question) {
 
   let answer = '';
   let needsBackend = false;
-  let backendMessage = '';
   let errored = false;
   const citations = [];
+  // Client-side deadline so a stalled backend can NEVER leave the spinner
+  // running forever (the server has its own 90s cap; this is the backstop for a
+  // hung/half-open connection). owner-reported "searching the docs forever",
+  // 2026-07-05.
+  const ac = new AbortController();
+  const deadline = setTimeout(() => ac.abort(), 100_000);
   try {
     const r = await fetch(`${base}/api/desktop/docs-qa`, {
       method: 'POST',
@@ -514,6 +529,7 @@ async function answerQuestion(base, section, question) {
         sectionTitle: section?.title,
         docSlugs: section?.docSlugs ?? [],
       }),
+      signal: ac.signal,
     });
     if (!r.ok || !r.body) {
       errored = true;
@@ -521,12 +537,14 @@ async function answerQuestion(base, section, question) {
       await consumeSse(r.body, (event, data) => {
         if (event === 'delta' && typeof data.text === 'string') answer += data.text;
         else if (event === 'citation' && data.slug) citations.push(data);
-        else if (event === 'needs_backend') { needsBackend = true; backendMessage = data.message || ''; }
+        else if (event === 'needs_backend') { needsBackend = true; }
         else if (event === 'error') errored = true;
       });
     }
   } catch {
     errored = true;
+  } finally {
+    clearTimeout(deadline);
   }
   if (spinner) {
     if (answer && !errored) spinner.succeed(accent('Answer'));
@@ -534,7 +552,9 @@ async function answerQuestion(base, section, question) {
   }
 
   if (needsBackend) {
-    if (backendMessage) say(dim(backendMessage));
+    // The caller (tutorialSectionAction) owns the no-agent UX: a clear message +
+    // "press any key → Setup" handoff (owner spec 2026-07-05). Don't double-print
+    // the generic server message here.
     return 'needs_backend';
   }
   if (answer.trim() && !errored) {
@@ -901,8 +921,25 @@ async function tutorialSectionAction(shell, s) {
     const q = typedQuestion ?? (await prompts.input({ message: '💬 Your question:' }))?.trim();
     if (q) {
       const result = await answerQuestion(base, s, q);
-      // B2-#3b: no agent backend configured → REAL auto-route to the Setup tab.
-      if (result === 'needs_backend') return { switchTo: 'setup' };
+      // No agent installed/signed-in → you can't ask a question yet. Tell the
+      // user plainly, wait for a keypress, THEN hand off to the Setup tab so they
+      // can install/sign in an agent (owner spec 2026-07-05: "if no agent cli is
+      // installed it should just tell them … press any key to be taken to setup").
+      if (result === 'needs_backend') {
+        say(
+          "To ask a question you need an agent CLI (Claude, Codex, or OMP) installed " +
+            "and signed in — that agent is what reads the docs and answers.\n" +
+            dim('Press any key to go to Setup and get one installed…'),
+        );
+        if (interactive) {
+          try {
+            await pressAnyKeyPrompt({ message: '' });
+          } catch {
+            /* Ctrl+C during the gate — fall through to Setup anyway */
+          }
+        }
+        return { switchTo: 'setup' };
+      }
     }
     return {};
   }

@@ -130,41 +130,54 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(rows.length).toBe(4);
   });
 
-  it('sets REPLICA IDENTITY FULL on agent_facts (migration 498 — WI-2718)', async () => {
-    // agent_facts has no primary key (only a UNIQUE INDEX), but migration 461's
-    // capture_agent_facts_outbox_del_trg publishes DELETEs for federation. Without
-    // an explicit replica identity, Postgres defaults to REPLICA IDENTITY DEFAULT,
-    // which requires a PK to log a DELETE for a table in a logical-replication
-    // publication — so any DELETE against agent_facts (e.g. the periodic sweep/GC)
-    // fails with "cannot delete from table ... because it does not have a replica
-    // identity and publishes deletes" on a federated/embedded operator. 'f' = FULL.
+  it('agent_facts has a surrogate PK + REPLICA IDENTITY DEFAULT (migration 505 supersedes 498 — WI-2914)', async () => {
+    // agent_facts publishes DELETEs for federation (mig 461 capture trigger + the
+    // zero_harness publication), so it needs a replica identity that logs deletes.
+    // 498 used REPLICA IDENTITY FULL as a no-PK workaround, but FULL includes the
+    // STORED generated column fed_key (mig 462) → on PG18 the delete is rejected
+    // ("Replica identity must not contain unpublished generated columns"), breaking
+    // the sweep/GC. 505 gives it a surrogate PK and switches to REPLICA IDENTITY
+    // DEFAULT (PK-only, no generated column) — a version-agnostic fix. 'd' = DEFAULT.
     const [{ relreplident }] = await sql.unsafe(
       `SELECT relreplident FROM pg_class
         WHERE relname = 'agent_facts' AND relnamespace = 'harness_shared'::regnamespace`,
     );
-    expect(relreplident).toBe('f');
+    expect(relreplident).toBe('d');
+
+    // The surrogate PK must exist for DEFAULT to have key columns to log.
+    const [{ pk_cols }] = await sql.unsafe(
+      `SELECT array_agg(a.attname ORDER BY k.ord) AS pk_cols
+         FROM pg_constraint c
+         CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+        WHERE c.conrelid = 'harness_shared.agent_facts'::regclass AND c.contype = 'p'`,
+    );
+    expect(pk_cols).toEqual(['id']);
   });
 
-  it('WI-2914: agent_facts DELETE succeeds under the real zero_harness publication (generated col fed_key + REPLICA IDENTITY FULL)', async () => {
-    // The REPLICA IDENTITY FULL assertion above is necessary but NOT sufficient:
-    // the actual sweep/GC DELETE only fails once the table is in a delete-publishing
+  it('WI-2914: agent_facts sweep DELETE succeeds under the real zero_harness delete-publishing publication', async () => {
+    // The replica-identity assertion above is necessary but NOT sufficient: the
+    // actual sweep/GC DELETE only fails once the table is in a delete-publishing
     // publication — which the embedded/federated operator creates at boot but the
     // dev box's native PG never does (why the bug never reproduced on :5432). So run
     // the REAL boot-path publication DDL (ensureZeroHarnessPublication — the same fn
     // index.js calls at boot), then prove a full insert→delete round-trip works.
     //
-    // Without the WI-2914 publish_generated_columns=stored fix this DELETE throws:
-    //   "cannot delete from table agent_facts:
-    //    Replica identity must not contain unpublished generated columns"
-    // (agent_facts's FULL replica identity contains the STORED generated column
-    // fed_key from mig 462). This test goes red if that fix is removed/regressed.
+    // Before migration 505 this DELETE threw, on PG18, "cannot delete from table
+    // agent_facts: Replica identity must not contain unpublished generated columns"
+    // (498's FULL replica identity contained the STORED generated column fed_key).
+    // 505's surrogate-PK + REPLICA IDENTITY DEFAULT removes the generated column
+    // from the identity, so the DELETE works on every PG version (this suite's PG16
+    // container AND the PG18 ship target). Goes red if 505 is removed/regressed.
     await ensureZeroHarnessPublication(sql);
 
-    // The fix's mechanism: the publication now publishes generated columns.
-    const [{ pubgencols }] = await sql.unsafe(
-      `SELECT pubgencols FROM pg_publication WHERE pubname = 'zero_harness'`,
+    // Sanity: agent_facts really is a member of the delete-publishing publication.
+    const [{ published }] = await sql.unsafe(
+      `SELECT count(*)::int > 0 AS published FROM pg_publication_tables
+        WHERE pubname = 'zero_harness' AND schemaname = 'harness_shared'
+          AND tablename = 'agent_facts'`,
     );
-    expect(pubgencols).toBe('s'); // 's' = STORED generated columns published
+    expect(published).toBe(true);
 
     // The real thing the sweep does: insert an (expired) fact, then delete it.
     await sql.unsafe(`
