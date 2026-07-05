@@ -24,7 +24,7 @@ import { CAPABILITY_DISPATCH_TCB_PATTERNS } from '../../capability-envelope/tcb'
 import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
 /** Work-item kinds (forward-compatible with unify-work-items-2026-06-04 D-002). */
-export type WorkItemKind = 'feature' | 'bug' | 'change' | 'research-task' | 'chunk';
+export type WorkItemKind = 'feature' | 'bug' | 'change' | 'chunk';
 
 export type ImprovementSeverity = 'critical' | 'major' | 'minor' | 'nit';
 // Canonical lifecycle vocabulary (P-007) — one definition across all ObjectRefs.

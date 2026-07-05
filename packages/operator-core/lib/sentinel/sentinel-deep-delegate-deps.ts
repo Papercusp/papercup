@@ -8,7 +8,7 @@
  * Each dep maps onto an EXISTING substrate primitive — reuse, don't rebuild:
  *   - countOpenDelegations → one SQL count over engineer_issues keyed on the
  *                            feature-family row stamp (the durable marker).
- *   - createWorkItem       → work-items.createWorkItem (kind=`research-task`),
+ *   - createWorkItem       → work-items.createWorkItem (kind=`task`, tagged
  *                            tagged `deep-delegation` (the landing gate) +
  *                            stamped payload.deep_delegation, landing ALREADY
  *                            claimed by the pre-minted spawn id.
@@ -26,7 +26,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
  *  the operator HOME harness (where the sentinel itself lives) via the canonical
  *  resolver — env PAPERCUSP_HIVE_HOME_SLUG when set, else the standing default.
  *  Raw-env-only resolution left the staging process (no env) unable to mint the
- *  research-task at all ("no harness resolved", live 2026-07-01). */
+ *  deep-delegation task at all ("no harness resolved", live 2026-07-01). */
 function defaultSpawnHarness(): string | null {
   return operatorHomeHarnessSlug() || null;
 }
@@ -39,10 +39,10 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
         const { sql } = getOrgPg();
         const rows = await sql<{ n: number }[]>`
           SELECT count(*)::int AS n
-            FROM harness_shared.harness_features_consolidated
+            FROM harness_shared.work_items
            WHERE workspace_id = ${workspaceId}
-             AND item_kind = 'research-task'
-             AND status <> ALL(ARRAY['passed', 'deprecated']::text[])
+             AND item_kind = 'task'
+             AND status <> ALL(ARRAY['passed', 'deprecated', 'resolved', 'closed']::text[])
              AND payload->>'deep_delegation' = 'true'
         `;
         return rows[0]?.n ?? 0;
@@ -57,11 +57,11 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
         const { createWorkItem } = await import('../work-items');
         const harness = input.harness ?? defaultSpawnHarness();
         if (!harness) {
-          console.warn('[deep-delegate] no harness resolved for research-task create');
+          console.warn('[deep-delegate] no harness resolved for deep-delegation task create');
           return null;
         }
         const wi = await createWorkItem({
-          kind: 'research-task',
+          kind: 'task',
           title: input.title,
           summary: input.summary,
           harness,

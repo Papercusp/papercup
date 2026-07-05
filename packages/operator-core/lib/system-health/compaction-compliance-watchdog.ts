@@ -189,12 +189,23 @@ const FORCE_COMPACT_FOCUS =
   'confirmation, owner-gated walls, and any in-flight work-item checkpoint; drop resolved tool output ' +
   'and superseded state.';
 /** The continuation-turn text opened on the compacted context (WI-1804 auto-continue
- *  hosts) — re-orient first (a compaction is a stale-snapshot boundary). */
-const FORCE_COMPACT_CONTINUE_NOTE =
-  'The compaction watchdog compacted you because you ran PAST your soft context limit — through ' +
-  'the ~30% grace band above it — without self-compacting. This is a fresh turn on the compacted ' +
-  'context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then resume your ' +
-  'current unit of work.';
+ *  hosts) — re-orient first (a compaction is a stale-snapshot boundary). Built with
+ *  the session's REAL numbers (owner 2026-07-05: the old static text read as "you were
+ *  compacted for merely passing the soft limit", which contradicts the model — the
+ *  soft limit is the configured NUDGE point; the watchdog seizes only past the FORCE
+ *  threshold ≈ 1.3 × soft limit, window-capped). */
+function forceCompactContinueNote(est: number, limit: number, forceAt: number): string {
+  const k = (n: number) => `${Math.round(n / 1000)}k`;
+  return (
+    `The compaction watchdog force-compacted you: your context (~${k(est)} tokens) crossed the ` +
+    `FORCE threshold (~${k(forceAt)} ≈ 1.3 × your configured soft limit of ${k(limit)}, capped by the ` +
+    `model window). The soft limit itself is only the nudge point — you should self-compact ` +
+    `(session:request-compaction) at a clean stopping point anywhere in the 100–130% band; the ` +
+    `watchdog seizes the turn only when that band is exhausted. This is a fresh turn on the ` +
+    `compacted context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then ` +
+    `resume your current unit of work.`
+  );
+}
 
 /**
  * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE-COMPACT
@@ -218,6 +229,9 @@ async function maybeForceCompact(
   ownerLabel: string,
   est: number,
   limit: number,
+  /** The resolved force threshold (min(limit × 1.3, window − margin)) — named in the
+   *  continuation note so the compacted agent (and its owner) see the real numbers. */
+  forceAt: number = limit * FORCE_COMPACT_FRACTION,
 ): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -237,15 +251,15 @@ async function maybeForceCompact(
     const ok = hostSupports(host, 'compact')
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
-          data: FORCE_COMPACT_CONTINUE_NOTE,
+          data: forceCompactContinueNote(est, limit, forceAt),
           focus: FORCE_COMPACT_FOCUS,
         })
       : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${FORCE_COMPACT_FOCUS}` });
     if (ok) {
       console.warn(
         `[compaction-watchdog] FORCE-COMPACTED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
-          `(${Math.round((est / limit) * 100)}%) — injected /compact after it ran past its soft limit ` +
-          `without self-compacting (P-012).`,
+          `(${Math.round((est / limit) * 100)}% of the soft limit; force threshold ~${forceAt}) — ` +
+          `injected /compact after it exhausted the 100–130% self-compaction band (P-012).`,
       );
     }
     return ok;
@@ -571,7 +585,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
           );
           if (
             est >= forceAt &&
-            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit))
+            (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit, forceAt))
           ) {
             forceCompactedOwners.add(r.owner_id);
             out.forceCompacted.push(r.owner_id);

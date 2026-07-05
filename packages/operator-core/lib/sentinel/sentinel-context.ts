@@ -416,10 +416,10 @@ export function buildSentinelContextDeps(workspaceId: string, hiveSlug: string):
         updated_ts: unknown;
       }>>`
         SELECT feature_id, harness_slug, title, status, taken_by, last_progress_at, updated_ts
-          FROM harness_shared.harness_features_consolidated
+          FROM harness_shared.work_items
          WHERE workspace_id = ${workspaceId}
-           AND item_kind = 'research-task'
-           AND status <> ALL(ARRAY['passed', 'deprecated']::text[])
+           AND item_kind = 'task'
+           AND status <> ALL(ARRAY['passed', 'deprecated', 'resolved', 'closed']::text[])
            AND payload->>'deep_delegation' = 'true'
          ORDER BY COALESCE(last_progress_at, to_timestamp(updated_ts::double precision / 1000.0))
                   DESC NULLS LAST,

@@ -151,7 +151,7 @@ export default defineTool({
   name: "work_items:list",
   profile: "engineer",
   description:
-    "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
+    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
     when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
@@ -179,7 +179,7 @@ export default defineTool({
       .max(80)
       .optional()
       .describe(
-        'built-in kind (feature, research-task, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
+        'built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
       ),
     state: z.string().max(40).optional(),
     assignee: z
