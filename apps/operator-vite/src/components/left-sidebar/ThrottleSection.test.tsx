@@ -156,7 +156,10 @@ describe('ThrottleSection rendering + writes', () => {
   it('toggling an idle activity off calls onToggleIdle(kind,false)', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Scout idle activity' }));
+    // 'scout' label pack-routes via t('scout'); the identity useLexicon mock
+    // returns the key, so the aria-label is 'scout idle activity' (the live
+    // classic/Pot label is "Blender").
+    fireEvent.click(screen.getByRole('checkbox', { name: 'scout idle activity' }));
     expect(props.onToggleIdle).toHaveBeenCalledWith('scout', false);
   });
 

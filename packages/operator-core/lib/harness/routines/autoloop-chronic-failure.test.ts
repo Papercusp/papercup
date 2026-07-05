@@ -186,6 +186,35 @@ describe('selectChronicFailures', () => {
     expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
   });
 
+  it('EI-6690 real shape: a dead loop-role-* owner loop (role-* owner, not su-*) at the HIGHEST real streak (226) is NOT re-escalated', () => {
+    // EI-6690 (loop-role-da950389-8866-4f33-bfd9-74db3e832f6c@*): the FIRST real-world
+    // `loop-role-*` shape pinned in this file — every prior pin is a `loop-su-<uuid>` owner
+    // loop whose routine.target_owner_id is `su-<uuid>`. This loop:arm loop is ROLE-owned:
+    // role `loop-role-<uuid>`, routine target_owner_id `role-<uuid>` (prefix `role-`, not
+    // `su-`). The pinned owner died; the loop stuck-backstopped 226 consecutive times before
+    // its routine went active:false, its last fire freezing 2026-07-01 (~3 days stale). All
+    // three exclusion axes apply — loop:arm OWNER loop (target_owner_id non-null), routine
+    // auto-paused (active:false), AND a >6h-stale frozen watermark. Critically, this proves
+    // `isLoopArmOwnerLoop` is PREFIX-AGNOSTIC — it keys on target_owner_id being non-null, NOT
+    // on the `su-`/`role-` owner prefix — so a future change that (wrongly) gated the loop:arm
+    // guard on the `su-` prefix would re-open this class. Also the HIGHEST real streak pinned
+    // here (prior max was EI-6692 at 221). Live proof it stays suppressed: hive_watchdog_fires
+    // shows exactly ONE autoloop-chronic fire for this row (2026-07-02, which filed EI-6690)
+    // and none since, despite the row still carrying 226 errors.
+    const rows = [
+      row({
+        harness_slug: '*',
+        role: 'loop-role-da950389-8866-4f33-bfd9-74db3e832f6c',
+        consecutive_errors: 226,
+        last_status: 'loop-stuck-backstop',
+        routine_active: false,
+        routine_target_owner_id: 'role-da950389-8866-4f33-bfd9-74db3e832f6c',
+        last_fired_at: new Date(NOW - 3 * 24 * HOUR_MS).toISOString(), // ~3 days stale frozen watermark
+      }),
+    ];
+    expect(selectChronicFailures(rows, 6, { now: NOW, staleMs: 6 * HOUR_MS })).toEqual([]);
+  });
+
   it('a routine that is still active (armed, still trying+failing) IS escalated', () => {
     const rows = [row({ role: 'loop-su-still-live', consecutive_errors: 7, routine_active: true })];
     expect(selectChronicFailures(rows, 6)).toHaveLength(1);
@@ -370,6 +399,11 @@ describe('isStaleWatermark', () => {
 describe('isLoopArmOwnerLoop (EI-6727)', () => {
   it('non-null, non-empty target_owner_id → loop:arm owner loop (true)', () => {
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: 'su-dad90f05-580b-4cb0-b81e-8cb951756c59' })).toBe(true);
+  });
+  it('EI-6690: prefix-agnostic — a `role-<uuid>` owner (not `su-`) is still a loop:arm owner loop (true)', () => {
+    // The guard keys on target_owner_id being present, NOT the owner prefix: a `loop-role-*`
+    // loop is owned by `role-<uuid>`, and must be suppressed exactly like a `loop-su-*` loop.
+    expect(isLoopArmOwnerLoop({ routine_target_owner_id: 'role-da950389-8866-4f33-bfd9-74db3e832f6c' })).toBe(true);
   });
   it('null / undefined / empty → fixed system role, fail-open (false)', () => {
     expect(isLoopArmOwnerLoop({ routine_target_owner_id: null })).toBe(false);

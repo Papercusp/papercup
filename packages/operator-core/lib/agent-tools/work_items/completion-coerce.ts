@@ -15,6 +15,15 @@
  *                                                        no `completion` wrapper — the top-level
  *                                                        refine then rejects)
  *
+ * EI-7311 (2026-07-04): a related but DISTINCT mis-shape — a JSON-STRINGIFIED completion
+ * object (`completion: '{"summary":"...","tests":"..."}'` as a literal string, not an
+ * object). This one doesn't reject; it silently SUCCEEDS with the wrong content: the bare-
+ * string branch below wraps the whole JSON text as `{ summary: <entire blob> }`, dropping
+ * every other field (confirmed live via tool_invocations.args_json on 2 real completions,
+ * EI-6516/EI-6528, whose `tests` field vanished this way and tripped a false
+ * verificationWarning). Detected + parsed back into an object before the rest of the
+ * coercion runs.
+ *
  * The durable fix is coercion at the input boundary (a Zod `preprocess`), applied
  * BEFORE validation so a well-meant-but-mis-shaped completion is normalised to the
  * CompletionRecord contract instead of hard-rejected. WELL-FORMED input passes
@@ -58,7 +67,31 @@ function joinToString(v: readonly unknown[]): string {
 }
 
 /**
+ * EI-7311: a JSON-STRINGIFIED completion object (e.g. `completion: '{"summary":
+ * "...", "tests": "..."}'`) hits the bare-string branch below and gets wrapped
+ * whole as `{ summary: <the entire JSON text> }` — silently DROPPING every
+ * other field, including `tests`/`deferred`, which then trips the false
+ * verificationWarning ("neither tests nor deferred populated") even though the
+ * caller's original completion had `tests` populated. Confirmed live via
+ * tool_invocations.args_json on 2 real completions (EI-6516, EI-6528) that hit
+ * exactly this shape. Detect a string that PARSES to a plain object (as
+ * opposed to genuine prose) and recurse into the normal object-coercion path
+ * instead of swallowing it as a summary blob.
+ */
+function tryParseJsonObject(s: string): Record<string, unknown> | undefined {
+  const t = s.trim();
+  if (!t.startsWith('{') || !t.endsWith('}')) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(t);
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Normalise ONE `completion` value to the CompletionRecord shape. Handles:
+ *  - a JSON-stringified object → parsed + coerced as an object (EI-7311)
  *  - a bare string        → { summary: <string> }
  *  - array-typed field given a scalar → wrapped in a 1-element array (lossless)
  *  - string-typed field given an array → joined with '; '
@@ -69,6 +102,8 @@ function joinToString(v: readonly unknown[]): string {
  */
 export function coerceCompletionShape(raw: unknown): unknown {
   if (typeof raw === 'string') {
+    const parsedObject = tryParseJsonObject(raw);
+    if (parsedObject) return coerceCompletionShape(parsedObject);
     const s = raw.trim();
     return s ? { summary: s } : raw; // empty string: let validation reject it
   }

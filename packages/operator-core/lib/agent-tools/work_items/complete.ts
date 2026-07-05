@@ -183,7 +183,20 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
   // than drop, so hard-rejecting HERE would be the one place that violates it. Mirrors
   // stateWarning: attached to the result + surfaced to the caller; the completion is still
   // recorded + emitted. Rides the write-echo passthrough (write-echo-shape.ts).
-  const hasTests = typeof it.completion.tests === 'string' && it.completion.tests.trim().length > 0;
+  //
+  // EI-7316: the schema carries verification evidence across SEVEN sibling fields
+  // (tests / testsRun / testResult / verifiedHow, each also duplicated under the
+  // nested `verification.*` alias) — completionEvidenceFromRecord (above) already
+  // treats all of them as equally valid evidence when filling completionEvidence for
+  // the state write. This check used to inspect ONLY the bare `tests` field, so a
+  // caller who documented verification via `testsRun`/`testResult`/`verifiedHow` (or
+  // the nested `verification.*` aliases) — every one a legitimate, schema-blessed
+  // way to record it — got a FALSE "neither tests nor deferred populated" warning
+  // even though they HAD stated how it was verified. Reuse the SAME evidence
+  // extraction as the state write (completionEvidenceFromRecord) as the one source
+  // of truth, so "did this completion record verification" can never disagree
+  // between the two call sites.
+  const hasTests = completionEvidenceFromRecord(it.completion) !== undefined;
   const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
   const verificationWarning =
     !hasTests && !hasDeferred
