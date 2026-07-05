@@ -166,7 +166,11 @@ def get_glance():
     cached = _read_cached_glance()
     if cached is not None:
         return cached
-    fresh = call_tool('coord:glance', {'audience': 'user', 'activity_limit': ACTIVITY_WINDOW})
+    fresh = call_tool('coord:glance', {
+        'audience': 'user',
+        'activity_limit': ACTIVITY_WINDOW,
+        'display_only': True,
+    })
     _write_cached_glance(fresh)
     return fresh
 

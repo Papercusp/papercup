@@ -360,6 +360,7 @@ describe('statusline-fleet render (fixture mode)', () => {
 
   it('live mode caches coord:glance for a short burst of statusline invocations', async () => {
     let glanceCalls = 0;
+    let glanceArgs: unknown = null;
     const glance = {
       ok: true,
       wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
@@ -376,9 +377,19 @@ describe('statusline-fleet render (fixture mode)', () => {
         return;
       }
       if (req.url?.startsWith('/api/mcp')) {
-        req.resume();
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => {
+          body += chunk;
+        });
         req.on('end', () => {
           glanceCalls += 1;
+          try {
+            const parsed = JSON.parse(body) as { params?: { arguments?: unknown } };
+            glanceArgs = parsed.params?.arguments ?? null;
+          } catch {
+            glanceArgs = null;
+          }
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({
             jsonrpc: '2.0',
@@ -415,6 +426,7 @@ describe('statusline-fleet render (fixture mode)', () => {
       expect(first).toContain('🔭 cached glance');
       expect(second).toBe(first);
       expect(glanceCalls).toBe(1);
+      expect(glanceArgs).toEqual({ audience: 'user', activity_limit: 12, display_only: true });
       rmSync(home, { recursive: true, force: true });
       rmSync(cacheDir, { recursive: true, force: true });
     } finally {

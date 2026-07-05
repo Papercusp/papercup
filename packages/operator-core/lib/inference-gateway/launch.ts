@@ -329,7 +329,11 @@ function createOptionalFailoverPool(
     reload(next) {
       if (next.length === 0) {
         inner = null;
-        opts.log?.('info', 'inference-gateway: Codex account pool hot-reloaded → []');
+        // WI-3069: this is now only reachable for a genuinely-empty codex config (reloadPool's
+        // own empty-resolve fail-safe keeps a transient hiccup from ever calling reload([]) when
+        // codexAccounts was previously non-empty) — but the pool going unavailable is worth a
+        // 'warn', not an easily-missed 'info' that reads like a routine, successful reload.
+        opts.log?.('warn', 'inference-gateway: Codex account pool hot-reloaded to EMPTY — codex is now UNAVAILABLE until the next non-empty reload');
         return;
       }
       if (inner?.reload) inner.reload(next);
@@ -534,10 +538,25 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     const next = opts.resolveAccount
       ? [await opts.resolveAccount(opts.workspace)]
       : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'claude');
-    const nextCodex = opts.resolveAccount ? [] : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'codex');
+    let nextCodex = opts.resolveAccount ? [] : await (opts.resolveAccounts ?? resolveAccountPool)(opts.workspace, 'codex');
     if (next.length === 0) {
       log('warn', 'inference-gateway: pool reload resolved an EMPTY pool — keeping the current pool (fail-safe)');
       return { changed: false, version: configVersion, accounts: ids(accounts) };
+    }
+    // WI-3069: mirror the claude-pool empty-resolve fail-safe above for codex. Without this, a
+    // transient resolver hiccup that momentarily returns zero codex accounts (while claude's `next`
+    // still resolved fine) fell through to `codexPool.reload([])` below, which WIPES the live codex
+    // pool to null (createOptionalFailoverPool.reload sets inner=null on an empty list) — every codex
+    // call then throws "no Codex account pool configured" until the next successful reload restores
+    // it. Only trips when we previously HAD codex accounts (an intentional zero-codex deployment,
+    // where codexAccounts was already [], is unaffected) and opts.resolveAccount didn't force codex to
+    // [] on purpose (the single-account back-compat mode).
+    if (!opts.resolveAccount && nextCodex.length === 0 && codexAccounts.length > 0) {
+      log(
+        'warn',
+        'inference-gateway: codex pool reload resolved an EMPTY pool (previously non-empty) — keeping the current codex pool (fail-safe)',
+      );
+      nextCodex = codexAccounts;
     }
     const unchanged = sigOf(next) === sigOf(accounts) && sigOf(nextCodex) === sigOf(codexAccounts);
     if (!pool.reload || unchanged) {

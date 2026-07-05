@@ -103,6 +103,16 @@ export const LEARNING_SLO_DEFAULTS = {
   memoryZeroHitMaxRate: 0.4,
   /** …AND baseline rate × this factor (when a baseline of ≥ minRecalls exists). */
   memoryZeroHitSpikeFactor: 2,
+  /**
+   * EI-7774: …AND (when both windows carry a usable non-zero-hit top-score
+   * median) the recent P50 has ALSO dropped to at most baseline × this
+   * factor. A zero-hit rate spike with a STABLE-or-better top-score on the
+   * recalls that DID hit is a healthy burst of cold-pool/novel queries, not
+   * the EI-366 index-degradation signature (which collapses the top-score
+   * distribution too). 0.85 = the recent median must fall to ≤85% of
+   * baseline to still count as a genuine regression.
+   */
+  memoryZeroHitTopScoreDropFactor: 0.85,
 } as const;
 
 /** Per-tick overrides for the SLO tunables (CollectOptions extends this). */
@@ -123,6 +133,7 @@ export interface LearningSloOptions {
   memoryZeroHitMinRecalls?: number;
   memoryZeroHitMaxRate?: number;
   memoryZeroHitSpikeFactor?: number;
+  memoryZeroHitTopScoreDropFactor?: number;
 }
 
 /** Injectable IO seam (unit tests run without PG / flags). */
@@ -452,6 +463,16 @@ export interface RecallRateAggregate {
   recentZero: number;
   baselineRecalls: number;
   baselineZero: number;
+  /**
+   * EI-7774: median top_score over the recent window's NON-zero-hit recalls
+   * (null/undefined when unavailable — a caller on an older query shape, or a
+   * window with no non-zero recalls to take a median of). Optional and
+   * backward-compatible: omitting both P50 fields falls back to the pre-
+   * EI-7774 rate-only behavior below.
+   */
+  recentTopScoreP50?: number | null;
+  /** Median top_score over the baseline window's non-zero-hit recalls. */
+  baselineTopScoreP50?: number | null;
 }
 
 /**
@@ -462,6 +483,15 @@ export interface RecallRateAggregate {
  * jump against the system's own history is the EI-366 index-degradation
  * class. kind=bug per FB-18: the correct state is the baseline rate and the
  * stats table makes it regression-testable.
+ *
+ * EI-7774: a rate spike ALONE cannot distinguish that degradation class from
+ * a healthy burst of cold-pool/novel queries (which also zero-hit at a higher
+ * rate, but whose recalls that DID hit score normally). So when BOTH windows
+ * carry a usable top-score P50 (from recalls that hit), also require the
+ * recent P50 to have dropped to ≤ baseline × memoryZeroHitTopScoreDropFactor
+ * — the actual EI-366 signature — before firing. Missing/null P50 data (an
+ * older caller, or a window with zero non-zero-hit recalls to median) falls
+ * back to the original rate-only gate unchanged.
  */
 export function memoryZeroHitSignalsFromAggregate(
   agg: RecallRateAggregate,
@@ -470,6 +500,7 @@ export function memoryZeroHitSignalsFromAggregate(
   const minRecalls = opts.memoryZeroHitMinRecalls ?? LEARNING_SLO_DEFAULTS.memoryZeroHitMinRecalls;
   const maxRate = opts.memoryZeroHitMaxRate ?? LEARNING_SLO_DEFAULTS.memoryZeroHitMaxRate;
   const factor = opts.memoryZeroHitSpikeFactor ?? LEARNING_SLO_DEFAULTS.memoryZeroHitSpikeFactor;
+  const scoreDropFactor = opts.memoryZeroHitTopScoreDropFactor ?? LEARNING_SLO_DEFAULTS.memoryZeroHitTopScoreDropFactor;
   const recentHours = opts.memoryZeroHitRecentHours ?? LEARNING_SLO_DEFAULTS.memoryZeroHitRecentHours;
   const baselineDays = opts.memoryZeroHitBaselineDays ?? LEARNING_SLO_DEFAULTS.memoryZeroHitBaselineDays;
   if (agg.recentRecalls < minRecalls) return [];
@@ -478,6 +509,14 @@ export function memoryZeroHitSignalsFromAggregate(
   const hasBaseline = agg.baselineRecalls >= minRecalls;
   const baseRate = hasBaseline ? agg.baselineZero / agg.baselineRecalls : null;
   if (baseRate !== null && rate < baseRate * factor) return [];
+  // EI-7774: both P50s present AND the recent one has NOT materially
+  // dropped ⇒ the recalls that hit still score normally — a healthy zero
+  // burst, not index degradation. Stay quiet.
+  const recentP50 = agg.recentTopScoreP50;
+  const baseP50 = agg.baselineTopScoreP50;
+  const hasScoreData = recentP50 != null && baseP50 != null && baseP50 > 0;
+  const scoreCollapsed = hasScoreData ? recentP50! <= baseP50! * scoreDropFactor : null;
+  if (hasScoreData && !scoreCollapsed) return [];
   const pct = (x: number): string => `${Math.round(x * 100)}%`;
   return [{
     source: 'memory-zero-hit',
@@ -490,6 +529,10 @@ export function memoryZeroHitSignalsFromAggregate(
         ? ` — vs a ${pct(baseRate)} baseline over the prior ${baselineDays}d (${agg.baselineRecalls} recalls), ` +
           `a ${(rate / Math.max(baseRate, 0.001)).toFixed(1)}× spike`
         : ` (no usable baseline window — the absolute ${pct(maxRate)} SLO fired)`) +
+      (hasScoreData
+        ? ` — AND the non-zero recalls' top-score P50 also collapsed: ${recentP50!.toFixed(3)} vs a ` +
+          `${baseP50!.toFixed(3)} baseline (${(recentP50! / Math.max(baseP50!, 0.001)).toFixed(2)}×)`
+        : '') +
       `. A spike against the system's own history means index degradation, not "no relevant memory" ` +
       `(the EI-366 class B-10's memory_recall_stats telemetry exists to catch).`,
     severity: 'major',
@@ -509,12 +552,29 @@ export function memoryZeroHitSignalsFromAggregate(
 export async function collectMemoryZeroHitSignals(sql: Sql, opts: LearningSloOptions = {}): Promise<WatchdogSignal[]> {
   const recentHours = opts.memoryZeroHitRecentHours ?? LEARNING_SLO_DEFAULTS.memoryZeroHitRecentHours;
   const baselineDays = opts.memoryZeroHitBaselineDays ?? LEARNING_SLO_DEFAULTS.memoryZeroHitBaselineDays;
-  const rows = await sql<{ recent_recalls: number; recent_zero: number; base_recalls: number; base_zero: number }[]>`
+  // EI-7774: also median the NON-zero-hit top_score in each window (NULL on
+  // zero hits, so the FILTER + percentile_cont naturally excludes them) —
+  // the signature that distinguishes a healthy cold-query zero burst from
+  // real EI-366 index degradation (see memoryZeroHitSignalsFromAggregate).
+  const rows = await sql<
+    {
+      recent_recalls: number;
+      recent_zero: number;
+      base_recalls: number;
+      base_zero: number;
+      recent_top_score_p50: number | null;
+      base_top_score_p50: number | null;
+    }[]
+  >`
     SELECT
       count(*) FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}))::int AS recent_recalls,
       count(*) FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}) AND hit_count = 0)::int AS recent_zero,
       count(*) FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}))::int AS base_recalls,
-      count(*) FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}) AND hit_count = 0)::int AS base_zero
+      count(*) FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}) AND hit_count = 0)::int AS base_zero,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE created_at > now() - make_interval(hours => ${recentHours}) AND top_score IS NOT NULL) AS recent_top_score_p50,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE created_at <= now() - make_interval(hours => ${recentHours}) AND top_score IS NOT NULL) AS base_top_score_p50
       FROM harness_shared.memory_recall_stats
      WHERE created_at > now() - make_interval(hours => ${recentHours}) - make_interval(days => ${baselineDays})`;
   const r = rows[0];
@@ -525,6 +585,8 @@ export async function collectMemoryZeroHitSignals(sql: Sql, opts: LearningSloOpt
       recentZero: Number(r.recent_zero),
       baselineRecalls: Number(r.base_recalls),
       baselineZero: Number(r.base_zero),
+      recentTopScoreP50: r.recent_top_score_p50 == null ? null : Number(r.recent_top_score_p50),
+      baselineTopScoreP50: r.base_top_score_p50 == null ? null : Number(r.base_top_score_p50),
     },
     opts,
   );

@@ -192,6 +192,38 @@ describe('memoryZeroHitSignalsFromAggregate (B-10 telemetry spike)', () => {
       memoryZeroHitSignalsFromAggregate({ recentRecalls: 30, recentZero: 14, baselineRecalls: 200, baselineZero: 80 }),
     ).toEqual([]); // 47% recent vs 40% baseline — over the absolute rate but NOT a spike
   });
+
+  // EI-7774: a rate spike alone can't tell a healthy cold-query zero burst
+  // apart from real EI-366 index degradation — only the latter also
+  // collapses the top-score P50 of the recalls that DID hit.
+  it('EI-7774: stays quiet on a rate spike whose non-zero recalls score normally (healthy cold-query burst)', () => {
+    expect(
+      memoryZeroHitSignalsFromAggregate({
+        recentRecalls: 30, recentZero: 18, baselineRecalls: 200, baselineZero: 20,
+        recentTopScoreP50: 0.42, baselineTopScoreP50: 0.4, // stable / even slightly better
+      }),
+    ).toEqual([]);
+  });
+
+  it('EI-7774: still fires when the rate spikes AND the non-zero top-score P50 also collapses', () => {
+    const out = memoryZeroHitSignalsFromAggregate({
+      recentRecalls: 30, recentZero: 18, baselineRecalls: 200, baselineZero: 20,
+      recentTopScoreP50: 0.1, baselineTopScoreP50: 0.4, // collapsed to 25% of baseline
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].body).toContain('top-score P50 also collapsed');
+    expect(out[0].body).toContain('0.100');
+    expect(out[0].body).toContain('0.400');
+  });
+
+  it('EI-7774: falls back to rate-only firing when P50 data is missing/null (backward compatible)', () => {
+    const out = memoryZeroHitSignalsFromAggregate({
+      recentRecalls: 30, recentZero: 18, baselineRecalls: 200, baselineZero: 20,
+      recentTopScoreP50: null, baselineTopScoreP50: null,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].body).not.toContain('top-score P50');
+  });
 });
 
 describe('the D-001 dark gate (flag OFF)', () => {

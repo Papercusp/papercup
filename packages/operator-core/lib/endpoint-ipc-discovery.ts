@@ -81,14 +81,34 @@ export async function writeEndpointIpcDiscovery(socketPath: string): Promise<voi
 
 /** Read the discovery file, or null when missing/corrupt. */
 export async function readEndpointIpcDiscovery(): Promise<EndpointIpcDiscovery | null> {
+  return readEndpointIpcDiscoveryFrom(endpointIpcDiscoveryPath());
+}
+
+/**
+ * Read the PER-PORT discovery file (EI-190) for a specific operator port, or
+ * null when missing/corrupt. Use this — not the legacy singleton above —
+ * whenever the caller knows (or can resolve) which operator it actually cares
+ * about: the singleton is LAST-WRITER-WINS across every operator on the box
+ * (potentially many concurrent harness/fleet dev sessions each on their own
+ * port), so at any given instant it may point at a DIFFERENT operator than
+ * the one the caller means, including a dead one (EI-7760: this exact
+ * mismatch produced a false "desktop IPC unreachable" alarm — see
+ * desktop-health.ts's `resolveDesktopIpcDiscovery`).
+ */
+export async function readEndpointIpcDiscoveryForPort(port: number): Promise<EndpointIpcDiscovery | null> {
+  return readEndpointIpcDiscoveryFrom(endpointIpcDiscoveryPathForPort(port));
+}
+
+async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDiscovery | null> {
   try {
-    const txt = await readFile(endpointIpcDiscoveryPath(), 'utf8');
+    const txt = await readFile(path, 'utf8');
     const j = JSON.parse(txt) as Partial<EndpointIpcDiscovery>;
     if (typeof j?.socketPath === 'string' && j.socketPath) {
       return {
         socketPath: j.socketPath,
         pid: Number(j.pid) || 0,
         startedAt: Number(j.startedAt) || 0,
+        ...(Number.isFinite(j.port) ? { port: Number(j.port) } : {}),
       };
     }
   } catch {

@@ -233,6 +233,40 @@ test('reloadPool keeps the live pool when the DB resolves EMPTY (fail-safe, no w
   assert.equal(up.lastAuth(), 'Bearer a-tok', 'live pool retained after the empty reload — no restart, no wipe');
 });
 
+test('reloadPool keeps the live CODEX pool when only codex momentarily resolves EMPTY (WI-3069 fail-safe)', async () => {
+  const up = await startUpstream();
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+  let codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/codex', source: 'pool' as const }];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  assert.equal(svc.configVersion(), 1);
+
+  // Claude's resolver still returns its healthy pool; codex's resolver has a transient hiccup and
+  // momentarily resolves EMPTY. Before the WI-3069 fix this wiped the live codex pool to null
+  // (createOptionalFailoverPool.reload(inner=null)) even though claude was fine — every subsequent
+  // codex request then threw "no Codex account pool configured" until the next successful reload.
+  codexDb = [];
+  const r = await svc.reloadPool();
+  assert.equal(r.changed, false, 'codex-only empty resolution does not count as a real change');
+  assert.equal(r.version, 1, 'version unchanged');
+
+  // PROOF the live codex pool still serves after the hiccup reload.
+  const res = await fetch(`http://127.0.0.1:${svc.port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-account': 'codex-main' },
+    body: JSON.stringify({ model: 'gpt-4.1', input: 'hi' }),
+  });
+  assert.equal(res.status, 200, 'codex pool was NOT wiped by the transient empty resolve');
+  assert.equal(up.lastAuth(), 'Bearer codex-main-tok');
+});
+
 test('reloadPool follows the back-compat single resolveAccount path (re-resolves + bumps on change)', async () => {
   const up = await startUpstream();
   const acct = { accountId: 'solo', credentialRef: 'token:/s', source: 'env' as const };

@@ -530,6 +530,7 @@ async function answerQuestion(base, section, question) {
   if (!spinner) say(dim('Searching the docs…'));
 
   let answer = '';
+  let streamed = false; // first delta flips the UI from spinner → live text
   let needsBackend = false;
   let errored = false;
   const citations = [];
@@ -553,10 +554,32 @@ async function answerQuestion(base, section, question) {
     if (!r.ok || !r.body) {
       errored = true;
     } else {
+      // STREAM the answer as it arrives (owner repro 2026-07-05: "stalls on
+      // 'searching docs…'"). Buffering the whole answer behind a static spinner
+      // reads as a hang whenever the LLM leg is slow (a queued gateway = tens of
+      // seconds) — so: citations advance the spinner text, and the FIRST delta
+      // retires the spinner and switches to live typed-out text.
       await consumeSse(r.body, (event, data) => {
-        if (event === 'delta' && typeof data.text === 'string') answer += data.text;
-        else if (event === 'citation' && data.slug) citations.push(data);
-        else if (event === 'needs_backend') { needsBackend = true; }
+        if (event === 'delta' && typeof data.text === 'string') {
+          if (!streamed) {
+            streamed = true;
+            if (spinner) {
+              spinner.succeed(accent('Answer'));
+              spinner = null;
+            } else {
+              process.stdout.write('\n');
+            }
+          }
+          answer += data.text;
+          process.stdout.write(data.text);
+        } else if (event === 'citation' && data.slug) {
+          citations.push(data);
+          if (spinner) {
+            spinner.text = accent(
+              `Found ${citations.length} source${citations.length > 1 ? 's' : ''} — asking the agent…`,
+            );
+          }
+        } else if (event === 'needs_backend') { needsBackend = true; }
         else if (event === 'error') errored = true;
       });
     }
@@ -565,24 +588,26 @@ async function answerQuestion(base, section, question) {
   } finally {
     clearTimeout(deadline);
   }
-  if (spinner) {
-    if (answer && !errored) spinner.succeed(accent('Answer'));
-    else spinner.stop();
-  }
+  if (spinner) spinner.stop(); // nothing streamed (error / needs_backend path)
 
   if (needsBackend) {
     // The caller (tutorialSectionAction) owns the no-agent UX: a clear message +
-    // "press any key → Setup" handoff (owner spec 2026-07-05). Don't double-print
+    // "press ⏎ → Setup" handoff (owner spec 2026-07-05). Don't double-print
     // the generic server message here.
     return 'needs_backend';
   }
   if (answer.trim() && !errored) {
-    say(answer.trim());
+    if (streamed) {
+      process.stdout.write('\n'); // close the streamed answer's last line
+    } else {
+      say(answer.trim()); // non-stream path (kept as a safety net)
+    }
     if (citations.length) {
       say(dim(`Sources: ${citations.map((c) => `/internal/docs/${c.slug}`).join(' · ')}`));
     }
     return 'answered';
   }
+  if (streamed) process.stdout.write('\n'); // partial stream then error — keep the tty clean
   // Graceful fallback — the tutorial NEVER stalls on a failed Q&A.
   const docs = section?.docSlugs?.length
     ? ` For the fuller answer, see ${section.docSlugs.map((d) => `/internal/docs/${d}`).join(' or ')}.`
@@ -946,9 +971,10 @@ async function tutorialSectionAction(shell, s) {
       // installed it should just tell them … press any key to be taken to setup").
       if (result === 'needs_backend') {
         say(
-          "To ask a question you need an agent CLI (Claude, Codex, or OMP) installed " +
-            "and signed in — that agent is what reads the docs and answers.\n" +
-            dim('Press any key to go to Setup and get one installed…'),
+          'You need to install an agent backend first (Claude, Codex, or OMP) — ' +
+            'that agent is what reads the docs and answers your question.\n' +
+            'Want to do that now? ' +
+            dim('Press ⏎ to open Setup…'),
         );
         if (interactive) {
           try {

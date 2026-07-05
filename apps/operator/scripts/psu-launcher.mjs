@@ -1079,30 +1079,46 @@ export function parkRoleScopedMcpJson(cwd) {
 // lockstep by the drift guard in apps/operator/lib/psu-launcher.test.ts (psu-launcher.mjs
 // is a plain node script with no TS imports, so the list is inlined, not imported).
 export const OMP_CORE_MCP_TOOL_NAMES = [
-  'coord:orient', 'coord:inbox', 'coord:ack', 'coord:send', 'coord:glance', 'coord:ask',
+  // (coord:ack cut in the 2026-07-05 demand-evidence rebalance, in lockstep with the
+  // canonical list — 47 calls/7d; a coord:send reply covers it.)
+  'coord:orient', 'coord:inbox', 'coord:send', 'coord:glance', 'coord:ask',
   // plans:new (P-002, cross-platform-hardening-and-agent-ergonomics-2026-07-05) authors a
   // whole plan in ONE call (P-001 `body` arg) so an agent never hunts for a create verb —
   // the Mac-app plan-authoring fumble (owner: "plans should be a core trimmed tool").
-  'plans:new',
-  'plans:get', 'plans:set-status', 'plans:items',
-  'work_items:list', 'work_items:claim',
+  // plans:set-now: the "## Now" narration duty (467 fallback + 807 direct calls/7d).
+  'plans:new', 'plans:get', 'plans:set-status', 'plans:items', 'plans:set-now',
+  // work_items:create: #1 gap of the 2026-07-05 rebalance (608 fallback + 1,354 direct
+  // across 5 roles/7d) — the spine had claim/complete but not the verb that CREATES one.
+  'work_items:list', 'work_items:create', 'work_items:claim',
   // EI-6770: self-pull (claim_next) + read (get) + finish (complete) — the rest of the
   // canonical worker loop; their absence caused "tool not available" self-halts.
+  // (work_items:update cut 2026-07-05 — 104 calls/7d; set_state + comment cover it.)
   'work_items:claim_next', 'work_items:get', 'work_items:complete',
-  'work_items:set_state', 'work_items:update',
+  'work_items:set_state',
+  // scheduler:get_next: the fleet-member feed loop (claim-spec pull, 732 fallback
+  // reaches/7d) — a drain member hits this every iteration.
+  'scheduler:get_next',
   // locks:*_granular are NOT in the weak-model spine: file-edit locks are acquired
   // AUTOMATICALLY by the omp `-e` coord extension on every Edit/Write, so a worker
   // never needs the manual lock tools. Advertising them up-front just invited misuse
   // — weak models treated them as an operation-mutex (locking the plan file to
   // "serialize fleet creation", churning acquire/release, losing track of lock_ids).
   // They stay REACHABLE via tools:find for the rare genuine multi-file cross-turn hold.
+  // (2026-07-05: the canonical list dropped them too — this is no longer a divergence.)
   'docs:search', 'memory:search', 'memory:remember',
+  // improvements:capture: the universal "file what you notice" reflex (227 fallback +
+  // 1,128 direct calls across 3 roles/7d).
+  'improvements:capture',
   // 2026-07-03 canonical-core catch-up (drift guard): batching (code:run + recipes),
   // standing facts, and the loop/work-item checkpoint verbs joined the canonical
   // CORE_MCP_TOOL_NAMES — mirror them here or the lockstep test fails.
-  'code:run', 'recipes:search', 'recipes:run',
+  // (recipes:run cut 2026-07-05 — 78 calls/7d, one role; recipes:search returns the
+  // run pointer and the run routes via tools:invoke.)
+  'code:run', 'recipes:search',
   'facts:assert', 'facts:list',
-  'work_items:checkpoint', 'loop:checkpoint',
+  // loop:arm joins loop:checkpoint (2026-07-05): checkpoint was in the spine while the
+  // verb that CREATES the loop was not (253 fallback reaches/7d).
+  'work_items:checkpoint', 'loop:arm', 'loop:checkpoint',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',

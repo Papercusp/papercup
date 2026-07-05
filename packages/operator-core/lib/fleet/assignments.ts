@@ -76,7 +76,7 @@ export interface FleetAssignmentRow {
   /** Per-assignee position in the holder's ordered work-list (local-hive P-021).
    *  work-item rows only; null on plan-item/assignment/presence rows. */
   assigneeRank: number | null;
-  /** Who set assigneeRank — 'bee' | 'queen' (the propose/dispose audit, D-008). */
+  /** Who set assigneeRank — 'cup' | 'mug' (the propose/dispose audit, D-008). */
   rankWriter: string | null;
   /** named-su-agent-fleets P-005: the holder's named-fleet slug (the SOFT
    *  coord_presence membership label, surfaced by the view via the presence join,
@@ -262,7 +262,7 @@ export interface AgentClaim {
   activity: ItemActivity;
   /** Position in the holder's ordered work-list (work-item claims only; null otherwise). */
   rank: number | null;
-  /** Who set the rank — 'bee' | 'queen' (D-008). */
+  /** Who set the rank — 'cup' | 'mug' (D-008). */
   rankWriter: string | null;
 }
 
@@ -339,7 +339,7 @@ export interface WorkListItem {
   title: string;
   status: string | null;
   rank: number | null;
-  /** Who placed it — 'bee' (self-authored) | 'queen' (overlay) | null (unranked). */
+  /** Who placed it — 'cup' (self-authored) | 'mug' (overlay) | null (unranked). */
   rankWriter: string | null;
   /** The derived truth for this held item (P-005): progressing = actively worked;
    *  stalled/dead = reclaimable (the holder isn't really advancing it). */

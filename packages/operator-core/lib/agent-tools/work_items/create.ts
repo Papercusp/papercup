@@ -51,6 +51,18 @@ export function codeSmellsLikeCode(title: string, summary?: string): boolean {
   );
 }
 
+/**
+ * EI-7766: `assign_to` names a concrete ownerId — but the literal `'self'` is a
+ * natural guess many callers make (the same convention already honored by `owner`
+ * in search/sessions tools). Previously a literal `'self'` was stored VERBATIM as
+ * the assignee, producing an unmatchable claim (no agent is ever actually named
+ * "self") that later surfaces as an orphaned claim. Resolve it to the caller's
+ * ownerId here so both the single-create and bulk-items paths get the same fix.
+ */
+function resolveAssignTo(value: string | undefined, callerOwnerId: string): string | undefined {
+  return value === 'self' ? callerOwnerId : value;
+}
+
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
@@ -133,7 +145,7 @@ export default defineTool({
       payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
-      assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — it lands already owned, no create→claim race. Omit ⇒ unclaimed.'),
+      assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
@@ -155,7 +167,7 @@ export default defineTool({
           ...it,
           harness: it.harness ?? args.harness,
           workspace: args.workspace,
-          assign_to: it.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+          assign_to: resolveAssignTo(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
           ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
         }))
       : [
@@ -172,7 +184,7 @@ export default defineTool({
             payload: args.payload,
             urgent: args.urgent,
             force: args.force,
-            assign_to: args.assign_to ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+            assign_to: resolveAssignTo(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
           },
         ];

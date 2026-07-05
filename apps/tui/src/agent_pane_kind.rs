@@ -30,11 +30,14 @@ impl AgentPaneKind {
     /// Parse the backend wire string. Unknown / absent → None (pui falls back to
     /// an untyped pane render).
     pub fn from_wire(s: &str) -> Option<Self> {
+        // pot-rename S2 (2026-07-05): the backend now sends the new role ids
+        // (mug/kettle/cup/papercup); the old words still arrive from pre-rename
+        // rows, so both vocabularies parse to the same kind.
         match s {
-            "queen" => Some(Self::Queen),
-            "overwatch" => Some(Self::Overwatch),
-            "bee" => Some(Self::Bee),
-            "sentinel" => Some(Self::Sentinel),
+            "mug" | "queen" => Some(Self::Queen),
+            "kettle" | "overwatch" => Some(Self::Overwatch),
+            "cup" | "bee" => Some(Self::Bee),
+            "papercup" | "sentinel" => Some(Self::Sentinel),
             "planner" => Some(Self::Planner),
             "su" => Some(Self::Su),
             _ => None,
@@ -46,13 +49,14 @@ impl AgentPaneKind {
         s.as_deref().and_then(Self::from_wire)
     }
 
-    /// The wire string (matches the backend literal).
+    /// The wire string (matches the backend AGENT_PANE_KINDS literal — the new
+    /// pot-lexicon ids since the S2 rename; the old words parse as aliases only).
     pub fn as_wire(self) -> &'static str {
         match self {
-            Self::Queen => "queen",
-            Self::Overwatch => "overwatch",
-            Self::Bee => "bee",
-            Self::Sentinel => "sentinel",
+            Self::Queen => "mug",
+            Self::Overwatch => "kettle",
+            Self::Bee => "cup",
+            Self::Sentinel => "papercup",
             Self::Planner => "planner",
             Self::Su => "su",
         }
@@ -250,16 +254,26 @@ mod tests {
     // backend renames a kind, this test is the canary that the mirror drifted.
     #[test]
     fn pane_kind_wire_contract() {
+        // Canonical wires (= backend AGENT_PANE_KINDS): parse + emit round-trip.
         for (s, k) in [
-            ("queen", AgentPaneKind::Queen),
-            ("overwatch", AgentPaneKind::Overwatch),
-            ("bee", AgentPaneKind::Bee),
-            ("sentinel", AgentPaneKind::Sentinel),
+            ("mug", AgentPaneKind::Queen),
+            ("kettle", AgentPaneKind::Overwatch),
+            ("cup", AgentPaneKind::Bee),
+            ("papercup", AgentPaneKind::Sentinel),
             ("planner", AgentPaneKind::Planner),
             ("su", AgentPaneKind::Su),
         ] {
             assert_eq!(AgentPaneKind::from_wire(s), Some(k));
             assert_eq!(k.as_wire(), s);
+        }
+        // Pre-rename aliases (rows written before the S2 cutover): parse-only.
+        for (s, k) in [
+            ("queen", AgentPaneKind::Queen),
+            ("overwatch", AgentPaneKind::Overwatch),
+            ("bee", AgentPaneKind::Bee),
+            ("sentinel", AgentPaneKind::Sentinel),
+        ] {
+            assert_eq!(AgentPaneKind::from_wire(s), Some(k));
         }
         // The `sentinel` WATCHER role is a `bee` kind on the backend, never a
         // pane-kind string "watcher" — guard against that mistaken value.

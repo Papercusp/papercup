@@ -38,8 +38,8 @@ import { promptHarnessRoot } from '@papercusp/harness/paths';
  */
 export const BASE_HARNESS_PROMPT_FILES: readonly string[] = [
   'blueprints/base/prompts/agent-base-preamble.md',
-  'blueprints/base/prompts/queen.md',
-  'blueprints/base/prompts/bee.md',
+  'blueprints/base/prompts/mug.md',
+  'blueprints/base/prompts/cup.base.md',
   'blueprints/base/prompts/worker.md',
   'blueprints/base/prompts/scanner.md',
   'blueprints/coding/prompts/agent-base-overlay.md',

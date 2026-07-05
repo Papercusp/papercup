@@ -37,6 +37,7 @@ import {
   dispatchOverdueAfterMs,
   markDispatchOrphaned,
   readRecentDispatches,
+  type DispatchOutcome,
   type ImprovementDispatchRow,
 } from './dispatch-ledger';
 import { releaseIssue, mergeIssuePayload } from '../../issues-engineer';
@@ -161,6 +162,45 @@ export interface OrphanSignalOpts {
    * noise loop. Default false (healthy lane: a cause-unknown orphan IS worth a signal).
    */
   envOutage?: boolean;
+  /**
+   * EI-7795: the FULL recent-dispatch read (not just orphan evidence) — used to detect
+   * an item that recovered on a LATER attempt after the orphaned evidence was recorded
+   * (e.g. attempt 1 orphaned, attempt 2 later resolved 'fixed'). Without this, a signal
+   * can fire on stale evidence from a lane that has since recovered (the storm's own
+   * item ids can be living proof the lane already works again). Default: `evidence`
+   * itself (no broader context available — matches the pre-fix behavior for callers
+   * that don't pass it).
+   */
+  allRows?: ImprovementDispatchRow[];
+}
+
+/** Outcomes that mean the item's OWN dispatch genuinely settled (not a worker death). */
+const RESOLVED_DISPATCH_OUTCOMES = new Set<DispatchOutcome>(['fixed', 'could-not-fix', 'needs-human']);
+
+/**
+ * Pure: item ids whose orphan evidence is STALE — a LATER attempt (higher `attempt`
+ * number) on the SAME item reached a genuine resolved outcome. `allRows` should be the
+ * full recent-dispatch read so later attempts are visible even when they fall outside
+ * `evidence` (evidence is orphan-outcome-only). Compares by `attempt`, not timestamp,
+ * per-item — unambiguous and immune to clock/formatting drift across rows.
+ */
+function stallSuperseded(
+  evidenceByItem: Map<string, ImprovementDispatchRow[]>,
+  allRows: ImprovementDispatchRow[],
+): Set<string> {
+  const superseded = new Set<string>();
+  for (const [itemId, orphanRows] of evidenceByItem) {
+    const maxOrphanAttempt = Math.max(...orphanRows.map((r) => r.attempt ?? 0));
+    const laterResolved = allRows.some(
+      (r) =>
+        r.itemId === itemId &&
+        r.outcome != null &&
+        RESOLVED_DISPATCH_OUTCOMES.has(r.outcome) &&
+        (r.attempt ?? 0) > maxOrphanAttempt,
+    );
+    if (laterResolved) superseded.add(itemId);
+  }
+  return superseded;
 }
 
 /**
@@ -324,15 +364,27 @@ export function buildOrphanedDispatchSignals(
     return !Number.isNaN(ts) && opts.nowMs - ts <= windowMs;
   });
 
-  const byItem = new Map<string, ImprovementDispatchRow[]>();
+  const byItemAll = new Map<string, ImprovementDispatchRow[]>();
   for (const r of inWindow) {
+    const list = byItemAll.get(r.itemId) ?? [];
+    list.push(r);
+    byItemAll.set(r.itemId, list);
+  }
+
+  // EI-7795: drop evidence for items that recovered on a later attempt — the storm/item
+  // signal must not cry wolf on a condition that's already fixed.
+  const superseded = stallSuperseded(byItemAll, opts.allRows ?? evidence);
+  const liveEvidence = inWindow.filter((r) => !superseded.has(r.itemId));
+
+  const byItem = new Map<string, ImprovementDispatchRow[]>();
+  for (const r of liveEvidence) {
     const list = byItem.get(r.itemId) ?? [];
     list.push(r);
     byItem.set(r.itemId, list);
   }
 
   const bySignature = new Map<string, ImprovementDispatchRow[]>();
-  for (const r of inWindow) {
+  for (const r of liveEvidence) {
     const signature = orphanStormSignature(r);
     const list = bySignature.get(signature) ?? [];
     list.push(r);
@@ -516,7 +568,9 @@ export async function collectOrphanedDispatchSignals(
 
   const evidence = [...marked, ...rows.filter((r) => r.outcome === 'orphaned')];
   const envOutage = laneInEnvOutage(rows, { nowMs });
-  const signals = buildOrphanedDispatchSignals(evidence, { nowMs, envOutage });
+  // EI-7795: pass the FULL recent read (not just orphan evidence) so a later, already-
+  // resolved attempt on the same item can supersede stale orphan evidence.
+  const signals = buildOrphanedDispatchSignals(evidence, { nowMs, envOutage, allRows: rows });
   const notes: string[] = [];
   if (marked.length) notes.push(`marked ${marked.length} open dispatch(es) orphaned (worker presumed dead)`);
   if (recovered) notes.push(`recovered ${recovered} host-restart victim(s) (claim released + attempt rolled back)`);

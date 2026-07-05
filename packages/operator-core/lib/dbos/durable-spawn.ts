@@ -336,6 +336,23 @@ async function recordDurableSpawnAdmission(
 
   return sql.begin(async (tx): Promise<QueenSingletonAdmission> => {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${'queen-singleton:' + rec.workspaceId}))`;
+    await tx`
+      UPDATE harness_shared.spawned_agents AS a
+         SET status = 'cancelled',
+             cancel_requested = true,
+             cancel_reason = COALESCE(
+               a.cancel_reason,
+               'DBOS workflow is terminal but the Queen singleton nursery row was still running; retired during singleton admission'
+             ),
+             cancelled_at = COALESCE(a.cancelled_at, now()),
+             finished_at = COALESCE(a.finished_at, now()),
+             duration_ms = COALESCE(a.duration_ms, (EXTRACT(EPOCH FROM (now() - a.started_at)) * 1000)::bigint)
+        FROM dbos.workflow_status AS w
+       WHERE a.workspace_id = ${rec.workspaceId}
+         AND a.child_role = 'mug'
+         AND a.status IN ('running', 'restarting')
+         AND a.spawn_id = w.workflow_uuid
+         AND w.status IN ('CANCELLED', 'ERROR', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED')`;
     const active = await tx<{ spawn_id: string; harness_slug: string | null }[]>`
       SELECT spawn_id, harness_slug
         FROM harness_shared.spawned_agents

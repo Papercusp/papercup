@@ -182,8 +182,8 @@ export interface WorkItem {
    * ranked work; the bee owns its sequencing (propose/dispose, D-008).
    */
   rank: number | null;
-  /** Who last set `rank` — the propose/dispose audit (D-008). 'bee' (the default,
-   *  bee-authored) | 'queen' (Queen overlay). null when unranked. */
+  /** Who last set `rank` — the propose/dispose audit (D-008). 'cup' (the default,
+   *  cup-authored) | 'mug' (Mug overlay). null when unranked. */
   rankWriter: RankWriter | null;
   /** When `rank` was last written (tiebreak + audit). */
   rankUpdatedAt: string | null;
@@ -1921,6 +1921,31 @@ export function observationLaneExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The NEEDS-HUMAN self-select EXCLUSION floor for issue-family claims (EI-7776). When the
+ * implement worker resolves an item with outcome `needs-human`, `improvements:resolve` posts a
+ * diagnosis comment, sets `payload.needsHuman:true`, and RELEASES the claim
+ * (resolve-core.ts) — but the issue-family status dialect has no real terminal "needs human"
+ * state (`normalizeIssueLikeState` collapses `needs-human`/`blocked`/`wip` all to `open`,
+ * EI-450), so the row stays fully self-selectable. `classifyImprovement` (policy.ts) already
+ * keeps a needsHuman-flagged item out of the AUTOMATED improvement-dispatch tier, but that
+ * policy check lives ONLY in the improvement-dispatch path — `scheduler:get_next` /
+ * `work_items:claim_next` (the generic backlog-drain self-select every fleet member pulls
+ * through) never looked at `needsHuman` at all. The result: a drain-loop bee re-claims the
+ * SAME already-routed-to-a-human item, re-investigates from scratch, and re-posts the
+ * identical diagnosis comment — confirmed live as EI-7592 being independently "resolved" as
+ * the same false positive three times in one afternoon (2026-07-05) before this floor existed.
+ * Mirrors {@link observationLaneExclusionSql}'s shape/placement exactly (same NULL-safe
+ * COALESCE, same POOL+READY+claim call sites) so an all-needs-human backlog also reads
+ * `drained:true` instead of "pending but gated" — still directly claimable BY ID so an
+ * operator (or the human it was routed to) can still act on it.
+ */
+export function needsHumanExclusionSql(sql: OrgSql) {
+  // COALESCE so a NULL-payload row reads NULL ->> 'needsHuman' = NULL, and
+  // `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
+  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'`;
+}
+
+/**
  * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
  * excluded from `claim_next`/`scheduler:get_next` self-selection (see
  * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
@@ -2167,7 +2192,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- D-005: observation-lane rows never enter the work queue, so they are NOT part of the
          -- "work here a bee shouldn't idle on" POOL — excluding them here (not just from READY,
          -- as the rig/claimHold floors are) lets a scorecard-only backlog read drained:true.
-         AND ${observationLaneExclusionSql(sql)}`;
+         AND ${observationLaneExclusionSql(sql)}
+         -- EI-7776: a needsHuman-routed row is likewise not work-queue material AT ALL — same
+         -- pool-level exclusion as observation-lane, so an all-needs-human backlog also reads
+         -- drained:true rather than idling a drainer on unpickable rows.
+         AND ${needsHumanExclusionSql(sql)}`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
 
     // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
@@ -2214,6 +2243,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${claimHoldExclusionSql(sql)}
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
+         -- EI-7776: a needsHuman-routed row is not work-queue material either — same floor the
+         -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
+         AND ${needsHumanExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
          AND ${issueCooldown > 0
@@ -2325,6 +2357,13 @@ export async function claimNextIssueWorkItem(
           -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
           -- "never enters the work queue" (only the Observations pane + Scout digest read it).
           AND ${observationLaneExclusionSql(sql)}
+          -- EI-7776: never self-select an item improvements:resolve already routed to a human
+          -- (payload.needsHuman) — the issue-family status dialect has no real terminal
+          -- "needs-human" state (it collapses to 'open'), so without this floor a drain-loop
+          -- bee re-claims the SAME already-diagnosed item and re-posts the identical
+          -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
+          -- afternoon). Still directly claimable BY ID.
+          AND ${needsHumanExclusionSql(sql)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"
@@ -2747,7 +2786,7 @@ export interface ReorderWorkItemResult {
  * `target` rank within its assignee's ordered queue, shifting peers down (insert-at-rank
  * — what the Queen's "inject at a rank" and a bee's "move this up" both need). Atomic via
  * the `harness_shared.reorder_work_item` SQL fn (one transaction, renumbers densely, spans
- * both base tables). `writer` ('bee'|'queen') stamps the propose/dispose audit (D-008);
+ * both base tables). `writer` ('cup'|'mug') stamps the propose/dispose audit (D-008);
  * the Queen-vs-bee write balance is gated by the EXISTING automation tier at the tool
  * layer (P-022), not here.
  *

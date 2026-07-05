@@ -347,11 +347,15 @@ export function shapeMutationEcho(
     // partial result object throw here instead of just showing no okFalse warning.
     ...(okFalseMutationsList.length > 0
       ? {
+          // EI-7784: `partial: true` is ALSO on the result's top level (a structured signal a
+          // caller can branch on programmatically) — this warning is the human-readable pointer
+          // to it, not the only place it's surfaced.
           okFalseWarning:
             `${okFalseMutationsList.length} write-effect call(s) dispatched without throwing but reported ` +
             `ok:false in their own result (did NOT take effect): ` +
             `${okFalseMutationsList.map((m) => m.tool).join(', ')}. Check okFalseMutations for details — ` +
-            'do not assume these succeeded just because the script did not throw.',
+            'do not assume these succeeded just because the script did not throw. `partial: true` is set ' +
+            'on this result for exactly this reason — check it, not just `ok`.',
           okFalseMutations: okFalseMutationsList,
         }
       : {}),

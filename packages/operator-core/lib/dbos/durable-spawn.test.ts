@@ -431,6 +431,31 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('skipped duplicate Queen launch'));
   });
 
+  it('retires DBOS-terminal Mug rows before checking the Queen singleton', async () => {
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=mug&ws=papercusp-workspace',
+      body: { kickoff: 'wake after stale singleton' },
+      idempotencyKey: 'q-after-cancelled-row',
+      label: 'papercusp/queen',
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'mug' },
+    });
+
+    const sqlTexts = h.sql.mock.calls.map((args) => {
+      const strings = args[0] as TemplateStringsArray | string | undefined;
+      return Array.isArray(strings) ? strings.join(' ') : String(strings);
+    });
+    expect(sqlTexts.some((text) =>
+      text.includes('UPDATE harness_shared.spawned_agents AS a') &&
+      text.includes('FROM dbos.workflow_status AS w') &&
+      text.includes('MAX_RECOVERY_ATTEMPTS_EXCEEDED'),
+    )).toBe(true);
+    expect(h.recordSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: 'durable-spawn:q-after-cancelled-row',
+      childRole: 'mug',
+    }));
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes a stale Kettle durable body from current modelOverrides before every /invoke POST', async () => {
     h.ownerSteering.value = { modelOverrides: { kettle: 'gpt-5.5:high' } };
     await durableSpawnFireImpl({

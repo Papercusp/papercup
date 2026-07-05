@@ -143,6 +143,12 @@ export default defineTool({
       .max(100)
       .optional()
       .describe('Recent activity rows to include (default 12; 0 to skip).'),
+    display_only: z
+      .boolean()
+      .optional()
+      .describe(
+        'For human status surfaces that only print display.title/statusline/notice: compute display normally, but omit raw activity rows from the returned payload.',
+      ),
   }),
   async handler(args, ctx) {
     const audience = args.audience ?? 'user';
@@ -366,6 +372,8 @@ export default defineTool({
         account: await fetchRoutedAccount(selfOwnerId),
       });
     }
+
+    if (args.display_only) payload.activity = [];
 
     return {
       content: [

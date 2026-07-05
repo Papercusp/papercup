@@ -175,15 +175,32 @@ describe('P-306 property — universal safety invariants under an adversarial st
 });
 
 describe('P-306 property — liveness (no work starvation) under benign conditions', () => {
-  // QUARANTINED (WI-3051, su-f0afe 2026-07-05): this UNSEEDED property intermittently
-  // finds a starvation counterexample (a priority-0 offer never admitted despite eligible
-  // static capacity) ~1/1000 cases → reds the green-checkpoint gate ~7-26% of runs. It is
-  // a PRE-EXISTING sim-model liveness edge case (lease-expiry-vs-completion timing race),
-  // not a regression, and adjudicating "real fairness bug vs over-strong benign arb" needs
-  // a p2p-sim owner. Skipped to unblock WI-2900; the safety properties above still run.
-  // Repro seeds are in WI-3051. Remove .skip when the sim owner fixes the starvation or
-  // tightens benignArb so leases outlast work-hold time.
-  it.skip('with live capacity and no crashes, every authorized offer reaches a terminal state', () => {
+  // DE-QUARANTINED (WI-3051, su-31b3893b 2026-07-05, follow-up to su-f0afe's it.skip).
+  //
+  // ROOT CAUSE (confirmed by tracing sim-model.ts, not a scheduler fairness bug):
+  // the benign arbitrary scheduled exactly ONE 'complete' event per offer, at a fixed
+  // ABSOLUTE step `completeAt`. The 'complete' handler is a no-op unless the offer is
+  // `status === 'claimed'` at that exact step (sim-model.ts ~L334). When an offer's
+  // first admission is delayed (priority contention) or it gets lease-expired+requeued
+  // right at/just before its `completeAt` (the reported seeds have leaseTtl:6 racing
+  // completeAt:6-7), that single pulse fires as a no-op and is never rescheduled. The
+  // offer, once later (re)claimed, then has NO remaining completion event at all — it
+  // becomes a permanent "zombie": it occupies a slot until its lease next expires, gets
+  // requeued, and (since it usually still outranks the lone priority-0 offer) gets
+  // re-claimed again, forever — never freeing real capacity for the lowest-priority
+  // offer to ever win a slot. This is a test-model artifact (an absolute-time one-shot
+  // completion pulse doesn't reflect "work takes some duration once actually started"),
+  // not a bug in the production claim-pass/lease-renewal logic itself (verified: the
+  // priority+aging sort and lease-expiry/failover logic are correct — see WI-3051).
+  //
+  // FIX: make each offer's completion pulse RECURRING (fired every step from its
+  // nominal `completeAt` through `maxSteps`) instead of a single shot. `complete` is
+  // already idempotent/no-op once `status !== 'claimed'` (including already 'done'),
+  // so the extra events are harmless — but now ANY step at which the offer happens to
+  // be freshly claimed will catch a pulse and complete it, closing the "missed the one
+  // shot, now a zombie forever" gap while still preserving "never completes before its
+  // nominal `completeAt`" (no pulse is scheduled earlier than that).
+  it('with live capacity and no crashes, every authorized offer reaches a terminal state', () => {
     // Benign: hosts stay alive (no crash/interactive/revoke), generous budgets +
     // slots, and a completion pulse late enough for steal/failover to settle.
     const benignArb = fc.integer({ min: 1, max: 4 }).chain((nHosts) => {
@@ -218,9 +235,19 @@ describe('P-306 property — liveness (no work starvation) under benign conditio
               grantorId: 1,
               grantEpoch: 0,
             }));
+            // Recurring completion pulses (WI-3051 fix, see comment above): every step
+            // from completeAt through maxSteps, not a single one-shot event, so a late
+            // (re)admission can never permanently miss its completion.
+            const completePulses: SimEvent[] = r.offers.flatMap((o) =>
+              Array.from({ length: Math.max(0, MAX_STEPS - o.completeAt + 1) }, (_, i): SimEvent => ({
+                t: o.completeAt + i,
+                kind: 'complete',
+                offerId: o.id,
+              })),
+            );
             const events: SimEvent[] = [
               ...offers.map((o): SimEvent => ({ t: 0, kind: 'publish', offerId: o.id })),
-              ...r.offers.map((o): SimEvent => ({ t: o.completeAt, kind: 'complete', offerId: o.id })),
+              ...completePulses,
             ];
             return {
               scenario: {

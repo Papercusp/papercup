@@ -10,10 +10,14 @@
  *       runs ONLY inside the Tauri shell (papercusp-desktop `dev_bridge.rs`), so
  *       a live bridge token (`/tmp/tauri-dev-bridge-<pid>.token` with a live pid)
  *       is also our "is the desktop even running" signal.
- *   (b) the Tauri↔operator IPC unix socket (`~/.papercusp/endpoint-ipc.json`) —
- *       connectable = the `ipcFetch` channel the webview's `/api/*` calls ride is
- *       alive. A dead one is the Plans-tab "loading forever" bug, so a present
- *       desktop with a dead IPC socket is genuinely unhealthy.
+ *   (b) the Tauri↔operator IPC unix socket — connectable = the `ipcFetch` channel
+ *       the webview's `/api/*` calls ride is alive. A dead one is the Plans-tab
+ *       "loading forever" bug, so a present desktop with a dead IPC socket is
+ *       genuinely unhealthy. Resolved via `resolveDesktopIpcDiscovery()` (below) —
+ *       NOT the raw `~/.papercusp/endpoint-ipc.json` singleton, which is
+ *       last-writer-wins across every operator on the box and can point at a
+ *       different (possibly dead) operator than the one this desktop targets
+ *       (EI-7760).
  *   (c) toastLog.recent — recent ERROR toasts = the app is running but unhappy.
  *       Surfaced as detail (`recentErrors` + the note); it does NOT by itself
  *       flip up/down, so a single transient error toast can't turn into a DOWN
@@ -29,9 +33,11 @@
  * unit-tested without a live desktop / bridge / kopia.
  */
 import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import net from 'node:net';
 import type { ProbeResult } from './service-health';
-import { readEndpointIpcDiscovery } from './endpoint-ipc-discovery';
+import { readEndpointIpcDiscovery, readEndpointIpcDiscoveryForPort, type EndpointIpcDiscovery } from './endpoint-ipc-discovery';
 import { listToasts } from './toast-log-data';
 
 /** Error-toast look-back window — matches the 1-min service-health tick. */
@@ -116,9 +122,58 @@ async function realBridgeEval(bridge: LiveBridge, timeoutMs = 4000): Promise<boo
   }
 }
 
+/** desktop-build-target.json's known content ports → API port (EI-190's api_port_for_target,
+ *  mirrored from env_switch.rs): :3055 (bare Vite SPA, no operator of its own) proxies /api
+ *  to the :3070 release operator; every other target IS its own API port. Exported for
+ *  direct unit testing (mirrors the Rust-side mapping — kept in lockstep by inspection). */
+export function apiPortForTarget(targetPort: number): number {
+  return targetPort === 3055 ? 3070 : targetPort;
+}
+
+/** dev :3270 is "the session's OWN working-tree operator" — the desktop's default target
+ *  (env_switch.rs TARGETS[0]) when no persisted choice exists yet. */
+export const DEFAULT_DESKTOP_TARGET_PORT = 3270;
+
+/**
+ * Resolve which operator's IPC discovery file actually describes THIS desktop's
+ * `/api` target — not the shared last-writer-wins singleton (EI-7760).
+ *
+ * `~/.papercusp/endpoint-ipc.json` (the legacy singleton `readEndpointIpcDiscovery`
+ * reads) is overwritten by EVERY operator that boots on this box — and this dev box
+ * routinely runs many concurrent harness/fleet dev operators on distinct ports at
+ * once. Whichever one wrote LAST wins the singleton, so at any given instant it can
+ * point at a completely unrelated (and possibly dead) operator, producing a false
+ * "ipc socket unreachable" verdict for a desktop whose OWN configured operator is
+ * perfectly healthy (confirmed live 2026-07-05: the singleton pointed at a dead pid
+ * while the desktop's actual target — port 3270 per desktop-build-target.json — had
+ * a live, connectable socket the whole time).
+ *
+ * The desktop persists which env it's pointed at in `~/.papercusp/desktop-build-target.json`
+ * ({name, port} — the exact file `env_switch.rs`'s Rust side reads/writes), so we read
+ * THAT to resolve the per-port discovery file (EI-190) for the operator the desktop
+ * actually targets. Falls back to the legacy singleton only if no per-port file exists
+ * yet (e.g. a very old operator process pre-dating EI-190) — strictly better than
+ * always trusting the racy singleton.
+ */
+export async function resolveDesktopIpcDiscovery(): Promise<EndpointIpcDiscovery | null> {
+  let targetPort = DEFAULT_DESKTOP_TARGET_PORT;
+  try {
+    const raw = await readFile(join(homedir(), '.papercusp', 'desktop-build-target.json'), 'utf8');
+    const j = JSON.parse(raw) as { port?: unknown };
+    if (typeof j?.port === 'number' && Number.isFinite(j.port)) targetPort = j.port;
+  } catch {
+    /* missing/corrupt → use the dev default (:3270), the desktop's own default target */
+  }
+  const apiPort = apiPortForTarget(targetPort);
+  const perPort = await readEndpointIpcDiscoveryForPort(apiPort).catch(() => null);
+  if (perPort) return perPort;
+  // Fall back to the legacy singleton (better than nothing if no per-port file exists).
+  return readEndpointIpcDiscovery();
+}
+
 /** Connect to the operator IPC unix socket; success = the channel is alive. */
 async function realIpcConnectable(timeoutMs = 2000): Promise<boolean> {
-  const disc = await readEndpointIpcDiscovery();
+  const disc = await resolveDesktopIpcDiscovery();
   if (!disc?.socketPath) return false;
   return new Promise<boolean>((resolve) => {
     const sock = net.connect(disc.socketPath);

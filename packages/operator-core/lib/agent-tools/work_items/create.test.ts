@@ -73,6 +73,22 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(createM).toHaveBeenNthCalledWith(2, expect.objectContaining({ title: 'b', assign_to: 'bee-7' }), expect.anything());
   });
 
+  it('EI-7766: assign_to:"self" resolves to the caller ownerId, not the literal string (single-create path)', async () => {
+    await body({ kind: 'bug', title: 'a', assign_to: 'self' });
+    expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', assign_to: 'me' }), expect.anything());
+  });
+
+  it('EI-7766: assign_to:"self" resolves to the caller ownerId in the bulk items[] path too', async () => {
+    await body({ items: [{ kind: 'bug', title: 'a', assign_to: 'self' }, { kind: 'bug', title: 'b', assign_to: 'bee-7' }] });
+    expect(createM).toHaveBeenNthCalledWith(1, expect.objectContaining({ title: 'a', assign_to: 'me' }), expect.anything());
+    expect(createM).toHaveBeenNthCalledWith(2, expect.objectContaining({ title: 'b', assign_to: 'bee-7' }), expect.anything());
+  });
+
+  it('a concrete assign_to ownerId is passed through unchanged (not confused with "self")', async () => {
+    await body({ kind: 'bug', title: 'a', assign_to: 'someone-else' });
+    expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', assign_to: 'someone-else' }), expect.anything());
+  });
+
   it('batch-level harness is the default for items that omit one', async () => {
     await body({ items: [{ kind: 'feature', title: 'a' }], harness: 'h-default' });
     expect(createM).toHaveBeenCalledWith(expect.objectContaining({ title: 'a', harness: 'h-default' }), expect.anything());

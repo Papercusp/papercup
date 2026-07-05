@@ -76,6 +76,22 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     expect(v.env).toBe(false);
   });
 
+  // WI-3053: filed as a suspected classifier GAP ("bare SIGTERM mid-run, well before the
+  // configured timeout, no env/context-overflow text match, falls into charged
+  // 'worker-exit-backedge' with no diagnosis") citing two live examples (EI-7220 @927s vs a
+  // 900-2700s budget, EI-7439 @2223s vs a 2700s budget, both empty stdout/stderr). Verified
+  // ALREADY CLOSED by EI-7644's later "silent death" leg (added independently, above): a bare
+  // SIGTERM mid-run with truly empty output is exactly a silent death, well past the DOA floor
+  // and not near the configured timeout — no gap remains for this exact shape.
+  it('WI-3053: a bare SIGTERM well before the configured timeout, with empty output, is a silent-death env failure (not a raw charged worker-exit-backedge)', () => {
+    const v1 = isEnvFailureExit({ exitCode: 143, runtimeMs: 927_000, configuredTimeoutMs: 2_700_000, stdout: '', stderr: '' });
+    expect(v1.env).toBe(true);
+    expect(v1.reason).toMatch(/silent death/);
+    const v2 = isEnvFailureExit({ exitCode: 143, runtimeMs: 2_223_000, configuredTimeoutMs: 2_700_000, stdout: '', stderr: '' });
+    expect(v2.env).toBe(true);
+    expect(v2.reason).toMatch(/silent death/);
+  });
+
   it('a genuine worker failure (long run, substantive output, no env signature) is NOT env', () => {
     const v = isEnvFailureExit({
       exitCode: 1,

@@ -356,4 +356,37 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     }) as Record<string, unknown>;
     expect(shaped.warning).toBeUndefined();
   });
+
+  // EI-7784: `ok:true` alone is misleading when a write-effect call dispatched fine but reported
+  // its OWN ok:false (EI-7669's okFalseMutations) — the top-level `partial` flag + the
+  // okFalseWarning are the two structured/human-readable signals a caller must check alongside
+  // `ok`, not instead of relying on `ok` meaning "nothing went wrong".
+  it('ok:true with an okFalse mutation carries partial:true + a prominent okFalseWarning naming the tool', () => {
+    const okFalseResult = { ok: false, error: 'completion_integrity_required' };
+    const shaped = shapeMutationEcho({
+      ...base,
+      dryRun: false,
+      partial: true,
+      plannedMutations: [{ tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' } }],
+      okFalseMutations: [{ tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult }],
+    }) as Record<string, unknown>;
+    expect(shaped.ok).toBe(true); // the script itself completed — this is exactly the misleading bit
+    expect(shaped.partial).toBe(true);
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('work_items:set_state'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('did NOT take effect'));
+    expect(shaped.okFalseMutations).toEqual([
+      { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult },
+    ]);
+  });
+
+  it('a hand-built fixture predating okFalseMutations (field absent) never throws — defaults to no warning', () => {
+    const shaped = shapeMutationEcho({
+      ...base,
+      dryRun: false,
+      plannedMutations: [{ tool: 'work_items:claim', args: { id: 'WI-1' } }],
+      // okFalseMutations deliberately omitted — pre-EI-7669 fixture shape.
+    }) as Record<string, unknown>;
+    expect(shaped.okFalseWarning).toBeUndefined();
+    expect(shaped.okFalseMutations).toBeUndefined();
+  });
 });

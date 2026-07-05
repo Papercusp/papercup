@@ -186,6 +186,62 @@ describe('buildOrphanedDispatchSignals — one signal per item, stable identity'
   });
 });
 
+describe('EI-7795: stale evidence from an item that recovered on a later attempt is superseded', () => {
+  it('drops the item signal when a LATER attempt on the same item resolved (fixed)', () => {
+    const evidence = [row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 })];
+    const allRows = [
+      ...evidence,
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(1), attempt: 2, firedAt: hoursAgo(1) }),
+    ];
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW, allRows })).toEqual([]);
+  });
+
+  it('keeps signaling when the later attempt ALSO orphaned (still broken)', () => {
+    const evidence = [
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 }),
+      row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), attempt: 2 }),
+    ];
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW, allRows: evidence }).map((s) => s.key)).toEqual(['EI-1']);
+  });
+
+  it('an EARLIER resolved attempt does NOT supersede a LATER orphan (the item broke again after recovering)', () => {
+    const evidence = [row({ id: 'd2', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), attempt: 2 })];
+    const allRows = [
+      row({ id: 'd1', itemId: 'EI-1', outcome: 'fixed', resolvedAt: hoursAgo(3), attempt: 1 }),
+      ...evidence,
+    ];
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW, allRows }).map((s) => s.key)).toEqual(['EI-1']);
+  });
+
+  it('supersession applies per-item inside a storm: 3 genuinely-broken + 1 recovered stays below the storm threshold', () => {
+    const evidence = ['EI-1', 'EI-2', 'EI-3', 'EI-4'].map((itemId, i) =>
+      row({
+        id: `d${i}`,
+        itemId,
+        outcome: 'orphaned',
+        resolvedAt: hoursAgo(1),
+        attempt: 1,
+        resolvedBy: 'orphaned-dispatch-collector',
+      }),
+    );
+    const allRows = [
+      ...evidence,
+      row({ id: 'd-recover', itemId: 'EI-4', outcome: 'fixed', attempt: 2, firedAt: hoursAgo(1) }),
+    ];
+    // EI-4 recovered, so only 3 items remain — below ORPHAN_STORM_MIN_ITEMS (4), so no storm signal
+    // and each surfaces as its own per-item signal instead.
+    expect(
+      buildOrphanedDispatchSignals(evidence, { nowMs: NOW, allRows }).map((s) => s.key).sort(),
+    ).toEqual(['EI-1', 'EI-2', 'EI-3']);
+  });
+
+  it('without `allRows` (default), behavior is unchanged from before the fix (backward-compatible)', () => {
+    const evidence = [row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(3), attempt: 1 })];
+    // No allRows passed — falls back to `evidence` itself, which carries no later resolution.
+    expect(buildOrphanedDispatchSignals(evidence, { nowMs: NOW }).map((s) => s.key)).toEqual(['EI-1']);
+  });
+});
+
 describe('isLaneBreakageOrphan — env-failure + host-restart orphans do NOT false-alarm (EI-536 noise loop)', () => {
   it('a host-restart-recovered orphan is NOT lane breakage (infra, already recovered)', () => {
     const r = row({ id: 'd1', itemId: 'EI-1', outcome: 'orphaned', resolvedAt: hoursAgo(1), resolvedBy: 'host-restart-recovery' });

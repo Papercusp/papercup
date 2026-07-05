@@ -72,8 +72,8 @@ impl Scope {
     fn matches_role(&self, role: &str) -> bool {
         let r = role.to_ascii_lowercase();
         match self {
-            Scope::Queen => r == "queen" || r == "brain",
-            Scope::Overwatch => r == "overwatch",
+            Scope::Queen => r == "mug" || r == "queen" || r == "brain",
+            Scope::Overwatch => r == "kettle" || r == "overwatch",
         }
     }
 }
@@ -566,6 +566,8 @@ mod tests {
     #[test]
     fn scope_matches_role_aliases() {
         assert!(Scope::Queen.matches_role("queen"));
+        assert!(Scope::Queen.matches_role("mug"));
+        assert!(Scope::Overwatch.matches_role("kettle"));
         assert!(Scope::Queen.matches_role("brain"));
         assert!(Scope::Queen.matches_role("QUEEN"));
         assert!(!Scope::Queen.matches_role("overwatch"));

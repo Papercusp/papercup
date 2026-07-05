@@ -148,6 +148,18 @@ describe('coord:glance', () => {
     expect(sqlCalls.some((q) => q.includes('agent_activity'))).toBe(false);
   });
 
+  it('display_only computes the statusline from activity but omits raw activity rows', async () => {
+    activityRows = [
+      { owner_id: 'su-peer-a0000', summary: 'edit x.ts', kind: 'tool', created_at: 't' },
+      { owner_id: 'su-peer-b0000', summary: 'test y.ts', kind: 'tool', created_at: 't' },
+    ];
+    const g = out(await glance.handler(parse({ audience: 'user', display_only: true }), ctx));
+    expect(sqlCalls.some((q) => q.includes('agent_activity'))).toBe(true);
+    expect(g.display.statusline[0]).toContain('2 peers');
+    expect(g.display.statusline[0]).toContain('edit x.ts');
+    expect(g.activity).toEqual([]);
+  });
+
   it('self.loop reflects an active engine loop (loop-status-display); null when not looping', async () => {
     getLoopStatus.mockResolvedValue({ active: true, intervalSec: 120, parked: false });
     let g = out(await glance.handler(parse({}), ctx));
