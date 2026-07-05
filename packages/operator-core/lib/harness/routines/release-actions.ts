@@ -162,11 +162,16 @@ function runScript(
  * suite's wall-clock — but this budget stayed at the original 25m, so every
  * 2-fork run OVERRAN it and was SIGTERM-killed (exit 143) BEFORE producing any
  * verdict, wedging the green gate (and thus every fleet deploy) for ~18h
- * (green-checkpoint-timeout-vs-forks-2026-06-27). 55m gives a 2-fork run headroom
- * to COMPLETE under live-fleet load.
+ * (green-checkpoint-timeout-vs-forks-2026-06-27). 55m gave a 2-fork run headroom
+ * under MODERATE load — but under sustained full-fleet load (46+ sessions) the
+ * multi-pass suite measured 60–90m wall-clock, so 55m resumed killing HEALTHY
+ * runs pre-verdict: 4 consecutive gate losses on 2026-07-05 froze `main` ~17h
+ * (EI-7553 posts 50747/50749 — run verifiably alive at 59m, SIGTERM'd, verdict
+ * row null forever). 120m covers the measured worst case with ~30m headroom.
  *
- * INVARIANT: keep this STRICTLY LESS than CHECKPOINT_LOCK_STALE_MS
- * (green-checkpoint.ts, 65m) — a run must be killed by THIS timeout (and release
+ * INVARIANT: keep this STRICTLY LESS than SELF_WATCHDOG_MS (green-checkpoint.ts,
+ * 3h) and CHECKPOINT_LOCK_STALE_MS (green-checkpoint.ts, 190m) — a run must be
+ * killed by THIS timeout (and release
  * its lock) before that lock is stale-reclaimable, else the next hourly fire
  * spawns a SECOND concurrent suite and OOMs the box. operator-core cannot import
  * from apps/operator, so the two constants live in separate files; whoever
@@ -177,7 +182,7 @@ function runScript(
  * would let the gate run more forks → finish faster → afford a SHORTER budget.
  * This bump UNWEDGES the gate; it does not remove that deeper cost.
  */
-export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 55 * 60_000;
+export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 120 * 60_000;
 
 /**
  * system:green-checkpoint — advance `ready` to the newest green integration

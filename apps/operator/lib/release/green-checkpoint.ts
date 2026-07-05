@@ -165,13 +165,18 @@ function defaultPidAlive(pid: number): boolean {
  *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
  *  the gate forever — the dead-pid check alone never reclaims a recycled-pid lock. This
  *  is the silent multi-hour fleet-deploy freeze (green-checkpoint-stale-lock-2026-06-26).
- *  INVARIANT: keep this STRICTLY GREATER than the suite timeout, so a run is killed by the
- *  timeout (and releases its lock) before the lock is reclaimable — else an overlapping
- *  hourly fire spawns a 2nd concurrent suite and OOMs the box. Raised 45m→65m in lock-step
- *  with the 25m→55m timeout bump (green-checkpoint-timeout-vs-forks-2026-06-27): the 2-fork
- *  suite now legitimately runs ~45m, so the OLD 45m stale-threshold could reclaim a
- *  HEALTHY in-progress run's lock mid-suite. */
-export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
+ *  INVARIANT: keep this STRICTLY GREATER than the suite timeout AND SELF_WATCHDOG_MS, so a
+ *  run is killed by the timeout (or, parent-dead, by its own watchdog) and releases its lock
+ *  before the lock is reclaimable — else an overlapping hourly fire spawns a 2nd concurrent
+ *  suite and OOMs the box. Raised 45m→65m in lock-step with the 25m→55m timeout bump
+ *  (green-checkpoint-timeout-vs-forks-2026-06-27), then 65m→190m with the 55m→120m bump
+ *  (EI-7553: under full-fleet load the multi-pass suite measured 60–90m, so the 55m/65m pair
+ *  killed healthy runs pre-verdict; 190m sits above BOTH the 120m timeout and the 180m
+ *  self-watchdog, making the full chain coherent for the first time:
+ *  timeout 120m < self-watchdog 180m < stale-reclaim 190m). The dead-pid check still
+ *  reclaims a crashed run's lock immediately; THIS threshold only gates the recycled-pid
+ *  case, so the longer window costs nothing in the common crash path. */
+export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
 
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
@@ -203,12 +208,12 @@ export const CHECKPOINT_LOCK_STALE_MS = 65 * 60_000;
  *  SIGKILLs its OWN process group (`-process.pid`, covering itself + every
  *  runCmd-spawned vitest/tsx worker in one shot) — no orphan can outlive it.
  *
- *  INVARIANT: strictly greater than the parent's full kill window (55m SIGTERM
+ *  INVARIANT: strictly greater than the parent's full kill window (120m SIGTERM
  *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
  *  this watchdog is a pure backstop, never a competing timeout. Keep it at or
  *  above 3h for long-load checkpoint runs so the outer launch cap cannot cut the
  *  suite off before the red verdict path can run. Also strictly less than
- *  CHECKPOINT_LOCK_STALE_MS (65m) so THIS run terminates itself (and frees its
+ *  CHECKPOINT_LOCK_STALE_MS (190m) so THIS run terminates itself (and frees its
  *  lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
