@@ -83,7 +83,7 @@ export interface CoordinationSpec {
  *  structurally to avoid a cross-package orchestrator import; matches BlueprintSchema's fields.) */
 export interface TopologyBlueprintView {
   id: string;
-  kind?: 'hive' | 'harness';
+  kind?: 'pot' | 'hive' | 'harness';
   spine: { claimModel?: 'decider-dispatch' | 'self-claim-fifo' | 'self-claim-priority' };
   coordination?: {
     broadcast?: 'none' | 'topic';

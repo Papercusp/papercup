@@ -43,6 +43,15 @@ describe('isEnvFailureExit (EI-406 classifier)', () => {
     ['the live EI-6476 inference-gateway 502', 'API Error: 502 inference-gateway upstream error: fetch failed. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:8788).'],
     ['a bare numeric 5xx with no English phrasing', 'API Error: 503'],
     ['undici fetch-failed connectivity death', 'TypeError: fetch failed'],
+    // EI-7591/EI-7426: an Anthropic USAGE-CREDITS / billing exhaustion — a credential/billing-class
+    // outage, self-healing once credits are restored; NOT the item's fault. The live death slipped
+    // EVERY pattern above ("credits" is not matched by the /credential/ pattern), so it was charged
+    // + tagged plain 'worker-exit-backedge' and filed a false "lane broken" EI (EI-7591).
+    [
+      'the live EI-7426 usage-credits exhaustion',
+      'API Error: Usage credits required for 1M context · turn on usage credits at claude.ai/settings/usage, or use --model to switch to standard context',
+    ],
+    ['a bare "credits required" billing message', 'Error: purchase more credits required to continue'],
   ])('classifies %s as env failure', (_label, stdout) => {
     // A long substantive run (well past the DOA floor) so the ONLY thing that can
     // class these env is the new upstream-5xx signature, not the sub-floor DOA rule.

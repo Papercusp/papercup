@@ -95,6 +95,15 @@ const ENV_FAILURE_PATTERNS: readonly RegExp[] = [
   /\bupstream error\b/i, // the inference-gateway wrapper for a failing upstream
   /server-?side issue/i, // the gateway's "This is a server-side issue, usually temporary" phrasing
   /\b5(?:0[0-9]|29)\b/, // a bare HTTP 5xx status code (500-509 / 529 overloaded), e.g. "API Error: 502 …"
+  // EI-7591/EI-7426: an Anthropic USAGE-CREDITS / billing exhaustion — the live death was
+  // "API Error: Usage credits required for 1M context · turn on usage credits at
+  // claude.ai/settings/usage, or use --model to switch to standard context" (exit 1 after 849s).
+  // A billing/credential-class outage, self-healing once credits are added or the plan changes;
+  // it says nothing about the ITEM (the worker DOA'd before doing real work). It slipped EVERY
+  // pattern above — note "credits" is NOT matched by the /\bcredential/ pattern — so it was
+  // CHARGED as a real attempt AND tagged plain 'worker-exit-backedge', and the orphaned-dispatch
+  // watchdog read it as "the lane is broken" and filed a false major EI (EI-7591): the SAME
+  // self-amplifying noise loop the EI-6876/EI-6890 additions closed for the transient-5xx shapes.
 ];
 
 /**

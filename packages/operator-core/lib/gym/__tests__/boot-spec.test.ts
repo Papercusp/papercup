@@ -79,6 +79,18 @@ describe('buildGymOperatorBootSpec', () => {
     expect(buildGymOperatorBootSpec(base).env.DBOS__APPVERSION).toBe(env.DBOS__APPVERSION);
   });
 
+  it('WI-2604: blanks PAPERCUSP_MCP_PROXY_BASE so spawned eval agents hand-shake THIS instance, not a leaked live-operator proxy', () => {
+    // bg-host's dev-api service sets PAPERCUSP_MCP_PROXY_BASE (fronting the LIVE :3070
+    // operator). Both resolveSpawnOperatorBase (spawn-mcp.ts) and resolveAgentMcpBaseUrl
+    // (mcp-base-url.ts) check this env var BEFORE the spawning host's own
+    // PAPERCUSP_HONO_PORT, so an unblanked leak pointed every gym eval agent's .mcp.json
+    // at the live operator instead of this dedicated gym-operator — which verifies
+    // against a DIFFERENT spawn-signing-key (the live DB's, not the gym DB's preminted
+    // one) → invalid_signature on every spawn.
+    const { env } = buildGymOperatorBootSpec(base);
+    expect(env.PAPERCUSP_MCP_PROXY_BASE).toBe('');
+  });
+
   it('throws when the harness commit is not a pinned SHA (D-016 demands a real pin)', () => {
     expect(() => buildGymOperatorBootSpec({ ...base, harnessCommit: 'main' })).toThrow();
   });

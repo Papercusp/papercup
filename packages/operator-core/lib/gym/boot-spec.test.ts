@@ -40,5 +40,12 @@ describe('buildGymOperatorBootSpec — hermetic DSN pinning', () => {
     // PAPERCUSP_HIVE_HOME_SLUG fatals home-harness validation against the
     // hermetic registry (the gym operator runs no hive).
     expect(spec.env.PAPERCUSP_HIVE_HOME_SLUG, 'gym operator runs NO hive').toBe('');
+    // WI-2604 root cause (1): a leaked PAPERCUSP_MCP_PROXY_BASE (bg-host's dev-api
+    // service sets it, fronting the LIVE :3070 operator) makes resolveSpawnOperatorBase
+    // / resolveAgentMcpBaseUrl point every gym eval agent's .mcp.json at the LIVE
+    // operator instead of this dedicated gym instance — which verifies against a
+    // DIFFERENT spawn-signing-key (live DB, not this gym DB's preminted one) →
+    // invalid_signature on every spawn.
+    expect(spec.env.PAPERCUSP_MCP_PROXY_BASE, 'eval agents must hand-shake THIS instance, not a leaked live proxy').toBe('');
   });
 });
