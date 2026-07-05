@@ -63,7 +63,9 @@ describe('substrate-outbox backstop GC', () => {
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
-        drained_at   BIGINT
+        drained_at   BIGINT,
+        -- mig 495 (WI-2136): the drain now stamps the own-log key it appended into
+        drained_log_key TEXT
       );
     `);
   }, 60_000);

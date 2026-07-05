@@ -97,7 +97,9 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
-        drained_at   BIGINT
+        drained_at   BIGINT,
+        -- mig 495 (WI-2136): the drain now stamps the own-log key it appended into
+        drained_log_key TEXT
       );
       CREATE INDEX substrate_outbox_drain_idx
         ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);
