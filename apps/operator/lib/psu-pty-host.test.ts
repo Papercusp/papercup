@@ -66,12 +66,12 @@ describe('control wire protocol (v1)', () => {
     expect(controlBytes(d)).toBe('hello\r');
   });
   it('raw envelope → immediate, verbatim bytes (force interrupt)', () => {
-    const d = decodeControl(encodeControl({ mode: 'raw', data: '' })); // Ctrl-C
-    expect(d).toEqual({ mode: 'raw', data: '', gated: false });
-    expect(controlBytes(d)).toBe('');
+    const d = decodeControl(encodeControl({ mode: 'raw', data: '\x03' })); // Ctrl-C
+    expect(d).toEqual({ mode: 'raw', data: '\x03', gated: false });
+    expect(controlBytes(d)).toBe('\x03');
   });
   it('Esc force interrupt round-trips', () => {
-    expect(controlBytes(decodeControl(encodeControl({ mode: 'raw', data: '' })))).toBe('');
+    expect(controlBytes(decodeControl(encodeControl({ mode: 'raw', data: '\x1b' })))).toBe('\x1b');
   });
   it('osc envelope → immediate, verbatim recolor bytes (terminal display, not the agent)', () => {
     const osc = '\x1b]11;#581c87\x07';

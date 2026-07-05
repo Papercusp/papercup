@@ -211,9 +211,9 @@ describe('injectIntoHost', () => {
   it('writes a v1 raw envelope (force interrupt = Ctrl-C, immediate)', async () => {
     const dir = tmpDir();
     const { sock, received } = startSocket(dir, 'su-force');
-    const ok = await injectIntoHost(sock, { mode: 'raw', data: '' });
+    const ok = await injectIntoHost(sock, { mode: 'raw', data: '\x03' });
     expect(ok).toBe(true);
-    expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'raw', data: '' });
+    expect(JSON.parse(await received)).toEqual({ v: 1, mode: 'raw', data: '\x03' });
   });
 
   it('writes a v1 osc envelope (recolor bytes for the terminal display)', async () => {

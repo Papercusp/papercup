@@ -465,7 +465,7 @@ export const ACTIVITY_PERSIST_MS = 15_000;
  *
  *   mode:'turn' → a wake turn: idle-gated (P-013), then `data` + CR submits it.
  *   mode:'raw'  → verbatim + IMMEDIATE (bypasses the idle gate): force-interrupt
- *                 control bytes (Ctrl-C '' / Esc '') for the
+ *                 control bytes (Ctrl-C '\x03' / Esc '\x1b') for the
  *                 operator-mediated `turn:interrupt` (Phase 4, D-007). data is
  *                 written exactly, no CR appended.
  *

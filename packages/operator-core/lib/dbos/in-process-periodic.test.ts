@@ -144,6 +144,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'harness-status-sweep',
         'hive-epoch-key-reconcile',
         'learning-infra-health',
+        'poll-suspect-scan',
         'scorecard-emission-pulse',
         'service-health',
         'shared-presence-reaper',
@@ -169,6 +170,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('hive-epoch-key-reconcile')!.intervalMs).toBe(600_000);
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
+    expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
   });
 
   it('only the heavy ticks shed under load (parity with shouldShedHeavyTick)', () => {

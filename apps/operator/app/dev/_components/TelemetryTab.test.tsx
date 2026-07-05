@@ -152,6 +152,38 @@ describe('<TelemetryTab /> render states + transport filter', () => {
     expect(screen.queryByRole('button', { name: 'clear' })).toBeNull();
   });
 
+  it('renders the poll-suspects banner when the response carries suspects (EI-7428)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      envelope({
+        entries: [],
+        poll_suspects: [
+          {
+            tool_name: 'activity:recent',
+            call_count: 144_000,
+            calls_per_hour: 6000,
+            callers: 50,
+            calls_per_caller_per_hour: 120,
+            total_bytes: 70_000_000,
+            reason: '6000 calls/hr sustained — polling-shaped',
+          },
+        ],
+      }),
+    ));
+    render(<TelemetryTab workspaceIds={null} onRerun={onRerun} />);
+    const banner = await screen.findByTestId('poll-suspects-banner');
+    expect(banner.textContent).toContain('1 poll-suspect tool');
+    expect(banner.textContent).toContain('activity:recent');
+    expect(banner.textContent).toContain('6000/hr');
+    expect(banner.textContent).toContain('50 callers');
+  });
+
+  it('does NOT render the poll-suspects banner when the response carries none', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => envelope({ entries: [], poll_suspects: [] })));
+    render(<TelemetryTab workspaceIds={null} onRerun={onRerun} />);
+    await screen.findByTestId('grid');
+    expect(screen.queryByTestId('poll-suspects-banner')).toBeNull();
+  });
+
   it('clicking a row rerun button fires onRerun with the tool + first workspace', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       envelope({ entries: [

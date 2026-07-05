@@ -118,9 +118,9 @@ shareholder-briefings) all ship the TS form.
 Plugins consume host state via typed services. The
 PapercuspApi exposes each service as a direct property
 (api.tasks, api.goals,
-api.routines, api.comments,
-api.secrets, api.storage,
-api.db, api.fetch,
+api.pendingEvents, api.routines,
+api.comments, api.secrets,
+api.storage, api.db, api.fetch,
 api.capabilities); each call is a capability-gated proxy
 that throws MissingCapabilityError when the plugin's
 manifest hasn't declared the matching capability:

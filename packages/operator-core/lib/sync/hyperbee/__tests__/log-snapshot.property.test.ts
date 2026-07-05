@@ -211,8 +211,8 @@ describe('buildSnapshotRows — algebraic properties (P-004 exhaustive)', () => 
         expect(new Set(keys).size).toBe(keys.length);
         // strictly ascending (table,hbKey) — deterministic byte order
         for (let i = 1; i < rows.length; i++) {
-          const prev = `${rows[i - 1].table} ${rows[i - 1].hbKey}`;
-          const cur = `${rows[i].table} ${rows[i].hbKey}`;
+          const prev = `${rows[i - 1].table}\x00${rows[i - 1].hbKey}`;
+          const cur = `${rows[i].table}\x00${rows[i].hbKey}`;
           expect(prev < cur).toBe(true);
         }
       }),

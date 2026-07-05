@@ -171,9 +171,9 @@ export default defineManifest({
         Plugins consume host state via typed services. The
         <code>PapercuspApi</code> exposes each service as a direct property
         (<code>api.tasks</code>, <code>api.goals</code>,
-        <code>api.routines</code>, <code>api.comments</code>,
-        <code>api.secrets</code>, <code>api.storage</code>,
-        <code>api.db</code>, <code>api.fetch</code>,
+        <code>api.pendingEvents</code>, <code>api.routines</code>,
+        <code>api.comments</code>, <code>api.secrets</code>,
+        <code>api.storage</code>, <code>api.db</code>, <code>api.fetch</code>,
         <code>api.capabilities</code>); each call is a capability-gated proxy
         that throws <code>MissingCapabilityError</code> when the plugin's
         manifest hasn't declared the matching capability:

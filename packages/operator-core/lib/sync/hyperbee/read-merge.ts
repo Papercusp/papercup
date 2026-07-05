@@ -609,7 +609,7 @@ const MAX_APPLY_THROWS = 3;
 /** Op identity for the per-op throw counter — a new op (or a different winner for
  *  the key) gets a fresh retry budget; the same poison op accumulates throws. */
 function opIdent(groupKey: string, env: OpEnvelope): string {
-  return `${groupKey} ${env.ts ?? 0} ${env.sourceLogKeyHex ?? ''} ${env.type}`;
+  return `${groupKey}\x00${env.ts ?? 0}\x00${env.sourceLogKeyHex ?? ''}\x00${env.type}`;
 }
 
 /**

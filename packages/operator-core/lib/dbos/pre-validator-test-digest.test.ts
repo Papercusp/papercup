@@ -43,9 +43,9 @@ describe('digestTestOutput (P-010)', () => {
   });
 
   it('strips ANSI escapes', () => {
-    const colored = '[32m✓ ok[0m\n[31m✗ FAIL thing[0m\n1 failed';
+    const colored = '\x1b[32m✓ ok\x1b[0m\n\x1b[31m✗ FAIL thing\x1b[0m\n1 failed';
     const d = digestTestOutput(colored, 1, 'x');
-    expect(d.body).not.toContain('');
+    expect(d.body).not.toContain('\x1b');
   });
 
   it('bounds the body at maxBytes with a truncation marker', () => {

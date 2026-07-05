@@ -201,8 +201,8 @@ export function assertReportSetFirewall(registry: readonly BenchSet[] = BENCH_SE
   const dupes: string[] = [];
   const seen = new Set<string>();
   for (const s of registry) {
-    if (seen.has(`${s.id} ${s.usage}`)) dupes.push(`${s.id} (${s.usage})`);
-    seen.add(`${s.id} ${s.usage}`);
+    if (seen.has(`${s.id}\x00${s.usage}`)) dupes.push(`${s.id} (${s.usage})`);
+    seen.add(`${s.id}\x00${s.usage}`);
     const u = usagesById.get(s.id) ?? new Set<BenchSetUsage>();
     u.add(s.usage);
     usagesById.set(s.id, u);

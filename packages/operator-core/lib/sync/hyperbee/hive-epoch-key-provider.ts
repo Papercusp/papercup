@@ -64,7 +64,7 @@ export function createEpochKeyProvider(
   const cache = new Map<string, EpochKey>();
   return {
     async keyForEpoch(hiveId: string, epoch: number): Promise<EpochKey> {
-      const ck = `${hiveId}${epoch}`;
+      const ck = `${hiveId}\x1f${epoch}`;
       const hit = cache.get(ck);
       if (hit) return hit;
       const blob = await loader.load(hiveId, epoch, localDevice.pubkeyBase64);

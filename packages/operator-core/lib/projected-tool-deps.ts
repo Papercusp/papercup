@@ -509,9 +509,10 @@ async function recordInvocationImpl(
   if (telemetryQueue.length > maxPending) {
     // Producer outran the PG writer (stall/backpressure) — shed oldest to keep
     // memory bounded. Telemetry is best-effort; a dropped row is acceptable.
-    telemetryQueue.splice(0, telemetryQueue.length - maxPending);
-    telemetryDropped++;
-    if (telemetryDropped === 1 || telemetryDropped % 1000 === 0) {
+    const dropped = telemetryQueue.length - maxPending;
+    telemetryQueue.splice(0, dropped);
+    telemetryDropped += dropped;
+    if (telemetryDropped === dropped || telemetryDropped % 1000 === 0) {
       console.warn(
         `[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`,
       );

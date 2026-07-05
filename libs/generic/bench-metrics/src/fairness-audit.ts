@@ -254,7 +254,7 @@ export function formatPerInstanceMatrix(rows: readonly TaskRunResult[], opts: { 
   const tasks = [...new Set(rows.map((r) => r.taskId))].sort();
   // per (task, arm): scored/resolved/scoreSum/infra over seeds.
   const cell = new Map<string, { scored: number; resolved: number; scoreSum: number; infra: number }>();
-  const key = (t: string, a: string) => `${t} ${a}`;
+  const key = (t: string, a: string) => `${t}\x00${a}`;
   for (const r of rows) {
     const c = cell.get(key(r.taskId, r.arm)) ?? { scored: 0, resolved: 0, scoreSum: 0, infra: 0 };
     if (isScored(r)) {
