@@ -20,7 +20,7 @@ export default defineTool({
   name: 'scorecards:list',
   profile: 'engineer',
   description:
-    'Read structured rubric SCORECARDS back — rubric-graded observations (a rubricRef + per-criterion {rating, evidence}) that the Overwatch emits every turn and Scout consumes. Filter by rubricRef + sourceHive + a since time-window; newest-first. Each row carries {issueId, createdAt, createdBy, sourceHive, rubricRef, ratings, nKeys, missingKeys, rubricResolved} — nKeys + missingKeys expose completeness (a partial scorecard rated < all the rubric criteria). The read side of monitoring-the-monitor (was write-only before).',
+    'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness).',
   guidance: {
     when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE hive-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.',
     notWhen:
@@ -47,6 +47,12 @@ export default defineTool({
       .optional()
       .describe('ISO timestamp — only scorecards filed at/after this (the time-window); omit for all'),
     limit: z.number().int().positive().max(500).optional().describe('max rows, newest-first (default 100, max 500)'),
+    includeSynthesized: z
+      .boolean()
+      .optional()
+      .describe(
+        'also return SYNTHESIZED floor scorecards (turn-end backstop + scheduled-pulse). Default false — agent-emission reads exclude floors; pass true to verify the data layer itself (e.g. is the pulse filing while overwatch is paused?)',
+      ),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
@@ -55,6 +61,7 @@ export default defineTool({
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,
+      includeSynthesized: args.includeSynthesized,
     });
     return {
       content: [

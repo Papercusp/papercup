@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { listFacts, FACT_SCOPES } from '../../agent-facts/store';
+import { resolveScopeRefFromCtx } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:list',
@@ -27,9 +28,13 @@ export default defineTool({
     scopeRef: z.string().max(120).optional(),
     limit: z.number().int().positive().max(100).optional(),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
+    // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
+    // harness = this harness, role = my role) so `facts:list { scope: 'owner' }`
+    // lists YOUR facts without having to pass your own id — symmetry with assert.
+    const scopeRef = await resolveScopeRefFromCtx(args.scope, args.scopeRef, ctx);
     const facts = await listFacts(
-      { scope: args.scope, scopeRef: args.scopeRef ?? null },
+      { scope: args.scope, scopeRef: scopeRef ?? null },
       { limit: args.limit ?? 50 },
     );
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, count: facts.length, facts }) }] };

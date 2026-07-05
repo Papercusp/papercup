@@ -9,6 +9,7 @@ import type { Sql } from 'postgres';
 import {
   assertFact,
   renderFactsFold,
+  resolveFactScopeRef,
   resolveFederationWorkspace,
   validateFactScope,
   type AgentFact,
@@ -84,6 +85,46 @@ describe('validateFactScope (D-001 scoping)', () => {
 
   it('rejects unknown scopes', () => {
     expect(validateFactScope('galaxy', 'x')).toMatch(/unknown scope/);
+  });
+});
+
+describe('resolveFactScopeRef (EI-7517 — self-scoped default)', () => {
+  const defaults = { ownerId: 'su-me', harnessSlug: 'papercusp', role: 'su' };
+
+  it('defaults an OMITTED ref for the self-scoped scopes from ctx', () => {
+    expect(resolveFactScopeRef('owner', undefined, defaults)).toBe('su-me');
+    expect(resolveFactScopeRef('owner', null, defaults)).toBe('su-me');
+    expect(resolveFactScopeRef('owner', '  ', defaults)).toBe('su-me'); // blank counts as omitted
+    expect(resolveFactScopeRef('harness', undefined, defaults)).toBe('papercusp');
+    expect(resolveFactScopeRef('role', undefined, defaults)).toBe('su');
+  });
+
+  it('the defaulted owner ref then PASSES validateFactScope (the fix — no more structural error)', () => {
+    // The bug: facts:assert { scope: 'owner' } with no ref returned the
+    // "scope 'owner' requires scope_ref" structural error the watchdog flagged.
+    expect(validateFactScope('owner', undefined)).toMatch(/requires scope_ref/);
+    const filled = resolveFactScopeRef('owner', undefined, defaults);
+    expect(validateFactScope('owner', filled)).toBeNull();
+  });
+
+  it('an EXPLICIT ref always wins over the ctx default', () => {
+    expect(resolveFactScopeRef('owner', 'su-other', defaults)).toBe('su-other');
+    expect(resolveFactScopeRef('harness', 'other-harness', defaults)).toBe('other-harness');
+    expect(resolveFactScopeRef('role', 'queen', defaults)).toBe('queen');
+  });
+
+  it('leaves workspace ref-less and does NOT invent a work_item ref', () => {
+    expect(resolveFactScopeRef('workspace', undefined, defaults)).toBeUndefined();
+    // work_item has no caller-context default — still requires an explicit id.
+    expect(resolveFactScopeRef('work_item', undefined, defaults)).toBeUndefined();
+    expect(validateFactScope('work_item', resolveFactScopeRef('work_item', undefined, defaults))).toMatch(
+      /requires scope_ref/,
+    );
+  });
+
+  it('falls back to the passed ref when a ctx default is missing', () => {
+    expect(resolveFactScopeRef('harness', undefined, { ownerId: 'su-me' })).toBeUndefined();
+    expect(resolveFactScopeRef('role', null, { ownerId: 'su-me' })).toBeNull();
   });
 });
 

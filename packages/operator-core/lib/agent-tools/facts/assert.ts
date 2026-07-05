@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { assertFact, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 
 export default defineTool({
   name: 'facts:assert',
@@ -45,7 +45,17 @@ export default defineTool({
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the hive over the substrate. Default false — facts are hive-private.'),
   }),
   async handler(args, ctx) {
-    const { resolveAgentIdentity } = await import('../coordination/identity');
+    const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
+    const identity = resolveAgentIdentity(ctx);
+    // EI-7517: default an OMITTED scopeRef from the caller's context for the
+    // self-scoped cases (owner = me, harness = this harness, role = my role), so
+    // the common "assert a fact about just myself" doesn't error on a missing
+    // ref the tool can infer. An explicit scopeRef always wins.
+    const scopeRef = resolveFactScopeRef(args.scope, args.scopeRef, {
+      ownerId: identity.ownerId,
+      harnessSlug: ctx.harnessSlug,
+      role: deriveAgentRole(identity),
+    });
     // F1-1 federation identity: a SHAREABLE fact must carry the hive-home slug
     // (mig 461 harness_slug) or the capture routes nowhere and peers reject the
     // wire row. Resolved only when federating (a registry read per assert is
@@ -56,12 +66,12 @@ export default defineTool({
         : null;
     const fact = await assertFact({
       scope: args.scope,
-      scopeRef: args.scopeRef ?? null,
+      scopeRef: scopeRef ?? null,
       key: args.key,
       body: args.body,
       sourceRef: args.sourceRef ?? null,
       ttlSec: args.ttlSec,
-      createdBy: resolveAgentIdentity(ctx).ownerId,
+      createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(hiveHomeSlug ? { hiveHomeSlug } : {}),
     });

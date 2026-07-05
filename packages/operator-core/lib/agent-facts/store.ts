@@ -82,6 +82,38 @@ export function validateFactScope(scope: string, scopeRef?: string | null): stri
   return null;
 }
 
+/**
+ * EI-7517 — fill an OMITTED scopeRef from the caller's context for the
+ * ref-bearing scopes that have an unambiguous caller-side default, so the
+ * common SELF-scoped assert/list/retract does not force the agent to look up
+ * and pass its own id. This closes the recurring "scope 'owner' requires
+ * scope_ref" structural error: an agent asserting a fact about "just me"
+ * naturally omits the ref, and the tool has enough context to infer it.
+ *   owner   → the caller's own ownerId ("owner = just you")
+ *   harness → the caller's harness slug (when known)
+ *   role    → the caller's derived role
+ * An EXPLICIT scopeRef always wins. workspace takes no ref; work_item has no
+ * caller-context default (an explicit WI id is still required — there is no
+ * "current work item" on the ctx). PURE — unit-tested without ctx/PG.
+ */
+export function resolveFactScopeRef(
+  scope: string,
+  scopeRef: string | null | undefined,
+  defaults: { ownerId?: string | null; harnessSlug?: string | null; role?: string | null },
+): string | null | undefined {
+  if ((scopeRef ?? '').trim()) return scopeRef; // an explicit ref always wins
+  switch (scope) {
+    case 'owner':
+      return defaults.ownerId ?? scopeRef;
+    case 'harness':
+      return defaults.harnessSlug ?? scopeRef;
+    case 'role':
+      return defaults.role ?? scopeRef;
+    default:
+      return scopeRef; // workspace (ref-less) / work_item (explicit id required)
+  }
+}
+
 function sqlOf(inject?: Sql): Sql {
   return inject ?? getOrgPg().sql;
 }

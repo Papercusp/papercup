@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { retractFact, FACT_SCOPES } from '../../agent-facts/store';
+import { resolveScopeRefFromCtx } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:retract',
@@ -27,8 +28,12 @@ export default defineTool({
     scopeRef: z.string().max(120).optional(),
     key: z.string().min(1).max(120),
   }),
-  async handler(args) {
-    const retracted = await retractFact({ scope: args.scope, scopeRef: args.scopeRef ?? null, key: args.key });
+  async handler(args, ctx) {
+    // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
+    // harness = this harness, role = my role) so a fact asserted self-scoped
+    // without a ref can be retracted the same way — symmetry with facts:assert.
+    const scopeRef = await resolveScopeRefFromCtx(args.scope, args.scopeRef, ctx);
+    const retracted = await retractFact({ scope: args.scope, scopeRef: scopeRef ?? null, key: args.key });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, retracted }) }] };
   },
 });
