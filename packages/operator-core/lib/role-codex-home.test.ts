@@ -81,6 +81,8 @@ describe('writeRoleCodexHome', () => {
     // psu-isolation P-004 / D-001: no cwd AGENTS.md read + native memory off.
     expect(toml).toContain('project_doc_max_bytes = 0');
     expect(toml).toContain('memory_tool = false');
+    // tui-status-parity 2026-07-05: hook owns the title (see the su-home test).
+    expect(toml).toContain('[tui]\nterminal_title = []');
   });
 
   it('symlinks auth.json to the real ~/.codex/auth.json (shared OAuth, not a copy)', async () => {
@@ -216,6 +218,10 @@ describe('writeSuCodexHome', () => {
     expect(toml).toContain('project_doc_max_bytes = 0');
     expect(toml).toContain('[features]');
     expect(toml).toContain('memory_tool = false');
+    // tui-status-parity 2026-07-05: the objective-title hook owns the terminal
+    // title — an EMPTY terminal_title item list stops codex's own OSC-0 writes
+    // (default ["activity","project"]) clobbering display.title every turn.
+    expect(toml).toContain('[tui]\nterminal_title = []');
   });
 
   it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {

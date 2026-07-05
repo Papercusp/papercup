@@ -69,7 +69,7 @@ describe('storage categories taxonomy', () => {
     expect(isTrimmable(plans!)).toBe(false);
   });
 
-  it('harness_run_output is a local-diagnostic epoch_ms category (deferred follow-up)', () => {
+  it('harness_run_output is a local-diagnostic epoch_ms category (wired into DEFAULT_RETENTION_TARGETS@14d, EI-7491)', () => {
     const c = getStorageCategory('harness-run-output');
     expect(c && isPgCategory(c) && c.table).toBe('harness_run_output');
     expect(c && isPgCategory(c) && c.ageColumn).toBe('ended_at');

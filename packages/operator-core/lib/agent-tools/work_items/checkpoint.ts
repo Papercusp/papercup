@@ -24,7 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
-import { getWorkItem, markFeatureProgress } from '../../work-items';
+import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 
 const itemSpec = z.object({
@@ -96,9 +96,16 @@ export default defineTool({
         );
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not
-        // `stalled`. Fire-and-forget + fail-soft (markFeatureProgress swallows errors and
-        // no-ops a holderless/issue row) so a progress bump never breaks the checkpoint write.
-        if (stored !== null) void markFeatureProgress(harness, it.id);
+        // `stalled`. Fire-and-forget + fail-soft (each swallows errors and no-ops on the
+        // wrong family / a holderless row) so a progress bump never breaks the checkpoint
+        // write. WI-3006: markFeatureProgress only matches feature-family rows and
+        // markIssueProgress only matches issue-family (bug/change/task) rows — item_kind is
+        // mutually exclusive between them, so firing both unconditionally is a harmless
+        // no-op on whichever one doesn't apply (no need to look up the item's kind first).
+        if (stored !== null) {
+          void markFeatureProgress(harness, it.id);
+          void markIssueProgress(it.id);
+        }
         return { ok: true as const, id: it.id, harness, cleared: stored === null, length: stored?.length ?? 0, by: ident.ownerId };
       },
       { keyOf: (it) => ({ id: it.id }) },

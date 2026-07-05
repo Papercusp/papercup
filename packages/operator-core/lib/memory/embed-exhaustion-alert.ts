@@ -22,11 +22,19 @@ export interface EmbedExhaustionNotification {
 type NotifyFn = (n: EmbedExhaustionNotification) => Promise<void> | void;
 type ResolveFn = (n: { conditionKey: string; workspaceId: string }) => Promise<void> | void;
 
-const CONDITION_KEY = 'embed-exhaustion';
 const DEFAULT_ALERT_COOLDOWN_MS = 45 * 60_000;
 
-let alertedUntil = 0;
-let active = false;
+// EI-7475 follow-up: `openai_billing` and `daily_cap` are INDEPENDENT conditions (a hard
+// OpenAI billing stop vs. our own spend backstop) — each gets its OWN latch/cooldown/
+// conditionKey. A single shared latch would let one kind's cooldown silently suppress
+// (or, on clear, wrongly resolve) the OTHER kind's alert if both occur within the same
+// cooldown window — a real gap in an earlier version of this file.
+function conditionKeyFor(kind: EmbedExhaustionKind): string {
+  return `embed-exhaustion:${kind}`;
+}
+
+const alertedUntil: Record<EmbedExhaustionKind, number> = { openai_billing: 0, daily_cap: 0 };
+const active: Record<EmbedExhaustionKind, boolean> = { openai_billing: false, daily_cap: false };
 let notifyForTest: NotifyFn | null = null;
 let resolveForTest: ResolveFn | null = null;
 
@@ -41,8 +49,10 @@ export function __setEmbedExhaustionNotifierForTest(notify: NotifyFn, resolve?: 
 }
 
 export function __resetEmbedExhaustionAlertForTest(): void {
-  alertedUntil = 0;
-  active = false;
+  alertedUntil.openai_billing = 0;
+  alertedUntil.daily_cap = 0;
+  active.openai_billing = false;
+  active.daily_cap = false;
   notifyForTest = null;
   resolveForTest = null;
 }

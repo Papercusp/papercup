@@ -83,8 +83,11 @@ import {
   promoteIssue,
   issuesScopeWorkspace,
   mergeIssuePayload,
+  markIssueProgress,
   type EngineerIssue,
 } from './issues-engineer';
+
+export { markIssueProgress };
 
 // ── Kinds ───────────────────────────────────────────────────────────────────────
 export type FeatureFamilyKind = 'feature' | 'chunk';
@@ -304,7 +307,12 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     // The unified work-item surface must expose it as takenAt so assignment
     // views/reapers do not read a live issue claim as unanchored.
     takenAt: i.assignedAt,
-    lastProgressAt: null,
+    // WI-3006: mirrors the takenAt fix above — engineer_issues.last_progress_at (migration 509)
+    // is the real item-scoped progress signal for issue-family, bumped by markIssueProgress()
+    // on a checkpoint. Was hardcoded null (issue-family checkpoints never advanced it), which
+    // made classifyItemActivity fall back to takenAt forever and degrade any issue-family claim
+    // held >STALE_MS with zero checkpoints to 'stalled' even while actively worked.
+    lastProgressAt: i.lastProgressAt,
     assignedBy: i.assignedBy,
     severity: i.severity,
     parent: null,

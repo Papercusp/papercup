@@ -555,6 +555,38 @@ export async function claimIssue(id: string, assignee: string): Promise<Engineer
   return issue;
 }
 
+/**
+ * WI-2990/WI-3006: bump an issue-family (bug/change/task) row's `last_progress_at`
+ * to now — the issue-family mirror of {@link ../work-items.markFeatureProgress}.
+ *
+ * Writes the BASE `harness_shared.work_items` table directly (not through the
+ * `engineer_issues` compat view) so it can match by (workspace_id, feature_id)
+ * alone — issue ids are globally unique, and matching this way sidesteps the
+ * harness_slug encoding split (`<slug>` vs `operator:<workspace_id>`) that a
+ * `markFeatureProgress`-style `harness_slug = <caller's harness>` match would
+ * get wrong for an operator-scoped issue. Only a CLAIMED row is credited — an
+ * unclaimed/terminal row matches 0 rows and is a harmless no-op (mirrors
+ * markFeatureProgress's own guard). Fail-soft: swallows errors so a progress
+ * bump can never break the caller's primary write (e.g. a checkpoint write).
+ *
+ * @returns true if a held issue-family row was bumped, false otherwise.
+ */
+export async function markIssueProgress(id: string): Promise<boolean> {
+  if (!id) return false;
+  try {
+    const { sql } = getOrgPg();
+    const res = await sql`
+      UPDATE harness_shared.work_items
+         SET last_progress_at = now()
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
+         AND item_kind IN ('bug', 'change', 'task')
+         AND taken_by IS NOT NULL AND taken_by <> ''`;
+    return res.count > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function releaseIssue(id: string): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = issuesScopeWorkspace();

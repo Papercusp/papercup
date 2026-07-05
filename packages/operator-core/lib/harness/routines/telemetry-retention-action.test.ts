@@ -35,9 +35,23 @@ const ctx = (triggerConfig: Record<string, unknown>) => ({
 });
 
 describe('resolveTargets', () => {
-  it('defaults to route-invocations@7d + tool-invocations@14d', () => {
+  it('defaults to route-invocations@7d + tool-invocations@14d + harness-run-output@14d', () => {
     expect(resolveTargets({})).toEqual([...DEFAULT_RETENTION_TARGETS]);
     expect(resolveTargets({ targets: [] })).toEqual([...DEFAULT_RETENTION_TARGETS]);
+  });
+
+  // EI-7491: harness_run_output was a fully-registered prunable storage category
+  // (packages/operator-core/lib/storage/categories.ts) that was never added to
+  // DEFAULT_RETENTION_TARGETS, so the janitor never pruned it and it grew
+  // unbounded (1.5GB/6,726 rows, oldest 56d, ~334 rows/day). Assert it's wired in
+  // with the exact category id string categories.ts registers ('harness-run-output')
+  // — a typo here silently no-ops (resolveTargets/pruneStorageCategory filter to
+  // known categories).
+  it('includes harness-run-output@14d in the default targets (EI-7491)', () => {
+    expect(DEFAULT_RETENTION_TARGETS).toContainEqual({
+      category: 'harness-run-output',
+      retention_days: 14,
+    });
   });
 
   it('honors a configured targets list + drops malformed entries', () => {
@@ -68,7 +82,7 @@ describe('system:telemetry-retention action', () => {
     expect(action).toBeTypeOf('function');
     await action!(ctx({}));
 
-    expect(pruneMock).toHaveBeenCalledTimes(2);
+    expect(pruneMock).toHaveBeenCalledTimes(3);
     expect(pruneMock).toHaveBeenNthCalledWith(1, {
       categoryId: 'route-invocations',
       olderThanDays: 7,
@@ -77,6 +91,12 @@ describe('system:telemetry-retention action', () => {
     });
     expect(pruneMock).toHaveBeenNthCalledWith(2, {
       categoryId: 'tool-invocations',
+      olderThanDays: 14,
+      dryRun: false,
+      workspaceId: 'ws-1',
+    });
+    expect(pruneMock).toHaveBeenNthCalledWith(3, {
+      categoryId: 'harness-run-output',
       olderThanDays: 14,
       dryRun: false,
       workspaceId: 'ws-1',

@@ -19,8 +19,9 @@
  *
  * Config (routine `trigger_config`, all optional):
  *   - `targets` — `Array<{ category: string; retention_days: number }>`; default
- *     `route-invocations`@7d + `tool-invocations`@14d (the two largest diagnostic
- *     tables, request- vs tool-call telemetry).
+ *     `route-invocations`@7d + `tool-invocations`@14d + `harness-run-output`@14d
+ *     (the largest diagnostic tables: request-, tool-call, and per-agent-run
+ *     transcript telemetry).
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -31,12 +32,18 @@ interface RetentionTarget {
   retention_days: number;
 }
 
-/** The two largest unbounded diagnostic tables (infra audit R2). route_invocations
- *  is request-level noise dominated by polling → 7d; tool_invocations is the more
- *  analysis-useful MCP telemetry → 14d. */
+/** The largest unbounded diagnostic tables (infra audit R2 + EI-7491).
+ *  route_invocations is request-level noise dominated by polling → 7d;
+ *  tool_invocations is the more analysis-useful MCP telemetry → 14d;
+ *  harness_run_output (EI-7491) stores four uncompressed full-transcript TEXT
+ *  blobs per agent run (~228 KB/row, the largest per-row table in the DB) and
+ *  was a fully-registered storage category never wired into this default
+ *  target list, so it grew unbounded (56d+ of history, ~334 rows/day) — 14d
+ *  matches tool-invocations and keeps ~2 weeks of run transcripts for debugging. */
 export const DEFAULT_RETENTION_TARGETS: readonly RetentionTarget[] = [
   { category: 'route-invocations', retention_days: 7 },
   { category: 'tool-invocations', retention_days: 14 },
+  { category: 'harness-run-output', retention_days: 14 },
 ];
 
 /** Bound the per-tick prune loop so a backlog can never run a tick away; the
