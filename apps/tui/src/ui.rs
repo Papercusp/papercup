@@ -3854,7 +3854,7 @@ mod tests {
         // narrow width the Tabs widget truncates the tail.)
         let app = App::new();
         let text = render(&app, 60, 8);
-        assert!(text.contains("Operator"));
+        assert!(text.contains("Papercup")); // classic operator label (restore-pot-lexicon D-006)
         assert!(text.contains("Inbox"));
         assert!(text.contains("Plans"));
     }
@@ -3904,7 +3904,7 @@ mod tests {
     fn tab_strip_uses_classic_labels_by_default() {
         let app = App::new(); // empty lexicon = classic fallback
         let text = render(&app, 200, 8);
-        assert!(text.contains("Operator"));
+        assert!(text.contains("Papercup")); // classic operator label (restore-pot-lexicon D-006)
         assert!(text.contains("Fleet"));
         assert!(text.contains("Pots"));
         assert!(text.contains("Cupboard"));

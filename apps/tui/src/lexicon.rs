@@ -121,7 +121,7 @@ mod tests {
         let lx = Lexicon::default();
         assert_eq!(lx.lex("fleet"), "Fleet");
         assert_eq!(lx.lex("pot"), "Pot");
-        assert_eq!(lx.lex("operator"), "Operator");
+        assert_eq!(lx.lex("operator"), "Papercup");
         assert_eq!(lx.lex("cupboard"), "Cupboard");
         assert_eq!(lx.lex_plural("pot"), "Pots");
     }

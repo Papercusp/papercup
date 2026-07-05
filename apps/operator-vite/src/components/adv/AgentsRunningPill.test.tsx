@@ -23,7 +23,7 @@ vi.mock('@/app/harness/AgentInspectorModal', () => ({
     <div data-testid="inspector-modal" data-run={runId} data-url={streamUrl} />
   ),
 }));
-vi.mock('@/app/harness/AgentThinkingPopover', () => ({
+vi.mock('@/app/harness/AgentThinkingStream', () => ({
   ThinkingDot: ({ title }: { title?: string }) => <span data-testid="thinking-dot" aria-label={title ?? 'thinking'} />,
 }));
 

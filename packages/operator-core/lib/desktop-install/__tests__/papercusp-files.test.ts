@@ -152,6 +152,54 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.papercuspCliPath)).mode & 0o777).toBe(0o755);
   });
 
+  it('writes a macOS "Papercusp Tutorial.app" wrapper on darwin once the dispatcher resolves (WI-2197)', async () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    try {
+      // No concierge yet → dispatcher not written → no .app wrapper either.
+      let result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      expect(result.papercuspCliWritten).toBe(false);
+      expect(result.macTutorialAppWritten).toBe(false);
+      expect(
+        await fs
+          .access(result.macTutorialAppPath)
+          .then(() => true)
+          .catch(() => false),
+      ).toBe(false);
+
+      await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
+      result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      expect(result.papercuspCliWritten).toBe(true);
+      expect(result.macTutorialAppWritten).toBe(true);
+      expect(result.macTutorialAppPath).toBe(path.join(tmpHome, 'Applications', 'Papercusp Tutorial.app'));
+
+      const plist = await fs.readFile(path.join(result.macTutorialAppPath, 'Contents', 'Info.plist'), 'utf8');
+      expect(plist).toContain('<key>CFBundleExecutable</key><string>papercusp-tutorial</string>');
+
+      const execPath = path.join(result.macTutorialAppPath, 'Contents', 'MacOS', 'papercusp-tutorial');
+      const exec = await fs.readFile(execPath, 'utf8');
+      expect(exec).toMatch(/^#!\/bin\/bash\n/);
+      expect(exec).toContain('"$HOME/.papercusp/bin/papercusp" tutorial');
+      expect(exec).toContain('open -na "$TERM_APP"');
+      expect((await fs.stat(execPath)).mode & 0o777).toBe(0o755);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+    }
+  });
+
+  it('does not write the macOS Tutorial.app wrapper on non-darwin platforms', async () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      await fs.writeFile(path.join(tmpAppRoot, 'scripts', 'onboard.mjs'), '// bundled concierge\n');
+      const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      expect(result.papercuspCliWritten).toBe(true);
+      expect(result.macTutorialAppWritten).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+    }
+  });
+
   it('prefers the bundled psu.mjs over the dev psu-launcher.mjs (A2)', async () => {
     // A packaged sidecar ships scripts/psu.mjs alongside the dev source; the
     // bundled name must win so end users run the self-contained bundle.

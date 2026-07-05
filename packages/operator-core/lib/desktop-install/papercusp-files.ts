@@ -52,6 +52,10 @@ export interface InstallPaths {
   /** ~/.papercusp/bin/papercusp — `papercusp <setup|tutorial>` dispatcher (onboard = alias of setup) →
    *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
   papercuspCliPath: string;
+  /** ~/Applications/Papercusp Tutorial.app — macOS-only clickable launcher that opens a
+   *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
+   *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
+  macTutorialAppPath: string;
 }
 
 export interface InstallResult extends InstallPaths {
@@ -76,6 +80,8 @@ export interface InstallResult extends InstallPaths {
   ptoolShimWritten: boolean;
   /** True when the `papercusp` dispatcher shim was written (P-014). */
   papercuspCliWritten: boolean;
+  /** True when the macOS "Papercusp Tutorial.app" wrapper was written (darwin only, WI-2197). */
+  macTutorialAppWritten: boolean;
   /** Resolved psu launcher the shim points at. Empty when not found. */
   psuLauncherSource: string;
   /** Resolved ptool launcher the shim points at. Empty when not found. */
@@ -529,6 +535,75 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
 }
 
 /**
+ * Write a minimal, self-contained macOS `.app` bundle at
+ * `~/Applications/Papercusp Tutorial.app` that double-clicks (Finder/Launchpad/
+ * Spotlight) into a fresh Terminal (or iTerm, if installed) window running
+ * `papercusp tutorial` (windows-macos-tutorial-shortcut-parity-2026-07-04,
+ * WI-2197). Parity with the Linux .deb's third `.desktop` icon
+ * (deb/postinstall.sh, agent-first-onboarding P-014) and the forthcoming
+ * Windows Start-Menu entry (src-tauri/windows/fragments + hooks.nsh) — this is
+ * the macOS leg, since a DMG has no postinstall-script hook to lean on the way
+ * the .deb does, so it has to be provisioned here at first-run instead.
+ *
+ * `~/Applications` (NOT `/Applications`) so this needs no admin privilege —
+ * it's a standard, LaunchServices/Spotlight-indexed per-user location, same
+ * unprivileged-per-user posture as the rest of installPapercuspFiles.
+ *
+ * The bundle's own executable is a bash script (macOS doesn't require a
+ * compiled binary — LaunchServices only needs CFBundleExecutable to be
+ * executable) that mirrors native_console.rs's spawn_macos_new_window: write a
+ * one-shot `.command` file and `open -na <Terminal.app|iTerm.app>` it, so a
+ * REAL terminal window opens (a bare script would otherwise run invisibly in
+ * the background).
+ */
+async function writeMacTutorialApp(appPath: string): Promise<boolean> {
+  const contentsDir = path.join(appPath, 'Contents');
+  const macosDir = path.join(contentsDir, 'MacOS');
+  await fs.mkdir(macosDir, { recursive: true });
+
+  const infoPlist =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+    '<plist version="1.0">\n' +
+    '<dict>\n' +
+    '  <key>CFBundleName</key><string>Papercusp Tutorial</string>\n' +
+    '  <key>CFBundleDisplayName</key><string>Papercusp Tutorial &amp; Setup</string>\n' +
+    '  <key>CFBundleIdentifier</key><string>com.papercusp.tutorial</string>\n' +
+    '  <key>CFBundleVersion</key><string>1</string>\n' +
+    '  <key>CFBundleShortVersionString</key><string>1.0</string>\n' +
+    '  <key>CFBundlePackageType</key><string>APPL</string>\n' +
+    '  <key>CFBundleExecutable</key><string>papercusp-tutorial</string>\n' +
+    '  <key>LSMinimumSystemVersion</key><string>10.15</string>\n' +
+    '  <key>LSUIElement</key><true/>\n' +
+    '  <key>NSHighResolutionCapable</key><true/>\n' +
+    '</dict>\n' +
+    '</plist>\n';
+  await fs.writeFile(path.join(contentsDir, 'Info.plist'), infoPlist, { mode: 0o644 });
+
+  const executable =
+    '#!/bin/bash\n' +
+    '# Papercusp Tutorial launcher — managed by Papercusp.app (installPapercuspFiles).\n' +
+    '# Refreshed on every boot; do not edit. Opens a Terminal window running\n' +
+    '# `papercusp tutorial` (mirrors native_console.rs spawn_macos_new_window).\n' +
+    'set -e\n' +
+    'TMP="$(mktemp -t papercusp-tutorial).command"\n' +
+    'cat > "$TMP" <<\'SCRIPT\'\n' +
+    '#!/bin/bash\n' +
+    'set -e\n' +
+    'export PATH="$HOME/.papercusp/bin:$HOME/.local/bin:$PATH"\n' +
+    '"$HOME/.papercusp/bin/papercusp" tutorial\n' +
+    'SCRIPT\n' +
+    'chmod +x "$TMP"\n' +
+    'TERM_APP="Terminal.app"\n' +
+    '[ -d "/Applications/iTerm.app" ] && TERM_APP="iTerm.app"\n' +
+    'open -na "$TERM_APP" "$TMP"\n';
+  const execPath = path.join(macosDir, 'papercusp-tutorial');
+  await fs.writeFile(execPath, executable, { mode: 0o755 });
+  await fs.chmod(execPath, 0o755);
+  return true;
+}
+
+/**
  * Ensure ~/.papercusp/bin is on the user's shell PATH so `psu` / `ptool` work in
  * ANY terminal the user opens — not only the in-app "+" console (which sets PATH
  * itself). Appends an idempotent, marker-guarded block to the common login +
@@ -638,6 +713,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     psuPath: path.join(binDir, 'psu'),
     ptoolPath: path.join(binDir, 'ptool'),
     papercuspCliPath: path.join(binDir, 'papercusp'),
+    macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial.app'),
   };
 }
 
@@ -717,6 +793,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // where claude lives in ~/.local/bin makes psu exit immediately (can't exec it).
   await ensureAgentClisLinked(home, paths.binDir);
 
+  // macOS Tutorial.app wrapper (WI-2197): only where it means something (darwin)
+  // and only once the dispatcher it invokes actually landed — a DMG install has
+  // no postinstall-script hook, so this is provisioned here at first boot,
+  // mirroring the Linux .deb's third `.desktop` icon.
+  const macTutorialAppWritten =
+    process.platform === 'darwin' && papercuspCliWritten ? await writeMacTutorialApp(paths.macTutorialAppPath) : false;
+
   return {
     ...paths,
     minted: { token: token.minted, agentId: agentId.minted },
@@ -728,6 +811,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     psuShimWritten,
     ptoolShimWritten,
     papercuspCliWritten,
+    macTutorialAppWritten,
     psuLauncherSource: psuShimWritten && psuLauncherSource ? psuLauncherSource : '',
     ptoolLauncherSource: ptoolShimWritten && ptoolLauncherSource ? ptoolLauncherSource : '',
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',

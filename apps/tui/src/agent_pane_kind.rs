@@ -240,7 +240,7 @@ mod tests {
             glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)),
             "☕ worker · ab12"
         );
-        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "♛ Q");
+        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)), "🍵 Q");
         // unknown/missing kind → unchanged
         assert_eq!(glyph_prefixed_title("x", None), "x");
     }
@@ -285,11 +285,11 @@ mod tests {
             Some(AgentPaneKind::Bee)
         );
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("♛ brain"),
+            AgentPaneKind::from_glyph_prefix("🍵 mug"),
             Some(AgentPaneKind::Queen)
         );
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("🛡 operator"),
+            AgentPaneKind::from_glyph_prefix("🥤 papercup"),
             Some(AgentPaneKind::Sentinel)
         );
         assert_eq!(
@@ -297,7 +297,7 @@ mod tests {
             Some(AgentPaneKind::Planner)
         );
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("👁 overwatch"),
+            AgentPaneKind::from_glyph_prefix("🫖 kettle"),
             Some(AgentPaneKind::Overwatch)
         );
         // Unglyphed (colony driver / user panes) → None.
