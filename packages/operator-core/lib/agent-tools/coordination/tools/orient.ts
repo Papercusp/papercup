@@ -410,6 +410,7 @@ export default defineTool({
     recipesLimit: z.number().int().positive().max(5).optional().describe('Max relevant recipes to surface (default 3).'),
     includeFleetCatchUp: z.boolean().optional().describe("Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true)."),
     fleetCatchUpLimit: z.number().int().positive().max(25).optional().describe('Max fleet catch-up messages to fold (default 8).'),
+    afterCompaction: z.boolean().optional().describe('Pass true on your FIRST orient after a compaction: folds a recovery block — your held work-items’ checkpoints, armed-loop status, and the self-recall pointer (pre-compaction turns are searchable via sessions:search { session:’self’ }).'),
   }),
   // context-trimming-tiers P-012: orient is the fattest bootstrap read (one
   // unshaped call measured ~43k tokens in the 2026-07-01 fleet incident). The
@@ -480,7 +481,19 @@ export default defineTool({
         }
       } catch { /* fail-soft */ }
     }
-    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(result as object) };
+    // compaction-context-loss-2026-07-05 P-002: the post-compaction recovery
+    // fold — held-item checkpoints + armed-loop status + the self-recall
+    // pointer (with a self live-tail so it's fresh). Handler-side IO like
+    // ownerPresent/modes; best-effort — never breaks orientation.
+    let recovery: unknown;
+    if (args.afterCompaction && ownerId) {
+      try {
+        const { buildCompactionRecovery } = await import('../compaction-recovery');
+        const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
+        recovery = await buildCompactionRecovery(ownerId, ws);
+      } catch { /* fail-soft */ }
+    }
+    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path

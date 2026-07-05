@@ -2,7 +2,7 @@
 title: Reflexive datatypes & tools — extend the platform from inside it
 description: How an agent declares a NEW entity type (a datatype) or a NEW tool at runtime and has the whole platform treat it as first-class. Datatypes — meta:define-datatype writes harness_shared.datatype_registry (dedup-only, D-010); a generic-kind datatype's work_item_kind is accepted by work_items:create AND its payload is validated against payload_schema (ajv), it's visible in list/search/plans, frontier-placeable via the hive-placement tag (opt-in), self-improvable by construction (P-010), and blueprint-dependable (dependencies.datatypes). Tools — meta:define-tool routes composed→live recipe / sandboxed|elevated→tools:scaffold PR rail; dynamic-tool-confinement is the adversarially-proven per-tool envelope (no fs-escape / denied-host net / cap escalation / cap minting). first-class migrations + the Comb-published shared tier + the runtime PEP wiring go through the reviewed PR rail (D-003) / the capability TCB (tier:'human', D-007).
 discovered: 2026-06-30
-tags: [datatypes, tools, reflexive, extensibility, registry, dedup, capability-confinement, blueprint-deps, self-improvement, oddsmith]
+tags: [datatypes, tools, reflexive, extensibility, registry, dedup, capability-confinement, blueprint-deps, self-improvement]
 status: active
 documents:
   - packages/operator-core/lib/datatype-registry-store.ts
@@ -24,8 +24,8 @@ plans:
 
 Papercusp can be extended **from inside the running system**: an agent declares a new
 **datatype** (a named entity TYPE) or a new **tool** (a capability), and the platform
-treats it as first-class — no engineer, no redeploy. The point: a domain (oddsmith first)
-models its own concepts *on* the self-improvement substrate instead of building a bespoke
+treats it as first-class — no engineer, no redeploy. The point: a domain (an internal
+reference app was the first) models its own concepts *on* the self-improvement substrate instead of building a bespoke
 system beside it. Design anchors D-001..D-011 (the plan); the decisive ones are inlined below.
 
 ## Datatypes — the extension flow

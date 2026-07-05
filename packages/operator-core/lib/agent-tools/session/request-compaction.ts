@@ -32,8 +32,10 @@ const DEFAULT_FOCUS =
 function defaultContinueNote(focus: string): string {
   return (
     'Continue where you left off — this is a fresh turn right after your compaction. ' +
-    'First re-run coord:orient to reconcile live state (fleet/claims/inbox may have moved), ' +
-    `then resume: ${focus}`
+    'First re-run coord:orient { afterCompaction: true } to reconcile live state AND get your ' +
+    'recovery block (held-item checkpoints, armed-loop status, self-recall pointer). Anything ' +
+    "the summary lost is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
+    `Then resume: ${focus}`
   );
 }
 
@@ -111,6 +113,19 @@ export default defineTool({
     // "compaction done" is observable), then type the carry-note continuation. An old host
     // (no `caps`) falls back to the plain /compact turn inject: compaction still runs, no
     // auto-continue — so the rollout is a pure no-op until hosts advertise the capability.
+    // compaction-context-loss-2026-07-05 P-001: force-ingest the caller's
+    // transcript into the episodic index AT the moment of (deliberate) loss —
+    // the server-mediated write-time flush that works for EVERY client
+    // (claude/omp/codex), no PreCompact hook required. Fail-soft: the 2-min
+    // ingest tick + the read-time self live-tail (D-002) cover any miss.
+    try {
+      const { resolveSelfSession } = await import('../../search/self-session');
+      const self = await resolveSelfSession(identity.ownerId);
+      if (self) {
+        const { ingestFileNow } = await import('../../search/session-ingest');
+        await ingestFileNow(self.filePath);
+      }
+    } catch { /* best-effort */ }
     const canAutoContinue = autoContinue && hostSupports(host, 'compact');
     const ok = canAutoContinue
       ? await injectIntoHost(host.sock, {

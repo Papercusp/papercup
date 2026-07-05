@@ -43,9 +43,9 @@ Verify the discriminators directly in the YAML: `coding` declares `kind: hive` +
 
 `libs/papercusp/packages/harness/blueprints/work/blueprint.yaml` is
 `extends: coding` (`kind: hive`). So **anything built on `work` inherits the
-queen/bee model**, not the factory. The oddsmith ops hive (`oddsmith-ops` extends
-`work`) is therefore a queen/bee hive: its analysts are scaled to the
-bet-analysis backlog by the **Queen + fleet placement**, governed by the hive
+queen/bee model**, not the factory. An internal ops hive (one that `extends:
+work`) is therefore a queen/bee hive: its analysts are scaled to the
+domain backlog by the **Queen + fleet placement**, governed by the hive
 blueprint's placement / wake / fleet knobs and the Queen prompt — **NOT** by
 `orchestrator-loop.ts`.
 

@@ -148,8 +148,8 @@ transferred **delta-only** (≤ 25 % of cold's bytes by default), and (d) booted
 **faster**. The pure verdict is unit-tested; the two-install **measurement** seam
 (`PackagedInstallMeasure`) needs a fresh **packaged build** to run and is
 honestly-gated (`PACKAGED_MEASURE_BUILD_REQUIRED`) — it executes only from a rig with
-a build (deploys are frozen while green-checkpoint is stalled on quartermaster; no
-numbers are fabricated in-process).
+a build (deploys are frozen while green-checkpoint is stalled on an internal
+reference harness; no numbers are fabricated in-process).
 
 ## Quick reference — env + flags
 

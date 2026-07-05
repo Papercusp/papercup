@@ -55,7 +55,7 @@ the reaper starts, i.e. the flag is ON), so the **OFF path is byte-identical** �
 ### Current-fleet reality (why v1 is correct but currently inert)
 
 `dev:dogfood_substrate_status` on the live operator shows **one** booted harness
-(`oddsmith-hive`), which is **shared + peered** → the reaper correctly evicts
+(an internal reference harness), which is **shared + peered** → the reaper correctly evicts
 nothing today. The path-liveness filter in `boot-all` (skip registry entries
 whose project path is gone) already bounded the original O(harness-count) RSS
 problem. v1 is ready to act when idle *private* harnesses exist; the real

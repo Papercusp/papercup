@@ -561,12 +561,23 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       }
       // Newest first: recent sessions index first; history back-fills over ticks.
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      // Bulk-load this adapter's ingest state ONCE — a per-file SELECT at ~23k
+      // candidate files was minutes of serial round-trips (perf anti-pattern
+      // A1: per-item queries in a loop; observed live 2026-07-05).
+      const stateRows = await sql<Array<{ file_path: string; byte_offset: string | number; turn_count: number }>>`
+        SELECT file_path, byte_offset, turn_count
+          FROM harness_shared.session_ingest_state
+         WHERE source_kind = ${adapter.sourceKind}
+      `;
+      const stateMap = new Map<string, IngestState>(
+        stateRows.map((r) => [r.file_path, { byte_offset: Number(r.byte_offset), turn_count: r.turn_count }]),
+      );
       let filesThisAdapter = 0;
       for (const cand of candidates) {
         if (budget.turns <= 0 || filesThisAdapter >= MAX_FILES_PER_TICK) break;
         stats.filesScanned += 1;
         try {
-          const st = await readState(sql, adapter.sourceKind, cand.path);
+          const st = stateMap.get(cand.path) ?? { byte_offset: 0, turn_count: 0 };
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
           const { turns, newOffset } = await readNewLines(cand.path, st.byte_offset, adapter.parseLine);

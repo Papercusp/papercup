@@ -95,13 +95,15 @@ export function renderBandedContextGauge(
       return fact;
     case 'loud':
       return (
-        `⚠ ${fact} — approaching your soft compaction limit; reach a clean stopping ` +
+        `⚠ ${fact} — approaching your soft compaction limit; FLUSH durable conclusions NOW ` +
+        `(facts:assert / work_items:checkpoint / loop:checkpoint), then reach a clean stopping ` +
         `point soon and call session:request-compaction (or /compact) with a focus.`
       );
     case 'critical':
       return (
-        `⚠ ${fact} — CRITICAL: at your soft compaction limit. Call session:request-compaction ` +
-        `(or /compact) with a focus NOW, at the nearest stopping point — do not merely narrate ending the turn.`
+        `⚠ ${fact} — CRITICAL: at your soft compaction limit. Flush checkpoints/facts if not yet done, ` +
+        `then call session:request-compaction (or /compact) with a focus NOW, at the nearest stopping ` +
+        `point — do not merely narrate ending the turn.`
       );
   }
 }

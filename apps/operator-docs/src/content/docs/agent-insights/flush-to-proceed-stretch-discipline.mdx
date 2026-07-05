@@ -23,7 +23,7 @@ The rule that governs how an su session sequences **units of work** across a tur
 
 ## The reframe (why turn-ending was the wrong rule)
 
-"End your turn after one item" is a *turn-lifetime enforcement* of a *state-durability invariant*. That is the same bug class as oddsmith's LLM-budget defect (a `≤100/day` cap enforced by a counter living in a per-cycle closure — enforcement lifetime ≠ invariant scope, so the cap never actually bound). The load-bearing invariant here is:
+"End your turn after one item" is a *turn-lifetime enforcement* of a *state-durability invariant*. That is the same bug class as an internal app's LLM-budget defect (a `≤100/day` cap enforced by a counter living in a per-cycle closure — enforcement lifetime ≠ invariant scope, so the cap never actually bound). The load-bearing invariant here is:
 
 > **Never hold unexternalized state longer than one unit of work.**
 
@@ -95,4 +95,4 @@ Every scoping deviation from the plan's literal text is recorded as a decision (
 
 - **Persona (P-007 / D-003).** Durable rules live in a **re-injected surface**, never in conversation (which decays at the next compaction). The three rules ship as a `## Stretch discipline — flush to proceed` section in **both** su base playbooks (`papercusp-su-engineer.tools.md`, `papercusp-su-power.tools.md`) — the playbook is a system-prompt surface, so it re-injects across compaction by construction. **D-009:** these persona edits reach **new** su launches from the integration/staging prompt tree *without* a code deploy (the `promptsDir()` prompt-decouple); only the Phase-2 **code** rides the next papercusp deploy.
 - **Measurement (P-008).** The `stretch-discipline` rubric (`rubrics:propose`, status *proposed*) grades one scorecard **per session**: `checkpoint-freshness-at-compaction`, `wake-overhead-per-completed-unit`, `owner-redirect-latency`, `units-completed-per-session`. Graded via turn-end `improvements:capture { rubricRef: 'stretch-discipline' }`; Scout's digest trends it. A rule without measurement drifts back to a reflex.
-- **Rollout (P-009).** Pilot behind the loop-continuation policy on one session (the su-ac403 oddsmith engine loop); compare the rubric trend + wake overhead before/after over ≥3 days, then flip the fleet default and ratify the rubric. Rollback = disarm the policy; the old always-settle behavior remains the fallback. *(Gated on the `papercusp-loops` flag.)*
+- **Rollout (P-009).** Pilot behind the loop-continuation policy on one session (the su-ac403 engine loop); compare the rubric trend + wake overhead before/after over ≥3 days, then flip the fleet default and ratify the rubric. Rollback = disarm the policy; the old always-settle behavior remains the fallback. *(Gated on the `papercusp-loops` flag.)*

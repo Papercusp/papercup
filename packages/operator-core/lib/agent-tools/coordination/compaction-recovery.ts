@@ -1,0 +1,112 @@
+/**
+ * Post-compaction recovery fold for coord:orient
+ * (compaction-context-loss-2026-07-05 P-002 / D-002).
+ *
+ * The first orient after a compaction re-delivers, structurally, what prose
+ * summaries lose: (a) the caller's HELD work-items' checkpoints (the carry
+ * notes a successor is normally re-injected with only on item pickup),
+ * (b) the armed engine-loop status, and (c) the self-recall pointer — the
+ * pre-compaction transcript survives on disk and is searchable via
+ * sessions:search { session:'self' }. Resolving here ALSO force-tails the
+ * caller's own transcript (ingestFileNow) so that pointer is FRESH the
+ * moment it's handed out — client-neutral (claude/omp/codex), no hook
+ * required.
+ *
+ * Handler-side IO (like ownerPresent/modes): composeOrient stays pure.
+ * Every leg is best-effort — recovery must never break orientation.
+ */
+
+import { getOrgPg } from '@papercusp/db-org';
+import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
+
+export interface CompactionRecovery {
+  /** The one-line pointer back to the pre-compaction verbatim record. */
+  selfRecall: string;
+  /** The caller's live transcript, when resolvable (already force-tailed). */
+  selfSession?: { sourceKind: string; sessionId: string } | null;
+  /** Armed engine loop, if any — the loop's carry-note is re-injected on its own wake. */
+  loop?: { active: boolean; intervalSec?: number | null } | null;
+  /** Held (assigned, non-terminal) work-items + their checkpoints. */
+  checkpoints?: Array<{ id: string; title?: string; checkpoint: string | null }>;
+}
+
+const MAX_HELD_ITEMS = 6;
+const CHECKPOINT_CAP = 1200;
+
+export async function buildCompactionRecovery(
+  ownerId: string,
+  workspaceId: string,
+): Promise<CompactionRecovery> {
+  const recovery: CompactionRecovery = {
+    selfRecall:
+      "Your pre-compaction turns survive on disk and are INDEXED — recover any lost detail with " +
+      "sessions:search { session:'self', mode:'verbatim', query:'<what you remember>' } " +
+      "(or sessions:read { session:'self' } for the tail).",
+  };
+
+  // (c) self live-tail + pointer — freshness at the moment of hand-out.
+  try {
+    const { resolveSelfSession } = await import('../../search/self-session');
+    const self = await resolveSelfSession(ownerId);
+    if (self) {
+      recovery.selfSession = { sourceKind: self.sourceKind, sessionId: self.sessionId };
+      try {
+        const { ingestFileNow } = await import('../../search/session-ingest');
+        await ingestFileNow(self.filePath);
+      } catch { /* the 2-min tick covers it */ }
+    } else {
+      recovery.selfSession = null;
+    }
+  } catch {
+    recovery.selfSession = null;
+  }
+
+  // (b) armed engine loop.
+  try {
+    const { getLoopStatus } = await import('../../harness/routines/loop');
+    const loop = (await getLoopStatus(ownerId)) as
+      | { active?: boolean; rescheduleIntervalSec?: number; reschedule_interval_sec?: number }
+      | null;
+    recovery.loop = loop
+      ? {
+          active: Boolean(loop.active),
+          intervalSec: loop.rescheduleIntervalSec ?? loop.reschedule_interval_sec ?? null,
+        }
+      : null;
+  } catch {
+    recovery.loop = null;
+  }
+
+  // (a) held work-items' checkpoints — normally re-injected only on pickup;
+  // after a compaction the agent may not know it still HOLDS them.
+  try {
+    const { sql } = getOrgPg();
+    const held = await sql<Array<{ issue_id: string; title: string | null; scope: string }>>`
+      SELECT issue_id, title, scope
+        FROM harness_shared.engineer_issues
+       WHERE assignee = ${ownerId}
+         AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
+         AND (workspace_id = ${workspaceId} OR workspace_id = 'default')
+       ORDER BY issue_id DESC
+       LIMIT ${MAX_HELD_ITEMS}
+    `;
+    if (held.length) {
+      const out: NonNullable<CompactionRecovery['checkpoints']> = [];
+      for (const h of held) {
+        const harness = h.scope?.startsWith('harness:') ? h.scope.slice('harness:'.length) : 'papercup';
+        let checkpoint: string | null = null;
+        try {
+          checkpoint = await getWorkItemCheckpoint({ harness, workItemId: h.issue_id, workspaceId });
+        } catch { /* per-item best-effort */ }
+        out.push({
+          id: h.issue_id,
+          ...(h.title ? { title: h.title.slice(0, 120) } : {}),
+          checkpoint: checkpoint ? checkpoint.slice(0, CHECKPOINT_CAP) : null,
+        });
+      }
+      recovery.checkpoints = out;
+    }
+  } catch { /* best-effort */ }
+
+  return recovery;
+}
