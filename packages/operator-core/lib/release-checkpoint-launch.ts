@@ -11,9 +11,10 @@
  *
  * Why DETACHED (mirrors release-deploy-launch.ts): the green-checkpoint suite runs the full
  * test battery under load for up to ~55 min — far past any MCP call budget — so an awaited
- * child would time out the tool. We launch it as a transient systemd unit (bounded by
- * RuntimeMaxSec so a hung suite can't run forever) and return once systemd-run accepts it; the
- * OUTCOME lands on /admin/git (the pipeline event the CLI emits), not this caller.
+ * child would time out the tool. We launch it as a transient systemd unit with a loose
+ * RuntimeMaxSec backstop (well above the suite timeout) so systemd never preempts a healthy
+ * long run; the suite's own timeout still produces the verdict if it truly runs too long.
+ * The OUTCOME lands on /admin/git (the pipeline event the CLI emits), not this caller.
  *
  * OOM-safety: green-checkpoint.ts self-locks (its status vocabulary includes 'skipped-locked'),
  * so firing this while the cron tick's suite is mid-run just no-ops the second run rather than
@@ -50,9 +51,13 @@ export function checkpointUnitForRoot(root: string): string {
   return `${CHECKPOINT_UNIT}-${h.toString(36)}`;
 }
 
-/** Wall-clock ceiling for the detached suite (systemd kills the unit past this). Mirrors the
- *  routine's in-process GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (55m) so a hung suite self-reaps. */
-export const CHECKPOINT_MAX_RUNTIME_SEC = 55 * 60;
+/** Wall-clock ceiling for the detached suite's systemd backstop.
+ *
+ * Keep this strictly ABOVE the suite's own in-process timeout (55m) so the suite itself
+ * still emits a red/verdict path if it genuinely overruns; the systemd cap is only a guard
+ * against a truly wedged launch path, not the primary timeout.
+ */
+export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
 
 export interface LaunchCheckpointResult {
   launched: boolean;
@@ -88,7 +93,7 @@ export interface ActiveCheckpointCheck {
   quiet_cut_sec?: number | null;
   /** ISO timestamp the unit actually started running (systemd ExecMainStartTimestamp). */
   started_at?: string | null;
-  /** Seconds remaining before the suite's own runtime ceiling (CHECKPOINT_MAX_RUNTIME_SEC)
+  /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. */
   eta_sec?: number | null;
 }

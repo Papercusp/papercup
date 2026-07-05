@@ -21,6 +21,7 @@ describe('buildCheckpointSystemdArgv', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
     expect(argv).toContain(`--unit=${checkpointUnitForRoot('/tree')}`); // per-root (2026-07-01): cross-root manual gates no longer serialize
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
+    expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
     expect(argv).toContain('--working-directory=/tree');
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
     const inner = argv[argv.length - 1]!;
